@@ -42,7 +42,7 @@ async function irText(source: string): Promise<string> {
 function body(llvm: string, name: RegExp): string {
   const match = llvm.match(
     new RegExp(
-      `define internal [^\\n]+ @${name.source}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+      `define internal [^\\n]+ @${name.source}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
     ),
   );
   expect(match, `${name.source} LLVM function`).not.toBeNull();

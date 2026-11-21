@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -607,6 +608,7 @@ test("routed executable hits require an unchanged compiler implementation proof"
       size: implementationInfo.size,
       mtimeMs: implementationInfo.mtimeMs,
       ctimeMs: implementationInfo.ctimeMs,
+      content: createHash("sha256").update("compiler-v1\n").digest("hex"),
     },
   ];
   const tracker = new FrontendInputTracker();
@@ -699,6 +701,7 @@ async function routedFixture(executableRestored = true) {
       size: info.size,
       mtimeMs: info.mtimeMs,
       ctimeMs: info.ctimeMs,
+      content: createHash("sha256").update("compiler-v1\n").digest("hex"),
     },
   ];
   const tracker = new FrontendInputTracker();

@@ -172,7 +172,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v50(void) {}
+void scr_runtime_abi_v51(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
@@ -578,6 +578,28 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
 
 void scr_console_log(size_t n, const ScrLogArg *args) {
   scr_console_write(1, n, args, true, true);
+}
+
+/* The diagnostics_channel unit installs its publisher the first time it
+ * creates a channel. A program that never imports diagnostics_channel cannot
+ * have console-channel subscribers, so the pointer stays NULL there. */
+static SCR_TL void (*scr_console_channel_publisher)(double member, ScrDyn *args) = NULL;
+static SCR_TL bool (*scr_console_channel_probe)(double member) = NULL;
+
+void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args)) {
+  scr_console_channel_publisher = publisher;
+}
+
+void scr_console_set_channel_active(bool (*active)(double member)) {
+  scr_console_channel_probe = active;
+}
+
+bool scr_console_channel_active(double member) {
+  return scr_console_channel_probe != NULL && scr_console_channel_probe(member);
+}
+
+void scr_console_publish_args(double member, ScrDyn *args) {
+  if (scr_console_channel_publisher != NULL) scr_console_channel_publisher(member, args);
 }
 
 /* console.error and console.warn. Runtime-internal stdout output that is

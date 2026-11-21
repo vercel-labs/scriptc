@@ -264,7 +264,7 @@ function buildFetchCompatProfile() {
       ],
       responseCalls: ["json", "text", "bytes", "clone"],
       readableStreamReads: ["locked"],
-      readableStreamCalls: ["cancel", "getReader", ...READABLE_STREAM_WEB_VIEW_CALLS],
+      readableStreamCalls: ["cancel", "getReader", "values", ...READABLE_STREAM_WEB_VIEW_CALLS],
     },
     operations: [
       {
@@ -477,6 +477,13 @@ function buildFetchCompatProfile() {
         kind: "method",
         facets: ["webidl-conversion", "identity", "state-machine", "error-shape"],
         evidence: [generated("stream-traces"), fixture("static-stream")],
+      },
+      {
+        id: "stdlib.readable-stream.values",
+        name: "ReadableStream.values",
+        kind: "method",
+        facets: ["identity", "promise-settlement", "state-machine", "error-shape"],
+        evidence: [fixture("static-stream-values")],
       },
       ...READABLE_STREAM_WEB_VIEW_CALLS.map((member): FetchCompatOperation => ({
         id: `stdlib.readable-stream.${member}`,
@@ -805,13 +812,7 @@ function buildFetchCompatProfile() {
         ...READABLE_STREAM_WEB_VIEW_CALLS.map((member) =>
           staticEntry(`stdlib.readable-stream.${member}`, "ReadableStream", member, "prototype"),
         ),
-        unsupportedEntry(
-          "stdlib.readable-stream.values",
-          "ReadableStream",
-          "values",
-          "prototype",
-          "direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported",
-        ),
+        staticEntry("stdlib.readable-stream.values", "ReadableStream", "values", "prototype"),
         unsupportedEntry(
           "stdlib.readable-stream.symbol.asyncIterator",
           "ReadableStream",

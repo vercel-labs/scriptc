@@ -170,13 +170,22 @@ static ScrDyn *scr_assert_dyn_text(const char *text) {
 /* Sets the error's own properties in Node's order. The values move in. */
 static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
                                      ScrDyn *op, ScrDyn *diff) {
-  scr_error_set_prop(e, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  /* Node assigns generatedMessage, then name, then the rest; the view is
+   * laid out when the first property is attached, so the seed places
+   * generatedMessage before the class name. */
+  scr_error_seed_own_prop("generatedMessage", 16, scr_dyn_new_bool(generated));
+  ScrDyn *view = scr_dyn_from_error(e); /* generatedMessage, then name */
+  scr_dyn_release(view);
   scr_error_set_code(e, "ERR_ASSERTION");
   scr_error_set_prop(e, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
   scr_error_set_prop(e, "actual", 6, actual);
   scr_error_set_prop(e, "expected", 8, expected);
   scr_error_set_prop(e, "operator", 8, op);
   scr_error_set_prop(e, "diff", 4, diff);
+  /* A view that already existed does not consume the seed; keep the value,
+   * at the end of the order. */
+  ScrDyn *leftover = scr_error_take_seed();
+  if (leftover) scr_error_set_prop(e, "generatedMessage", 16, leftover);
 }
 
 static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {
@@ -234,7 +243,7 @@ void scr_assert_message_clear(void) {
   g_message_value = NULL;
 }
 
-void scr_assert_fail(ScrStr *message, bool generated) {
+static void scr_assert_fail_with(ScrStr *message, bool generated, bool generated_from_truthiness) {
   static const char sentinel[] = SCR_ASSERT_VALUE_MESSAGE;
   const size_t n = sizeof sentinel - 1;
   if (g_message_value && message->len >= n && memcmp(message->data, sentinel, n) == 0) {
@@ -248,7 +257,10 @@ void scr_assert_fail(ScrStr *message, bool generated) {
       return;
     }
     ScrStr *text = scr_dyn_string_coerce_js(value);
-    generated = !scr_dyn_truthy(value);
+    /* AssertionError sets generatedMessage to !message; assert.ok overrides
+     * it with its own message == null test, so only the former derives the
+     * flag from the value's truthiness. */
+    if (generated_from_truthiness) generated = !scr_dyn_truthy(value);
     scr_dyn_release(value);
     if (!text) {
       scr_str_release(message);
@@ -263,6 +275,68 @@ void scr_assert_fail(ScrStr *message, bool generated) {
     message = scr_jb_finish(&b);
   }
   ScrError *e = scr_assert_error(message, generated, scr_assert_diff_full() ? "full" : "simple");
+  g_instance_options = 0;
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+void scr_assert_fail(ScrStr *message, bool generated) {
+  scr_assert_fail_with(message, generated, true);
+}
+
+/* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
+ * the deprecated multi-argument form (Node's innerFail). A message that is
+ * an Error is thrown itself; otherwise the AssertionError carries actual,
+ * expected and the operator value, and either the message's String() form
+ * (generatedMessage `!message`, so the empty string counts as generated) or
+ * Node's generated `${inspect(actual)} ${operator} ${inspect(expected)}`
+ * when the message is absent or nullish. The lowering supplies the
+ * operator default ("!=" for exactly two arguments, "fail" otherwise).
+ * Everything moves in. Throws. */
+static ScrStr *scr_assert_cf_inspect(const ScrDyn *d); /* the dyn renderer below */
+
+void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
+                                ScrDyn *operator_value, ScrDyn *default_operator) {
+  /* Node's `operator === undefined ? default : operator`: a null operator
+   * stays null in the property and in the generated message. */
+  if (!operator_value || operator_value == scr_dyn_undefined()) operator_value = default_operator;
+  if (message && (scr_dyn_ref_is_error(message) || scr_dyn_is_error_prototype(message))) {
+    scr_dyn_throw(scr_dyn_retain(message));
+    return;
+  }
+  bool generated;
+  ScrStr *text;
+  if (!message || scr_dyn_is_nullish(message)) {
+    ScrStr *ia = scr_assert_cf_inspect(actual);
+    ScrStr *ib = scr_assert_cf_inspect(expected);
+    ScrStr *op = scr_dyn_string_coerce_js(operator_value);
+    if (scr_exc_pending()) {
+      scr_str_release(ia);
+      scr_str_release(ib);
+      return;
+    }
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_write(&b, ia->data, ia->len);
+    scr_jb_putc(&b, ' ');
+    if (op) scr_jb_write(&b, op->data, op->len);
+    scr_jb_putc(&b, ' ');
+    scr_jb_write(&b, ib->data, ib->len);
+    scr_str_release(ia);
+    scr_str_release(ib);
+    if (op) scr_str_release(op);
+    text = scr_jb_finish(&b);
+    generated = true;
+  } else {
+    text = scr_dyn_string_coerce_js(message);
+    if (scr_exc_pending()) return;
+    generated = !scr_dyn_truthy(message);
+  }
+  ScrError *e = scr_error_new(SCR_ERR_ASSERTION, text);
+  scr_str_release(text);
+  e->name_present = true;
+  scr_assert_attach_values(e, generated, scr_dyn_retain(actual), scr_dyn_retain(expected),
+                           scr_dyn_retain(operator_value),
+                           scr_assert_dyn_text(scr_assert_diff_full() ? "full" : "simple"));
   g_instance_options = 0;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
@@ -282,9 +356,9 @@ void scr_assert_fail_msg(ScrStr *message) { scr_assert_fail(message, true); }
  * string, or the compile-time "The expression evaluated to a falsy
  * value:\n\n  <source text>\n" — the source is a compile-time constant
  * where Node re-reads the file). */
-void scr_assert_ok(bool pass, ScrStr *message, bool generated) {
+void scr_assert_ok(bool pass, ScrStr *message, bool generated, bool generated_from_truthiness) {
   if (pass) return;
-  scr_assert_fail(scr_str_retain(message), generated);
+  scr_assert_fail_with(scr_str_retain(message), generated, generated_from_truthiness);
 }
 
 /* SameValue over doubles — Object.is, the comparison of strictEqual AND
@@ -1301,6 +1375,36 @@ typedef struct {
   size_t len;
 } ScrCfEntry;
 
+/* The growing entry list the container renderers collect into: a render
+ * runs program getters, which can add properties while the table is being
+ * walked, so the list grows as entries are produced instead of being sized
+ * from an up-front count. */
+typedef struct {
+  ScrCfEntry *items;
+  size_t len, cap;
+} ScrCfEntries;
+
+static char *scr_assert_cf_entry_copy(const char *text, size_t len) {
+  char *copy = malloc(len ? len : 1);
+  if (!copy) scr_assert_oom();
+  if (len) memcpy(copy, text, len);
+  return copy;
+}
+
+static void scr_assert_cf_entries_push(ScrCfEntries *list, char *text, size_t len) {
+  if (list->len == list->cap) {
+    size_t cap = list->cap ? list->cap * 2 : 8;
+    if (cap < list->cap || cap > SIZE_MAX / sizeof *list->items) scr_assert_oom();
+    ScrCfEntry *items = realloc(list->items, cap * sizeof *items);
+    if (!items) scr_assert_oom();
+    list->items = items;
+    list->cap = cap;
+  }
+  list->items[list->len].text = text;
+  list->items[list->len].len = len;
+  list->len++;
+}
+
 static int scr_assert_cf_entry_cmp(const void *pa, const void *pb) {
   const ScrCfEntry *a = pa, *b = pb;
   size_t n = a->len < b->len ? a->len : b->len;
@@ -1395,8 +1499,7 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
   } else if (d->null_proto) ab_cstr(b, "[Object: null prototype] ");
   /* Render every entry, then sort the RENDERED texts (Node's
    * sorted:true sorts formatted entries, quotes included). */
-  ScrCfEntry *ents = malloc(shown * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1405,20 +1508,19 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
     scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
-    ents[n].text = eb.data ? eb.data : malloc(1);
-    if (!ents[n].text) scr_assert_oom();
-    ents[n++].len = eb.len;
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, shown, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_char(b, '{');
-  for (size_t i = 0; i < shown; i++) {
+  for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
-    if (i + 1 < shown) ab_char(b, ',');
-    free(ents[i].text);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
+    if (i + 1 < n) ab_char(b, ',');
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');
@@ -1473,8 +1575,7 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   }
   if (extra == 0) return;
   if (depth == 0) return;
-  ScrCfEntry *ents = malloc(extra * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1483,20 +1584,19 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
     scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
-    ents[n].text = eb.data ? eb.data : malloc(1);
-    if (!ents[n].text) scr_assert_oom();
-    ents[n++].len = eb.len;
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, n, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_cstr(b, " {");
   for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
     if (i + 1 < n) ab_char(b, ',');
-    free(ents[i].text);
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');

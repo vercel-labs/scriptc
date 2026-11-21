@@ -1,5 +1,6 @@
 import type { TargetCpu } from "../target-cpu.js";
 import { loopEntryInlines } from "./loop-entry-versions.js";
+import { alignFunctionEntries } from "./function-alignment.js";
 import type { FunctionLayout } from "./function-layout.js";
 import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
@@ -89,6 +90,7 @@ import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
   type ChunkResult,
   EmitJournal,
+  registerContentReplay,
   registerReplay,
   renameChunk,
   replayJournal,
@@ -441,6 +443,7 @@ import {
   recordViewTest,
 } from "./record-views.js";
 import { LlvmUnsupportedError, anchorRefusal } from "./unsupported.js";
+import { singleOwnerErrors } from "./single-owner.js";
 import { LlWalkers } from "./walkers.js";
 import {
   isObjectArm,
@@ -642,6 +645,10 @@ export interface LlvmTargetOptions {
    * column constants): the sources stay in the compiler, only the numbers
    * reach the executable. */
   positionSources?: ReadonlyMap<string, string>;
+  /** The file a location names, read when `positionSources` holds no text for
+   * it: a build from an IR artifact, which records the file names and offsets
+   * but not the sources (source-text-loader.ts). */
+  positionSourceLoader?: (file: string) => string | undefined;
   /** The output is linked with the report of failed checked conversions
    * (scr_conversion_trace.c, runtime feature conversionTrace), so each
    * conversion's failure path calls it with the conversion's position. Set
@@ -2094,7 +2101,6 @@ export class LlEmitter {
    * zero-initialized ScrJsGroup per group, and the key arrays the probes
    * read (scr_js.h). */
   jsGroupCount = 0;
-  private jsGroupKeysCount = 0;
   private readonly jsGroupKeysByName = new Map<string, readonly string[]>();
   private readonly jsGroupKeysByText = new Map<string, string>();
   /** The guard of each group the function being emitted has entered: the
@@ -2491,7 +2497,7 @@ export class LlEmitter {
    * per-statement text). */
   readonly stackPositions: boolean;
   private readonly positionOf: ((loc: SrcLoc) => SourcePosition | null) | null;
-  private readonly positionSourcesValue: ReadonlyMap<string, string> | undefined;
+  private readonly sourceTextOf: ((file: string) => string | undefined) | undefined;
   /** Whether the function being emitted has a source frame to position. */
   frameActive = false;
   /** The executable prints its frame chain when it aborts. */
@@ -2559,19 +2565,20 @@ export class LlEmitter {
     // A release build whose program observes stacks records the position of
     // each call and throw site in the frame, instead of the per-statement
     // text a dev build stores. A sanitized build keeps the release frames:
-    // ASan instruments every store, and dev builds already skip positions
-    // there for the same reason.
-    this.stackPositions =
-      !this.positionedFrames &&
-      this.stackTraces &&
-      options.sanitizeAttributes === false &&
-      options.positionSources !== undefined;
+    // Every build that observes stacks records its call and throw sites:
+    // a dev build keeps its per-statement text for uncaught reports as
+    // well, and a sanitized build accepts the instrumented stores so that
+    // calls such as util.getCallSites answer real positions there too.
+    this.stackPositions = this.stackTraces && options.positionSources !== undefined;
     const positionSources = options.positionSources;
-    this.positionSourcesValue = positionSources;
+    this.sourceTextOf =
+      positionSources === undefined
+        ? options.positionSourceLoader
+        : (file) => positionSources.get(file) ?? options.positionSourceLoader?.(file);
     this.positionOf =
       this.stackPositions && positionSources !== undefined
         ? (() => {
-            const locations = new SourceLocations(positionSources);
+            const locations = new SourceLocations(positionSources, options.positionSourceLoader);
             return (loc: SrcLoc) => locations.position(loc);
           })()
         : null;
@@ -2933,6 +2940,7 @@ export class LlEmitter {
         : (name, op, args) => this.journal?.allocated(name, op, args),
       journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
       journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      contentSymbol: (prefix, text) => this.contentSymbol(prefix, text),
       journalUsed: !this.journaled
         ? undefined
         : (name, op, args) => this.journal?.used(name, op, args),
@@ -3295,6 +3303,15 @@ export class LlEmitter {
       });
       for (const name of plan.classes) this.classMeta.get(name)!.tree = true;
       this.treeMoves = plan.classes.size > 0 ? new Set(plan.moves) : null;
+      this.treeBorrows = plan.classes.size > 0 ? new Map(plan.borrows) : null;
+      // A class the program marked `implements SingleOwner` asked for this
+      // layout, so a rejection is an error here rather than the silent
+      // counted fallback an unmarked class gets (SC7010).
+      const marked = (mod.contracts?.singleOwner ?? []).filter((name) => plan.rejected.has(name));
+      if (marked.length > 0) {
+        const broken = singleOwnerErrors(mod, marked, plan.rejected);
+        if (broken[0] !== undefined) throw broken[0];
+      }
     }
     // Group arenas: off with lifetime regions, which own their classes'
     // allocation, and in libraries, whose exports any host code calls.
@@ -3464,7 +3481,8 @@ export class LlEmitter {
             this.cpuCopies,
             this.cpuCopies === "dispatch" ? this.copySelection() : undefined,
           );
-    return this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    const all = this.heapCensus === null ? out : [...out, this.heapCensus.definitions().join("\n")];
+    return alignFunctionEntries(all);
   }
 
   /** The entry point and JavaScript name of each named function the
@@ -3892,7 +3910,7 @@ export class LlEmitter {
    * falling back to the call's own start where the sources do not spell
    * one. */
   private callCalleeLoc(loc: SrcLoc): SrcLoc {
-    const text = this.positionSourcesValue?.get(loc.file);
+    const text = this.sourceTextOf?.(loc.file);
     if (text === undefined) return loc;
 
     const i = Math.min(loc.end, text.length) - 1;
@@ -4731,7 +4749,7 @@ export class LlEmitter {
   retypeGuardRef(unionId: string): string {
     let sym = this.retypeGuards.get(unionId);
     if (!sym) {
-      sym = `sc_retype_guard_${this.retypeGuards.size}`;
+      sym = this.contentSymbol("sc_retype_guard_", unionId);
       this.retypeGuards.set(unionId, sym);
     }
     this.journal?.entry("retype", unionId, sym);
@@ -4753,7 +4771,7 @@ export class LlEmitter {
     }
     let sym = this.absentInstances.get(unionId);
     if (!sym) {
-      sym = `sc_absent_${this.absentInstances.size}`;
+      sym = this.contentSymbol("sc_absent_", unionId);
       this.absentInstances.set(unionId, sym);
     }
     this.journal?.entry("absent", unionId, sym);
@@ -4927,6 +4945,13 @@ export class LlEmitter {
     return (
       arm !== null && arm.kind === "object" && this.classMeta.get(arm.className)?.tree === true
     );
+  }
+
+  /** Whether a tree local holds a borrow rather than an owner
+   * (backend/tree-classes.ts): reads of it copy no count, and its scope
+   * releases nothing — a release would destroy the owner's subtree. */
+  isTreeBorrow(localId: string): boolean {
+    return this.treeBorrows?.get(this.currentFunctionName)?.has(localId) === true;
   }
 
   /** The retained (+1) read of a refcounted value — type-directed through
@@ -7520,6 +7545,28 @@ export class LlEmitter {
     if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
   }
 
+  /** Adds a content-named entry a chunk interned, by the family's key. The
+   * digest is the same in every emitter, so a rewrite is never needed: a
+   * chunk's name and this emitter's name disagree only when a digest
+   * collision was resolved against a different set of names, and that
+   * would silently give two definitions one name. */
+  private addContentNamed(
+    into: Map<string, string>,
+    key: string,
+    name: string,
+    prefix: string,
+  ): void {
+    let own = into.get(key);
+    if (own === undefined) {
+      own = this.contentSymbol(prefix, key);
+      into.set(key, own);
+    }
+    if (own !== name)
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${prefix}${key} is ${name} in a chunk and ${own} here`,
+      );
+  }
+
   /** Applies a chunk's table entry (EmitJournal.entry) at its place in the
    * chunk's order: a key this emitter lacks is added, numbered after its
    * own entries where the table numbers them, and the chunk's name for it
@@ -7620,17 +7667,28 @@ export class LlEmitter {
         return;
       }
       case "absent":
-        return addNumbered(this.absentInstances, key, value as string, "sc_absent_", names);
+        return this.addContentNamed(this.absentInstances, key, value as string, "sc_absent_");
       case "retype":
-        return addNumbered(this.retypeGuards, key, value as string, "sc_retype_guard_", names);
-      case "slots":
-        return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
+        return this.addContentNamed(this.retypeGuards, key, value as string, "sc_retype_guard_");
+      case "slots": {
+        // The table holds the reference, `@` and all.
+        let own = this.threadSlotsBlocks.get(key);
+        if (own === undefined) {
+          own = `@${this.contentSymbol("sc_slots_", key)}`;
+          this.threadSlotsBlocks.set(key, own);
+        }
+        if (own !== value)
+          throw new InternalCompilerError(
+            `llvm emitter bug: sc_slots_${key} is ${value} in a chunk and ${own} here`,
+          );
+        return;
+      }
       case "regex":
         return this.addContentEntry(this.regexInstances, key, value as never, "sc_re_", names);
       case "regexReplacer":
         return this.addContentEntry(this.regexReplacers, key, value as never, "sc_rr_", names);
       case "templateStrings":
-        return addNumberedSymbol(
+        return this.addContentEntry(
           this.templateStringsInstances,
           key,
           value as never,
@@ -8882,7 +8940,7 @@ export class LlEmitter {
   threadSlotsBlock(name: string): string {
     let sym = this.threadSlotsBlocks.get(name);
     if (sym === undefined) {
-      sym = `@sc_slots_${this.threadSlotsBlocks.size}`;
+      sym = `@${this.contentSymbol("sc_slots_", name)}`;
       this.threadSlotsBlocks.set(name, sym);
     }
     this.journal?.entry("slots", name, sym);
@@ -9049,6 +9107,7 @@ export class LlEmitter {
         : (name, op, args) => this.journal?.allocated(name, op, args),
       journalBuilt: !this.journaled ? undefined : () => this.journal?.built(),
       journalOpened: !this.journaled ? undefined : (op) => this.journal?.opened(op),
+      contentSymbol: (prefix, text) => this.contentSymbol(prefix, text),
       journalUsed: !this.journaled
         ? undefined
         : (name, op, args) => this.journal?.used(name, op, args),
@@ -9693,6 +9752,10 @@ export class LlEmitter {
    * the source slot is nulled and the value taken without a retain, since
    * a tree instance has no count to raise. */
   private treeMoves: Set<IrExpr> | null = null;
+  /** The tree locals that hold a borrow (backend/tree-classes.ts): their
+   * reads copy no count, and their scopes release nothing. Local ids are
+   * unique within a function, so the set is kept per function name. */
+  private treeBorrows: Map<string, ReadonlySet<string>> | null = null;
   private arenaSlots = new Map<Node, string>();
   /** The frames emitStmtBody opens for whole statements (arenas only). */
   readonly statementFrames = new Set<LlValue[]>();
@@ -9863,7 +9926,7 @@ export class LlEmitter {
     const text = keys.join("\u0000");
     let name = this.jsGroupKeysByText.get(text);
     if (name !== undefined) return name;
-    name = `@sc_gkeys_${this.jsGroupKeysCount++}`;
+    name = `@${this.contentSymbol("sc_gkeys_", text)}`;
     this.jsGroupKeysByText.set(text, name);
     this.jsGroupKeysByName.set(name, keys);
     this.journal?.site(name, "jsGroupKeys", [keys]);
@@ -10363,43 +10426,9 @@ function addEntry<V>(into: Map<string, V>, key: string, value: V): void {
   if (!into.has(key)) into.set(key, value);
 }
 
-/** Adds `key` to a numbered table when it lacks it, numbering it after the
- * table's own entries (`prefix` and its index), and records the rename of
- * the chunk's `name` for it. */
-function addNumbered(
-  into: Map<string, string>,
-  key: string,
-  name: string,
-  prefix: string,
-  names: Map<string, string>,
-): void {
-  let own = into.get(key);
-  if (own === undefined) {
-    own = `${prefix}${into.size}`;
-    into.set(key, own);
-  }
-  if (own !== name) names.set(name.replace(/^@/, ""), own.replace(/^@/, ""));
-}
-
-/** addNumbered for entries that keep their numbered name in `sym`. */
-function addNumberedSymbol<V extends { sym: string }>(
-  into: Map<string, V>,
-  key: string,
-  entry: V,
-  prefix: string,
-  names: Map<string, string>,
-): void {
-  let own = into.get(key);
-  if (own === undefined) {
-    own = { ...entry, sym: `${prefix}${into.size}` };
-    into.set(key, own);
-  }
-  if (own.sym !== entry.sym) names.set(entry.sym, own.sym);
-}
-
 registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
 registerReplay("jsGroup", (emitter) => emitter.jsGroup());
-registerReplay("jsGroupKeys", (emitter, args) => emitter.jsGroupKeys(args[0] as string[]));
+registerContentReplay("jsGroupKeys", (emitter, args) => emitter.jsGroupKeys(args[0] as string[]));
 registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
 registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
 for (const op of [
@@ -10417,14 +10446,17 @@ for (const op of [
   "dyn.jsEntryThunk",
   "dyn.unnamedFuncBoxHelper",
   "dyn.dynFuncAdapterHelper",
+  "dyn.messageListenerHelper",
+  "dyn.messageReaderHelper",
+])
+  registerContentReplay(op, (emitter, args) => emitter.dyn.replayHelper(op, args));
+for (const op of [
   "dyn.dynToStrHelper",
   "dyn.dynIterNHelper",
   "dyn.dynDestrCheckHelper",
   "dyn.dynKeyGetHelper",
   "dyn.dynComputedKeyGetHelper",
   "dyn.caughtToDynHelper",
-  "dyn.messageListenerHelper",
-  "dyn.messageReaderHelper",
 ])
   registerReplay(op, (emitter, args) => emitter.dyn.replayHelper(op, args));
 for (const op of [
@@ -10432,6 +10464,6 @@ for (const op of [
   "walkers.recordFieldWriter",
   "walkers.unionJoinHelper",
 ])
-  registerReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
+  registerContentReplay(op, (emitter, args) => emitter.walkers.replayHelper(op, args));
 for (const op of ["publish.walker", "publish.refusal"])
-  registerReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));
+  registerContentReplay(op, (emitter, args) => emitter.publishWalkers.replayHelper(op, args));

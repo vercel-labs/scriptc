@@ -238,7 +238,15 @@ typedef struct {
   bool in_cache;
   bool loaded;
   bool is_main;
+  /* The checked-dynamic Module object (built once, for JavaScript values
+   * and identity comparisons) and this module's exports value, which the
+   * compiled prologue stores so another module's view can read it. */
+  ScrDyn *dyn_self;
+  ScrDyn *exports_dyn;
 } ScrModuleRecord;
+
+static void scr_module_dyn_refresh(ScrModuleRecord *m);
+static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id);
 
 static SCR_TL ScrModuleRecord *scr_module_records = NULL;
 static SCR_TL size_t scr_module_record_count = 0;
@@ -252,6 +260,8 @@ static void scr_module_registry_cleanup(void) {
     scr_str_release(m->path);
     scr_arr_release(m->paths);
     scr_arr_release(m->children);
+    scr_dyn_release(m->dyn_self);
+    scr_dyn_release(m->exports_dyn);
   }
   free(scr_module_records);
   scr_module_records = NULL;
@@ -536,12 +546,23 @@ void scr_module_link(double parent_id, double child_id) {
   if (!child->is_main && child->parent < 0) child->parent = parent_id;
   if (!scr_arr_includes_f64(parent->children, child_id)) {
     scr_arr_push_f64(parent->children, child_id);
+    /* Node's Module keeps one `children` array for its life: an array a
+     * program already holds must see the new child, so the view's array is
+     * appended to, not replaced. */
+    ScrDyn *live = parent->dyn_self ? scr_dyn_obj_read(parent->dyn_self, "children", 8) : NULL;
+    if (live && live->kind == SCR_DYN_ARR) {
+      scr_dyn_arr_push(live, scr_module_dyn_object(child_id));
+      scr_dyn_release(live);
+    } else {
+      scr_module_dyn_refresh(parent);
+    }
   }
 }
 
 void scr_module_finish(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   m->loaded = true;
+  scr_module_dyn_refresh(m);
 }
 
 void scr_module_fail(double module_id) {
@@ -552,12 +573,14 @@ void scr_module_fail(double module_id) {
     if (at >= 0) {
       ScrArr *removed = scr_arr_splice(parent->children, at, 1);
       scr_arr_release(removed);
+      scr_module_dyn_children_remove(parent, module_id);
     }
   }
   m->parent = m->is_main ? -1 : -2;
   m->cache_order = 0;
   m->in_cache = false;
   m->loaded = false;
+  scr_module_dyn_refresh(m);
 }
 
 ScrStr *scr_module_filename(double module_id) {
@@ -578,6 +601,126 @@ ScrArr *scr_module_paths(double module_id) {
 
 ScrArr *scr_module_children(double module_id) {
   return scr_arr_retain(scr_module_record(module_id)->children);
+}
+
+/* Stores the module's exports value for the checked-dynamic Module view
+ * another module reads. Borrowed; a later store replaces it. */
+void scr_module_set_exports_dyn(double module_id, ScrDyn *value) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  ScrDyn *previous = m->exports_dyn;
+  m->exports_dyn = value ? scr_dyn_retain(value) : NULL;
+  scr_dyn_release(previous);
+}
+
+/* Node's Module keeps `children` live and `loaded` current on the object a
+ * program already holds; the cached view is updated in place whenever the
+ * registry changes one of those. */
+static void scr_module_dyn_refresh(ScrModuleRecord *m) {
+  if (!m->dyn_self) return;
+  scr_dyn_obj_set(m->dyn_self, "loaded", 6, scr_dyn_new_bool(m->loaded));
+}
+
+/* Drops a child from the view's live `children` array in place, so an array
+ * a program kept loses the failed module the way Node's one array does. */
+static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) {
+  if (!m->dyn_self) return;
+  ScrDyn *kids = scr_dyn_obj_read(m->dyn_self, "children", 8);
+  if (!kids || kids->kind != SCR_DYN_ARR) {
+    scr_dyn_release(kids);
+    return;
+  }
+  ScrDyn *target = scr_module_dyn_object(child_id);
+  for (size_t i = 0; i < (size_t)kids->v.arr.len; i++) {
+    if (kids->v.arr.items[i] != target) continue;
+    ScrDyn *held = kids->v.arr.items[i];
+    for (size_t j = i + 1; j < (size_t)kids->v.arr.len; j++) kids->v.arr.items[j - 1] = kids->v.arr.items[j];
+    kids->v.arr.len--;
+    if (kids->v.arr.length == kids->v.arr.len + 1) kids->v.arr.length = kids->v.arr.len;
+    if (kids->v.arr.presence) kids->v.arr.presence[kids->v.arr.len] = 0;
+    scr_dyn_release(held);
+    break;
+  }
+  scr_dyn_release(target);
+  scr_dyn_release(kids);
+}
+
+/* The checked-dynamic view of one module record (Node's Module object as a
+ * program sees it when the value's type is any): one object per record,
+ * built once and cached, so identity holds between `module.children[i]`,
+ * `module.parent` and `require.main`. +1. */
+ScrDyn *scr_module_dyn_object(double module_id) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  if (m->dyn_self) return scr_dyn_retain(m->dyn_self);
+  ScrDyn *o = scr_dyn_new_obj();
+  /* Cache before filling: a require cycle reaches the parent through its
+   * children, and the record must already answer its own object then. */
+  m->dyn_self = scr_dyn_retain(o);
+  scr_dyn_obj_set(o, "id", 2, scr_dyn_new_str(m->id));
+  scr_dyn_obj_set(o, "filename", 8, scr_dyn_new_str(m->filename));
+  scr_dyn_obj_set(o, "path", 4, scr_dyn_new_str(m->path));
+  scr_dyn_obj_set(o, "loaded", 6, scr_dyn_new_bool(m->loaded));
+  ScrDyn *paths = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->paths); i++) {
+    ScrStr *entry = (ScrStr *)scr_arr_get_ref(m->paths, (double)i);
+    scr_dyn_arr_push(paths, scr_dyn_new_str(entry));
+  }
+  scr_dyn_obj_set(o, "paths", 5, paths);
+  ScrDyn *children = scr_dyn_new_arr();
+  for (size_t i = 0; i < (size_t)scr_arr_len(m->children); i++) {
+    scr_dyn_arr_push(children, scr_module_dyn_object(scr_arr_get_f64(m->children, (double)i)));
+  }
+  scr_dyn_obj_set(o, "children", 8, children);
+  /* The registry's two absent markers are Node's two cases: -1 is the
+   * entry (no parent, `null`) and -2 is a module loaded outside the
+   * CommonJS graph (an ES-module entry's import, `undefined`). */
+  scr_dyn_obj_set(o, "parent", 6,
+                  m->parent == -1 ? scr_dyn_new_null()
+                  : m->parent < 0  ? scr_dyn_retain(scr_dyn_undefined())
+                                   : scr_module_dyn_object(m->parent));
+  /* Node's `parent` is not one of the Module constructor's own enumerable
+   * fields: `Object.keys` omits it, so the dyn object does too. */
+  scr_dyn_obj_set_attrs_at(o, scr_dyn_obj_index_of(o, "parent", 6), true, false, true);
+  scr_dyn_obj_set(o, "exports", 7,
+                  m->exports_dyn ? scr_dyn_retain(m->exports_dyn) : scr_dyn_retain(scr_dyn_undefined()));
+  return o;
+}
+
+/* module.parent as a checked-dynamic value: the registry's -1 marker is
+ * the entry (Node's null) and any other absent marker is a module with no
+ * CommonJS parent (Node's undefined, an ES-module entry's import). +1. */
+ScrDyn *scr_module_dyn_parent(double module_id) {
+  ScrModuleRecord *m = scr_module_record(module_id);
+  if (m->parent >= 0) return scr_module_dyn_object(m->parent);
+  return m->parent == -1 ? scr_dyn_new_null() : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* A module handle as its checked-dynamic view, absent markers answering
+ * undefined: the comparison between a view and a handle Node compares as
+ * one object (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id) {
+  if (module_id < 0) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_module_dyn_object(module_id);
+}
+
+/* A checked-dynamic module handle (a number, or an absent marker) as its
+ * view: the comparison between a view and a handle Node compares as one
+ * object (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value) {
+  if (value && value->kind == SCR_DYN_NUM) return scr_module_dyn_object_or_absent(value->v.num);
+  /* A value that already is the view (or an absent marker) answers itself. */
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
+}
+
+/* module.children as checked-dynamic values: a fresh array of the
+ * children's Module objects (Node's array is live and per parent; the
+ * compiled form reads it at the call, as the static array does). +1. */
+ScrDyn *scr_module_dyn_children(double module_id) {
+  /* Node's `children` is one array for the module's life: the read answers
+   * the view's own array, so a program that kept it sees later children. */
+  ScrDyn *view = scr_module_dyn_object(module_id);
+  ScrDyn *kids = scr_dyn_obj_read(view, "children", 8);
+  scr_dyn_release(view);
+  return kids;
 }
 
 double scr_module_parent(double module_id) {
@@ -8710,7 +8853,7 @@ ScrDyn *scr_stats_dyn(ScrStats *s, bool bigint) {
  * callback boundary as dynamic objects: an enumerable name and parentPath,
  * and a non-enumerable %dtype the prototype's is*() probes read (the same
  * libuv UV_DIRENT encoding the scandir snapshot uses). */
-static ScrDyn *scr_dirent_proto = NULL;
+static SCR_TL ScrDyn *scr_dirent_proto = NULL;
 
 static ScrDyn *scr_dirent_method(ScrDynThunk thunk, uint32_t arity, const char *name, double kind) {
   ScrClosure *closure = scr_closure_new(NULL, 1);

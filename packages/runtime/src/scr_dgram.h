@@ -33,11 +33,13 @@ ScrDgramSocket *scr_dgram_create(bool v6, bool reuse_addr, bool ipv6_only, bool 
 ScrStr *scr_dgram_type_str(ScrDgramSocket *s);
 /* createSocket(type | options[, listener]) over the checked-dynamic
  * argument: Node's Socket constructor, with the options it cannot honor
- * yet (signal, lookup, the block lists) refused explicitly. The listener
- * (nullable, moves) becomes on('message'). NULL with the exception
- * pending. */
+ * yet (lookup, bind's fd) refused explicitly. The listener (nullable,
+ * moves) becomes on('message'); `add_abort` is events.addAbortListener
+ * (the event-target unit's hook) for the options' signal. NULL with the
+ * exception pending. */
 ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb /*moves, nullable*/,
-                                     ScrDgramMsgFn fn);
+                                     ScrDgramMsgFn fn,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *));
 /* bind(options[, callback]) and bindSync(options) over the untyped options
  * object (Node's { port, address, exclusive, fd }). */
 void scr_dgram_bind_opts(ScrDgramSocket *s, const ScrDyn *options, ScrClosure *cb /*moves, nullable*/);
@@ -55,6 +57,9 @@ void scr_dgram_bind(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, S
 void scr_dgram_bind_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
 void scr_dgram_connect_sync(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, bool has_host);
 void scr_dgram_connect(ScrDgramSocket *s, double port, ScrStr *host /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
+/* connect with an untyped JavaScript completion callback: it receives the
+ * refusal as Node's nextTick(callback, ex) does. */
+void scr_dgram_connect_dyn(ScrDgramSocket *s, double port, ScrStr *host, const struct ScrDyn *cb);
 void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 /* The send argument-validation ladder over dyn arguments (Node's

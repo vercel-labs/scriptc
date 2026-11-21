@@ -27,6 +27,7 @@ import { extendsElementOf } from "../heritage-elements.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
+import { genericOverrideBelow } from "./lower-classes.js";
 import { isOptionalChainTail } from "./expressions/optional-chains.js";
 import {
   BOOL,
@@ -2042,6 +2043,13 @@ function islandMethodName(name: string): boolean {
   return name !== "constructor" && !name.startsWith("#") && !/^(?:get|set|sym):/.test(name);
 }
 
+/** Whether the lowered method `name` is a public, string-keyed accessor half
+ * (`get:x`, `set:x`): the table holds it under that name, and the runtime
+ * runs it when island code reads or writes `x` on an instance. */
+function islandAccessorName(name: string): boolean {
+  return /^(?:get|set):[^#]/.test(name);
+}
+
 /** A class instance crossing into an island: its capsule answers island
  * reads of its fields, and its prototype methods come from a table the
  * runtime builds once per class (nodeIsland.classMethods): the unbound
@@ -2064,7 +2072,9 @@ function withClassMethods(
 }
 
 /** The builder of a class's method table (a dyn closure answering
- * {name: unbound method value}), or null for a class without methods. */
+ * {name: unbound method value}), or null for a class without methods. The
+ * table holds the class's accessor halves under their lowered names
+ * (`get:x`, `set:x`), nearest declaration first, like its methods. */
 function classMethodsBuilderOf(
   lowerer: Lowerer,
   className: string,
@@ -2079,8 +2089,11 @@ function classMethodsBuilderOf(
     c !== undefined;
     c = c.def.base ? lowerer.classes.get(c.def.base) : undefined
   ) {
-    for (const m of c.def.methods ?? [])
-      if (!names.includes(m) && islandMethodName(m)) names.push(m);
+    // Generic methods never enter `def.methods` (they have no single ABI
+    // signature and no vtable slot), but their erased instance is a method
+    // value the island calls like any other (`document.querySelectorAll`).
+    for (const m of [...(c.def.methods ?? []), ...(c.genericMethods?.keys() ?? [])])
+      if (!names.includes(m) && (islandMethodName(m) || islandAccessorName(m))) names.push(m);
   }
   if (names.length === 0) return null;
   const builder = `%island.methods:${className}`;
@@ -2088,6 +2101,11 @@ function classMethodsBuilderOf(
     lowerer.classMethodValueHelpers.add(builder);
     const fields: { key: IrExpr; value: IrExpr }[] = [];
     for (const m of names) {
+      // A generic method a subclass overrides has no value this table can
+      // hold — the island dispatches by static class, so the overriding
+      // class decides — and the lowering refuses the value: the table leaves
+      // the member out instead of failing the build that shares the class.
+      if (genericOverrideBelow(info, m)) continue;
       const method = classMethodValue(lowerer, blame, info, m, loc);
       if (method === null) continue;
       fields.push({

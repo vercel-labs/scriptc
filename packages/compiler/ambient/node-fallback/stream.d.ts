@@ -457,6 +457,15 @@ declare module "stream" {
     /* Duplex.from: an async generator function, an iterable, a string or
      * a stream (duplexify.js). */
     static from(body: unknown): Duplex;
+    /* A Duplex over a web stream pair: the readable side reads `readable`
+     * and the writable side writes `writable` (Node's web-pair adapter). The
+     * pair is `unknown`, like `from`'s body: a pair-shaped parameter here
+     * would make typeof Duplex incompatible with typeof Readable, and
+     * constructor registries typed `(typeof Readable)[]` (Transform,
+     * PassThrough) must keep type checking. The lowering validates the
+     * argument and the runtime validates the pair. The options have no
+     * lowering yet. */
+    static fromWeb(pair: unknown, options?: {}): Duplex;
     /* The web { writable, readable } pair over this duplex: a writer's
      * write() completes when the duplex accepts the chunk and rejects with
      * its error when that write fails, and the readable side ends with the

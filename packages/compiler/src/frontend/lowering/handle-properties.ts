@@ -27,7 +27,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { IrExpr, IrFunction, IrLibFn, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { DYN, F64, STRING, VOID } from "../../ir/ir.js";
-import { moduleUsesChildProcess, moduleUsesFetch } from "../../ir/runtime-features.js";
+import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
 import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
@@ -1094,12 +1094,24 @@ function functionsUseChildProcess(functions: IrFunction[]): boolean {
  * no handle class: the handle census cannot see it, and a program that uses
  * fetch installs the table for the classes it can reach. */
 function functionsUseFetch(functions: IrFunction[]): boolean {
-  return moduleUsesFetch({
-    irVersion: 17,
-    sourceFile: "",
-    functions,
-    entry: ENTRY_NAME,
-  });
+  // The one signal moduleUsesFetch reads for fetch is a libCall whose name
+  // starts with "fetch.", so the walk stops at the first one. The generated
+  // class helpers (`%dyn.class.*`) hold the compiler's own property and
+  // reflection code, never a program call.
+  let found = false;
+  const expr = (node: IrExpr): boolean => {
+    if (node.kind === "libCall" && node.fn.startsWith("fetch.")) found = true;
+    return !found;
+  };
+  const stmt = (): boolean => !found;
+  for (const fn of functions) {
+    if (fn.name.startsWith("%dyn.class.")) continue;
+    for (const statement of fn.body) {
+      everyStmt(statement, { expr, stmt });
+      if (found) return true;
+    }
+  }
+  return false;
 }
 
 /** Switches a program that can add properties to handles onto the

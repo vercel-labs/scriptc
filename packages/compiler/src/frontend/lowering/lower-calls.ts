@@ -1,3 +1,4 @@
+import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -1173,6 +1174,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
             consoleMember === "log" || consoleMember === "info" || consoleMember === "debug",
             `console.${consoleMember}`,
             loc,
+            undefined,
+            lowerer.usesDiagnosticsChannel() ? consoleMember : undefined,
           )
         : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
     return receiver === null
@@ -2183,6 +2186,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramStatsMethodCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
@@ -2439,6 +2443,32 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     {
       const tableCall = lowerCallableMemberCall(lowerer, expr);
       if (tableCall) return tableCall;
+    }
+    // `Error.prepareStackTrace(...)`: the member is program state (a
+    // checked-dynamic value, see fieldTarget), and a call is the call of
+    // whatever the program stored there — the default value's call throws
+    // its named refusal.
+    {
+      const target =
+        ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken
+          ? lowerer.fieldTarget(expr.expression)
+          : null;
+      if (
+        target !== null &&
+        target.container === "errorPrepareStackTrace" &&
+        !expr.arguments.nodes.some((arg) => ts.isSpreadElement(arg))
+      ) {
+        const callee = lowerer.fieldGetExpr(target, locOf(expr.expression), expr.expression);
+        const args = expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        return {
+          kind: "dynCall",
+          callee,
+          calleeName: v8CalleeText(expr.expression),
+          args,
+          type: DYN,
+          loc: locOf(expr),
+        };
+      }
     }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
@@ -6249,6 +6279,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "values",
   "entries",
   "next",
+  "return",
   "writeContinue",
   "writeEarlyHints",
   "cork",
@@ -11574,7 +11605,16 @@ function lowerObjectStaticCall(
         loc: locOf(call),
       };
     }
-    return null;
+    // A union of this record and a unit is the indexed read's lowering under
+    // noUncheckedIndexedAccess (the checker's own type drops the undefined
+    // the storage holds). objectEnumerationReceiver throws for the unit arm
+    // and enumerates the record arm, so keep the lowering this call had.
+    const arms =
+      represented.type.kind === "union"
+        ? lowerer.unions.get(represented.type.unionId)?.arms
+        : undefined;
+    if (arms === undefined || !arms.every((arm) => isUnitType(arm) || typeEquals(arm, argIr)))
+      return null;
   }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence

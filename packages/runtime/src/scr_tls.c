@@ -4256,6 +4256,128 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s) {
   return answer;
 }
 
+/* Whether `label` begins with one of the PRF labels RFC 5705 reserves for
+ * the handshake ("client finished", "server finished", "master secret",
+ * "extended master secret", "key expansion"): the provider compares the
+ * PRF argument's leading bytes, so the label's own prefix decides. */
+static bool scr_tls_reserved_exporter_label(const ScrStr *label) {
+  static const char *const reserved[] = {
+    "client finished",
+    "server finished",
+    "master secret",
+    "extended master secret",
+    "key expansion",
+  };
+  for (size_t i = 0; i < sizeof reserved / sizeof reserved[0]; i++) {
+    size_t n = strlen(reserved[i]);
+    if (label->len >= n && memcmp(label->data, reserved[i], n) == 0) return true;
+  }
+  return false;
+}
+
+/* The error OpenSSL raises for an exporter label it refuses (a TLS 1.2
+ * connection's reserved PRF names, a TLS 1.3 connection's over-long label),
+ * as Node reports it: "error:0A00016F:SSL routines::tls illegal exporter
+ * label" with own library, reason and code properties in Node's key order. */
+static void scr_tls_throw_illegal_exporter_label(void) {
+  static const char text[] = "error:0A00016F:SSL routines::tls illegal exporter label";
+  static const char library[] = "SSL routines";
+  static const char reason[] = "tls illegal exporter label";
+  static const char code[] = "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  const char *keys[] = { "library", "reason", "code" };
+  const char *values[] = { library, reason, code };
+  for (size_t i = 0; i < 3; i++) {
+    if (i == 2) scr_error_set_code(e, code);
+    ScrStr *value = scr_str_new(values[i], strlen(values[i]));
+    scr_error_set_prop(e, keys[i], strlen(keys[i]), scr_dyn_new_str(value));
+    scr_str_release(value);
+  }
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* tlsSocket.exportKeyingMaterial(length, label[, context]): Node's
+ * validation ladder (validateInteger length 1..4294967295, a string label,
+ * a Buffer/TypedArray context) then the provider's TLS exporter. +1
+ * Buffer, NULL with an exception pending. */
+ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const ScrDyn *length,
+                                              const ScrDyn *label, const ScrDyn *context,
+                                              bool has_context) {
+  if (length->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("length", "of type number", length);
+    return NULL;
+  }
+  double len = length->v.num;
+  if (floor(len) != len || len < 1 || len > 4294967295.0) {
+    char recv[48];
+    char msg[192];
+    int n;
+    scr_num_received(len, recv);
+    if (floor(len) != len) {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be an integer. Received %s", recv);
+    } else {
+      n = snprintf(msg, sizeof msg,
+                   "The value of \"length\" is out of range. It must be >= 1 && <= 4294967295. Received %s",
+                   recv);
+    }
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+    return NULL;
+  }
+  if (label->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("label", "of type string", label);
+    return NULL;
+  }
+  const ScrBytes *ctx = NULL;
+  if (has_context && context->kind != SCR_DYN_UNDEF && context->kind != SCR_DYN_NULL) {
+    if (context->kind != SCR_DYN_BYTES) {
+      scr_dyn_arg_type_fail("context", "an instance of Buffer, TypedArray, or DataView", context);
+      return NULL;
+    }
+    ctx = context->v.bytes;
+  }
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || !scr_net_sock_established(s)) {
+    static const char msg[] = "TLS socket connection must be securely established";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_INVALID_STATE");
+    return NULL;
+  }
+  /* RFC 5705's reserved names: a TLS 1.2 exporter builds its PRF argument
+   * from the label, so a label that begins with one of the handshake's own
+   * PRF labels is refused; TLS 1.3 exporters have no such names. */
+  bool tls13 = strcmp(mbedtls_ssl_get_version(&t->ssl), "TLSv1.3") == 0;
+  if (!tls13 && scr_tls_reserved_exporter_label(label->v.str)) {
+    scr_tls_throw_illegal_exporter_label();
+    return NULL;
+  }
+  /* RFC 8446's 255-byte label ceiling less the provider's "tls13 " prefix:
+   * a TLS 1.3 connection refuses a longer label where a TLS 1.2 connection
+   * exports any label. */
+  if (tls13 && label->v.str->len > 249) {
+    scr_tls_throw_illegal_exporter_label();
+    return NULL;
+  }
+  size_t key_len = (size_t)len;
+  /* A typed-array context counts bytes, not elements: a Uint16Array view's
+   * suffix reaches the provider, so distinct contexts stay distinct. */
+  size_t context_len = ctx != NULL ? (size_t)scr_bytes_byte_len(ctx) : 0;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)key_len);
+  out->is_buffer = true;
+  int rc = mbedtls_ssl_export_keying_material(
+    &t->ssl, out->data, key_len, (const char *)label->v.str->data, label->v.str->len,
+    ctx != NULL ? ctx->data : NULL, context_len, ctx != NULL ? 1 : 0);
+  if (rc != 0) {
+    scr_bytes_release(out);
+    static const char msg[] =
+      "the TLS provider cannot export keying material for these parameters";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_SSL_TLS_ILLEGAL_EXPORTER_LABEL");
+    return NULL;
+  }
+  return out;
+}
+
 /* tlsSocket.getSession(): the session a resumption would use. +1 dyn
  * (a Buffer, or null when the handshake has no resumable session yet). */
 ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {

@@ -378,6 +378,68 @@ test("an array of nodes keeps the count", () => {
   expect(plan.rejected.get("Node")?.length).toBeGreaterThan(0);
 });
 
+test("undefined is as good an absence as null", () => {
+  // `left: Node | undefined`: both unit arms are one ABSENT value at
+  // runtime, so the nullable shape is the same.
+  const mod = tree();
+  mod.unions = [{ id: "u0", arms: [{ kind: "undefinedT" }, NODE] }];
+  const plan = planTreeClasses(mod, FACTS);
+  expect([...plan.classes]).toEqual(["Node"]);
+  expect([...plan.rejected]).toEqual([]);
+});
+
+test("a const alias of a field read is a borrow", () => {
+  // `const left = node.left` inside a function that does not own `node`:
+  // the node stays alive for the call that lent it, which outlives the
+  // local, so the alias is a borrow and the class keeps the tree layout.
+  const mod = tree();
+  mod.functions.push(
+    fn(
+      "readLeft",
+      [param("t.0", NODE)],
+      F64_T,
+      [
+        { kind: "varDecl", localId: "l.0", init: field(at("t.0"), "left"), loc },
+        { kind: "exprStmt", expr: isNil(at("l.0", MAYBE_NODE)), loc },
+        ret({ kind: "numLit", value: 0, type: F64_T, loc }),
+      ],
+      [local("l.0", MAYBE_NODE)],
+    ),
+  );
+  // readLeft reads its parameter and never releases it, so the emitter's
+  // call-lifetime analysis lists it as borrowed.
+  const plan = planTreeClasses(mod, {
+    borrowed: new Map([...FACTS.borrowed, ["readLeft", new Set([0])]]),
+  });
+  expect([...plan.classes]).toEqual(["Node"]);
+  expect([...(plan.borrows.get("readLeft") ?? [])]).toEqual(["l.0"]);
+  // The constructor's parameters are no borrows: it stores them.
+  expect(plan.borrows.get("%Node.constructor")).toBeUndefined();
+});
+
+test("an alias of a field of a node the function owns keeps the count", () => {
+  // The field read through an owner this function holds is a view: the
+  // owner may be moved or released while the alias lives, so the alias
+  // would outlive it.
+  const mod = tree();
+  mod.functions.push(
+    fn(
+      "own",
+      [],
+      { kind: "void" },
+      [
+        { kind: "varDecl", localId: "root.0", init: construct(nil(), nil()), loc },
+        { kind: "varDecl", localId: "l.0", init: field(at("root.0"), "left"), loc },
+        { kind: "exprStmt", expr: isNil(at("l.0", MAYBE_NODE)), loc },
+      ],
+      [local("root.0", NODE), local("l.0", MAYBE_NODE)],
+    ),
+  );
+  const plan = planTreeClasses(mod, FACTS);
+  expect([...plan.classes]).toEqual([]);
+  expect(plan.rejected.get("Node")).toContain("own: local l.0 aliases a node it does not own");
+});
+
 test("a node a function only builds inside an expression keeps the count", () => {
   // `show` names no tree local and returns nothing but a number, yet its
   // temporary expression hands a freshly built node to a dynamic value. The
@@ -461,16 +523,16 @@ test("each class is judged by the slots that mention it, in module order", () =>
   const plan = planTreeClasses(mod, {
     borrowed: new Map([...FACTS.borrowed, ["%Other.constructor", new Set([0])]]),
   });
-  const unfit = "holds it in a type that is neither the class nor null or it";
+  const unfit = "holds it in a type that is neither the class nor null, undefined or it";
   expect([...plan.classes]).toEqual([]);
   expect(plan.rejected.get("Node")).toEqual([
-    `record r0 field make ${unfit}`,
+    `an object's field make ${unfit}`,
     `global trees ${unfit}`,
   ]);
   expect(plan.rejected.get("Other")).toEqual([
     `pick parameter all.0 ${unfit}`,
     `pick local all.0 ${unfit}`,
-    `record r0 field make ${unfit}`,
+    `an object's field make ${unfit}`,
     `global byName ${unfit}`,
   ]);
 });
@@ -497,7 +559,7 @@ test("a union that reaches itself through a container is walked once", () => {
   const plan = planTreeClasses(mod, {
     borrowed: new Map([...FACTS.borrowed, ["%Other.constructor", new Set([0])]]),
   });
-  const unfit = "holds it in a type that is neither the class nor null or it";
+  const unfit = "holds it in a type that is neither the class nor null, undefined or it";
   expect([...plan.classes]).toEqual(["Other"]);
   expect(plan.rejected.get("Node")).toEqual([
     `global woods ${unfit}`,

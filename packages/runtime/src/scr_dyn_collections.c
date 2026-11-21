@@ -1384,3 +1384,19 @@ ScrDyn *scr_dyn_collection_get_prototype(ScrDyn *value) {
   }
   return scr_dyn_get_prototype(value);
 }
+
+/* scr_dyn_get_prototype's collection arm (scr_json.c): the class prototype
+ * of a Map, Set, WeakMap or WeakSet value, or NULL for any other value —
+ * never the getPrototypeOf fallback, which would re-enter the caller. */
+static ScrDyn *scr_dyn_collection_proto_for(ScrDyn *value) {
+  const ScrCollectionClass *cls = scr_collection_class_of(value);
+  if (!cls) return NULL;
+  ScrStr *name = scr_str_new(cls->klass, strlen(cls->klass));
+  ScrDyn *prototype = scr_dyn_collection_prototype(name);
+  scr_str_release(name);
+  return prototype;
+}
+
+__attribute__((constructor)) static void scr_dyn_collection_install_proto_hook(void) {
+  scr_dyn_collection_proto_hook = scr_dyn_collection_proto_for;
+}

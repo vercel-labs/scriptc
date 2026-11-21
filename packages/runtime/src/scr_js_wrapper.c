@@ -38,6 +38,10 @@ typedef struct ScrJsWrapperSlot {
 } ScrJsWrapperSlot;
 
 static SCR_TL ScrDyn *scr_js_wrapper_prototypes[3];
+/* Seeded per thread, like the prototypes themselves: a worker that boxes a
+ * primitive before reading X.prototype must still seed its own prototype's
+ * constructor when the read comes. */
+static SCR_TL bool scr_js_wrapper_protos_seeded[3];
 static SCR_TL bool scr_js_wrapper_cleanup_registered;
 /* The interned Boolean.prototype.valueOf (0) and toString (1) values read
  * as functions in a JavaScript source. */
@@ -75,6 +79,7 @@ static void scr_js_wrapper_cleanup(void) {
   for (int i = 0; i < 3; i++) {
     ScrDyn *prototype = scr_js_wrapper_prototypes[i];
     scr_js_wrapper_prototypes[i] = NULL;
+    scr_js_wrapper_protos_seeded[i] = false;
     scr_dyn_release(prototype);
   }
   for (int i = 0; i < 2; i++) {
@@ -180,7 +185,10 @@ static ScrDyn *scr_js_wrapper_apply(int kind, const char *method, ScrDyn *primit
   } else if (strcmp(method, "at") == 0 || strcmp(method, "slice") == 0 ||
              strcmp(method, "indexOf") == 0 || strcmp(method, "lastIndexOf") == 0 ||
              strcmp(method, "includes") == 0) {
-    return scr_dyn_invoke(primitive, method, args, argc, method);
+    /* The generic string algorithm lives in the untyped-invoke unit, which
+     * links only for programs that call through values: reach it through
+     * its hook, and refuse in our own voice when it is absent. */
+    if (scr_dyn_invoke_fn) return scr_dyn_invoke_fn(primitive, method, args, argc, method);
   }
   ScrJsonBuf text;
   scr_jb_init(&text);
@@ -363,7 +371,17 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
  * and toString answer that primitive; its own prototype is
  * Object.prototype. */
 static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
-  if (scr_js_wrapper_prototypes[kind]) return scr_js_wrapper_prototypes[kind];
+  if (scr_js_wrapper_prototypes[kind]) {
+    /* The prototype may have been built first for Object.getPrototypeOf,
+     * before any X.prototype read named its constructor: seed it now. */
+    if (constructor && !scr_js_wrapper_protos_seeded[kind]) {
+      scr_js_wrapper_define_hidden(scr_js_wrapper_prototypes[kind], "constructor",
+                                   scr_dyn_retain(constructor));
+      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(scr_js_wrapper_prototypes[kind]));
+      scr_js_wrapper_protos_seeded[kind] = true;
+    }
+    return scr_js_wrapper_prototypes[kind];
+  }
   scr_js_wrapper_register_cleanup();
   ScrDyn *primitive;
   if (kind == SCR_JS_WRAPPER_STRING) {
@@ -375,7 +393,10 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
   }
   ScrDyn *prototype = scr_js_wrapper_object(kind, primitive);
   scr_dyn_release(primitive);
-  scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
+  if (constructor) {
+    scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
+    scr_js_wrapper_protos_seeded[kind] = true;
+  }
   const ScrJsWrapperMember *members = kind == SCR_JS_WRAPPER_STRING ? scr_js_wrapper_string_members
                                     : kind == SCR_JS_WRAPPER_NUMBER ? scr_js_wrapper_number_members
                                     : scr_js_wrapper_boolean_members;
@@ -385,7 +406,7 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
    * `Boolean.prototype === Object(true).constructor.prototype`, and every
    * wrapper's chain ends here. It is non-writable, non-enumerable and
    * non-configurable, like a builtin constructor's. */
-  scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
+  if (constructor) scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
 }
@@ -445,6 +466,20 @@ static const ScrMessageWrapperOps scr_js_wrapper_message_ops = { scr_js_wrapper_
 /* A wrapper's consumers that can copy instead of refusing (structuredClone)
  * and the message format's refusal: installed by the first wrapper this
  * thread makes, so a program without one links none of it. */
+/* Object.getPrototypeOf of a primitive kind (0 String, 1 Number, 2 Boolean):
+ * the wrapper unit's prototype object, the one X.prototype reads, so the
+ * edge and the value share identity. +1. */
+static ScrDyn *scr_js_wrapper_primitive_proto(double kind) {
+  if (kind < 0 || kind > 2) return NULL;
+  return scr_dyn_retain(scr_js_wrapper_prototype((int)kind, NULL));
+}
+
+/* Installed when the unit links, not on the first wrapper: a program may
+ * ask Object.getPrototypeOf("x") before it creates any wrapper. */
+__attribute__((constructor)) static void scr_js_wrapper_install_proto_hook(void) {
+  scr_js_wrapper_primitive_proto_hook = scr_js_wrapper_primitive_proto;
+}
+
 static void scr_js_wrapper_install_consumers(void) {
   static SCR_TL bool installed;
   if (installed) return;

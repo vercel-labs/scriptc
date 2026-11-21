@@ -6,10 +6,15 @@
 // descriptor's own position alone.
 import * as fs from "node:fs";
 import * as http2 from "node:http2";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 
 const lines: string[] = [];
 const bodyPath = "tests/corpus/http2-respond-with-file/body.txt";
+const largeDir = fs.mkdtempSync(join(tmpdir(), "h2-large-"));
+const largePath = join(largeDir, "large.txt");
+fs.writeFileSync(largePath, "x".repeat(200000));
 const server = http2.createServer();
 server.on("stream", (stream, headers) => {
   if (headers[":path"] === "/file") {
@@ -43,6 +48,32 @@ server.on("stream", (stream, headers) => {
       fs.closeSync(fd);
     });
     stream.respondWithFD(fd, { ":status": 200 }, { offset: 0, length: 5 });
+  } else if (headers[":path"] === "/large") {
+    stream.respondWithFile(largePath, { ":status": 200 });
+  } else if (headers[":path"] === "/nul") {
+    try {
+      stream.respondWithFile("bad\u0000path", { ":status": 200 });
+    } catch (error) {
+      lines.push(`nul throw ${(error as NodeJS.ErrnoException).code}`);
+    }
+    stream.respond({ ":status": 204 });
+    stream.end();
+  } else if (headers[":path"] === "/check-false") {
+    stream.respondWithFile(bodyPath, { ":status": 200 }, {
+      statCheck: (stat, headers) => {
+        lines.push(`check stat ${stat.size > 0} status ${headers[":status"]}`);
+        return false;
+      },
+    });
+    setTimeout(() => {
+      lines.push(`check headersSent ${stream.headersSent}`);
+      stream.close();
+    }, 30);
+  } else if (headers[":path"] === "/late") {
+    // The fs error arrives on a later turn, so a listener added right after
+    // the call hears it (Node's fs callback).
+    stream.respondWithFile("/nonexistent-http2-file-late");
+    stream.on("error", (error) => lines.push(`late error ${(error as NodeJS.ErrnoException).code}`));
   } else {
     stream.on("error", (error) => lines.push(`server error ${(error as NodeJS.ErrnoException).code}`));
     stream.respondWithFile("/nonexistent-http2-file");
@@ -56,14 +87,16 @@ server.listen(0, "127.0.0.1", () => {
       let body = "";
       request.setEncoding("utf8");
       request.on("response", (headers) =>
-        lines.push(`${path} response ${headers[":status"]} ${headers["x-m"]}`),
+        lines.push(
+          `${path} response ${headers[":status"]} ${headers["x-m"]} length ${headers["content-length"]}`,
+        ),
       );
       request.on("data", (chunk: string) => (body += chunk));
       request.on("error", (error) =>
         lines.push(`${path} error ${(error as NodeJS.ErrnoException).code}`),
       );
       request.on("close", () => {
-        lines.push(`${path} body ${JSON.stringify(body)} rst ${request.rstCode}`);
+        lines.push(`${path} body ${body.length > 40 ? `${body.length} bytes` : JSON.stringify(body)} rst ${request.rstCode}`);
         resolve();
       });
       request.end();
@@ -74,6 +107,11 @@ server.listen(0, "127.0.0.1", () => {
     await get("/fd-position");
     await get("/fd-unreadable");
     await get("/missing");
+    await get("/large");
+    await get("/nul");
+    await get("/check-false");
+    await get("/late");
+    fs.rmSync(largeDir, { recursive: true, force: true });
     client.close(() => {
       server.close(() => {
         for (const line of lines.sort()) console.log(line);

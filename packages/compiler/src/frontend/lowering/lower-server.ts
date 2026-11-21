@@ -4785,6 +4785,7 @@ function lowerH2StreamMethodCall(
     let offset = -1,
       length = -1,
       wait = false;
+    let check: IrExpr | null = null;
     const options = args.length >= 3 ? args[2]! : undefined;
     if (options !== undefined) {
       if (!ts.isObjectLiteralExpression(options)) {
@@ -4813,6 +4814,30 @@ function lowerH2StreamMethodCall(
               "spell the byte offset/length as a number literal",
             );
           }
+        } else if (key === "statCheck") {
+          // Node calls statCheck(stat, headers) after the stat and cancels
+          // the response only on an explicit false. The callback crosses as
+          // a checked-dynamic callable: the runtime invokes it after the
+          // deferred open/stat and reads the result.
+          const fnValue = lowerer.lowerExpr(init);
+          if (fnValue.type.kind === "dyn") {
+            check = fnValue;
+          } else if (
+            fnValue.type.kind === "func" &&
+            canBoxFuncIntoDyn(
+              fnValue.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            check = { kind: "dynFrom", value: fnValue, type: DYN, loc: locOf(init) };
+          } else {
+            lowerer.noLowering(
+              "a statCheck value that is not a function",
+              init,
+              "pass a function: statCheck: (stat, headers) => boolean",
+            );
+          }
         } else if (key === "waitForTrailers") {
           if (init.kind === ts.SyntaxKind.TrueKeyword) wait = true;
           else if (init.kind === ts.SyntaxKind.FalseKeyword) wait = false;
@@ -4831,7 +4856,15 @@ function lowerH2StreamMethodCall(
       return {
         kind: "libCall",
         fn: "http2.streamRespondWithFile",
-        args: [receiver(), path, headersArg, num(offset), num(length), boolLit(wait, loc)],
+        args: [
+          receiver(),
+          path,
+          headersArg,
+          num(offset),
+          num(length),
+          boolLit(wait, loc),
+          check ?? dynUndefinedExpr(loc),
+        ],
         type: VOID,
         loc,
       };
@@ -4840,7 +4873,15 @@ function lowerH2StreamMethodCall(
     return {
       kind: "libCall",
       fn: "http2.streamRespondWithFD",
-      args: [receiver(), fd, headersArg, num(offset), num(length), boolLit(wait, loc)],
+      args: [
+        receiver(),
+        fd,
+        headersArg,
+        num(offset),
+        num(length),
+        boolLit(wait, loc),
+        check ?? dynUndefinedExpr(loc),
+      ],
       type: VOID,
       loc,
     };

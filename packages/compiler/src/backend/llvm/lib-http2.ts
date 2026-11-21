@@ -155,8 +155,6 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.reqComplete": "scr_http2_req_complete",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
-    "http2.streamRespondWithFile": "scr_http2_stream_respond_with_file",
-    "http2.streamRespondWithFD": "scr_http2_stream_respond_with_fd",
     "http2.streamUndefCall": "scr_http2_stream_undef_call",
   };
   const symbol = direct[e.fn];
@@ -226,6 +224,20 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         ...caBytes(host, args[2]!),
         ...handler,
       ]);
+    }
+    case "http2.streamRespondWithFile":
+    case "http2.streamRespondWithFD": {
+      // The trailing statCheck value crosses as a checked-dynamic callable;
+      // without one the runtime sees no check.
+      const check = args[6];
+      return finishRuntimeCall(
+        host,
+        e,
+        e.fn === "http2.streamRespondWithFile"
+          ? "scr_http2_stream_respond_with_file"
+          : "scr_http2_stream_respond_with_fd",
+        [...a.slice(0, 6), check !== undefined ? a[6]! : ptr()],
+      );
     }
     case "http2.sessionClose":
     case "http2.sessionCloseCb":

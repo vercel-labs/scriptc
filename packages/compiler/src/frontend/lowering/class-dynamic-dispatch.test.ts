@@ -405,16 +405,14 @@ test("the untyped read-only bag selects classes as the bag dispatch does, withou
   const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
   dispatch.finalize(lowerer);
   const text = (body: IrStmt[]) => JSON.stringify(body);
-  // All three accessors call one shared table; it stores the bag only on the
-  // creating path and answers the class's own table on every read.
-  const core = liftedFns.find((item) => item.name === "%dyn.class.bag")!;
-  expect(text(bag.body)).toContain('"%dyn.class.bag"');
-  expect(text(bag.body)).not.toContain('"kind":"fieldSet"');
-  expect(text(read.body)).toContain('"%dyn.class.bag"');
+  expect(text(bag.body)).toContain('"kind":"fieldSet"');
+  // Both read-only accessors call one shared table, which selects the class
+  // as the storing dispatch does and never stores the bag.
+  const core = liftedFns.find((item) => item.name === "%dyn.class.readBag")!;
+  expect(text(read.body)).toContain('"%dyn.class.readBag"');
   expect(text(read.body)).not.toContain('"kind":"fieldSet"');
   expect(text(core.body)).toContain('"className":"Widget","field":"%dynProperties"');
-  expect(text(core.body)).toContain('"localId":"create"');
-  expect(text(core.body)).toContain('"kind":"fieldSet"');
+  expect(text(core.body)).not.toContain('"kind":"fieldSet"');
 });
 
 test("indexes a class table's branches on the receiver's class key at sixty-four or more classes", () => {
@@ -454,9 +452,9 @@ test("indexes a class table's branches on the receiver's class key at sixty-four
   );
   const dispatch = new ClassDynamicDispatch();
   expect(dispatch.process(lowerer, [target, ...liftedFns])).toBe(true);
+  const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
   dispatch.finalize(lowerer);
-  const table = liftedFns.find((item) => item.name === "%dyn.class.bag")!;
-  const dispatchSwitch = table.body.find((stmt) => stmt.kind === "switch");
+  const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
   expect(dispatchSwitch).toMatchObject({
     kind: "switch",
     disc: { kind: "libCall", fn: "dyn.classHash" },
@@ -464,8 +462,8 @@ test("indexes a class table's branches on the receiver's class key at sixty-four
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
   // The table's first two classes stay in the chain ahead of the switch and
   // hold no case of their own.
-  const at = table.body.indexOf(dispatchSwitch);
-  const aheadKeys = table.body
+  const at = bag.body.indexOf(dispatchSwitch);
+  const aheadKeys = bag.body
     .slice(0, at)
     .flatMap((stmt) => (branchKey(stmt) === null ? [] : [branchKey(stmt)]));
   expect(aheadKeys).toHaveLength(2);
@@ -528,8 +526,7 @@ test("keeps two classes whose keys hash alike in one case, in order", () => {
   const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
   const chainKeys = bag.body.flatMap((stmt) => (branchKey(stmt) === null ? [] : [branchKey(stmt)]));
   dispatch.finalize(lowerer);
-  const table = liftedFns.find((item) => item.name === "%dyn.class.bag")!;
-  const dispatchSwitch = table.body.find((stmt) => stmt.kind === "switch");
+  const dispatchSwitch = bag.body.find((stmt) => stmt.kind === "switch");
   if (dispatchSwitch?.kind !== "switch") throw new Error("expected a dispatch switch");
   /* `object:AlphaThing` and `object:BravoThing` have the same length and end
    * in the same four bytes, so the dispatch cannot separate them: one case
@@ -584,9 +581,9 @@ test("keeps the class chain below sixty-four classes", () => {
   );
   const dispatch = new ClassDynamicDispatch();
   expect(dispatch.process(lowerer, [target, ...liftedFns])).toBe(true);
+  const bag = liftedFns.find((item) => item.name === "%dyn.class.properties")!;
   dispatch.finalize(lowerer);
-  const table = liftedFns.find((item) => item.name === "%dyn.class.bag")!;
-  expect(table.body.some((stmt) => stmt.kind === "switch")).toBe(false);
+  expect(bag.body.some((stmt) => stmt.kind === "switch")).toBe(false);
 });
 
 test("normalizes base capsules before dispatching each derived member once", () => {

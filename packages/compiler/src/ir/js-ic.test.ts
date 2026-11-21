@@ -207,6 +207,68 @@ test("bags converted between dyn and jsval are still the receiver", () => {
   expect(sites.site("%dyn.class.property.2")).toBeNull();
 });
 
+test("a shared class table keeps its accessors bags of the receiver", () => {
+  // The two untyped read accessors share one class table; its boolean flag
+  // chooses what an absent empty bag answers. A call through the table is
+  // still the receiver for an ordinary object, so property helpers that read
+  // through such an accessor keep their cache sites.
+  const flag = (value: boolean): IrExpr => ({ kind: "boolLit", value, type: BOOL, loc });
+  const table: IrFunction = {
+    ...helper("%dyn.class.readBag", ["v"], [capsuleBranch("v"), ret(ref("v"))]),
+    params: [
+      { localId: "v", name: "v", type: DYN },
+      { localId: "orEmpty", name: "orEmpty", type: BOOL },
+    ],
+    locals: [
+      { id: "v", name: "v", type: DYN, mutable: false },
+      { id: "orEmpty", name: "orEmpty", type: BOOL, mutable: false },
+    ],
+  };
+  const accessor = helper("%dyn.class.readPropertiesOrEmpty", ["v"], [
+    ret({
+      kind: "libCall",
+      fn: "js.fromDyn",
+      args: [call(table.name, ref("v"), flag(true))],
+      type: { kind: "jsval" },
+      loc,
+    }),
+  ]);
+  // The creating accessor stores the absent bag, so it is not a bag of the
+  // receiver and a read through it selects no cache site.
+  const creating: IrFunction = {
+    ...helper("%dyn.class.properties.shared", ["v"], [
+      capsuleBranch("v"),
+      ret(ref("v")),
+      { kind: "assign", localId: "v", value: ref("v"), loc },
+    ]),
+    params: [
+      { localId: "v", name: "v", type: DYN },
+      { localId: "create", name: "create", type: BOOL },
+    ],
+  };
+  const broken = helper("%dyn.class.readProperties.fresh", ["v"], [
+    ret({ kind: "dynObjLit", type: DYN, loc } as IrExpr),
+  ]);
+  const sites = sitesOf(
+    table,
+    creating,
+    accessor,
+    broken,
+    getHelper("%dyn.class.property.0", "x", [], call(accessor.name, ref("p.0"))),
+    getHelper("%dyn.class.property.1", "x", [], call(broken.name, ref("p.0"))),
+    getHelper(
+      "%dyn.class.property.2",
+      "x",
+      [],
+      call(table.name, ref("p.0"), { kind: "varRef", localId: "orEmpty", type: BOOL, loc }),
+    ),
+  );
+  expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "get", key: "x" });
+  expect(sites.site("%dyn.class.property.1")).toBeNull();
+  // A flag that is not a literal leaves the table unproven.
+  expect(sites.site("%dyn.class.property.2")).toBeNull();
+});
+
 test("a bag helper may first rebind its parameter to a bag of it", () => {
   // Programs with subclasses normalize the value before the class branches.
   const normalize = helper("%dyn.class.normalize", ["v"], [capsuleBranch("v"), ret(ref("v"))]);

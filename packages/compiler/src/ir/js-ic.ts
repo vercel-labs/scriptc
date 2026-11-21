@@ -383,12 +383,55 @@ export class JsIcSites {
     if (isVar(e, receiver)) return true;
     if (e.kind === "libCall" && (e.fn === "js.toDyn" || e.fn === "js.fromDyn"))
       return e.args.length === 1 && this.bagOf(e.args[0]!, receiver);
-    return (
-      e.kind === "call" &&
-      e.args.length === 1 &&
-      this.bagOf(e.args[0]!, receiver) &&
-      this.identityHelper(e.callee)
-    );
+    if (e.kind !== "call" || e.args[0] === undefined) return false;
+    // A shared class table applied to the receiver, its remaining arguments
+    // the boolean flags that choose what an absent bag answers. For every
+    // ordinary object the table answers the receiver itself (tableHelper).
+    if (e.args.length > 1 && isVar(e.args[0], receiver) && e.args.slice(1).every(isBoolLit))
+      return this.tableHelper(e.callee);
+    return e.args.length === 1 && this.bagOf(e.args[0]!, receiver) && this.identityHelper(e.callee);
+  }
+
+  /** A class table several entry points share, such as
+   * `%dyn.class.readBag(value, orEmpty)`: capsule branches and the plain
+   * exit, then a return of the receiver itself. A flag only decides what an
+   * absent bag answers inside a branch, so for an ordinary object the table
+   * is still the receiver. */
+  private tableHelper(name: string): boolean {
+    const known = this.identities.get(name);
+    if (known !== undefined) return known;
+    this.identities.set(name, false); // a recursive chain is not a table
+    const fn = this.fns.get(name);
+    const params = fn?.params ?? [];
+    let table = false;
+    if (
+      fn &&
+      name.startsWith("%dyn.class.") &&
+      params.length > 1 &&
+      params[0]!.type.kind === "dyn" &&
+      params.slice(1).every((p) => p.type.kind === "bool") &&
+      fn.async === undefined &&
+      fn.generator === undefined &&
+      fn.captures === undefined
+    ) {
+      const receiver = params[0]!.localId;
+      const body = classTableBranches(fn.body);
+      const last = body[body.length - 1];
+      table =
+        body
+          .slice(0, -1)
+          .every(
+            (s) =>
+              this.capsuleBranch(s, receiver) ||
+              this.kindExit(s, receiver) ||
+              this.rebinding(s, receiver),
+          ) &&
+        last?.kind === "return" &&
+        last.value !== null &&
+        this.bagOf(last.value, receiver);
+    }
+    this.identities.set(name, table);
+    return table;
   }
 
   /** An early exit for values a class table never matches: `if (!<kind
@@ -448,6 +491,10 @@ export class JsIcSites {
 
 function isVar(e: IrExpr | undefined | null, localId: string): boolean {
   return e?.kind === "varRef" && e.localId === localId;
+}
+
+function isBoolLit(e: IrExpr | undefined | null): boolean {
+  return e?.kind === "boolLit";
 }
 
 function unwrapFromDyn(e: IrExpr | null | undefined): IrExpr | null {

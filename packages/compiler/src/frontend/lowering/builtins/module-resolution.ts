@@ -28,7 +28,13 @@ import {
 } from "../../../diagnostics/diagnostic.js";
 import { NODE_BUILTIN_MODULES_V24 } from "../../builtin-modules.js";
 import { builtinModulesArrayLit } from "../surfaces.js";
-import { moduleFileName } from "../import-meta.js";
+import { isImportMeta, moduleFileName } from "../import-meta.js";
+import {
+  baseHrefOfPath,
+  baseUrlLiteral,
+  findPackageJson,
+  findPackageJsonPathsMatchHost,
+} from "../../find-package-json.js";
 import {
   BOOL,
   DYN,
@@ -124,6 +130,84 @@ function lowerCompileCacheCall(
   return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
+/** `module.findPackageJSON(specifier[, base])` with a string-literal
+ * specifier and a static base (`import.meta.url`, `__filename`, or a path or
+ * file: URL literal): the nearest package.json resolved at build time, which
+ * is the answer Node gives for the same source tree. A runtime-computed
+ * specifier or base, and a lookup that fails, keep the named refusal. */
+function lowerFindPackageJsonCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement) || args.length === 0 || args.length > 2) {
+    lowerer.noLowering(
+      "module.findPackageJSON with this argument list",
+      expr,
+      "pass a string-literal specifier and an optional static base",
+    );
+  }
+  const specifierNode = withoutParenthesesTypeWrappers(args[0]!);
+  if (!ts.isStringLiteralLike(specifierNode)) {
+    lowerer.noLowering(
+      "module.findPackageJSON with a runtime-computed specifier",
+      args[0]!,
+      "a compiled binary has a fixed module graph; pass a string literal",
+    );
+  }
+  let baseHref = "data:";
+  if (args.length === 2) {
+    const base = findPackageJsonBaseHref(lowerer, args[1]!);
+    if (base === null) {
+      lowerer.noLowering(
+        "module.findPackageJSON with a runtime-computed base",
+        args[1]!,
+        "pass import.meta.url, __filename, or an absolute path or file: URL literal",
+      );
+    }
+    baseHref = base;
+  }
+  if (!findPackageJsonPathsMatchHost(lowerer.targetPlatform)) {
+    lowerer.noLowering(
+      "module.findPackageJSON for this target",
+      expr,
+      "the build resolves the lookup with the host's path rules; this target's differ",
+    );
+  }
+  const answer = findPackageJson(specifierNode.text, baseHref);
+  if (!answer.ok) {
+    lowerer.noLowering(
+      `module.findPackageJSON(${JSON.stringify(specifierNode.text)}): ${answer.refusal}`,
+      expr,
+      "the build-time lookup cannot answer this call",
+    );
+  }
+  const lit: IrExpr = { kind: "strLit", value: answer.path, type: STRING, loc };
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  return declared === null ? lit : lowerer.coerceToExpected(lit, declared);
+}
+
+/** The file: URL a findPackageJSON base expression names, or null when it is
+ * not one of the static spellings. */
+function findPackageJsonBaseHref(lowerer: Lowerer, node: ts.Expression): string | null {
+  const value = withoutParenthesesTypeWrappers(node);
+  if (ts.isStringLiteralLike(value)) return baseUrlLiteral(value.text);
+  const sf = ts.getSourceFileOfNode(value);
+  if (
+    ts.isPropertyAccessExpression(value) &&
+    !value.questionDotToken &&
+    value.name.text === "url" &&
+    isImportMeta(value.expression)
+  ) {
+    return baseHrefOfPath(moduleFileName(lowerer, sf));
+  }
+  if (
+    ts.isIdentifier(value) &&
+    value.text === "__filename" &&
+    !isNodeEsmFile(sf, lowerer.program)
+  ) {
+    return baseHrefOfPath(moduleFileName(lowerer, sf));
+  }
+  return null;
+}
+
 /** node:module's source-map support calls and the runtime entry point of
  * each (scr_lib.c). `params` is how many leading arguments the runtime
  * reads; the rest are evaluated and dropped, as Node ignores them. */
@@ -203,6 +287,7 @@ export function lowerNodeModuleCall(
   if (Object.hasOwn(COMPILE_CACHE_CALLS, bi.member)) {
     return lowerCompileCacheCall(lowerer, expr, bi.member as CompileCacheMember, loc);
   }
+  if (bi.member === "findPackageJSON") return lowerFindPackageJsonCall(lowerer, expr, loc);
   if (Object.hasOwn(SOURCE_MAP_CALLS, bi.member)) {
     return lowerSourceMapsCall(lowerer, expr, bi.member as SourceMapMember, loc);
   }

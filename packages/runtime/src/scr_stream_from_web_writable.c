@@ -26,6 +26,8 @@ struct SfwwCtx {
   /* The error the destroy settles with: Node reports the ORIGINAL error
    * even when abort() rejects with its own. +1 while the destroy runs. */
   ScrError *destroy_error;
+  /* The option's AbortSignal (+1 while attached). */
+  ScrDyn *signal;
 };
 
 static SfwwCtx *sfww_ref(SfwwCtx *c) {
@@ -38,6 +40,7 @@ static void sfww_unref(SfwwCtx *c) {
   if (c->writable) scr_stream_release(c->writable);
   if (c->writer) scr_dyn_release(c->writer);
   if (c->destroy_error) scr_error_release(c->destroy_error);
+  if (c->signal) scr_dyn_release(c->signal);
   free(c);
 }
 
@@ -224,7 +227,15 @@ static ScrDyn *sfww_closed_err(ScrClosure *cl, ScrDyn *const *args, size_t argc)
 static void sfww_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   (void)s;
   SfwwCtx *c = sfww_of(cb);
-  ScrDyn *value = scr_dyn_new_bytes(chunk);
+  /* decodeStrings: false and object mode hand the write step dyn values
+   * (strings stay strings, objects stay objects); a byte-mode step hands a
+   * Buffer. A typed record arrives as the record itself with the write's
+   * descriptor, so it takes that descriptor's capsule conversion — reading
+   * it as a dyn value would follow record fields as dyn tags. */
+  const ScrStreamTypedDesc *typed = scr_stream_write_desc(s);
+  ScrDyn *value = typed != NULL ? typed->box((void *)chunk)
+                  : scr_stream_writes_values(s) ? scr_dyn_retain((ScrDyn *)chunk)
+                                                : scr_dyn_new_bytes(chunk);
   ScrDyn *args[1] = {value};
   ScrDyn *result = scr_dyn_invoke(c->writer, "write", args, 1, "writer.write");
   scr_dyn_release(value);
@@ -274,12 +285,92 @@ static void sfww_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   sfww_unref(c);
 }
 
-/* Writable.fromWeb(writableStream): the Writable (+1), or NULL with
- * ERR_INVALID_ARG_TYPE pending for a value that is not a web WritableStream.
- * The options (objectMode, decodeStrings, highWaterMark, signal) have no
- * lowering. */
-ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
-  (void)flags;
+/* The resolver the events unit installs for a signal's abort listener.
+ * Node's addAbortSignal registers its listener so that an earlier
+ * listener's stopImmediatePropagation does not skip it
+ * (kResistStopPropagation); this entry is that registration. A program that
+ * cannot pass a signal links no such unit. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak reference; this weak definition stands in
+ * until the events unit's strong one is linked, and the linked flag is the
+ * capability test. */
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
+static bool sfww_events_available(void) { return scr_dyn_event_target_unit_linked != 0; }
+#else
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+static bool sfww_events_available(void) { return scr_events_add_abort_listener != NULL; }
+#endif
+
+/* Destroy the writable now with Node's AbortError whose cause is the
+ * signal's reason. A write issued after an already-aborted signal therefore
+ * cannot reach the sink; the destroy's own 'error' emission still waits for
+ * a tick, so a listener attached after construction sees it. */
+static void sfww_destroy_aborted(SfwwCtx *c, ScrDyn *signal) {
+  ScrDyn *reason = scr_dyn_obj_read(signal, "reason", 6);
+  ScrError *aborted = scr_error_abort(reason); /* +1; reason borrowed */
+  if (aborted) {
+    ScrStream *destroyed = scr_stream_destroy(c->writable, aborted);
+    if (destroyed) scr_stream_release(destroyed);
+    scr_error_release(aborted);
+  }
+  if (reason) scr_dyn_release(reason);
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
+/* The fallback when the events unit is not linked: the signal's own
+ * addEventListener destroys the writable when it fires. */
+static ScrDyn *sfww_on_abort(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  (void)args;
+  (void)argc;
+  SfwwCtx *c = sfww_of(cl);
+  if (c->signal) sfww_destroy_aborted(c, c->signal);
+  sfww_unref(c);
+  return scr_dyn_undefined();
+}
+
+/* The option's signal: the runtime's addAbortSignal when the events unit is
+ * linked, the signal's own listener otherwise. */
+static void sfww_attach_signal(SfwwCtx *c, ScrDyn *signal) {
+  if (sfww_events_available()) {
+    ScrStream *attached =
+        scr_stream_add_abort_signal(c->writable, signal, true, scr_events_add_abort_listener);
+    if (attached) scr_stream_release(attached);
+    else if (scr_exc_pending()) scr_exc_clear();
+    return;
+  }
+  ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
+  bool is_aborted = scr_dyn_truthy(aborted);
+  if (aborted) scr_dyn_release(aborted);
+  if (is_aborted) {
+    sfww_destroy_aborted(c, signal);
+    return;
+  }
+  c->signal = scr_dyn_retain(signal);
+  ScrClosure *clo = sfww_closure((void *)&sfww_on_abort, c);
+  ScrDyn *listener = scr_dyn_new_func(clo, &sfww_on_abort, 1, "(event)", "onAbort");
+  ScrStr *abort_name = scr_str_new("abort", 5);
+  ScrDyn *name = scr_dyn_new_str(abort_name);
+  ScrDyn *args[2] = {name, listener};
+  ScrDyn *result = scr_dyn_invoke(signal, "addEventListener", args, 2, "addEventListener");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(name);
+  scr_str_release(abort_name);
+  scr_dyn_release(listener);
+  if (scr_exc_pending()) scr_exc_clear();
+}
+
+/* Writable.fromWeb(writableStream[, options]): the Writable (+1), or NULL
+ * with ERR_INVALID_ARG_TYPE pending for a value that is not a web
+ * WritableStream. flags: bit 1 the web pair's writable half (Duplex.fromWeb),
+ * bit 2 objectMode, bit 4 decodeStrings: false. hwm < 0 takes the default
+ * (65536 bytes, or 16 objects in object mode); signal may be NULL. */
+static ScrStream *sfww_build(ScrDyn *web, double flags, double hwm, ScrDyn *signal) {
   /* The checked-dynamic WritableStream, or the fetch unit's compact one (an
    * identity TransformStream's writable side) — Node accepts either. */
   if (web->kind != SCR_DYN_HANDLE || (web->v.handle.tag != SCR_DYNH_WS_WRITABLE &&
@@ -288,6 +379,20 @@ ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
     scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
     return NULL;
   }
+  bool object_mode = ((int)flags & 2) != 0;
+  bool decode_strings_off = ((int)flags & 4) != 0;
+  if (object_mode && hwm < 0) hwm = 16;
+  /* Node's validateAbortSignal, before anything is built: a value that is
+   * not an AbortSignal throws (null and undefined are ignored). */
+  if (signal && signal->kind != SCR_DYN_UNDEF && signal->kind != SCR_DYN_NULL) {
+    ScrDyn *aborted = scr_dyn_obj_read(signal, "aborted", 7);
+    if (aborted == NULL || aborted->kind == SCR_DYN_UNDEF) {
+      if (aborted) scr_dyn_release(aborted);
+      scr_dyn_arg_type_fail("signal", "an instance of AbortSignal", signal);
+      return NULL;
+    }
+    scr_dyn_release(aborted);
+  }
   ScrDyn *writer = scr_dyn_invoke(web, "getWriter", NULL, 0, "writableStream.getWriter");
   if (!writer) return NULL;
   SfwwCtx *c = calloc(1, sizeof *c);
@@ -295,11 +400,13 @@ ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
   c->rc = 1;
   c->writer = writer;
   c->pair_member = ((int)flags & 1) != 0;
-  ScrStream *w = scr_stream_new_writable(-1, true, true, sfww_closure((void *)&sfww_write_inv, c),
+  ScrStream *w = scr_stream_new_writable(hwm, true, true, sfww_closure((void *)&sfww_write_inv, c),
                                          &sfww_write_inv,
                                          sfww_closure((void *)&sfww_final_inv, c), &sfww_final_inv,
                                          sfww_closure((void *)&sfww_destroy_inv, c),
                                          &sfww_destroy_inv);
+  if (object_mode) scr_stream_set_object_mode(w, false, true);
+  if (decode_strings_off) scr_stream_set_decode_strings(w, false);
   c->writable = scr_stream_retain(w);
   ScrDyn *closed = scr_dyn_obj_read(writer, "closed", 6);
   if (closed && closed->kind == SCR_DYN_PROMISE) {
@@ -313,6 +420,17 @@ ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
     scr_dyn_release(onr);
   }
   if (closed) scr_dyn_release(closed);
+  if (signal && signal->kind != SCR_DYN_UNDEF && signal->kind != SCR_DYN_NULL)
+    sfww_attach_signal(c, signal);
   sfww_unref(c);
   return w;
+}
+
+ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) {
+  return sfww_build(web, flags, -1, NULL);
+}
+
+ScrStream *scr_stream_writable_from_web_opts(ScrDyn *web, double flags, double hwm,
+                                             ScrDyn *signal) {
+  return sfww_build(web, flags, hwm, signal);
 }

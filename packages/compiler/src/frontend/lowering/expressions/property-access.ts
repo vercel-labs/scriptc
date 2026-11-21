@@ -403,6 +403,21 @@ function isModuleDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression
   );
 }
 
+/** A member of an `import.meta` value held in a variable: the metadata object
+ * importMetaValue builds reads through the checked-dynamic tier. */
+function isImportMetaDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!["url", "dirname", "filename", "main", "resolve"].includes(expr.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+  return (
+    !!symbol &&
+    symbol.declarations.some((declaration) => {
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+      const parent = declaration.parent;
+      return ts.isInterfaceDeclaration(parent) && parent.name.text === "ImportMeta";
+    })
+  );
+}
+
 function isStatFsDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
   if (
     !["type", "bsize", "blocks", "bfree", "bavail", "files", "ffree", "bigint"].includes(
@@ -2044,6 +2059,7 @@ export function lowerPropertyAccessExpr(
   if (
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
+    isImportMetaDynProperty(lowerer, expr) ||
     // Covers the compile cache result and options, the source-map support
     // record and its options, and a SourceMap's members.
     isModuleDynProperty(lowerer, expr) ||

@@ -296,6 +296,7 @@ import {
 import type { FrontendServices } from "../services.js";
 import type { Defines } from "../defines.js";
 import { programImportsNodeApi } from "../node-api-import.js";
+import { programImportsDiagnosticsChannel } from "../diagnostics-channel-import.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { SlotSignature } from "./slot-signatures.js";
 import type { FsPathPlan } from "./builtins/fs-paths.js";
@@ -5273,6 +5274,11 @@ export class Lowerer {
    * a checked-dynamic value may be a Node island value and code the build
    * does not lower may run (mayRunInNode); computed on first use. */
   importsNodeApi: boolean | undefined = undefined;
+  /** Whether the program imports diagnostics_channel
+   * (programImportsDiagnosticsChannel), so a console output call's channel
+   * can have a subscriber and the call publishes its arguments; computed on
+   * first use. */
+  importsDiagnosticsChannel: boolean | undefined = undefined;
   /** Whether the program reads util.inspect's function value
    * (programTouchesInspectTables), so its defaultOptions, colors and styles
    * tables can change and static inspect renderings route through the
@@ -5472,6 +5478,13 @@ export class Lowerer {
    * and the calls reading it (json-require.ts). */
   readonly jsonRequireModules = new Map<string, JsonRequireModule>();
   readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
+  /** The module's `import.meta` object read as a value: one checked-dynamic
+   * object per source file, created in that file's %init prelude on first use
+   * (import-meta.ts). */
+  readonly importMetaObjects = new Map<
+    ts.SourceFile,
+    { global: IrGlobal; loadedId: string; build: () => IrExpr }
+  >();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -6470,6 +6483,7 @@ export class Lowerer {
       checkedTable("jsonInitActions", () => this.jsonInitActions.size),
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
+      checkedTable("importMetaObjects", () => this.importMetaObjects.size),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
@@ -6678,6 +6692,7 @@ export class Lowerer {
     "createsWrappers",
     "memberReceivers",
     "importsNodeApi",
+    "importsDiagnosticsChannel",
     "inspectTablesTouched",
     // The census of the program's writes on the global object, a pure
     // function of its modules, read again when a unit replays.
@@ -17457,6 +17472,12 @@ export class Lowerer {
     return (
       this.nodeIslands !== null || (this.importsNodeApi ??= programImportsNodeApi(this.program))
     );
+  }
+
+  /** Whether the program imports diagnostics_channel, so a console output
+   * call can have a channel subscriber. */
+  usesDiagnosticsChannel(): boolean {
+    return (this.importsDiagnosticsChannel ??= programImportsDiagnosticsChannel(this.program));
   }
 
   /** The IR type of a type's canonical form (canon-map.ts), or null when

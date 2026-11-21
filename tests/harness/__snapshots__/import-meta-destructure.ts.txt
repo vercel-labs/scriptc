@@ -1,5 +1,0 @@
-import-meta-destructure.ts:1:9 - error SC1090: 'import.meta.resolve' (only url, filename, dirname, and main are supported in static ESM) is not supported yet
-
-  1 | const { resolve } = import.meta;
-    |         ^~~~~~~
-  2 | console.log(resolve);

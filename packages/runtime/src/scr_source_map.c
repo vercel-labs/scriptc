@@ -17,6 +17,7 @@
  * A unit of its own, linked only by a program that names module.SourceMap
  * (the compiler's `sourceMap` runtime feature), so no other executable
  * changes. */
+#include "scr_source_map.h"
 #include "scr_runtime.h"
 
 #include <stdlib.h>

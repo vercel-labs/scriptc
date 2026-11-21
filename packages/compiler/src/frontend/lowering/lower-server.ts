@@ -6769,6 +6769,7 @@ const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
 const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  "ALPNCallback",
   "ALPNProtocols",
   "minVersion",
   "maxVersion",

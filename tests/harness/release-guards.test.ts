@@ -144,5 +144,12 @@ test("CI on main keeps one group without cancelling, and pull requests keep canc
     concurrency: { group: string; "cancel-in-progress": string };
   };
   expect(ci.concurrency.group).toContain("github.event_name == 'push' && 'main'");
-  expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
+  // A pull request's expensive tier (a dispatch with pr) shares and cancels in the pull request's group; other
+  // manual runs, such as the release CI gate's, keep a group of their own.
+  expect(ci.concurrency.group).toContain(
+    "github.event_name == 'workflow_dispatch' && (inputs.pr || format('dispatch-{0}', github.run_id))",
+  );
+  expect(ci.concurrency["cancel-in-progress"]).toBe(
+    "${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}",
+  );
 });

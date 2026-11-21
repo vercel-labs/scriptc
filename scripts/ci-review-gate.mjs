@@ -1,0 +1,192 @@
+#!/usr/bin/env node
+// Starts a pull request's expensive CI tier once both Vercel reviews pass on its head, and reports ci/full for
+// fork pull requests. Run by .github/workflows/ci-review-gate.yml (reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and
+// GITHUB_REPOSITORY; calls `gh api` with GH_TOKEN, which needs actions: write, checks: read, pull-requests: read and
+// statuses: write).
+//
+// A pull request run of CI (.github/workflows/ci.yml) from this repository runs only the fast tier, and leaves the
+// commit status ci/full pending. The expensive tier is a workflow_dispatch of CI on the pull request's branch with
+// inputs pr and sha. This script dispatches it:
+//   check_run completed: when Vercel Agent Review or Vercel Security Review completes, and both have passed
+//     (success or neutral) on the pull request's current head;
+//   pull_request labeled ci:full, or workflow_dispatch with a pr: at once, whatever the reviews say.
+// The dispatched run checks that the branch is still at sha, and a new push cancels it (they share the pull
+// request's concurrency group). CI runs on the branch, never here: this workflow runs in the default branch's
+// context, whose caches main and the release restore.
+//
+// workflow_run completed: a fork's token cannot write statuses, so its pull request runs (which run every lane)
+// report ci/full through here, from the run's required test job.
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+export const REVIEWS = ["Vercel Agent Review", "Vercel Security Review"];
+export const REVIEW_APP = "vercel";
+export const FULL_LABEL = "ci:full";
+export const STATUS_CONTEXT = "ci/full";
+
+/** Each review's latest check run on the commit, and whether all of them passed. */
+export function reviewState(checkRuns) {
+  const reviews = REVIEWS.map((name) => {
+    const run = checkRuns
+      .filter((check) => check.name === name && check.app?.slug === REVIEW_APP)
+      .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))[0];
+    const passed =
+      run?.status === "completed" && (run.conclusion === "success" || run.conclusion === "neutral");
+    const state =
+      run === undefined ? "missing" : run.status === "completed" ? run.conclusion : run.status;
+    return { name, passed, state };
+  });
+  return { passed: reviews.every((review) => review.passed), reviews };
+}
+
+/**
+ * Whether to dispatch the expensive tier of one pull request.
+ * mode: "review" (a review completed on reviewedSha), "label" or "manual".
+ * runs: the CI workflow_dispatch runs on the pull request's head.
+ */
+export function decide({ mode, pr, repo, defaultBranch, reviewedSha, checkRuns, runs }) {
+  const skip = (reason) => ({ action: "skip", reason });
+  if (pr.state !== "open") return skip(`#${pr.number} is ${pr.state}`);
+  if (pr.head?.repo?.full_name !== repo)
+    return skip(`#${pr.number} comes from a fork, whose pull request run runs every lane`);
+  const sha = pr.head.sha;
+  if (mode === "review") {
+    if (reviewedSha !== sha)
+      return skip(`the review ran on ${reviewedSha}, and #${pr.number} is at ${sha}`);
+    if ((pr.labels ?? []).some((label) => label.name === FULL_LABEL))
+      return skip(`#${pr.number} has ${FULL_LABEL}, so its pull request run runs every lane`);
+    // An upper layer of a stack defers full CI until it targets the default branch (ci.yml validation_scope).
+    if (pr.base?.ref !== defaultBranch)
+      return skip(
+        `#${pr.number} targets ${pr.base?.ref}; full CI runs once it targets ${defaultBranch}`,
+      );
+    const state = reviewState(checkRuns);
+    if (!state.passed)
+      return skip(
+        `the reviews have not both passed on ${sha}: ` +
+          state.reviews.map((review) => `${review.name} ${review.state}`).join(", "),
+      );
+  }
+  const live = runs.find(
+    (run) => run.head_sha === sha && (run.status !== "completed" || run.conclusion === "success"),
+  );
+  if (live)
+    return skip(
+      `the expensive tier of ${sha} is already ${live.status === "completed" ? "green" : live.status}: ${live.html_url}`,
+    );
+  return {
+    action: "dispatch",
+    reason: `${mode === "review" ? "both reviews passed" : mode === "label" ? `labeled ${FULL_LABEL}` : "requested"} on ${sha}`,
+    ref: pr.head.ref,
+    inputs: { pr: String(pr.number), sha, macos_suite: "darwin", scope: "all" },
+  };
+}
+
+/** The ci/full status of a fork's pull request run, from its required test job; null when there is none. */
+export function forkStatus(run, jobs, repo) {
+  if (run.event !== "pull_request" || run.head_repository?.full_name === repo) return null;
+  const test = jobs.find((job) => job.name === "test");
+  if (test === undefined || test.status !== "completed") return null;
+  return {
+    sha: run.head_sha,
+    state: test.conclusion === "success" ? "success" : "failure",
+    description:
+      test.conclusion === "success" ? "Every CI lane passed" : "A CI lane failed or was cancelled",
+    target_url: run.html_url,
+  };
+}
+
+const gh = (...args) =>
+  execFileSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+const json = (...args) => JSON.parse(gh(...args));
+
+function main() {
+  const repo = process.env.GITHUB_REPOSITORY;
+  const eventName = process.env.GITHUB_EVENT_NAME;
+  const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
+  const defaultBranch = event.repository?.default_branch ?? "main";
+
+  if (eventName === "workflow_run") {
+    const run = event.workflow_run;
+    const jobs = json(
+      "--paginate",
+      "--slurp",
+      `repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`,
+    ).flatMap((page) => page.jobs);
+    const status = forkStatus(run, jobs, repo);
+    if (status === null) return console.log(`Run ${run.html_url} reports no ${STATUS_CONTEXT}`);
+    gh(
+      "--method",
+      "POST",
+      `repos/${repo}/statuses/${status.sha}`,
+      "-f",
+      `state=${status.state}`,
+      "-f",
+      `context=${STATUS_CONTEXT}`,
+      "-f",
+      `description=${status.description}`,
+      "-f",
+      `target_url=${status.target_url}`,
+    );
+    return console.log(`${STATUS_CONTEXT} on ${status.sha}: ${status.state}`);
+  }
+
+  let mode, numbers, reviewedSha;
+  if (eventName === "check_run") {
+    const check = event.check_run;
+    if (
+      check.status !== "completed" ||
+      !REVIEWS.includes(check.name) ||
+      check.app?.slug !== REVIEW_APP
+    )
+      return console.log(`${check.name} from ${check.app?.slug} does not gate CI`);
+    mode = "review";
+    reviewedSha = check.head_sha;
+    // GitHub lists only pull requests whose head is in this repository.
+    numbers = (check.pull_requests ?? []).map((pr) => pr.number);
+  } else if (eventName === "pull_request") {
+    if (event.label?.name !== FULL_LABEL)
+      return console.log(`The label ${event.label?.name} does not gate CI`);
+    mode = "label";
+    numbers = [event.pull_request.number];
+  } else if (eventName === "workflow_dispatch") {
+    mode = "manual";
+    numbers = [Number(event.inputs?.pr)];
+    if (!Number.isInteger(numbers[0]) || numbers[0] <= 0)
+      throw new Error("workflow_dispatch needs a pull request number");
+  } else throw new Error(`unexpected event ${eventName}`);
+
+  for (const number of numbers) {
+    const pr = json(`repos/${repo}/pulls/${number}`);
+    const checkRuns =
+      mode === "review"
+        ? // By name: a head carries well over a hundred check runs, CI's own included.
+          REVIEWS.flatMap(
+            (name) =>
+              json(
+                `repos/${repo}/commits/${pr.head.sha}/check-runs?filter=all&per_page=100&check_name=${encodeURIComponent(name)}`,
+              ).check_runs,
+          )
+        : [];
+    const runs = json(
+      `repos/${repo}/actions/workflows/ci.yml/runs?event=workflow_dispatch&head_sha=${pr.head.sha}&per_page=100`,
+    ).workflow_runs;
+    const decision = decide({ mode, pr, repo, defaultBranch, reviewedSha, checkRuns, runs });
+    console.log(`#${number}: ${decision.action}: ${decision.reason}`);
+    if (decision.action !== "dispatch") continue;
+    gh(
+      "--method",
+      "POST",
+      `repos/${repo}/actions/workflows/ci.yml/dispatches`,
+      "-f",
+      `ref=${decision.ref}`,
+      ...Object.entries(decision.inputs).flatMap(([key, value]) => [
+        "-f",
+        `inputs[${key}]=${value}`,
+      ]),
+    );
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) main();

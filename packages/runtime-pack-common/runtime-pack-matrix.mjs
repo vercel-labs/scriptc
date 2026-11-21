@@ -142,7 +142,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // fact arms it at the top of %main (arrayBuffer.armMutable); every other
   // program keeps the base units' hooks NULL and links no registry.
   ["scr_js_buffers.c", "mutableBuffers"],
-  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal")],
+  ["scr_event_target.c", any("eventTarget", "nativeFetch", "abortSignal", "webSocket")],
+  // The WebSocket client (the global WebSocket class).
+  ["scr_websocket.c", "webSocket"],
   [
     "scr_async_dyn.c",
     any(

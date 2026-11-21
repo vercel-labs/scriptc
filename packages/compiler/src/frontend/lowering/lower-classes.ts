@@ -190,6 +190,7 @@ import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
+import { lowerWebSocketNew } from "./builtins/websocket.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
@@ -13014,6 +13015,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     lowerMessagePortNew(lowerer, expr) ??
     lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
+  // `new WebSocket(url[, protocols])`: the runtime dials, upgrades and
+  // carries the connection (websocket.ts).
+  const webSocket = lowerWebSocketNew(lowerer, expr);
+  if (webSocket) return webSocket;
   let intlConstructor = expr.expression;
   if (ts.isIdentifier(intlConstructor)) {
     const symbol = lowerer.resolveValueSymbol(intlConstructor);

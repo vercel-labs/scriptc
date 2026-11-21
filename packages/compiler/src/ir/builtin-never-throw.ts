@@ -38,6 +38,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesValue",
   "perf.histoDispose",
   "perf.slidingReset",
+  // The handle tag test answers false for every value that is not a
+  // WebSocket handle and runs no program code.
+  "websocket.is",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",

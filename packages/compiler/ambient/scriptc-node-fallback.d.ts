@@ -1401,6 +1401,32 @@ declare var CloseEvent: {
   ): CloseEvent;
   readonly prototype: CloseEvent;
 };
+
+/* The global WebSocket client (scr_websocket.c). The instance is a native
+ * handle: the lowering supports construction, the readyState constants and
+ * instanceof, and the members below dispatch at run time. */
+interface WebSocket extends EventTarget {
+  readonly url: string;
+  readonly readyState: number;
+  readonly protocol: string;
+  readonly extensions: string;
+  readonly bufferedAmount: number;
+  binaryType: string;
+  onopen: ((this: WebSocket, ev: Event) => unknown) | null;
+  onmessage: ((this: WebSocket, ev: MessageEvent) => unknown) | null;
+  onerror: ((this: WebSocket, ev: Event) => unknown) | null;
+  onclose: ((this: WebSocket, ev: CloseEvent) => unknown) | null;
+  send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void;
+  close(code?: number, reason?: string): void;
+}
+declare var WebSocket: {
+  new (url: string | URL, protocols?: string | string[]): WebSocket;
+  readonly prototype: WebSocket;
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
+};
 interface AddEventListenerOptions {
   capture?: boolean;
   once?: boolean;

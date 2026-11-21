@@ -172,6 +172,7 @@ export function executableLinkFeatures(
     x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.webSocket ? { webSocket: true } : {}),
     ...(features.icu ? { intl: true } : {}),
   });
 }

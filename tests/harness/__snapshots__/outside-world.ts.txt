@@ -3,11 +3,4 @@ outside-world.ts:11:13 - error SC0001: Cannot find name 'document'. Do you need 
   10 | const cloned = structuredClone({ a: 1 });
   11 | const doc = document;
      |             ^~~~~~~~
-  12 | const ws = new WebSocket("wss://example.com");
-
-outside-world.ts:12:16 - error SC0001: Cannot find name 'WebSocket'.
-
-  11 | const doc = document;
-  12 | const ws = new WebSocket("wss://example.com");
-     |                ^~~~~~~~~
-  13 | const store = localStorage;
+  12 | const store = localStorage;

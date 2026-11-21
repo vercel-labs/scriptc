@@ -82,6 +82,11 @@ ScrDyn *scr_et_handler_get(ScrEventTargetCore *core, const char *type);
 void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
 /* A trusted (isTrusted) Event handle of the given type, +1. */
 ScrDyn *scr_event_new_trusted(const char *type);
+/* The trusted events a native emitter dispatches: a MessageEvent carrying
+ * `data` (borrowed) and a CloseEvent with its code, reason (borrowed) and
+ * wasClean flag. +1. */
+ScrDyn *scr_message_event_with(ScrDyn *data, bool trusted);
+ScrDyn *scr_close_event_with(int64_t code, ScrStr *reason, bool was_clean, bool trusted);
 /* new EventTarget() / new Event(type, options) / new CustomEvent(type,
  * options): `args` is the argument vector as one dyn array (borrowed).
  * +1 handle, or NULL with the exception pending. */

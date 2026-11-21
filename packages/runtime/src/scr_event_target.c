@@ -983,8 +983,51 @@ void scr_et_handler_set(ScrEventTargetCore *core, const char *type, const ScrDyn
 
 /* ── Event handles ─────────────────────────────────────────────────── */
 
+static void scr_event_drop_refs(ScrEvent *ev);
+
+/* An event carries references to its target (a handle that retains the
+ * object dispatching it), its detail, ports and source: a handler that
+ * keeps its last event keeps that graph. The event therefore carries a
+ * cycle header so the collector can see the edges and reclaim a socket /
+ * target / handler / event cycle. The strings and the exit-registry entry
+ * are the teardown's complement. */
+static void scr_event_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrEvent *ev = p;
+  visit(ev->target, ctx);
+  visit(ev->detail, ctx);
+  visit(ev->ports, ctx);
+  visit(ev->source, ctx);
+}
+
+static void scr_event_gcfree(void *p) {
+  ScrEvent *ev = p;
+  scr_event_untrack(ev);
+  scr_str_release(ev->type);
+  scr_str_release(ev->origin);
+  scr_str_release(ev->last_event_id);
+  scr_str_release(ev->reason);
+  scr_obj_free_note();
+  scr_cyc_free(ev);
+}
+
+static void scr_event_destroy(void *p) {
+  ScrEvent *ev = p;
+  /* A field's release can run the collector; re-entrant releases of an
+   * event already being torn down are no-ops. */
+  ev->rc = SIZE_MAX;
+  scr_event_drop_refs(ev);
+  scr_str_release(ev->type);
+  ev->rc = 0;
+  scr_obj_free_note();
+  scr_cyc_free(ev);
+}
+
 static ScrEvent *scr_event_alloc(ScrStr *type /* moves */, bool custom) {
-  ScrEvent *ev = scr_et_calloc(sizeof *ev);
+  static ScrCycType cyc_type = {&scr_event_trace, &scr_event_gcfree, SCR_CYC_KIND_NONE, 0};
+  ScrEvent *ev = scr_cyc_alloc(sizeof *ev, &cyc_type);
+  if (!ev) scr_et_oom();
+  memset(ev, 0, sizeof *ev);
+  scr_obj_alloc_note();
   ev->rc = 1;
   ev->type = type;
   ev->custom = custom;
@@ -1024,10 +1067,13 @@ static void scr_event_drop_refs(ScrEvent *ev) {
 
 static void scr_event_release_v(void *p) {
   ScrEvent *ev = p;
-  if (--ev->rc > 0) return;
-  scr_event_drop_refs(ev);
-  scr_str_release(ev->type);
-  free(ev);
+  if (ev->rc == SIZE_MAX) return; /* the teardown's own releases */
+  if (--ev->rc > 0) {
+    scr_cyc_released(ev);
+    return;
+  }
+  scr_cyc_dead(ev);
+  scr_rc_destroy(ev, scr_event_destroy);
 }
 
 static bool scr_et_key(const char *key, size_t len, const char *want) {
@@ -1875,6 +1921,33 @@ ScrDyn *scr_event_new_trusted(const char *type) {
   ScrEvent *ev = scr_event_alloc(scr_str_new(type, strlen(type)), false);
   ev->trusted = true;
   ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
+/* The trusted events a native emitter dispatches (the WebSocket client): a
+ * MessageEvent carrying `data`, and a CloseEvent with its code, reason and
+ * wasClean flag. Both borrow their payloads; +1. */
+ScrDyn *scr_message_event_with(ScrDyn *data, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("message", 7), false);
+  ev->trusted = trusted;
+  ev->message = true;
+  ev->detail = scr_dyn_retain(data);
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
+  scr_event_release_v(ev);
+  return out;
+}
+
+ScrDyn *scr_close_event_with(int64_t code, ScrStr *reason, bool was_clean, bool trusted) {
+  scr_et_install();
+  ScrEvent *ev = scr_event_alloc(scr_str_new("close", 5), false);
+  ev->trusted = trusted;
+  ev->close = true;
+  ev->code = code;
+  ev->reason = scr_str_retain(reason);
+  ev->was_clean = was_clean;
+  ScrDyn *out = scr_dyn_new_handle(ev, SCR_DYNH_CLOSE_EVENT);
   scr_event_release_v(ev);
   return out;
 }

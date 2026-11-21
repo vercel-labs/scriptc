@@ -833,6 +833,12 @@ function buildLibFnSignatures() {
     "perf.histoMeanCI": { argTypes: [DYN, F64, F64], result: F64 },
     "perf.histoWelch": { argTypes: [DYN, DYN, F64, F64], result: F64 },
     "perf.histoPercentileCI": { argTypes: [DYN, F64, F64, F64], result: F64 },
+    /** new WebSocket(url[, protocols]): both arguments are checked-dynamic
+     * (the URL coerces, the protocols take a string or a string array), and
+     * the runtime validates them as Node does (MAY THROW). */
+    "websocket.new": { argTypes: [DYN, DYN], result: DYN },
+    /** `value instanceof WebSocket`: the handle tag test. */
+    "websocket.is": { argTypes: [DYN], result: BOOL },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2

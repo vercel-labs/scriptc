@@ -30,6 +30,8 @@ export interface NativeLinkFeatures {
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
   fetch: boolean;
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket?: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
@@ -486,6 +488,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_websocket.c dials through scr_net.c and sc_http.c's client, wraps
+  // wss connections with scr_tls.c, and dispatches its events through
+  // scr_event_target.c (with the emitter and symbol units that unit needs).
+  { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names

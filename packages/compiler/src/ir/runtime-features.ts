@@ -2329,6 +2329,8 @@ const RUNTIME_FEATURE_RULES = {
    * program does not resolve to a typed tuple (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
+  /** The WebSocket client (the global WebSocket class): scr_websocket.c. */
+  webSocket: rule({ fns: ["websocket.new", "websocket.is"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */
@@ -2900,6 +2902,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    webSocket: false,
     asyncHooks: false,
     bigint: false,
     bigstats: false,

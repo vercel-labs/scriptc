@@ -503,6 +503,27 @@ ScrStr *scr_stack_capture_after(const char *through) {
   return NULL;
 }
 
+/* The same trim for a function the runtime holds as a value: the topmost
+ * frame its name heads ("    at name (file)"), not an identity comparison.
+ * A frame of a class constructor ("    at new C (...)") or a member
+ * ("    at C.m (...)") keeps V8's spelling, which the name alone cannot
+ * match; those leave every frame in place. */
+ScrStr *scr_stack_capture_after_name(const char *name) {
+  static const char prefix[] = "    at ";
+  const size_t plen = sizeof prefix - 1;
+  const size_t nlen = strlen(name);
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous) {
+    const char *text = frame->text;
+    if (strncmp(text, prefix, plen) != 0) continue;
+    const char *at = text + plen;
+    size_t rest = strlen(at);
+    if (rest < nlen || memcmp(at, name, nlen) != 0) continue;
+    if (rest == nlen || at[nlen] == ' ' || at[nlen] == '(')
+      return scr_stack_capture_from(frame->previous);
+  }
+  return NULL;
+}
+
 #define scr_exc_kind (SCR_EXC_CUR()->kind)
 #define scr_exc_f64 (SCR_EXC_CUR()->f64)
 #define scr_exc_bool (SCR_EXC_CUR()->b)

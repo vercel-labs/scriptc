@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3669,
+    "matrixRows": 3668,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 219,
+      "not-applicable": 220,
       "chapters": 7
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 383,
-      "apiEntries": 383
+      "entries": 382,
+      "apiEntries": 382
     },
     {
       "slug": "events",
@@ -11273,8 +11273,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -11319,8 +11319,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -17566,7 +17566,7 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -17857,24 +17857,6 @@
         "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "errors:244449227555",
-      "chapter": "errors",
-      "kind": "section",
-      "name": "function",
-      "signature": "`error.function`",
-      "label": "error.function",
-      "apiSymbol": "error.function",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "errorfunction",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -18250,9 +18232,9 @@
       "anchor": "err_construct_call_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19492,9 +19474,9 @@
       "anchor": "err_fs_watch_queue_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20374,9 +20356,9 @@
       "anchor": "err_http_body_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20464,9 +20446,9 @@
       "anchor": "err_http_request_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21382,9 +21364,9 @@
       "anchor": "err_ipc_channel_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22174,9 +22156,9 @@
       "anchor": "err_socket_bad_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22948,9 +22930,9 @@
       "anchor": "err_tls_sni_from_server",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22966,9 +22948,9 @@
       "anchor": "err_trace_events_category_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23652,9 +23634,9 @@
       "anchor": "err_worker_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23868,9 +23850,9 @@
       "anchor": "cert_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36324,8 +36306,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
     },
@@ -37060,8 +37042,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
     },

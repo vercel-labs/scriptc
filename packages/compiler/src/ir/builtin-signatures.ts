@@ -822,6 +822,12 @@ function buildLibFnSignatures() {
     "perf.histoMannWhitneyU": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoMannWhitneyZ": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoMannWhitneyP": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoConfidence": { argTypes: [DYN], result: F64 },
+    "perf.histoPercentileArg": { argTypes: [DYN], result: F64 },
+    "perf.histoOther": { argTypes: [DYN], result: VOID },
+    "perf.histoMeanCI": { argTypes: [DYN, F64, F64], result: F64 },
+    "perf.histoWelch": { argTypes: [DYN, DYN, F64, F64], result: F64 },
+    "perf.histoPercentileCI": { argTypes: [DYN, F64, F64, F64], result: F64 },
     /** process.memoryUsage(): memoryUsageTake samples the resident set and
      * the runtime heap once (MAY THROW Node's uv_resident_set_memory error)
      * and memoryUsageField(k) reads that sample (0 rss, 1 heapTotal, 2
@@ -1727,6 +1733,10 @@ function buildLibFnSignatures() {
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Writable.fromWeb with options (scr_stream_from_web_writable.c): the web
+     * stream, the option flags, the highWaterMark (-1 default), and the
+     * signal (undefined when absent); a Writable. */
+    "webstream.writableFromWebOpts": { argTypes: [DYN, F64, F64, DYN], result: VOID },
     /** Writable.toWeb (scr_stream_writable_to_web.c): the writable and the
      * option flags; a web WritableStream. */
     "webstream.writableToWeb": { argTypes: [null, F64], result: DYN },
@@ -5256,6 +5266,13 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** Node's Module object as a checked-dynamic value; one per record. */
+    "module.dynObject": { argTypes: [F64], result: DYN },
+    "module.dynChildren": { argTypes: [F64], result: DYN },
+    "module.dynParent": { argTypes: [F64], result: DYN },
+    "module.dynObjectOrAbsent": { argTypes: [F64], result: DYN },
+    "module.dynOf": { argTypes: [DYN], result: DYN },
+    "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
     /** The same stream object for a procStream VALUE (the cursor methods'
      * receiver): its scalar representation IS the descriptor. */
     "process.stdioOf": { argTypes: [PROCSTREAM_T], result: DYN },
@@ -5423,6 +5440,15 @@ function buildLibFnSignatures() {
      * properties = all). dirDyn is console.dir's inspect of a dyn value
      * (custom inspection off: a Buffer anywhere inside throws the fence). */
     "console.noop": { argTypes: [], result: VOID },
+    /** A global console output member's diagnostics-channel publish: the
+     * call's evaluated argument array (spreads expanded), published on
+     * console.<member> (0 log, 1 info, 2 debug, 3 warn, 4 error) before the
+     * line is written. Never throws: a subscriber's throw becomes the
+     * channel's deferred uncaught report (scr_console.c). */
+    "console.publishArgs": { argTypes: [F64, DYN], result: VOID },
+    /** Whether console.<member> has a diagnostics-channel subscriber: the
+     * guard around building the published argument array (scr_console.c). */
+    "console.channelActive": { argTypes: [F64], result: BOOL },
     "console.label": { argTypes: [DYN], result: STRING },
     "console.count": { argTypes: [STRING], result: VOID },
     "console.countReset": { argTypes: [DYN], result: STRING },
@@ -6455,7 +6481,7 @@ function buildLibFnSignatures() {
      * the value's inspection) — the frontend routes null/undefined to a
      * no-op and everything else here (Node throws for falsy values too).
      * All arguments are borrowed. */
-    "assert.ok": { argTypes: [BOOL, STRING, BOOL], result: VOID },
+    "assert.ok": { argTypes: [BOOL, STRING, BOOL, BOOL], result: VOID },
     /** fail(actual, expected, message|null, operator, has_message): the
      * deprecated form's AssertionError, built by the runtime. */
     "assert.failDeprecated": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: VOID },
@@ -6590,6 +6616,10 @@ function buildLibFnSignatures() {
      * util.formatWithOptions(options, pack): the runtime formatter for format
      * strings known at run time and spread arguments. */
     "insp.format": { argTypes: [DYN], result: STRING },
+    /** The console channels' formatter: insp.format over a private copy of
+     * the published arguments, so a subscriber's reentrant mutation of the
+     * array cannot free the vector the formatter reads. */
+    "insp.formatSnapshot": { argTypes: [DYN], result: STRING },
     /** insp.format over arguments that are all strings, numbers, booleans,
      * null or undefined, without the checked-dynamic walk. */
     "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },
@@ -7139,6 +7169,11 @@ function buildLibFnSignatures() {
     "ah.providers": { argTypes: [], result: DYN },
     "ah.executionId": { argTypes: [], result: F64 },
     "ah.triggerId": { argTypes: [], result: F64 },
+    /** executionAsyncResource(): the AsyncResource whose runInAsyncScope or
+     * bound call is executing, and a shared plain object elsewhere (timer,
+     * immediate, tick and promise executions have no resource object of
+     * their own in the runtime). */
+    "ah.executionResource": { argTypes: [], result: DYN },
     /** AsyncLocalStorage.withScope(store): enters the store now and answers
      * the native RunScope handle whose dispose()/[Symbol.dispose] installs
      * the value getStore() answered before it again. */

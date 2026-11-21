@@ -118,6 +118,7 @@ import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { everyExprChild } from "../../ir/traverse.js";
+import { importMetaValue } from "./import-meta.js";
 import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
@@ -1098,6 +1099,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // carry.
   if (isNewTarget(expr)) return lowerNewTarget(lowerer, expr);
   if (ts.isMetaProperty(expr)) {
+    if (expr.keywordToken === ts.SyntaxKind.ImportKeyword && expr.name.text === "meta")
+      return importMetaValue(lowerer, expr);
     const name =
       expr.keywordToken === ts.SyntaxKind.NewKeyword ? "new.target" : `import.${expr.name.text}`;
     lowerer.unsupported(

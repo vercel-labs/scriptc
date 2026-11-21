@@ -645,6 +645,10 @@ export interface LlvmTargetOptions {
    * column constants): the sources stay in the compiler, only the numbers
    * reach the executable. */
   positionSources?: ReadonlyMap<string, string>;
+  /** The file a location names, read when `positionSources` holds no text for
+   * it: a build from an IR artifact, which records the file names and offsets
+   * but not the sources (source-text-loader.ts). */
+  positionSourceLoader?: (file: string) => string | undefined;
   /** The output is linked with the report of failed checked conversions
    * (scr_conversion_trace.c, runtime feature conversionTrace), so each
    * conversion's failure path calls it with the conversion's position. Set
@@ -2493,7 +2497,7 @@ export class LlEmitter {
    * per-statement text). */
   readonly stackPositions: boolean;
   private readonly positionOf: ((loc: SrcLoc) => SourcePosition | null) | null;
-  private readonly positionSourcesValue: ReadonlyMap<string, string> | undefined;
+  private readonly sourceTextOf: ((file: string) => string | undefined) | undefined;
   /** Whether the function being emitted has a source frame to position. */
   frameActive = false;
   /** The executable prints its frame chain when it aborts. */
@@ -2567,11 +2571,14 @@ export class LlEmitter {
     // calls such as util.getCallSites answer real positions there too.
     this.stackPositions = this.stackTraces && options.positionSources !== undefined;
     const positionSources = options.positionSources;
-    this.positionSourcesValue = positionSources;
+    this.sourceTextOf =
+      positionSources === undefined
+        ? options.positionSourceLoader
+        : (file) => positionSources.get(file) ?? options.positionSourceLoader?.(file);
     this.positionOf =
       this.stackPositions && positionSources !== undefined
         ? (() => {
-            const locations = new SourceLocations(positionSources);
+            const locations = new SourceLocations(positionSources, options.positionSourceLoader);
             return (loc: SrcLoc) => locations.position(loc);
           })()
         : null;
@@ -3903,7 +3910,7 @@ export class LlEmitter {
    * falling back to the call's own start where the sources do not spell
    * one. */
   private callCalleeLoc(loc: SrcLoc): SrcLoc {
-    const text = this.positionSourcesValue?.get(loc.file);
+    const text = this.sourceTextOf?.(loc.file);
     if (text === undefined) return loc;
 
     const i = Math.min(loc.end, text.length) - 1;

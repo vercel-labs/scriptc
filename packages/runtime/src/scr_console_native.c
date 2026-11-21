@@ -19,7 +19,6 @@ __attribute__((weak)) bool scr_tty_console_auto_colors(bool is_tty) {
 /* The colorMode answers, defined with the instance writers below. */
 static int scr_console_target_colors_mode(int color_mode, bool is_tty);
 static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
-
 /* The console object as a value. Its function-valued members are one
  * function object each per thread, so `console.log === console.log` holds
  * and a detached method needs no receiver (Node binds them the same way).
@@ -1516,6 +1515,12 @@ static void scr_table_print(ScrConsoleInst *inst, ScrStr *const *head,
 }
 
 static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConsoleInst *inst) {
+  /* The cells inspect over the instance's options and colorMode; the
+   * global console has neither and answers 'auto' over stdout. */
+  ScrDyn *inspect_options = inst != NULL ? inst->inspect_options : NULL;
+  int colors_mode = inst != NULL
+                        ? scr_console_inst_colors_mode(inst, 0)
+                        : scr_console_target_colors_mode(2, scr_process_is_tty(1));
   ScrDyn *data = scr_table_view(data_in);
   /* `tabularData === null || typeof tabularData !== 'object'`: log it. */
   if (data->kind != SCR_DYN_OBJ && data->kind != SCR_DYN_ARR && data->kind != SCR_DYN_BYTES) {
@@ -1567,14 +1572,15 @@ static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConso
     }
     if (!props && primitive) {
       has_primitives = true;
-      values[i] = scr_insp_table_cell(item);
+      values[i] = scr_insp_table_cell(item, inspect_options, colors_mode);
     } else if (props) {
       for (size_t k = 0; k < props->v.arr.len && !scr_exc_pending(); k++) {
         ScrStr *key = props->v.arr.items[k]->v.str;
         ScrTableColumn *col = scr_table_column(&t, key);
         ScrDyn *value = primitive ? NULL : scr_table_own_value(item, key);
         if (col->cells[i]) scr_str_release(col->cells[i]);
-        col->cells[i] = value ? scr_insp_table_cell(value) : scr_str_new("", 0);
+        col->cells[i] = value ? scr_insp_table_cell(value, inspect_options, colors_mode)
+                              : scr_str_new("", 0);
         if (value) scr_dyn_release(value);
       }
     } else {
@@ -1586,7 +1592,7 @@ static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConso
           ScrDyn *value = scr_table_own_value(item, keys[k]);
           if (value) {
             if (col->cells[i]) scr_str_release(col->cells[i]);
-            col->cells[i] = scr_insp_table_cell(value);
+            col->cells[i] = scr_insp_table_cell(value, inspect_options, colors_mode);
             scr_dyn_release(value);
           }
         }

@@ -6696,7 +6696,7 @@ ScrPkiKey *scr_pki_key_from_jwk(const ScrDyn *jwk, bool private_key) {
 ScrPkiKey *scr_pki_key_from_point(const char *curve_name, const uint8_t *point, size_t len) {
   const SpCurve *curve = NULL;
   for (size_t i = 0; i < sizeof sp_curves / sizeof sp_curves[0]; i++)
-    if (strcmp(sp_curves[i].jwk, curve_name) == 0) curve = &sp_curves[i];
+    if (sp_curves[i].jwk && strcmp(sp_curves[i].jwk, curve_name) == 0) curve = &sp_curves[i];
   if (!curve) return NULL;
   SpKey *k = sp_key_alloc(false);
   bool ok = false;
@@ -6729,7 +6729,7 @@ ScrPkiKey *scr_pki_generate_rsa(unsigned bits, uint64_t exponent) {
 ScrPkiKey *scr_pki_generate_ec(const char *curve_name) {
   const SpCurve *curve = NULL;
   for (size_t i = 0; i < sizeof sp_curves / sizeof sp_curves[0]; i++)
-    if (strcmp(sp_curves[i].jwk, curve_name) == 0) curve = &sp_curves[i];
+    if (sp_curves[i].jwk && strcmp(sp_curves[i].jwk, curve_name) == 0) curve = &sp_curves[i];
   SpKey *k = sp_key_alloc(true);
   if (!curve || mbedtls_pk_setup(&k->pk, mbedtls_pk_info_from_type(MBEDTLS_PK_ECKEY)) != 0 ||
       mbedtls_ecp_gen_key(curve->id, mbedtls_pk_ec(k->pk), sp_random, NULL) != 0) {

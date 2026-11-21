@@ -1,7 +1,7 @@
 // node:crypto elliptic-curve keys on prime192v1 and secp224r1: import,
 // curve reports, signing, raw and DER exports, JWK imports by the OpenSSL
 // name and the NIST alias, and the unsupported-curve JWK export error.
-import { createECDH, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
+import { createECDH, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify } from "node:crypto";
 
 const log = (...a: unknown[]) => console.log(a.map(String).join(" | "));
 const attempt = (label: string, run: () => unknown): void => {
@@ -31,6 +31,14 @@ const check = (name: string, pem: string, crv: string, alias: string, coord: num
   }
   attempt(name + " jwk export", () => pub.export({ format: "jwk" }));
 };
+
+for (const curve of ["prime192v1", "secp224r1"]) {
+  attempt("generate " + curve, () => {
+    const pair = generateKeyPairSync("ec", { namedCurve: curve });
+    const details = pair.privateKey.asymmetricKeyDetails as { namedCurve?: string };
+    log("generate " + curve, pair.privateKey.asymmetricKeyType, details.namedCurve);
+  });
+}
 
 const p192 = `-----BEGIN PRIVATE KEY-----
 MG8CAQAwEwYHKoZIzj0CAQYIKoZIzj0DAQEEVTBTAgEBBBiWe0Fb3erCalVl9GsN

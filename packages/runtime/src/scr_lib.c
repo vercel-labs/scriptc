@@ -600,11 +600,24 @@ ScrDyn *scr_process_config(void) {
   scr_dyn_obj_set(variables, "node_shared", 11, scr_dyn_new_bool(false));
   scr_dyn_obj_set(variables, "node_shared_libuv", 17, scr_dyn_new_bool(false));
   scr_dyn_obj_set(variables, "node_use_openssl", 16, scr_dyn_new_bool(true));
+  /* The one variable a binary answers from what it links: v8_enable_i18n_support is 1
+   * when the ICU unit is part of the build (the weak reference is non-NULL there). */
+  extern double scr_intl_i18n_support(void) __attribute__((weak));
+  double i18n = scr_intl_i18n_support && scr_intl_i18n_support() != 0.0 ? 1.0 : 0.0;
+  scr_dyn_obj_set(variables, "v8_enable_i18n_support", 22, scr_dyn_new_num(i18n));
   ScrDyn *target = scr_dyn_new_obj();
-  scr_dyn_obj_set(target, "include_dirs", 12, scr_dyn_new_arr());
-  scr_dyn_obj_set(target, "libraries", 9, scr_dyn_new_arr());
-  scr_dyn_obj_set(target, "defines", 7, scr_dyn_new_arr());
-  scr_dyn_obj_set(target, "cflags", 6, scr_dyn_new_arr());
+  ScrDyn *include_dirs = scr_dyn_new_arr();
+  ScrDyn *libraries = scr_dyn_new_arr();
+  ScrDyn *defines = scr_dyn_new_arr();
+  ScrDyn *cflags = scr_dyn_new_arr();
+  scr_dyn_freeze_data(include_dirs);
+  scr_dyn_freeze_data(libraries);
+  scr_dyn_freeze_data(defines);
+  scr_dyn_freeze_data(cflags);
+  scr_dyn_obj_set(target, "include_dirs", 12, include_dirs);
+  scr_dyn_obj_set(target, "libraries", 9, libraries);
+  scr_dyn_obj_set(target, "defines", 7, defines);
+  scr_dyn_obj_set(target, "cflags", 6, cflags);
   ScrStr *release = scr_str_new("Release", 7);
   scr_dyn_obj_set(target, "default_configuration", 21, scr_dyn_new_str(release));
   ScrDyn *configurations = scr_dyn_new_obj();

@@ -18,6 +18,9 @@
  * merge that left one conflicted regenerates them, for the conflicted entries:
  *
  *   tests/harness/corpus-costs.json                       node scripts/ci-corpus-costs.mjs
+ *   scripts/ci-test-costs.json and tests/harness/*-costs.json
+ *                                                         node scripts/ci-test-costs.mjs
+ *                                                         node scripts/ci-effect-costs.mjs
  *   packages/compiler/test/ts7/baselines/order-parity/**   SCRIPTC_UPDATE_BASELINES=1 vitest
  *
  * During a merge, rebase or cherry-pick, resolve the conflicts in source
@@ -42,6 +45,15 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const args = new Set(process.argv.slice(2));
 const TS7_BASELINE_DIR = "packages/compiler/test/ts7/baselines/order-parity/";
 const CORPUS_COSTS = "tests/harness/corpus-costs.json";
+const SHARD_COST_TABLES = [
+  "scripts/ci-test-costs.json",
+  "tests/harness/effect-costs.json",
+  "tests/harness/effect4-costs.json",
+  "tests/harness/npm-static-costs.json",
+  "tests/harness/self-hosting-llvm-emitter-costs.json",
+  "tests/harness/three-library-costs.json",
+  "tests/harness/ts7-host-reuse-parity-costs.json",
+];
 const COMPAT_GENERATED = [
   "packages/compiler/surface-manifest.json",
   "internal/compatibility/generated/node-v24-internal.json",
@@ -115,20 +127,33 @@ const conflictedBaselines = [...unmerged].filter(
   (path) => path.startsWith(TS7_BASELINE_DIR) && path.endsWith(".json"),
 );
 const corpusCostsConflicted = unmerged.has(CORPUS_COSTS);
+const isShardCostTable = (path) =>
+  path === "scripts/ci-test-costs.json" ||
+  (path !== CORPUS_COSTS && /^tests\/harness\/[^/]+-costs\.json$/.test(path));
+const conflictedShardCosts = [...unmerged].filter(isShardCostTable);
+const conflictedCorpusCostFiles = [...unmerged].filter(
+  (path) => path.startsWith("tests/harness/corpus-costs/") && path.endsWith(".json"),
+);
+const unknownShardCosts = conflictedShardCosts.filter((path) => !SHARD_COST_TABLES.includes(path));
+if (unknownShardCosts.length > 0)
+  throw new Error(
+    `no generator for conflicted shard cost table(s): ${unknownShardCosts.join(", ")}; add ${unknownShardCosts.length === 1 ? "it" : "them"} to SHARD_COST_TABLES in scripts/regen-generated.mjs instead of resolving by hand`,
+  );
+const conflictedAll = [...new Set([...conflicted, ...conflictedShardCosts])];
 
-if (conflicted.length > 0) {
-  const stage = chooseSide(conflicted);
+if (conflictedAll.length > 0) {
+  const stage = chooseSide(conflictedAll);
   // Written to the working tree only: the index keeps the conflict until
   // regeneration succeeds.
-  for (const path of conflicted) {
+  for (const path of conflictedAll) {
     const text = side(stage, path) ?? side(5 - stage, path);
     if (text !== null) writeFileSync(join(root, path), text);
   }
-  console.log(`took ${stage === 2 ? "ours" : "theirs"} for ${conflicted.join(", ")}`);
+  console.log(`took ${stage === 2 ? "ours" : "theirs"} for ${conflictedAll.join(", ")}`);
 }
 if (conflictedBaselines.length > 0) console.log(`re-recording ${conflictedBaselines.join(", ")}`);
 else if (args.has("--ts7-baselines")) console.log("re-recording every order-parity baseline");
-if (corpusCostsConflicted || args.has("--corpus-costs"))
+if (corpusCostsConflicted || conflictedCorpusCostFiles.length > 0 || args.has("--corpus-costs"))
   console.log(`folding the per-program corpus costs into ${CORPUS_COSTS}`);
 
 // These read the member surface of the pinned Node release and refuse to run
@@ -152,15 +177,27 @@ process.stdout.write(run("pnpm", ["--silent", "generate:ir-codec"]));
 process.stdout.write(run(process.execPath, ["internal/compatibility/src/generate.mjs", "--local"]));
 process.stdout.write(run(process.execPath, ["scripts/runtime-refusals.mjs", "--write"]));
 
-if (corpusCostsConflicted || args.has("--corpus-costs")) {
+if (corpusCostsConflicted || conflictedCorpusCostFiles.length > 0 || args.has("--corpus-costs")) {
   // ci-corpus-costs folds every per-program override, sorts the table, and
   // deletes the folded files: the union of both merge sides, not one side.
-  if (corpusCostsConflicted) {
-    const text = side(2, CORPUS_COSTS) ?? side(3, CORPUS_COSTS);
-    if (text !== null) writeFileSync(join(root, CORPUS_COSTS), text);
+  for (const path of [CORPUS_COSTS, ...conflictedCorpusCostFiles]) {
+    const text = side(2, path) ?? side(3, path);
+    if (text !== null) writeFileSync(join(root, path), text);
   }
   process.stdout.write(run(process.execPath, ["scripts/ci-corpus-costs.mjs"]));
   git("add", "-A", "--", CORPUS_COSTS, "tests/harness/corpus-costs");
+}
+
+if (conflictedShardCosts.length > 0) {
+  // Without log arguments these refresh the tables from the committed rows:
+  // they sort, prune entries for files or fixtures that no longer exist, and
+  // leave every measurement they were not given. Both writers run because a
+  // conflict in one table of a family means the same tests moved on both
+  // sides; the tables the writers own are staged together.
+  process.stdout.write(run(process.execPath, ["scripts/ci-test-costs.mjs"]));
+  process.stdout.write(run(process.execPath, ["scripts/ci-effect-costs.mjs"]));
+  git("add", "--", ...SHARD_COST_TABLES);
+  console.log(`regenerated ${conflictedShardCosts.join(", ")}`);
 }
 
 if (conflictedBaselines.length > 0 || args.has("--ts7-baselines")) {
@@ -179,13 +216,15 @@ if (conflictedBaselines.length > 0 || args.has("--ts7-baselines")) {
   if (conflictedBaselines.length > 0) git("add", "--", ...conflictedBaselines);
 }
 
-const staged = conflicted.filter(
+const staged = conflictedAll.filter(
   (path) => builtinTablesRegenerated || !NODE_SOURCES.includes(path),
 );
 if (staged.length > 0) {
   git("add", "--", ...staged);
   console.log(`staged ${staged.join(", ")}`);
 }
-const skipped = conflicted.filter((path) => !staged.includes(path));
+const skipped = conflictedAll.filter((path) => !staged.includes(path));
 if (skipped.length > 0)
-  console.warn(`left unmerged (not regenerated on this Node): ${skipped.join(", ")}`);
+  throw new Error(
+    `left unmerged (not regenerated on this Node ${process.version}): ${skipped.join(", ")}; run \`pnpm regen\` on Node ${nodePin} to regenerate them`,
+  );

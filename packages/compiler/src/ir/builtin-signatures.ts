@@ -2724,6 +2724,10 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    /** node:test's assert.register(name, fn) and the call of a registered
+     * assertion on a TestContext (its arguments a dyn array). */
+    "test.assertRegister": { argTypes: [STRING, DYN], result: VOID },
+    "test.ctxCustomAssert": { argTypes: [TESTCTX_T, STRING, DYN], result: DYN },
     // t.tags: the flattened tag set (a frozen array of strings).
     "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
@@ -2745,6 +2749,9 @@ function buildLibFnSignatures() {
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+    // The first `t.assert` read fixes this context's assertion set (Node
+    // builds the test's assertion object from the registry at that moment).
+    "test.ctxAssertTouch": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
     // mock.fn's and mock.method's { times }: Node's non-negative-integer

@@ -70,6 +70,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // ERR_INVALID_ARG_VALUE for a missing method.
   "test.accessorDescriptor",
   "test.accessorRequire",
+  // assert.register validates its function; a registered assertion and the
+  // missing-name error throw from the call the runner makes.
+  "test.assertRegister",
+  "test.ctxCustomAssert",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",

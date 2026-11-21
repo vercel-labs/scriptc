@@ -753,6 +753,14 @@ static void scr_dgram_defer_err(ScrDgramSocket *s, const char *msg) {
   scr_dgram_wake();
 }
 
+/* A settled socket drops the program's resolver, as Node's handle does when
+ * it is destroyed: a resolver that captures the socket (or the transport
+ * owning it) must not keep the closed socket and its captured data alive. */
+static void scr_dgram_drop_lookup(ScrDgramSocket *s) {
+  scr_dyn_release(s->lookup);
+  s->lookup = NULL;
+}
+
 /* ── createSocket({ lookup }): a program's own resolver ────────────────
  * Node's internal dgram handle carries a `lookup(address, family, cb)` and
  * calls it from bind, connect and every unconnected send — its default
@@ -862,7 +870,7 @@ static bool scr_dgram_lk_bind_implicit(ScrDgramSocket *s, ScrStr *host) {
     char ip[64] = "";
     scr_dgram_sockaddr_ip(&sa, ip, sizeof ip);
     char msg[128];
-    snprintf(msg, sizeof msg, "bind %s %s:0", scr_dgram_errname(errno), ip);
+    snprintf(msg, sizeof msg, "bind %s %s", scr_dgram_errname(errno), ip);
     scr_dgram_defer_err(s, msg);
     return false;
   }
@@ -902,7 +910,12 @@ static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc
       } else {
         snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", job->address);
       }
-      if (job->op == SCR_DGRAM_LK_SEND_DYN && job->send_cb != NULL) {
+      if (job->stage == 1) {
+        /* the implicit bind's own resolution failed: Node answers on the
+         * socket's 'error' event and abandons the operation — the send or
+         * connect completion never runs */
+        scr_dgram_defer_err(s, msg);
+      } else if (job->op == SCR_DGRAM_LK_SEND_DYN && job->send_cb != NULL) {
         ScrDyn *eargs[1] = { scr_dgram_send_error(msg) };
         scr_dns_call_later(job->send_cb, eargs, 1, false);
         scr_closure_release(job->cb);
@@ -3401,18 +3414,33 @@ static void scr_dgram_sweep(void) {
        * inert: if nothing keeps it live (not bound, not closing), settle
        * it off the registry so the loop can drain — pre-failure
        * listeners drop, the net failed-listen stance. */
-      if (s->fd < 0 && !s->closing && !s->close_emitted) {
-        s->close_emitted = true;
-        scr_dgram_clear_abort(s);
-        scr_dgram_ls_drop(&s->msg_ls);
-        scr_dgram_ls_drop(&s->err_ls);
-        scr_dgram_ls_drop(&s->listening_ls);
-        scr_dgram_ls_drop(&s->close_ls);
-        scr_dgram_ls_drop(&s->conn_ls);
-        scr_dgram_unregister(s);
-        if (scr_exc_pending()) {
-          scr_dgram_release(s);
-          return;
+      if (!s->closing && !s->close_emitted) {
+        if (s->fd < 0) {
+          s->close_emitted = true;
+          scr_dgram_clear_abort(s);
+          scr_dgram_drop_lookup(s);
+          scr_dgram_ls_drop(&s->msg_ls);
+          scr_dgram_ls_drop(&s->err_ls);
+          scr_dgram_ls_drop(&s->listening_ls);
+          scr_dgram_ls_drop(&s->close_ls);
+          scr_dgram_ls_drop(&s->conn_ls);
+          scr_dgram_unregister(s);
+          if (scr_exc_pending()) {
+            scr_dgram_release(s);
+            return;
+          }
+        } else if (!s->bound && !s->read_armed) {
+          /* a failed implicit bind leaves an unbound descriptor behind:
+           * Node's never-started handle holds no loop reference, so drop
+           * the descriptor and the registry slot. The socket stays usable —
+           * a later operation binds afresh — and close() still works. */
+          scr_dgram_close_fd_raw(s->fd);
+          s->fd = -1;
+          scr_dgram_unregister(s);
+          if (scr_exc_pending()) {
+            scr_dgram_release(s);
+            return;
+          }
         }
       }
     }
@@ -3420,6 +3448,7 @@ static void scr_dgram_sweep(void) {
       s->close_emitted = true;
       scr_dgram_fire0(&s->close_ls);
       scr_dgram_clear_abort(s);
+      scr_dgram_drop_lookup(s);
       /* settle: listeners drop (the cycle story), off the registry */
       scr_dgram_ls_drop(&s->msg_ls);
       scr_dgram_ls_drop(&s->err_ls);

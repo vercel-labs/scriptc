@@ -4046,16 +4046,19 @@ export class Lowerer {
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** Per module some namespace import reads, the export members its
    * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
-   * takes the value the module finished evaluating with, and the slot its
-   * writes keep updating. Node's namespace object is a snapshot of
-   * `module.exports` taken when the CommonJS module finished evaluating, so
-   * a namespace read observes the snapshot slot, not the live export one.
-   * Registered before any init lowers (collectProgram), assigned at the end
-   * of the module's own init. */
+   * takes the values the module's exports held when the first ESM module
+   * imported it, and the live slot its writes keep updating. Node builds a
+   * CommonJS module's namespace object at that import, not when the module
+   * finished evaluating (a require-and-mutate can come between), so a
+   * namespace read observes the snapshot slot. Registered before any init
+   * lowers (collectProgram), filled by the first importing module's init. */
   readonly cjsNamespaceMemberSnapshots = new Map<
     ts.SourceFile,
     Map<string, { snapshot: IrGlobal; source: IrGlobal }>
   >();
+  /** Per namespace-imported module, the flag its snapshot copy sets so a
+   * later importer keeps the first snapshot instead of replacing it. */
+  readonly cjsNamespaceSnapshotTakenGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -6775,6 +6778,7 @@ export class Lowerer {
     // a cache of that detection.
     "cjsRuntimeExportSnapshotGlobals",
     "cjsNamespaceMemberSnapshots",
+    "cjsNamespaceSnapshotTakenGlobals",
     "cjsRuntimeRequireBindings",
     "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
@@ -9556,12 +9560,9 @@ export class Lowerer {
   }
 
   /** The stores that fill a module's namespace-member snapshot slots
-   * (`cjsNamespaceMemberSnapshots`) from its live export storage. Emitted
-   * where the module finishes evaluating — the end of its init body and
-   * every top-level return, which ends evaluation just the same — so a
-   * namespace read never observes an unassigned slot. */
-  cjsNamespaceSnapshotStores(sf: ts.SourceFile, loc: SrcLoc): IrStmt[] {
-    const slots = this.cjsNamespaceMemberSnapshots.get(sf);
+   * (`cjsNamespaceMemberSnapshots`) from its live export storage. */
+  cjsNamespaceSnapshotStores(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const slots = this.cjsNamespaceMemberSnapshots.get(dep);
     if (slots === undefined) return [];
     const stores: IrStmt[] = [];
     for (const { snapshot, source } of slots.values()) {
@@ -9573,6 +9574,33 @@ export class Lowerer {
       });
     }
     return stores;
+  }
+
+  /** The guarded copy an ESM link to CommonJS module `dep` emits right after
+   * `dep`'s initializer runs: the first link copies the namespace snapshot
+   * from `dep`'s current exports and sets the flag later links check. Node
+   * builds the namespace object at the first ESM import, so a dependency a
+   * require mutated before that import is what the namespace shows. */
+  cjsNamespaceSnapshotLinkStmts(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const stores = this.cjsNamespaceSnapshotStores(dep, loc);
+    const taken = this.cjsNamespaceSnapshotTakenGlobals.get(dep);
+    if (stores.length === 0 || taken === undefined) return [];
+    return [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: taken.id, type: taken.type, loc },
+          right: numLit(0, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [...stores, { kind: "assign", localId: taken.id, value: numLit(1, loc), loc }],
+        else_: null,
+        loc,
+      },
+    ];
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots

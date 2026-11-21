@@ -2608,13 +2608,14 @@ export function widenCjsExportsOfWidenedBindings(
 
 /** Register a snapshot slot for every export member that a namespace-imported
  * CommonJS module assigns from inside a function. Node builds a CommonJS
- * module's namespace object when the module finishes evaluating, and those
- * property values never change afterwards; the module's own `module.exports`
- * object keeps changing when an exported function assigns a member. Reads
- * through the namespace therefore observe the snapshot, while same-module
- * `exports.f` access and requirers keep the live member global. Registered
- * here, before any init lowers, so the assignment at the end of the module's
- * init body (lowerFileInit) has storage to write. */
+ * module's namespace object at the first ESM import of it, and those property
+ * values never change afterwards; the module's own `module.exports` object
+ * keeps changing when an exported function assigns a member. Reads through
+ * the namespace therefore observe the snapshot, while same-module `exports.f`
+ * access and requirers keep the live member global. Registered here, before
+ * any init lowers; the first importing module's init fills the slots
+ * (cjsNamespaceSnapshotImportStmts), and a flag keeps that first snapshot
+ * when several modules import the same dependency. */
 function registerCjsNamespaceSnapshotGlobals(lowerer: Lowerer, parts: FileParts[]): void {
   const deps = new Set<ts.SourceFile>();
   for (const fp of parts) {
@@ -2639,25 +2640,25 @@ function registerCjsNamespaceSnapshotGlobals(lowerer: Lowerer, parts: FileParts[
     const { names, assignedLater } = lowerer.cjsNamespaceOf(dep);
     if (assignedLater !== "all" && assignedLater.size === 0) continue;
     // A name the module re-exports belongs to the module that assigns it
-    // (`module.exports = require("./impl.cjs")`); its member global is that
-    // module's. The copy at the end of THIS module's init still sees the
-    // re-exported module's end-of-evaluation value, since dependencies
-    // initialize first.
-    const reexported = [
-      lowerer.cjsInFileExportMemberGlobals.get(dep),
-      ...cjsReexportedModules(lowerer.program, dep).map((mod) =>
-        lowerer.cjsInFileExportMemberGlobals.get(mod),
-      ),
-    ].filter((byName) => byName !== undefined);
-    if (reexported.length === 0) continue;
+    // (`module.exports = require("./impl.cjs")`); its storage is that
+    // module's, and a module that chooses its whole export at run time keeps
+    // it in its own selection slots rather than a member global.
+    const sources = cjsReexportedModules(lowerer.program, dep);
     const rawTag = lowerer.fileTag.get(dep) ?? "";
     const tag = rawTag === "" ? "e." : rawTag.replace(/^%/, "");
     const slots = new Map<string, { snapshot: IrGlobal; source: IrGlobal }>();
+    /** The storage a name has in `mod`: its run-time selection slot when it
+     * chooses its whole export at run time (copying the table's own member
+     * global can name the arm that did not run, which is uninitialized),
+     * else its own member global. */
+    const sourceIn = (mod: ts.SourceFile, name: string): IrGlobal | undefined =>
+      lowerer.cjsConditionalWholeExportGlobals.get(mod)?.get(name) ??
+      lowerer.cjsInFileExportMemberGlobals.get(mod)?.get(name);
     for (const name of names) {
       if (assignedLater !== "all" && !assignedLater.has(name)) continue;
       let source: IrGlobal | undefined;
-      for (const byName of reexported) {
-        source = byName.get(name);
+      for (const mod of sources) {
+        source = sourceIn(mod, name);
         if (source !== undefined) break;
       }
       if (source === undefined) continue;
@@ -2670,7 +2671,16 @@ function registerCjsNamespaceSnapshotGlobals(lowerer: Lowerer, parts: FileParts[
       slots.set(name, { snapshot, source });
       lowerer.globalsList.push(snapshot);
     }
-    if (slots.size > 0) lowerer.cjsNamespaceMemberSnapshots.set(dep, slots);
+    if (slots.size === 0) continue;
+    lowerer.cjsNamespaceMemberSnapshots.set(dep, slots);
+    const taken: IrGlobal = {
+      id: `%g.${tag}%nsTaken`,
+      name: "%nsTaken",
+      type: F64,
+      mutable: true,
+    };
+    lowerer.cjsNamespaceSnapshotTakenGlobals.set(dep, taken);
+    lowerer.globalsList.push(taken);
   }
 }
 
@@ -4830,13 +4840,16 @@ export function lowerFileInit(
           } else {
             header.push({ kind: "exprStmt", expr: call, loc });
             // An ES-module importer links a CommonJS dependency: Node
-            // copies its lexer-visible exports here.
+            // copies its lexer-visible exports here, and builds the
+            // module's namespace object at this first link.
             if (
               (ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)) &&
               !isCjsJsFile(sf, lowerer.program) &&
               isCjsJsFile(dep, lowerer.program)
-            )
+            ) {
               header.push(...cjsAccessorSnapshotStores(lowerer, dep, stmt));
+              header.push(...lowerer.cjsNamespaceSnapshotLinkStmts(dep, locOf(stmt)));
+            }
           }
         }
       }
@@ -5104,12 +5117,6 @@ export function lowerFileInit(
         loc: loc0,
       });
     }
-    // A member an exported function may reassign afterwards: the namespace
-    // some importer holds keeps the value the module finished evaluating
-    // with (Node's CommonJS namespace object), so the slot copies the live
-    // member here, once its statements have run. A top-level return ends
-    // evaluation just as early (lowerModuleLevelReturn stores there too).
-    body.push(...lowerer.cjsNamespaceSnapshotStores(sf, loc0));
     for (const { at, g } of unionEntryInits) {
       if (g.type.kind !== "dyn") continue;
       body[at] = {

@@ -2496,10 +2496,6 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
           },
         ]
       : []),
-    // A namespace import's snapshot slots copy the members whose values the
-    // module finished evaluating with; this return ends evaluation, so it
-    // fills them here, exactly as the end of the init body does.
-    ...lowerer.cjsNamespaceSnapshotStores(sf, loc),
   ];
   if (!stmt.expression)
     return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-namespace-mutated-before-import/main.ts"
+ ],
+ "diags": []
+}

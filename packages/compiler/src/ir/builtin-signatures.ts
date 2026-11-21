@@ -1741,9 +1741,13 @@ function buildLibFnSignatures() {
     /** Readable.toWeb (scr_stream_to_web.c): the readable and the option
      * flags (< 0: none); a web ReadableStream. */
     "webstream.toWebReadable": { argTypes: [null, F64], result: DYN },
+    /** Readable.toWeb with an options strategy (scr_stream_to_web.c): the
+     * readable, the option flags, and the strategy (undefined for none). */
+    "webstream.toWebReadableOpts": { argTypes: [null, F64, DYN], result: DYN },
     /** Readable.toWeb over a checked-dynamic value: a boxed native stream
      * unwraps, anything else throws the not-supported Error. */
     "webstream.toWebReadableDyn": { argTypes: [DYN, F64], result: DYN },
+    "webstream.toWebReadableDynOpts": { argTypes: [DYN, F64, DYN], result: DYN },
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },

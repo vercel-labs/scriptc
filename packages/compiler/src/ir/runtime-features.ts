@@ -379,6 +379,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -476,6 +478,8 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -2024,6 +2028,8 @@ const RUNTIME_FEATURE_RULES = {
       // sink members through scr_dyn_invoke.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
@@ -2403,6 +2409,8 @@ const RUNTIME_FEATURE_RULES = {
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",

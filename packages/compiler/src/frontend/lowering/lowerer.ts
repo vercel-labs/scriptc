@@ -25574,6 +25574,17 @@ export class Lowerer {
    * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
    * are only dispatch sentinels for call-site-specific lowering. */
+  /** Module members Node exposes as a class: an ordinary function with its
+   * own prototype object. The value is the runtime's one-per-(module, name)
+   * class value, so `constructor` identity and `instanceof` compare one
+   * object. Values are the class's `length`. */
+  private static readonly MODULE_CLASS_VALUES: ReadonlyMap<string, number> = new Map([
+    ["http.IncomingMessage", 1],
+    ["http.ServerResponse", 2],
+    ["http2.Http2ServerRequest", 4],
+    ["http2.Http2ServerResponse", 2],
+  ]);
+
   lowerBuiltinCallableValue(bi: { module: string; member: string }, loc: SrcLoc): IrExpr | null {
     const assertion = assertFunctionValue(bi, loc);
     if (assertion) return assertion;
@@ -25605,6 +25616,20 @@ export class Lowerer {
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
       return this.lowerModuleSyncBuiltinValue(loc);
+    const classArity = Lowerer.MODULE_CLASS_VALUES.get(`${bi.module}.${bi.member}`);
+    if (classArity !== undefined) {
+      return {
+        kind: "libCall",
+        fn: "dyn.moduleClassValue",
+        args: [
+          { kind: "strLit", value: bi.module, type: STRING, loc },
+          { kind: "strLit", value: bi.member, type: STRING, loc },
+          numLit(classArity, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
   }

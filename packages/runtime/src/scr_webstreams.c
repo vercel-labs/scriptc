@@ -2462,6 +2462,56 @@ ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx)
   return box;
 }
 
+/* The over-source with an explicit queuing strategy, validated exactly as
+ * `new ReadableStream(source, strategy)` validates one: the strategy's
+ * highWaterMark and size drive the controller's pulls and desiredSize. NULL
+ * (or undefined) keeps the zero high-water mark the over-source always had;
+ * the error the check raises leaves the context's reference with the
+ * caller. */
+ScrDyn *scr_webstream_readable_over_opts(const ScrWebStreamSource *source, void *ctx,
+                                         ScrDyn *strategy) {
+  ws_install();
+  double high_water_mark = 0;
+  ScrDyn *size = NULL;
+  ScrDyn *value = NULL;
+  if (strategy != NULL && strategy->kind != SCR_DYN_UNDEF && strategy->kind != SCR_DYN_NULL) {
+    if (!ws_validate_object(strategy, "strategy", true)) return NULL;
+    ScrDyn *size_arg = ws_get(strategy, "size");
+    /* NULL: reading the member threw (a getter), and the exception is
+     * pending. */
+    if (!size_arg) return NULL;
+    if (size_arg->kind != SCR_DYN_UNDEF) {
+      if (!ws_validate_function(size_arg, "strategy.size")) {
+        scr_dyn_release(size_arg);
+        return NULL;
+      }
+      size = size_arg; /* +1, moved to the controller below */
+    } else {
+      scr_dyn_release(size_arg);
+    }
+    value = ws_get(strategy, "highWaterMark");
+    if (!value) {
+      if (size) scr_dyn_release(size);
+      return NULL;
+    }
+    if (!ws_extract_high_water_mark(value, 1, &high_water_mark)) {
+      if (size) scr_dyn_release(size);
+      scr_dyn_release(value);
+      return NULL;
+    }
+  }
+  if (value) scr_dyn_release(value);
+  WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
+  o->source = source;
+  o->ctx = ctx;
+  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, high_water_mark, false);
+  if (size) s->controller->size_fn = size;
+  o->stream = ws_readable_retain(s);
+  ScrDyn *box = ws_stream_box(s);
+  ws_readable_release(s);
+  return box;
+}
+
 /* ── async iteration (ReadableStream.prototype.values) ────────────── */
 
 typedef struct WsIter {

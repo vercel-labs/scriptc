@@ -1,0 +1,90 @@
+compat-absent-tls-engine-members.ts:15:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"OCSPRequest"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
+
+  14 | // the engine supports neither OCSP stapling nor a session cache (tickets only)
+  15 | server.on("OCSPRequest", () => {});
+     |           ^~~~~~~~~~~~~
+  16 | server.on("OCSPResponse", () => {});
+
+compat-absent-tls-engine-members.ts:16:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"OCSPResponse"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
+
+  15 | server.on("OCSPRequest", () => {});
+  16 | server.on("OCSPResponse", () => {});
+     |           ^~~~~~~~~~~~~~
+  17 | server.on("newSession", () => {});
+
+compat-absent-tls-engine-members.ts:17:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"newSession"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
+
+  16 | server.on("OCSPResponse", () => {});
+  17 | server.on("newSession", () => {});
+     |           ^~~~~~~~~~~~
+  18 | server.on("resumeSession", () => {});
+
+compat-absent-tls-engine-members.ts:18:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"resumeSession"' is not assignable to parameter of type '"checkContinue" | "checkExpectation" | "request"'.
+
+  17 | server.on("newSession", () => {});
+  18 | server.on("resumeSession", () => {});
+     |           ^~~~~~~~~~~~~~~
+  19 | 
+
+compat-absent-tls-engine-members.ts:23:8 - error SC0001: Property 'enableTrace' does not exist on type 'TLSSocket'.
+
+  22 | // signature-algorithm list are not exposed by the engine
+  23 | client.enableTrace();
+     |        ^~~~~~~~~~~
+  24 | client.getFinished();
+
+compat-absent-tls-engine-members.ts:24:8 - error SC0001: Property 'getFinished' does not exist on type 'TLSSocket'.
+
+  23 | client.enableTrace();
+  24 | client.getFinished();
+     |        ^~~~~~~~~~~
+  25 | client.getPeerFinished();
+
+compat-absent-tls-engine-members.ts:25:8 - error SC0001: Property 'getPeerFinished' does not exist on type 'TLSSocket'.
+
+  24 | client.getFinished();
+  25 | client.getPeerFinished();
+     |        ^~~~~~~~~~~~~~~
+  26 | client.getSharedSigalgs();
+
+compat-absent-tls-engine-members.ts:26:8 - error SC0001: Property 'getSharedSigalgs' does not exist on type 'TLSSocket'.
+
+  25 | client.getPeerFinished();
+  26 | client.getSharedSigalgs();
+     |        ^~~~~~~~~~~~~~~~
+  27 | 
+
+compat-absent-tls-engine-members.ts:30:17 - error SC0001: Property 'getCiphers' does not exist on type 'typeof import("node:tls")'.
+
+  29 | // options that consume them (ciphers, certCompression) are refused too
+  30 | console.log(tls.getCiphers());
+     |                 ^~~~~~~~~~
+  31 | console.log(tls.DEFAULT_CIPHERS);
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'getCiphers' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-tls-engine-members.ts:31:17 - error SC0001: Property 'DEFAULT_CIPHERS' does not exist on type 'typeof import("node:tls")'.
+
+  30 | console.log(tls.getCiphers());
+  31 | console.log(tls.DEFAULT_CIPHERS);
+     |                 ^~~~~~~~~~~~~~~
+  32 | console.log(tls.getCertificateCompressionAlgorithms());
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'DEFAULT_CIPHERS' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint
+
+compat-absent-tls-engine-members.ts:32:17 - error SC0001: Property 'getCertificateCompressionAlgorithms' does not exist on type 'typeof import("node:tls")'.
+
+  31 | console.log(tls.DEFAULT_CIPHERS);
+  32 | console.log(tls.getCertificateCompressionAlgorithms());
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  33 | 
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'getCertificateCompressionAlgorithms' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint

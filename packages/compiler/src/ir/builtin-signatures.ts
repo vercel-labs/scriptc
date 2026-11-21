@@ -496,6 +496,9 @@ function buildLibFnSignatures() {
      * interned function per name, the same one dynamic values answer for
      * `.constructor`. The name is a compiler-chosen literal. */
     "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+    /* A module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`):
+     * the module and class names plus the class's arity. */
+    "dyn.moduleClassValue": { argTypes: [STRING, STRING, F64], result: DYN },
     /** A builtin global function (setTimeout, setInterval, setImmediate,
      * the clear functions, queueMicrotask, process.nextTick) read as a
      * JavaScript value: one interned function per name whose calls run the
@@ -1738,9 +1741,13 @@ function buildLibFnSignatures() {
     /** Readable.toWeb (scr_stream_to_web.c): the readable and the option
      * flags (< 0: none); a web ReadableStream. */
     "webstream.toWebReadable": { argTypes: [null, F64], result: DYN },
+    /** Readable.toWeb with an options strategy (scr_stream_to_web.c): the
+     * readable, the option flags, and the strategy (undefined for none). */
+    "webstream.toWebReadableOpts": { argTypes: [null, F64, DYN], result: DYN },
     /** Readable.toWeb over a checked-dynamic value: a boxed native stream
      * unwraps, anything else throws the not-supported Error. */
     "webstream.toWebReadableDyn": { argTypes: [DYN, F64], result: DYN },
+    "webstream.toWebReadableDynOpts": { argTypes: [DYN, F64, DYN], result: DYN },
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },

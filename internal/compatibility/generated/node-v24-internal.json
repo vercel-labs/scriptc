@@ -34838,6 +34838,7 @@
           "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
           "tests/corpus/compat-errors-worker.mjs",
@@ -41683,7 +41684,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE",
         "tests": [
-          "tests/corpus/compat-errors-tls-keying-state.mjs"
+          "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41815,8 +41817,11 @@
       "anchor": "err_tls_sni_from_server",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER",
+        "tests": [
+          "tests/corpus/compat-errors-tls-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58745,6 +58750,7 @@
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
           "tests/corpus/5563-http-keep-alive-timeout.ts",
+          "tests/corpus/compat-http-class-identity.mjs",
           "tests/corpus/compat-http-client-connect.mjs",
           "tests/corpus/compat-http-client-connect.ts",
           "tests/corpus/compat-http-interim-responses.mjs",
@@ -61052,11 +61058,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.ServerResponse",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -61974,11 +61979,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.IncomingMessage",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -103645,7 +103649,8 @@
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
-          "tests/corpus/tls-unix-connect.ts"
+          "tests/corpus/tls-unix-connect.ts",
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -104356,8 +104361,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'newSession'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104379,8 +104387,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'OCSPRequest'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104402,8 +104413,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'resumeSession'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104631,8 +104645,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.enableTrace",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104795,8 +104812,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getFinished",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104886,8 +104906,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getPeerFinished",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105025,8 +105048,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getSharedSigalgs",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105684,8 +105710,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'OCSPResponse'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106162,8 +106191,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tls.getCiphers",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106185,8 +106217,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tls.getCertificateCompressionAlgorithms",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },

@@ -125,6 +125,7 @@ import {
 } from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { unloweredGlobalValue, unloweredModuleMemberValue } from "../node-value-reads.js";
+import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { lowerEnumObjectValue } from "../enum-objects.js";
@@ -928,6 +929,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           );
         }
       } else {
+        // util.getCallSites has a direct-call lowering but no function value:
+        // reading it hands back a callable (Node's typeof, identity and
+        // length), and only calling that value refuses, so a module that
+        // stores, compares or re-exports it keeps loading.
+        if (bi.module === "util" && bi.member === "getCallSites")
+          return builtinFunctionFenceValue(lowerer, bi, expr, loc);
         if (builtinModuleFnOf(lowerer, bi.module, bi.member)) {
           lowerer.unsupported(
             "SC1090",

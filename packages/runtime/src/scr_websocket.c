@@ -1084,6 +1084,15 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
   if (protocols == NULL || protocols->kind == SCR_DYN_UNDEF || protocols->kind == SCR_DYN_NULL)
     return true;
   ScrStr *joined = NULL;
+  if (protocols->kind == SCR_DYN_TYPED_REF) {
+    /* A compiled value crossing as a capsule (a `string[]` or `string`
+     * variable): the protocols are the value's own view. */
+    ScrDyn *view = scr_dyn_typed_ref_materialize(protocols);
+    if (view == NULL) return false;
+    bool ok = scr_ws_protocols(view, offered);
+    scr_dyn_release(view);
+    return ok;
+  }
   if (protocols->kind == SCR_DYN_STR) {
     if (!scr_ws_is_token(protocols->v.str->data, protocols->v.str->len)) return false;
     joined = scr_str_retain(protocols->v.str);
@@ -1097,18 +1106,43 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
     if (items == NULL || tokens == NULL) scr_trap("scriptc: out of memory\n");
     for (size_t i = 0; i < count; i++) items[i] = scr_dyn_retain(protocols->v.arr.items[i]);
     bool ok = true;
+    /* Duplicates are found through a hash set: a list of distinct tokens
+     * costs one probe per token, not a comparison per pair. */
+    size_t slots = 16;
+    while (slots <= count && slots <= (SIZE_MAX >> 3)) slots <<= 1;
+    size_t *seen = calloc(slots ? slots : 1, sizeof *seen);
+    if (seen == NULL) scr_trap("scriptc: out of memory\n");
     for (size_t i = 0; i < count && ok; i++) {
       tokens[i] = scr_dyn_string_coerce_js(items[i]);
       if (tokens[i] == NULL) {
         ok = false;
         break;
       }
-      if (!scr_ws_is_token(tokens[i]->data, tokens[i]->len)) ok = false;
-      for (size_t j = 0; j < i && ok; j++)
-        if (tokens[j]->len == tokens[i]->len &&
-            memcmp(tokens[j]->data, tokens[i]->data, tokens[i]->len) == 0)
+      if (!scr_ws_is_token(tokens[i]->data, tokens[i]->len)) {
+        ok = false;
+        break;
+      }
+      uint64_t hash = 1469598103934665603ull;
+      for (size_t at = 0; at < tokens[i]->len; at++) {
+        hash ^= (unsigned char)tokens[i]->data[at];
+        hash *= 1099511628211ull;
+      }
+      size_t slot = (size_t)hash & (slots - 1);
+      for (;;) {
+        if (seen[slot] == 0) {
+          seen[slot] = i + 1;
+          break;
+        }
+        ScrStr *other = tokens[seen[slot] - 1];
+        if (other->len == tokens[i]->len &&
+            memcmp(other->data, tokens[i]->data, tokens[i]->len) == 0) {
           ok = false;
+          break;
+        }
+        slot = (slot + 1) & (slots - 1);
+      }
     }
+    free(seen);
     if (ok) {
       size_t total = 0;
       for (size_t i = 0; i < count; i++) total += tokens[i]->len + (i ? 2 : 0);

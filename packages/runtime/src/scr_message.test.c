@@ -408,6 +408,47 @@ static void check_handle_transfer(void) {
   scr_collect_cycles();
 }
 
+/* A published capsule's native operation table is process-lifetime: the
+ * receiver's fresh capsule binds the sender's table, so a member operation
+ * answers as it does on the sender. */
+static size_t published_node_rc = SIZE_MAX;
+static void *pub_retain(void *p) { return p; }
+static void pub_release(void *p) { (void)p; }
+static bool record_has(void *rec, size_t index) {
+  (void)rec;
+  (void)index;
+  return true;
+}
+static ScrDyn *record_get(void *rec, size_t index) {
+  (void)rec;
+  (void)index;
+  return scr_dyn_new_num(42);
+}
+static const ScrDynTypedRecordOps record_ops = {
+    .count = 0, .names = NULL, .has = record_has, .get = record_get, .fixed = true};
+
+static void check_typed_ops(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  ScrDyn *capsule = scr_dyn_new_typed_ref(&published_node_rc, pub_retain, pub_release, "Node", 4,
+                                          NULL, NULL);
+  assert(capsule);
+  scr_dyn_typed_ref_bind_record(capsule, &record_ops);
+  scr_dyn_obj_set(root, "shared", 6, capsule);
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending());
+  scr_dyn_release(root);
+  ScrDyn *decoded = scr_message_decode(message);
+  assert(decoded && !scr_exc_pending());
+  ScrDyn *received = scr_dyn_obj_get(decoded, "shared", 6);
+  assert(received && received->kind == SCR_DYN_TYPED_REF);
+  assert(received->v.typed_ref.record);
+  assert(received->v.typed_ref.array == (const ScrDynTypedArrayOps *)(const void *)&record_ops);
+  scr_dyn_release(decoded);
+  scr_collect_cycles();
+  scr_message_free(message);
+  puts("a received capsule keeps the native operation table");
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -427,6 +468,7 @@ int main(void) {
   check_large();
   check_readers();
   check_handle_transfer();
+  check_typed_ops();
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
   puts("native handles cross threads through their transfer hooks");

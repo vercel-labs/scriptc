@@ -2060,9 +2060,15 @@ export class LlDyn {
   }
 
   /** Tests the pending flag after a call and, when it is set, runs `cleanup`
-   * and returns `dummy`. `made`, of type `madeType`, is the value that call
+   * and returns `dummy`. `made`, of type `madeType`, is the value the call
    * returned, when nothing else owns it yet: the bail releases it where the
-   * flag can be set although the call succeeded (pendingBailReleaseLines). */
+   * flag can be set although the call succeeded (pendingBailReleaseLines).
+   * `held` marks a wrapper's own value instead, one it acquired by
+   * converting an argument or by calling through and still owns here: the
+   * bail always releases it, because a context that is stopping sets the
+   * flag without failing that acquisition (a worker terminating, a shared
+   * island shutting down, a host stopping a library context), and the
+   * release of the null a real throw leaves behind is harmless. */
   private pendingBail(
     B: BlockBuilder,
     hint: string,
@@ -2070,6 +2076,7 @@ export class LlDyn {
     dummy: string,
     madeType?: IrType,
     made?: string,
+    held = false,
   ): void {
     const p = B.tmp();
     for (const line of this.host.pendingTestLines(p)) B.line(line.trimStart());
@@ -2077,9 +2084,14 @@ export class LlDyn {
     const lk = B.newLabel(`${hint}.k`);
     B.condBr(p, lu, lk);
     B.startBlock(lu);
-    if (madeType !== undefined && made !== undefined)
-      for (const line of this.host.pendingBailReleaseLines(madeType, made))
-        B.line(line.trimStart());
+    if (madeType !== undefined && made !== undefined) {
+      if (held) {
+        if (madeType.kind !== "void" && isRefCounted(madeType))
+          B.line(`call void ${releaseSym(this.host, madeType)}(ptr ${made})`);
+      } else
+        for (const line of this.host.pendingBailReleaseLines(madeType, made))
+          B.line(line.trimStart());
+    }
     cleanup();
     B.terminate(`ret ${dummy}`);
     B.startBlock(lk);
@@ -7117,6 +7129,7 @@ export class LlDyn {
           "ptr null",
           p,
           a,
+          true,
         );
         argNames.push(a);
         return;
@@ -7178,6 +7191,7 @@ export class LlDyn {
           "ptr null",
           p,
           a,
+          true,
         );
         // Declaration-typed boundary programs: an argument package code
         // passes keeps its identity (scr_dyn_decl_adopt).
@@ -7234,12 +7248,12 @@ export class LlDyn {
     } else if (t.ret.kind === "dyn") {
       const r = B.tmp();
       B.line(`${r} = call ptr ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r, true);
       B.terminate(`ret ptr ${r}`);
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r, true);
       // A record or array result crosses the way `dynFrom liveRef` boxes
       // one — a LIVE capsule of the closure's own object — so the caller's
       // `() => shared` through an untyped slot still answers `shared`
@@ -7314,7 +7328,7 @@ export class LlDyn {
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
-      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r, true);
       if (ret.kind === "jsval") {
         B.terminate(`ret ptr ${r}`);
       } else if (ret.kind === "f64") {
@@ -8040,7 +8054,7 @@ export class LlDyn {
       );
     B.line(`call void @scr_dyn_release(ptr ${fnv})`);
     for (const v of argVals) B.line(`call void @scr_dyn_release(ptr ${v})`);
-    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r);
+    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r, true);
     if (t.ret.kind === "void") {
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret void`);

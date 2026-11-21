@@ -5385,11 +5385,18 @@ static void scr_net_sock_refuse_established(ScrNetSocket *s, double port, const 
     }
     snprintf(local, sizeof local, " - Local (%s:%d)", ip, lport);
   }
-  char msg[256];
-  int n = snprintf(msg, sizeof msg, "connect EISCONN %s:%d%s", address, (int)port, local);
+  /* The address is whatever the program passed (hosts are unbounded), so the
+   * message is built at its exact length: a fixed buffer would truncate the
+   * text and the required length snprintf returns is not the copied length. */
+  int need = snprintf(NULL, 0, "connect EISCONN %s:%d%s", address, (int)port, local);
+  if (need < 0) need = 0;
+  char *msg = malloc((size_t)need + 1);
+  if (!msg) scr_net_oom();
+  snprintf(msg, (size_t)need + 1, "connect EISCONN %s:%d%s", address, (int)port, local);
   /* No code override: the message carries Node's syscall, code, address and
    * port, and the error object's properties come from it. */
-  if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)n);
+  if (!s->pending_err) s->pending_err = scr_str_new(msg, (size_t)need);
+  free(msg);
   scr_net_sock_register(s);
   /* the error is deferred work: an idle socket has no poller event to wake
    * the dispatch, so it goes on the work queue */

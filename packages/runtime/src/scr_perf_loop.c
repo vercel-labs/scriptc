@@ -789,7 +789,16 @@ static void scr_histo_record_corrected(ScrHisto *h, int64_t value, int64_t expec
   }
 }
 
-static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
+static void scr_histo_clear_view(ScrHisto *h) {
+  /* The staging buffers are transient: free them rather than retaining the
+   * last export's capacity in a long-lived histogram. */
+  free(h->view_key);
+  free(h->view_value);
+  h->view_key = NULL;
+  h->view_value = NULL;
+  h->view_len = 0;
+  h->view_cap = 0;
+}
 
 /* Grow the two view buffers together: both new arrays are allocated and
  * filled before the old ones are released, so a failed allocation leaves
@@ -797,6 +806,15 @@ static void scr_histo_clear_view(ScrHisto *h) { h->view_len = 0; }
  * allocation-failure error instead of leaving the histogram with a freed
  * buffer. */
 static bool scr_histo_push_view(ScrHisto *h, double key, int64_t value) {
+  /* Every staging walk emits nondecreasing keys, and a Map keeps the last
+   * value for a repeated key at the first position, so an equal key only
+   * replaces the last staged pair. HDR quantization makes many reporting
+   * levels share one bucket key; collapsing them keeps the staging bounded
+   * by the histogram's distinct keys instead of the level count. */
+  if (h->view_len > 0 && h->view_key[h->view_len - 1] == key) {
+    h->view_value[h->view_len - 1] = value;
+    return true;
+  }
   if (h->view_len == h->view_cap) {
     size_t cap = h->view_cap ? h->view_cap * 2 : 16;
     if (cap > SIZE_MAX / sizeof(double) || cap > SIZE_MAX / sizeof(int64_t)) {

@@ -177,3 +177,13 @@ console.log(
   interval.ewmaErrorRate,
   interval.burnRate(0.999),
 );
+
+// One large observation with unit steps walks every reporting level, but HDR
+// quantization shares bucket keys: the Map has one entry per bucket, and the
+// staging stays bounded by distinct keys rather than the level count.
+const large = createHistogram();
+large.record(200000);
+const unit = [...large.linearBuckets(1)];
+console.log("unit", unit.length, JSON.stringify(unit.slice(0, 3)), JSON.stringify(unit.slice(-2)));
+const unitLog = [...large.logBuckets(1, 2)];
+console.log("unit log", unitLog.length, JSON.stringify(unitLog.slice(0, 3)), JSON.stringify(unitLog.slice(-2)));

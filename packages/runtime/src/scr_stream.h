@@ -242,6 +242,11 @@ ScrStream *scr_stream_writable_from_web_opts(struct ScrDyn *web, double flags, d
  * over the pair's web readable and writable, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending. */
 ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
+/* The same with the options: flags bit 1 allowHalfOpen, bit 2 objectMode,
+ * bit 4 decodeStrings: false; hwm < 0 takes the default; encoding is NULL
+ * when absent; signal may be NULL. */
+ScrStream *scr_stream_duplex_from_web_opts(struct ScrDyn *pair, double flags, double hwm,
+                                           struct ScrDyn *signal, struct ScrStr *encoding);
 
 /* stream.setDefaultHighWaterMark(objectMode, value) and
  * stream.getDefaultHighWaterMark(objectMode): what a stream created without

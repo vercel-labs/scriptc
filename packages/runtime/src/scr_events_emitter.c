@@ -82,6 +82,15 @@ static ScrStr *scr_ee_sym_text(ScrSym *sym) {
   return scr_sym_event_ops->to_string(sym);
 }
 
+/* A name key's symbol, retained (+1); NULL for a string key. A bucket is
+ * the symbol's owner for as long as it keys one, so a removal that drops
+ * the last listener of the name can release the symbol whose removal the
+ * meta event is about to announce; callers hold it across the
+ * announcement. */
+static ScrSym *scr_ee_sym_hold(ScrStr *name) {
+  return scr_str_is_symbol_key(name) ? scr_ee_sym_retain(scr_str_symbol_key_sym(name)) : NULL;
+}
+
 /* The symbol itself as a checked-dynamic value (+1): the meta events pass
  * the affected event's name VALUE, and a symbol key names itself, not
  * "Symbol(desc)". */
@@ -1236,12 +1245,16 @@ static void scr_ee_remove_at_quiet(ScrEmitter *em, ScrEeBucket *b, size_t i) {
 
 static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
   ScrStr *name = scr_str_retain(b->name);
+  /* The removal may drop the name's last bucket and with it the symbol
+   * the announcement passes on. */
+  ScrSym *sym = scr_ee_sym_hold(name);
   /* The removed listener as a function value, for checked-dynamic
    * 'removeListener' listeners (Node's second argument). */
   ScrDyn *fn = scr_ee_dyn ? scr_ee_dyn->removed(em, b->ls[i]) : NULL;
   scr_ee_remove_at_quiet(em, b, i);
   scr_ee_emit_meta(em, "removeListener", name, fn);
   if (fn) scr_dyn_release(fn);
+  scr_ee_sym_release(sym);
   scr_str_release(name);
 }
 
@@ -1332,6 +1345,9 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
    * survives. The bucket can drop (and even be recreated) under the
    * pass, so every step re-finds it and matches entries by identity. */
   ScrStr *name = scr_str_retain(b->name);
+  /* The removals below drop the name's bucket, and the symbol it owns
+   * with it, while the pass still matches entries by that name. */
+  ScrSym *sym = scr_ee_sym_hold(name);
   size_t n = b->n;
   ScrEeEntry **snap = malloc(n * sizeof *snap);
   if (!snap) scr_ee_oom();
@@ -1353,6 +1369,7 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
     scr_ee_entry_unref(e);
   }
   free(snap);
+  scr_ee_sym_release(sym);
   scr_str_release(name);
 }
 

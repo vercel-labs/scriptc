@@ -1590,7 +1590,9 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
   /* The entry the list answers: a plain object with the argument list as
    * its detail, kept so a typed read of the list answers this object. */
   ScrDyn *object = scr_dyn_new_obj();
-  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str(scr_str_retain((ScrStr *)name)));
+  /* scr_dyn_new_str retains the borrowed name; retaining it here as well
+   * leaked one heap string per recorded call. */
+  scr_dyn_obj_set(object, "name", 4, scr_dyn_new_str((ScrStr *)name));
   ScrStr *type = scr_str_new("function", 8);
   scr_dyn_obj_set(object, "entryType", 9, scr_dyn_new_str(type));
   scr_str_release(type);
@@ -1639,7 +1641,14 @@ static void scr_perf_observe_function(const ScrStr *name, double start, double d
 static bool scr_perf_timerified_record(ScrDyn *histogram, const ScrStr *name, double start,
                                        double duration, ScrDyn *detail) {
   if (histogram != NULL) {
-    scr_histo_record_checked(histogram, ceil(duration * 1e6));
+    /* Node measures the call with its nanosecond clock, so a completed call
+     * always records at least 1ns. This runtime times calls with the
+     * monotonic clock in milliseconds, whose tick can be coarser than the
+     * call: a trivial call then measures 0, and the histogram's own range
+     * check (integer >= 1, as Node's) would turn it into an uncaught
+     * ERR_OUT_OF_RANGE. Record the minimum instead. */
+    double recorded = ceil(duration * 1e6);
+    scr_histo_record_checked(histogram, recorded < 1 ? 1 : recorded);
     if (scr_exc_pending()) return false;
   }
   scr_perf_observe_function(name, start, duration, detail);
@@ -1951,19 +1960,19 @@ ScrDyn *scr_perf_timerify(ScrDyn *args) {
   scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(wrapper));
   /* The prototype's constructor property is hidden (writable and
    * configurable, not enumerable), as on any function's prototype. */
-  for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
-    scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
+  size_t ctor_index = scr_dyn_obj_index_of(prototype, "constructor", 11);
+  if (ctor_index != SIZE_MAX)
+    scr_dyn_obj_set_attrs_at(prototype, ctor_index, true, false, true);
   scr_dyn_fn_seed_prototype(wrapper, prototype);
   /* The seed's builtin recipe makes a constructor's prototype read-only;
    * an ordinary function's is writable in Node, and only its sameness and
    * attributes' enumerable/configurable bits are fixed. */
   ScrDyn *table = scr_dyn_function_properties(wrapper); /* +1 */
   if (table != NULL) {
-    ScrDynEntry *entries = scr_dyn_obj_dict_entries(table);
-    for (size_t i = 0; i < (size_t)table->v.obj.len; i++) {
-      if (entries[i].key != NULL && entries[i].key_len == 9 &&
-          memcmp(entries[i].key, "prototype", 9) == 0)
-        entries[i].writable = true;
+    size_t proto_index = scr_dyn_obj_index_of(table, "prototype", 9);
+    if (proto_index != SIZE_MAX) {
+      ScrDynProp prop = scr_dyn_obj_prop_at(table, proto_index);
+      scr_dyn_obj_set_attrs_at(table, proto_index, true, prop.enumerable, prop.configurable);
     }
     scr_dyn_release(table);
   }

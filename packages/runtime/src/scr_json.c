@@ -22296,6 +22296,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
         (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
       return scr_typed_ref_array_has_own(v, key);
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+    /* A capsule with no view answers materialization with undefined and a
+     * pending refusal (an untyped generator: SC1071). Asking the undefined
+     * view would raise a property-read TypeError over that refusal. */
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return false;
+    }
     if (!view) return false;
     bool result = scr_dyn_has_own(view, key);
     scr_dyn_release(view);

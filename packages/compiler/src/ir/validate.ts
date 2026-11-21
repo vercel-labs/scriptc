@@ -4688,6 +4688,23 @@ function validateFunction(
         err(`libCall ${e.fn} must take (pair, flags) and return a Duplex`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.writableFromWebOpts") {
+      // Writable.fromWeb with options: (writableStream, flags, hwm, signal) →
+      // a Writable.
+      if (
+        e.args.length !== 4 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "f64" ||
+        e.args[3]?.type.kind !== "dyn" ||
+        e.type.kind !== "object"
+      )
+        err(
+          `libCall ${e.fn} must take (writableStream, flags, hwm, signal) and return a Writable`,
+          e.loc,
+        );
+      return true;
+    }
     if (e.fn === "webstream.writableFromWeb") {
       // Writable.fromWeb: (writableStream, flags) → a Writable.
       if (

@@ -35,6 +35,7 @@ import {
 } from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
 import { programTouchesInspectTables } from "./inspect-tables.js";
+import { dynArgumentPack } from "./call-arguments.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
  * representation the stdlib Console type maps to) over two output
@@ -66,6 +67,39 @@ function isConsoleCtor(lowerer: Lowerer, callee: ts.Expression): boolean {
   );
 }
 
+/** Whether any module constructs a Console with inspectOptions or
+ * colorMode. Such a Console's methods format through the runtime's
+ * option-aware entries wherever their call sites sit, so the answer is a
+ * program-wide fact, not a lowering-order one (a call lowered before the
+ * constructor would otherwise keep the static path). Scanned once; the
+ * answer is cached on the lowerer. */
+function programConstructsOptionConsole(lowerer: Lowerer): boolean {
+  if (lowerer.consoleOptionsFact !== undefined) return lowerer.consoleOptionsFact;
+  const modules = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  let found = false;
+  for (const sf of modules) {
+    if (found) break;
+    ts.walkPreorder(sf, (node) => {
+      if (!ts.isNewExpression(node) || !isConsoleCtor(lowerer, node.expression)) return undefined;
+      const first = node.arguments?.nodes[0];
+      if (first === undefined || !ts.isObjectLiteralExpression(first)) return undefined;
+      for (const prop of first.properties.nodes) {
+        // `inspectOptions: value` and the shorthand `inspectOptions`.
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) continue;
+        const key = prop.name;
+        const text = ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
+        if (text === "inspectOptions" || text === "colorMode") {
+          found = true;
+          return "stop";
+        }
+      }
+      return undefined;
+    });
+  }
+  lowerer.consoleOptionsFact = found;
+  return found;
+}
+
 function isUndefinedArg(node: ts.Expression | undefined): boolean {
   return (
     node === undefined ||
@@ -76,7 +110,14 @@ function isUndefinedArg(node: ts.Expression | undefined): boolean {
 
 type Target = { fd: number } | { local: string; type: IrType };
 
-type OptionRole = "stdout" | "stderr" | "ignoreErrors" | "groupIndentation" | "ignored";
+type OptionRole =
+  | "stdout"
+  | "stderr"
+  | "ignoreErrors"
+  | "groupIndentation"
+  | "inspectOptions"
+  | "colorMode"
+  | "ignored";
 
 /** `new Console(stdout[, stderr][, ignoreErrors])` and `new
  * Console({ stdout, stderr, ignoreErrors })`. Arguments and option
@@ -115,36 +156,21 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         );
       }
       if (name === "colorMode") {
-        // Node accepts 'auto', true and false; 'auto' colors only a TTY's
-        // inspect output, which this runtime never styles (the same
-        // boundary as util.inspect's colors: true), so both non-color
-        // spellings lower identically.
-        if (
-          !(
-            value.kind === ts.SyntaxKind.FalseKeyword ||
-            (ts.isStringLiteral(value) && value.text === "auto")
-          )
-        ) {
-          lowerer.noLowering(
-            "Console colorMode other than 'auto' or false",
-            value,
-            "ANSI styling has no lowering — only 'auto' and false",
-          );
-        }
+        // Node validates 'auto', true and false in its constructor, after
+        // the stream checks; the runtime reads the value there.
+        entries.push({ role: "colorMode", node: value });
         continue;
       }
       if (name === "groupIndentation") {
         entries.push({ role: "groupIndentation", node: value });
         continue;
       }
+      if (name === "inspectOptions") {
+        // The methods format with this record's knobs per call.
+        entries.push({ role: "inspectOptions", node: value });
+        continue;
+      }
       if (!OPTION_KEYS.has(name)) {
-        if (name === "inspectOptions") {
-          lowerer.noLowering(
-            "Console inspectOptions",
-            value,
-            "the lowered members render with scriptc's inspect defaults; util.inspect's option knobs have no Console plumbing yet",
-          );
-        }
         // Node destructures the known keys and ignores the rest. The
         // unknown initializer still evaluates, in source order.
         entries.push({ role: "ignored", node: value });
@@ -199,6 +225,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
   let errBad = false;
   let ignore: IrExpr | null = null;
   let groupIndent: IrExpr | null = null;
+  let inspectOptions: IrExpr | null = null;
+  let colorMode: IrExpr | null = null;
   for (const entry of entries) {
     const node = entry.node;
     if (isUndefinedArg(node)) {
@@ -212,6 +240,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         errBad = false;
       } else if (entry.role === "ignoreErrors") ignore = null;
       else if (entry.role === "groupIndentation") groupIndent = null;
+      else if (entry.role === "inspectOptions") inspectOptions = null;
+      else if (entry.role === "colorMode") colorMode = null;
       continue;
     }
     if (entry.role === "stdout") {
@@ -230,6 +260,20 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         loc,
       );
       groupIndent = value;
+    } else if (entry.role === "inspectOptions" || entry.role === "colorMode") {
+      // Node keeps the inspectOptions record (later mutation shows up in
+      // the next write) and validates colorMode in its constructor; the
+      // runtime reads both per call, so the methods format through the
+      // option-aware entries (lowerConsoleInstanceCall).
+      const value = hoist(
+        lowerer,
+        stmts,
+        entry.role === "inspectOptions" ? "%consoleInspectOptions" : "%consoleColorMode",
+        lowerer.lowerExprExpecting(node!, DYN),
+        loc,
+      );
+      if (entry.role === "inspectOptions") inspectOptions = value;
+      else colorMode = value;
     } else if (entry.role === "ignored") {
       // Node destructures the known keys and ignores the rest; the
       // unknown initializer still evaluates, in source order.
@@ -275,6 +319,8 @@ export function lowerConsoleNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
         fdOf(stderrTarget),
         ignore ?? boolLit(true, loc),
         groupIndent ?? dynUndefinedExpr(loc),
+        inspectOptions ?? dynUndefinedExpr(loc),
+        colorMode ?? dynUndefinedExpr(loc),
       ],
       type: DYN,
       loc,
@@ -394,6 +440,59 @@ function lowerConsoleInstanceMemberCall(
     type,
     loc: at,
   });
+
+  /* A program that constructs any Console with inspectOptions or colorMode
+   * formats the instance methods' arguments in the runtime, where the
+   * instance's options and colorMode apply per call (scr_inspect.c's
+   * console entries). The members Node's Console methods do not format
+   * (count/time labels use String, table cells have their own renderer)
+   * keep the static lowering. */
+  if (programConstructsOptionConsole(lowerer)) {
+    const args = call.arguments.nodes;
+    const packed = (at: SrcLoc): { stmts: IrStmt[]; pack: () => IrExpr } =>
+      dynArgumentPack(lowerer, args, at, { blame: call });
+    const withPack = (fn: IrLibFn, extra: (pack: IrExpr) => IrExpr[], at: SrcLoc): IrExpr => {
+      const p = packed(at);
+      return seq([...stmts, ...p.stmts], call_(fn, [handle(), ...extra(p.pack())], VOID, at), at);
+    };
+    switch (member) {
+      case "log":
+      case "info":
+      case "debug":
+      case "warn":
+      case "error": {
+        const index = ["log", "info", "debug", "warn", "error"].indexOf(member);
+        return withPack("console.instWriteArgs", (pack) => [numLit(index, loc), pack], loc);
+      }
+      case "dirxml":
+        return withPack("console.instDirxmlArgs", (pack) => [pack], loc);
+      case "trace":
+        return withPack("console.instTraceArgs", (pack) => [pack], loc);
+      case "assert":
+        return withPack("console.instAssertArgs", (pack) => [pack], loc);
+      case "group":
+      case "groupCollapsed":
+        return withPack(
+          "console.instGroupArgs",
+          (pack) => [pack, boolLit(member === "groupCollapsed", loc)],
+          loc,
+        );
+      case "dir": {
+        const p = packed(loc);
+        const dirStmts = [...stmts, ...p.stmts];
+        const rendered = hoist(
+          lowerer,
+          dirStmts,
+          "%consoleDir",
+          call_("console.instDirArgs", [handle(), p.pack()], STRING, loc),
+          loc,
+        );
+        return seq(dirStmts, write(true, [rendered], loc), loc);
+      }
+      default:
+        break;
+    }
+  }
 
   const outToStderr = member === "dirxml" ? false : OUTPUT_MEMBERS.get(member);
   if (outToStderr !== undefined) {
@@ -691,6 +790,9 @@ export function lowerConsoleOutput(
   intrinsic: "console.log" | "console.error" | "console.trace" = stdout
     ? "console.log"
     : "console.error",
+  /** The global console output member this call is: its diagnostics channel
+   * receives the call's own argument array before the line is written. */
+  channel?: "log" | "info" | "debug" | "warn" | "error",
 ): IrExpr {
   /** One write of the formatted line: the console.log/error intrinsic, or
    * console.trace for trace's stderr line. */
@@ -701,6 +803,126 @@ export function lowerConsoleOutput(
     type: VOID,
     loc,
   });
+  // A global output member publishes the call's own arguments on
+  // console.<member> before it formats and writes the line, whatever the
+  // argument types are. A call that formats in the runtime (a spread, a
+  // runtime format string, or a program that reads the inspect tables)
+  // publishes the pack it already builds for util.format. Every other call
+  // stages its arguments once, renders the line from those staged values as
+  // before, and builds the published array only when the channel has a
+  // subscriber, so the no-subscriber path keeps its typed rendering and its
+  // cost.
+  if (channel !== undefined) {
+    const members = { log: 0, info: 1, debug: 2, warn: 3, error: 4 } as const;
+    const member = members[channel];
+    const nodes = expr.arguments.nodes;
+    const first = nodes[0];
+    const runtimeFormatted =
+      nodes.some(ts.isSpreadElement) ||
+      programTouchesInspectTables(lowerer) ||
+      (nodes.length > 1 &&
+        (first === undefined || !isStringLiteralLike(first) || hasFormatSpecifier(first.text)));
+    if (runtimeFormatted)
+      return emitLine([lowerRuntimeFormat(lowerer, nodes, loc, undefined, "", member)]);
+    const stmts: IrStmt[] = [];
+    const staged = nodes.map((node) => {
+      const value = lowerer.lowerExpr(node);
+      const k = value.type.kind;
+      if (k === "undefinedT" || k === "nullT") {
+        if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+        const unit = k === "nullT" ? ("null" as const) : ("undefined" as const);
+        return { node, ref: (): IrExpr => ({ kind: "unitLit", unit, type: value.type, loc }) };
+      }
+      const held = lowerer.declareHiddenLocal("%consoleArg", value.type);
+      stmts.push({ kind: "varDecl", localId: held.id, init: value, loc });
+      return { node, ref: (): IrExpr => varRef(held.id, value.type, loc) };
+    });
+    const args = staged.map((a) => lowerConsoleArg(lowerer, a.node, a.ref(), surface, loc));
+    // The published array is built only when the member's channel has a
+    // subscriber. An argument the compiler cannot represent as a
+    // checked-dynamic value leaves the call unpublished; the line still
+    // renders from its typed value.
+    let subscribed: IrStmt[] | null = null;
+    const boxed: IrExpr[] = [];
+    for (const a of staged) {
+      const ref = a.ref();
+      if (ref.type.kind === "dyn") boxed.push(ref);
+      else if (lowerer.dynConvertible(ref.type)) boxed.push(lowerer.coerceInto(a.node, ref, DYN));
+      else {
+        boxed.length = 0;
+        break;
+      }
+    }
+    if (boxed.length === staged.length) {
+      const arr = lowerer.declareHiddenLocal("%consoleArgs", DYN);
+      const build: IrStmt[] = [
+        {
+          kind: "varDecl",
+          localId: arr.id,
+          init: { kind: "dynArrLit", elems: [], type: DYN, loc },
+          loc,
+        },
+      ];
+      for (const value of boxed)
+        build.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.packPush",
+            args: [varRef(arr.id, DYN, loc), value],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+      build.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "console.publishArgs",
+          args: [numLit(member, loc), varRef(arr.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+      // The line is formatted from the array that was just published, as
+      // Node formats the same arguments after its subscribers saw them: a
+      // subscriber's mutation of the array reaches the printed line. The
+      // unsubscribed call keeps its typed rendering.
+      const formatted: IrExpr = {
+        kind: "libCall",
+        fn: "insp.formatSnapshot",
+        args: [varRef(arr.id, DYN, loc)],
+        type: STRING,
+        loc,
+      };
+      build.push({ kind: "exprStmt", expr: emitLine([formatted]), loc });
+      subscribed = build;
+    }
+    const typedWrite: IrStmt = { kind: "exprStmt", expr: emitLine(args), loc };
+    if (subscribed === null) return seq([...stmts, typedWrite], noop(loc), loc);
+    return seq(
+      [
+        ...stmts,
+        {
+          kind: "if",
+          cond: {
+            kind: "libCall",
+            fn: "console.channelActive",
+            args: [numLit(member, loc)],
+            type: BOOL,
+            loc,
+          },
+          then: subscribed,
+          else_: [typedWrite],
+          loc,
+        },
+      ],
+      noop(loc),
+      loc,
+    );
+  }
   // A program that reads util.inspect's value can change the tables every
   // console line's inspection reads (defaultOptions, colors, styles), so
   // the whole line renders through the runtime formatter, which reads them

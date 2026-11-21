@@ -6,7 +6,7 @@ import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
 test.each(["llvm"] as const)(
-  "untyped Buffer inputs keep explicit object-boundary refusals (%s)",
+  "untyped Buffer inputs run a valueOf answer and refuse an opaque reference (%s)",
   async (backend) => {
     const dir = mkdtempSync(join(tmpdir(), "scriptc-buffer-from-"));
     try {
@@ -37,8 +37,10 @@ console.log("after");
       const child = spawnSync(result.binaryPath, [], { encoding: "utf8" });
       expect(child.status).toBe(0);
       expect(child.stderr).toBe("");
+      // Node runs the object's valueOf and converts its answer; the class
+      // instance that is not array-like still names its refusal.
       expect(child.stdout).toBe(
-        "Error Buffer.from with a custom valueOf is not supported yet\n" +
+        "must not execute hook\n" +
           "Error Buffer.from with an opaque reference is not supported yet\nafter\n",
       );
     } finally {

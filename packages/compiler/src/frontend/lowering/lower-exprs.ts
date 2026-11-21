@@ -118,6 +118,7 @@ import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { everyExprChild } from "../../ir/traverse.js";
+import { importMetaValue } from "./import-meta.js";
 import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
@@ -208,6 +209,12 @@ export { lowerInstanceOf } from "./expressions/relational.js";
 export type FieldTarget =
   | { container: "dynamic"; obj: IrExpr; field: string; fieldType: IrType }
   | { container: "errorStackLimit"; obj: IrExpr; field: "stackTraceLimit"; fieldType: IrType }
+  | {
+      container: "errorPrepareStackTrace";
+      obj: IrExpr;
+      field: "prepareStackTrace";
+      fieldType: IrType;
+    }
   | { container: "errorCause"; obj: IrExpr; field: "cause"; fieldType: IrType }
   | { container: "class"; obj: IrExpr; className: string; field: string; fieldType: IrType }
   | { container: "record"; obj: IrExpr; shapeId: string; field: string; fieldType: IrType }
@@ -1092,6 +1099,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // carry.
   if (isNewTarget(expr)) return lowerNewTarget(lowerer, expr);
   if (ts.isMetaProperty(expr)) {
+    if (expr.keywordToken === ts.SyntaxKind.ImportKeyword && expr.name.text === "meta")
+      return importMetaValue(lowerer, expr);
     const name =
       expr.keywordToken === ts.SyntaxKind.NewKeyword ? "new.target" : `import.${expr.name.text}`;
     lowerer.unsupported(
@@ -3808,29 +3817,38 @@ export function cjsAccessorSnapshotStores(
 }
 
 /** The interned lifted-getter call both accessor-read paths share. */
-export function cjsAccessorCall(
+export function cjsAccessorValue(
   lowerer: Lowerer,
-  getter: ts.GetAccessorDeclaration,
+  accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
   loc: SrcLoc,
 ): IrExpr | null {
-  let fn = lowerer.cjsAccessorFns.get(getter);
+  let fn = lowerer.cjsAccessorFns.get(accessor);
   if (!fn) {
-    const closure = lowerer.lowerLambda(getter);
+    const closure = lowerer.lowerLambda(accessor);
     if (closure.kind !== "closure" || closure.type.kind !== "func") return null; // defensive
     fn = { fnName: closure.fnName, type: closure.type };
-    lowerer.cjsAccessorFns.set(getter, fn);
+    lowerer.cjsAccessorFns.set(accessor, fn);
   }
   // Lifted functions carry the closure ABI (an env parameter, even
   // capture-free) — the read calls through a zero-capture closure value,
   // the interned identity every lifted lambda uses.
-  const closureVal: IrExpr = {
+  return {
     kind: "closure",
     fnName: fn.fnName,
     captures: [],
     type: fn.type,
     loc,
   };
-  return { kind: "callValue", callee: closureVal, args: [], type: fn.type.ret, loc };
+}
+
+export function cjsAccessorCall(
+  lowerer: Lowerer,
+  getter: ts.GetAccessorDeclaration,
+  loc: SrcLoc,
+): IrExpr | null {
+  const closureVal = cjsAccessorValue(lowerer, getter, loc);
+  if (closureVal === null || closureVal.type.kind !== "func") return null;
+  return { kind: "callValue", callee: closureVal, args: [], type: closureVal.type.ret, loc };
 }
 
 /** A read of a catch binding — the caught analog of maybeNarrow. Where

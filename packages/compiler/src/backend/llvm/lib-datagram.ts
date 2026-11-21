@@ -1,5 +1,6 @@
 import { InternalCompilerError } from "../../errors.js";
 import { STRING, type IrType } from "../../ir/ir.js";
+import { dgramCreateReadsSignal } from "../../ir/runtime-features.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import {
@@ -13,6 +14,16 @@ import {
 } from "./lib-abi.js";
 import { FN_ATTRS } from "./shapes.js";
 import { registerReplay } from "./emit-journal.js";
+
+/** events.addAbortListener for the createSocket options form's `signal`
+ * (the dgram unit reads the member at run time and closes the socket on
+ * abort). Only the options form takes the hook: the bare type string links
+ * the dgram unit alone. */
+function dgramSignalHook(host: LlvmEmitterContext, e: LibCallExpr): AbiArgument {
+  if (!dgramCreateReadsSignal(e.args[0])) return ptr();
+  host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+  return ptr("@scr_events_add_abort_listener");
+}
 
 function messageAdapter(host: LlvmEmitterContext, type: IrType): string {
   if (type.kind !== "record")
@@ -251,10 +262,22 @@ export function emitDatagramLibCall(host: LlvmEmitterContext, e: LibCallExpr): L
       host.toHeap(cb);
       if (type.params.length < 2)
         host.declare(`declare void @${adapter}(ptr, ptr, ptr, ptr, double, double)`);
-      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [a[0]!, a[1]!, ptr("@" + adapter)]);
+      // The options' signal subscribes through events.addAbortListener (the
+      // event-target unit, linked for the options form by runtime-features).
+      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [
+        a[0]!,
+        a[1]!,
+        ptr("@" + adapter),
+        dgramSignalHook(host, e),
+      ]);
     }
     case "dgram.createSocket":
-      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [a[0]!, ptr(), ptr()]);
+      return finishRuntimeCall(host, e, "scr_dgram_create_chk", [
+        a[0]!,
+        ptr(),
+        ptr(),
+        dgramSignalHook(host, e),
+      ]);
     case "dgram.bindOpts":
     case "dgram.bindOptsCb":
       if (args[2] !== undefined) host.toHeap(args[2]);

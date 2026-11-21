@@ -245,8 +245,8 @@
       "signature": "bad-title 500 Internal Server Error"
     },
     "island:hono": {
-      "category": "exit",
-      "signature": "exit 1, Node 0: Uncaught TypeError: Illegal invocation"
+      "category": "stdout",
+      "signature": "bad-title 400 {\"success\":false,\"error\":{\"name\":\"ZodError\"}}"
     }
   },
   "npm/hono-zod-validator": {

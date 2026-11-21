@@ -183,7 +183,14 @@ function outcome({ result, phases }: Lowering): unknown {
       message: fence.message,
       loc: fence.loc,
     })),
-    passes: phases.map((phase) => phase.phase),
+    // The emitter passes decide the result; #3915's per-pass timing lines
+    // (collect, scans, root-wave, drain, finish:*) describe work inside one
+    // pass and differ by construction between a pass that ends where it
+    // asks and one that runs to its end. The individual tests below assert
+    // which passes were aborted.
+    passes: phases
+      .map((phase) => phase.phase)
+      .filter((phase) => phase === "reachable-emit" || phase.endsWith("-relower")),
   };
 }
 

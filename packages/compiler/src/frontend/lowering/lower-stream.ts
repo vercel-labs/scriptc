@@ -2614,7 +2614,9 @@ function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
 
 /** Duplex.toWeb(duplex[, options]): the { writable, readable } pair of web
  * streams over the duplex (scr_stream_to_web_pair.c). The options carry only
- * the readable side's stream type, and a byte stream has no lowering yet. */
+ * the readable side's stream type: `readableType: 'bytes'` makes the readable
+ * a byte stream a BYOB reader reads, and another value is Node's
+ * ERR_INVALID_ARG_VALUE (null reads as absent). */
 function lowerDuplexToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
@@ -2625,6 +2627,10 @@ function lowerDuplexToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc
     );
   }
   const options = args[1];
+  let flags = 0;
+  // A readableType initializer the lowering answers from its static value
+  // still runs, after the duplex argument, as the call evaluates it.
+  const typeEffects: IrExpr[] = [];
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
@@ -2640,14 +2646,36 @@ function lowerDuplexToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc
           ? member.name.text
           : null;
       if (key === "readableType" && ts.isPropertyAssignment(member)) {
-        const t = lowerer.typeOf(member.initializer);
-        if (t.isStringLiteralType() && t.value === "bytes") {
-          lowerer.noLowering(
-            "Duplex.toWeb with a byte readable side",
-            member,
-            "a byte stream has no lowering yet; omit the option",
+        // Node's check reads the option as a shared `type`: null is its
+        // absent value, every other non-'bytes' literal is the refusal.
+        const invalid = (received: string): IrExpr =>
+          throwAfterCallArguments(
+            lowerer,
+            call,
+            nodeThrowExpr(
+              1,
+              "ERR_INVALID_ARG_VALUE",
+              `The property 'options.type' must be one of: 'bytes', undefined. Received ${received}`,
+              DYN,
+              loc,
+            ),
+            loc,
           );
+        const t = lowerer.typeOf(member.initializer);
+        if (t.isStringLiteralType()) {
+          if (t.value === "bytes") {
+            typeEffects.push(lowerer.lowerExpr(member.initializer));
+            flags |= 1;
+            continue;
+          }
+          return invalid(`'${t.value}'`);
         }
+        if (member.initializer.kind === ts.SyntaxKind.NullKeyword) continue;
+        if (member.initializer.kind === ts.SyntaxKind.NumericLiteral) {
+          return invalid((member.initializer as ts.NumericLiteral).text);
+        }
+        if (member.initializer.kind === ts.SyntaxKind.TrueKeyword) return invalid("true");
+        if (member.initializer.kind === ts.SyntaxKind.FalseKeyword) return invalid("false");
       }
       lowerer.noLowering(
         key === null ? "Duplex.toWeb options with this member" : `the Duplex.toWeb option '${key}'`,
@@ -2658,15 +2686,25 @@ function lowerDuplexToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc
   }
   // A checked-dynamic value takes the dyn entry point, which unwraps a boxed
   // native duplex and throws Node's ERR_INVALID_ARG_TYPE for anything else.
+  // When the readableType initializer has effects of its own, the duplex is
+  // kept in a local so those effects still run after it.
   const value = lowerer.lowerExpr(args[0]!);
-  const dyn = value.type.kind === "dyn";
-  return {
+  const typeStmts = typeEffects.flatMap((effect) => effectStmts(effect, loc));
+  let source = value;
+  let stmts: IrStmt[] = [];
+  if (typeStmts.length > 0) {
+    const fresh = lowerer.declareHiddenLocal("%duplex", value.type);
+    source = varRef(fresh.id, value.type, loc);
+    stmts = [{ kind: "varDecl", localId: fresh.id, init: value, loc }, ...typeStmts];
+  }
+  const built: IrExpr = {
     kind: "libCall",
-    fn: dyn ? "webstream.toWebDuplexDyn" : "webstream.toWebDuplex",
-    args: [value, numLit(0, loc)],
+    fn: source.type.kind === "dyn" ? "webstream.toWebDuplexDyn" : "webstream.toWebDuplex",
+    args: [source, numLit(flags, loc)],
     type: DYN,
     loc,
   };
+  return stmts.length === 0 ? built : { kind: "seqExpr", stmts, result: built, type: DYN, loc };
 }
 
 /** Readable.from(source, options), and for Duplex.from over an iterable

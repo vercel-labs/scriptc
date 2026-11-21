@@ -35,6 +35,14 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
     res.end("numbers");
     return;
   }
+  if (path === "/arrow") {
+    // a concise arrow body hands the response on to its caller
+    const withHeaders = (response: http.ServerResponse) =>
+      response.setHeaders(new Map<string, string>([["x-arrow", "yes"]]));
+    const chained = withHeaders(res);
+    chained.writeHead(202, "arrow").end("arrow");
+    return;
+  }
   if (path === "/chain") {
     res
       .setHeaders(new Map<string, string>([["x-chain", "yes"]]))
@@ -88,7 +96,17 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
 
 server.listen(0, "127.0.0.1", () => {
   const port = (server.address() as { port: number }).port;
-  const paths = ["/map", "/headers", "/numbers", "/chain", "/bad-name", "/bad-value", "/sent", "/lengths"];
+  const paths = [
+    "/map",
+    "/headers",
+    "/numbers",
+    "/chain",
+    "/arrow",
+    "/bad-name",
+    "/bad-value",
+    "/sent",
+    "/lengths",
+  ];
   const next = (index: number) => {
     if (index === paths.length) {
       server.close();

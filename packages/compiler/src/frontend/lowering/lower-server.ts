@@ -11114,17 +11114,9 @@ function lowerHttpResMethodCall(
       value.type.kind === "dyn"
         ? value
         : { kind: "dynFrom", value, type: DYN, loc: locOf(args[0]!) };
-    // A call whose value is discarded keeps the plain void form; a used one
-    // answers the response, as Node's `return this` does.
-    if (resultIsDiscarded(call)) {
-      return {
-        kind: "libCall",
-        fn: "http.resSetHeaders",
-        args: [receiver, headers],
-        type: VOID,
-        loc,
-      };
-    }
+    // The call always answers the response, as Node's `return this` does:
+    // a concise arrow body (`() => res.setHeaders(map)`) hands it on even
+    // when only the arrow's caller decides whether to use it.
     return receiverReturningCall(
       lowerer,
       "http.resSetHeaders",

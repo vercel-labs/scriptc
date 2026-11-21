@@ -3919,10 +3919,21 @@ static bool scr_sqlite_table_write(ScrDyn **expandos, const char *cls, void *h,
  * property shadows a prototype method in Node: a callable runs with the
  * handle as `this`, and any other value is V8's "not a function" TypeError.
  * Answers false when `method` names no added property. */
+/* A method value read from a handle runs the class's implementation
+ * directly; when such a value was written back onto the same property
+ * (`db.exec = db.exec`) and is called, the property must not dispatch to
+ * itself again — Node's saved function does not re-read the property. */
+static SCR_TL void *scr_sqlite_dispatch_h = NULL;
+static SCR_TL const char *scr_sqlite_dispatch_method = NULL;
+static SCR_TL int scr_sqlite_dispatch_depth = 0;
+
 static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTag tag,
                                        const char *method, ScrDyn *self,
                                        ScrDyn *const *args, size_t argc, const char *what,
                                        ScrDyn **out) {
+  if (scr_sqlite_dispatch_depth > 0 && scr_sqlite_dispatch_h == h &&
+      scr_sqlite_dispatch_method != NULL && strcmp(scr_sqlite_dispatch_method, method) == 0)
+    return false;
   ScrDynProp prop;
   if (!scr_sqlite_table_prop(expandos, method, strlen(method), &prop)) return false;
   ScrDyn *callable;
@@ -3948,7 +3959,16 @@ static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTa
     return true;
   }
   scr_dyn_this_push_dyn(self);
+  void *prev_h = scr_sqlite_dispatch_h;
+  const char *prev_method = scr_sqlite_dispatch_method;
+  int prev_depth = scr_sqlite_dispatch_depth;
+  scr_sqlite_dispatch_h = h;
+  scr_sqlite_dispatch_method = method;
+  scr_sqlite_dispatch_depth = prev_depth + 1;
   *out = scr_dyn_call(callable, args, argc, what);
+  scr_sqlite_dispatch_h = prev_h;
+  scr_sqlite_dispatch_method = prev_method;
+  scr_sqlite_dispatch_depth = prev_depth;
   scr_dyn_this_pop();
   scr_dyn_release(callable);
   return true;

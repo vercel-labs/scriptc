@@ -2000,6 +2000,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -2079,6 +2082,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -5433,6 +5437,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -5695,6 +5702,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -10392,12 +10400,44 @@ static ScrDyn *scr_child_dyn_invoke(
   return NULL;
 }
 
+/* ChildProcess.stdio in the checked-dynamic lane: Node's one array per
+ * child — the piped handles at their slots (the same checked-dynamic views
+ * child.stdin/stdout/stderr answer, so identity holds), null for every slot
+ * that is not a pipe, and null in a fork's fourth (IPC) slot — built once
+ * and answered by every later read (+1). */
+static ScrDyn *scr_child_stdio_dyn(ScrChild *child) {
+  if (child->stdio_dyn) return scr_dyn_retain(child->stdio_dyn);
+  ScrDyn *array = scr_dyn_new_arr();
+  ScrDyn *slot = scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->out_stream, &child->out_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->err_stream, &child->err_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  if (child->ipc_slot) scr_dyn_arr_push(array, scr_dyn_new_null());
+  child->stdio_dyn = scr_dyn_retain(array);
+  return array;
+}
+
 static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
   ScrChild *child = (ScrChild *)h;
   SCR_IF_ISLAND(child, scr_child_island_ops->stdio(child));
   if (key_len == 6 && !memcmp(key, "stdout", 6)) return scr_child_bridge_readable(child->out_stream, &child->out_dyn);
   if (key_len == 6 && !memcmp(key, "stderr", 6)) return scr_child_bridge_readable(child->err_stream, &child->err_dyn);
   if (key_len == 5 && !memcmp(key, "stdin", 5)) return scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (key_len == 5 && !memcmp(key, "stdio", 5)) return scr_child_stdio_dyn(child);
   if (key_len == 6 && memcmp(key, "killed", 6) == 0) {
     return scr_dyn_new_bool(scr_child_killed(child));
   }

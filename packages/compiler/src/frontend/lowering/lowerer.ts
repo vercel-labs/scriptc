@@ -5484,6 +5484,11 @@ export class Lowerer {
     ts.SourceFile,
     { global: IrGlobal; loadedId: string; build: () => IrExpr }
   >();
+  /** `module.builtinModules` as a value: one frozen string[] global per
+   * program (builtinModulesValue), so every read — the named binding, the
+   * namespace member, the boxed namespace and a dynamic import — answers
+   * the same array, as Node answers one frozen array. */
+  builtinModulesEntry: { global: IrGlobal; loadedId: string } | null = null;
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -6483,6 +6488,7 @@ export class Lowerer {
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
       checkedTable("importMetaObjects", () => this.importMetaObjects.size),
+      checkedTable("builtinModulesEntry", () => (this.builtinModulesEntry === null ? 0 : 1)),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
@@ -25398,10 +25404,10 @@ export class Lowerer {
     }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    // module.builtinModules through a namespace binding — the baked
-    // Node v24 list, a fresh string[] per read.
+    // module.builtinModules through a namespace binding — the baked Node v24
+    // list as Node's one frozen array.
     if (bi.module === "module" && bi.member === "builtinModules") {
-      return builtinModulesArrayLit(loc);
+      return this.builtinModulesValue(loc);
     }
     if (bi.module === "http" && bi.member === "METHODS") {
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
@@ -25537,6 +25543,79 @@ export class Lowerer {
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
   }
 
+  /** `module.builtinModules` as a value: Node answers one frozen array
+   * (Object.isFrozen is true and every read is the same array). The first
+   * read builds the baked Node v24 list into a program global and freezes
+   * it; every later read — the named binding, the namespace member read, the
+   * boxed namespace, and a dynamic import's member — answers that array. */
+  builtinModulesValue(loc: SrcLoc): IrExpr {
+    let entry = this.builtinModulesEntry;
+    if (entry === null) {
+      const id = "%g.builtinModules";
+      const loadedId = "%g.builtinModules%loaded";
+      const global: IrGlobal = {
+        id,
+        name: "%builtinModules",
+        type: arrayOf(STRING),
+        mutable: true,
+      };
+      this.globalsList.push(global, { id: loadedId, name: "%loaded", type: BOOL, mutable: true });
+      entry = { global, loadedId };
+      this.builtinModulesEntry = entry;
+    }
+    const arrayType = arrayOf(STRING);
+    const slot = this.declareHiddenLocal("%builtinModules", arrayType);
+    const built: IrExpr = {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: slot.id, init: builtinModulesArrayLit(loc), loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "array.freeze",
+            args: [varRef(slot.id, arrayType, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: varRef(slot.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "if",
+          cond: {
+            kind: "unary",
+            op: "!",
+            operand: { kind: "varRef", localId: entry.loadedId, type: BOOL, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "assign",
+              localId: entry.loadedId,
+              value: { kind: "boolLit", value: true, type: BOOL, loc },
+              loc,
+            },
+            { kind: "assign", localId: entry.global.id, value: built, loc },
+          ],
+          else_: null,
+          loc,
+        },
+      ],
+      result: varRef(entry.global.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
+  }
+
   /** One builtin module member as a value BY NAME (no expression node): the
    * value half of the named-import/property surface, for the checked-dynamic
    * namespace box a bounded dynamic import of a builtin produces
@@ -25549,7 +25628,7 @@ export class Lowerer {
     const bi = { module, member };
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

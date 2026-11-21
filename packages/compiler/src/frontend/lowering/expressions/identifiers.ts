@@ -114,7 +114,6 @@ import {
   builtinFenceHintOf,
   builtinModuleConstOf,
   builtinModuleFnOf,
-  builtinModulesArrayLit,
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
@@ -810,10 +809,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       ) {
         return pathModuleValue(lowerer, `path/${bi.member}`, loc);
       }
-      // module.builtinModules — the baked Node v24 list, a fresh
-      // string[] per read.
+      // module.builtinModules — the baked Node v24 list as Node's one
+      // frozen array (same identity at every read).
       if (bi.module === "module" && bi.member === "builtinModules") {
-        return builtinModulesArrayLit(loc);
+        return lowerer.builtinModulesValue(loc);
       }
       if (bi.module === "http" && bi.member === "METHODS") {
         return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };

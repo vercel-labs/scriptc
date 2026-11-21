@@ -3227,19 +3227,6 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
       return false;
     }
   }
-  /* A runtime options record cannot hold a SecureContext handle; Node
-   * rejects any other value for the member (null and undefined read as
-   * absent). */
-  {
-    const ScrDyn *secure_ctx = scr_dyn_obj_get(opts, "secureContext", 13);
-    if (secure_ctx != NULL && secure_ctx->kind != SCR_DYN_UNDEF &&
-        secure_ctx->kind != SCR_DYN_NULL) {
-      static const char msg[] = "context must be a SecureContext";
-      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1,
-                               "ERR_TLS_INVALID_CONTEXT");
-      return false;
-    }
-  }
   /* Snapshot the member names before any getter runs. A getter may delete an
    * earlier member, and the delete compacts the record: an index taken
    * across the getter calls would then skip the member that slid into place

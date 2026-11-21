@@ -58693,6 +58693,7 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-create-connection-typed.ts",
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
@@ -58890,10 +58891,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.agent.createConnection",
         "tests": [
-          "tests/corpus/http-agent-create-connection.mjs"
+          "tests/corpus/http-agent-create-connection.mjs",
+          "tests/corpus/http-agent-create-connection-typed.ts"
         ]
       },
       "anchorSource": "exact"

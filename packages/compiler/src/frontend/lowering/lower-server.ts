@@ -1037,6 +1037,125 @@ function h2HeaderPairsArg(lowerer: Lowerer, node: ts.Expression, what: string): 
  * (the caller falls through to the ordinary builtin tables); every net
  * member lands here — unlowered ones fence with their module-qualified
  * name. */
+/** net.connect / net.createConnection's argument dispatch — Node's
+ * normalizeArgs ladder over the typed, literal-options, Unix-path and
+ * checked-dynamic lanes. Also the Agent's createConnection rewrite: Node's
+ * default dialer IS net.createConnection, and a compiled program cannot
+ * install an Agent override (subclassing is refused, an instance assignment
+ * hits the Agent setter's fence), so the two calls lower identically. If
+ * Agent hook overrides ever become reachable, this must become the
+ * instance-dispatching libCall so an override wins. */
+export function lowerNetConnectCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  // A JavaScript call site reads its arguments at run time: Node's
+  // normalizeArgs and Socket.prototype.connect ladder walk the values
+  // (the checked-dynamic lane), so a port, host, path, options bag, or
+  // callback whose shape only the run time knows behaves as Node does.
+  // An options literal that spells out a `lookup` keeps the typed lookup
+  // lane, which calls the program's resolver through a compiler-emitted
+  // thunk and dials its answers.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
+      const props = (args[0] as ts.ObjectLiteralExpression).properties.nodes;
+      const plainKey = (p: ts.Node): string | null =>
+        (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
+        (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
+          ? p.name.text
+          : null;
+      const typedLookup =
+        props.some((p) => plainKey(p) === "lookup") &&
+        props.some(
+          (p) =>
+            plainKey(p) === "autoSelectFamily" &&
+            ts.isPropertyAssignment(p) &&
+            p.initializer.kind === ts.SyntaxKind.TrueKeyword,
+        ) &&
+        props.some((p) => {
+          if (plainKey(p) !== "port") return false;
+          const value = ts.isPropertyAssignment(p)
+            ? p.initializer
+            : ((p as ts.ShorthandPropertyAssignment).name as ts.Expression);
+          return lowerer.mapTypeOf(lowerer.typeOf(value))?.kind === "f64";
+        });
+      if (typedLookup) return lowerNetConnectOptions(lowerer, expr, member, loc);
+    }
+    return lowerNetConnectDyn(lowerer, expr, member, args, loc);
+  }
+  // The options-object form — connect({ port, host?, autoSelectFamily?,
+  // lookup? }): portless's createLoopbackConnection. A `lookup` function
+  // OVERRIDES resolution: the runtime invokes it as Node does —
+  // lookup(hostname, options, callback) with callback(err, addresses)
+  // — and dials the answered addresses IN ORDER, each connect failure
+  // trying the next (the fixed-list autoSelectFamily behavior;
+  // autoSelectFamily must be the literal `true` alongside it, portless's
+  // spelling — without it Node would dial only the first address). The
+  // no-lookup form is connect(port, host) with the option spellings.
+  if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
+    return lowerNetConnectOptions(lowerer, expr, member, loc);
+  }
+  // A first argument whose shape only the run time can read — a dynamic
+  // value, a record that may be the options, a union, or a checker
+  // `any`: Node's normalizeArgs reads it (the checked-dynamic lane).
+  const firstT = args.length > 0 ? lowerer.mapTypeOf(lowerer.typeOf(args[0]!)) : null;
+  if (
+    args.length === 0 ||
+    firstT === null ||
+    firstT.kind === "dyn" ||
+    firstT.kind === "jsval" ||
+    firstT.kind === "record" ||
+    firstT.kind === "union" ||
+    (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return lowerNetConnectDyn(lowerer, expr, member, args, loc);
+  }
+  if (args.length > 3) {
+    lowerer.noLowering(
+      `${member} with ${args.length} arguments`,
+      expr,
+      `the supported form is ${member}(port, host?, connectListener?)`,
+    );
+  }
+  // connect(path[, connectListener]): a string first argument names a
+  // Unix socket, or a localhost port when it reads as a non-negative
+  // number (Node's isPipeName, decided at run time).
+  if (firstT.kind === "string") {
+    return lowerNetConnectPath(lowerer, expr, member, lowerer.lowerExpr(args[0]!), true, args[1]);
+  }
+  const port = lowerer.lowerExprExpecting(args[0]!, F64);
+  // The optional middle host: a 2-arg call's second argument is the
+  // host when string-typed, the connect listener when func-typed.
+  let hostNode: ts.Expression | undefined;
+  let cbNode: ts.Expression | undefined;
+  if (args.length === 2) {
+    if (lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string") hostNode = args[1];
+    else cbNode = args[1];
+  } else if (args.length === 3) {
+    hostNode = args[1];
+    cbNode = args[2];
+  }
+  const host: IrExpr = hostNode
+    ? lowerer.lowerExprExpecting(hostNode, STRING)
+    : { kind: "strLit", value: "localhost", type: STRING, loc };
+  if (!cbNode) {
+    return { kind: "libCall", fn: "net.connect", args: [port, host], type: NETSOCKET_T, loc };
+  }
+  const { cb } = lowerCallbackArg(
+    lowerer,
+    cbNode,
+    "connect listeners",
+    0,
+    () => false,
+    "use ()",
+    [],
+  );
+  return { kind: "libCall", fn: "net.connectCb", args: [port, host, cb], type: NETSOCKET_T, loc };
+}
+
 export function lowerNetModuleCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1097,115 +1216,7 @@ export function lowerNetModuleCall(
     );
   }
   if (bi.member === "connect" || bi.member === "createConnection") {
-    // A JavaScript call site reads its arguments at run time: Node's
-    // normalizeArgs and Socket.prototype.connect ladder walk the values
-    // (the checked-dynamic lane), so a port, host, path, options bag, or
-    // callback whose shape only the run time knows behaves as Node does.
-    // An options literal that spells out a `lookup` keeps the typed lookup
-    // lane, which calls the program's resolver through a compiler-emitted
-    // thunk and dials its answers.
-    if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
-        const props = (args[0] as ts.ObjectLiteralExpression).properties.nodes;
-        const plainKey = (p: ts.Node): string | null =>
-          (ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p)) &&
-          (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name))
-            ? p.name.text
-            : null;
-        const typedLookup =
-          props.some((p) => plainKey(p) === "lookup") &&
-          props.some(
-            (p) =>
-              plainKey(p) === "autoSelectFamily" &&
-              ts.isPropertyAssignment(p) &&
-              p.initializer.kind === ts.SyntaxKind.TrueKeyword,
-          ) &&
-          props.some((p) => {
-            if (plainKey(p) !== "port") return false;
-            const value = ts.isPropertyAssignment(p)
-              ? p.initializer
-              : ((p as ts.ShorthandPropertyAssignment).name as ts.Expression);
-            return lowerer.mapTypeOf(lowerer.typeOf(value))?.kind === "f64";
-          });
-        if (typedLookup) return lowerNetConnectOptions(lowerer, expr, bi.member, loc);
-      }
-      return lowerNetConnectDyn(lowerer, expr, bi.member, args, loc);
-    }
-    // The options-object form — connect({ port, host?, autoSelectFamily?,
-    // lookup? }): portless's createLoopbackConnection. A `lookup` function
-    // OVERRIDES resolution: the runtime invokes it as Node does —
-    // lookup(hostname, options, callback) with callback(err, addresses)
-    // — and dials the answered addresses IN ORDER, each connect failure
-    // trying the next (the fixed-list autoSelectFamily behavior;
-    // autoSelectFamily must be the literal `true` alongside it, portless's
-    // spelling — without it Node would dial only the first address). The
-    // no-lookup form is connect(port, host) with the option spellings.
-    if (args.length >= 1 && ts.isObjectLiteralExpression(args[0]!)) {
-      return lowerNetConnectOptions(lowerer, expr, bi.member, loc);
-    }
-    // A first argument whose shape only the run time can read — a dynamic
-    // value, a record that may be the options, a union, or a checker
-    // `any`: Node's normalizeArgs reads it (the checked-dynamic lane).
-    const firstT = args.length > 0 ? lowerer.mapTypeOf(lowerer.typeOf(args[0]!)) : null;
-    if (
-      args.length === 0 ||
-      firstT === null ||
-      firstT.kind === "dyn" ||
-      firstT.kind === "jsval" ||
-      firstT.kind === "record" ||
-      firstT.kind === "union" ||
-      (lowerer.typeOf(args[0]!).flags & ts.TypeFlags.Any) !== 0
-    ) {
-      return lowerNetConnectDyn(lowerer, expr, bi.member, args, loc);
-    }
-    if (args.length > 3) {
-      lowerer.noLowering(
-        `${bi.member} with ${args.length} arguments`,
-        expr,
-        `the supported form is ${bi.member}(port, host?, connectListener?)`,
-      );
-    }
-    // connect(path[, connectListener]): a string first argument names a
-    // Unix socket, or a localhost port when it reads as a non-negative
-    // number (Node's isPipeName, decided at run time).
-    if (firstT.kind === "string") {
-      return lowerNetConnectPath(
-        lowerer,
-        expr,
-        bi.member,
-        lowerer.lowerExpr(args[0]!),
-        true,
-        args[1],
-      );
-    }
-    const port = lowerer.lowerExprExpecting(args[0]!, F64);
-    // The optional middle host: a 2-arg call's second argument is the
-    // host when string-typed, the connect listener when func-typed.
-    let hostNode: ts.Expression | undefined;
-    let cbNode: ts.Expression | undefined;
-    if (args.length === 2) {
-      if (lowerer.mapTypeOf(lowerer.typeOf(args[1]!))?.kind === "string") hostNode = args[1];
-      else cbNode = args[1];
-    } else if (args.length === 3) {
-      hostNode = args[1];
-      cbNode = args[2];
-    }
-    const host: IrExpr = hostNode
-      ? lowerer.lowerExprExpecting(hostNode, STRING)
-      : { kind: "strLit", value: "localhost", type: STRING, loc };
-    if (!cbNode) {
-      return { kind: "libCall", fn: "net.connect", args: [port, host], type: NETSOCKET_T, loc };
-    }
-    const { cb } = lowerCallbackArg(
-      lowerer,
-      cbNode,
-      "connect listeners",
-      0,
-      () => false,
-      "use ()",
-      [],
-    );
-    return { kind: "libCall", fn: "net.connectCb", args: [port, host, cb], type: NETSOCKET_T, loc };
+    return lowerNetConnectCall(lowerer, expr, bi.member, loc);
   }
   lowerer.noLowering(
     `net.${bi.member}`,

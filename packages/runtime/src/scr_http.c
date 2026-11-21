@@ -10531,6 +10531,20 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   return out;
 }
 
+/* The typed rewrite's receiver check: the net dialer it lowers to builds a
+ * plaintext socket, so an Agent value whose class is secure (an https.Agent,
+ * however it is typed at the call site) must refuse instead of dialing. */
+void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
+  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
+      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+    return;
+  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+  if (a == NULL || !a->secure) return;
+  static const char secure_text[] =
+      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
+}
+
 /* The dialer as a value, held like the other hooks. */
 static ScrDyn *scr_http_agent_connect_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   ScrHttpAgent *a = scr_box_get_ref(clo->caps[0]); /* +1 */

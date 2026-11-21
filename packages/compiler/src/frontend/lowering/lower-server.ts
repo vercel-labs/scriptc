@@ -6496,6 +6496,23 @@ function lowerHttpModuleCall(
       loc,
     };
   }
+  if (bi.member === "setGlobalProxyFromEnv") {
+    requireStatementPosition(lowerer, expr, "http.setGlobalProxyFromEnv(...)");
+    const args = expr.arguments.nodes;
+    if (args.length > 1 || args.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering(
+        "http.setGlobalProxyFromEnv arguments",
+        expr,
+        "pass at most one proxy-environment object",
+      );
+    }
+    let env: IrExpr = dynUndefinedExpr(loc);
+    if (args.length === 1) {
+      const value = lowerer.lowerExpr(args[0]!);
+      env = value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    }
+    return { kind: "libCall", fn: "http.setGlobalProxyFromEnv", args: [env], type: VOID, loc };
+  }
   if (bi.member === "setMaxIdleHTTPParsers") {
     // Node sizes a pool of idle parser objects; the compiled parser is
     // per-connection state, so the call validates its argument like

@@ -444,6 +444,9 @@ void scr_http_client_on_connect(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, S
 /* http.setMaxIdleHTTPParsers(max): validates like Node; there is no parser
  * pool to size. */
 void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/);
+/* http.setGlobalProxyFromEnv(proxyEnv?): configures the module's environment
+ * proxy (Node 24). An undefined argument reads the process environment. */
+void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/);
 void scr_http_client_on_error(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_client_on_timeout(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
 void scr_http_client_on_close(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, bool once);
@@ -462,7 +465,15 @@ ScrHttpClientReq *scr_http_request_ex(ScrStr *host /*borrowed*/, double port,
                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                        bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                        ScrHttpRespFn fn, int default_port,
-                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx);
+/* The same, for a caller that already chose its transport (fetch's proxy):
+ * the module's proxy policy does not apply to it. */
+ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
 /* The URL-string client form (http.get('http://host:port/path')): parses
  * through the WHATWG unit; throws catchably on an unparsable input
  * ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL) and
@@ -501,6 +512,8 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                              ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
 /* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
 const ScrDyn *scr_http_global_agent(bool secure);
+/* The same, only when the program already created it (no allocation). */
+const ScrDyn *scr_http_global_agent_existing(bool secure);
 /* fetch()'s client request for a direct connection: through fetch's own
  * keep-alive agent, which reuses an idle connection with the same host,
  * port and pool_key (+1). */

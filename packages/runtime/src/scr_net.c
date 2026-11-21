@@ -837,6 +837,8 @@ typedef struct ScrNetTunnel {
   /* bytes a wrapped socket left unsent, which go out before the
    * transport's own; no response head is read */
   bool send_only;
+  ScrNetTunnelMsgFn msg_fn; /* the failure message formatter, or NULL */
+  void *msg_ctx;
 } ScrNetTunnel;
 
 /* The 'lookup' event's half of the runtime, installed by the first
@@ -2195,8 +2197,11 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
     if (end == 0) continue;
     int status = scr_net_tunnel_status(t->in, end);
     if (status != 200) {
-      char msg[128];
-      scr_net_tunnel_failure(status, msg, sizeof msg);
+      char msg[512];
+      if (t->msg_fn != NULL)
+        t->msg_fn(t->msg_ctx, status, t->in, end, msg, sizeof msg);
+      else
+        scr_net_tunnel_failure(status, msg, sizeof msg);
       scr_net_sock_tunnel_fail(s, msg);
       return;
     }
@@ -8580,7 +8585,8 @@ void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
 
 /* ── the transport hooks (scr_tls.c) ─────────────────────────────────── */
 
-void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
+void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
+                                ScrNetTunnelMsgFn msg_fn, void *ctx) {
   if (s->fd < 0 || !s->connecting || s->tunnel != NULL) return;
   ScrNetTunnel *t = calloc(1, sizeof *t);
   if (!t) scr_net_oom();
@@ -8588,7 +8594,13 @@ void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
   if (!t->out) scr_net_oom();
   memcpy(t->out, request, len);
   t->out_len = len;
+  t->msg_fn = msg_fn;
+  t->msg_ctx = ctx;
   s->tunnel = t;
+}
+
+void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
+  scr_net_sock_set_tunnel_ex(s, request, len, NULL, NULL);
 }
 
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx) {

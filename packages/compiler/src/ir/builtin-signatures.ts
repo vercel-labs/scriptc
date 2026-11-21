@@ -2839,6 +2839,9 @@ function buildLibFnSignatures() {
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
     /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
     "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
+    /** http.setGlobalProxyFromEnv(proxyEnv?): Node 24 configures the module's
+     * environment proxy; the default agent resolves it per target. */
+    "http.setGlobalProxyFromEnv": { argTypes: [DYN], result: VOID },
     /** The typed createConnection rewrite's secure-agent check. */
     "http.agentCreateConnectionCheck": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },

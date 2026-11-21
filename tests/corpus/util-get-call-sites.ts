@@ -4,6 +4,11 @@
 // the Node oracle and the compiled binary compare like for like.
 import { getCallSites } from "node:util";
 
+// The imported function as a value is one callable with Node's typeof,
+// identity and length.
+const stored = getCallSites;
+console.log("stored", typeof stored, stored === getCallSites, stored.length);
+
 const self = "util-get-call-sites.ts";
 
 function show(sites: { functionName: string; scriptName: string; scriptId: string; lineNumber: number; column: number }[]): string {

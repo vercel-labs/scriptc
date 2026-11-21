@@ -577,7 +577,7 @@ test("stack checks cover every recursive cycle, including recursion through reen
   expect(computeMayThrow(mod).fns.size).toBe(0);
 });
 
-test("a member that writes to stdout or slices bytes does not re-enter", () => {
+test("a typed-array slice is bounded, but a process write can re-enter", () => {
   type WriteFn = "process.stdoutWriteBytes" | "process.stdoutWriteBytesCb";
   const slice: IrExpr = {
     kind: "bytesIntrinsic",
@@ -587,29 +587,36 @@ test("a member that writes to stdout or slices bytes does not re-enter", () => {
     type: { kind: "bytes", elem: "u8" },
     loc,
   };
-  const member = (method: string, fnName: WriteFn): IrModule =>
+  const member = (method: string, call: IrExpr): IrModule =>
     ({
       irVersion: 17,
       sourceFile: loc.file,
       entry: "caller",
-      functions: [
-        fn(`%W.${method}`, [
-          exprStmt({ kind: "libCall", fn: fnName, args: [slice], type: BOOL, loc }),
-        ]),
-        fn("caller", []),
-      ],
+      functions: [fn(`%W.${method}`, [exprStmt(call)]), fn("caller", [])],
       // Only the member list matters to the stack-check graph.
       classes: [{ name: "W", methods: [method] }],
     }) as unknown as IrModule;
-  // Neither a typed-array slice nor a callback-free process write runs
-  // scriptc code, so the member closes no cycle and checks no stack; the
-  // completion-callback write can re-enter and stays checked.
+  const write = (fnName: WriteFn): IrExpr => ({
+    kind: "libCall",
+    fn: fnName,
+    args: [slice],
+    type: BOOL,
+    loc,
+  });
+  // A typed-array slice runs no scriptc code, so the member closes no cycle
+  // and checks no stack. A callback-free process write hands the chunk to the
+  // stream's current write method, which may be a replacement that writes
+  // again, so it stays checked — just like the completion-callback write.
   expect(
-    [...computeMayThrow(member("put", "process.stdoutWriteBytes"), { stackChecks: true }).stackChecks!],
+    [...computeMayThrow(member("slice", slice), { stackChecks: true }).stackChecks!],
   ).toEqual([]);
   expect(
+    [...computeMayThrow(member("put", write("process.stdoutWriteBytes")), { stackChecks: true })
+      .stackChecks!],
+  ).toEqual(["%W.put"]);
+  expect(
     [
-      ...computeMayThrow(member("putCb", "process.stdoutWriteBytesCb"), {
+      ...computeMayThrow(member("putCb", write("process.stdoutWriteBytesCb")), {
         stackChecks: true,
       }).stackChecks!,
     ],

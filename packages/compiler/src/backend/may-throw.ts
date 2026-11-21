@@ -998,16 +998,11 @@ export function boundedNode(rec: IrExpr | IrStmt): boolean {
       // callback or conversion.
       if (rec.fn.startsWith("string.") || rec.fn.startsWith("num."))
         return rec.args.every(primitiveArgument);
-      // A process write without a callback runs no scriptc code: the runtime
-      // writes to the descriptor. The *Cb entries take a completion callback
-      // and stay unbounded.
-      if (
-        rec.fn === "process.stdoutWriteBytes" ||
-        rec.fn === "process.stderrWriteBytes" ||
-        rec.fn === "process.stdoutWrite" ||
-        rec.fn === "process.stderrWrite"
-      )
-        return true;
+      // A callback-free process write is not bounded: the runtime's stdio
+      // hook hands the chunk to the stream's CURRENT write method, which a
+      // program (or a dynamically typed alias it passed the stream through)
+      // can replace with code that writes again. That re-entry edge keeps
+      // the stack check on a recursive writer or hook cycle.
       return rec.fn.startsWith("math.");
     case "intrinsic":
       // A module binding read before its declaration ran only throws.

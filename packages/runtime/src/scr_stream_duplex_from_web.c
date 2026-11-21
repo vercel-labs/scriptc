@@ -548,7 +548,11 @@ static ScrStream *sdfw_build(ScrDyn *pair, double flags, double hwm, ScrDyn *sig
   c->reader = reader;
   c->writer = writer;
   ScrStream *d = scr_stream_new_duplex(
-      hwm, hwm, true, true, ((int)flags & 1) != 0, true, true,
+      /* An object-mode Duplex takes the object-mode default for both sides
+       * (16), which the constructor reads before the mode is switched on. */
+      hwm < 0 && ((int)flags & 2) != 0 ? scr_stream_get_default_hwm(true) : hwm,
+      hwm < 0 && ((int)flags & 2) != 0 ? scr_stream_get_default_hwm(true) : hwm,
+      true, true, ((int)flags & 1) != 0, true, true,
       sdfw_closure((void *)&sdfw_read_inv, c),
       &sdfw_read_inv, sdfw_closure((void *)&sdfw_write_inv, c), &sdfw_write_inv,
       sdfw_closure((void *)&sdfw_final_inv, c), &sdfw_final_inv,

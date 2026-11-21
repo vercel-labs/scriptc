@@ -1,9 +1,18 @@
 // Duplex.fromWeb options: allowHalfOpen, objectMode, encoding, decodeStrings,
 // highWaterMark and signal each take effect on the Duplex, which owns the
 // pair's reader and writer.
-import { Duplex } from "node:stream";
+import { Duplex, getDefaultHighWaterMark } from "node:stream";
 
 const log = [];
+
+const plainBody = new TransformStream();
+const plain = Duplex.fromWeb(
+  { readable: plainBody.readable, writable: plainBody.writable },
+  { objectMode: true },
+);
+log.push(
+  `object default ${plain.readableHighWaterMark} ${plain.writableHighWaterMark} ${getDefaultHighWaterMark(true)}`,
+);
 
 const body = new TransformStream();
 const duplex = Duplex.fromWeb(

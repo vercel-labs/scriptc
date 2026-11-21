@@ -579,20 +579,27 @@ static void scr_rjh_clear(void) {
 
 /* Delivers what was queued since the previous checkpoint. A listener
  * throw leaves a pending exception: the caller takes the loop's uncaught
- * path. */
+ * path. The batch leaves the queue before any listener runs: a listener
+ * that attaches a handler to another reported promise enqueues into a
+ * fresh queue, and that entry must reach the next checkpoint instead of
+ * overwriting a promise whose delivery is still due. Each entry's
+ * reference moves with it into this batch, so a promise is released once. */
 static bool scr_drain_rejection_handled(void) {
   if (!scr_rjh_pending()) return true;
+  ScrPromise **batch = scr_rjh_queue;
   size_t head = scr_rjh_head, len = scr_rjh_len;
-  scr_rjh_head = scr_rjh_len = 0;
+  scr_rjh_queue = NULL;
+  scr_rjh_head = scr_rjh_len = scr_rjh_cap = 0;
   bool ok = true;
   for (size_t i = head; i < len; i++) {
-    ScrPromise *p = scr_rjh_queue[i];
+    ScrPromise *p = batch[i];
     /* A throwing listener stops delivery, but every queued reference is
      * still dropped. */
     if (ok && scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
     scr_promise_release(p);
     if (ok && scr_exc_pending()) ok = false;
   }
+  free(batch);
   return ok;
 }
 

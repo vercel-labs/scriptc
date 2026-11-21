@@ -145,7 +145,7 @@ declare module "http" {
     appendHeader(name: string, value: string | readonly string[]): void;
     /* Node's OutgoingMessage.setHeaders: a Map (or Headers object) of
      * names to values, set-cookie's values kept as one array. */
-    setHeaders(headers: ReadonlyMap<string, string | readonly string[]>): void;
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): this;
     getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];

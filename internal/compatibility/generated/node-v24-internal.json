@@ -44754,6 +44754,7 @@
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/6491-events-once-streams.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-dyn-listener-array.ts",
           "tests/corpus/emitter-surface.ts",
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/event-target-surface.ts",
@@ -46342,11 +46343,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:emitter.listeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/emitter-surface.ts"
+          "tests/corpus/emitter-surface.ts",
+          "tests/corpus/emitter-dyn-listener-array.ts"
         ]
       },
       "anchorSource": "exact"
@@ -46613,7 +46615,8 @@
         "evidence": "compiler-dedicated:emitter.rawListeners",
         "tests": [
           "tests/corpus/1677-emitter-listeners.ts",
-          "tests/corpus/emitter-surface.ts"
+          "tests/corpus/emitter-surface.ts",
+          "tests/corpus/emitter-dyn-listener-array.ts"
         ]
       },
       "anchorSource": "exact"

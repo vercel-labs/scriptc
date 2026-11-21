@@ -7399,9 +7399,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
     type: DYN,
     loc,
   };
-  return stmts.length === 0
-    ? built
-    : { kind: "seqExpr", stmts, result: built, type: DYN, loc };
+  return stmts.length === 0 ? built : { kind: "seqExpr", stmts, result: built, type: DYN, loc };
 }
 
 export function lowerStreamMethodCall(

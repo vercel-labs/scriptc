@@ -44906,7 +44906,7 @@
       "anchor": "moduleisbuiltinmodulename",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -44993,7 +44993,7 @@
       "anchor": "modulesyncbuiltinesmexports",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }

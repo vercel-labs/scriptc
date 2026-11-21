@@ -74416,6 +74416,7 @@
           "tests/corpus/module-compile-cache-require.cjs",
           "tests/corpus/module-compile-cache-values.mjs",
           "tests/corpus/module-find-package-json/main.ts",
+          "tests/corpus/module-function-values/main.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/harness/module-compile-cache.test.ts",
           "tests/harness/npm-static.test.ts"
@@ -74506,11 +74507,12 @@
       "anchor": "moduleisbuiltinmodulename",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:module.module.isBuiltin",
         "tests": [
           "tests/corpus/2932-create-require-program/main.ts",
-          "tests/corpus/5846-events-esm-default-max.ts"
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-function-values/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -74600,11 +74602,12 @@
       "anchor": "modulesyncbuiltinesmexports",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:module.module.syncBuiltinESMExports",
         "tests": [
           "tests/corpus/2932-create-require-program/main.ts",
-          "tests/corpus/5846-events-esm-default-max.ts"
+          "tests/corpus/5846-events-esm-default-max.ts",
+          "tests/corpus/module-function-values/main.ts"
         ]
       },
       "anchorSource": "exact"

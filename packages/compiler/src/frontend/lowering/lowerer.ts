@@ -25539,8 +25539,148 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    if (bi.module === "module" && bi.member === "isBuiltin")
+      return this.lowerModuleIsBuiltinValue(loc);
+    if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
+      return this.lowerModuleSyncBuiltinValue(loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** `module.isBuiltin` as a value: Node's function that answers whether a
+   * module name is a builtin. A direct call folds a literal at build time; a
+   * held value is a real function over the same rule — the runtime
+   * canonicalises the id against the baked list (scr_process_builtin_id),
+   * and an empty answer means "not a builtin". Node's name and length ride
+   * on the value. */
+  lowerModuleIsBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.isBuiltin";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "isBuiltin");
+      this.builtinCallableValueLengths.set(fnName, 1);
+      const input = { localId: "input", name: "input", type: DYN };
+      const inputLocal = { id: "input", name: "input", type: DYN, mutable: false };
+      const id = { id: "id", name: "id", type: STRING, mutable: false };
+      this.liftedFns.push({
+        name: fnName,
+        params: [input],
+        returnType: BOOL,
+        locals: [inputLocal, id],
+        body: [
+          {
+            kind: "if",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: {
+                kind: "libCall",
+                fn: "dyn.typeof",
+                args: [varRef(inputLocal.id, DYN, loc)],
+                type: STRING,
+                loc,
+              },
+              right: { kind: "strLit", value: "string", type: STRING, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "varDecl",
+                localId: id.id,
+                init: {
+                  kind: "libCall",
+                  fn: "process.builtinId",
+                  args: [varRef(inputLocal.id, DYN, loc), builtinModulesArrayLit(loc)],
+                  type: STRING,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "return",
+                value: {
+                  kind: "strEq",
+                  negated: true,
+                  left: varRef(id.id, STRING, loc),
+                  right: { kind: "strLit", value: "", type: STRING, loc },
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: { kind: "boolLit", value: false, type: BOOL, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [DYN], ret: BOOL },
+        loc,
+      },
+      fnName: "isBuiltin",
+      fnLength: 1,
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** `module.syncBuiltinESMExports` as a value: the statement form refreshes
+   * the events module's ES module namespace copy of defaultMaxListeners; a
+   * held value calls the same runtime refresh and answers undefined, as
+   * Node's function does. */
+  lowerModuleSyncBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.syncBuiltinESMExports";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "syncBuiltinESMExports");
+      this.builtinCallableValueLengths.set(fnName, 0);
+      this.liftedFns.push({
+        name: fnName,
+        params: [],
+        returnType: VOID,
+        locals: [],
+        body: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "emitter.esmSync", args: [], type: VOID, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [], ret: VOID },
+        loc,
+      },
+      fnName: "syncBuiltinESMExports",
+      fnLength: 0,
+      type: DYN,
+      loc,
+    };
   }
 
   /** `module.builtinModules` as a value: Node answers one frozen array

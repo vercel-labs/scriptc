@@ -23,6 +23,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // those are MAY_THROW.)
   "perf.histoStat",
   "perf.histoStatBig",
+  "perf.histoEwma",
   "perf.histoPercentile",
   "perf.histoPercentileBig",
   "perf.histoMeanCI",
@@ -36,6 +37,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesCount",
   "perf.histoPercentilesKey",
   "perf.histoPercentilesValue",
+  "perf.histoPercentilesValueBig",
   "perf.histoDispose",
   "perf.slidingReset",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the

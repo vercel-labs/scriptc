@@ -39,11 +39,16 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoBucketsKey",
   "perf.histoBucketsValue",
   "perf.histoDispose",
+  "perf.slidingReset",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_assert_touch copies the custom-assertion registry (plain
+  // objects and functions) into the context's snapshot; it runs no program
+  // code and raises no catchable error.
+  "test.ctxAssertTouch",
   // scr_test_ctx_tags answers the cached frozen tag array; building it on the
   // first read copies the tag strings and allocates, running no program code.
   "test.ctxTags",

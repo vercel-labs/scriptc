@@ -30393,6 +30393,7 @@
           "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs",
           "tests/corpus/diagnostics-channel-audit.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs",
           "tests/corpus/diagnostics-channel-console.cjs"
         ]
       },
@@ -30814,7 +30815,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.log'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30840,7 +30842,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.info'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30866,7 +30869,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.debug'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30892,7 +30896,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.warn'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -30918,7 +30923,8 @@
         "status": "partial",
         "evidence": "compiler-feature:diagnostics_channel.'console.error'",
         "tests": [
-          "tests/corpus/diagnostics-channel-console.cjs"
+          "tests/corpus/diagnostics-channel-console.cjs",
+          "tests/corpus/diagnostics-channel-console-instance.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -47219,6 +47225,8 @@
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-filehandle-web-stream.ts",
+          "tests/corpus/fs-lchmod-typed.ts",
+          "tests/corpus/fs-lchmod.cjs",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -47610,8 +47618,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pull"
       },
       "anchorSource": "exact"
     },
@@ -47633,8 +47641,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pullSync"
       },
       "anchorSource": "exact"
     },
@@ -48098,8 +48106,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.writer"
       },
       "anchorSource": "exact"
     },
@@ -48405,8 +48413,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lchmod",
+        "tests": [
+          "tests/corpus/fs-lchmod.cjs",
+          "tests/corpus/fs-lchmod-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49738,8 +49750,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmod"
       },
       "anchorSource": "exact"
     },
@@ -51421,8 +51433,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmodSync"
       },
       "anchorSource": "exact"
     },
@@ -58681,6 +58693,7 @@
           "tests/corpus/compat-http-outgoing-headers.ts",
           "tests/corpus/compat-http-server-tail.mjs",
           "tests/corpus/compat-http-server-tail.ts",
+          "tests/corpus/http-agent-create-connection-typed.ts",
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
@@ -58878,10 +58891,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.agent.createConnection",
         "tests": [
-          "tests/corpus/http-agent-create-connection.mjs"
+          "tests/corpus/http-agent-create-connection.mjs",
+          "tests/corpus/http-agent-create-connection-typed.ts"
         ]
       },
       "anchorSource": "exact"
@@ -81100,6 +81114,7 @@
           "tests/corpus/perf-observer-delivers-at-exit.ts",
           "tests/corpus/perf-observer-family.ts",
           "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-sliding-window-histogram.ts",
           "tests/corpus/perf-supported-entry-types.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
@@ -84403,8 +84418,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.SlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84426,8 +84444,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.record",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84449,8 +84470,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.reset",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84472,8 +84496,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.snapshot",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84524,8 +84551,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.createSlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -98585,18 +98615,15 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
+          "tests/fixtures/node-test/cases/assert-register.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
           "tests/fixtures/node-test/cases/ctx-error.ts",
           "tests/fixtures/node-test/cases/ctx-hooks.ts",
@@ -99337,13 +99364,11 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
-        "evidence": "compiler-dedicated:assert",
+        "status": "partial",
+        "evidence": "compiler-feature:test.assert",
         "tests": [
-          "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs",
-          "tests/corpus/assert-message-forms.ts"
+          "tests/fixtures/node-test/cases/assert-register.ts",
+          "tests/harness/node-test.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -103515,6 +103540,8 @@
           "tests/corpus/7454-tls-peer-embedded-pem.ts",
           "tests/corpus/8176-tls-empty-context-ca.ts",
           "tests/corpus/8177-tls-empty-client-ca.ts",
+          "tests/corpus/tls-check-server-identity-malformed.ts",
+          "tests/corpus/tls-check-server-identity.ts",
           "tests/corpus/tls-connect-forms.ts",
           "tests/corpus/tls-export-keying-material-context-types.ts",
           "tests/corpus/tls-export-keying-material-context.ts",
@@ -105699,8 +105726,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tls.checkServerIdentity",
+        "tests": [
+          "tests/corpus/tls-check-server-identity.ts",
+          "tests/corpus/tls-check-server-identity-malformed.ts"
+        ]
       },
       "anchorSource": "exact"
     },

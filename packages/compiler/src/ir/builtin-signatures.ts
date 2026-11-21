@@ -821,6 +821,11 @@ function buildLibFnSignatures() {
     "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
     "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.slidingNew": { argTypes: [DYN], result: DYN },
+    "perf.slidingRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.slidingRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.slidingReset": { argTypes: [DYN], result: VOID },
+    "perf.slidingSnapshot": { argTypes: [DYN], result: DYN },
     "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
@@ -2724,6 +2729,10 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    /** node:test's assert.register(name, fn) and the call of a registered
+     * assertion on a TestContext (its arguments a dyn array). */
+    "test.assertRegister": { argTypes: [STRING, DYN], result: VOID },
+    "test.ctxCustomAssert": { argTypes: [TESTCTX_T, STRING, DYN], result: DYN },
     // t.tags: the flattened tag set (a frozen array of strings).
     "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
@@ -2745,6 +2754,9 @@ function buildLibFnSignatures() {
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+    // The first `t.assert` read fixes this context's assertion set (Node
+    // builds the test's assertion object from the registry at that moment).
+    "test.ctxAssertTouch": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
     // mock.fn's and mock.method's { times }: Node's non-negative-integer
@@ -2815,6 +2827,8 @@ function buildLibFnSignatures() {
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
     /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
     "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
+    /** The typed createConnection rewrite's secure-agent check. */
+    "http.agentCreateConnectionCheck": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverAllowMissingHostHeader": { argTypes: [NETSERVER_T], result: VOID },
     /** The five writable numeric http.Server timeout fields use one
@@ -3482,6 +3496,11 @@ function buildLibFnSignatures() {
      * opaque SecureContext handle (secureCtx kind) for SNI callbacks to
      * answer with; cert/key are PEM strings or Buffers like createServer's. */
     "tls.createSecureContext": { argTypes: [null, null], result: SECURECTX_T },
+    /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+     * verification — undefined on a match, the ERR_TLS_CERT_ALTNAME_INVALID
+     * error otherwise (a malformed quoted alt-name string throws
+     * ERR_TLS_CERT_ALTNAME_FORMAT). */
+    "tls.checkServerIdentity": { argTypes: [STRING, DYN], result: DYN },
     /** createSecureContext over a RUNTIME options record (the checked-
      * dynamic lane): Node's typed option validations first (the ciphers/
      * passphrase/engine/version/timeout/ticketKeys ladders), then the pem
@@ -4850,6 +4869,7 @@ function buildLibFnSignatures() {
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmod": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },

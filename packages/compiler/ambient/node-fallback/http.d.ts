@@ -258,6 +258,19 @@ declare module "http" {
      * createConnection, is not supported. */
     keepSocketAlive(socket: Socket): boolean;
     reuseSocket(socket: Socket, request: ClientRequest): void;
+    /* Node's default dialer, net.createConnection: the options record and the
+     * trailing connect listener dial one connection. */
+    createConnection(
+      options: {
+        port?: number;
+        host?: string;
+        path?: string;
+        localAddress?: string;
+        family?: number;
+        [option: string]: unknown;
+      },
+      connectListener?: () => void,
+    ): Socket;
     maxSockets: number;
     maxFreeSockets: number;
     /* Node's cap across every name: requests queue once the agent's live

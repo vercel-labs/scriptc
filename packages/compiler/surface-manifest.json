@@ -1503,6 +1503,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.lchmod",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchmod",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.lchown",
       "kind": "node-builtin",
       "name": "fs/promises.lchown",
@@ -2409,6 +2415,13 @@
       "name": "perf_hooks.createHistogram",
       "status": "static",
       "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+    },
+    {
+      "id": "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createSlidingWindowHistogram",
+      "status": "static",
+      "note": "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's"
     },
     {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",

@@ -250,6 +250,9 @@ declare module "fs/promises" {
   export function chmod(path: string | URL, mode: number): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
+  /** Platform-specific: defined everywhere as a promise, rejecting with
+   * ERR_METHOD_NOT_IMPLEMENTED where lchmod(2) does not exist (Linux). */
+  export function lchmod(path: string | URL, mode: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
   export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;

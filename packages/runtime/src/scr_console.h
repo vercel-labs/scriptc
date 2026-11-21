@@ -54,6 +54,10 @@ void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *
  * the diagnostics_channel unit never installed its probe. */
 bool scr_console_channel_active(double member);
 void scr_console_set_channel_active(bool (*active)(double member));
+/* A private copy of a console argument pack, each element retained: a
+ * channel subscriber can mutate the published array from a formatted
+ * value's hook while the line is formatted. */
+ScrDyn *scr_console_snapshot_pack(ScrDyn *pack);
 /* The stderr twin (console.error AND console.warn — one stream in Node):
  * identical formatting, with stdout settled first so merged (2>&1) output
  * keeps source order. */

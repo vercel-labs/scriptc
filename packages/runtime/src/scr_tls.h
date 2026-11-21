@@ -104,6 +104,11 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
  * switch), so no registration indirection is needed. */
 void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *), ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn);
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/, size_t ca_len);
+/* tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+ * verification over a legacy certificate object — undefined when it
+ * matches, the ERR_TLS_CERT_ALTNAME_INVALID error otherwise (+1 dyn).
+ * Throws ERR_TLS_CERT_ALTNAME_FORMAT for a malformed alt-name string. */
+ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDyn *cert /*borrowed*/);
 
 /* ── tls.SecureContext + the SNI callback (scr_tls.c) ─────────────────
  * A SecureContext is an opaque refcounted parsed cert/key pair

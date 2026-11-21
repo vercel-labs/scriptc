@@ -1535,6 +1535,449 @@ void scr_histo_dispose(ScrDyn *handle) {
   scr_histo_clear_view(h);
 }
 
+/* ── perf_hooks createSlidingWindowHistogram ──────────────────────────
+ * Node's SlidingWindowHistogram keeps `chunks` histograms of one bucket
+ * layout and rotates them by wall time (chunkDuration, milliseconds) or by recorded
+ * count (recordsPerChunk). A snapshot is a fresh histogram that merges the
+ * chunks still inside the window; the reading methods then behave as any
+ * Histogram's. */
+
+#define SCR_SLIDING_NO_GENERATION UINT64_MAX
+
+typedef struct {
+  int64_t lowest;
+  int64_t highest;
+  int figures;
+  ScrHisto **chunks;      /* owned, chunk_count entries */
+  uint64_t *generations;  /* per slot; SCR_SLIDING_NO_GENERATION = empty */
+  size_t chunk_count;
+  bool time_based;
+  uint64_t rotate_at;     /* chunkDuration converted to ns, or recordsPerChunk */
+  uint64_t origin_ns;
+  uint64_t current_generation;
+  uint64_t records_in_current_chunk;
+  bool has_count_records;
+  size_t rc;
+} ScrSliding;
+
+static ScrSliding *scr_sliding_of(const ScrDyn *handle) {
+  if (handle == NULL || handle->kind != SCR_DYN_HANDLE ||
+      handle->v.handle.tag != SCR_DYNH_SLIDING_HISTOGRAM)
+    return NULL;
+  return handle->v.handle.ptr;
+}
+
+/* A histogram with the given layout, owned by the caller (rc 1). */
+static ScrHisto *scr_histo_alloc(int64_t lowest, int64_t highest, int figures) {
+  ScrHisto *h = calloc(1, sizeof *h);
+  if (h == NULL) {
+    static const char msg[] = "scriptc: out of memory";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return NULL;
+  }
+  if (!scr_histo_config(h, lowest, highest, figures)) {
+    scr_histo_free(h);
+    static const char msg[] = "The value of \"options\" is invalid";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+    return NULL;
+  }
+  h->rc = 1;
+  return h;
+}
+
+static void scr_sliding_reset_chunk(ScrHisto *h) {
+  memset(h->counts, 0, (size_t)h->counts_len * sizeof *h->counts);
+  h->total = 0;
+  h->min_value = INT64_MAX;
+  h->max_value = 0;
+  h->exceeds = 0;
+  h->prev_ns = 0;
+  scr_histo_clear_view(h);
+}
+
+static void scr_sliding_free(ScrSliding *s) {
+  if (s == NULL) return;
+  for (size_t i = 0; i < s->chunk_count; i++) scr_histo_free(s->chunks[i]);
+  free(s->chunks);
+  free(s->generations);
+  free(s);
+}
+
+static void *scr_sliding_retain_v(void *p) {
+  ((ScrSliding *)p)->rc++;
+  return p;
+}
+
+static void scr_sliding_release_v(void *p) {
+  ScrSliding *s = p;
+  if (s == NULL || --s->rc > 0) return;
+  scr_sliding_free(s);
+}
+
+static const ScrDynHandleOps scr_sliding_ops = {
+    .cls = "SlidingWindowHistogram",
+    .retain = scr_sliding_retain_v,
+    .release = scr_sliding_release_v,
+};
+
+static void scr_sliding_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  scr_dyn_handle_install(SCR_DYNH_SLIDING_HISTOGRAM, &scr_sliding_ops);
+}
+
+/* The chunk for a generation, reset or allocated when the slot holds an
+ * older one. */
+static ScrHisto *scr_sliding_chunk(ScrSliding *s, uint64_t generation) {
+  size_t index = (size_t)(generation % s->chunk_count);
+  if (s->generations[index] == generation && s->chunks[index] != NULL)
+    return s->chunks[index];
+  if (s->chunks[index] != NULL) {
+    scr_sliding_reset_chunk(s->chunks[index]);
+  } else {
+    s->chunks[index] = scr_histo_alloc(s->lowest, s->highest, s->figures);
+    if (s->chunks[index] == NULL) return NULL;
+  }
+  s->generations[index] = generation;
+  return s->chunks[index];
+}
+
+static uint64_t scr_sliding_generation(const ScrSliding *s) {
+  if (s->time_based) {
+    uint64_t now = scr_hrtime_ns();
+    return now > s->origin_ns ? (now - s->origin_ns) / s->rotate_at : 0;
+  }
+  if (s->records_in_current_chunk == s->rotate_at) return s->current_generation + 1;
+  return s->current_generation;
+}
+
+static bool scr_sliding_record_value(ScrSliding *s, int64_t value) {
+  uint64_t generation = scr_sliding_generation(s);
+  ScrHisto *chunk = scr_sliding_chunk(s, generation);
+  if (chunk == NULL) return false;
+  scr_histo_record(chunk, value);
+  if (!s->time_based) {
+    if (generation != s->current_generation) {
+      s->current_generation = generation;
+      s->records_in_current_chunk = 0;
+    }
+    s->records_in_current_chunk++;
+    s->has_count_records = true;
+  }
+  return true;
+}
+
+static void scr_sliding_text_append(char *out, size_t cap, size_t *len, const char *text,
+                                    size_t text_len) {
+  if (*len + text_len >= cap) text_len = cap - 1 - *len;
+  memcpy(out + *len, text, text_len);
+  *len += text_len;
+  out[*len] = 0;
+}
+
+/* One option value the way Node's inspect prints it: primitives exactly, a
+ * deeper shape as the sketch the message only needs for its "Received". */
+static void scr_sliding_value_text(const ScrDyn *value, char *out, size_t cap, size_t *len) {
+  char buf[64];
+  switch (value->kind) {
+    case SCR_DYN_NULL:
+      scr_sliding_text_append(out, cap, len, "null", 4);
+      break;
+    case SCR_DYN_UNDEF:
+      scr_sliding_text_append(out, cap, len, "undefined", 9);
+      break;
+    case SCR_DYN_BOOL:
+      scr_sliding_text_append(out, cap, len, value->v.b ? "true" : "false",
+                              value->v.b ? 4 : 5);
+      break;
+    case SCR_DYN_NUM: {
+      size_t n = scr_f64_to_str(value->v.num, buf);
+      scr_sliding_text_append(out, cap, len, buf, n);
+      break;
+    }
+    case SCR_DYN_STR: {
+      ScrStr *quoted = scr_str_inspect_quoted(value->v.str, false);
+      scr_sliding_text_append(out, cap, len, quoted->data, quoted->len);
+      scr_str_release(quoted);
+      break;
+    }
+    case SCR_DYN_BIGINT: {
+      ScrStr *digits = scr_bigint_to_string(value->v.bigint, 10.0);
+      scr_sliding_text_append(out, cap, len, digits->data, digits->len);
+      scr_sliding_text_append(out, cap, len, "n", 1);
+      scr_str_release(digits);
+      break;
+    }
+    case SCR_DYN_ARR:
+      scr_sliding_text_append(out, cap, len, "[ ... ]", 7);
+      break;
+    case SCR_DYN_OBJ:
+      scr_sliding_text_append(out, cap, len, "{ ... }", 7);
+      break;
+    default:
+      scr_sliding_text_append(out, cap, len, "[object]", 8);
+      break;
+  }
+}
+
+/* The options object as Node's inspect prints it in the "exactly one"
+ * message: its own enumerable entries in insertion order. */
+static void scr_sliding_options_text(const ScrDyn *options, char *out, size_t cap) {
+  size_t len = 0;
+  out[0] = 0;
+  if (options == NULL || options->kind != SCR_DYN_OBJ) {
+    const char *text = scr_dyn_inspect_lite(options, out, cap);
+    if (text != out) {
+      size_t n = strlen(text);
+      scr_sliding_text_append(out, cap, &len, text, n);
+    }
+    return;
+  }
+  scr_sliding_text_append(out, cap, &len, "{ ", 2);
+  bool first = true;
+  for (size_t i = 0; i < scr_dyn_obj_count(options); i++) {
+    ScrDynProp prop = scr_dyn_obj_prop_at(options, i);
+    if (!prop.enumerable || (prop.key_len == 6 && memcmp(prop.key, "%error", 6) == 0)) continue;
+    if (!first) scr_sliding_text_append(out, cap, &len, ", ", 2);
+    first = false;
+    bool bare = prop.key_len > 0;
+    for (size_t j = 0; bare && j < prop.key_len; j++) {
+      char c = prop.key[j];
+      bool head = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+      bool tail = head || (c >= '0' && c <= '9');
+      bare = j == 0 ? head : tail;
+    }
+    if (bare) {
+      scr_sliding_text_append(out, cap, &len, prop.key, prop.key_len);
+    } else {
+      ScrStr *raw = scr_str_new(prop.key, prop.key_len);
+      ScrStr *quoted = scr_str_inspect_quoted(raw, false);
+      scr_sliding_text_append(out, cap, &len, quoted->data, quoted->len);
+      scr_str_release(quoted);
+      scr_str_release(raw);
+    }
+    scr_sliding_text_append(out, cap, &len, ": ", 2);
+    scr_sliding_value_text(prop.value, out, cap, &len);
+  }
+  scr_sliding_text_append(out, cap, &len, " }", 2);
+}
+
+/* createSlidingWindowHistogram(options): Node's required options and their
+ * validation order (chunks, the histogram layout, exactly one rotation
+ * mode, then that mode's range). */
+ScrDyn *scr_sliding_new(ScrDyn *options) {
+  ScrSliding *s = NULL;
+  ScrDyn *plain = NULL;
+  bool ok = false;
+  int64_t chunks = 0, lowest = 1, highest = 9007199254740991LL;
+  double figures = 3;
+  int64_t chunk_duration = 0, records_per_chunk = 0;
+  bool has_duration = false, has_records = false;
+  if (options == NULL || options->kind == SCR_DYN_UNDEF ||
+      (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF)) {
+    scr_dyn_arg_type_fail("options", "of type object", options == NULL ? scr_dyn_undefined() : options);
+    return NULL;
+  }
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    plain = scr_dyn_typed_ref_materialize(options);
+    if (scr_exc_pending()) return NULL;
+  }
+  const ScrDyn *opts = plain != NULL ? plain : options;
+  {
+    const ScrDyn *chunks_value = scr_dyn_obj_get(opts, "chunks", 6);
+    if (chunks_value == NULL) chunks_value = scr_dyn_undefined();
+    if (chunks_value->kind != SCR_DYN_NUM) {
+      scr_dyn_prop_type_fail("options.chunks", "of type number", chunks_value);
+      goto done;
+    }
+    if (!scr_histo_integer_ok(chunks_value->v.num, "options.chunks", 1, 1024)) goto done;
+    chunks = (int64_t)chunks_value->v.num;
+    if (!scr_histo_option_int(scr_dyn_obj_get(opts, "lowest", 6), "options.lowest", &lowest))
+      goto done;
+    if (!scr_histo_option_int(scr_dyn_obj_get(opts, "highest", 7), "options.highest", &highest))
+      goto done;
+    {
+      int64_t minimum_highest = lowest > INT64_MAX / 2 ? INT64_MAX : lowest * 2;
+      if (highest < minimum_highest) {
+        char msg[192];
+        int len = snprintf(msg, sizeof msg,
+                           "The value of \"options.highest\" is out of range. It must be >= 2 * "
+                           "options.lowest (%lldn). Received %lld",
+                           (long long)minimum_highest, (long long)highest);
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+        goto done;
+      }
+    }
+    {
+      const ScrDyn *fig = scr_dyn_obj_get(opts, "figures", 7);
+      if (fig != NULL && fig->kind != SCR_DYN_UNDEF) {
+        if (fig->kind != SCR_DYN_NUM) {
+          scr_dyn_prop_type_fail("options.figures", "of type number", fig);
+          goto done;
+        }
+        if (!scr_histo_integer_ok(fig->v.num, "options.figures", 1, 5)) goto done;
+        figures = fig->v.num;
+      }
+    }
+    {
+      const ScrDyn *duration = scr_dyn_obj_get(opts, "chunkDuration", 13);
+      const ScrDyn *records = scr_dyn_obj_get(opts, "recordsPerChunk", 15);
+      has_duration = duration != NULL && duration->kind != SCR_DYN_UNDEF;
+      has_records = records != NULL && records->kind != SCR_DYN_UNDEF;
+      if (has_duration == has_records) {
+        char received[160];
+        scr_sliding_options_text(opts, received, sizeof received);
+        char msg[288];
+        int len = snprintf(msg, sizeof msg,
+                           "The argument 'options' must specify exactly one of "
+                           "\"chunkDuration\" or \"recordsPerChunk\". Received %s",
+                           received);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_INVALID_ARG_VALUE");
+        goto done;
+      }
+      if (has_duration) {
+        if (duration->kind != SCR_DYN_NUM) {
+          scr_dyn_prop_type_fail("options.chunkDuration", "of type number", duration);
+          goto done;
+        }
+        if (!scr_histo_integer_ok(duration->v.num, "options.chunkDuration", 1, 18446744073709.0))
+          goto done;
+        chunk_duration = (int64_t)duration->v.num;
+      } else {
+        if (records->kind != SCR_DYN_NUM) {
+          scr_dyn_prop_type_fail("options.recordsPerChunk", "of type number", records);
+          goto done;
+        }
+        if (!scr_histo_integer_ok(records->v.num, "options.recordsPerChunk", 1, 9007199254740991.0))
+          goto done;
+        records_per_chunk = (int64_t)records->v.num;
+      }
+    }
+  }
+  ok = true;
+done:
+  scr_dyn_release(plain);
+  if (!ok) return NULL;
+  {
+    ScrHisto *spare = scr_histo_alloc(lowest, highest, (int)figures);
+    if (spare == NULL) return NULL;
+    scr_histo_free(spare);
+  }
+  scr_sliding_install();
+  /* snapshot() boxes its merged histogram, so the RecordableHistogram ops
+   * must be registered too. */
+  scr_histo_install();
+  s = calloc(1, sizeof *s);
+  if (s == NULL) {
+    static const char msg[] = "scriptc: out of memory";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return NULL;
+  }
+  s->lowest = lowest;
+  s->highest = highest;
+  s->figures = (int)figures;
+  s->chunk_count = (size_t)chunks;
+  s->chunks = calloc(s->chunk_count, sizeof *s->chunks);
+  s->generations = malloc(s->chunk_count * sizeof *s->generations);
+  if (s->chunks == NULL || s->generations == NULL) {
+    scr_sliding_free(s);
+    static const char msg[] = "scriptc: out of memory";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return NULL;
+  }
+  for (size_t i = 0; i < s->chunk_count; i++) s->generations[i] = SCR_SLIDING_NO_GENERATION;
+  s->time_based = has_duration;
+  /* chunkDuration is milliseconds (Node multiplies by 1,000,000 for the
+   * nanosecond rotation interval). */
+  s->rotate_at = has_duration ? (uint64_t)chunk_duration * 1000000ULL
+                              : (uint64_t)records_per_chunk;
+  s->origin_ns = scr_hrtime_ns();
+  s->rc = 1;
+  ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_SLIDING_HISTOGRAM);
+  if (box == NULL) {
+    scr_sliding_free(s);
+    return NULL;
+  }
+  scr_sliding_release_v(s); /* the box holds the one live reference */
+  return box;
+}
+
+void scr_sliding_record_checked(ScrDyn *handle, double value) {
+  ScrSliding *s = scr_sliding_of(handle);
+  if (s == NULL) return;
+  if (!scr_histo_integer_ok(value, "val", 1, 9007199254740991.0)) return;
+  scr_sliding_record_value(s, (int64_t)value);
+}
+
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value) {
+  ScrSliding *s = scr_sliding_of(handle);
+  int64_t recorded = 0;
+  bool fits;
+  if (s == NULL || value == NULL) return;
+  fits = scr_bigint_i64_fits(value);
+  if (fits) recorded = scr_bigint_to_i64(value);
+  /* Node takes the BigInt through Int64Value and refuses anything below 1
+   * before the value reaches the window, so a rejected record does not
+   * advance a generation or evict a sample. */
+  if (!fits || recorded < 1) {
+    static const char msg[] = "value is out of range";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+    return;
+  }
+  scr_sliding_record_value(s, recorded);
+}
+
+void scr_sliding_reset(ScrDyn *handle) {
+  ScrSliding *s = scr_sliding_of(handle);
+  if (s == NULL) return;
+  for (size_t i = 0; i < s->chunk_count; i++) s->generations[i] = SCR_SLIDING_NO_GENERATION;
+  s->origin_ns = scr_hrtime_ns();
+  s->current_generation = 0;
+  s->records_in_current_chunk = 0;
+  s->has_count_records = false;
+}
+
+/* snapshot(): a fresh Histogram over the chunks inside the window. */
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle) {
+  ScrSliding *s = scr_sliding_of(handle);
+  if (s == NULL) return NULL;
+  ScrHisto *snap = scr_histo_alloc(s->lowest, s->highest, s->figures);
+  if (snap == NULL) return NULL;
+  uint64_t current = 0;
+  bool merge = true;
+  if (s->time_based) {
+    current = scr_sliding_generation(s);
+  } else if (s->has_count_records) {
+    current = s->current_generation;
+  } else {
+    merge = false;
+  }
+  if (merge) {
+    for (size_t i = 0; i < s->chunk_count; i++) {
+      const uint64_t generation = s->generations[i];
+      if (generation == SCR_SLIDING_NO_GENERATION || generation > current ||
+          current - generation >= s->chunk_count || s->chunks[i] == NULL)
+        continue;
+      const ScrHisto *chunk = s->chunks[i];
+      for (int64_t index = 0; index < chunk->counts_len; index++) {
+        if (chunk->counts[index] == 0) continue;
+        scr_histo_record_value(snap, scr_histo_value_at_index(chunk, index),
+                               chunk->counts[index]);
+      }
+      snap->exceeds += chunk->exceeds;
+      if (chunk->prev_ns > snap->prev_ns) snap->prev_ns = chunk->prev_ns;
+    }
+  }
+  ScrDyn *box = scr_dyn_new_handle(snap, SCR_DYNH_HISTOGRAM);
+  if (box == NULL) {
+    scr_histo_free(snap);
+    return NULL;
+  }
+  scr_histo_release_v(snap); /* the box holds the one live reference */
+  return box;
+}
+
 /* ── Histogram confidence intervals and Welch's t-test ────────────────
  * Node's Histogram::MeanCI, PercentileCI and WelchTest over the same
  * HdrHistogram readings (hdr_mean/hdr_stddev with Bessel's correction), the

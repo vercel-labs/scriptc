@@ -69,6 +69,12 @@ attempt("2des", () => createPrivateKey({ key: twoDes, passphrase: "secret" }));
 attempt("rc2", () => createPrivateKey({ key: rc2, passphrase: "secret" }));
 attempt("md5-des", () => createPrivateKey({ key: md5des, passphrase: "secret" }));
 attempt("3des buffer pass", () => createPrivateKey({ key: threeDes, passphrase: Buffer.from("secret") }));
+attempt("3des shared passphrase", () => {
+  const shared = new SharedArrayBuffer(6);
+  const passphrase = Buffer.from(shared);
+  passphrase.write("secret", "utf8");
+  return createPrivateKey({ key: threeDes, passphrase });
+});
 attempt("3des bad pass", () => createPrivateKey({ key: threeDes, passphrase: "nope" }));
 attempt("3des no pass", () => createPrivateKey({ key: threeDes }));
 const der = Buffer.from(threeDes.split("\n").filter((line) => !line.includes("-----")).join(""), "base64");

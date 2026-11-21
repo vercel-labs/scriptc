@@ -1418,6 +1418,14 @@ static const SpKeyCipher sp_pbes1_2des = {"pbeWithSHAAnd2-KeyTripleDES-CBC", "DE
  * OPENSSL_asc2uni uses, where each byte is one UTF-16 code unit. The
  * string ends with the KDF's zero unit. +1 malloc'd. */
 static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t *out_len) {
+  /* The passphrase can be a live view of shared memory: decode from a
+   * snapshot so a concurrent writer cannot change a byte between the
+   * validation pass and the conversion pass (which reads each sequence's
+   * trailing bytes without re-checking the bounds). */
+  unsigned char *snapshot = malloc(len ? len : 1);
+  if (!snapshot) scr_trap("scriptc: out of memory\n");
+  if (len) memcpy(snapshot, s, len);
+  s = snapshot;
   bool utf8 = true;
   for (size_t i = 0; utf8 && i < len;) {
     unsigned c = s[i];
@@ -1500,6 +1508,8 @@ static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t 
   b[o++] = 0;
   b[o++] = 0;
   *out_len = o;
+  mbedtls_platform_zeroize(snapshot, len);
+  free(snapshot);
   return b;
 }
 

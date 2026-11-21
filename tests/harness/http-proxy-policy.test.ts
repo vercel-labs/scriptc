@@ -326,3 +326,62 @@ console.log("fetch", res);
   expect(httpProxy.heads[0]).toBe("CONNECT target.invalid:80 HTTP/1.1");
   expect(httpsProxy.heads).toEqual([]);
 });
+
+test("an empty proxy value leaves the request unproxied", async () => {
+  const proxy = await recordingProxy(okAnswer("prox"));
+  const source = `import * as http from "node:http";
+http.get({ host: "target.invalid", port: 80, path: "/x" }, (res) => {
+  res.resume();
+  res.on("end", () => console.log("body"));
+}).on("error", (e) => console.log("error", e.code));
+`;
+  const { bin, entry } = await build("emptyproxy", source);
+  const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: "" };
+  const reference = await run(process.execPath, [entry], env);
+  const native = await run(bin, [], env);
+  expect(native.stdout).toBe(reference.stdout);
+  expect(reference.stdout.trim()).toBe("error ENOTFOUND");
+  expect(proxy.heads).toEqual([]);
+});
+
+test("an https proxied request accepts the origin's Host header", async () => {
+  const proxy = await recordingProxy((sock) => {
+    sock.end("HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n");
+  });
+  const source = `import * as https from "node:https";
+https.get({ host: "target.invalid", port: 443, path: "/x", headers: { host: "target.invalid" } })
+  .on("error", (e) => console.log("error", e.code));
+`;
+  const { bin, entry } = await build("httpshost", source);
+  const env = { NODE_USE_ENV_PROXY: "1", HTTPS_PROXY: `http://127.0.0.1:${proxy.port}` };
+  const reference = await run(process.execPath, [entry], env);
+  const native = await run(bin, [], env);
+  expect(native.stdout).toBe(reference.stdout);
+  expect(reference.stdout.trim()).toBe("error ERR_PROXY_TUNNEL");
+  expect(proxy.heads).toEqual([
+    "CONNECT target.invalid:443 HTTP/1.1",
+    "CONNECT target.invalid:443 HTTP/1.1",
+  ]);
+});
+
+test("an absolute-form path is the proxied request target itself", async () => {
+  const proxy = await recordingProxy(okAnswer("prox"));
+  const source = `import * as http from "node:http";
+http.get({ host: "target.invalid", port: 80, path: "http://target.invalid/z?q=1" }, (res) => {
+  let body = "";
+  res.setEncoding("utf8");
+  res.on("data", (chunk) => { body += chunk; });
+  res.on("end", () => console.log("body", body));
+}).on("error", (e) => console.log("error", e.code));
+`;
+  const { bin, entry } = await build("absolutepath", source);
+  const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxy.port}` };
+  const reference = await run(process.execPath, [entry], env);
+  const native = await run(bin, [], env);
+  expect(native.stdout).toBe(reference.stdout);
+  expect(reference.stdout.trim()).toBe("body prox");
+  expect(proxy.heads).toEqual([
+    "GET http://target.invalid/z?q=1 HTTP/1.1",
+    "GET http://target.invalid/z?q=1 HTTP/1.1",
+  ]);
+});

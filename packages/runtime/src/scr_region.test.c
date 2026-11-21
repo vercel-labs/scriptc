@@ -275,6 +275,48 @@ static void check_cycles(void) {
   puts("owned cycles and dead outside cycles do not keep a region");
 }
 
+static void check_array_metadata(void) {
+  for (int strings = 0; strings < 2; strings++) for (int outside = 0; outside < 2; outside++) {
+    double r = region();
+    scr_region_enter(r);
+    Node *root = node_new(0), *held = node_new(7);
+    ScrArr *a = scr_arr_new(strings ? SCR_ELEM_STR : SCR_ELEM_F64, 1);
+    if (strings) scr_arr_push_ref(a, scr_str_new("held", 4));
+    else scr_arr_push_f64(a, 42);
+    root->kids = a;
+    ScrDyn *metadata = scr_dyn_new_obj();
+    scr_arr_ext(a)->metadata = metadata;
+    scr_dyn_obj_set(metadata, "held", 4, scr_dyn_new_typed_ref(
+        held, node_retain, node_release, "Node", 4, NULL, NULL));
+    node_release(held);
+    if (outside) scr_arr_retain(a);
+    scr_region_leave();
+    node_release(root);
+    ndisposed = 0;
+    void (*hook)(void *) = scr_weak_dispose_hook;
+    scr_weak_dispose_hook = note_disposed;
+    scr_region_release(r);
+    if (outside) {
+      assert(!was_disposed(root) && !was_disposed(held));
+      assert(held->value == 7 && a->len == 1);
+      scr_arr_release(a);
+      /* An ordinary array release leaves the region's counted references
+       * unchanged. Cross the same allocation threshold as check_retry_schedule
+       * before asking the scheduler to revisit this ownership graph. */
+      double retry = region();
+      scr_region_enter(retry);
+      for (size_t i = 0; i < ((size_t)9 << 20) / sizeof(Node); i++) node_release(node_new(0));
+      scr_region_leave();
+      scr_region_enter(retry);
+      scr_region_leave();
+      scr_region_release(retry);
+    }
+    assert(was_disposed(root) && was_disposed(held));
+    scr_weak_dispose_hook = hook;
+  }
+  puts("primitive array metadata participates in region ownership");
+}
+
 static void check_unwalked(void) {
   double r = region();
   scr_region_enter(r);
@@ -527,6 +569,8 @@ int main(int argc, char **argv) {
     check_poison();
   } else if (!strcmp(mode, "debug")) {
     check_debug_report();
+  } else if (!strcmp(mode, "array-metadata")) {
+    check_array_metadata();
   } else if (!strcmp(mode, "retained")) {
     check_default_region();
     check_published();

@@ -504,6 +504,8 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                              ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
 /* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
 const ScrDyn *scr_http_global_agent(bool secure);
+/* The same, only when the program already created it (no allocation). */
+const ScrDyn *scr_http_global_agent_existing(bool secure);
 /* fetch()'s client request for a direct connection: through fetch's own
  * keep-alive agent, which reuses an idle connection with the same host,
  * port and pool_key (+1). */

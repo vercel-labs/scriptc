@@ -9146,6 +9146,13 @@ const ScrDyn *scr_http_global_agent(bool secure) {
   return *slot;
 }
 
+/* The global agent only if the program created one. A fetch-only program
+ * never reads http.globalAgent, and this lookup must not create it there:
+ * the handle's ops come from the http unit such a program does not link. */
+const ScrDyn *scr_http_global_agent_existing(bool secure) {
+  return scr_http_global_agents[secure ? 1 : 0];
+}
+
 /* http.globalAgent as a value (+1). */
 ScrDyn *scr_http_global_agent_value(bool secure) {
   return scr_dyn_retain((ScrDyn *)scr_http_global_agent(secure));
@@ -9226,7 +9233,7 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   ScrNetSocket *presock = socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
                           : queue || reuse    ? scr_net_connect_deferred(p, host)
                                               : NULL;
-  const ScrDyn *global_agent = scr_http_global_agent(default_port == 443);
+  const ScrDyn *global_agent = scr_http_global_agent_existing(default_port == 443);
   bool env_proxy = global_agent != NULL && global_agent->kind == SCR_DYN_HANDLE &&
                    global_agent->v.handle.ptr == (void *)ag;
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,

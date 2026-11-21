@@ -3482,6 +3482,10 @@ function buildLibFnSignatures() {
       result: VOID,
     },
     "tls.sockOnSession": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
+    /** TLSSocket.on('keylog') and tls.Server.on('keylog'): Node's NSS
+     * key-log lines, each a Buffer. */
+    "tls.sockOnKeylog": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
+    "tls.serverOnKeylog": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
     /** The 'secure' event: the handshake completed (after secureConnect on
      * a client). Plain sockets never fire it. */
     "tls.sockOnSecure": {

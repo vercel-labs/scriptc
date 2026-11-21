@@ -317,6 +317,14 @@ double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
 void scr_histo_dispose(ScrDyn *handle);
+/* createSlidingWindowHistogram: a window of histogram chunks rotated by
+ * chunkDuration (milliseconds) or recordsPerChunk; snapshot() merges the
+ * window. */
+ScrDyn *scr_sliding_new(ScrDyn *options);
+void scr_sliding_record_checked(ScrDyn *handle, double value);
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_sliding_reset(ScrDyn *handle);
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle);
 /* Histogram inference: the confidence-interval and Welch readings lower
  * through selectors after their arguments are validated once. */
 double scr_histo_confidence(ScrDyn *options);

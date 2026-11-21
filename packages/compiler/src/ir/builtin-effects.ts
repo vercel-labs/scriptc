@@ -791,6 +791,12 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
   "perf.timerify",
+  // createSlidingWindowHistogram's options and record forms validate, and a
+  // snapshot can fail to allocate.
+  "perf.slidingNew",
+  "perf.slidingRecord",
+  "perf.slidingRecordBig",
+  "perf.slidingSnapshot",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",

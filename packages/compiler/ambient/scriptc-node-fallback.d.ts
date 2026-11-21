@@ -2157,6 +2157,26 @@ declare module "node:perf_hooks" {
     subtract(other: RecordableHistogram): void;
   }
   export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
+  /* createSlidingWindowHistogram keeps a fixed number of histogram chunks
+   * and rotates them by time (chunkDuration, milliseconds) or by recorded
+   * count (recordsPerChunk); snapshot() answers a Histogram over the
+   * chunks still inside the window. */
+  export interface SlidingWindowHistogramOptions {
+    chunks: number;
+    chunkDuration?: number | undefined;
+    recordsPerChunk?: number | undefined;
+    lowest?: number | bigint | undefined;
+    highest?: number | bigint | undefined;
+    figures?: number | undefined;
+  }
+  export interface SlidingWindowHistogram {
+    record(val: number | bigint): void;
+    snapshot(): Histogram;
+    reset(): void;
+  }
+  export function createSlidingWindowHistogram(
+    options: SlidingWindowHistogramOptions,
+  ): SlidingWindowHistogram;
   export interface TimerifyOptions {
     histogram?: RecordableHistogram | undefined;
   }

@@ -388,6 +388,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.async_hooks.executionAsyncResource",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncResource",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.async_hooks.triggerAsyncId",
       "kind": "node-builtin",
       "name": "async_hooks.triggerAsyncId",
@@ -1497,6 +1503,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.lchmod",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchmod",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.lchown",
       "kind": "node-builtin",
       "name": "fs/promises.lchown",
@@ -1845,6 +1857,14 @@
       "kind": "node-builtin",
       "name": "module.enableCompileCache",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.module.findPackageJSON",
+      "kind": "node-builtin",
+      "name": "module.findPackageJSON",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph"
     },
     {
       "id": "node-builtin.module.flushCompileCache",
@@ -2397,11 +2417,18 @@
       "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
     },
     {
+      "id": "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createSlidingWindowHistogram",
+      "status": "static",
+      "note": "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's"
+    },
+    {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
       "status": "static",
-      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile, burnRate, the min, max, mean, stddev, count, exceeds, skewness, kurtosis and EWMA readings, and the distribution comparisons are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.clearMarks",

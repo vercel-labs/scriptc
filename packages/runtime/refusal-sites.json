@@ -301,6 +301,12 @@
  },
  {
   "file": "scr_console_native.c",
+  "function": "scr_console_inst_require",
+  "message": "Calling %s on this value has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
   "function": "scr_console_dir_dyn",
   "message": "console.dir of a Buffer has no lowering",
   "code": "SC2020"
@@ -349,32 +355,8 @@
  },
  {
   "file": "scr_dgram.c",
-  "function": "scr_dgram_block_list_fail",
-  "message": "a receiveBlockList or sendBlockList is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "abort-driven close is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
   "function": "scr_dgram_create_chk",
   "message": "a custom lookup function is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_bind_opts",
-  "message": "opening an existing descriptor is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_bind_sync_chk",
-  "message": "opening an existing descriptor is not supported yet",
   "code": "SC2020"
  },
  {
@@ -829,6 +811,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"
@@ -957,18 +945,6 @@
   "file": "scr_inspect.c",
   "function": "scr_insp_inspect",
   "message": "with a depth argument that is not a number or null has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding Error values have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding accessor properties have no lowering",
   "code": "SC2020"
  },
  {

@@ -33,13 +33,11 @@ function attempt(label, run) {
 }
 `;
 
-// The CommonJS module object is a handle (a number) where its type is known.
-// Node holds the object in every position, so a position that would hold the
-// number instead is refused by name; members, typeof, comparisons and
-// truthiness answer as in Node.
-test("the CommonJS module object in an untyped position is refused by name", async () => {
-  const refused =
-    "Error SC1090 the CommonJS 'module' object as a value in an untyped position (its members, typeof, and comparisons such as require.main === module lower; an untyped use would see a number where Node has the object) is not supported yet";
+// The CommonJS module object is Node's object in every position: members,
+// typeof, comparisons and truthiness answer as in Node, and so do the uses
+// that would hold the handle's number — a conversion, an untyped argument
+// and a function's result.
+test("the CommonJS module object holds the object in untyped positions, as Node does", async () => {
   const stdout = await run(
     "main.cjs",
     `${ATTEMPT}
@@ -67,13 +65,13 @@ attempt("returned", () => kind((() => module)()));
     "member . boolean",
     "main true",
     "truthy yes",
-    `argument ${refused}`,
-    `string ${refused}`,
-    `template ${refused}`,
-    `concatenation ${refused}`,
-    `in ${refused}`,
-    `held ${refused}`,
-    `returned ${refused}`,
+    "argument object",
+    "string [object Object]",
+    "template [object Object]",
+    "concatenation [object Object]",
+    "in true",
+    "held true",
+    "returned object",
     "",
   ]);
 });

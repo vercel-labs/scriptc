@@ -242,7 +242,7 @@ import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
-import { lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
@@ -380,6 +380,21 @@ function isCompileCacheDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpr
           return node.name.text === "module" || node.name.text === "node:module";
       }
       return false;
+    })
+  );
+}
+
+/** A member of an `import.meta` value held in a variable: the metadata object
+ * importMetaValue builds reads through the checked-dynamic tier. */
+function isImportMetaDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!["url", "dirname", "filename", "main", "resolve"].includes(expr.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+  return (
+    !!symbol &&
+    symbol.declarations.some((declaration) => {
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+      const parent = declaration.parent;
+      return ts.isInterfaceDeclaration(parent) && parent.name.text === "ImportMeta";
     })
   );
 }
@@ -1508,6 +1523,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerErrorCodeProperty(expr) ??
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
+    lowerDOMExceptionStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
     // The _readableState/_writableState scalar READS (the suite's
@@ -2025,6 +2041,7 @@ export function lowerPropertyAccessExpr(
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
     isCompileCacheDynProperty(lowerer, expr) ||
+    isImportMetaDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
     moduleConstants ||

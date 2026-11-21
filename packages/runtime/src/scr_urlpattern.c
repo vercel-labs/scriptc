@@ -1113,10 +1113,17 @@ static ScrStr *ws_strip_protocol(ScrStr *value) {
 }
 
 static bool ws_read_field(const ScrDyn *object, const char *name, ScrStr **out) {
-  /* scr_dyn_obj_get answers a borrowed value. */
-  ScrDyn *value = scr_dyn_obj_get(object, name, strlen(name));
-  if (value == NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) return true;
+  /* An ordinary property read, so a component behind a getter answers the
+   * value its getter returns (the standard reads the record's components
+   * with Get, not as own data properties). Owned result. */
+  ScrDyn *value = scr_dyn_obj_read(object, name, strlen(name));
+  if (value == NULL) return false;
+  if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) {
+    scr_dyn_release(value);
+    return true;
+  }
   ScrStr *text = scr_dyn_string_coerce_js(value);
+  scr_dyn_release(value);
   if (text == NULL) return false;
   *out = text;
   return true;
@@ -1237,7 +1244,10 @@ static ScrStr *ws_dot_segments(const ScrStr *path) {
     bool append = true;
     bool empty = false;
     if (ws_double_dot(segment, n)) {
-      append = false;
+      /* a ".." that ends the path leaves the directory it entered, whose
+       * trailing slash is part of the result ("/a/b/.." is "/a/") */
+      append = end;
+      empty = end;
       if (len > 0) len--;
     } else if (ws_single_dot(segment, n)) {
       /* only a "." that ends the path adds its empty segment */
@@ -1359,6 +1369,18 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
     ScrUrl *url = ws_parse_or_null(candidate);
     scr_str_release(candidate);
     if (url != NULL) {
+      /* A hostname component is host text only: a port or a query hidden in
+       * it would be dropped here while the separately matched components
+       * keep it, so both are the standard's TypeError. */
+      ScrStr *port = scr_url_port(url);
+      ScrStr *search = scr_url_search(url);
+      bool host_only = port->len == 0 && search->len == 0;
+      scr_str_release(port);
+      scr_str_release(search);
+      if (!host_only) {
+        scr_url_release(url);
+        break;
+      }
       ScrStr *out = scr_url_hostname(url);
       scr_url_release(url);
       return out;
@@ -1366,26 +1388,43 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
     break;
   }
   case WF_PORT: {
+    /* A port component is a number: the leading decimal digits are the
+     * port and text after them is not part of it (so "80@host" is port 80,
+     * never a hidden authority). A value that does not start with a digit,
+     * carries the URL's port terminators ('?', ':', '\\', '+'), or exceeds
+     * 65535 is the standard's TypeError. */
     if (value->len == 0) return scr_str_new("", 0);
-    WsBuf b = {0};
+    if (value->len == 1 && value->data[0] == '*') return scr_str_new("*", 1);
+    size_t digits = 0;
+    uint64_t number = 0;
+    while (digits < value->len && value->data[digits] >= '0' && value->data[digits] <= '9') {
+      number = number * 10 + (uint64_t)(value->data[digits] - '0');
+      if (number > 65535) break;
+      digits++;
+    }
+    if (digits == 0 || number > 65535) break;
+    for (size_t i = digits; i < value->len; i++) {
+      char c = value->data[i];
+      if (c == '?' || c == ':' || c == '\\' || c == '+') {
+        digits = 0;
+        break;
+      }
+    }
+    if (digits == 0) break;
+    /* A special scheme's default port is the empty port, as a parsed URL
+     * answers it (the record's other components see the stripped value). */
     if (protocol != NULL && protocol->len > 0) {
-      ws_buf_scr(&b, protocol);
-    } else {
-      /* a non-special scheme: no default port is stripped */
-      ws_buf_str(&b, "x");
+      const char *default_port = NULL;
+      if (ws_scheme_is(protocol, "http") || ws_scheme_is(protocol, "ws")) default_port = "80";
+      else if (ws_scheme_is(protocol, "https") || ws_scheme_is(protocol, "wss"))
+        default_port = "443";
+      else if (ws_scheme_is(protocol, "ftp")) default_port = "21";
+      if (default_port != NULL && strtoull(default_port, NULL, 10) == number)
+        return scr_str_new("", 0);
     }
-    ws_buf_str(&b, "://h:");
-    ws_buf_scr(&b, value);
-    ws_buf_str(&b, "/");
-    ScrStr *candidate = ws_buf_finish(&b);
-    ScrUrl *url = ws_parse_or_null(candidate);
-    scr_str_release(candidate);
-    if (url != NULL) {
-      ScrStr *out = scr_url_port(url);
-      scr_url_release(url);
-      return out;
-    }
-    break;
+    char buf[8];
+    int n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)number);
+    return scr_str_new(buf, (size_t)n);
   }
   case WF_PATHNAME:
     return ws_path_canonicalize(value, base);

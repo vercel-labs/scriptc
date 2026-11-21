@@ -7194,6 +7194,10 @@ static void scr_http_client_arm_socket_drain(ScrHttpClientReq *c) {
 
 static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
   if (!c->need_drain || c->ended || c->destroyed || c->close_emitted) return;
+  /* While the CONNECT reply is pending nothing request-owned can leave, and
+   * the socket's own buffer is empty: arming its flush callback here would
+   * re-enter immediately on every tick. The establishment path resumes. */
+  if (c->tunnel_pending) return;
   if (scr_http_client_writable_length(c) != 0) {
     scr_http_client_arm_socket_drain(c);
     return;
@@ -8088,6 +8092,8 @@ static void scr_http_client_sock_established(void *ctx) {
     if (c->sock != NULL && !c->destroyed && !c->close_emitted && !scr_exc_pending())
       scr_http_send_chunk_end(c->sock, &c->trailers);
   }
+  /* the upload held for the tunnel can drain now */
+  scr_http_client_maybe_drain(c);
   scr_http_client_queue_finish(c);
 }
 
@@ -8336,6 +8342,169 @@ static bool scr_http_proxy_spec_invalid(const ScrStr *spec) {
   return true;
 }
 
+/* The proxy as error text shows it: the configured URL with its userinfo
+ * removed, so credentials never reach a message or a log. */
+static ScrStr *scr_http_proxy_display(const ScrStr *spec) { /* +1, nullable */
+  if (spec == NULL) return NULL;
+  size_t scheme_end = SIZE_MAX;
+  for (size_t i = 0; i + 2 < spec->len; i++)
+    if (spec->data[i] == ':' && spec->data[i + 1] == '/' && spec->data[i + 2] == '/') {
+      scheme_end = i + 3;
+      break;
+    }
+  size_t path_at = spec->len;
+  for (size_t i = scheme_end == SIZE_MAX ? 0 : scheme_end; i < spec->len; i++)
+    if (spec->data[i] == '/') {
+      path_at = i;
+      break;
+    }
+  if (scheme_end == SIZE_MAX) return scr_str_retain((ScrStr *)spec);
+  size_t at_sign = SIZE_MAX;
+  for (size_t i = scheme_end; i < path_at; i++)
+    if (spec->data[i] == '@') at_sign = i;
+  if (at_sign == SIZE_MAX) return scr_str_retain((ScrStr *)spec);
+  ScrHttpBuf out = {NULL, 0, 0};
+  scr_http_buf_append(&out, spec->data, scheme_end);
+  scr_http_buf_append(&out, spec->data + at_sign + 1, spec->len - at_sign - 1);
+  ScrStr *answer = scr_str_new(out.data, out.len);
+  free(out.data);
+  return answer;
+}
+
+/* Whether the configured proxy applies to this target, and that it is one
+ * this runtime can dial. A configured value that cannot be used fails closed
+ * here (Node's ERR_PROXY_INVALID_CONFIG for a malformed value, a named
+ * refusal for a scheme this runtime does not dial) — never a direct
+ * connection. */
+static bool scr_http_proxy_configured(bool secure, const ScrStr *host, double port) {
+  const ScrStr *spec = scr_http_proxy_spec(secure);
+  if (spec == NULL || scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port))
+    return false;
+  if (scr_http_proxy_spec_invalid(spec)) {
+    scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
+    return false;
+  }
+  if (spec->len < 7 || memcmp(spec->data, "http://", 7) != 0) {
+    static const char msg[] =
+        "environment proxy URLs other than http:// are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    return false;
+  }
+  return true;
+}
+
+/* Node's proxied-request target checks (RFC 9112 3.2.2): the authority must
+ * parse as a URL, a supplied Host header must name that authority, and the
+ * path must be origin-form or an absolute URI for the same authority. Throws
+ * Node's errors; the request never dials. */
+static bool scr_http_proxy_target_valid(const ScrStr *host, double port, const ScrStr *path,
+                                        ScrArr *header_pairs /*borrowed, nullable*/) {
+  ScrHttpBuf base = {NULL, 0, 0};
+  bool v6 = memchr(host->data, ':', host->len) != NULL;
+  scr_http_buf_str(&base, "http://");
+  if (v6) scr_http_buf_str(&base, "[");
+  scr_http_buf_append(&base, host->data, host->len);
+  if (v6) scr_http_buf_str(&base, "]");
+  if ((int)port != 80) {
+    char pbuf[16];
+    snprintf(pbuf, sizeof pbuf, ":%d", (int)port);
+    scr_http_buf_str(&base, pbuf);
+  }
+  ScrStr *source = scr_str_new(base.data, base.len);
+  free(base.data);
+  /* an authority with controls, whitespace or other URL-breaking syntax is
+   * not a URL at all: Node's ERR_INVALID_URL at construction */
+  ScrUrl *request_base = scr_url_new(source);
+  scr_str_release(source);
+  if (request_base == NULL) return false; /* the Invalid URL is pending */
+  ScrStr *authority = scr_url_host(request_base); /* +1, host[:port] normalized */
+  bool ok = true;
+  if (header_pairs != NULL) {
+    double pairs = scr_arr_len(header_pairs);
+    for (double i = 0; i + 1 < pairs; i += 2) {
+      ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, i);
+      if (name == NULL || name->len != 4) continue;
+      if (tolower((unsigned char)name->data[0]) != 'h' ||
+          tolower((unsigned char)name->data[1]) != 'o' ||
+          tolower((unsigned char)name->data[2]) != 's' ||
+          tolower((unsigned char)name->data[3]) != 't')
+        continue;
+      ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      if (value == NULL) continue;
+      if (value->len != authority->len ||
+          memcmp(value->data, authority->data, authority->len) != 0) {
+        ScrJsonBuf message;
+        scr_jb_init(&message);
+        scr_jb_puts(&message, "The property 'Host in options.headers' must match the request "
+                              "authority (");
+        scr_jb_write(&message, authority->data, authority->len);
+        scr_jb_puts(&message, "). Received '");
+        scr_jb_write(&message, value->data, value->len);
+        scr_jb_puts(&message, "'");
+        ScrStr *text = scr_jb_finish(&message);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+        scr_str_release(text);
+        ok = false;
+      }
+      break;
+    }
+  }
+  if (ok && (path->len == 0 || path->data[0] != '/')) {
+    ScrUrl *absolute = scr_url_can_parse((ScrStr *)path) ? scr_url_new((ScrStr *)path) : NULL;
+    if (absolute == NULL) {
+      ScrJsonBuf message;
+      scr_jb_init(&message);
+      scr_jb_puts(&message, "The property 'options.path' must be in absolute-form or start "
+                            "with /. Received '");
+      scr_jb_write(&message, path->data, path->len);
+      scr_jb_puts(&message, "'");
+      ScrStr *text = scr_jb_finish(&message);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+      scr_str_release(text);
+      ok = false;
+    } else {
+      ScrStr *protocol = scr_url_protocol(absolute);
+      ScrStr *user = scr_url_username(absolute);
+      ScrStr *password = scr_url_password(absolute);
+      ScrStr *absolute_host = scr_url_host(absolute);
+      if (user->len != 0 || password->len != 0) {
+        static const char msg[] = "The property 'options.path' must not contain userinfo, use "
+                                  "options.auth instead";
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        ok = false;
+      } else if (protocol->len != 5 || memcmp(protocol->data, "http:", 5) != 0) {
+        static const char msg[] = "The property 'options.path' must use http: scheme when "
+                                  "specified as an absolute URL";
+        scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_ARG_VALUE");
+        ok = false;
+      } else if (absolute_host->len != authority->len ||
+                 memcmp(absolute_host->data, authority->data, authority->len) != 0) {
+        ScrJsonBuf message;
+        scr_jb_init(&message);
+        scr_jb_puts(&message, "The property 'options.path' must match the request authority (");
+        scr_jb_write(&message, authority->data, authority->len);
+        scr_jb_puts(&message, "). Received '");
+        ScrStr *href = scr_url_href(absolute);
+        scr_jb_write(&message, href->data, href->len);
+        scr_jb_puts(&message, "'");
+        scr_str_release(href);
+        ScrStr *text = scr_jb_finish(&message);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_INVALID_ARG_VALUE");
+        scr_str_release(text);
+        ok = false;
+      }
+      scr_str_release(protocol);
+      scr_str_release(user);
+      scr_str_release(password);
+      scr_str_release(absolute_host);
+      scr_url_release(absolute);
+    }
+  }
+  scr_str_release(authority);
+  scr_url_release(request_base);
+  return ok;
+}
+
 /* The proxy a plain-http target goes through, parsed from HTTP_PROXY: an
  * `http://` URL with optional credentials. */
 static bool scr_http_proxy_resolve(const ScrStr *host, double port, bool secure,
@@ -8424,10 +8593,11 @@ static void scr_http_tunnel_message(void *ctx, int status, const char *head, siz
   size_t line_len = 0;
   while (line_len + 1 < head_len && !(head[line_len] == '\r' && head[line_len + 1] == '\n'))
     line_len++;
-  const ScrStr *spec = scr_http_proxy_env.https_proxy;
+  ScrStr *spec = scr_http_proxy_display(scr_http_proxy_env.https_proxy);
   snprintf(out, cap, "Failed to establish tunnel to %.*s:%d via %.*s: %.*s",
            (int)c->host->len, c->host->data, c->port, (int)(spec != NULL ? spec->len : 0),
            spec != NULL ? spec->data : "", (int)line_len, head);
+  scr_str_release(spec);
   ScrStr *text = scr_str_new(out, strlen(out));
   ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
   scr_error_set_code(err, "ERR_PROXY_TUNNEL");
@@ -8452,15 +8622,29 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     if (presock) scr_net_sock_release(presock);
     return NULL;
   }
+  /* The proxy decision comes before any socket exists. A configured proxy
+   * that cannot be used fails closed: a malformed value is Node's
+   * ERR_PROXY_INVALID_CONFIG, an unsupported scheme a named refusal, and an
+   * unusable URL never becomes a direct connection. */
+  ScrHttpProxyTarget proxy;
+  memset(&proxy, 0, sizeof proxy);
+  bool proxied = false;
   if (env_proxy) {
-    const ScrStr *spec = scr_http_proxy_spec(wrap != NULL);
-    if (spec != NULL && !scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port) &&
-        scr_http_proxy_spec_invalid(spec)) {
-      /* Node's ERR_PROXY_INVALID_CONFIG: the message is the offending value */
+    bool usable = scr_http_proxy_configured(wrap != NULL, host, port);
+    if (scr_exc_pending() || (usable && !scr_http_proxy_target_valid(host, port, path, header_pairs))) {
       if (cb) scr_closure_release(cb);
       if (presock) scr_net_sock_release(presock);
-      scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
       return NULL;
+    }
+    if (usable) {
+      proxied = scr_http_proxy_resolve(host, port, wrap != NULL, &proxy);
+      if (!proxied) {
+        const ScrStr *spec = scr_http_proxy_spec(wrap != NULL);
+        if (cb) scr_closure_release(cb);
+        if (presock) scr_net_sock_release(presock);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
+        return NULL;
+      }
     }
   }
   scr_http_install();
@@ -8518,9 +8702,6 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     c->sock = presock;
     scr_net_sock_set_context(c->sock, c->als);
   } else {
-    ScrHttpProxyTarget proxy;
-    bool proxied =
-        env_proxy && scr_http_proxy_resolve(c->host, (double)c->port, wrap != NULL, &proxy);
     if (proxied && wrap != NULL) {
       /* https through the proxy: the net unit's CONNECT tunnel; the TLS
        * handshake starts when the proxy answers 200 */
@@ -8617,16 +8798,41 @@ static ScrHttpClientReq *scr_http_client_constructed(ScrHttpClientReq *c, bool a
   return c;
 }
 
+/* Shared by the scheme's request entries: `env_proxy` says the module's
+ * proxy policy applies to this request. fetch()'s own transport has already
+ * chosen its proxy, so it passes false and the HTTP layer leaves it alone. */
+static ScrHttpClientReq *scr_http_request_ex_impl(ScrStr *host /*borrowed*/, double port,
+                                                  ScrStr *path /*borrowed*/,
+                                                  ScrStr *method /*borrowed*/, double timeout_ms,
+                                                  ScrArr *header_pairs /*borrowed*/, bool auto_end,
+                                                  ScrClosure *cb /*moves, nullable*/,
+                                                  ScrHttpRespFn fn, int default_port,
+                                                  void (*wrap)(ScrNetSocket *, void *),
+                                                  void *wrap_ctx, bool env_proxy) {
+  return scr_http_client_constructed(
+      scr_http_request_impl(host, port, path, method, timeout_ms, header_pairs, cb, fn,
+                            default_port, wrap, wrap_ctx, env_proxy, NULL),
+      auto_end);
+}
+
 ScrHttpClientReq *scr_http_request_ex(ScrStr *host /*borrowed*/, double port,
                                        ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                        bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                        ScrHttpRespFn fn, int default_port,
                                        void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx) {
-  return scr_http_client_constructed(
-      scr_http_request_impl(host, port, path, method, timeout_ms, header_pairs, cb, fn,
-                            default_port, wrap, wrap_ctx, true, NULL),
-      auto_end);
+  return scr_http_request_ex_impl(host, port, path, method, timeout_ms, header_pairs, auto_end, cb,
+                                  fn, default_port, wrap, wrap_ctx, true);
+}
+
+ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx) {
+  return scr_http_request_ex_impl(host, port, path, method, timeout_ms, header_pairs, auto_end, cb,
+                                  fn, default_port, wrap, wrap_ctx, false);
 }
 
 /* http.request({ createConnection, ... }): the caller's DIALER supplies
@@ -9250,16 +9456,28 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   ScrStr *name = scr_http_agent_name(host->data, host->len, portbuf, (size_t)portn,
                                       NULL, 0, 0, socket_path ? socket_path->data : NULL,
                                       socket_path ? socket_path->len : 0);
-  /* a free pooled socket for the name serves the request right away */
-  ScrHttpAgentFree *reuse = ag->keep_alive ? scr_http_agent_free_take(ag, name, pool_key) : NULL;
-  bool queue = reuse == NULL && (scr_http_agent_active(ag, name) >= ag->max_sockets ||
-                                 (double)ag->sock_count->n >= ag->max_total);
-  ScrNetSocket *presock = socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
-                          : queue || reuse    ? scr_net_connect_deferred(p, host)
-                                              : NULL;
   const ScrDyn *global_agent = scr_http_global_agent_existing(default_port == 443);
   bool env_proxy = global_agent != NULL && global_agent->kind == SCR_DYN_HANDLE &&
                    global_agent->v.handle.ptr == (void *)ag;
+  /* The proxy policy decides before the agent takes or defers a socket: a
+   * proxied request never reuses a direct pooled connection and never gets
+   * an origin-bound deferred dial, and a configured proxy that cannot be
+   * used throws here, before anything is dialed. */
+  bool proxied = env_proxy && scr_http_proxy_configured(wrap != NULL, host, p);
+  if (scr_exc_pending()) {
+    if (cb) scr_closure_release(cb);
+    scr_str_release(name);
+    return NULL;
+  }
+  /* a free pooled socket for the name serves the request right away */
+  ScrHttpAgentFree *reuse =
+      !proxied && ag->keep_alive ? scr_http_agent_free_take(ag, name, pool_key) : NULL;
+  bool queue = !proxied && reuse == NULL && (scr_http_agent_active(ag, name) >= ag->max_sockets ||
+                                             (double)ag->sock_count->n >= ag->max_total);
+  ScrNetSocket *presock = proxied ? NULL
+                          : socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
+                          : queue || reuse    ? scr_net_connect_deferred(p, host)
+                                              : NULL;
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
                                                cb, fn, default_port, wrap, wrap_ctx, env_proxy,
                                                presock);

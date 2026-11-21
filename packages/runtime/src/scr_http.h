@@ -465,7 +465,15 @@ ScrHttpClientReq *scr_http_request_ex(ScrStr *host /*borrowed*/, double port,
                                        double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                        bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                        ScrHttpRespFn fn, int default_port,
-                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+                                       void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx);
+/* The same, for a caller that already chose its transport (fetch's proxy):
+ * the module's proxy policy does not apply to it. */
+ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
 /* The URL-string client form (http.get('http://host:port/path')): parses
  * through the WHATWG unit; throws catchably on an unparsable input
  * ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL) and

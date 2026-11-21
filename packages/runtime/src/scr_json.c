@@ -3974,6 +3974,16 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
      * answers from the record: read its ops before the view is built, since
      * a materialized capsule's ops answer NULL. */
     const ScrDynTypedRecordOps *record_ops = scr_typed_ref_record_ops(object);
+    /* A capsule that already built its view answers no live record ops, and
+     * a record that gained extra properties reports none either: the
+     * compiled shape still owns the hidden slot, so reach the table
+     * directly rather than falling back to the instance registry. */
+    if (record_ops == NULL && object->v.typed_ref.record) {
+      const ScrDynTypedRecordOps *raw =
+          (const ScrDynTypedRecordOps *)(const void *)object->v.typed_ref.array;
+      record_ops =
+          raw != NULL && raw->select != NULL ? raw->select(object->v.typed_ref.ptr) : raw;
+    }
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (scr_exc_pending()) { scr_dyn_release(view); return NULL; }
     ScrDyn *result = scr_dyn_set_prototype(view, prototype);

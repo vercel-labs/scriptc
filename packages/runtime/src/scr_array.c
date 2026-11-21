@@ -1549,13 +1549,19 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   }
   if (cap > SCR_ARR_MAX_LENGTH) scr_arr_oom();
   size_t unit = scr_elem_slot_width(elem) + (states ? 1 : 0);
-  ScrArr *a = scr_mem_alloc_ref(SCR_ARR_INLINE_OFFSET + cap * unit);
+  /* An element kind the program gives a prototype is born with the collector
+   * header here too: split and match results are ordinary arrays to the
+   * program, and their type is traced. */
+  bool cyc = scr_arr_force_cyclic[elem];
+  const ScrCycType *cyc_type = cyc ? scr_arr_cyc_desc(elem, NULL) : NULL;
+  ScrArr *a = cyc ? scr_cyc_alloc_inline(SCR_ARR_INLINE_OFFSET + cap * unit, cyc_type)
+                  : scr_mem_alloc_ref(SCR_ARR_INLINE_OFFSET + cap * unit);
   if (!a) scr_arr_oom();
   a->rc = 1;
   a->len = 0;
   a->cap = 0;
   a->elem = (uint8_t)elem;
-  a->cyc = 0;
+  a->cyc = cyc ? 1 : 0;
   a->spare = states ? SCR_ARR_STATES : 0;
   a->filled = 0;
   a->data = NULL;
@@ -1569,15 +1575,22 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
 ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot) {
   ScrArr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
   if (known) return known;
-  ScrArr *made = scr_mem_alloc_ref(sizeof(ScrArr));
+  /* A kind the program gives a prototype carries the collector header, so
+   * the run-time copy is one the collector may walk. */
+  bool cyc = scr_arr_force_cyclic[image->elem];
+  ScrArr *made =
+      cyc ? scr_cyc_alloc_inline(sizeof(ScrArr), scr_arr_cyc_desc(image->elem, NULL))
+          : scr_mem_alloc_ref(sizeof(ScrArr));
   if (!made) scr_arr_oom();
   memcpy(made, image, sizeof(ScrArr));
+  if (cyc) made->cyc = 1;
   /* Other threads reach the copy through the slot. */
   scr_sa_thread_shares();
   ScrArr *expected = NULL;
   if (__atomic_compare_exchange_n(slot, &expected, made, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
     return made;
-  scr_mem_free(made);
+  if (cyc) scr_cyc_free_inline(made);
+  else scr_mem_free(made);
   return expected;
 }
 

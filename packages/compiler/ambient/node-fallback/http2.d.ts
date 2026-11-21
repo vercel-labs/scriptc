@@ -101,6 +101,8 @@ declare module "http2" {
   export interface Http2SecureServer {
     listen(port: number, callback?: () => void): void;
     close(callback?: () => void): void;
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: ServerHttp2Session) => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
      * stance). */
@@ -113,6 +115,7 @@ declare module "http2" {
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "close", listener: () => void): void;
+    on(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     /* The ALPN=h2 server's surface (createSecureServer WITHOUT
      * allowHTTP1 — the real h2-over-TLS stack): per-stream and
@@ -139,6 +142,7 @@ declare module "http2" {
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
+    once(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(
       event: "stream",
@@ -159,6 +163,7 @@ declare module "http2" {
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "close", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     addListener(
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
@@ -478,6 +483,8 @@ declare module "http2" {
     ref(): void;
     unref(): void;
     setTimeout(msecs: number, callback?: () => void): void;
+    /* Raises the connection's receive window (sends WINDOW_UPDATE). */
+    setLocalWindowSize(windowSize: number): void;
     /* A cancelled ping (sent while connecting, after close(), or open when
      * the session goes away) calls back with the error alone, as Node
      * does: duration and payload are then undefined. */
@@ -757,7 +764,10 @@ declare module "http2" {
     listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
     address(): import("node:dgram").AddressInfo;
-    setTimeout(msecs?: number, callback?: () => void): void;
+    /* The idle timeout for accepted sessions (0 = none), Node's writable
+     * plain property; setTimeout stores it and joins 'timeout'. */
+    timeout: number;
+    setTimeout(msecs?: number, callback?: (session: ServerHttp2Session) => void): void;
     ref(): void;
     unref(): void;
     on(
@@ -770,7 +780,9 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
-    on(event: "close" | "listening" | "timeout", listener: () => void): void;
+    on(event: "close" | "listening", listener: () => void): void;
+    /* server.setTimeout's idle timer elapsed on a session. */
+    on(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     once(
@@ -783,7 +795,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     once(event: "error", listener: (err: Error) => void): void;
-    once(event: "close" | "listening" | "timeout", listener: () => void): void;
+    once(event: "close" | "listening", listener: () => void): void;
+    once(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
     addListener(
@@ -796,7 +809,8 @@ declare module "http2" {
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
-    addListener(event: "close" | "listening" | "timeout", listener: () => void): void;
+    addListener(event: "close" | "listening", listener: () => void): void;
+    addListener(event: "timeout", listener: (session: ServerHttp2Session) => void): void;
     addListener(event: "connection", listener: (socket: import("net").Socket) => void): void;
     addListener(
       event: "sessionError",

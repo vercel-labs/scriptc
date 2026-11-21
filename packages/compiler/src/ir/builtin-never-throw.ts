@@ -196,6 +196,18 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "http2.streamOnHeaders",
   "http2.streamOnWantTrailers",
   "http2.streamOnContinue",
+  // The idle-timer, timeout and receiver controls: a registration joins a
+  // list, an unref flips the socket's loop flag, and the reads answer a
+  // bit.
+  "http2.sessionOnTimeout",
+  "http2.streamOnTimeout",
+  "http2.streamOnReady",
+  "http2.sessionRef",
+  "http2.sessionUnref",
+  "http2.serverOnTimeout",
+  "http2.serverSetTimeout",
+  "http2.serverSetTimeoutCb",
+  "http2.streamPushAllowed",
   // Reads of the session's, the stream's or the request's state bits.
   "http2.sessionConnecting",
   "http2.streamHeadersSent",

@@ -1,4 +1,6 @@
 {
-  "order": ["<repo>/tests/corpus/assert-fail-deprecated-overloads.cjs"],
-  "diags": []
+ "order": [
+  "<repo>/tests/corpus/assert-fail-deprecated-overloads.cjs"
+ ],
+ "diags": []
 }

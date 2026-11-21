@@ -2654,19 +2654,33 @@ static bool scr_assert_partial_sparse_equiv(const ScrDyn *a, const ScrDyn *b, si
   size_t lenA = keysA - startA;
   size_t lenB = keysB - startB;
   if (lenA < lenB) return false;
+  /* Both sides walk forward only: the k-th own index grows with k, so a
+   * cursor that advances from the last match visits every element once
+   * (a rescan from index zero per candidate is quadratic on an untrusted
+   * array). Lengths and holes are still read live, so a getter that
+   * mutates the array during a comparison ends the walk as before. */
   size_t aPos = startA;
+  size_t aIndex = scr_assert_arr_own_index_at(a, aPos);
+  size_t bIndex = scr_assert_arr_own_index_at(b, startB);
   for (size_t i = 0; i < lenB; i++) {
-    size_t bIndex = scr_assert_arr_own_index_at(b, startB + i);
     if (bIndex == SIZE_MAX || bIndex >= b->v.arr.len) return false;
     const ScrDyn *bv = b->v.arr.items[bIndex];
     for (;;) {
-      size_t aIndex = scr_assert_arr_own_index_at(a, aPos);
       if (aIndex == SIZE_MAX || aIndex >= a->v.arr.len) return false;
       if (scr_assert_partial_eq(a->v.arr.items[aIndex], bv)) break;
       aPos++;
       if (aPos > keysA - lenB + i) return false;
+      size_t next = aIndex + 1;
+      while (next < a->v.arr.len && !scr_dyn_arr_has_index(a, next)) next++;
+      aIndex = next < a->v.arr.len ? next : SIZE_MAX;
     }
     aPos++;
+    size_t nextA = aIndex + 1;
+    while (nextA < a->v.arr.len && !scr_dyn_arr_has_index(a, nextA)) nextA++;
+    aIndex = nextA < a->v.arr.len ? nextA : SIZE_MAX;
+    size_t nextB = bIndex + 1;
+    while (nextB < b->v.arr.len && !scr_dyn_arr_has_index(b, nextB)) nextB++;
+    bIndex = nextB < b->v.arr.len ? nextB : SIZE_MAX;
   }
   return true;
 }

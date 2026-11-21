@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assert-partial-sparse-aligned.cjs"
+ ],
+ "diags": []
+}

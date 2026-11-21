@@ -6757,7 +6757,13 @@ static ScrBytes *sp_kem_dh_decapsulate(SpKey *k, const uint8_t *ct, size_t len);
 static ScrPkiKey *scr_crypto_kem_material(const ScrDyn *key_arg, bool private_key) {
   ScrDyn *key = sp_plain(key_arg);
   if (!key) return NULL;
-  if (scr_crypto_crypto_key_info != NULL && scr_crypto_crypto_key_info(key, NULL, NULL) != 0) {
+  /* The hook reports a secret CryptoKey's bytes through both pointers
+   * (AES and HMAC keys included), so it needs real output slots even
+   * though only its verdict is used here. */
+  const unsigned char *crypto_key_bytes = NULL;
+  size_t crypto_key_len = 0;
+  if (scr_crypto_crypto_key_info != NULL &&
+      scr_crypto_crypto_key_info(key, &crypto_key_bytes, &crypto_key_len) != 0) {
     if (scr_crypto_deprecate_crypto_key != NULL) scr_crypto_deprecate_crypto_key();
     ScrDyn *converted =
         scr_crypto_key_object_from != NULL ? scr_crypto_key_object_from(key) : NULL;

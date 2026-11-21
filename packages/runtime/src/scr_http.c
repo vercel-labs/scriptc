@@ -8698,10 +8698,15 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   }
   if (cb) scr_net_ls_add(&c->resp_ls, cb, (void *)fn, true);
 
-  if (presock != NULL) {
+  if (presock != NULL && !proxied) {
     c->sock = presock;
     scr_net_sock_set_context(c->sock, c->als);
   } else {
+    /* a proxied request never keeps an origin-bound socket */
+    if (presock != NULL) {
+      scr_net_sock_release(presock);
+      presock = NULL;
+    }
     if (proxied && wrap != NULL) {
       /* https through the proxy: the net unit's CONNECT tunnel; the TLS
        * handshake starts when the proxy answers 200 */

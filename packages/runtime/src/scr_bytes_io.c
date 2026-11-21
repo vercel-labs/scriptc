@@ -3278,9 +3278,11 @@ static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
   double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
   /* Node reaches a symbolic link's own entry on macOS by opening the path
    * with O_SYMLINK and then fchmod(2), so a failure reports the step it
-   * happened in: a missing path is Node's "ENOENT: ..., open 'x'". */
+   * happened in: a missing path is Node's "ENOENT: ..., open 'x'". The
+   * write access is Node's own (a writable but unreadable link is reached,
+   * and a directory fails the open with EISDIR rather than being chmodded). */
 #ifdef O_SYMLINK
-  int fd = open(p->data, O_RDONLY | O_SYMLINK);
+  int fd = open(p->data, O_WRONLY | O_SYMLINK);
   if (fd < 0) {
     scr_fs_throw(errno, "open", p);
     scr_str_release(p);

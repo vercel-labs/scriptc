@@ -27,5 +27,28 @@ const { tmpdir } = require("node:os");
     }
   }
 
+  if (process.platform === "darwin") {
+    // The operation is reached through an open with write access: a writable
+    // but unreadable link answers ok, and a directory fails that open.
+    const link = join(dir, "link.bin");
+    fs.symlinkSync(file, link);
+    fs.chmodSync(file, 0o200);
+    try {
+      await fs.promises.lchmod(link, 0o600);
+      console.log("lchmod no-read", "ok");
+    } catch (err) {
+      console.log("lchmod no-read", err.name, err.code, err.syscall, scrub(err.message));
+    }
+    fs.chmodSync(file, 0o600);
+    const sub = join(dir, "sub");
+    fs.mkdirSync(sub);
+    try {
+      await fs.promises.lchmod(sub, 0o600);
+      console.log("lchmod dir", "ok");
+    } catch (err) {
+      console.log("lchmod dir", err.name, err.code, err.syscall, scrub(err.message));
+    }
+  }
+
   fs.rmSync(dir, { recursive: true, force: true });
 })();

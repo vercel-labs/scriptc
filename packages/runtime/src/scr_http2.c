@@ -889,6 +889,7 @@ static void scr_h2_stream_free(ScrH2Stream *st);
 static bool scr_h2_file_pump(ScrH2Stream *st);
 static void scr_h2_file_close(ScrH2Stream *st);
 static ScrDyn *scr_h2_pairs_to_dom(ScrArr *pairs /*borrowed, nullable*/, double status);
+static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers);
 
 void scr_http2_stream_release(ScrH2Stream *st) {
   if (!st || st->rc == SIZE_MAX) return;
@@ -2313,6 +2314,21 @@ static bool scr_h2_regular_names_valid(ScrArr *pairs /*borrowed, nullable*/) {
   return true;
 }
 
+/* The implicit date header's text, +1 (the statCheck header record carries
+ * the same auto date Node puts there before the check runs). */
+static ScrStr *scr_h2_date_str(void) {
+  char date[40];
+  time_t now = time(NULL);
+  struct tm g;
+#ifdef _WIN32
+  gmtime_s(&g, &now);
+#else
+  gmtime_r(&now, &g);
+#endif
+  size_t n = strftime(date, sizeof date, "%a, %d %b %Y %H:%M:%S GMT", &g);
+  return scr_str_new(date, n);
+}
+
 /* The implicit date header (Node's auto date on respond). */
 static void scr_h2_encode_date(ScrH2Buf *b) {
   char date[40];
@@ -2676,7 +2692,11 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
       return false;
     }
     if (n == 0) {
+      /* The file shrank under the stat: EOF ends the body, as Node's file
+       * pipe ends the stream at EOF rather than waiting for the stat's
+       * length. */
       free(buf);
+      st->file_remaining = 0;
       break;
     }
     scr_h2_send_frame(s, SCR_H2_F_DATA, 0, st->id, buf, (size_t)n);
@@ -2844,58 +2864,76 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     return;
   }
   bool is_file = S_ISREG(info.st_mode);
-  /* Node's statCheck: (stat, headers); an explicit false cancels the
-   * response, leaving the stream for the program to answer itself. */
-  bool has_check = c->check != NULL && c->check->kind != SCR_DYN_NULL &&
-                   c->check->kind != SCR_DYN_UNDEF;
-  if (has_check) {
-    ScrDyn *stat_obj = scr_h2_stat_record(&info);
-    ScrDyn *hdrs = scr_h2_pairs_to_dom(c->pairs, -1);
-    ScrDyn *check_args[2] = { stat_obj, hdrs };
-    ScrDyn *answer = scr_dyn_call(c->check, check_args, 2, "statCheck");
-    /* Only an explicit false cancels the response (Node's === false). */
-    bool proceed = !(answer != NULL && answer->kind == SCR_DYN_BOOL && !answer->v.b);
-    scr_dyn_release(answer);
-    scr_dyn_release(stat_obj);
-    scr_dyn_release(hdrs);
-    scr_dyn_release(c->check);
-    c->check = NULL;
-    if (scr_exc_pending()) {
-      if (owns) scr_h2_close_fd(fd);
-      scr_str_utf8_end(owned);
-      scr_h2_file_call_cleanup(c);
-      return;
-    }
-    if (!proceed || st->respond_sent || st->destroyed) {
-      if (owns) scr_h2_close_fd(fd);
-      scr_str_utf8_end(owned);
-      scr_h2_file_call_cleanup(c);
-      return;
-    }
-  }
   scr_h2_file_off size = (scr_h2_file_off)info.st_size;
   scr_h2_file_off start = c->offset > 0 ? (scr_h2_file_off)c->offset : 0;
   scr_h2_file_off want = c->length >= 0 ? (scr_h2_file_off)c->length : size - start;
   if (start > size) { start = size; want = 0; }
   if (want < 0) want = 0;
   if (start + want > size) want = size - start;
-  /* respondWithFile's response carries the regular file's exact length
-   * (Node sets content-length from the stat); the descriptor form does
-   * not. */
+  /* Node's statCheck: (stat, headers); an explicit false cancels the
+   * response, leaving the stream for the program to answer itself. The
+   * record it receives is the one that answers, so a callback that edits
+   * it changes the response (Node passes the caller's live headers
+   * object). */
+  bool has_check = c->check != NULL && c->check->kind != SCR_DYN_NULL &&
+                   c->check->kind != SCR_DYN_UNDEF;
   ScrArr *pairs = c->pairs;
-  ScrArr *with_len = NULL;
-  if (owns && is_file && !scr_h2_pairs_has(pairs, "content-length")) {
+  ScrArr *owned_pairs = NULL;
+  if (has_check) {
+    ScrDyn *stat_obj = scr_h2_stat_record(&info);
+    ScrDyn *hdrs = scr_h2_pairs_to_dom(c->pairs, -1);
+    {
+      ScrStr *date = scr_h2_date_str();
+      scr_dyn_obj_set(hdrs, "date", 4, scr_dyn_new_str(date));
+      scr_str_release(date);
+    }
+    ScrDyn *check_args[2] = { stat_obj, hdrs };
+    ScrDyn *answer = scr_dyn_call(c->check, check_args, 2, "statCheck");
+    /* Only an explicit false cancels the response (Node's === false). */
+    bool proceed = !(answer != NULL && answer->kind == SCR_DYN_BOOL && !answer->v.b);
+    scr_dyn_release(answer);
+    scr_dyn_release(stat_obj);
+    scr_dyn_release(c->check);
+    c->check = NULL;
+    if (scr_exc_pending()) {
+      scr_dyn_release(hdrs);
+      if (owns) scr_h2_close_fd(fd);
+      scr_str_utf8_end(owned);
+      scr_h2_file_call_cleanup(c);
+      return;
+    }
+    if (!proceed || st->respond_sent || st->destroyed) {
+      scr_dyn_release(hdrs);
+      if (owns) scr_h2_close_fd(fd);
+      scr_str_utf8_end(owned);
+      scr_h2_file_call_cleanup(c);
+      return;
+    }
+    /* respondWithFile's response carries the regular file's exact length,
+     * overriding whatever the check left there (Node assigns it after the
+     * callback, and leaves the descriptor form's headers alone). */
+    if (owns && is_file) {
+      char lenbuf[32];
+      int lenlen = snprintf(lenbuf, sizeof lenbuf, "%lld", (long long)want);
+      ScrStr *clen = scr_str_new(lenbuf, (size_t)lenlen);
+      scr_dyn_obj_set(hdrs, "content-length", 14, scr_dyn_new_str(clen));
+      scr_str_release(clen);
+    }
+    owned_pairs = scr_h2_dom_to_pairs(hdrs);
+    pairs = owned_pairs;
+    scr_dyn_release(hdrs);
+  } else if (owns && is_file && !scr_h2_pairs_has(pairs, "content-length")) {
     size_t n = (size_t)scr_arr_len(pairs);
-    with_len = scr_arr_new(SCR_ELEM_STR, (double)n + 2);
-    for (size_t i = 0; i < n; i++) scr_arr_push_ref(with_len, scr_arr_get_ref(pairs, (double)i));
+    owned_pairs = scr_arr_new(SCR_ELEM_STR, (double)n + 2);
+    for (size_t i = 0; i < n; i++) scr_arr_push_ref(owned_pairs, scr_arr_get_ref(pairs, (double)i));
     char lenbuf[32];
     int lenlen = snprintf(lenbuf, sizeof lenbuf, "%lld", (long long)want);
-    scr_arr_push_ref(with_len, scr_str_new("content-length", 14));
-    scr_arr_push_ref(with_len, scr_str_new(lenbuf, (size_t)lenlen));
-    pairs = with_len;
+    scr_arr_push_ref(owned_pairs, scr_str_new("content-length", 14));
+    scr_arr_push_ref(owned_pairs, scr_str_new(lenbuf, (size_t)lenlen));
+    pairs = owned_pairs;
   }
   scr_http2_stream_respond_wait(st, pairs, false, c->wait_trailers);
-  if (with_len != NULL) scr_arr_release(with_len);
+  if (owned_pairs != NULL) scr_arr_release(owned_pairs);
   scr_str_utf8_end(owned);
   if (st->respond_sent && !st->destroyed && !st->close_queued) {
     st->file_fd = fd;

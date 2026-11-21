@@ -48,6 +48,15 @@ server.on("stream", (stream, headers) => {
       fs.closeSync(fd);
     });
     stream.respondWithFD(fd, { ":status": 200 }, { offset: 0, length: 5 });
+  } else if (headers[":path"] === "/mutate") {
+    stream.respondWithFile(bodyPath, { ":status": 200 }, {
+      statCheck: (stat, hdrs) => {
+        hdrs["x-check"] = "yes";
+        hdrs["x-size"] = String(stat.size);
+        hdrs["content-length"] = 999;
+        return true;
+      },
+    });
   } else if (headers[":path"] === "/large") {
     stream.respondWithFile(largePath, { ":status": 200 });
   } else if (headers[":path"] === "/nul") {
@@ -88,7 +97,7 @@ server.listen(0, "127.0.0.1", () => {
       request.setEncoding("utf8");
       request.on("response", (headers) =>
         lines.push(
-          `${path} response ${headers[":status"]} ${headers["x-m"]} length ${headers["content-length"]}`,
+          `${path} response ${headers[":status"]} ${headers["x-m"]} length ${headers["content-length"]} check ${headers["x-check"]} size ${headers["x-size"]}`,
         ),
       );
       request.on("data", (chunk: string) => (body += chunk));
@@ -107,6 +116,7 @@ server.listen(0, "127.0.0.1", () => {
     await get("/fd-position");
     await get("/fd-unreadable");
     await get("/missing");
+    await get("/mutate");
     await get("/large");
     await get("/nul");
     await get("/check-false");

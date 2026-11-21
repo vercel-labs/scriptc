@@ -15747,6 +15747,13 @@ export class Lowerer {
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
     this.programSourceFiles = parts.map((fp) => fp.sf);
     this.classHierarchyCache = null;
+    // Normal compilation lowers through this pass, not through run(): the
+    // held-constructor fact is decided from the program's syntax and symbols
+    // before any body lowers, so a diagnostic is marked only where lowering
+    // actually meets a constructor value's function type
+    // (held-constructors.ts). Without it every diagnostic would count as one
+    // and the comparison pass would run for every program.
+    this.constructorFunctionTypes = programHoldsConstructorValue(this);
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.

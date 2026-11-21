@@ -96,3 +96,16 @@ test("the coverage report runs once per run, its corpus sweep across the plain s
       expect(plan.side[0]!.args).toContain(`--exclude=${coverageCorpusFile}`);
     }
 });
+
+test("the Sandbox runner splits the coverage corpus sweep and runs the coverage report once", () => {
+  // scripts/sandbox-test.mjs runs as a command, so its lists are read from its source.
+  const source = readFileSync(new URL("../../scripts/sandbox-test.mjs", import.meta.url), "utf8");
+  const list = (name: string): string[] => {
+    const match = new RegExp(`const ${name} = \\[([^\\]]*)\\]`).exec(source);
+    expect(match, name).not.toBeNull();
+    return [...match![1]!.matchAll(/"([^"]+)"/g)].map((entry) => entry[1]!);
+  };
+  expect(list("invariantCaseShardedFiles")).toContain(coverageCorpusFile);
+  expect(list("invariantRemoteFiles")).toContain(coverageFile);
+  expect(list("invariantCaseShardedFiles")).not.toContain(coverageFile);
+});

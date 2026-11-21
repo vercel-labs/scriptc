@@ -887,10 +887,12 @@ function isEmptyBag(value: IrExpr): boolean {
   return value.kind === "dynObjLit" && value.fields?.length === 0;
 }
 
-/** The property-bag dispatch's class branches without their lazy stores:
- * `if (bag === undefined) bag = init` becomes `return init` (not stored), or
- * nothing for an empty bag unless `orEmpty` asks for a fresh empty object. */
-function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
+/** The class table's branches with the absent-bag store decided by the
+ * table's `create` flag. Creating stores the initializer; a read returns it
+ * for a non-empty bag, and for an empty one answers a fresh empty object only
+ * when the `orEmpty` flag asks — exactly what the separate read-only copies
+ * of the table did. */
+function bagTableBody(body: IrStmt[]): IrStmt[] {
   for (const branch of body) {
     if (branch.kind !== "if") continue;
     const absent = branch.then[0];
@@ -904,8 +906,28 @@ function readOnlyBagBody(body: IrStmt[], orEmpty = false): IrStmt[] {
       store.field !== PROPERTY_BAG
     )
       continue;
-    if (isEmptyBag(store.value) && !orEmpty) branch.then.shift();
-    else absent.then = [{ kind: "return", value: store.value, loc: store.loc }];
+    const loc = store.loc;
+    const readOnly: IrStmt[] = isEmptyBag(store.value)
+      ? [
+          {
+            kind: "if",
+            cond: varRef("orEmpty", BOOL, loc),
+            then: [{ kind: "return", value: store.value, loc }],
+            else_: null,
+            loc,
+          },
+          { kind: "return", value: dynUndefinedExpr(loc), loc },
+        ]
+      : [{ kind: "return", value: store.value, loc }];
+    absent.then = [
+      {
+        kind: "if",
+        cond: varRef("create", BOOL, loc),
+        then: [store],
+        else_: readOnly,
+        loc,
+      },
+    ];
   }
   return body;
 }
@@ -7309,19 +7331,67 @@ export class ClassDynamicDispatch {
       else if (absent?.kind === "if")
         absent.then = [{ kind: "return", value: initialize.value, loc: initialize.loc }];
     }
-    // The untyped read-only accessor selects the receiver's class as the
-    // complete property-bag dispatch does, without its lazy stores.
-    for (const fn of lowerer?.liftedFns ?? []) {
-      if (
-        !this.propertyBag ||
-        (fn.name !== READ_PROPERTIES && fn.name !== READ_PROPERTIES_OR_EMPTY)
-      )
-        continue;
-      fn.locals = structuredClone(this.propertyBag.locals);
-      fn.body = readOnlyBagBody(
-        structuredClone(this.propertyBag.body),
+    // ONE table serves the creating dispatch and both read-only accessors.
+    // They differ only in whether an absent bag is stored and whether an
+    // absent EMPTY bag answers a fresh object, which the table takes as
+    // flags, so a large program emits the class table once instead of three
+    // times.
+    const bagAccessors = (lowerer?.liftedFns ?? []).filter(
+      (fn) =>
+        fn === this.propertyBag ||
+        fn.name === READ_PROPERTIES ||
         fn.name === READ_PROPERTIES_OR_EMPTY,
-      );
+    );
+    if (lowerer && this.propertyBag && bagAccessors.length > 0) {
+      const loc = this.propertyBag.loc;
+      const coreName = "%dyn.class.bag";
+      let core = lowerer.liftedFnNamed(coreName);
+      if (core === undefined) {
+        core = {
+          name: coreName,
+          params: [
+            { localId: "p.0", name: "value", type: DYN },
+            { localId: "create", name: "create", type: BOOL },
+            { localId: "orEmpty", name: "orEmpty", type: BOOL },
+          ],
+          returnType: DYN,
+          locals: [
+            ...structuredClone(this.propertyBag.locals),
+            { id: "create", name: "create", type: BOOL, mutable: false },
+            { id: "orEmpty", name: "orEmpty", type: BOOL, mutable: false },
+          ],
+          body: bagTableBody(structuredClone(this.propertyBag.body)),
+          loc,
+        };
+        lowerer.liftedFns.push(core);
+        lowerer.shareHelper(core);
+      }
+      for (const fn of bagAccessors) {
+        const create = fn === this.propertyBag;
+        fn.locals = structuredClone(this.propertyBag.locals);
+        fn.body = [
+          {
+            kind: "return",
+            value: {
+              kind: "call",
+              callee: core.name,
+              args: [
+                varRef("p.0", DYN, fn.loc),
+                { kind: "boolLit", value: create, type: BOOL, loc: fn.loc },
+                {
+                  kind: "boolLit",
+                  value: fn.name === READ_PROPERTIES_OR_EMPTY,
+                  type: BOOL,
+                  loc: fn.loc,
+                },
+              ],
+              type: DYN,
+              loc: fn.loc,
+            },
+            loc: fn.loc,
+          },
+        ];
+      }
     }
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);

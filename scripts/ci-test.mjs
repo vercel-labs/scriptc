@@ -43,7 +43,7 @@ async function main() {
         console.log(`[CI] Starting ${task.name} (${task.env.SCRIPTC_TEST_WORKERS} workers)`);
         const child = spawn("pnpm", task.args, {
           cwd: fileURLToPath(new URL("../", import.meta.url)),
-          env: { ...process.env, ...task.env },
+          env: { ...process.env, ...task.env, SCRIPTC_CI_TASK: task.name },
           stdio: "inherit",
         });
         child.once("error", reject);

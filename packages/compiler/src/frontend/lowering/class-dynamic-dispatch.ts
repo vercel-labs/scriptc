@@ -1862,7 +1862,7 @@ function staticFieldBranchParts(
  * `declare` adds to the helper. */
 export function groupStaticFieldBranches(
   body: IrStmt[],
-  branches: WeakMap<IrStmt, StaticFieldBranch>,
+  branches: ReadonlyMap<IrStmt, StaticFieldBranch>,
   local: () => string,
   declare: (id: string, type: IrType) => void,
 ): IrStmt[] {
@@ -1976,9 +1976,9 @@ export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
 
   /** The static-field branches this pass put in its helpers' bodies, which
-   * finalize regroups (groupStaticFieldBranches). A branch another pass
-   * copied is no longer listed and keeps its flat form. */
-  private readonly staticFieldBranches = new WeakMap<IrStmt, StaticFieldBranch>();
+   * finalize regroups (groupStaticFieldBranches) and then forgets. A branch
+   * another pass copied is no longer listed and keeps its flat form. */
+  private readonly staticFieldBranches = new Map<IrStmt, StaticFieldBranch>();
 
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
@@ -7723,6 +7723,7 @@ export class ClassDynamicDispatch {
       );
       if (body !== fn.body) fn.body = body;
     }
+    this.staticFieldBranches.clear();
   }
 
   /** Each generated class table tests its classes in order, one exact type

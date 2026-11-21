@@ -984,7 +984,7 @@ test("regroups static-field branches by the class value they test", () => {
     type: BOOL,
     loc,
   });
-  const branches = new WeakMap<IrStmt, StaticFieldBranch>();
+  const branches = new Map<IrStmt, StaticFieldBranch>();
   const fence = (keyClass: string, actual: string, field: string): IrStmt => {
     const branch: IrStmt = {
       kind: "if",

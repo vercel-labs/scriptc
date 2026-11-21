@@ -34838,6 +34838,7 @@
           "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
           "tests/corpus/compat-errors-worker.mjs",
@@ -41683,7 +41684,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE",
         "tests": [
-          "tests/corpus/compat-errors-tls-keying-state.mjs"
+          "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41815,8 +41817,11 @@
       "anchor": "err_tls_sni_from_server",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER",
+        "tests": [
+          "tests/corpus/compat-errors-tls-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

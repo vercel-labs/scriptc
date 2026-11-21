@@ -3725,6 +3725,15 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    /** ...statCheck: the trailing slot is the (stat, headers) callback. */
+    "http2.streamRespondWithFile": {
+      argTypes: [HTTP2STREAM_T, STRING, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
+      result: VOID,
+    },
+    "http2.streamRespondWithFD": {
+      argTypes: [HTTP2STREAM_T, F64, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
+      result: VOID,
+    },
     "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
     // Http2ServerRequest.complete: true once aborted, ended or closed.
     "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },

@@ -40,6 +40,19 @@ ScrStr *scr_module_id(double module_id);
 ScrStr *scr_module_path(double module_id);
 ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
+/* The checked-dynamic Module object for a record, one per record (+1), and
+ * its children as a fresh checked-dynamic array (+1). */
+ScrDyn *scr_module_dyn_object(double module_id);
+ScrDyn *scr_module_dyn_children(double module_id);
+/* module.parent as a checked-dynamic value (+1): null, undefined or the
+ * parent's view, per the registry's absent markers. */
+ScrDyn *scr_module_dyn_parent(double module_id);
+/* A handle as its view, absent markers as undefined (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id);
+/* The same for a checked-dynamic handle value (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value);
+/* The compiled prologue stores a module's exports value for that view. */
+void scr_module_set_exports_dyn(double module_id, ScrDyn *value);
 double scr_module_parent(double module_id);
 bool scr_module_loaded(double module_id);
 double scr_module_cache_get(ScrStr *filename);

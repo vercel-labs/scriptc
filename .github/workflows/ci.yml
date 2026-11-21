@@ -27,10 +27,14 @@ on:
         default: all
 
 concurrency:
-  # A new push to a pull request cancels its previous run. Every push to main, and every merge queue group, runs
-  # to completion in a group of its own commit, so each merged commit gets a result (releases require a green run
-  # on their commit). The nightly sweep and manual runs neither cancel nor are cancelled by main pushes.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.sha }}
+  # A new push to a pull request cancels its previous run. Pushes to main share one group without cancelling: a
+  # running main run finishes, and of the pushes that land meanwhile only the newest gets a run (GitHub cancels the
+  # older pending ones before they start), so a burst of merges costs one run instead of one each. A main run
+  # covers every commit merged before it. Releases still require a green run on their own commit: the release's
+  # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
+  # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
+  # main pushes.
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
@@ -163,6 +167,10 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: build (macOS arm64 native packages)
     runs-on: macos-15
+    # Measured 2026-11-07..21: 11 minutes at the 99th percentile, 21 at most
+    # (cache misses). The limits on this workflow's jobs are hang detectors at
+    # about twice the longest green run; the default is six hours.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
@@ -195,6 +203,9 @@ jobs:
     # The full suite runs on Linux x64, whose hosted runners start without the
     # macOS queue. tests_macos keeps the darwin clang/libc oracles.
     runs-on: ubuntu-24.04
+    # Longest green shard 2026-11-07..21: plain 31 minutes, sanitized 43 (30
+    # slices).
+    timeout-minutes: ${{ matrix.flavor == 'san' && 80 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -310,6 +321,9 @@ jobs:
       matrix:
         flavor: [plain, san]
         shard: ${{ fromJSON((github.event_name != 'schedule' && inputs.macos_suite != 'full') && '[1, 2, 3]' || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]') }}
+    # Longest green shard 2026-11-07..21: plain 44 minutes, sanitized 72
+    # (complete suite, ten slices); the darwin suite's three slices 38 and 60.
+    timeout-minutes: ${{ matrix.flavor == 'san' && 120 || 90 }}
     env:
       # See the Linux tests job for the worker cap and case partitioning.
       SCRIPTC_TEST_WORKERS: "4"
@@ -344,6 +358,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: build (Linux x64 native packages)
     runs-on: ubuntu-24.04
+    # 13 minutes at the 99th percentile, 21 at most (cache misses).
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
@@ -376,6 +392,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.effects == 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, Effect ${{ matrix.shard }}/16)
     runs-on: ubuntu-24.04
+    # Longest green shard 2026-11-07..21: plain 32 minutes, sanitized 43.
+    timeout-minutes: ${{ matrix.flavor == 'san' && 80 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -424,6 +442,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' }}
     name: test (Linux, Node island conformance ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
+    # Longest green shard 2026-11-07..21: 14 minutes.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -543,6 +563,7 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     name: build (Linux x64 native packages, shape overlay)
     runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
@@ -575,6 +596,8 @@ jobs:
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
     name: test (Linux, shape overlay, ${{ matrix.suite }} ${{ matrix.shard }}/8)
     runs-on: ubuntu-24.04
+    # Longest green shard 2026-11-07..21: 59 minutes (effect).
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -620,6 +643,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' }}
     name: build (Linux, ${{ matrix.flavor }}, bootstrap seed)
     runs-on: ubuntu-24.04
+    # Longest green seed 2026-11-07..21: plain 41 minutes, sanitized 37.
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -731,6 +756,9 @@ jobs:
     # These contracts are portable. Standard Linux runners have enough memory
     # for LLVM optimization alongside the compiler that produces its input.
     runs-on: ubuntu-24.04
+    # Longest green phase 2026-11-07..21: plain commands 12 minutes, rebuild
+    # 34; sanitized commands 22, rebuild-frontend 46, rebuild-emit 67.
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
@@ -738,11 +766,11 @@ jobs:
         # lowers the compiler and compares its IR with the seed's; the other
         # emits, links and probes the next generation from the seed's IR.
         include:
-          - { flavor: plain, phase: commands }
-          - { flavor: plain, phase: rebuild }
-          - { flavor: san, phase: commands }
-          - { flavor: san, phase: rebuild-frontend }
-          - { flavor: san, phase: rebuild-emit }
+          - { flavor: plain, phase: commands, timeout: 30 }
+          - { flavor: plain, phase: rebuild, timeout: 70 }
+          - { flavor: san, phase: commands, timeout: 45 }
+          - { flavor: san, phase: rebuild-frontend, timeout: 90 }
+          - { flavor: san, phase: rebuild-emit, timeout: 130 }
     env:
       SCRIPTC_TEST_WORKERS: "1"
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}

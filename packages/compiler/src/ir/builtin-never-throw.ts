@@ -251,6 +251,14 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // Reads the fork channel registry and answers undefined, null or the
   // retained Control object; a plain process has no channel.
   "process.channel",
+  // The Module view of a record: a cache lookup, a retain, and the object
+  // built on first use from fields the registry already holds.
+  "module.dynObject",
+  "module.dynChildren",
+  "module.dynParent",
+  "module.dynObjectOrAbsent",
+  "module.dynOf",
+  "module.setExportsDyn",
   // The stream object a descriptor the program already holds names: a cache
   // lookup and a retain, with no allocation, coercion or program code. The
   // cursor methods use it to reach the same object process.stdio answers.

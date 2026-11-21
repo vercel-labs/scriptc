@@ -5,8 +5,17 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      require_green_ci:
+        description: Publish only when the CI run on this commit succeeded
+        type: boolean
+        default: true
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# No workflow-wide concurrency group. One used to serialize every run, so a run
+# left waiting for the Release environment's approval blocked every later run
+# without saying so. Instead, each run's supersede job cancels older runs that
+# have not started publishing, and the publish job keeps its own group, so two
+# runs never upload at once.
 
 # The token of a job that declares no permissions of its own (the native and mobile package builds) can read the
 # repository and nothing else. The jobs that read other runs' artifacts, publish to npm or write the GitHub release
@@ -15,6 +24,30 @@ permissions:
   contents: read
 
 jobs:
+  # Cancels older runs of this branch that are still building or waiting for
+  # approval to publish (scripts/release-supersede.mjs); this run releases the
+  # same or a later commit. A run that has started publishing is left to finish.
+  supersede:
+    name: Supersede older release runs
+    if: github.repository == 'vercel-labs/scriptc'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # A failure here must not stop the release; the publish group still keeps
+    # two uploads apart.
+    continue-on-error: true
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Cancel stale release runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release-supersede.mjs
+
   check-release:
     name: Check for new version
     # The private mirror carries this file too; only the public repo
@@ -60,6 +93,25 @@ jobs:
           fi
           echo "version=$LOCAL_VERSION" >> "$GITHUB_OUTPUT"
 
+      # What would otherwise fail only after the builds: package versions out
+      # of sync (the publish job's check), no marked changelog entry (the
+      # GitHub release's body) and a stale surface manifest (its asset).
+      - name: Check the release can publish
+        if: steps.check.outputs.should_release == 'true'
+        run: node scripts/release-preflight.mjs
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        if: steps.check.outputs.should_release == 'true'
+        with:
+          version: 11.1.3
+      - name: Check the surface manifest
+        if: steps.check.outputs.should_release == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          if ! pnpm manifest --check; then
+            echo "::error::packages/compiler/surface-manifest.json does not match the tree. Run 'pnpm manifest' and commit; the GitHub release attaches this file."
+            exit 1
+          fi
+
       - name: Find reusable builds and accepted upload receipts
         id: reuse
         if: steps.check.outputs.should_release == 'true'
@@ -96,6 +148,9 @@ jobs:
                   ':(exclude).github/workflows/release.yml', ':(exclude)scripts/verify-native-cli.mjs',
                   ':(exclude)scripts/package-native-cli.mjs', ':(exclude)tests/harness/native-cli-packaging.test.ts',
                   ':(exclude)scripts/wait-npm-available.mjs', ':(exclude)tests/harness/npm-available.test.ts',
+                  ':(exclude)scripts/release-supersede.mjs', ':(exclude)scripts/release-preflight.mjs',
+                  ':(exclude)scripts/release-ci-gate.mjs',
+                  ':(exclude)tests/harness/release-guards.test.ts',
                 ]).status !== 0) continue;
             const artifacts = api(`repos/${repo}/actions/runs/${run.id}/artifacts?per_page=100`).artifacts
               .filter((artifact) => !artifact.expired && artifact.size_in_bytes > 0);
@@ -198,11 +253,49 @@ jobs:
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
     uses: ./.github/workflows/libnode-packs.yml
 
+  # Releases require a green CI run on their commit. This waits for the CI
+  # run of this push beside the builds, and fails with its link when it did
+  # not succeed, before anyone is asked to approve the upload.
+  # Releases require a green CI run on their commit. This waits for the CI
+  # run on this commit beside the builds, and fails with its link when it did
+  # not succeed, before anyone is asked to approve the upload. CI on main keeps
+  # only the newest pending push run, so when this commit's run was dropped,
+  # scripts/release-ci-gate.mjs dispatches a complete CI run on it and waits
+  # for that.
+  ci-green:
+    name: Require green CI on this commit
+    needs: check-release
+    if: >-
+      needs.check-release.outputs.should_release == 'true' &&
+      (github.event_name != 'workflow_dispatch' || inputs.require_green_ci)
+    runs-on: ubuntu-latest
+    # CI on main takes about 75 minutes; a dispatched run, with the complete
+    # macOS suite, about two and a half hours.
+    timeout-minutes: 240
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: Wait for CI on ${{ github.sha }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/release-ci-gate.mjs
+
   publish:
     name: Publish to npm
-    needs: [check-release, build-native-packages, build-libnode-packs]
+    needs: [check-release, build-native-packages, build-libnode-packs, ci-green]
+    # Two runs never upload at once. A newer run's publish waits here for an
+    # older one that has started; supersede cancels older runs that have not.
+    concurrency:
+      group: release-publish-${{ github.ref }}
+      cancel-in-progress: false
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' &&
+      (needs.ci-green.result == 'success' || needs.ci-green.result == 'skipped') &&
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
       (needs.build-native-packages.result == 'success' && needs.build-libnode-packs.result == 'success'))
     runs-on: ubuntu-latest

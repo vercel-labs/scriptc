@@ -1568,6 +1568,21 @@ static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
   scr_queue_microtask(job);
 }
 
+/* Node's iterator reads through stream.read(), which asks the source for more
+ * once the bytes it leaves behind fall below the highWaterMark. The web
+ * adapters' single-chunk reads take a buffered entry whole instead of going
+ * through read(), so they ask for the same read(0) demand the iterator's
+ * read() makes: without it a transform keeps the write callback it holds
+ * while backpressured, and the write waits for a drain that never comes. */
+static void scr_stream_next_demand(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  if (!st->r.next_single || st->r.ended || st->destroyed || st->errored || st->r.reading ||
+      st->constructing)
+    return;
+  if (st->r.length != 0 && st->r.length >= st->r.hwm) return;
+  scr_st_tick(s, SCR_ST_READ0, NULL, NULL);
+}
+
 /* One pass of createAsyncIterator's loop for the parked waiter:
  * `stream.read()` (a _read below the hwm, then the buffered chunk; pushes
  * the _read makes join it), else the settled states (error, EOF), else
@@ -1610,6 +1625,7 @@ static void scr_stream_iter_step(ScrStream *s) {
       st->r.next_waiter = NULL;
       scr_stream_next_fulfill(st, single_waiter, single, single_kind);
       if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+      scr_stream_next_demand(s);
       return;
     }
     void *chunk = scr_stream_read_n_kind(s, want, &kind);
@@ -1687,6 +1703,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
     if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
     scr_stream_next_fulfill(st, w, chunk, kind);
     if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+    scr_stream_next_demand(s);
     return;
   }
   if (st->r.ended || st->destroyed) {

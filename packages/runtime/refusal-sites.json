@@ -277,6 +277,12 @@
  },
  {
   "file": "scr_console_native.c",
+  "function": "scr_console_inst_invoke",
+  "message": "Format strings through dynamic Console calls have no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_console_native.c",
   "function": "scr_console_inst_write",
   "message": "This Console value has no lowering",
   "code": "SC2020"
@@ -339,12 +345,6 @@
   "file": "scr_crypto_args.h",
   "function": "ca_throw_formatted",
   "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "a custom lookup function is not supported yet",
   "code": "SC2020"
  },
  {
@@ -795,6 +795,12 @@
   "file": "scr_http.c",
   "function": "scr_http_agent_create_connection",
   "message": "http.Agent createConnection options here are not supported by the runtime",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
   "code": "SC2020"
  },
  {

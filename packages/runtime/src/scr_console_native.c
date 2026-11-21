@@ -16,6 +16,12 @@ __attribute__((weak)) bool scr_tty_console_auto_colors(bool is_tty) {
   return false;
 }
 
+/* The console member and colorMode answers, defined below. */
+static int scr_console_member_index(const char *key, size_t len);
+static int scr_console_member_target(const char *key, size_t len);
+static int scr_console_target_colors_mode(int color_mode, bool is_tty);
+static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
+
 /* The colorMode answers, defined with the instance writers below. */
 static int scr_console_target_colors_mode(int color_mode, bool is_tty);
 static int scr_console_inst_colors_mode(ScrConsoleInst *inst, int which);
@@ -336,17 +342,9 @@ static void scr_console_inst_print(ScrConsoleInst *inst, int which, ScrStr *text
 }
 
 /* The five output members, in the order the bound-function slots hold them
- * (the same order Node's Console constructor binds them). */
-static const char *const scr_console_inst_member_names[] = {"log", "info", "debug", "error", "warn"};
-
-/* 0..4 for the five output members, -1 otherwise. */
-static int scr_console_member_index(const char *key, size_t len) {
-  for (int i = 0; i < 5; i++)
-    if (strlen(scr_console_inst_member_names[i]) == len &&
-        memcmp(scr_console_inst_member_names[i], key, len) == 0)
-      return i;
-  return -1;
-}
+ * (Node's constructor binding order, which the shared member index answers). */
+static const char *const scr_console_inst_member_names[] = {"log", "info", "debug", "warn",
+                                                            "error"};
 
 /* ── bound instance methods ────────────────────────────────────────────
  * Node's Console constructor binds each method to the instance, so
@@ -468,25 +466,74 @@ static bool scr_console_inst_set(void *ptr, const char *key, size_t len, const S
   return false;
 }
 
-/* The output members' calls, direct or through the bound value: Node's
- * kWriteToConsole over util.format (format strings included), one line to
- * the instance's target. */
+/* 0 for the stdout members, 1 for the stderr members, -1 otherwise. */
+static int scr_console_member_target(const char *key, size_t len) {
+  const char *names[] = {"log", "info", "debug", "error", "warn"};
+  for (int i = 0; i < 5; i++)
+    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return i >= 3 ? 1 : 0;
+  return -1;
+}
+
+/* The output members' calls. A stored method (the bound function, which
+ * calls with a NULL receiver) is the same method: it formats with the
+ * instance's inspectOptions and colorMode answer. A dynamic call renders
+ * every argument through the dyn inspector (strings verbatim), space-joined,
+ * with format strings refused. */
 static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
                                        ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self; (void)what;
-  int index = scr_console_member_index(key, strlen(key));
-  if (index < 0) return scr_console_inst_get(ptr, key, strlen(key));
-  ScrConsoleInst *inst = ptr;
-  int which = index >= 3 ? 1 : 0;
-  /* The stored function is the same method: it formats with the instance's
-   * inspectOptions and colorMode answer, so detaching one changes nothing. */
-  ScrStr *line = scr_insp_console_format_argv(
-      args, argc, inst->inspect_options, index >= 3 ? "console.error" : "console.log",
-      scr_console_inst_colors_mode(inst, which));
-  if (line == NULL) return NULL;
-  scr_console_inst_print(inst, which, line);
-  scr_str_release(line);
-  return scr_dyn_retain(scr_dyn_undefined());
+  (void)what;
+  int which = scr_console_member_target(key, strlen(key));
+  if (which < 0) return scr_console_inst_get(ptr, key, strlen(key));
+  if (self == NULL) {
+    /* the stored method: the instance's own formatting, as a direct call */
+    ScrConsoleInst *inst = ptr;
+    ScrStr *line = scr_insp_console_format_argv(
+        args, argc, inst->inspect_options, which ? "console.error" : "console.log",
+        scr_console_inst_colors_mode(inst, which));
+    if (line == NULL) return NULL;
+    scr_console_inst_print(inst, which, line);
+    scr_str_release(line);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (argc > 1 && args[0]->kind == SCR_DYN_STR) {
+    ScrStr *format = args[0]->v.str;
+    for (size_t i = 0; i + 1 < format->len; i++) if (format->data[i] == '%' &&
+        strchr("sdifjoOc%", format->data[i + 1])) {
+      static const char message[] = "Format strings through dynamic Console calls have no lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+  }
+  int member = scr_console_member_index(key, strlen(key));
+  if (member >= 0 && scr_console_channel_active((double)member)) {
+    ScrDyn *pack = scr_dyn_new_arr();
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(pack, scr_dyn_retain(args[i]));
+    scr_console_inst_write_args(self, (double)member, pack);
+    scr_dyn_release(pack);
+    return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  }
+  ScrStr **parts = calloc(argc ? 2 * argc : 1, sizeof *parts);
+  if (!parts) scr_trap("scriptc: out of memory\n");
+  ScrStr *space = scr_str_new(" ", 1);
+  size_t n = 0;
+  for (size_t i = 0; i < argc; i++) {
+    ScrStr *rendered = scr_insp_dyn_s(args[i], 2);
+    if (scr_exc_pending()) {
+      scr_str_release(rendered);
+      break;
+    }
+    if (i) parts[n++] = space;
+    parts[n++] = rendered;
+  }
+  if (!scr_exc_pending()) {
+    ScrStr *text = scr_str_concat_parts(parts, n);
+    scr_console_inst_print(ptr, which, text);
+    scr_str_release(text);
+  }
+  for (size_t i = 0; i < n; i++) if (parts[i] != space) scr_str_release(parts[i]);
+  scr_str_release(space);
+  free(parts);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* Node's validateInteger(groupIndentation, 'groupIndentation', 0, 1000): an
@@ -1029,9 +1076,19 @@ static ScrStr *scr_console_inst_format(ScrConsoleInst *inst, int which, const ch
                                  scr_console_inst_colors_mode(inst, which));
 }
 
+/* The output member's index in Node's binding order, or -1. */
+static int scr_console_member_index(const char *key, size_t len) {
+  static const char *const names[] = {"log", "info", "debug", "warn", "error"};
+  for (int i = 0; i < 5; i++)
+    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return i;
+  return -1;
+}
+
 /* console.log/info/debug/warn/error over a run-time argument pack. `member`
  * is the output member's index in Node's binding order (0 log, 1 info, 2
- * debug, 3 warn, 4 error). */
+ * debug, 3 warn, 4 error). With a channel subscriber the pack is published
+ * and the line is formatted from a private snapshot of it, as Node
+ * publishes its arguments and then formats a spread copy. */
 void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack) {
   static const char *const surfaces[] = {"console.log", "console.info", "console.debug",
                                          "console.warn", "console.error"};
@@ -1039,15 +1096,24 @@ void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack) {
   if (index < 0 || index > 4) index = 0;
   int which = index >= 3 ? 1 : 0;
   ScrConsoleInst *inst = scr_console_inst_peek(console);
-  ScrStr *line;
-  if (inst != NULL) {
-    line = scr_console_inst_format(inst, which, surfaces[index], pack);
-  } else if (scr_console_is_global_value(console)) {
-    line = scr_console_global_format(pack, surfaces[index], which);
-  } else {
+  if (inst == NULL && !scr_console_is_global_value(console)) {
     scr_console_inst_require(console, "Console method");
     return;
   }
+  ScrDyn *snapshot = NULL;
+  if (scr_console_channel_active((double)index)) {
+    scr_console_publish_args((double)index, pack);
+    if (scr_exc_pending()) return;
+    snapshot = scr_console_snapshot_pack(pack);
+    pack = snapshot;
+  }
+  ScrStr *line;
+  if (inst != NULL) {
+    line = scr_console_inst_format(inst, which, surfaces[index], pack);
+  } else {
+    line = scr_console_global_format(pack, surfaces[index], which);
+  }
+  scr_dyn_release(snapshot);
   if (line == NULL) return;
   if (inst != NULL) scr_console_inst_print(inst, which, line);
   else scr_console_global_write(which, line);

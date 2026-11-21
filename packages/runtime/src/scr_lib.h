@@ -300,6 +300,8 @@ void scr_histo_add(ScrDyn *handle, ScrDyn *other);
 void scr_histo_subtract(ScrDyn *handle, ScrDyn *other);
 double scr_histo_stat(ScrDyn *handle, double which);
 ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which);
+double scr_histo_ewma(ScrDyn *handle, double which);
+double scr_histo_burn_rate(ScrDyn *handle, ScrDyn *slo_target);
 double scr_histo_percentile(ScrDyn *handle, double percentile);
 ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
 double scr_histo_count_at(ScrDyn *handle, double value);
@@ -316,7 +318,19 @@ double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
+ScrBigInt *scr_histo_percentiles_value_big(ScrDyn *handle, double index);
+double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_size);
+double scr_histo_log_view(ScrDyn *handle, ScrDyn *first_bucket, ScrDyn *base);
+double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *percentiles);
 void scr_histo_dispose(ScrDyn *handle);
+/* createSlidingWindowHistogram: a window of histogram chunks rotated by
+ * chunkDuration (milliseconds) or recordsPerChunk; snapshot() merges the
+ * window. */
+ScrDyn *scr_sliding_new(ScrDyn *options);
+void scr_sliding_record_checked(ScrDyn *handle, double value);
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_sliding_reset(ScrDyn *handle);
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle);
 /* Histogram inference: the confidence-interval and Welch readings lower
  * through selectors after their arguments are validated once. */
 double scr_histo_confidence(ScrDyn *options);

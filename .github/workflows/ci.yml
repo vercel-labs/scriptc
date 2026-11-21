@@ -7,8 +7,8 @@ on:
   # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
   # it does. It runs what a push to main runs. Nothing starts such a run until then.
   merge_group:
-  # Nightly full macOS sweep. Pushes to main run no macOS jobs, and pull requests run them only when they change
-  # darwin code (scripts/ci-lanes.mjs).
+  # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
+  # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
   schedule:
     - cron: "17 7 * * *"
   # A manual run, for example on a release candidate commit. It runs every lane; macos_suite selects the complete
@@ -87,8 +87,8 @@ jobs:
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every
-  # lane.
+  # every lane except macos, whose jobs the nightly sweep runs on main; they run macos_smoke instead. The nightly
+  # sweep and manual runs run every lane but macos_smoke, which the complete macOS lane covers.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -107,6 +107,7 @@ jobs:
       bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
       islands: ${{ steps.lanes.outputs.islands || 'false' }}
+      macos_smoke: ${{ steps.lanes.outputs.macos_smoke || 'false' }}
       # The shards of the effects lane to run: all sixteen, or the one that a pull request changing compiler or
       # runtime sources samples (scripts/ci-lanes.mjs).
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
@@ -123,9 +124,9 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -351,6 +352,40 @@ jobs:
       # than skip on macOS CI when none is configured.
       - uses: ./.github/actions/libnode
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
+        run: node scripts/ci-test.mjs
+
+  # Pushes to main run no macOS lane, so a darwin-only regression could land unseen until the nightly sweep. This
+  # one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin smoke suite
+  # (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows the host
+  # platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
+  tests_macos_smoke:
+    needs: [validation_scope, lanes]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos_smoke == 'true' }}
+    name: test (macOS, plain, darwin smoke)
+    runs-on: macos-15
+    # A hang detector at about twice the longest expected run: native packages
+    # took 21 minutes at most on a cache miss (native_macos), the smoke corpus
+    # about four on top. Typical runs take 6 to 12 minutes.
+    timeout-minutes: 50
+    env:
+      SCRIPTC_TEST_WORKERS: "2"
+      SCRIPTC_TEST_SHARD: 1/1
+      SCRIPTC_CI_SUITE: darwin-smoke
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/native-packages
+        with:
+          target: darwin-arm64
+      - run: pnpm build
+      - name: Tests (darwin smoke suite)
         run: node scripts/ci-test.mjs
 
   native_linux:
@@ -1445,6 +1480,7 @@ jobs:
         native_macos,
         tests,
         tests_macos,
+        tests_macos_smoke,
         native_linux,
         effects,
         island_conformance,
@@ -1484,6 +1520,7 @@ jobs:
               lane native_macos "${{ needs.native_macos.result }}" "${{ needs.lanes.outputs.macos }}"
               lane tests "${{ needs.tests.result }}" "${{ needs.lanes.outputs.linux }}"
               lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
+              lane tests_macos_smoke "${{ needs.tests_macos_smoke.result }}" "${{ needs.lanes.outputs.macos_smoke }}"
               lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
               lane island_conformance "${{ needs.island_conformance.result }}" "${{ needs.lanes.outputs.islands }}"

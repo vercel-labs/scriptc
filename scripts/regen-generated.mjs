@@ -2,11 +2,23 @@
 /* Regenerates the committed generated files from their sources, so a merge
  * never resolves one by hand:
  *
- *   packages/compiler/surface-manifest.json          pnpm manifest
+ *   packages/compiler/surface-manifest.json               pnpm manifest
+ *   packages/compiler/src/frontend/ts7/*.generated.ts     pnpm generate:ts7-ast
+ *   packages/compiler/src/ir/fields.generated.ts          pnpm generate:ir-fields
+ *   packages/compiler/src/ir/codec.generated.ts           pnpm generate:ir-codec
+ *   packages/compiler/src/frontend/lowering/*.generated.ts
+ *                                                         node scripts/gen-builtin-*.mjs
  *   internal/compatibility/generated/node-v24-internal.json
  *   internal/compatibility/generated/node-v24-refusals.json
  *   packages/experimental/refusals.json
- *   docs/src/generated/node-v24-compatibility.json   pnpm node-compat --local
+ *   docs/src/generated/node-v24-compatibility.json         pnpm node-compat --local
+ *   packages/runtime/refusal-sites.json                   node scripts/runtime-refusals.mjs --write
+ *
+ * Recorded from a run rather than derived from committed sources, so only a
+ * merge that left one conflicted regenerates them, for the conflicted entries:
+ *
+ *   tests/harness/corpus-costs.json                       node scripts/ci-corpus-costs.mjs
+ *   packages/compiler/test/ts7/baselines/order-parity/**   SCRIPTC_UPDATE_BASELINES=1 vitest
  *
  * During a merge, rebase or cherry-pick, resolve the conflicts in source
  * files first. Each generated file git still reports as conflicted is then
@@ -17,7 +29,9 @@
  * needs; when neither is, run `pnpm node-compat`, which fetches the pinned
  * Node docs, instead.
  *
- *   node scripts/regen-generated.mjs
+ *   pnpm regen
+ *   pnpm regen --corpus-costs   also fold the per-program corpus cost files
+ *   pnpm regen --ts7-baselines  also re-record every order-parity baseline
  */
 import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -25,26 +39,51 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const GENERATED = [
+const args = new Set(process.argv.slice(2));
+const TS7_BASELINE_DIR = "packages/compiler/test/ts7/baselines/order-parity/";
+const CORPUS_COSTS = "tests/harness/corpus-costs.json";
+const COMPAT_GENERATED = [
   "packages/compiler/surface-manifest.json",
   "internal/compatibility/generated/node-v24-internal.json",
   "internal/compatibility/generated/node-v24-refusals.json",
   "packages/experimental/refusals.json",
   "docs/src/generated/node-v24-compatibility.json",
 ];
+const NODE_SOURCES = [
+  "packages/compiler/src/frontend/lowering/builtin-module-members.generated.ts",
+  "packages/compiler/src/frontend/lowering/builtin-object-members.generated.ts",
+];
+const GENERATED = [
+  ...COMPAT_GENERATED,
+  ...NODE_SOURCES,
+  "packages/compiler/src/frontend/ts7/enums.generated.ts",
+  "packages/compiler/src/frontend/ts7/ast-schema.generated.ts",
+  "packages/compiler/src/frontend/ts7/ast-guards.generated.ts",
+  "packages/compiler/src/frontend/ts7/ast-tokens.generated.ts",
+  "packages/compiler/src/frontend/ts7/ast-types.generated.ts",
+  "packages/compiler/src/frontend/ts7/semantic-schema.generated.ts",
+  "packages/compiler/src/frontend/ts7/session-schema.generated.ts",
+  "packages/compiler/src/ir/fields.generated.ts",
+  "packages/compiler/src/ir/codec.generated.ts",
+  "packages/runtime/refusal-sites.json",
+  CORPUS_COSTS,
+];
 
-function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, stdio: ["ignore", "pipe", "inherit"] });
+function run(command, commandArgs, env = process.env) {
+  const result = spawnSync(command, commandArgs, {
+    cwd: root,
+    stdio: ["ignore", "pipe", "inherit"],
+    env,
+  });
   if (result.error) throw result.error;
   if (result.status !== 0) {
     process.stdout.write(result.stdout);
-    throw new Error(`${command} ${args.join(" ")} exited with ${result.status}`);
+    throw new Error(`${command} ${commandArgs.join(" ")} exited with ${result.status}`);
   }
   return result.stdout.toString();
 }
 
-const git = (...args) => run("git", args);
-const LEDGER = "internal/compatibility/generated/node-v24-internal.json";
+const git = (...gitArgs) => run("git", gitArgs);
 
 /** A conflicted file's content on one side: index stage 2 (ours) or 3 (theirs), or null if absent there. */
 function side(stage, path) {
@@ -54,13 +93,14 @@ function side(stage, path) {
 
 /** The side (2 or 3) to take the conflicted files from: the one whose ledger is for the merged pin. */
 function chooseSide(conflicted) {
-  if (!conflicted.includes(LEDGER)) return 2;
+  const ledger = "internal/compatibility/generated/node-v24-internal.json";
+  if (!conflicted.includes(ledger)) return 2;
   const pin = JSON.parse(readFileSync(join(root, "internal/compatibility/node-v24.json"), "utf8"));
   const forPin = (stage) => {
-    const text = side(stage, LEDGER);
+    const text = side(stage, ledger);
     if (text === null) return false;
-    const ledger = JSON.parse(text.toString("utf8"));
-    return ledger.nodeVersion === pin.version && ledger.nodeCommit === pin.commit;
+    const parsed = JSON.parse(text.toString("utf8"));
+    return parsed.nodeVersion === pin.version && parsed.nodeCommit === pin.commit;
   };
   if (forPin(2)) return 2;
   if (forPin(3)) return 3;
@@ -71,6 +111,11 @@ function chooseSide(conflicted) {
 
 const unmerged = new Set(git("diff", "--name-only", "--diff-filter=U").split("\n"));
 const conflicted = GENERATED.filter((path) => unmerged.has(path));
+const conflictedBaselines = [...unmerged].filter(
+  (path) => path.startsWith(TS7_BASELINE_DIR) && path.endsWith(".json"),
+);
+const corpusCostsConflicted = unmerged.has(CORPUS_COSTS);
+
 if (conflicted.length > 0) {
   const stage = chooseSide(conflicted);
   // Written to the working tree only: the index keeps the conflict until
@@ -81,9 +126,66 @@ if (conflicted.length > 0) {
   }
   console.log(`took ${stage === 2 ? "ours" : "theirs"} for ${conflicted.join(", ")}`);
 }
-process.stdout.write(run("pnpm", ["--silent", "manifest"]));
-process.stdout.write(run(process.execPath, ["internal/compatibility/src/generate.mjs", "--local"]));
-if (conflicted.length > 0) {
-  git("add", "--", ...conflicted);
-  console.log(`staged ${conflicted.join(", ")}`);
+if (conflictedBaselines.length > 0) console.log(`re-recording ${conflictedBaselines.join(", ")}`);
+else if (args.has("--ts7-baselines")) console.log("re-recording every order-parity baseline");
+if (corpusCostsConflicted || args.has("--corpus-costs"))
+  console.log(`folding the per-program corpus costs into ${CORPUS_COSTS}`);
+
+// These read the member surface of the pinned Node release and refuse to run
+// on another version; a checkout on the wrong Node keeps its committed copy.
+// They go first because the surface manifest projects the tables they write.
+const nodePin = readFileSync(join(root, ".node-version"), "utf8").trim();
+const builtinTablesRegenerated = process.version === `v${nodePin}`;
+if (builtinTablesRegenerated) {
+  process.stdout.write(run(process.execPath, ["scripts/gen-builtin-module-members.mjs"]));
+  process.stdout.write(run(process.execPath, ["scripts/gen-builtin-object-members.mjs"]));
+} else {
+  console.warn(
+    `skipped the builtin member tables: they are generated from Node ${nodePin} (this is ${process.version})`,
+  );
 }
+
+process.stdout.write(run("pnpm", ["--silent", "manifest"]));
+process.stdout.write(run("pnpm", ["--silent", "generate:ts7-ast"]));
+process.stdout.write(run("pnpm", ["--silent", "generate:ir-fields"]));
+process.stdout.write(run("pnpm", ["--silent", "generate:ir-codec"]));
+process.stdout.write(run(process.execPath, ["internal/compatibility/src/generate.mjs", "--local"]));
+process.stdout.write(run(process.execPath, ["scripts/runtime-refusals.mjs", "--write"]));
+
+if (corpusCostsConflicted || args.has("--corpus-costs")) {
+  // ci-corpus-costs folds every per-program override, sorts the table, and
+  // deletes the folded files: the union of both merge sides, not one side.
+  if (corpusCostsConflicted) {
+    const text = side(2, CORPUS_COSTS) ?? side(3, CORPUS_COSTS);
+    if (text !== null) writeFileSync(join(root, CORPUS_COSTS), text);
+  }
+  process.stdout.write(run(process.execPath, ["scripts/ci-corpus-costs.mjs"]));
+  git("add", "-A", "--", CORPUS_COSTS, "tests/harness/corpus-costs");
+}
+
+if (conflictedBaselines.length > 0 || args.has("--ts7-baselines")) {
+  const fixtures = conflictedBaselines.map((path) =>
+    path.slice(TS7_BASELINE_DIR.length, -".json".length),
+  );
+  const env = { ...process.env, SCRIPTC_UPDATE_BASELINES: "1" };
+  if (fixtures.length > 0) env["SCRIPTC_UPDATE_BASELINES_ONLY"] = fixtures.join("\n");
+  process.stdout.write(
+    run(
+      process.execPath,
+      ["node_modules/vitest/vitest.mjs", "run", "packages/compiler/test/ts7/order-parity.test.ts"],
+      env,
+    ),
+  );
+  if (conflictedBaselines.length > 0) git("add", "--", ...conflictedBaselines);
+}
+
+const staged = conflicted.filter(
+  (path) => builtinTablesRegenerated || !NODE_SOURCES.includes(path),
+);
+if (staged.length > 0) {
+  git("add", "--", ...staged);
+  console.log(`staged ${staged.join(", ")}`);
+}
+const skipped = conflicted.filter((path) => !staged.includes(path));
+if (skipped.length > 0)
+  console.warn(`left unmerged (not regenerated on this Node): ${skipped.join(", ")}`);

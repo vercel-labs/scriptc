@@ -8,6 +8,7 @@ import {
   renderRefusals,
   unsupportedBuiltinModules,
 } from "../../internal/compatibility/src/refusals.mjs";
+import { stale } from "../../scripts/generated-files.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -56,10 +57,7 @@ const fresh = renderRefusals(
 
 describe("refusal table", () => {
   test("the committed table regenerates byte-identically from the ledger", () => {
-    expect(
-      committed,
-      `${internalPath} is stale; run 'pnpm node-compat' and commit the result`,
-    ).toBe(fresh);
+    expect(committed, stale(`${internalPath} is stale`, "`pnpm node-compat`")).toBe(fresh);
   });
 
   test("the published copy is the generated table", () => {

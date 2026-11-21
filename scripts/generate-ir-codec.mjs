@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stale } from "./generated-files.mjs";
 
 // Generates packages/compiler/src/ir/codec.generated.ts from the types in
 // ir.ts: for every object type an IrModule can reach, an encoder that
@@ -436,5 +437,5 @@ const lines = [
 const text = lines.join("\n");
 if (process.argv.includes("--check")) {
   if (readFileSync(target, "utf8") !== text)
-    throw new Error("codec.generated.ts is stale; run node scripts/generate-ir-codec.mjs");
+    throw new Error(stale("codec.generated.ts is stale", "`pnpm generate:ir-codec`"));
 } else writeFileSync(target, text);

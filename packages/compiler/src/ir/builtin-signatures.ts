@@ -3482,6 +3482,11 @@ function buildLibFnSignatures() {
      * opaque SecureContext handle (secureCtx kind) for SNI callbacks to
      * answer with; cert/key are PEM strings or Buffers like createServer's. */
     "tls.createSecureContext": { argTypes: [null, null], result: SECURECTX_T },
+    /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+     * verification — undefined on a match, the ERR_TLS_CERT_ALTNAME_INVALID
+     * error otherwise (a malformed quoted alt-name string throws
+     * ERR_TLS_CERT_ALTNAME_FORMAT). */
+    "tls.checkServerIdentity": { argTypes: [STRING, DYN], result: DYN },
     /** createSecureContext over a RUNTIME options record (the checked-
      * dynamic lane): Node's typed option validations first (the ciphers/
      * passphrase/engine/version/timeout/ticketKeys ladders), then the pem

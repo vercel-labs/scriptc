@@ -7140,6 +7140,31 @@ function lowerTlsModuleCall(
       };
     }
   }
+  if (bi.member === "checkServerIdentity") {
+    // tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+    // verification over a legacy certificate object — undefined on a
+    // match, the ERR_TLS_CERT_ALTNAME_INVALID error otherwise.
+    if (args.length !== 2) {
+      lowerer.noLowering(
+        `checkServerIdentity with ${args.length} arguments`,
+        expr,
+        "the form is checkServerIdentity(hostname, cert)",
+      );
+    }
+    const hostname = lowerer.lowerExprExpecting(args[0]!, STRING);
+    const cert = lowerer.lowerExprExpecting(args[1]!, DYN);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.checkServerIdentity",
+      args: [hostname, cert],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(expr, value, declared);
+  }
   if (bi.member === "createSecureContext") {
     // createSecureContext({ cert, key }) → the opaque SecureContext handle
     // an SNI callback answers with. The minimal honest form: exactly the

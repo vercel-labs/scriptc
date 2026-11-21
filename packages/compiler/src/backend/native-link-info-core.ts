@@ -30,6 +30,8 @@ export interface NativeLinkFeatures {
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
   fetch: boolean;
+  /** The URLPattern global: scr_urlpattern.c. */
+  urlPattern?: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
    * without it keep their link identity. */
@@ -486,6 +488,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "eventTarget", requires: ["emitter", "symbol"] },
   { feature: "abortSignal", requires: ["emitter", "symbol"] },
   { feature: "fetch", requires: ["emitter", "symbol"] },
+  // scr_urlpattern.c compiles each component pattern through the regex
+  // engine (scr_regex.c) at construction, as the standard requires.
+  { feature: "urlPattern", requires: ["regex"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names

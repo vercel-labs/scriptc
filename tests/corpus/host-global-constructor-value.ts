@@ -55,7 +55,7 @@ console.log(FormData.prototype.constructor.name, typeof WebSocket.prototype.cons
 const boxed = { WebSocket };
 const cast = (globalThis as { FormData?: unknown }).FormData;
 console.log(typeof boxed.WebSocket, boxed.WebSocket === WebSocket);
-console.log(typeof scope.WebSocket, typeof scope["URLPattern"]);
+console.log(typeof scope.WebSocket, typeof scope["DecompressionStream"]);
 console.log(typeof cast, cast === FormData);
 
 // A capability probe over the value still sees a constructor, so the

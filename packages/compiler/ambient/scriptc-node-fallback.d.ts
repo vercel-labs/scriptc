@@ -1425,6 +1425,60 @@ declare var EventTarget: {
   readonly prototype: EventTarget;
 };
 
+/* The global URLPattern class (scr_urlpattern.c). Node's component
+ * properties are the compiled pattern strings; exec/test answer matched
+ * components and their groups. */
+interface URLPatternComponentResult {
+  input: string;
+  groups: Record<string, string | undefined>;
+}
+interface URLPatternInit {
+  protocol?: string;
+  username?: string;
+  password?: string;
+  hostname?: string;
+  port?: string;
+  pathname?: string;
+  search?: string;
+  hash?: string;
+  baseURL?: string;
+}
+interface URLPatternOptions {
+  ignoreCase?: boolean;
+}
+interface URLPatternResult {
+  inputs: (string | URLPatternInit)[];
+  protocol: URLPatternComponentResult;
+  username: URLPatternComponentResult;
+  password: URLPatternComponentResult;
+  hostname: URLPatternComponentResult;
+  port: URLPatternComponentResult;
+  pathname: URLPatternComponentResult;
+  search: URLPatternComponentResult;
+  hash: URLPatternComponentResult;
+}
+interface URLPattern {
+  exec(input?: string | URLPatternInit, baseURL?: string): URLPatternResult | null;
+  test(input?: string | URLPatternInit, baseURL?: string): boolean;
+  readonly hasRegExpGroups: boolean;
+  readonly protocol: string;
+  readonly username: string;
+  readonly password: string;
+  readonly hostname: string;
+  readonly port: string;
+  readonly pathname: string;
+  readonly search: string;
+  readonly hash: string;
+}
+declare var URLPattern: {
+  new (
+    input?: string | URLPatternInit,
+    options?: URLPatternOptions | string,
+    options2?: URLPatternOptions,
+  ): URLPattern;
+  readonly prototype: URLPattern;
+};
+
 /* Node's BroadcastChannel global is the worker_threads class itself: the
  * global value is declared here so the global form is typed without the
  * program importing node:worker_threads, and the lowering recognises it as

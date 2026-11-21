@@ -497,6 +497,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.histoPercentilesKey": "scr_histo_percentiles_key",
   "perf.histoPercentilesValue": "scr_histo_percentiles_value",
   "perf.histoDispose": "scr_histo_dispose",
+  "urlpattern.new": "scr_urlpattern_new",
+  "urlpattern.is": "scr_urlpattern_is",
   "perf.histoKsTest": "scr_histo_ks_test",
   "perf.histoCohensD": "scr_histo_cohens_d",
   "perf.histoCliffsD": "scr_histo_cliffs_d",

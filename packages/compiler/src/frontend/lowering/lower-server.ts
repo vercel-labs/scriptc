@@ -4780,6 +4780,148 @@ function lowerH2StreamMethodCall(
           : "http2.streamEndStr";
     return { kind: "libCall", fn, args: [receiver(), data], type: VOID, loc };
   }
+  if (name === "respondWithFile" || name === "respondWithFD") {
+    requireStatementPosition(lowerer, call, `stream.${name}(...)`);
+    if (args.length < 1 || args.length > 3) {
+      lowerer.noLowering(
+        `stream.${name} with ${args.length} arguments`,
+        call,
+        `use ${name}(${name === "respondWithFile" ? "path" : "fd"}[, headers[, options]])`,
+      );
+    }
+    const headersArg: IrExpr =
+      args.length >= 2 && args[1] !== undefined
+        ? lowerH2HeadersArg(lowerer, args[1]!)
+        : ({ kind: "arrayLit", elems: [], type: arrayOf(STRING), loc } as IrExpr);
+    let offset = -1,
+      length = -1,
+      wait = false;
+    let check: IrExpr | null = null;
+    let onError: IrExpr | null = null;
+    const options = args.length >= 3 ? args[2]! : undefined;
+    if (options !== undefined) {
+      if (!ts.isObjectLiteralExpression(options)) {
+        lowerer.noLowering(
+          `${name} options`,
+          options,
+          "pass the options as an object literal ({ offset, length, waitForTrailers })",
+        );
+      }
+      for (const prop of (options as ts.ObjectLiteralExpression).properties.nodes) {
+        if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) {
+          lowerer.noLowering(`${name} options`, prop, "use plain `name: value` entries");
+        }
+        const key = (prop.name as ts.Identifier).text;
+        const init = (prop as ts.PropertyAssignment).initializer;
+        if (key === "offset" || key === "length") {
+          const value = lowerer.lowerExprExpecting(init, F64);
+          // keep the literal when the source spells one
+          if (value.kind === "numLit") {
+            if (key === "offset") offset = value.value;
+            else length = value.value;
+          } else {
+            lowerer.noLowering(
+              `a non-literal ${name} '${key}' option`,
+              init,
+              "spell the byte offset/length as a number literal",
+            );
+          }
+        } else if (key === "statCheck") {
+          // Node calls statCheck(stat, headers) after the stat and cancels
+          // the response only on an explicit false. The callback crosses as
+          // a checked-dynamic callable: the runtime invokes it after the
+          // deferred open/stat and reads the result.
+          const fnValue = lowerer.lowerExpr(init);
+          if (fnValue.type.kind === "dyn") {
+            check = fnValue;
+          } else if (
+            fnValue.type.kind === "func" &&
+            canBoxFuncIntoDyn(
+              fnValue.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            check = { kind: "dynFrom", value: fnValue, type: DYN, loc: locOf(init) };
+          } else {
+            lowerer.noLowering(
+              "a statCheck value that is not a function",
+              init,
+              "pass a function: statCheck: (stat, headers) => boolean",
+            );
+          }
+        } else if (key === "onError") {
+          // Node calls onError(err) instead of failing the stream when the
+          // open/stat fails.
+          const fnValue = lowerer.lowerExpr(init);
+          if (fnValue.type.kind === "dyn") {
+            onError = fnValue;
+          } else if (
+            fnValue.type.kind === "func" &&
+            canBoxFuncIntoDyn(
+              fnValue.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            onError = { kind: "dynFrom", value: fnValue, type: DYN, loc: locOf(init) };
+          } else {
+            lowerer.noLowering(
+              "an onError value that is not a function",
+              init,
+              "pass a function: onError: (err) => void",
+            );
+          }
+        } else if (key === "waitForTrailers") {
+          if (init.kind === ts.SyntaxKind.TrueKeyword) wait = true;
+          else if (init.kind === ts.SyntaxKind.FalseKeyword) wait = false;
+          else
+            lowerer.noLowering(
+              "a non-literal waitForTrailers option",
+              init,
+              "spell it true or false",
+            );
+        }
+      }
+    }
+    const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+    if (name === "respondWithFile") {
+      const path = lowerer.lowerExprExpecting(args[0]!, STRING);
+      return {
+        kind: "libCall",
+        fn: "http2.streamRespondWithFile",
+        args: [
+          receiver(),
+          path,
+          headersArg,
+          num(offset),
+          num(length),
+          boolLit(wait, loc),
+          check ?? dynUndefinedExpr(loc),
+          onError ?? dynUndefinedExpr(loc),
+        ],
+        type: VOID,
+        loc,
+      };
+    }
+    const fd = lowerer.lowerExprExpecting(args[0]!, F64);
+    return {
+      kind: "libCall",
+      fn: "http2.streamRespondWithFD",
+      args: [
+        receiver(),
+        fd,
+        headersArg,
+        num(offset),
+        num(length),
+        boolLit(wait, loc),
+        check ?? dynUndefinedExpr(loc),
+        onError ?? dynUndefinedExpr(loc),
+      ],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "close") {
     requireStatementPosition(lowerer, call, "stream.close(...)");
     const code: IrExpr =

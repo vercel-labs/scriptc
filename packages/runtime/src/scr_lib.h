@@ -40,6 +40,19 @@ ScrStr *scr_module_id(double module_id);
 ScrStr *scr_module_path(double module_id);
 ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
+/* The checked-dynamic Module object for a record, one per record (+1), and
+ * its children as a fresh checked-dynamic array (+1). */
+ScrDyn *scr_module_dyn_object(double module_id);
+ScrDyn *scr_module_dyn_children(double module_id);
+/* module.parent as a checked-dynamic value (+1): null, undefined or the
+ * parent's view, per the registry's absent markers. */
+ScrDyn *scr_module_dyn_parent(double module_id);
+/* A handle as its view, absent markers as undefined (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id);
+/* The same for a checked-dynamic handle value (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value);
+/* The compiled prologue stores a module's exports value for that view. */
+void scr_module_set_exports_dyn(double module_id, ScrDyn *value);
 double scr_module_parent(double module_id);
 bool scr_module_loaded(double module_id);
 double scr_module_cache_get(ScrStr *filename);
@@ -304,6 +317,22 @@ double scr_histo_percentiles_count(ScrDyn *handle);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
 void scr_histo_dispose(ScrDyn *handle);
+/* createSlidingWindowHistogram: a window of histogram chunks rotated by
+ * chunkDuration (milliseconds) or recordsPerChunk; snapshot() merges the
+ * window. */
+ScrDyn *scr_sliding_new(ScrDyn *options);
+void scr_sliding_record_checked(ScrDyn *handle, double value);
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_sliding_reset(ScrDyn *handle);
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle);
+/* Histogram inference: the confidence-interval and Welch readings lower
+ * through selectors after their arguments are validated once. */
+double scr_histo_confidence(ScrDyn *options);
+double scr_histo_percentile_arg(ScrDyn *value);
+void scr_histo_other_check(ScrDyn *other);
+double scr_histo_mean_ci(ScrDyn *handle, double confidence, double which);
+double scr_histo_welch(ScrDyn *handle, ScrDyn *other, double confidence, double which);
+double scr_histo_percentile_ci(ScrDyn *handle, double percentile, double confidence, double which);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and

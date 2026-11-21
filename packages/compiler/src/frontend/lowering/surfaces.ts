@@ -1507,6 +1507,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: { kind: "promise", inner: VOID },
         valueParams: exactValueParams(STRING, F64, F64),
       },
+      // The promise form exists on every platform and rejects with Node's
+      // ERR_METHOD_NOT_IMPLEMENTED where lchmod(2) does not exist (Linux);
+      // macOS runs the validation ladder and lchmod(2) through the runtime.
+      lchmod: {
+        fn: "fsp.lchmod",
+        params: [DYN, DYN],
+        result: { kind: "promise", inner: VOID },
+        valueParams: exactValueParams(DYN, DYN),
+      },
       // access' omitted mode and truncate's omitted len complete to 0 in
       // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
       // fixed (path plus one optional number), so they box as function values
@@ -2422,6 +2431,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       createHook: { fn: "ah.createHook", params: [DYN], result: F64 },
       executionAsyncId: { fn: "ah.executionId", params: [], result: F64 },
       triggerAsyncId: { fn: "ah.triggerId", params: [], result: F64 },
+      executionAsyncResource: { fn: "ah.executionResource", params: [], result: DYN },
     },
     diagnostics_channel: {
       channel: { fn: "dc.channel", params: [STRING], result: F64 },
@@ -3295,8 +3305,37 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoMannWhitneyU",
         "perf.histoMannWhitneyZ",
         "perf.histoMannWhitneyP",
+        "perf.histoConfidence",
+        "perf.histoPercentileArg",
+        "perf.histoOther",
+        "perf.histoMeanCI",
+        "perf.histoWelch",
+        "perf.histoPercentileCI",
       ],
       note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
+    },
+    {
+      id: "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      kind: "node-builtin",
+      name: "perf_hooks.createSlidingWindowHistogram",
+      fns: [
+        "perf.slidingNew",
+        "perf.slidingRecord",
+        "perf.slidingRecordBig",
+        "perf.slidingReset",
+        "perf.slidingSnapshot",
+        "perf.histoStat",
+        "perf.histoStatBig",
+        "perf.histoPercentile",
+        "perf.histoPercentileBig",
+        "perf.histoCountAt",
+        "perf.histoCdf",
+        "perf.histoCcdf",
+        "perf.histoPercentilesCount",
+        "perf.histoPercentilesKey",
+        "perf.histoPercentilesValue",
+      ],
+      note: "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's",
     },
     {
       id: "node-builtin.perf_hooks.timerify",
@@ -3975,6 +4014,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "dynamic specifiers cannot exist in a compiled binary's fixed module graph",
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
+    findPackageJSON:
+      "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph",
     syncBuiltinESMExports:
       "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },

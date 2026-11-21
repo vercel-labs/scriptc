@@ -216,7 +216,12 @@ static __attribute__((noinline)) void scr_pub_cref_elems(ScrArr *a, ScrPub *ctx,
 
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrArr *a = v;
-  if (scr_arr_ext_of(a) && (scr_arr_ext_of(a)->props || scr_arr_ext_of(a)->metadata)) {
+  /* A stored prototype is mutable, refcounted state of this thread: a
+   * published array is shared across workers by pointer, so it is refused
+   * like the array's other out-of-line state. */
+  if (scr_arr_ext_of(a) &&
+      (scr_arr_ext_of(a)->props || scr_arr_ext_of(a)->metadata ||
+       scr_arr_ext_of(a)->prototype)) {
     scr_pub_refuse(ctx, "Cannot publish an array with non-index properties");
     return;
   }

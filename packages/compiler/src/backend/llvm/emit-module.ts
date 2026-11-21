@@ -698,6 +698,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
+  // Arrays the program gives a prototype are born with the collector header
+  // (scr_array.h): their element kinds are stamped before %main.
+  const prototypeArrayKinds = emitter.mod.prototypeOverrideArrayKinds ?? [];
+  if (prototypeArrayKinds.length > 0)
+    emitter.declare(`declare void @scr_arr_force_cyclic_kind(double)`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
   if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
@@ -1525,6 +1530,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // nullable event hooks before %main — scr_events.c links only when
     // this line is emitted (native/executable.ts gates on the same predicate).
     ...(usesEvents ? [`  call void @scr_events_install()`] : []),
+    ...prototypeArrayKinds.map(
+      (kind) => `  call void @scr_arr_force_cyclic_kind(double ${kind}.0)`,
+    ),
     // The runtime prints a boxed function through the program's own source
     // rows, so a program with any installs its lookup before %main runs.
     ...(fnSources !== null

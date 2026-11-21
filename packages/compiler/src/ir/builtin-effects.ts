@@ -1094,6 +1094,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
   "dyn.classTestPrototype",
+  // Object.getPrototypeOf(null or undefined) throws Node's TypeError, and a
+  // comparison the lowerer folds into this test can be inside a catch.
+  "dyn.isPlainObject",
 ];
 
 const MAY_THROW_LIB_FNS_PART_4: readonly IrLibFn[] = [

@@ -4045,6 +4045,10 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Element kinds (SCR_ELEM_* numbers) whose arrays the program gives a
+   * prototype: their allocations carry the collector header, so the
+   * prototype the array owns is an edge the collector can see. */
+  readonly prototypeArrayKinds = new Set<number>();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -15439,6 +15443,9 @@ export class Lowerer {
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.prototypeArrayKinds.size > 0
+              ? { prototypeOverrideArrayKinds: [...this.prototypeArrayKinds].sort((a, b) => a - b) }
+              : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
                   inferredFactFiles: shapeOverlayFileNames()

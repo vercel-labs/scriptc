@@ -20,10 +20,11 @@ const idle = () =>
     console.log("half open", describe(new net.Socket({ allowHalfOpen: true })));
     const controller = new AbortController();
     const signalled = new net.Socket({ signal: controller.signal });
+    /* the listener joins after abort(): Node's deferred error reaches it */
+    controller.abort();
     signalled.on("error", (error) => {
       console.log("aborted error", error.code, error.message);
     });
-    controller.abort();
     setImmediate(() => {
       console.log("aborted", signalled.destroyed, signalled.readable, signalled.writable);
       resolve();

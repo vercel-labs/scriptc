@@ -25,7 +25,10 @@ server.listen(0, "127.0.0.1", () => {
   const address = server.address() as net.AddressInfo;
   const bare = new net.Socket();
   round(bare, () => {
-    const literal = new net.Socket({ allowHalfOpen: true });
+    /* a dynamic options variable: the call still must link, with the
+   * abort-listener unit selected because the helper reference is emitted */
+  const shared = { allowHalfOpen: true };
+  const literal = new net.Socket(shared);
     round(literal, () => {
       server.close();
     });

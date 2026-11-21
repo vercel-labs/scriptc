@@ -669,6 +669,9 @@ struct ScrNetSocket {
   int remote_port_cache;
   bool remote_v6_cache;
   ScrStr *pending_err; /* deferred connect failure */
+  /* the pending error is an idle socket's abort: Node emits it only when a
+   * listener is present when the deferred error would fire */
+  bool err_optional;
   /* pending_err's code when its message does not name one (static
    * storage; NULL = the code the message maps to), and its name when the
    * error is not an Error (Node's AbortError) */
@@ -4114,13 +4117,10 @@ static bool scr_net_fd_check_dyn(const ScrDyn *v, int *out) {
  * NULL when the program never links the events unit). */
 static void scr_net_sock_abort_now(ScrNetSocket *s) {
   if (s->close_emitted || s->had_error) return;
-  if (s->fd < 0 && !s->connecting && s->err_ls.n == 0) {
-    /* an idle socket with no 'error' listener: Node's abort destroys it
-     * without emitting the AbortError (a registered listener receives
-     * ABORT_ERR through the pending-error sweep below) */
-    scr_net_sock_destroy(s);
-    return;
-  }
+  /* an idle socket's abort is deferred like the dialing socket's; the sweep
+   * delivers ABORT_ERR to a listener attached before it fires, and skips the
+   * event when there is none (Node's observable behavior for an idle socket) */
+  s->err_optional = s->fd < 0 && !s->connecting;
   static const char text[] = "The operation was aborted";
   if (s->pending_err == NULL) s->pending_err = scr_str_new(text, sizeof text - 1);
   s->pending_code = "ABORT_ERR";
@@ -9202,7 +9202,10 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     bool consumed = false;
     ScrAlsCtx *prev = scr_als_dispatch_enter(sock->als);
     if (sock->native_err) consumed = sock->native_err(sock->native_ctx, msg);
-    if (!consumed && !scr_exc_pending()) {
+    if (!consumed && !scr_exc_pending() && sock->err_optional && sock->err_ls.n == 0) {
+      /* an idle socket's abort with no listener: no 'error' event, only the
+       * 'close' the destroy scheduled */
+    } else if (!consumed && !scr_exc_pending()) {
       ScrError *coded = NULL;
       ScrError *saved = scr_event_error_payload;
       if (sock->pending_name != NULL && strcmp(sock->pending_name, "AbortError") == 0) {
@@ -9220,6 +9223,7 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
       if (coded != NULL) scr_error_release(coded);
     }
     scr_als_dispatch_leave(prev);
+    sock->err_optional = false;
     sock->pending_code = NULL;
     sock->pending_name = NULL;
     scr_str_release(msg);

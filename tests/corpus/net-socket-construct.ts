@@ -25,10 +25,11 @@ const idle = (): Promise<void> =>
     ignored.destroy();
     const controller = new AbortController();
     const signalled = new net.Socket({ signal: controller.signal });
+    /* the listener joins after abort(): Node's deferred error reaches it */
+    controller.abort();
     signalled.on("error", (error: Error & { code?: string }) => {
       console.log("aborted error", error.code, error.message);
     });
-    controller.abort();
     setImmediate(() => {
       console.log("aborted", signalled.destroyed, signalled.readable, signalled.writable);
       resolve();

@@ -130,6 +130,7 @@ import {
   cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   cjsModuleLacksExport,
+  hasWholeExportValue,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
@@ -232,6 +233,7 @@ import {
   ambientUndefVarRootOf,
   cjsNamespaceImportDep,
   contextualUndefReadType,
+  cjsNamespaceMemberSnapshotOf,
   fenceEarlyNsMemberRef,
   nodeUndefinedGlobalName,
   nsMemberIdentOf,
@@ -304,6 +306,25 @@ import { lowerModuleNamespaceMember } from "../module-namespace-elements.js";
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
  * These uses need concrete property dispatch because the base has no slot. */
+/** `ns.default` through a namespace import of a CommonJS module: Node's
+ * namespace answers module.exports as the first import saw it, the value a
+ * default import of the same module binds. Null for a static export table
+ * (its exports object has no represented value) and for any other read. */
+function cjsNamespaceDefaultValueOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken !== undefined || !ts.isIdentifier(access.name)) return null;
+  if (access.name.text !== "default") return null;
+  const dep = cjsNamespaceImportDep(lowerer, access.expression);
+  if (dep === null) return null;
+  const loc = locOf(access);
+  const snapshot = lowerer.cjsRuntimeExportSnapshotOf(dep);
+  if (snapshot !== null) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+  if (!hasWholeExportValue(lowerer, dep)) return null;
+  return wholeExportValue(lowerer, dep, access, 0);
+}
+
 export function abstractPropertyDeclOf(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -1405,10 +1426,17 @@ export function lowerPropertyAccessExpr(
   // identifier reference (globals, function values, classes), guarded
   // by the namespace source-order fences (lower-namespaces.ts).
   if (!expr.questionDotToken) {
+    const cjsDefault = cjsNamespaceDefaultValueOf(lowerer, expr);
+    if (cjsDefault) return cjsDefault;
     const nsMember = nsMemberIdentOf(lowerer, expr);
     if (nsMember) {
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr, memberSym);
+      // A member the module's functions reassign: Node's namespace kept the
+      // value the module finished evaluating with (lower-modules.ts,
+      // registerCjsNamespaceSnapshotGlobals).
+      const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, expr);
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
       return lowerExpr(lowerer, nsMember);
     }
     // The same read through a receiver that evaluates

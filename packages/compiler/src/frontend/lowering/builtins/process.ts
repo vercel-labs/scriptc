@@ -1510,12 +1510,21 @@ export function lowerProcessProperty(
       container === "config" &&
       (expr.name.text === "variables" || expr.name.text === "target_defaults")
     ) {
-      // `target_defaults` reads undefined directly. `variables` only
-      // appears as the receiver of a member read — that OUTER access is
-      // the undefined answer (below); a bare `variables` value fences.
-      if (expr.name.text === "target_defaults") {
-        return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
-      }
+      // The build description object Node exposes: its frozen `variables`
+      // and `target_defaults` members.
+      return {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr) },
+        value: {
+          kind: "libCall",
+          fn: "process.configValue",
+          args: [],
+          type: DYN,
+          loc: locOf(expr),
+        },
+        type: DYN,
+        loc: locOf(expr),
+      };
     }
     // process.config.variables.<name> — the full chain.
     if (
@@ -1530,7 +1539,21 @@ export function lowerProcessProperty(
       if (expr.name.text === "v8_enable_i18n_support") {
         return { kind: "libCall", fn: "icu.i18nSupport", args: [], type: F64, loc: locOf(expr) };
       }
-      return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
+      const loc = locOf(expr);
+      const variables: IrExpr = {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: "variables", type: STRING, loc },
+        value: { kind: "libCall", fn: "process.configValue", args: [], type: DYN, loc },
+        type: DYN,
+        loc,
+      };
+      return {
+        kind: "dynKeyGet",
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        value: variables,
+        type: DYN,
+        loc,
+      };
     }
   }
   const member = lowerer.stdlibGlobalMember(expr, "process");
@@ -1549,6 +1572,9 @@ export function lowerProcessProperty(
   }
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+  }
+  if (member === "config") {
+    return { kind: "libCall", fn: "process.configValue", args: [], type: DYN, loc };
   }
   // process.exitCode: undefined until something assigns it, then the
   // assigned code. A read the checker narrowed to number follows an

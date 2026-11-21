@@ -285,16 +285,16 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job; the nightly sweep and manual runs run every lane", () => {
   for (const event of ["push", "merge_group"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
+      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n",
     );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);
   for (const event of ["schedule", "workflow_dispatch"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
+      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
     );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",
@@ -304,7 +304,7 @@ test("pushes to main and merge queue groups run every lane except macos; the nig
   });
 });
 
-test("every job on a macOS runner is in the macos lane", () => {
+test("every job on a macOS runner is in the macos lane, but the main push smoke job", () => {
   const macosJobs = Object.entries(workflow.jobs).filter(([, job]) =>
     [job["runs-on"], ...(job.strategy?.matrix?.include ?? []).map((entry) => entry.runner)].some(
       (runner) => runner?.startsWith("macos"),
@@ -317,7 +317,18 @@ test("every job on a macOS runner is in the macos lane", () => {
     "mobile_runtime_packs_ios",
     "native_macos",
     "tests_macos",
+    "tests_macos_smoke",
   ]);
   for (const [name, job] of macosJobs)
-    expect(job.if, name).toContain("needs.lanes.outputs.macos == 'true'");
+    expect(job.if, name).toContain(
+      name === "tests_macos_smoke"
+        ? "needs.lanes.outputs.macos_smoke == 'true'"
+        : "needs.lanes.outputs.macos == 'true'",
+    );
+  // The smoke job runs the darwin smoke suite on one runner, building its own
+  // native packages.
+  const smoke = workflow.jobs["tests_macos_smoke"]!;
+  expect(smoke.needs).toEqual(["validation_scope", "lanes"]);
+  expect(smoke.strategy).toBeUndefined();
+  expect(smoke.env).toMatchObject({ SCRIPTC_CI_SUITE: "darwin-smoke", SCRIPTC_TEST_SHARD: "1/1" });
 });

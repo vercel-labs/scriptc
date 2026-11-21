@@ -1302,6 +1302,7 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
   double recv = 0, send = 0;
   ScrDyn *recv_list = NULL, *send_list = NULL; /* retained, move onto the socket */
   ScrDyn *signal_member = NULL;                /* retained, armed below */
+  ScrDyn *type_member = NULL;                  /* retained member of an options record */
   if (v->kind == SCR_DYN_OBJ) {
     ScrDyn *m = NULL;
     bool ok = true;
@@ -1382,7 +1383,6 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
         send_list = m; /* retained: moves onto the socket */
       }
     }
-    ScrDyn *type_member = NULL;
     if (ok && scr_dgram_opt_read(v, "type", 4, &type_member)) type = type_member;
     if (ok && scr_exc_pending()) ok = false;
     if (!ok) {
@@ -1403,6 +1403,7 @@ ScrDgramSocket *scr_dgram_create_chk(const ScrDyn *arg, ScrClosure *cb, ScrDgram
     scr_dyn_release(recv_list);
     scr_dyn_release(send_list);
     scr_dyn_release(signal_member);
+    scr_dyn_release(type_member);
     scr_dyn_release(owned);
     scr_closure_release(cb);
     return NULL;

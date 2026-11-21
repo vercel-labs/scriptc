@@ -224,31 +224,37 @@ test("a shared class table keeps its accessors bags of the receiver", () => {
       { id: "orEmpty", name: "orEmpty", type: BOOL, mutable: false },
     ],
   };
-  const accessor = helper("%dyn.class.readPropertiesOrEmpty", ["v"], [
-    ret({
-      kind: "libCall",
-      fn: "js.fromDyn",
-      args: [call(table.name, ref("v"), flag(true))],
-      type: { kind: "jsval" },
-      loc,
-    }),
-  ]);
+  const accessor = helper(
+    "%dyn.class.readPropertiesOrEmpty",
+    ["v"],
+    [
+      ret({
+        kind: "libCall",
+        fn: "js.fromDyn",
+        args: [call(table.name, ref("v"), flag(true))],
+        type: { kind: "jsval" },
+        loc,
+      }),
+    ],
+  );
   // The creating accessor stores the absent bag, so it is not a bag of the
   // receiver and a read through it selects no cache site.
   const creating: IrFunction = {
-    ...helper("%dyn.class.properties.shared", ["v"], [
-      capsuleBranch("v"),
-      ret(ref("v")),
-      { kind: "assign", localId: "v", value: ref("v"), loc },
-    ]),
+    ...helper(
+      "%dyn.class.properties.shared",
+      ["v"],
+      [capsuleBranch("v"), ret(ref("v")), { kind: "assign", localId: "v", value: ref("v"), loc }],
+    ),
     params: [
       { localId: "v", name: "v", type: DYN },
       { localId: "create", name: "create", type: BOOL },
     ],
   };
-  const broken = helper("%dyn.class.readProperties.fresh", ["v"], [
-    ret({ kind: "dynObjLit", type: DYN, loc } as IrExpr),
-  ]);
+  const broken = helper(
+    "%dyn.class.readProperties.fresh",
+    ["v"],
+    [ret({ kind: "dynObjLit", type: DYN, loc } as IrExpr)],
+  );
   const sites = sitesOf(
     table,
     creating,

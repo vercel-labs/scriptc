@@ -331,7 +331,14 @@ __attribute__((weak)) void scr_abort_signal_abort(ScrDyn *controller) { (void)co
 __attribute__((weak)) void scr_abort_signal_drop_listeners(ScrDyn *controller) {
   (void)controller;
 }
+__attribute__((weak)) int scr_dyn_event_target_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener) {
+  (void)signal;
+  (void)listener;
+  return NULL;
+}
 static bool scr_http_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+static bool scr_http_events_available(void) { return scr_dyn_event_target_unit_linked != 0; }
 #else
 extern ScrDyn *scr_abort_signal_controller_new(void) __attribute__((weak));
 extern ScrDyn *scr_abort_signal_signal(ScrDyn *controller) __attribute__((weak));
@@ -341,6 +348,9 @@ static bool scr_http_abort_available(void) {
   return scr_abort_signal_controller_new != NULL && scr_abort_signal_signal != NULL &&
          scr_abort_signal_abort != NULL && scr_abort_signal_drop_listeners != NULL;
 }
+extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
+    __attribute__((weak));
+static bool scr_http_events_available(void) { return scr_events_add_abort_listener != NULL; }
 #endif
 
 static void scr_http_req_abort_signal(ScrHttpReq *r) {
@@ -10018,14 +10028,22 @@ static bool scr_http_dynh_res_pipe_from(void *dst, const ScrDyn *src) {
   return false;
 }
 
+/* IncomingMessage's methods as values: the class exposes destroy as a
+ * member function, so `req.destroy` reads as a function like Node's (and
+ * the same value on every read); the call already reached the invoke arm. */
+static const ScrDynHandleMethod scr_http_req_methods[] = {
+  {"destroy", 7, false, NULL, NULL},
+  {NULL, 0, false, NULL, NULL},
+};
+
 static const ScrDynHandleOps scr_http_dynh_req_ops = {
-  "IncomingMessage",
-  &scr_http_req_retain_v,
-  &scr_http_req_release_v,
-  &scr_http_dynh_req_invoke,
-  &scr_http_dynh_req_get,
-  &scr_http_dynh_req_set,
-  NULL,
+  .cls = "IncomingMessage",
+  .retain = &scr_http_req_retain_v,
+  .release = &scr_http_req_release_v,
+  .invoke = &scr_http_dynh_req_invoke,
+  .get = &scr_http_dynh_req_get,
+  .set = &scr_http_dynh_req_set,
+  .methods = scr_http_req_methods,
 };
 
 static const ScrDynHandleOps scr_http_dynh_res_ops = {
@@ -10505,12 +10523,26 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_events_add_abort_listener != NULL ? scr_events_add_abort_listener : NULL, fence);
+      scr_http_events_available() ? scr_events_add_abort_listener : NULL, fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);
   scr_net_sock_release(sock);
   return out;
+}
+
+/* The typed rewrite's receiver check: the net dialer it lowers to builds a
+ * plaintext socket, so an Agent value whose class is secure (an https.Agent,
+ * however it is typed at the call site) must refuse instead of dialing. */
+void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
+  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
+      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+    return;
+  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+  if (a == NULL || !a->secure) return;
+  static const char secure_text[] =
+      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
 }
 
 /* The dialer as a value, held like the other hooks. */

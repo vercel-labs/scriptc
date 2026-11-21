@@ -18,6 +18,7 @@ import { cjsExportValueByName, cjsTableExportNamesInOrder } from "./cjs-inline-r
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { newFnCtx, PoisonError, type Lowerer } from "./lowerer.js";
 import { builtinModuleMemberNames } from "./surfaces.js";
+import { BUILTIN_MODULE_MEMBERS } from "./builtin-module-members.generated.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { argumentCountValue } from "./argument-counts.js";
 import { nsReceiverEvaluates } from "./lower-namespaces.js";
@@ -657,9 +658,14 @@ export function builtinNamespaceBoxServes(
 }
 
 /** Every member key the box tries, sorted: the lowering tables' value
- * members, the sub-module members and the module-level objects. */
+ * members, the exports the pinned Node's census lists for the module (so a
+ * data member served by its own branch, `module.builtinModules`, and any
+ * other member with a value lowering behind the census is not left out),
+ * the sub-module members and the module-level objects. */
 function builtinBoxMemberNames(lowerer: Lowerer, module: string): string[] {
   const names = new Set<string>(builtinModuleMemberNames(lowerer, module));
+  const census = BUILTIN_MODULE_MEMBERS[module];
+  if (census !== undefined) for (const key of census.keys) names.add(key);
   for (const sub of BUILTIN_NAMESPACE_MEMBERS[module] ?? []) names.add(sub);
   for (const value of BUILTIN_VALUE_MEMBERS[module] ?? []) names.add(value);
   return [...names].sort();

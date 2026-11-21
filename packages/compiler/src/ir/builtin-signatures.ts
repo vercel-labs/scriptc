@@ -496,6 +496,9 @@ function buildLibFnSignatures() {
      * interned function per name, the same one dynamic values answer for
      * `.constructor`. The name is a compiler-chosen literal. */
     "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+    /* A module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`):
+     * the module and class names plus the class's arity. */
+    "dyn.moduleClassValue": { argTypes: [STRING, STRING, F64], result: DYN },
     /** A builtin global function (setTimeout, setInterval, setImmediate,
      * the clear functions, queueMicrotask, process.nextTick) read as a
      * JavaScript value: one interned function per name whose calls run the
@@ -807,15 +810,31 @@ function buildLibFnSignatures() {
     "perf.histoSubtract": { argTypes: [DYN, DYN], result: VOID },
     "perf.histoStat": { argTypes: [DYN, F64], result: F64 },
     "perf.histoStatBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoEwma": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoBurnRate": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoPercentile": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentileBig": { argTypes: [DYN, F64], result: BIGINT_T },
     "perf.histoCountAt": { argTypes: [DYN, F64], result: F64 },
     "perf.histoCdf": { argTypes: [DYN, F64], result: F64 },
     "perf.histoCcdf": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoBucketArg": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoLinearBucketsCount": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoLogBucketsCount": { argTypes: [DYN, F64, F64], result: F64 },
+    "perf.histoBucketsKey": { argTypes: [F64], result: F64 },
+    "perf.histoBucketsValue": { argTypes: [F64], result: F64 },
     "perf.histoPercentilesCount": { argTypes: [DYN], result: F64 },
     "perf.histoPercentilesKey": { argTypes: [DYN, F64], result: F64 },
     "perf.histoPercentilesValue": { argTypes: [DYN, F64], result: F64 },
+    "perf.histoPercentilesValueBig": { argTypes: [DYN, F64], result: BIGINT_T },
+    "perf.histoLinearView": { argTypes: [DYN, DYN], result: F64 },
+    "perf.histoLogView": { argTypes: [DYN, DYN, DYN], result: F64 },
+    "perf.histoPercentilesAtView": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoDispose": { argTypes: [DYN], result: VOID },
+    "perf.slidingNew": { argTypes: [DYN], result: DYN },
+    "perf.slidingRecord": { argTypes: [DYN, F64], result: VOID },
+    "perf.slidingRecordBig": { argTypes: [DYN, BIGINT_T], result: VOID },
+    "perf.slidingReset": { argTypes: [DYN], result: VOID },
+    "perf.slidingSnapshot": { argTypes: [DYN], result: DYN },
     "perf.histoKsTest": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCohensD": { argTypes: [DYN, DYN], result: F64 },
     "perf.histoCliffsD": { argTypes: [DYN, DYN], result: F64 },
@@ -1727,9 +1746,13 @@ function buildLibFnSignatures() {
     /** Readable.toWeb (scr_stream_to_web.c): the readable and the option
      * flags (< 0: none); a web ReadableStream. */
     "webstream.toWebReadable": { argTypes: [null, F64], result: DYN },
+    /** Readable.toWeb with an options strategy (scr_stream_to_web.c): the
+     * readable, the option flags, and the strategy (undefined for none). */
+    "webstream.toWebReadableOpts": { argTypes: [null, F64, DYN], result: DYN },
     /** Readable.toWeb over a checked-dynamic value: a boxed native stream
      * unwraps, anything else throws the not-supported Error. */
     "webstream.toWebReadableDyn": { argTypes: [DYN, F64], result: DYN },
+    "webstream.toWebReadableDynOpts": { argTypes: [DYN, F64, DYN], result: DYN },
     /** Writable.fromWeb (scr_stream_from_web_writable.c): the web
      * WritableStream and the option flags; a Writable. */
     "webstream.writableFromWeb": { argTypes: [DYN, F64], result: VOID },
@@ -1743,6 +1766,10 @@ function buildLibFnSignatures() {
     /** Duplex.fromWeb (scr_stream_duplex_from_web.c): the { readable,
      * writable } pair and the option flags; a Duplex. */
     "webstream.duplexFromWeb": { argTypes: [DYN, F64], result: VOID },
+    /** Duplex.fromWeb with options (scr_stream_duplex_from_web.c): the pair,
+     * the option flags, the highWaterMark (-1 default), the signal (undefined
+     * when absent) and the encoding name ("" when absent); a Duplex. */
+    "webstream.duplexFromWebOpts": { argTypes: [DYN, F64, F64, DYN, STRING], result: VOID },
     /** Duplex.toWeb (scr_stream_to_web_pair.c): the duplex and the option
      * flags; the { writable, readable } pair. */
     "webstream.toWebDuplex": { argTypes: [null, F64], result: DYN },
@@ -2419,6 +2446,11 @@ function buildLibFnSignatures() {
      * budget runs Node's validateInt32-from-1 ladder and is then inert —
      * the single dial has nothing to time). May-throw. */
     "net.connectAttempt": { argTypes: [F64, STRING, DYN], result: NETSOCKET_T },
+    /** new net.Socket([options]): an unconnected socket. args [options,
+     * fence]; allowHalfOpen and signal lower, a descriptor (a number
+     * argument or options.fd) and the readable/writable sides throw the
+     * caller-rendered fence. May-throw seed. */
+    "net.socketNew": { argTypes: [DYN, STRING, BOOL], result: NETSOCKET_T },
     /** net.connect/createConnection over dynamic arguments (a runtime
      * option bag, or positional values whose kinds only the run decides):
      * args [arg0, arg1, arg2, fence]. The runtime runs Node's normalizeArgs
@@ -2719,6 +2751,10 @@ function buildLibFnSignatures() {
      * Node's check that it carries the mocked accessor. */
     "test.accessorDescriptor": { argTypes: [DYN, DYN], result: DYN },
     "test.accessorRequire": { argTypes: [DYN, BOOL], result: VOID },
+    /** node:test's assert.register(name, fn) and the call of a registered
+     * assertion on a TestContext (its arguments a dyn array). */
+    "test.assertRegister": { argTypes: [STRING, DYN], result: VOID },
+    "test.ctxCustomAssert": { argTypes: [TESTCTX_T, STRING, DYN], result: DYN },
     // t.tags: the flattened tag set (a frozen array of strings).
     "test.ctxTags": { argTypes: [TESTCTX_T], result: arrayOf(STRING) },
     "test.ctxName": { argTypes: [TESTCTX_T], result: STRING },
@@ -2740,6 +2776,9 @@ function buildLibFnSignatures() {
     "test.ctxRunOnly": { argTypes: [TESTCTX_T, BOOL], result: VOID },
     "test.ctxWaitFor": { argTypes: [TESTCTX_T, DYN, BOOL, F64, BOOL, F64], result: DYN },
     "test.ctxCount": { argTypes: [TESTCTX_T], result: VOID },
+    // The first `t.assert` read fixes this context's assertion set (Node
+    // builds the test's assertion object from the registry at that moment).
+    "test.ctxAssertTouch": { argTypes: [TESTCTX_T], result: VOID },
     // The mock trackers: the module's `mock` and t.mock keep each mock's
     // restore closure (moved) for restoreAll and reset.
     // mock.fn's and mock.method's { times }: Node's non-negative-integer
@@ -2810,6 +2849,8 @@ function buildLibFnSignatures() {
     "http.validateHeaderValue": { argTypes: [STRING, DYN], result: VOID },
     /** http.setMaxIdleHTTPParsers(max): Node's argument validation. */
     "http.setMaxIdleParsers": { argTypes: [DYN], result: VOID },
+    /** The typed createConnection rewrite's secure-agent check. */
+    "http.agentCreateConnectionCheck": { argTypes: [DYN], result: VOID },
     "http.serverJoinDupHeaders": { argTypes: [NETSERVER_T], result: VOID },
     "http.serverAllowMissingHostHeader": { argTypes: [NETSERVER_T], result: VOID },
     /** The five writable numeric http.Server timeout fields use one
@@ -3251,11 +3292,24 @@ function buildLibFnSignatures() {
     /** setNoDelay(enable): the argument as written (undefined means true);
      * answers the socket. */
     "net.sockSetNoDelay": { argTypes: [NETSOCKET_T, DYN], result: NETSOCKET_T },
+    /** socket.connect(port[, host][, connectListener]): an idle socket
+     * starts the dial net.connect's port form performs (port and host run
+     * the validation ladder first); answers the socket. */
+    "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
+    "net.sockConnectCb": {
+      argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],
+      result: VOID,
+    },
     "net.sockDestroySoon": { argTypes: [NETSOCKET_T], result: VOID },
     /** RST close, answers the socket; throws ERR_INVALID_HANDLE_TYPE on TLS. */
     "net.sockResetAndDestroy": { argTypes: [NETSOCKET_T], result: NETSOCKET_T },
     /** socket.address(): { address, family, port } or {} as a dyn. */
     "net.sockAddress": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.timeout: the idle timeout setTimeout set (undefined until
+     * one was set, 0 once disabled). */
+    "net.sockTimeoutGet": { argTypes: [NETSOCKET_T], result: DYN },
+    /** socket.allowHalfOpen: the constructor's stream option. */
+    "net.sockAllowHalfOpen": { argTypes: [NETSOCKET_T], result: BOOL },
     "net.sockBytesWritten": { argTypes: [NETSOCKET_T], result: F64 },
     /** socket.writableLength: Node's state.length, the length of every
      * write not yet completely sent. */
@@ -3477,6 +3531,11 @@ function buildLibFnSignatures() {
      * opaque SecureContext handle (secureCtx kind) for SNI callbacks to
      * answer with; cert/key are PEM strings or Buffers like createServer's. */
     "tls.createSecureContext": { argTypes: [null, null], result: SECURECTX_T },
+    /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+     * verification — undefined on a match, the ERR_TLS_CERT_ALTNAME_INVALID
+     * error otherwise (a malformed quoted alt-name string throws
+     * ERR_TLS_CERT_ALTNAME_FORMAT). */
+    "tls.checkServerIdentity": { argTypes: [STRING, DYN], result: DYN },
     /** createSecureContext over a RUNTIME options record (the checked-
      * dynamic lane): Node's typed option validations first (the ciphers/
      * passphrase/engine/version/timeout/ticketKeys ladders), then the pem
@@ -3671,6 +3730,15 @@ function buildLibFnSignatures() {
     "http2.streamClosed": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamAborted": { argTypes: [HTTP2STREAM_T], result: BOOL },
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
+    /** ...statCheck: the trailing slot is the (stat, headers) callback. */
+    "http2.streamRespondWithFile": {
+      argTypes: [HTTP2STREAM_T, STRING, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
+      result: VOID,
+    },
+    "http2.streamRespondWithFD": {
+      argTypes: [HTTP2STREAM_T, F64, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
+      result: VOID,
+    },
     "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
     // Http2ServerRequest.complete: true once aborted, ended or closed.
     "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
@@ -4845,6 +4913,7 @@ function buildLibFnSignatures() {
     "fsp.chmod": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.chown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
     "fsp.lchown": { argTypes: [STRING, F64, F64], result: { kind: "promise", inner: VOID } },
+    "fsp.lchmod": { argTypes: [DYN, DYN], result: { kind: "promise", inner: VOID } },
     "fsp.access": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.truncate": { argTypes: [STRING, F64], result: { kind: "promise", inner: VOID } },
     "fsp.appendFile": { argTypes: [STRING, STRING], result: { kind: "promise", inner: VOID } },

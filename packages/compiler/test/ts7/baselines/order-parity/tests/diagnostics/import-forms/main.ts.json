@@ -27,16 +27,6 @@
    "milestone": "later"
   },
   {
-   "code": "SC1013",
-   "message": "namespace imports of CommonJS modules are not supported yet",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/import-forms/main.ts",
-    "start": 578,
-    "end": 589
-   },
-   "milestone": "later"
-  },
-  {
    "code": "SC1014",
    "message": "re-exports from packages or builtin modules are not supported yet",
    "loc": {

@@ -18,8 +18,8 @@
  * behavior). receiveBlockList drops packets from a blocked source before
  * they reach 'message'; sendBlockList makes a blocked send fail its
  * callback with ERR_IP_BLOCKED and never reach the wire; createSocket's
- * signal closes the socket when it aborts. The option with no native
- * behavior yet (lookup) is refused at run time with an SC2020 Error. */
+ * signal closes the socket when it aborts. A custom `lookup` runs for
+ * bind, connect and the unconnected sends, as Node's handle lookup does. */
 declare module "dgram" {
   export interface AddressInfo {
     address: string;
@@ -47,10 +47,12 @@ declare module "dgram" {
     recvBufferSize?: number;
     sendBufferSize?: number;
     signal?: AbortSignal;
+    /** Node's handle-lookup contract: the address, the socket family (4 or
+     * 6), and a callback taking an error or the resolved IP. */
     lookup?: (
-      hostname: string,
-      options: unknown,
-      callback: (err: Error | null, address: string, family: number) => void,
+      address: string,
+      family: number,
+      callback: (error: Error | null, ip: string) => void,
     ) => void;
     receiveBlockList?: import("net").BlockList;
     sendBlockList?: import("net").BlockList;

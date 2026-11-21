@@ -126,6 +126,11 @@ struct ScrTestCtx {
   double dur_ms;
   ScrCaught *err;      /* owned; the own-body failure payload */
   ScrDyn *abort_controller; /* owned; t.signal's controller, made on first read */
+  /* The custom-assertion registry as this context first saw it (+1), made
+   * when the context's `t.assert` is first read: Node builds each test's
+   * assertion object from the registry at that moment, so a registration a
+   * later callback makes is invisible to a context already using it. */
+  ScrDyn *custom_asserts;
   /* The test finished, timed out or was cancelled: a t.signal read after
    * that must answer an aborted signal, even though the controller is made
    * on the first read. */
@@ -338,6 +343,7 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_promise_release(t->done);
   scr_promise_release(t->slot);
   scr_dyn_release(t->abort_controller);
+  scr_dyn_release(t->custom_asserts);
   /* The watch points at the signal: unlink it before the node's last
    * reference to the signal can free it. */
   scr_test_watch_free(t);
@@ -4271,6 +4277,92 @@ static ScrStr *scr_test_caught_message(const ScrCaught *err) {
   return out;
 }
 
+/* ── the module's assert.register registry ─────────────────────────────
+ * Node's test_runner/assert.js keeps a name→function map that every
+ * TestContext.assert reads. The registry lives for the process; a
+ * registered name is called with the assertion's arguments. */
+static SCR_TL ScrDyn *scr_test_custom_asserts; /* owned; a dyn object name→fn */
+
+void scr_test_assert_register(ScrStr *name /*borrowed*/, ScrDyn *fn /*borrowed*/) {
+  if (fn->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return;
+  }
+  if (!scr_test_custom_asserts) scr_test_custom_asserts = scr_dyn_new_obj();
+  scr_dyn_obj_set(scr_test_custom_asserts, name->data, name->len, scr_dyn_retain(fn));
+}
+
+/* t.assert.<registered>(...): the registered function runs with the call's
+ * arguments and the call's value is its result, as Node's assertion object
+ * returns it. An async assertion therefore hands its promise to the call
+ * site: `await t.assert.custom()` waits for it and a rejection fails the
+ * test. Node binds the TestContext as `this`; a compiled closure has no
+ * receiver, so `this` is not bound here (the limitations page records it).
+ * +1; NULL leaves an exception pending. */
+/* The registry as this context first saw it: Node builds each test's
+ * assertion object from the registry when the test reaches `t.assert`, so
+ * later re-registrations do not reach a context already using it. */
+static ScrDyn *scr_test_ctx_assert_snapshot(ScrTestCtx *t) {
+  if (t->custom_asserts) return t->custom_asserts;
+  ScrDyn *snap = scr_dyn_new_obj();
+  if (scr_test_custom_asserts) {
+    /* assign answers its own reference to the target; the snapshot keeps
+     * the one made here. */
+    ScrDyn *assigned = scr_dyn_assign(snap, scr_test_custom_asserts);
+    if (assigned) {
+      scr_dyn_release(assigned);
+    } else {
+      scr_dyn_release(snap);
+      snap = NULL;
+    }
+  }
+  t->custom_asserts = snap;
+  return snap;
+}
+
+/* Reading `t.assert` (any member, the module's own or a registered one):
+ * the first read fixes this context's assertion set. */
+void scr_test_ctx_assert_touch(ScrTestCtx *t) { (void)scr_test_ctx_assert_snapshot(t); }
+
+ScrDyn *scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
+                                   ScrDyn *args /*borrowed*/) {
+  ScrDyn *registry = scr_test_ctx_assert_snapshot(t);
+  ScrDyn *fn = registry ? scr_dyn_obj_get(registry, name->data, name->len) : NULL;
+  if (!fn) {
+    /* The name is program data of any length: format into a stack buffer
+     * and, when the message does not fit, into an exactly-sized heap
+     * buffer, so a long name neither truncates the message nor reads past
+     * the buffer (Node's message carries the whole name). */
+    char stack[96];
+    const char *msg = stack;
+    char *heap = NULL;
+    int len = snprintf(stack, sizeof stack, "t.assert.%.*s is not a function", (int)name->len,
+                       name->data);
+    if (len < 0) len = 0;
+    if ((size_t)len >= sizeof stack) {
+      heap = malloc((size_t)len + 1);
+      if (heap) {
+        snprintf(heap, (size_t)len + 1, "t.assert.%.*s is not a function", (int)name->len,
+                 name->data);
+        msg = heap;
+      } else {
+        len = (int)sizeof stack - 1;
+      }
+    }
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    free(heap);
+    return NULL;
+  }
+  /* An assertion that replaces its own registration while it runs (or a
+   * callback it made does) drops the registry's reference to the running
+   * function. Keep it — and the state its closure captured — alive until
+   * the call returns; the registry holds a borrowed reference here. */
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)fn);
+  ScrDyn *result = scr_dyn_apply(held, args, "assertion");
+  scr_dyn_release(held);
+  return result;
+}
+
 /* t.error: Node's ERR_TEST_FAILURE wrapper over the test's failure, or
  * null. Its `cause` is the value the test threw (an Error, a string, or
  * whatever else), which is how the documented surface reads the original
@@ -4325,6 +4417,8 @@ int scr_test_exit_code(void) {
     scr_test_hooks_free(&scr_test_mocks);
     scr_mt_free_all();
     scr_snap_free_all();
+    scr_dyn_release(scr_test_custom_asserts);
+    scr_test_custom_asserts = NULL;
     /* The entry path and the root's cached tracing context outlive the
      * runner; a clean RC-audited program must release them. */
     scr_str_release(scr_test_entry);

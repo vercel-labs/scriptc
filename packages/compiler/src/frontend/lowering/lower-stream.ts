@@ -2533,23 +2533,31 @@ function lowerWritableFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: Sr
 
 /** Duplex.fromWeb(pair[, options]): the adapter that owns the pair's reader
  * and writer directly (adapters.js's newStreamDuplexFromReadableWritablePair).
- * The options have no lowering yet. */
+ * The options take allowHalfOpen, objectMode, encoding, decodeStrings,
+ * highWaterMark and signal. */
 function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
     lowerer.noLowering(
       `Duplex.fromWeb with ${args.length} arguments`,
       call,
-      "the supported form is Duplex.fromWeb({ readable, writable })",
+      "the supported form is Duplex.fromWeb({ readable, writable }, options)",
     );
   }
+  const pair = lowerer.lowerExprExpecting(args[0]!, DYN);
+  let allowHalfOpen = false;
+  let objectMode = false;
+  let decodeStrings = true;
+  let hwm: IrExpr = numLit(-1, loc);
+  let encoding = "";
+  let signal: IrExpr | null = null;
   const options = args[1];
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
         "Duplex.fromWeb options that are not an object literal",
         options,
-        "pass no options, or an empty object literal",
+        "pass { allowHalfOpen, objectMode, encoding, decodeStrings, highWaterMark, signal } as an object literal",
       );
     }
     for (const option of options.properties.nodes) {
@@ -2558,22 +2566,86 @@ function lowerDuplexFromWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
         ts.isIdentifier(option.name)
           ? option.name.text
           : null;
+      const value =
+        key === null
+          ? null
+          : ts.isShorthandPropertyAssignment(option)
+            ? (option.name as ts.Identifier)
+            : (option as ts.PropertyAssignment).initializer;
+      if (key === "allowHalfOpen" && value) {
+        if (value.kind === ts.SyntaxKind.TrueKeyword) allowHalfOpen = true;
+        else if (value.kind !== ts.SyntaxKind.FalseKeyword)
+          lowerer.noLowering(
+            "the Duplex.fromWeb option 'allowHalfOpen' with this value",
+            option,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "objectMode" && value) {
+        if (value.kind === ts.SyntaxKind.TrueKeyword) objectMode = true;
+        else if (value.kind !== ts.SyntaxKind.FalseKeyword)
+          lowerer.noLowering(
+            "the Duplex.fromWeb option 'objectMode' with this value",
+            option,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "decodeStrings" && value) {
+        if (value.kind === ts.SyntaxKind.FalseKeyword) decodeStrings = false;
+        else if (value.kind !== ts.SyntaxKind.TrueKeyword)
+          lowerer.noLowering(
+            "the Duplex.fromWeb option 'decodeStrings' with this value",
+            option,
+            "write true or false",
+          );
+        continue;
+      }
+      if (key === "highWaterMark" && value) {
+        hwm = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "encoding" && value) {
+        const t = lowerer.typeOf(value);
+        if (t.isStringLiteralType() && knownBufEncoding(t.value) === undefined) {
+          return nodeThrowExpr(
+            1,
+            "ERR_INVALID_ARG_VALUE",
+            `The property 'options.encoding' is invalid. Received '${t.value}'`,
+            { kind: "object", className: "%Duplex" },
+            loc,
+          );
+        }
+        encoding = bufEncoding(lowerer, "the Duplex.fromWeb option 'encoding'", value);
+        continue;
+      }
+      if (key === "signal" && value) {
+        if (!sideEffectFreeOptionValue(value) && !pureRead(value)) {
+          lowerer.noLowering(
+            "the Duplex.fromWeb option 'signal' with this value",
+            option,
+            "pass a variable or property read (const signal = controller.signal)",
+          );
+        }
+        signal = lowerer.lowerExprExpecting(value, DYN);
+        continue;
+      }
       lowerer.noLowering(
         key === null
           ? "Duplex.fromWeb options with this member"
           : `the Duplex.fromWeb option '${key}'`,
         option,
-        "the supported form is Duplex.fromWeb({ readable, writable })",
+        "allowHalfOpen, objectMode, encoding, decodeStrings, highWaterMark and signal are the Duplex.fromWeb options",
       );
     }
   }
-  const duplexType: IrType = { kind: "object", className: "%Duplex" };
-  /* Node's web-pair adapter owns the reader and the writer directly. */
+  const flags = (allowHalfOpen ? 1 : 0) | (objectMode ? 2 : 0) | (decodeStrings ? 0 : 4);
   return {
     kind: "libCall",
-    fn: "webstream.duplexFromWeb",
-    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
-    type: duplexType,
+    fn: "webstream.duplexFromWebOpts",
+    args: [pair, numLit(flags, loc), hwm, signal ?? dynUndefinedExpr(loc), strLit(encoding, loc)],
+    type: { kind: "object", className: "%Duplex" },
     loc,
   };
 }
@@ -7310,9 +7382,12 @@ function lowerReadableCompose(
   };
 }
 
-/** Readable.toWeb(readable): a web ReadableStream over the readable's chunks
- * (scr_stream_to_web.c). The options are an object literal without members:
- * `type: 'bytes'` (a byte stream) and `strategy` have no lowering yet. */
+/** Readable.toWeb(readable[, options]): a web ReadableStream over the
+ * readable's chunks (scr_stream_to_web.c). `type: 'bytes'` makes it a byte
+ * stream a BYOB reader reads, and another value is Node's
+ * ERR_INVALID_ARG_VALUE; `strategy` lowers as a checked-dynamic value and
+ * drives the stream's highWaterMark and size, as Node passes it to the
+ * ReadableStream constructor (a byte stream ignores it, as Node does). */
 function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
@@ -7327,6 +7402,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   // A type initializer the lowering answers from its static value still
   // runs, after the stream argument, as the call evaluates the object.
   const typeEffects: IrExpr[] = [];
+  let strategy: IrExpr | null = null;
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
@@ -7396,6 +7472,10 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
           'write "bytes" or omit it',
         );
       }
+      if (key === "strategy" && ts.isPropertyAssignment(member)) {
+        strategy = lowerer.lowerExprExpecting(member.initializer, DYN);
+        continue;
+      }
       lowerer.noLowering(
         key === null
           ? "Readable.toWeb options with this member"
@@ -7430,10 +7510,17 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       throw e;
     }
   }
+  const dyn = readable.type.kind === "dyn";
   const built: IrExpr = {
     kind: "libCall",
-    fn: readable.type.kind === "dyn" ? "webstream.toWebReadableDyn" : "webstream.toWebReadable",
-    args: [readable, numLit(flags, loc)],
+    fn: strategy
+      ? dyn
+        ? "webstream.toWebReadableDynOpts"
+        : "webstream.toWebReadableOpts"
+      : dyn
+        ? "webstream.toWebReadableDyn"
+        : "webstream.toWebReadable",
+    args: strategy ? [readable, numLit(flags, loc), strategy] : [readable, numLit(flags, loc)],
     type: DYN,
     loc,
   };

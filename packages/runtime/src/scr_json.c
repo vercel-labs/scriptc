@@ -3357,6 +3357,168 @@ ScrDyn *scr_dyn_error_prototype(void) {
   return scr_dyn_retain(scr_builtin_error_prototype);
 }
 
+/* ── Node module class values (http.IncomingMessage, …) ────────────────
+ * A module's class member read as a value is an ordinary function carrying
+ * the prototype object Node's class has: one value per (module, name) per
+ * program, so `req.constructor === http.IncomingMessage` and `instanceof`
+ * compare one identity. Calling one without `new` refuses as Node's classes
+ * do. */
+typedef struct {
+  const char *module; /* compiler-emitted literals: program lifetime */
+  const char *name;
+  ScrDyn *value; /* owned until exit */
+} ScrBuiltinClassEntry;
+/* Per-worker, like every other dyn cache: a worker's class values are its own
+ * objects, and its exit stack drains the entries it registered. */
+static SCR_TL ScrBuiltinClassEntry *scr_builtin_class_entries;
+static SCR_TL size_t scr_builtin_class_count, scr_builtin_class_capacity;
+
+static void scr_builtin_class_cleanup(void) {
+  for (size_t i = 0; i < scr_builtin_class_count; i++)
+    scr_dyn_release(scr_builtin_class_entries[i].value);
+  free(scr_builtin_class_entries);
+  scr_builtin_class_entries = NULL;
+  scr_builtin_class_count = scr_builtin_class_capacity = 0;
+}
+
+static ScrDyn *scr_builtin_class_construct_refusal(ScrClosure *closure, ScrDyn *const *args,
+                                                   size_t argc) {
+  (void)args;
+  (void)argc;
+  const char *name = closure->fn ? (const char *)closure->fn : "";
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Class constructor ");
+  scr_jb_puts(&message, name);
+  scr_jb_puts(&message, " cannot be invoked without 'new'");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return NULL;
+}
+
+static ScrDynHandleTag scr_builtin_class_tag(const char *module, const char *name) {
+  if (strcmp(module, "http") == 0) {
+    if (strcmp(name, "IncomingMessage") == 0) return SCR_DYNH_HTTP_REQ;
+    if (strcmp(name, "ServerResponse") == 0) return SCR_DYNH_HTTP_RES;
+  }
+  return SCR_DYNH_CAPACITY;
+}
+typedef struct {
+  ScrDynHandleTag tag;
+  ScrDyn *prototype; /* owned until exit */
+} ScrBuiltinClassTag;
+static SCR_TL ScrBuiltinClassTag scr_builtin_class_tags[8];
+static SCR_TL size_t scr_builtin_class_ntags;
+static void scr_builtin_class_tags_cleanup(void) {
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    scr_dyn_release(scr_builtin_class_tags[i].prototype);
+  scr_builtin_class_ntags = 0;
+}
+static void scr_builtin_class_register_tag(ScrDynHandleTag tag, ScrDyn *prototype) {
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    if (scr_builtin_class_tags[i].tag == tag) return;
+  if (scr_builtin_class_ntags == sizeof scr_builtin_class_tags / sizeof scr_builtin_class_tags[0])
+    return;
+  if (scr_builtin_class_ntags == 0) scr_atexit(scr_builtin_class_tags_cleanup);
+  scr_builtin_class_tags[scr_builtin_class_ntags++] =
+      (ScrBuiltinClassTag){tag, scr_dyn_retain(prototype)};
+}
+/* The class a handle tag belongs to, as the module class value that names it
+ * (the pair scr_builtin_class_tag maps from). */
+static bool scr_builtin_class_tag_pair(ScrDynHandleTag tag, const char **module,
+                                       const char **name, double *arity) {
+  if (tag == SCR_DYNH_HTTP_REQ) {
+    *module = "http";
+    *name = "IncomingMessage";
+    *arity = 1;
+    return true;
+  }
+  if (tag == SCR_DYNH_HTTP_RES) {
+    *module = "http";
+    *name = "ServerResponse";
+    *arity = 2;
+    return true;
+  }
+  return false;
+}
+
+static ScrDyn *scr_builtin_class_prototype_of_tag(ScrDynHandleTag tag) { /* +1 */
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    if (scr_builtin_class_tags[i].tag == tag) return scr_dyn_retain(scr_builtin_class_tags[i].prototype);
+  return NULL;
+}
+
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity);
+
+/* The tag's class prototype, creating the class value (which registers it)
+ * when the program has not read the class yet: an instance's `constructor`
+ * read before `http.IncomingMessage` must answer the same value. */
+static ScrDyn *scr_builtin_class_prototype_for_tag(ScrDynHandleTag tag) { /* +1 */
+  ScrDyn *prototype = scr_builtin_class_prototype_of_tag(tag);
+  if (prototype != NULL) return prototype;
+  const char *module = NULL, *name = NULL;
+  double arity = 0;
+  if (!scr_builtin_class_tag_pair(tag, &module, &name, &arity)) return NULL;
+  /* The tag pair's own literals are program-lifetime, like the compiler's
+   * class reads, so nothing is allocated that outlives the call. */
+  ScrDyn *value = scr_builtin_class_make(module, name, arity);
+  scr_dyn_release(value);
+  return scr_builtin_class_prototype_of_tag(tag);
+}
+
+
+/* `module` and `name` are immortal program-lifetime literals: the registry
+ * entries and the function name borrow them, which is why both the
+ * compiler-emitted class reads (its string literals) and the tag pair's own
+ * literals may pass them here. */
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity) {
+  for (size_t i = 0; i < scr_builtin_class_count; i++) {
+    const ScrBuiltinClassEntry *entry = &scr_builtin_class_entries[i];
+    if (strcmp(entry->module, module) == 0 && strcmp(entry->name, name) == 0)
+      return scr_dyn_retain(entry->value);
+  }
+  ScrDyn *value = scr_dyn_new_func(scr_closure_new((void *)name, 0),
+                                   scr_builtin_class_construct_refusal, (uint32_t)arity,
+                                   "builtin-class", name);
+  /* A function's own prototype object: hidden constructor, writable
+   * prototype, as Node's classes carry. */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(value));
+  for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
+    scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
+  ScrDynHandleTag tag = scr_builtin_class_tag(module, name);
+  if (tag != SCR_DYNH_CAPACITY) scr_builtin_class_register_tag(tag, prototype);
+  scr_dyn_fn_seed_prototype(value, prototype);
+  ScrDyn *table = scr_dyn_function_properties(value);
+  if (table != NULL) {
+    ScrDynEntry *entries = scr_dyn_obj_dict_entries(table);
+    for (size_t i = 0; i < (size_t)table->v.obj.len; i++) {
+      if (entries[i].key != NULL && entries[i].key_len == 9 &&
+          memcmp(entries[i].key, "prototype", 9) == 0)
+        entries[i].writable = true;
+    }
+    scr_dyn_release(table);
+  }
+  if (scr_builtin_class_count == scr_builtin_class_capacity) {
+    size_t capacity = scr_builtin_class_capacity ? scr_builtin_class_capacity * 2 : 8;
+    ScrBuiltinClassEntry *grown =
+        realloc(scr_builtin_class_entries, capacity * sizeof *grown);
+    if (grown == NULL) {
+      scr_dyn_release(value);
+      return NULL;
+    }
+    scr_builtin_class_entries = grown;
+    scr_builtin_class_capacity = capacity;
+  }
+  if (scr_builtin_class_count == 0) scr_atexit(scr_builtin_class_cleanup);
+  scr_builtin_class_entries[scr_builtin_class_count++] =
+      (ScrBuiltinClassEntry){module, name, scr_dyn_retain(value)};
+  return value;
+}
+
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity) {
+  return scr_builtin_class_make(module->data, name->data, arity);
+}
+
 /* Error.captureStackTrace called through its function value. The
  * constructor argument's frame cannot be found from a function value, so
  * every frame is kept: the frames V8 keeps and the ones above them. */
@@ -7728,6 +7890,9 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
       ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops
                                      ? scr_dyn_handle_class_ops->prototype_of(value)
                                      : NULL;
+      if (handle_prototype == NULL && value->kind == SCR_DYN_HANDLE)
+        handle_prototype = scr_builtin_class_prototype_of_tag(value->v.handle.tag);
+
       if (handle_prototype || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
         ScrDyn *current = handle_prototype ? handle_prototype : scr_dyn_get_prototype((ScrDyn *)value);
         while (current && current->kind != SCR_DYN_NULL) {
@@ -9722,6 +9887,21 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
+  /* A class value's prototype answers the members the handle models none
+   * of (its `constructor` names the class value, as Node's instances answer
+   * it through their class prototype). */
+  if (!r || r->kind == SCR_DYN_UNDEF) {
+    ScrDyn *prototype = scr_builtin_class_prototype_for_tag(tag);
+    if (prototype != NULL) {
+      ScrDyn *inherited = scr_dyn_obj_read(prototype, k->data, k->len);
+      scr_dyn_release(prototype);
+      if (inherited != NULL && inherited->kind != SCR_DYN_UNDEF) {
+        scr_dyn_release(r);
+        return inherited;
+      }
+      scr_dyn_release(inherited);
+    }
+  }
   /* Unmodeled names answer undefined — the checked-dynamic tree's own-property stance
    * (real-but-unmodeled members throw "not supported yet" inside ops->get instead;
    * SEMANTICS.md documents the remainder). */

@@ -58750,6 +58750,7 @@
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
           "tests/corpus/5563-http-keep-alive-timeout.ts",
+          "tests/corpus/compat-http-class-identity.mjs",
           "tests/corpus/compat-http-client-connect.mjs",
           "tests/corpus/compat-http-client-connect.ts",
           "tests/corpus/compat-http-interim-responses.mjs",
@@ -61057,11 +61058,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.ServerResponse",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -61979,11 +61979,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.IncomingMessage",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"

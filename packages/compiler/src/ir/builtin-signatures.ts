@@ -496,6 +496,9 @@ function buildLibFnSignatures() {
      * interned function per name, the same one dynamic values answer for
      * `.constructor`. The name is a compiler-chosen literal. */
     "dyn.globalConstructor": { argTypes: [STRING], result: DYN },
+    /* A module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`):
+     * the module and class names plus the class's arity. */
+    "dyn.moduleClassValue": { argTypes: [STRING, STRING, F64], result: DYN },
     /** A builtin global function (setTimeout, setInterval, setImmediate,
      * the clear functions, queueMicrotask, process.nextTick) read as a
      * JavaScript value: one interned function per name whose calls run the

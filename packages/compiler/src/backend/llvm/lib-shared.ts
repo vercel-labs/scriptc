@@ -1574,6 +1574,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.nativeDateIs": "scr_dyn_date_instance_is",
   "dyn.nativeDateHandleIs": "scr_dyn_native_date_is",
   "dyn.globalConstructor": "scr_dyn_global_constructor",
+  "dyn.moduleClassValue": "scr_dyn_builtin_class_value",
   "dyn.builtinFunction": "scr_dyn_builtin_function",
   "dyn.namespaceNew": "scr_dyn_namespace_new",
   "dyn.namespaceDefine": "scr_dyn_namespace_define",

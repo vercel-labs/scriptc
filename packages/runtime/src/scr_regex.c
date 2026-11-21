@@ -528,7 +528,9 @@ static int scr_simple_program(const ScrStr *source, uint8_t *prog, size_t cap, u
           if (at + 1 < n && p[at] == '-' && p[at + 1] != ']') {
             at++;
             hi = p[at++];
-            if (hi < lo) return 0;
+            /* An escaped endpoint (`[0-\x39]`) is a class escape, not a
+             * literal backslash: the engine must answer. */
+            if (hi == '\\' || hi < lo) return 0;
           }
           for (unsigned ch = lo; ch <= hi; ch++) bits[ch >> 3] |= (uint8_t)(1u << (ch & 7));
           any = true;

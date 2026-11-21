@@ -39,3 +39,9 @@ console.log("xggtax".search(new RegExp(["ggta", "ggt"].join("|"))));
 console.log("xa".match(new RegExp(["a", ""].join("|"), "g")));
 console.log("xa".match(new RegExp(["", "a"].join("|"), "g")));
 console.log("xa".replace(new RegExp(["a", ""].join("|"), "g"), "-"));
+
+// An escaped upper endpoint is a class escape, not a literal backslash: the
+// pattern keeps the engine's answer, so removing everything but digits does
+// not let angle brackets through.
+console.log("<12>".replace(new RegExp("[^0-\\x39]", "g"), ""));
+console.log("a-b_c".replace(new RegExp("[\\x41-\\x5a]+", "g"), ""));

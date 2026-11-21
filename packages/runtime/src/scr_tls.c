@@ -887,6 +887,8 @@ typedef struct ScrTlsSock {
   bool renego_progress;
   /* asked for before the first handshake finished: started at 'secure' */
   bool renego_requested;
+  /* the negotiated version is TLS 1.3: no renegotiation exists on it */
+  bool is_tls13;
   bool settled; /* the socket closed: listeners added later never fire */
   /* a TLS 1.3 client sent no certificate to a server that requires one;
    * the alert goes out once the handshake is over */
@@ -1258,17 +1260,22 @@ static void scr_tls_drain_unread(ScrTlsSock *t) {
 
 static void scr_tls_fire_session(ScrTlsSock *t);
 
-/* A started renegotiation re-fires 'secure' when the engine finishes it:
- * the handshake leaves "over" while the peer's flight is in and returns
- * once it completes. Node's renegotiate() callback is registered as a
+/* A renegotiation re-fires 'secure' when the engine finishes it: the
+ * handshake leaves "over" while the peer's flight is in and returns once
+ * it completes. A local renegotiate() set the flag up front; a renegotiation
+ * the PEER started is discovered here — after the handshake was over, the
+ * engine reports one in progress again (TLS 1.3 has no renegotiation, so the
+ * version gates it). Node's renegotiate() callback is registered as a
  * once('secure') listener, so it runs with the rest in registration order. */
 static void scr_tls_renego_settle(ScrTlsSock *t) {
-  if (!t->renegotiating) return;
   if (!mbedtls_ssl_is_handshake_over(&t->ssl)) {
-    t->renego_progress = true;
+    if (t->established && !t->is_tls13) {
+      t->renegotiating = true;
+      t->renego_progress = true;
+    }
     return;
   }
-  if (!t->renego_progress) return; /* requested (server) but unanswered yet */
+  if (!t->renegotiating || !t->renego_progress) return; /* requested but unanswered */
   t->renegotiating = false;
   t->renego_progress = false;
   if (!scr_exc_pending()) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
@@ -1889,6 +1896,18 @@ static int scr_tls_handshake(void *tctx) {
 static void scr_tls_on_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->established = true;
+  {
+    const char *ver = mbedtls_ssl_get_version(&t->ssl);
+    t->is_tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
+  }
+  if (t->srv != NULL) {
+    /* Node emits a server socket's 'secure' as its handshake completes —
+     * before the server's 'secureConnection' listeners run, so a listener
+     * registered there waits for a later handshake — and the net pump
+     * dispatches 'secureConnection' right after this hook */
+    scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+    if (scr_exc_pending()) return;
+  }
   if (t->cli != NULL) scr_tls_fire_session(t); /* the 1.2 arm; 1.3 fires on ticket receipt */
   if (t->srv != NULL && t->srv->h2_conn != NULL) {
     /* the h2 secure server: dispatch on the NEGOTIATED protocol — the
@@ -1959,7 +1978,9 @@ static void scr_tls_drain(void *tctx) {
  * the settle drops them. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
-  scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+  /* a client's 'secure' follows its secureConnect listeners; a server's
+   * already fired in on_established, before 'secureConnection' */
+  if (t->srv == NULL) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
   if (t->renego_requested && !scr_exc_pending()) {
     /* renegotiate() called while the first handshake ran: Node queues it
      * behind that handshake, and its callback was registered as a
@@ -5141,11 +5162,13 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
 }
 
 /* The 'secure' event: the handshake completed (after secureConnect on a
- * client). A plain socket never emits it, and a registration after the
- * handshake comes too late, as in Node. */
+ * client), and every completed renegotiation fires it again. A plain socket
+ * never emits it; a listener may join at any time — Node's EventEmitter
+ * accepts it and it simply waits for the next handshake — and only a
+ * settled socket releases it unread. */
 void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || t->established || t->settled) {
+  if (t == NULL || t->settled) {
     scr_closure_release(cb);
     return;
   }

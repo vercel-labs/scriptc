@@ -37,6 +37,8 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesCount",
   "perf.histoPercentilesKey",
   "perf.histoPercentilesValue",
+  "perf.histoBucketsKey",
+  "perf.histoBucketsValue",
   "dyn.moduleClassValue",
   "perf.histoPercentilesValueBig",
   "perf.histoDispose",

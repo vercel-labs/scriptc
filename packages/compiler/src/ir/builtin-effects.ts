@@ -832,6 +832,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",
+  "perf.histoBucketArg",
+  "perf.histoLinearBucketsCount",
+  "perf.histoLogBucketsCount",
   "perf.histoRecord",
   "perf.histoRecordBig",
   "perf.histoRecordCorrected",

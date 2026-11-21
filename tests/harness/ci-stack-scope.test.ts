@@ -10,7 +10,7 @@ type Job = {
   if?: string;
   permissions?: Record<string, string>;
   outputs?: Record<string, string>;
-  steps?: { run?: string; uses?: string }[];
+  steps?: { name?: string; if?: string; run?: string; uses?: string }[];
 };
 const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -37,6 +37,10 @@ const stacked = (base: string, position = 3) => ({
 const upper = stacked("feature/lower");
 
 function runScope(eventName: string, event: unknown) {
+  return runScopeOutputs(eventName, event).replace(/^tier=.*\n/m, "");
+}
+
+function runScopeOutputs(eventName: string, event: unknown, sha = "") {
   const directory = mkdtempSync(join(tmpdir(), "ci-stack-scope-"));
   try {
     const eventPath = join(directory, "event.json");
@@ -51,6 +55,7 @@ function runScope(eventName: string, event: unknown) {
         GITHUB_EVENT_NAME: eventName,
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_OUTPUT: outputPath,
+        GITHUB_SHA: sha,
       },
     });
     expect(result.error).toBeUndefined();
@@ -180,11 +185,55 @@ const full = "needs.validation_scope.outputs.full == 'true'";
 const laneOf = (name: string) =>
   /needs\.lanes\.outputs\.(\w+) == 'true'/.exec(workflow.jobs[name]!.if ?? "")?.[1];
 
+test("a pull request from this repository runs the fast tier until its reviews pass", () => {
+  const ordinary = {
+    repository: { full_name: repository, default_branch: "main" },
+    pull_request: {
+      author_association: "MEMBER",
+      head: { repo: { full_name: repository } },
+      base: { ref: "main", repo: { full_name: repository } },
+      labels: [{ name: "enhancement" }],
+    },
+  };
+  expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
+  // The ci:full label overrides the gate.
+  const labeled = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
+  };
+  expect(runScopeOutputs("pull_request", labeled)).toBe("full=true\ntier=full\n");
+  // A fork's branch cannot be dispatched, so its pull request run runs every lane.
+  const fork = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, head: { repo: { full_name: "someone/scriptc" } } },
+  };
+  expect(runScopeOutputs("pull_request", fork)).toBe("full=true\ntier=full\n");
+  for (const eventName of ["push", "merge_group", "schedule"])
+    expect(runScopeOutputs(eventName, { repository: ordinary.repository }), eventName).toBe(
+      "full=true\ntier=full\n",
+    );
+  // The expensive tier ci-review-gate.yml dispatches runs on the commit the reviews passed on, and nothing once
+  // the branch moved on.
+  const gated = { repository: ordinary.repository, inputs: { pr: "12", sha: "abc", scope: "all" } };
+  expect(runScopeOutputs("workflow_dispatch", gated, "abc")).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("workflow_dispatch", gated, "def")).toBe("full=false\ntier=superseded\n");
+  const manual = { repository: ordinary.repository, inputs: { pr: "", sha: "", scope: "all" } };
+  expect(runScopeOutputs("workflow_dispatch", manual, "def")).toBe("full=true\ntier=full\n");
+});
+
+test("a superseded expensive tier passes the required check without reporting ci/full", () => {
+  const superseded = runGate("false", {}, undefined, "superseded");
+  expect(superseded.status).toBe(0);
+  expect(superseded.stdout).toContain("its new head runs its own CI");
+  const report = workflow.jobs.test!.steps!.find((step) => step.name === "Report ci/full")!;
+  expect(report.if).toContain("needs.validation_scope.outputs.tier != 'superseded'");
+});
+
 test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
   for (const name of nightlyJobs) {
     expect(workflow.jobs[name], name).toBeDefined();
     expect(workflow.jobs[name]!.if, name).toBe(
-      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '' }}",
     );
     expect(workflow.jobs.test!.needs, name).not.toContain(name);
   }
@@ -200,9 +249,10 @@ test("every expensive CI job is gated and included in the required test check", 
     else {
       expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
       expect(job.needs, name).toContain("lanes");
-      expect(["linux", "macos", "effects", "bootstrap", "profile", "islands"], name).toContain(
-        lane,
-      );
+      expect(
+        ["linux", "macos", "effects", "bootstrap", "profile", "islands", "fast"],
+        name,
+      ).toContain(lane);
     }
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }
@@ -225,6 +275,7 @@ test("a lane the base revision's selector does not name leaves its job off", () 
   expect(Object.keys(outputs).sort()).toEqual([
     "bootstrap",
     "effects",
+    "fast",
     "islands",
     "linux",
     "macos",
@@ -242,7 +293,9 @@ function runGate(
     macos: "true",
     effects: "true",
     bootstrap: "true",
+    fast: "true",
   },
+  tier = "full",
 ) {
   const needs = Object.fromEntries(
     (workflow.jobs.test!.needs as string[]).map((name) => {
@@ -252,7 +305,10 @@ function runGate(
         (lane !== undefined && lanes[lane] === "false");
       return [
         name,
-        { result: results[name] ?? (skipped ? "skipped" : "success"), outputs: { full, ...lanes } },
+        {
+          result: results[name] ?? (skipped ? "skipped" : "success"),
+          outputs: { full, tier, ...lanes },
+        },
       ];
     }),
   );
@@ -284,6 +340,21 @@ test("the required test check passes only after full validation", () => {
   expect(
     runGate("false", Object.fromEntries(heavyJobs.map((name) => [name, "success"]))).status,
   ).toBe(1);
+});
+
+test("the fast tier passes the required check on its own jobs, with every lane off", () => {
+  const fastTier = {
+    linux: "false",
+    macos: "false",
+    effects: "false",
+    bootstrap: "false",
+    profile: "false",
+    islands: "false",
+    fast: "true",
+  };
+  expect(runGate("true", {}, fastTier, "fast").status).toBe(0);
+  for (const result of ["failure", "cancelled", "skipped"])
+    expect(runGate("true", { fast_tests: result }, fastTier, "fast").status, result).toBe(1);
 });
 
 test("full validation rejects any failed, cancelled or skipped expensive job", () => {

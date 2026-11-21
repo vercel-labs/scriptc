@@ -1,0 +1,71 @@
+name: CI review gate
+
+# A pull request's expensive CI tier runs once both Vercel reviews pass on its head (scripts/ci-review-gate.mjs).
+# Pull request runs of CI run only the fast tier; this workflow dispatches the expensive tier on the pull request's
+# branch, where it runs in the pull request's concurrency group and cache scope. It never runs pull request code:
+# it checks out the default branch's gate script. check_run and workflow_run events start only the default branch's
+# copy of this file.
+on:
+  # Vercel Agent Review or Vercel Security Review completed.
+  check_run:
+    types: [completed]
+  # The override: labeling a pull request ci:full starts its expensive tier at once, and its later pull request
+  # runs run every lane while the label stays.
+  # A push to a pull request cancels the expensive tier still running on its older head.
+  pull_request:
+    types: [labeled, synchronize]
+  # A fork's pull request runs every lane but cannot write ci/full; this reports it.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+  # Start a pull request's expensive tier by hand, whatever the reviews say.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One gate at a time per pull request, so the two reviews' completions cannot both dispatch.
+concurrency:
+  group: ci-review-gate-${{ github.event.check_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Start the expensive CI tier
+    if: >-
+      (github.event_name == 'check_run' && github.event.check_run.app.slug == 'vercel' &&
+      (github.event.check_run.name == 'Vercel Agent Review' || github.event.check_run.name == 'Vercel Security Review')) ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event.action == 'synchronize' || github.event.label.name == 'ci:full')) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.head_repository.full_name != github.repository) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+      checks: read
+      pull-requests: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/ci-review-gate.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci-review-gate.mjs

@@ -8068,7 +8068,8 @@ typedef struct ScrHttpAgent {
   bool destroyed;
   ScrHttpAgentEnt *ents, *ents_last; /* append order — Node's FIFO queue */
   size_t nqueued; /* entries with queued set */
-  size_t pump_depth; /* a queue pass is running: wakes inside it leave the queue to it */
+  size_t pump_depth; /* a queue pass is running: wakes inside it are deferred to it */
+  bool pump_pending;  /* a wake arrived while a pass ran: the pass re-runs */
   struct ScrHttpAgentFree *free_socks; /* keepAlive: idle sockets, most recent first */
   ScrHttpSockCount *sock_count; /* totalSocketCount (+1) */
   bool in_registry;
@@ -8410,60 +8411,73 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
  * that name had nothing to start — the first queued request whose own origin
  * has no live socket and whose dial stays under maxTotalSockets (Node's
  * cross-origin path; the queue is not FIFO across origins). */
-static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
-  /* A wake raised while a pass is running (a pruned socket's slot coming
-   * back, a settle) leaves the queue to that pass: selecting a waiter here
-   * would start one the enclosing pass has already chosen, and the enclosing
-   * pass would then dequeue it a second time — underflowing the count and
-   * stranding the requests behind it. */
-  if (ag->pump_depth > 0) return;
-  /* Node's removeSocket serves the queue whenever a slot frees, including
-   * after destroy(): destroy() only tears the sockets down */
-  if (ag->nqueued > 0) {
-    ag->pump_depth++;
-    bool started = false;
-    if (name != NULL) {
-      for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
-        if (!(e->queued && e->name->len == name->len &&
-              memcmp(e->name->data, name->data, name->len) == 0))
-          continue;
-        ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
-        if (f != NULL) {
-          e->queued = false;
-          ag->nqueued--;
-          scr_http_client_rebind(e->client, f, false);
-          started = true;
-        } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
-                   (double)ag->sock_count->n < ag->max_total) {
-          e->queued = false;
-          ag->nqueued--;
-          if (e->client->sock) {
-            scr_http_conn_count(e->client->conn, ag->sock_count, ag);
-            scr_net_sock_dial_start(e->client->sock);
-          }
-          started = true;
-        }
-        break;
-      }
-    }
-    /* Node's cross-origin path: when the name that just freed nothing (or
-     * the name's own queue is empty), a request queued under another name
-     * starts if that origin has no live socket and the total stays under
-     * maxTotalSockets. The queue is not FIFO across origins, as in Node. */
-    if (!started && (double)ag->sock_count->n < ag->max_total) {
-      for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
-        if (!e->queued || scr_http_agent_active(ag, e->name) > 0) continue;
+/* One pass over the queue: the named origin first, then a queued request
+ * under another origin when the total has room (Node's cross-origin path). */
+static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name) {
+  bool started = false;
+  if (name != NULL) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (!(e->queued && e->name->len == name->len &&
+            memcmp(e->name->data, name->data, name->len) == 0))
+        continue;
+      ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
+      if (f != NULL) {
+        e->queued = false;
+        ag->nqueued--;
+        scr_http_client_rebind(e->client, f, false);
+        started = true;
+      } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
+                 (double)ag->sock_count->n < ag->max_total) {
         e->queued = false;
         ag->nqueued--;
         if (e->client->sock) {
           scr_http_conn_count(e->client->conn, ag->sock_count, ag);
           scr_net_sock_dial_start(e->client->sock);
         }
-        break;
+        started = true;
       }
+      break;
     }
-    ag->pump_depth--;
   }
+  /* Node's cross-origin path: when the name that just freed nothing (or
+   * the name's own queue is empty), a request queued under another name
+   * starts if that origin has no live socket and the total stays under
+   * maxTotalSockets. The queue is not FIFO across origins, as in Node. */
+  if (!started && (double)ag->sock_count->n < ag->max_total) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (!e->queued || scr_http_agent_active(ag, e->name) > 0) continue;
+      e->queued = false;
+      ag->nqueued--;
+      if (e->client->sock) {
+        scr_http_conn_count(e->client->conn, ag->sock_count, ag);
+        scr_net_sock_dial_start(e->client->sock);
+      }
+      break;
+    }
+  }
+}
+
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
+  /* A wake raised while a pass is running (a pruned socket's slot coming
+   * back, a settle) is deferred to it: the pass re-runs and serves the
+   * released capacity, so no wake is lost and no waiter is dequeued twice. */
+  if (ag->pump_depth > 0) {
+    ag->pump_pending = true;
+    return;
+  }
+  /* Node's removeSocket serves the queue whenever a slot frees, including
+   * after destroy(): destroy() only tears the sockets down */
+  if (ag->nqueued == 0) return;
+  ag->pump_depth++;
+  ag->pump_pending = false;
+  scr_http_agent_pump_pass(ag, name);
+  /* a later pass scans every queued entry: the origin that woke the first
+   * pass is not the only one a release can serve */
+  while (ag->pump_pending && ag->nqueued > 0) {
+    ag->pump_pending = false;
+    scr_http_agent_pump_pass(ag, NULL);
+  }
+  ag->pump_depth--;
 }
 
 /* getName's string builder — Node's exact shape:

@@ -883,6 +883,12 @@ static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc
   if (!job->done) {
     job->done = true;
     ScrDgramSocket *s = job->s;
+    /* closed while the resolver was pending: Node's handle is gone, so the
+     * answer runs no completion and creates no descriptor */
+    if (s->closing || s->close_emitted) {
+      scr_dgram_lk_job_release(job);
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
     const ScrDyn *err = argc > 0 ? args[0] : NULL;
     const ScrDyn *ip = argc > 1 ? args[1] : NULL;
     bool failed = err != NULL && err->kind != SCR_DYN_UNDEF && err->kind != SCR_DYN_NULL;
@@ -920,8 +926,9 @@ static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc
     ScrStr *host = scr_str_new(ip->v.str->data, ip->v.str->len);
     if (job->stage == 1) {
       /* the implicit bind Node's connect/send performs first: bind at the
-       * answered address, then resolve the operation's own target */
-      if (!scr_dgram_lk_bind_implicit(s, host)) {
+       * answered address, then resolve the operation's own target. A send
+       * that raced an earlier implicit bind finds the socket bound. */
+      if (!s->bound && !scr_dgram_lk_bind_implicit(s, host)) {
         scr_str_release(host);
         scr_closure_release(job->cb);
         job->cb = NULL;
@@ -994,6 +1001,10 @@ static void scr_dgram_lk_start(ScrDgramSocket *s, ScrDgramLkJob *job) {
     if (!job->address) scr_dgram_oom();
   }
   scr_dgram_lk_invoke(s, job);
+  /* the resolver callback's box owns the job from here: drop the starting
+   * reference (a resolver that answered synchronously already released the
+   * box's own). */
+  scr_dgram_lk_job_release(job);
 }
 
 /* The defaulted address text Node hands its lookup per operation. */
@@ -3630,7 +3641,7 @@ static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, 
     scr_dgram_throw("Not running");
     return;
   }
-  bool has_cb = callback->kind == SCR_DYN_FUNC;
+  bool has_cb = callback != NULL && callback->kind == SCR_DYN_FUNC;
   char msg[192];
   msg[0] = '\0';
   struct sockaddr_storage sa;

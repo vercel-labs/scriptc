@@ -190,19 +190,44 @@ static void stw_watch_errors(ScrStream *s) {
 
 /* Readable.toWeb(readable[, options]): the web ReadableStream (+1). flags'
  * bit 1 asks for a byte stream (options.type === 'bytes'). */
-ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags) {
-  (void)flags;
+/* The adapter over `readable` with an optional queuing strategy (NULL for
+ * none): the strategy's highWaterMark and size drive the over-source's
+ * pulls and desiredSize, as new ReadableStream(source, strategy) does. A
+ * strategy the web stream unit refuses answers NULL with the exception
+ * pending, and this context's reference goes with it. */
+static ScrDyn *stw_build(ScrStream *s, ScrDyn *strategy) {
   StwCtx *c = calloc(1, sizeof *c);
   if (!c) abort();
   c->rc = 1;
   c->readable = scr_stream_retain(s);
   stw_watch_errors(s);
-  return scr_webstream_readable_over(&stw_source, c); /* the stream takes the context's reference */
+  /* the stream takes the context's reference */
+  ScrDyn *out = scr_webstream_readable_over_opts(&stw_source, c, strategy);
+  if (!out) stw_unref(c); /* the refused strategy left the reference with us */
+  return out;
+}
+
+/* Readable.toWeb(readable): the web ReadableStream (+1). flags is unused for
+ * now (a type: "bytes" stream is added by its own change). */
+ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags) {
+  (void)flags;
+  return stw_build(s, NULL);
+}
+
+/* Readable.toWeb(readable, { strategy }): the same adapter over the
+ * strategy's queuing (scr_webstream_readable_over_opts validates it). */
+ScrDyn *scr_stream_to_web_readable_opts(ScrStream *s, double flags, ScrDyn *strategy) {
+  (void)flags;
+  return stw_build(s, strategy);
 }
 
 /* Readable.toWeb over a checked-dynamic value: a boxed native readable
  * unwraps, and any other value throws the not-supported Error. */
 ScrDyn *scr_stream_to_web_readable_dyn(const ScrDyn *value, double flags) {
+  return scr_stream_to_web_readable_dyn_opts(value, flags, NULL);
+}
+
+ScrDyn *scr_stream_to_web_readable_dyn_opts(const ScrDyn *value, double flags, ScrDyn *strategy) {
   ScrStream *s = scr_stream_native_readable_of_dyn(value);
   if (!s) {
     static const char message[] =
@@ -210,7 +235,7 @@ ScrDyn *scr_stream_to_web_readable_dyn(const ScrDyn *value, double flags) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  ScrDyn *out = scr_stream_to_web_readable(s, flags);
+  ScrDyn *out = scr_stream_to_web_readable_opts(s, flags, strategy);
   scr_stream_release(s);
   return out;
 }

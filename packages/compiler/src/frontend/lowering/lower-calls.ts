@@ -12,6 +12,7 @@ import {
 } from "./member-call-receivers.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
+  arrayClassDeclaresMember,
   arrayClassMemberOwner,
   applyDeferredArrayClassCheck,
   arrayClassReceiver,
@@ -353,6 +354,7 @@ import {
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
+  cjsNamespaceMemberSnapshotOf,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -3056,6 +3058,19 @@ function lowerNsMemberCall(
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   refuseModuleMemberThis(lowerer, expr, nsMember);
+  // A CommonJS namespace member its module's functions reassign: the call
+  // runs the value Node's namespace snapshot holds (the module's
+  // end-of-evaluation value), through the ordinary function-value path.
+  const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, access);
+  if (snapshot) {
+    const callee: IrExpr = { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+    if (checked) return checked;
+    // The slot holds the namespace's value, which may be an optional union
+    // (a module that may finish without assigning the member): the ordinary
+    // call-through-value path answers Node's TypeError for undefined.
+    return lowerCallThroughValue(lowerer, expr, callee, loc);
+  }
   // A member of a function+namespace merge is an own property of the
   // function object (lower-fundule.ts), and the qualified call reads
   // that property as Node does: after `Object.assign(fmt, { helper })`
@@ -5588,6 +5603,21 @@ function lowerDynReceiverMethodCall(
     lowerer.dynConvertible(recv.type)
   )
     recv = lowerer.coerceToExpected(recv, DYN);
+  // An untyped receiver that lowered to a native array can be an instance
+  // of a class declared `extends Array` over its elements: a member such a
+  // class declares answers through the dynamic dispatch, which tests the
+  // array's class (a live reference keeps the instance).
+  {
+    // An element read holds the array with the hole's unit arm.
+    const present = recv.type.kind === "union" ? lowerer.stripUndefinedArm(recv.type) : recv.type;
+    if (
+      checkerUntyped &&
+      present.kind === "array" &&
+      arrayClassDeclaresMember(lowerer, present, access.name.text) &&
+      lowerer.dynConvertible(recv.type)
+    )
+      recv = lowerer.coerceToExpected(recv, DYN);
+  }
   if (recv.type.kind !== "dyn") return null;
   // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
   // own member, so every primitive specialization below — which assumes a

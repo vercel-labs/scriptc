@@ -3412,6 +3412,22 @@ ScrError *scr_assert_error_new(ScrDyn *options) {
   scr_str_release(text);
   e->name_present = true;
   scr_assert_attach_values(e, generated, actual, expected, op, diff);
+  /* options.stackStartFn: Node's constructor passes it to
+   * Error.captureStackTrace, so the frames above that function — including
+   * its own — are left out, and a function that is not on the stack leaves
+   * none. The runtime knows the function value by name. */
+  ScrDyn *start_fn = scr_dyn_obj_read(options, "stackStartFn", 12);
+  if (start_fn) {
+    if (start_fn->kind == SCR_DYN_FUNC && start_fn->v.fn.name != NULL &&
+        start_fn->v.fn.name[0] != '\0') {
+      ScrStr *frames = scr_stack_capture_after_name(start_fn->v.fn.name);
+      scr_str_release(e->stack_frames);
+      e->stack_frames = frames;
+      scr_str_release(e->stack);
+      e->stack = NULL;
+    }
+    scr_dyn_release(start_fn);
+  }
   return e;
 }
 

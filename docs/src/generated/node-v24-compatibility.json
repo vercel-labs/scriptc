@@ -60,13 +60,13 @@
     "sourceChapters": 63,
     "sourceRows": 4996,
     "matrixChapters": 56,
-    "matrixRows": 3679,
+    "matrixRows": 3668,
     "excluded": {
       "documentation": 640,
       "metadata": 210,
       "configuration": 251,
       "non-api": 0,
-      "not-applicable": 209,
+      "not-applicable": 220,
       "chapters": 7
     }
   },
@@ -158,8 +158,8 @@
     {
       "slug": "errors",
       "title": "Errors",
-      "entries": 383,
-      "apiEntries": 383
+      "entries": 382,
+      "apiEntries": 382
     },
     {
       "slug": "events",
@@ -332,8 +332,8 @@
     {
       "slug": "tls",
       "title": "TLS/SSL",
-      "entries": 67,
-      "apiEntries": 67
+      "entries": 57,
+      "apiEntries": 57
     },
     {
       "slug": "tracing",
@@ -11273,8 +11273,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -11319,8 +11319,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -17566,7 +17566,7 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
         "verification": "test-backed"
       }
@@ -17857,24 +17857,6 @@
         "status": "supported",
         "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "errors:244449227555",
-      "chapter": "errors",
-      "kind": "section",
-      "name": "function",
-      "signature": "`error.function`",
-      "label": "error.function",
-      "apiSymbol": "error.function",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "errorfunction",
-      "nodeStability": null,
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -18250,9 +18232,9 @@
       "anchor": "err_construct_call_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -19492,9 +19474,9 @@
       "anchor": "err_fs_watch_queue_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20374,9 +20356,9 @@
       "anchor": "err_http_body_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -20464,9 +20446,9 @@
       "anchor": "err_http_request_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -21382,9 +21364,9 @@
       "anchor": "err_ipc_channel_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22174,9 +22156,9 @@
       "anchor": "err_socket_bad_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22948,9 +22930,9 @@
       "anchor": "err_tls_sni_from_server",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -22966,9 +22948,9 @@
       "anchor": "err_trace_events_category_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23652,9 +23634,9 @@
       "anchor": "err_worker_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23868,9 +23850,9 @@
       "anchor": "cert_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -36324,8 +36306,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
     },
@@ -37060,8 +37042,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Implemented for the documented node:http server subset.",
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
         "verification": "test-backed"
       }
     },
@@ -63690,75 +63672,6 @@
       }
     },
     {
-      "id": "tls:ab52864eff41",
-      "chapter": "tls",
-      "kind": "event",
-      "name": "newSession",
-      "signature": "Event: `'newSession'`",
-      "label": "'newSession'",
-      "apiSymbol": "'newSession'",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "event-newsession",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "tls:b2eb1b1d994c",
-      "chapter": "tls",
-      "kind": "event",
-      "name": "OCSPRequest",
-      "signature": "Event: `'OCSPRequest'`",
-      "label": "'OCSPRequest'",
-      "apiSymbol": "'OCSPRequest'",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "event-ocsprequest",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "tls:020344a5d9c8",
-      "chapter": "tls",
-      "kind": "event",
-      "name": "resumeSession",
-      "signature": "Event: `'resumeSession'`",
-      "label": "'resumeSession'",
-      "apiSymbol": "'resumeSession'",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "event-resumesession",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "tls:dcb1e0fd7134",
       "chapter": "tls",
       "kind": "event",
@@ -63874,29 +63787,6 @@
       }
     },
     {
-      "id": "tls:e2e80f42b8af",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "enableTrace",
-      "signature": "`tlsSocket.enableTrace()`",
-      "label": "tlsSocket.enableTrace()",
-      "apiSymbol": "tlsSocket.enableTrace",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "tlssocketenabletrace",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "tls:99c0aa73bd31",
       "chapter": "tls",
       "kind": "method",
@@ -63989,29 +63879,6 @@
       }
     },
     {
-      "id": "tls:117f47e191c2",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "getFinished",
-      "signature": "`tlsSocket.getFinished()`",
-      "label": "tlsSocket.getFinished()",
-      "apiSymbol": "tlsSocket.getFinished",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "tlssocketgetfinished",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "tls:eed448ff16bd",
       "chapter": "tls",
       "kind": "method",
@@ -64032,29 +63899,6 @@
         "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "tls:d9f63506b1fb",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "getPeerFinished",
-      "signature": "`tlsSocket.getPeerFinished()`",
-      "label": "tlsSocket.getPeerFinished()",
-      "apiSymbol": "tlsSocket.getPeerFinished",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "tlssocketgetpeerfinished",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -64124,29 +63968,6 @@
         "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "tls:37b4ae5bd331",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "getSharedSigalgs",
-      "signature": "`tlsSocket.getSharedSigalgs()`",
-      "label": "tlsSocket.getSharedSigalgs()",
-      "apiSymbol": "tlsSocket.getSharedSigalgs",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "tlssocketgetsharedsigalgs",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {
@@ -64541,29 +64362,6 @@
       }
     },
     {
-      "id": "tls:a8befc33127e",
-      "chapter": "tls",
-      "kind": "event",
-      "name": "OCSPResponse",
-      "signature": "Event: `'OCSPResponse'`",
-      "label": "'OCSPResponse'",
-      "apiSymbol": "'OCSPResponse'",
-      "depth": 2,
-      "scope": "api",
-      "anchor": "event-ocspresponse",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
       "id": "tls:446a052576c2",
       "chapter": "tls",
       "kind": "event",
@@ -64814,52 +64612,6 @@
         "status": "supported",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
-      }
-    },
-    {
-      "id": "tls:4939f0b62ade",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "getCiphers",
-      "signature": "`tls.getCiphers()`",
-      "label": "tls.getCiphers()",
-      "apiSymbol": "tls.getCiphers",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "tlsgetciphers",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
-      }
-    },
-    {
-      "id": "tls:5a3cdc74e2b5",
-      "chapter": "tls",
-      "kind": "method",
-      "name": "getCertificateCompressionAlgorithms",
-      "signature": "`tls.getCertificateCompressionAlgorithms()`",
-      "label": "tls.getCertificateCompressionAlgorithms()",
-      "apiSymbol": "tls.getCertificateCompressionAlgorithms",
-      "depth": 1,
-      "scope": "api",
-      "anchor": "tlsgetcertificatecompressionalgorithms",
-      "nodeStability": {
-        "index": "2",
-        "level": 2,
-        "text": "Stable",
-        "inherited": true
-      },
-      "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
       }
     },
     {

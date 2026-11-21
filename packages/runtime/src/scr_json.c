@@ -3361,8 +3361,10 @@ typedef struct {
   const char *name;
   ScrDyn *value; /* owned until exit */
 } ScrBuiltinClassEntry;
-static ScrBuiltinClassEntry *scr_builtin_class_entries;
-static size_t scr_builtin_class_count, scr_builtin_class_capacity;
+/* Per-worker, like every other dyn cache: a worker's class values are its own
+ * objects, and its exit stack drains the entries it registered. */
+static SCR_TL ScrBuiltinClassEntry *scr_builtin_class_entries;
+static SCR_TL size_t scr_builtin_class_count, scr_builtin_class_capacity;
 
 static void scr_builtin_class_cleanup(void) {
   for (size_t i = 0; i < scr_builtin_class_count; i++)
@@ -3397,8 +3399,8 @@ typedef struct {
   ScrDynHandleTag tag;
   ScrDyn *prototype; /* owned until exit */
 } ScrBuiltinClassTag;
-static ScrBuiltinClassTag scr_builtin_class_tags[8];
-static size_t scr_builtin_class_ntags;
+static SCR_TL ScrBuiltinClassTag scr_builtin_class_tags[8];
+static SCR_TL size_t scr_builtin_class_ntags;
 static void scr_builtin_class_tags_cleanup(void) {
   for (size_t i = 0; i < scr_builtin_class_ntags; i++)
     scr_dyn_release(scr_builtin_class_tags[i].prototype);

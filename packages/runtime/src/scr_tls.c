@@ -465,6 +465,17 @@ static const char *SCR_TLS_ALPN_HTTP11[] = {"http/1.1", NULL};
 static const char *SCR_TLS_ALPN_H2[] = {"h2", NULL};
 static const char *SCR_TLS_ALPN_H2_HTTP11[] = {"h2", "http/1.1", NULL};
 
+/* Node's sockets accept a post-handshake renegotiation (TLS 1.2; a TLS 1.3
+ * renegotiate() answers Node's wrong-version error instead). mbedTLS leaves
+ * it off until a config enables it, so every config built here does. */
+static void scr_tls_conf_allow_renegotiation(mbedtls_ssl_config *conf) {
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+  mbedtls_ssl_conf_renegotiation(conf, MBEDTLS_SSL_RENEGOTIATION_ENABLED);
+#else
+  (void)conf;
+#endif
+}
+
 static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char *key,
                                    size_t key_len, bool alpn_http11) {
   scr_tls_rng_init();
@@ -495,6 +506,7 @@ static ScrTlsSrv *scr_tls_srv_new(const char *cert, size_t cert_len, const char 
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
     scr_tls_oom();
   }
+  scr_tls_conf_allow_renegotiation(&s->conf);
   mbedtls_ssl_conf_rng(&s->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   /* no client certificate unless requestCert asks (scr_tls_srv_client_auth) */
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_NONE);
@@ -521,6 +533,7 @@ static ScrTlsSrv *scr_tls_srv_from_ctx(ScrSecureCtx *ctx /*borrowed*/) {
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
     scr_tls_oom();
   }
+  scr_tls_conf_allow_renegotiation(&s->conf);
   mbedtls_ssl_conf_rng(&s->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_NONE);
   s->ctx = scr_secure_ctx_retain(ctx);
@@ -724,6 +737,7 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
                                   MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
     scr_tls_oom();
   }
+  scr_tls_conf_allow_renegotiation(&c->conf);
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   /* Node refuses a server's finite-field Diffie-Hellman group under 2048
    * bits (OpenSSL's default security level: "dh key too small"); the
@@ -872,6 +886,19 @@ typedef struct ScrTlsSock {
   size_t head_len;
   /* the 'secure' event's listeners */
   ScrNetLs secure_ls;
+  /* a post-handshake renegotiation (TLSSocket.renegotiate): started when
+   * the engine accepted it, progress seen once the peer's flight moved the
+   * handshake off "over", and settled when the handshake is over again */
+  bool renegotiating;
+  bool renego_progress;
+  /* asked for before the first handshake finished: started at 'secure' */
+  bool renego_requested;
+  /* disableRenegotiation(): a peer-initiated renegotiation is reported
+   * (once per attempt) and never re-fires 'secure' */
+  bool no_renego;
+  bool renego_denied;
+  /* the negotiated version is TLS 1.3: no renegotiation exists on it */
+  bool is_tls13;
   bool settled; /* the socket closed: listeners added later never fire */
   /* a TLS 1.3 client sent no certificate to a server that requires one;
    * the alert goes out once the handshake is over */
@@ -1212,6 +1239,17 @@ static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int d
 
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
+  if (depth == 0 && t->vrfy_top == NULL) {
+    /* a new handshake's leaf — the initial one, or a renegotiation whose
+     * previous verdict and borrowed leaf were cleared: start fresh */
+    t->vrfy_seen = false;
+    t->vrfy_blocked = false;
+    t->vrfy_leaf_self = false;
+    t->vrfy_chain_self = false;
+    t->vrfy_expired = false;
+    t->vrfy_cn_mismatch = false;
+    t->vrfy_flags = 0;
+  }
   t->vrfy_seen = true;
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
@@ -1397,10 +1435,52 @@ static void scr_tls_drain_unread(ScrTlsSock *t) {
 
 static void scr_tls_fire_session(ScrTlsSock *t);
 
+/* A renegotiation re-fires 'secure' when the engine finishes it: the
+ * handshake leaves "over" while the peer's flight is in and returns once
+ * it completes. A local renegotiate() set the flag up front; a renegotiation
+ * the PEER started is discovered here — after the handshake was over, the
+ * engine reports one in progress again (TLS 1.3 has no renegotiation, so the
+ * version gates it). Node's renegotiate() callback is registered as a
+ * once('secure') listener, so it runs with the rest in registration order. */
+static void scr_tls_renego_settle(ScrTlsSock *t) {
+  if (!mbedtls_ssl_is_handshake_over(&t->ssl)) {
+    if (t->established && !t->is_tls13) {
+      if (!t->renegotiating && t->no_renego && !t->renego_denied) {
+        /* disableRenegotiation(): Node's socket reports the refusal and
+         * keeps the connection (OpenSSL's NO_RENEGOTIATION stance) */
+        t->renego_denied = true;
+        scr_net_sock_transport_report(t->sock,
+                                      "TLS session renegotiation disabled for this socket",
+                                      "ERR_TLS_RENEGOTIATION_DISABLED");
+      }
+      t->renegotiating = true;
+      t->renego_progress = true;
+    }
+    return;
+  }
+  if (!t->renegotiating || !t->renego_progress) return; /* requested but unanswered */
+  t->renegotiating = false;
+  t->renego_progress = false;
+  bool denied = t->renego_denied;
+  t->renego_denied = false;
+  if (t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
+      !t->srv->standalone && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
+    /* the renegotiated identity failed verification: the connection is
+     * destroyed rather than carry application data under a certificate
+     * that fails the server's required-client-auth policy */
+    scr_net_sock_transport_error(t->sock, NULL);
+    t->hang_up_pending = true;
+    return;
+  }
+  if (denied) return; /* the renegotiation was refused: no 'secure' */
+  if (!scr_exc_pending()) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+}
+
 static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   for (;;) {
     int r = mbedtls_ssl_read(&t->ssl, (unsigned char *)buf, n);
+    scr_tls_renego_settle(t);
     if (r > 0) return r;
     if (r == 0 || r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || r == MBEDTLS_ERR_SSL_CONN_EOF) {
       return 0; /* orderly (or abrupt-but-quiet) EOF — Node's 'end' either way */
@@ -1432,6 +1512,7 @@ static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
 static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
+  scr_tls_renego_settle(t);
   if (r >= 0) return r;
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
     errno = EAGAIN;
@@ -2068,6 +2149,22 @@ static int scr_tls_handshake(void *tctx) {
 static void scr_tls_on_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   t->established = true;
+  {
+    const char *ver = mbedtls_ssl_get_version(&t->ssl);
+    t->is_tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
+  }
+  /* the verified leaf is borrowed from the handshake's chain, which the
+   * engine frees: clearing it leaves no dangling pointer across a later
+   * renegotiation (the next handshake's verdict starts from it) */
+  t->vrfy_top = NULL;
+  if (t->srv != NULL) {
+    /* Node emits a server socket's 'secure' as its handshake completes —
+     * before the server's 'secureConnection' listeners run, so a listener
+     * registered there waits for a later handshake — and the net pump
+     * dispatches 'secureConnection' right after this hook */
+    scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+    if (scr_exc_pending()) return;
+  }
   if (t->cli != NULL) scr_tls_fire_session(t); /* the 1.2 arm; 1.3 fires on ticket receipt */
   if (t->srv != NULL && t->srv->h2_conn != NULL) {
     /* the h2 secure server: dispatch on the NEGOTIATED protocol — the
@@ -2134,11 +2231,26 @@ static void scr_tls_drain(void *tctx) {
 }
 
 /* The 'secure' event: after a client's secureConnect listeners, as Node
- * emits it. */
+ * emits it. The listeners stay registered — a completed renegotiation
+ * fires 'secure' again (the renegotiate() callback is one of them) — and
+ * the settle drops them. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
-  scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
-  scr_net_ls_drop(&t->secure_ls);
+  /* a client's 'secure' follows its secureConnect listeners; a server's
+   * already fired in on_established, before 'secureConnection' */
+  if (t->srv == NULL) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
+  if (t->renego_requested && !scr_exc_pending()) {
+    /* renegotiate() called while the first handshake ran: Node queues it
+     * behind that handshake, and its callback was registered as a
+     * once('secure') listener before it */
+    t->renego_requested = false;
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+    int r = mbedtls_ssl_renegotiate(&t->ssl);
+    if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE || r == 0) {
+      t->renegotiating = true;
+    }
+#endif
+  }
 }
 
 /* The closed socket settles: its 'secure' and 'session' listeners can no
@@ -5089,7 +5201,11 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
 
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
-void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
+void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) return;
+  t->no_renego = true;
+}
 
 /* `x instanceof tls.Server` over a checked-dynamic value: false for every
  * non-server value (a null, another handle, a plain object). */
@@ -5311,11 +5427,13 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
 }
 
 /* The 'secure' event: the handshake completed (after secureConnect on a
- * client). A plain socket never emits it, and a registration after the
- * handshake comes too late, as in Node. */
+ * client), and every completed renegotiation fires it again. A plain socket
+ * never emits it; a listener may join at any time — Node's EventEmitter
+ * accepts it and it simply waits for the next handshake — and only a
+ * settled socket releases it unread. */
 void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
-  if (t == NULL || t->established || t->settled) {
+  if (t == NULL || t->settled) {
     scr_closure_release(cb);
     return;
   }
@@ -5334,6 +5452,140 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
   }
   scr_net_ls_add(&t->session_ls, cb, fn, once);
   if (t->established) scr_tls_fire_session(t); /* the ticket already arrived */
+}
+
+/* ── TLSSocket.renegotiate(options[, callback]) ──────────────────────── */
+
+/* The callback the program passed: Node's `once('secure', () =>
+ * callback(null))`, so it runs with null among the 'secure' listeners. */
+static void scr_tls_renego_cb_fire(ScrClosure *cb) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb); /* +1 */
+  ScrDyn *arg = scr_dyn_new_null();
+  ScrDyn *args[1] = { arg };
+  ScrDyn *r = scr_dyn_call(fn, args, 1, "renegotiateCallback");
+  scr_dyn_release(r);
+  scr_dyn_release(arg);
+  scr_dyn_release(fn);
+}
+
+/* The engine's refusal, as OpenSSL words it on a TLS 1.3 connection (the
+ * only refusal the local engine has: it supports TLS 1.2 renegotiation). */
+static ScrDyn *scr_tls_wrong_version_error(void) {
+  static const char text[] = "error:0A00010A:SSL routines::wrong ssl version";
+  ScrStr *msg = scr_str_new(text, sizeof text - 1);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  scr_str_release(msg);
+  scr_error_set_code(e, "ERR_SSL_WRONG_SSL_VERSION");
+  ScrDyn *d = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return d;
+}
+
+static void scr_tls_renego_fail_fire(ScrClosure *cb) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);                 /* +1 */
+  ScrDyn *err = (ScrDyn *)scr_box_get_ref(cb->caps[1]); /* +1 */
+  ScrDyn *args[1] = { err };
+  ScrDyn *r = scr_dyn_call(fn, args, 1, "renegotiateCallback");
+  scr_dyn_release(r);
+  scr_dyn_release(err);
+  scr_dyn_release(fn);
+}
+
+/* Node answers a refused renegotiate() on the next tick. */
+static void scr_tls_renego_fail_later(const ScrDyn *callback) {
+  ScrClosure *clo = scr_closure_new((void *)&scr_tls_renego_fail_fire, 2);
+  ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+  scr_box_set_ref(box, scr_dyn_retain((ScrDyn *)callback));
+  clo->caps[0] = box;
+  box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+  scr_box_set_ref(box, scr_tls_wrong_version_error());
+  clo->caps[1] = box;
+  scr_next_tick(clo); /* ownership moves in */
+}
+
+ScrDyn *scr_tls_sock_renegotiate(ScrNetSocket *s, ScrDyn *options, ScrDyn *callback) {
+  bool object = options != NULL &&
+                (options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_TYPED_REF);
+  if (!object) {
+    char detail[128];
+    char msg[224];
+    int n = snprintf(msg, sizeof msg,
+                     "The \"options\" argument must be of type object. Received %s",
+                     options == NULL ? "undefined"
+                                     : scr_dyn_specific_type(options, detail, sizeof detail));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  bool has_cb = callback != NULL && callback->kind == SCR_DYN_FUNC;
+  if (callback != NULL && callback->kind != SCR_DYN_UNDEF && callback->kind != SCR_DYN_NULL &&
+      !has_cb) {
+    char detail[128];
+    char msg[224];
+    int n = snprintf(msg, sizeof msg,
+                     "The \"callback\" argument must be of type function. Received %s",
+                     scr_dyn_specific_type(callback, detail, sizeof detail));
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_ARG_TYPE");
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  /* a destroyed socket answers undefined, as Node returns before it asks
+   * the handle anything */
+  if (scr_net_sock_destroyed(s)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) return scr_dyn_retain(scr_dyn_undefined());
+  /* options.rejectUnauthorized: the renegotiated handshake verifies the
+   * peer the way the option asks (a client socket owns its config) */
+  if (t->cli != NULL && options->kind == SCR_DYN_OBJ) {
+    const ScrDyn *reject = scr_dyn_obj_get(options, "rejectUnauthorized", 18);
+    if (reject != NULL) {
+      bool want = scr_dyn_truthy(reject);
+      if (want != t->cli->reject) {
+        t->cli->reject = want;
+        mbedtls_ssl_conf_authmode(&t->cli->conf,
+                                  want ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_NONE);
+        if (want) {
+          mbedtls_ssl_conf_ca_chain(&t->cli->conf,
+                                    t->cli->has_ca ? &t->cli->ca : scr_tls_system_ca(), NULL);
+        }
+      }
+    }
+  }
+  if (t->established) {
+    const char *ver = mbedtls_ssl_get_version(&t->ssl);
+    if (ver != NULL && strcmp(ver, "TLSv1.3") == 0) {
+      /* OpenSSL refuses (Node surfaces the engine's error); no handshake
+       * is possible on a TLS 1.3 connection */
+      if (has_cb) scr_tls_renego_fail_later(callback);
+      return scr_dyn_new_bool(false);
+    }
+    /* the callback joins the 'secure' listeners (Node's once('secure')) */
+    if (has_cb) {
+      ScrClosure *clo = scr_dyn_listener_closure_fn(callback, (void *)&scr_tls_renego_cb_fire);
+      scr_net_ls_add(&t->secure_ls, clo, NULL, true);
+    }
+#if defined(MBEDTLS_SSL_RENEGOTIATION)
+    int r = mbedtls_ssl_renegotiate(&t->ssl);
+    if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE || r == 0) {
+      t->renegotiating = true;
+      t->renego_progress = false;
+      return scr_dyn_new_bool(true);
+    }
+    /* the engine refused: Node hands the error to the callback */
+    if (has_cb) scr_tls_renego_fail_later(callback);
+    return scr_dyn_new_bool(false);
+#else
+    if (has_cb) scr_tls_renego_fail_later(callback);
+    return scr_dyn_new_bool(false);
+#endif
+  }
+  /* before the first 'secure': Node registers the callback now and lets
+   * the running handshake finish first; the renegotiation starts at
+   * 'secure' (scr_tls_after_established) */
+  if (has_cb) {
+    ScrClosure *clo = scr_dyn_listener_closure_fn(callback, (void *)&scr_tls_renego_cb_fire);
+    scr_net_ls_add(&t->secure_ls, clo, NULL, true);
+  }
+  t->renego_requested = true;
+  return scr_dyn_new_bool(true);
 }
 
 static bool scr_tls_dynh_get(ScrNetSocket *s, const char *key, ScrDyn **out) {
@@ -5399,11 +5651,17 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     *out = scr_tls_sock_get_cipher(s);
     return true;
   }
+  if (strcmp(method, "renegotiate") == 0) {
+    ScrDyn *options = argc > 0 ? args[0] : NULL;
+    ScrDyn *callback = argc > 1 ? args[1] : NULL;
+    *out = scr_tls_sock_renegotiate(s, options, callback);
+    return true;
+  }
   static const char *const tls_methods[] = {
     "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
-    "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
+    "exportKeyingMaterial", "isSessionReused", "setMaxSendFragment",
     "enableTrace", "disableRenegotiation", "setServername", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {

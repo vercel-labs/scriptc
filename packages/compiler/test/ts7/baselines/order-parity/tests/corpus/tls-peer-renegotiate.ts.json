@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-peer-renegotiate.ts"
+ ],
+ "diags": []
+}

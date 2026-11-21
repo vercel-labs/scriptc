@@ -3468,6 +3468,10 @@ function buildLibFnSignatures() {
     "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
     "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
     "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
+    /** renegotiate(options[, callback]): Node's options and completion
+     * validations throw; answers true/false, or undefined on a destroyed
+     * socket. */
+    "tls.sockRenegotiate": { argTypes: [NETSOCKET_T, DYN, DYN], result: DYN },
     "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
     /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
      * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()

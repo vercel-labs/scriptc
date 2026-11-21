@@ -238,8 +238,9 @@ jobs:
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
       (needs.build-native-packages.result == 'success' && needs.build-libnode-packs.result == 'success'))
     runs-on: ubuntu-latest
-    # Two waits for npm availability of at most 25 minutes each.
-    timeout-minutes: 70
+    # Two waits for npm availability of at most 50 minutes each: npm can take
+    # more than 25 minutes to serve the largest runtime packs.
+    timeout-minutes: 120
     environment: Release
     permissions:
       contents: read
@@ -452,7 +453,7 @@ jobs:
           wait_available() {
             awk 'FILENAME == ARGV[1] { accepted[$1] = $2; next } { print $1, accepted[$1] }' \
               "$RUNNER_TEMP/npm-accepted-times.txt" "$RUNNER_TEMP/npm-release.txt" > "$RUNNER_TEMP/npm-wait.txt"
-            node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-wait.txt" --interval 30 --timeout 1500
+            node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-wait.txt" --interval 30 --timeout 3000
           }
           wait_available
           for pkg in packages/cli-*; do publish_dir "$pkg"; done

@@ -1565,6 +1565,105 @@ static void check_large_blocks_stats(void) {
   assert(used4 - used3 >= (double)(more - big) && used4 <= total4);
   scr_mem_free(d);
 }
+
+#if defined(__linux__)
+#include <errno.h>
+#include <stdarg.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#if defined(MREMAP_FIXED)
+/* The write permission of the mapping that holds address a. */
+static bool writable_at(uintptr_t a) {
+  FILE *maps = fopen("/proc/self/maps", "r");
+  assert(maps);
+  char line[512], perms[8] = "";
+  bool found = false;
+  while (!found && fgets(line, sizeof line, maps)) {
+    unsigned long lo, hi;
+    if (sscanf(line, "%lx-%lx %7s", &lo, &hi, perms) != 3) continue;
+    found = a >= lo && a < hi;
+  }
+  fclose(maps);
+  assert(found);
+  return perms[1] == 'w';
+}
+
+/* Kernels before 6.17 fail a MREMAP_FIXED whose source spans more than one
+ * VMA; newer ones move every VMA. Interposing mremap forces the old failure on
+ * any kernel: unmap the new range first, as it does, then report the error. */
+static bool fail_fixed_move;
+static unsigned fixed_move_failures;
+void *mremap(void *old_address, size_t old_size, size_t new_size, int flags, ...) {
+  void *new_address = NULL;
+  va_list ap;
+  va_start(ap, flags);
+  if (flags & MREMAP_FIXED) new_address = va_arg(ap, void *);
+  va_end(ap);
+  if (fail_fixed_move && (flags & MREMAP_FIXED)) {
+    munmap(new_address, new_size);
+    fixed_move_failures++;
+    errno = EFAULT;
+    return MAP_FAILED;
+  }
+  return (void *)syscall(SYS_mremap, old_address, old_size, new_size, flags, new_address);
+}
+
+/* A run whose pages a mprotect split grows by copying its contents into a run
+ * mapped again: the copy must not fault, and the old range is mapped again as
+ * a move leaves it. Newer kernels move the split run instead; the read-only
+ * page moves with it and must be writable again before the fill. */
+static void check_run_move_failure(void) {
+  size_t have = (size_t)5 << 20, n = (size_t)21 << 20; /* two chunks, then six */
+  unsigned char *p = scr_mem_alloc_ref(have);
+  assert(p && in_window(p));
+  size_t run = scr_mem_block_size(p);
+  assert(run >= have);
+  fill(p, run, 0x6b);
+  size_t page = (size_t)sysconf(_SC_PAGESIZE);
+  assert(mprotect(p + page, page, PROT_READ) == 0);
+  unsigned char *q = scr_mem_realloc_ref(p, n);
+  assert(q && q != p && in_window(q));
+  verify(q, run, 0x6b);
+  /* A move carried the page; map it writable again before writing to it. */
+  if (!writable_at((uintptr_t)q + page))
+    assert(mprotect(q + page, page, PROT_READ | PROT_WRITE) == 0);
+  /* The old range is mapped again, as the success path leaves it. */
+  assert(writable_at((uintptr_t)p + page));
+  assert(p[page] == 0);
+  fill(q, n, 0x27);
+  verify(q, n, 0x27);
+  scr_mem_free(q);
+}
+
+/* The same failure path without depending on the kernel: a forced failed
+ * MREMAP_FIXED unmaps the new range, so the copy must not fault, the old range
+ * is mapped again reading zero, and the new run is writable across its size. */
+static void check_run_move_fixed_failure(void) {
+  size_t have = (size_t)5 << 20, n = (size_t)21 << 20; /* two chunks, then six */
+  unsigned char *p = scr_mem_alloc_ref(have);
+  assert(p && in_window(p));
+  size_t run = scr_mem_block_size(p);
+  assert(run >= have);
+  fill(p, run, 0x5a);
+  unsigned before = fixed_move_failures;
+  fail_fixed_move = true;
+  unsigned char *q = scr_mem_realloc_ref(p, n);
+  fail_fixed_move = false;
+  /* The interposition took effect in this build. */
+  assert(fixed_move_failures > before);
+  assert(q && q != p && in_window(q));
+  verify(q, run, 0x5a);
+  assert(writable_at((uintptr_t)q));
+  assert(writable_at((uintptr_t)q + n - 1));
+  assert(writable_at((uintptr_t)p));
+  assert(p[0] == 0 && p[have - 1] == 0);
+  fill(q, n, 0x3e);
+  verify(q, n, 0x3e);
+  scr_mem_free(q);
+}
+#endif
+#endif
 #endif
 
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
@@ -1734,6 +1833,12 @@ int main(int argc, char **argv) {
 #if SCR_SMALL_ALLOC
   check_large_blocks();
   check_large_blocks_stats();
+#ifdef __linux__
+#if defined(MREMAP_FIXED)
+  check_run_move_failure();
+  check_run_move_fixed_failure();
+#endif
+#endif
 #endif
 #if SCR_SMALL_ALLOC && defined(__linux__)
   check_chunk_map();

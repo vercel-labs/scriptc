@@ -2839,11 +2839,22 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     return NULL;
   char *q = scr_sa_run_take((n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT, n, false);
   if (!q) return NULL;
-  if (mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+  bool moved = mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) == q;
+  if (!moved) {
+    /* A failed MREMAP_FIXED has already unmapped the new range: map it
+     * again before copying the run into it. */
+    if (mmap(q, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q)
+      scr_trap("scriptc: out of memory\n");
+#ifdef SCR_SA_THP
+    (void)madvise(q, have, MADV_NOHUGEPAGE);
+#endif
+#ifdef SCR_SA_DUMP
+    (void)madvise(q, have, MADV_DONTDUMP);
+#endif
     memcpy(q, p, have);
-    scr_sa_run_free(p);
-    return q;
   }
+  /* Map the old range again, as the move does, so the run returns to the
+   * window reading as zero whether or not the move took. */
   if (mmap(p, have, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != p)
     scr_trap("scriptc: out of memory\n");
 #ifdef SCR_SA_THP

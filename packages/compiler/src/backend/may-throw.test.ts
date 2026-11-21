@@ -607,20 +607,18 @@ test("a typed-array slice is bounded, but a process write can re-enter", () => {
   // and checks no stack. A callback-free process write hands the chunk to the
   // stream's current write method, which may be a replacement that writes
   // again, so it stays checked — just like the completion-callback write.
-  expect(
-    [...computeMayThrow(member("slice", slice), { stackChecks: true }).stackChecks!],
-  ).toEqual([]);
-  expect(
-    [...computeMayThrow(member("put", write("process.stdoutWriteBytes")), { stackChecks: true })
-      .stackChecks!],
-  ).toEqual(["%W.put"]);
-  expect(
-    [
-      ...computeMayThrow(member("putCb", write("process.stdoutWriteBytesCb")), {
-        stackChecks: true,
-      }).stackChecks!,
-    ],
-  ).toEqual(["%W.putCb"]);
+  expect([...computeMayThrow(member("slice", slice), { stackChecks: true }).stackChecks!]).toEqual(
+    [],
+  );
+  expect([
+    ...computeMayThrow(member("put", write("process.stdoutWriteBytes")), { stackChecks: true })
+      .stackChecks!,
+  ]).toEqual(["%W.put"]);
+  expect([
+    ...computeMayThrow(member("putCb", write("process.stdoutWriteBytesCb")), {
+      stackChecks: true,
+    }).stackChecks!,
+  ]).toEqual(["%W.putCb"]);
 });
 
 test("synchronous functions on a checked cycle skip the worker entry poll", () => {

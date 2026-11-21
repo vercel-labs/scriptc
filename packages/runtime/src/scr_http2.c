@@ -4825,11 +4825,29 @@ static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
     const ScrDyn *v = e.value;
     ScrStr *vs;
-    if (v->kind == SCR_DYN_STR) vs = scr_str_retain(v->v.str);
-    else if (v->kind == SCR_DYN_NUM) vs = scr_f64_to_scrstr(v->v.num);
-    else continue; /* undefined/null header: dropped, Node's stance */
-    scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
-    scr_arr_push_ref(pairs, vs);
+    if (v->kind == SCR_DYN_STR || v->kind == SCR_DYN_NUM) {
+      vs = v->kind == SCR_DYN_STR ? scr_str_retain(v->v.str) : scr_f64_to_scrstr(v->v.num);
+      scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
+      scr_arr_push_ref(pairs, vs);
+    } else if (v->kind == SCR_DYN_ARR || v->kind == SCR_DYN_TYPED_REF) {
+      /* An array-valued header is one field per element (Node's header
+       * lists repeat the name; 'set-cookie' relies on it). A compiled
+       * array literal arrives as a typed capsule; materializing it gives
+       * the element list. */
+      ScrDyn *view = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v)
+                                                  : scr_dyn_retain((ScrDyn *)v);
+      if (view != NULL && view->kind == SCR_DYN_ARR) {
+        for (size_t k = 0; k < view->v.arr.len; k++) {
+          const ScrDyn *item = view->v.arr.items[k];
+          if (item->kind == SCR_DYN_STR) vs = scr_str_retain(item->v.str);
+          else if (item->kind == SCR_DYN_NUM) vs = scr_f64_to_scrstr(item->v.num);
+          else continue;
+          scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
+          scr_arr_push_ref(pairs, vs);
+        }
+      }
+      if (view != NULL) scr_dyn_release(view);
+    } /* undefined/null header: dropped, Node's stance */
   }
   return pairs;
 }

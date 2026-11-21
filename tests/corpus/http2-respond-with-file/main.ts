@@ -54,6 +54,7 @@ server.on("stream", (stream, headers) => {
         hdrs["x-check"] = "yes";
         hdrs["x-size"] = String(stat.size);
         hdrs["content-length"] = 999;
+        hdrs["set-cookie"] = ["a=1", "b=2"];
         return true;
       },
     });
@@ -97,7 +98,7 @@ server.listen(0, "127.0.0.1", () => {
       request.setEncoding("utf8");
       request.on("response", (headers) =>
         lines.push(
-          `${path} response ${headers[":status"]} ${headers["x-m"]} length ${headers["content-length"]} check ${headers["x-check"]} size ${headers["x-size"]}`,
+          `${path} response ${headers[":status"]} ${headers["x-m"]} length ${headers["content-length"]} check ${headers["x-check"]} size ${headers["x-size"]} cookies ${headers["set-cookie"]}`,
         ),
       );
       request.on("data", (chunk: string) => (body += chunk));

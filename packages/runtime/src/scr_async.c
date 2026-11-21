@@ -616,6 +616,20 @@ SCR_TL bool (*scr_process_before_exit_hook)(double code) = NULL;
  * lost, and `value` is the value it passed, +1 (the hook owns it). */
 SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value) = NULL;
 
+/* Whether 'rejectionHandled' is Node's own to raise: with Node's process
+ * events in charge (the island lane), the hook only tells Node that the
+ * promise is handled, and Node raises the event in its own turn. Nothing is
+ * queued then: the hook call is the notification, and a queue entry would
+ * hold the promise — and the island handle it carries — until a native
+ * checkpoint that lane may not reach before the program ends. */
+static bool scr_rjh_reports_to_node(void) {
+#ifdef SCR_NODE_ISLANDS
+  return scr_rjh_notify_fn == scr_ni_promise_handled;
+#else
+  return false;
+#endif
+}
+
 /* Every handler attach funnels here: mark the rejection observed, and
  * queue Node's 'rejectionHandled' when the attach arrived AFTER the
  * report delivered this promise to 'unhandledRejection' listeners (the
@@ -631,7 +645,8 @@ static void scr_prom_observe(ScrPromise *p) {
   if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
-    scr_rjh_enqueue(p);
+    if (scr_rjh_reports_to_node()) scr_rjh_notify_fn(p);
+    else scr_rjh_enqueue(p);
   }
 }
 

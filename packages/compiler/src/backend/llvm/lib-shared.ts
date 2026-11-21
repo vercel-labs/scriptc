@@ -1805,6 +1805,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webstream.writableFromWeb": "scr_stream_writable_from_web",
   "webstream.writableFromWebOpts": "scr_stream_writable_from_web_opts",
   "webstream.writableToWeb": "scr_stream_writable_to_web",
+  "webstream.writableToWebDyn": "scr_stream_writable_to_web_dyn",
   "webstream.duplexFromWeb": "scr_stream_duplex_from_web",
   "webstream.toWebDuplex": "scr_stream_to_web_duplex",
   "webstream.toWebDuplexDyn": "scr_stream_to_web_duplex_dyn",

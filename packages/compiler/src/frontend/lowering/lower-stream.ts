@@ -2561,20 +2561,28 @@ function lowerWritableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
    * adapts as well as a Writable (Node accepts any Writable). */
   const value = lowerer.lowerExpr(args[0]!);
   const valueType = value.type;
-  if (
-    valueType.kind !== "object" ||
-    (valueType.className !== "%Writable" && valueType.className !== "%Duplex")
-  ) {
-    lowerer.noLowering(
-      `Writable.toWeb on '${lowerer.fmt(valueType)}' values`,
-      args[0]!,
-      "the supported form is Writable.toWeb(writable)",
-    );
+  /* Node accepts any Writable: the writable half of a Duplex or Transform
+   * is the same stream object, so every stream class with a writable side
+   * (and every user subclass of one) adapts. Any other value takes the
+   * checked-dynamic adapter, which validates write() and on() the way
+   * Node's adapter does (a non-object throws its ERR_INVALID_ARG_TYPE). */
+  const sides =
+    valueType.kind === "object"
+      ? streamSidesOf(lowerer, lowerer.classes.get(valueType.className))
+      : null;
+  if (sides !== null && sides.includes("w")) {
+    return {
+      kind: "libCall",
+      fn: "webstream.writableToWeb",
+      args: [value, numLit(0, loc)],
+      type: DYN,
+      loc,
+    };
   }
   return {
     kind: "libCall",
-    fn: "webstream.writableToWeb",
-    args: [value, numLit(0, loc)],
+    fn: "webstream.writableToWebDyn",
+    args: [lowerer.lowerExprExpecting(args[0]!, DYN), numLit(0, loc)],
     type: DYN,
     loc,
   };

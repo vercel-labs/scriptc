@@ -1086,12 +1086,21 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
   ScrStr *joined = NULL;
   if (protocols->kind == SCR_DYN_TYPED_REF) {
     /* A compiled value crossing as a capsule (a `string[]` or `string`
-     * variable): the protocols are the value's own view. */
+     * variable): the protocols are the value's own view. The inner call
+     * fills a slot of its own; its result replaces this call's empty value
+     * (which is released here, not left to the caller). */
     ScrDyn *view = scr_dyn_typed_ref_materialize(protocols);
     if (view == NULL) return false;
-    bool ok = scr_ws_protocols(view, offered);
+    ScrStr *inner = NULL;
+    bool ok = scr_ws_protocols(view, &inner);
     scr_dyn_release(view);
-    return ok;
+    if (!ok) {
+      scr_str_release(inner);
+      return false;
+    }
+    scr_str_release(*offered);
+    *offered = inner;
+    return true;
   }
   if (protocols->kind == SCR_DYN_STR) {
     if (!scr_ws_is_token(protocols->v.str->data, protocols->v.str->len)) return false;

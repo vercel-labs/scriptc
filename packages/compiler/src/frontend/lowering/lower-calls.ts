@@ -2513,6 +2513,15 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         propSym &&
         isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker)
       ) {
+        {
+          const dynamic = lowerDynamicGenericMemberCall(
+            lowerer,
+            expr,
+            expr.expression,
+            expr.expression.name.text,
+          );
+          if (dynamic !== null) return dynamic;
+        }
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -13217,6 +13226,44 @@ function lowerDynMemberChainCall(
  *     before the arguments.
  *
  * Null keeps the caller's refusal. */
+/** A generic member whose declaration has no compiled body in the program
+ * (an interface-only member of a class-backed value, a native runtime
+ * class's member): the receiver's value still carries the member at run
+ * time, so read it and call it dynamically — the dispatch an untyped
+ * receiver takes — and convert the checked-dynamic result to this call's
+ * instantiated type. Null when the receiver cannot cross the checked-value
+ * boundary or the call spreads its arguments. */
+function lowerDynamicGenericMemberCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr | null {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const recvValue = tryLowerExpression(lowerer, access.expression);
+  if (recvValue === null || recvValue.type.kind === "void") return null;
+  let receiver: IrExpr;
+  if (recvValue.type.kind === "dyn") receiver = recvValue;
+  else if (lowerer.dynConvertible(recvValue.type))
+    receiver = lowerer.coerceToExpected(recvValue, DYN);
+  else return null;
+  const loc = locOf(call);
+  const invoked: IrExpr = {
+    kind: "dynInvoke",
+    recv: receiver,
+    method: name,
+    calleeName: v8CalleeText(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
+  const resultType = lowerer.irTypeOf(call);
+  // A void method's result stays the runtime's untyped value (a class may
+  // implement it with a method that returns one, which JavaScript passes on).
+  if (resultType.kind === "void") return invoked;
+  return lowerer.coerceInto(call, invoked, resultType);
+}
+
 function lowerSignatureOnlyGenericMemberCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -13535,29 +13582,9 @@ function lowerObjLitGenericMethodCall(
     // dispatches by name to the runtime object's member, which a generic
     // method answers with its erased instance; the result converts to this
     // call's instantiated return type.
-    if (onInterface && !call.arguments.nodes.some(ts.isSpreadElement)) {
-      const receiver = lowerer.lowerExpr(access.expression);
-      if (receiver.type.kind === "dyn") {
-        const loc = locOf(call);
-        const invoked: IrExpr = {
-          kind: "dynInvoke",
-          recv: receiver,
-          method: name,
-          calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
-          type: DYN,
-          loc,
-        };
-        const resultType = lowerer.irTypeOf(call);
-        // A void method's result stays the runtime's untyped value, as a
-        // call through a non-generic void member's dispatch keeps it: a class
-        // may implement the member with a method that returns a value, which
-        // JavaScript passes on (`console.log(c.publish(m))`).
-        if (resultType.kind === "void") return invoked;
-        return lowerer.coerceInto(call, invoked, resultType);
-      }
-    }
     if (onInterface) {
+      const dynamic = lowerDynamicGenericMemberCall(lowerer, call, access, name);
+      if (dynamic !== null) return dynamic;
       lowerer.unsupported(
         "SC1090",
         call,

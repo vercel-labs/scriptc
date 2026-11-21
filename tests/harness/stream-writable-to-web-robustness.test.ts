@@ -107,6 +107,27 @@ const outcome = await Promise.race([
 console.log("sync error " + outcome);
 `;
 
+// A userland sink can emit 'finish' synchronously inside end(). The adapter
+// retires there, so the close it is asked for must already be recorded when
+// end() runs; otherwise the returned promise never settles.
+const SYNC_FINISH_ON_CLOSE = `${PRELUDE}
+const target = fake();
+target.end = function () {
+  target.writable = false;
+  target.emitLocal("finish");
+};
+const web = Writable.toWeb(target);
+const writer = web.getWriter();
+const outcome = await Promise.race([
+  writer.close().then(
+    () => "resolved",
+    (error) => "rejected " + error.name + " " + error.code,
+  ),
+  new Promise((resolve) => setTimeout(() => resolve("pending"), 200)),
+]);
+console.log("sync finish close " + outcome);
+`;
+
 async function run(source: string): Promise<{ stdout: string; stderr: string; code: number }> {
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-writable-to-web-robustness-"));
   const entry = join(outDir, "main.mjs");
@@ -136,4 +157,9 @@ test("a finish without a close rejects a write waiting on drain", async () => {
 test("a synchronous error during write settles the write", async () => {
   const { stdout } = await run(SYNC_ERROR_DURING_WRITE);
   expect(stdout).toContain("sync error resolved");
+});
+
+test("a finish emitted inside end settles the close", async () => {
+  const { stdout } = await run(SYNC_FINISH_ON_CLOSE);
+  expect(stdout).toContain("sync finish close resolved");
 });

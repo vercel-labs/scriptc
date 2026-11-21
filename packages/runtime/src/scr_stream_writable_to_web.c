@@ -985,17 +985,27 @@ static ScrDyn *stw3d_close(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   if (ended) scr_dyn_release(ended);
   if (is_ended || c->closed != NULL) {
     scr_promise_fulfill_void(p);
+  } else if (c->target == NULL) {
+    /* Retired (the wrapped value is gone): Node leaves a close on such a
+     * stream pending. */
   } else {
+    /* The close is recorded before end(): a userland sink can emit 'finish'
+     * synchronously inside end(), which settles and retires the adapter.
+     * Recording it afterwards would strand this promise, and the error the
+     * retirement reports, forever. */
+    c->closed = scr_promise_retain(p);
     ScrDyn *result = stw3d_call(c->target, "end", NULL, 0);
     if (scr_exc_pending()) {
+      if (c->closed) {
+        scr_promise_release(c->closed);
+        c->closed = NULL;
+      }
       scr_promise_reject_pending(p);
       if (scr_exc_pending()) scr_exc_clear();
       if (result) scr_dyn_release(result);
       goto done;
     }
     if (result) scr_dyn_release(result);
-    if (c->closed) scr_promise_release(c->closed);
-    c->closed = scr_promise_retain(p);
   }
 done:;
   ScrDyn *out = scr_dyn_new_promise(p);

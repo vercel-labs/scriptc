@@ -34,6 +34,7 @@ import type { Frontend, FrontendFactory } from "../frontend/pipeline.js";
 import { shapeOverlayEnabled } from "../frontend/shape-inference/index.js";
 import type { NpmStaticStatus } from "../coverage/report.js";
 import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
+import type { UnitObservation } from "../units/types.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
 import {
@@ -88,6 +89,9 @@ export interface PreparedExecutableModule {
   /** The first place the program reached into Node (LowerResult), for
    * SC8005's hint when no pack can be recorded. */
   nodeIslandUse?: { file: string; api: string };
+  /** SCRIPTC_UNITS=observe: the unit observation the host reports and
+   * stores (units/observe.ts). Absent in every other build. */
+  unitObservation?: UnitObservation;
 }
 
 /** prepareRounds, with each diagnostic and warning on a line a source shadow
@@ -818,6 +822,7 @@ function prepareRound(
     stats: lowered.stats,
     ...(lowered.changedUnits !== undefined ? { changedUnits: lowered.changedUnits } : {}),
     ...(lowered.nodeIslandUse !== undefined ? { nodeIslandUse: lowered.nodeIslandUse } : {}),
+    ...(lowered.unitObservation !== undefined ? { unitObservation: lowered.unitObservation } : {}),
     warnings: [
       ...(islandDecision?.notes ?? []),
       ...(fe.warnings ?? []),

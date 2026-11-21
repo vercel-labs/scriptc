@@ -11092,8 +11092,8 @@ function lowerHttpResMethodCall(
   if (name === "setHeaders") {
     // Node's OutgoingMessage.setHeaders(headers): a Map (or Headers) whose
     // entries go through setHeader in iteration order, set-cookie's values
-    // collected into one array.
-    requireStatementPosition(lowerer, call, "res.setHeaders(...)");
+    // collected into one array. It answers the response, so a chained
+    // `res.setHeaders(map).end()` keeps Node's shape.
     if (args.length !== 1) {
       lowerer.noLowering(
         `setHeaders with ${args.length} arguments`,
@@ -11114,13 +11114,16 @@ function lowerHttpResMethodCall(
       value.type.kind === "dyn"
         ? value
         : { kind: "dynFrom", value, type: DYN, loc: locOf(args[0]!) };
-    return {
-      kind: "libCall",
-      fn: "http.resSetHeaders",
-      args: [receiver, headers],
-      type: VOID,
+    // The call always answers the response, as Node's `return this` does:
+    // a concise arrow body (`() => res.setHeaders(map)`) hands it on even
+    // when only the arrow's caller decides whether to use it.
+    return receiverReturningCall(
+      lowerer,
+      "http.resSetHeaders",
+      [receiver, headers],
+      HTTPRES_T,
       loc,
-    };
+    );
   }
   if (name === "pipe") {
     // OutgoingMessage.prototype.pipe: Stream's shape takes anything and

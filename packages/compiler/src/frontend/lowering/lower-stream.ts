@@ -7312,9 +7312,11 @@ function lowerReadableCompose(
   };
 }
 
-/** Readable.toWeb(readable): a web ReadableStream over the readable's chunks
- * (scr_stream_to_web.c). The options are an object literal without members:
- * `type: 'bytes'` (a byte stream) and `strategy` have no lowering yet. */
+/** Readable.toWeb(readable[, options]): a web ReadableStream over the
+ * readable's chunks (scr_stream_to_web.c). `strategy` lowers as a
+ * checked-dynamic value and drives the stream's highWaterMark and size, as
+ * Node passes it to the ReadableStream constructor; `type: 'bytes'` (a byte
+ * stream) has no lowering yet. */
 function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = call.arguments.nodes;
   if (args.length === 0 || args.length > 2 || args.some((a) => ts.isSpreadElement(a))) {
@@ -7325,6 +7327,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
     );
   }
   const options = args[1];
+  let strategy: IrExpr | null = null;
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
@@ -7348,6 +7351,10 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
             "a byte stream has no lowering yet; omit the option",
           );
         }
+      }
+      if (key === "strategy" && ts.isPropertyAssignment(member)) {
+        strategy = lowerer.lowerExprExpecting(member.initializer, DYN);
+        continue;
       }
       lowerer.noLowering(
         key === null
@@ -7373,10 +7380,17 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       throw e;
     }
   }
+  const dyn = readable.type.kind === "dyn";
   return {
     kind: "libCall",
-    fn: readable.type.kind === "dyn" ? "webstream.toWebReadableDyn" : "webstream.toWebReadable",
-    args: [readable, numLit(0, loc)],
+    fn: strategy
+      ? dyn
+        ? "webstream.toWebReadableDynOpts"
+        : "webstream.toWebReadableOpts"
+      : dyn
+        ? "webstream.toWebReadableDyn"
+        : "webstream.toWebReadable",
+    args: strategy ? [readable, numLit(0, loc), strategy] : [readable, numLit(0, loc)],
     type: DYN,
     loc,
   };

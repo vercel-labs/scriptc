@@ -91,6 +91,30 @@ export function arrayRootOf(info: ClassInfo | null | undefined): ClassInfo | nul
   return null;
 }
 
+/** Whether a class declared `extends Array` over the elements of `array`
+ * declares the field, method or accessor `name`: an array of that type can be one
+ * of its instances. (Whether the class is constructed is known only once
+ * lowering has reached every `new`; the dispatch tests constructed classes
+ * only.) */
+export function arrayClassDeclaresMember(
+  lowerer: Lowerer,
+  array: Extract<IrType, { kind: "array" }>,
+  name: string,
+): boolean {
+  for (const info of lowerer.classes.values()) {
+    const elem = info.extendsArray?.elem;
+    if (elem === undefined || !typeEquals(elem, array.elem)) continue;
+    if (
+      info.fields.has(name) ||
+      lowerer.findMethodOn(info, name) ||
+      lowerer.findMethodOn(info, `get:${name}`) ||
+      lowerer.findMethodOn(info, `set:${name}`)
+    )
+      return true;
+  }
+  return false;
+}
+
 /** The array a class instance is (a reinterpret: the same object). */
 export function arrayOfClassInstance(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrExpr {
   const root = arrayRootOf(info)!;

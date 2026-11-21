@@ -105,5 +105,18 @@ export default defineConfig({
       ? { maxWorkers: Number(workers), minWorkers: 1 }
       : {}),
     globalSetup: ["./tests/harness/suite-lock.mjs"],
+    // On GitHub Actions, scripts/ci-progress-reporter.mjs also names each
+    // failed or slow test as it finishes and, every minute, the tests still
+    // running, so a job that hangs or times out says where. The first two are
+    // vitest's defaults there.
+    ...(process.env["GITHUB_ACTIONS"] === "true" && process.env["SCRIPTC_CI_PROGRESS"] !== "0"
+      ? {
+          reporters: [
+            "default",
+            "github-actions",
+            fileURLToPath(new URL("./scripts/ci-progress-reporter.mjs", import.meta.url)),
+          ],
+        }
+      : {}),
   },
 });

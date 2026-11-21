@@ -73,7 +73,11 @@ import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { constantCondition } from "../constant-conditions.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
+import {
+  fenceNodeModuleMutation,
+  isNodeModuleHandle,
+  lowerRequireCacheHas,
+} from "../lower-node-module.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { errorToStringCall } from "../error-methods.js";
 import {
@@ -103,7 +107,11 @@ import {
   arrayValueType,
   tryLowerBytesReadNumberEquality,
 } from "../array-values.js";
-import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
+import {
+  cjsExportMemberWriteGlobalOf,
+  cjsInFileExportGlobalOf,
+  cjsPartialExportMirror,
+} from "../cjs-exports-object.js";
 import { cjsRuntimeOptionalExportStorage } from "../cjs-inline-require.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
 import { dynamicArrayOperand, emptyArrayLiteralArm } from "./array-literals.js";
@@ -2226,6 +2234,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
                 // A conditional whole export that selected this table answers
                 // Node's shared exports object, so its slots follow the write.
                 ...lowerer.cjsConditionalExportMirrorStmts(g.id, result, expr.right, loc),
+                // A module of a require() cycle keeps the live exports
+                // object: this write lands there too, where it runs.
+                ...cjsPartialExportMirror(
+                  lowerer,
+                  ts.getSourceFileOfNode(expr),
+                  expr.left.name.text,
+                  result,
+                  expr.right,
+                  loc,
+                ),
               ],
               result,
               type: value.type,
@@ -2494,6 +2512,32 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (expr.operatorToken.kind === ts.SyntaxKind.PlusToken && lowerer.constructorFunctionTypes) {
     left = builtinConstructorText(lowerer, expr.left, left) ?? left;
     right = builtinConstructorText(lowerer, expr.right, right) ?? right;
+  }
+  if (strictEquality && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A module view held in checked-dynamic storage is compared as the
+    // object it holds: the checker's handle type (a number) must not pull
+    // the read back to it.
+    const moduleView = (n: ts.Node, e: IrExpr): IrExpr =>
+      e.kind === "dynCheck" && e.value.type.kind === "dyn" && isNodeModuleHandle(lowerer, n)
+        ? e.value
+        : e;
+    left = moduleView(expr.left, left);
+    right = moduleView(expr.right, right);
+    // A view against a module handle (require.cache's entry, require.main)
+    // is Node's object against the same object: the handle is read as its
+    // view so the comparison is identity.
+    const viewOf = (n: ts.Node, e: IrExpr, other: IrExpr): IrExpr =>
+      other.type.kind === "dyn" && isNodeModuleHandle(lowerer, n)
+        ? {
+            kind: "libCall",
+            fn: "module.dynOf",
+            args: [lowerer.coerceToExpected(e, DYN)],
+            type: DYN,
+            loc: e.loc,
+          }
+        : e;
+    left = viewOf(expr.left, left, right);
+    right = viewOf(expr.right, right, left);
   }
   if (strictEquality) {
     const storedLeft = runtimeOptionalStorageOperand(lowerer, expr.left);

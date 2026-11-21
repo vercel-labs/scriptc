@@ -118,7 +118,7 @@ test("the original body runs as an out-of-line fallback the helper places by nam
   // Only a bound that is not an int32 reaches it: it is cold, never
   // inlined, and marked for the helper's partitioner.
   expect(llvm).toMatch(
-    /^define [^@]*@sc_\w+?_sumTo_int32Fallback\([^)]*\) noinline cold "scriptc-fallback" /m,
+    /^define [^@]*@sc_\w+?_sumTo_int32Fallback\([^)]*\) align 64 noinline cold "scriptc-fallback" /m,
   );
   // The function itself keeps only the int32 test and the two calls.
   const body = /^define [^@]*@sc_\w+?_sumTo\([^]*?^}/m.exec(llvm)?.[0] ?? "";
@@ -131,5 +131,5 @@ test("a versioned function stays out of line so its copy compiles in its frame",
   const llvm = await emitLlvm(loops);
   // Inlined into a caller the function takes its copy along, and the loops
   // then compile in that caller's frame instead of this one.
-  expect(llvm).toMatch(/^define [^@]*@sc_\w+?_sumTo\([^)]*\) noinline /m);
+  expect(llvm).toMatch(/^define [^@]*@sc_\w+?_sumTo\([^)]*\) align 64 noinline /m);
 });

@@ -388,6 +388,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.async_hooks.executionAsyncResource",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncResource",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.async_hooks.triggerAsyncId",
       "kind": "node-builtin",
       "name": "async_hooks.triggerAsyncId",
@@ -1847,6 +1853,14 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.module.findPackageJSON",
+      "kind": "node-builtin",
+      "name": "module.findPackageJSON",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph"
+    },
+    {
       "id": "node-builtin.module.flushCompileCache",
       "kind": "node-builtin",
       "name": "module.flushCompileCache",
@@ -2456,6 +2470,13 @@
       "name": "perf_hooks.performance.now",
       "status": "static",
       "note": "the global performance object and the performance.now.bind(performance) function value reach the same clock"
+    },
+    {
+      "id": "node-builtin.perf_hooks.timerify",
+      "kind": "node-builtin",
+      "name": "perf_hooks.timerify",
+      "status": "static",
+      "note": "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type"
     },
     {
       "id": "node-builtin.process",
@@ -5861,9 +5882,8 @@
       "id": "stdlib.readable-stream.values",
       "kind": "stdlib",
       "name": "ReadableStream.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-stream-values"
     },
     {
       "id": "stdlib.request.arrayBuffer",

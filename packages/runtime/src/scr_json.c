@@ -7765,6 +7765,12 @@ bool scr_bytes_instanceof(const ScrDyn *value, const ScrDyn *callee) {
   return scr_bytes_instanceof_at(value, callee, NULL);
 }
 SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) = NULL;
+/* The timerified wrapper's construct form (scr_perf.c installs it when the
+ * program first wraps a function): a wrapper constructs its original with
+ * Node's `new` semantics and records the entry, then this dispatcher's own
+ * "not a constructor" refusal never sees it. */
+SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
+                                               ScrDyn **result) = NULL;
 SCR_TL ScrDyn *(*scr_dyn_builtin_static_fn)(const ScrDyn *fn, const char *key, size_t key_len,
                                             bool descriptor) = NULL;
 SCR_TL void (*scr_dyn_builtin_statics_own_fn)(const ScrDyn *fn, ScrDyn *table) = NULL;
@@ -7789,6 +7795,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
     return result;
   }
   ScrDyn *constructed = NULL;
+  if (callee->kind == SCR_DYN_FUNC && scr_dyn_timerified_construct_fn &&
+      scr_dyn_timerified_construct_fn(callee, args, &constructed))
+    return constructed;
   if (scr_dyn_global_construct_fn && scr_dyn_global_construct_fn(callee, args, &constructed))
     return constructed;
   /* The Buffer function value (scr_builtin_values.c): Node's construction
@@ -7828,6 +7837,7 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
   return NULL;
 }
+
 
 static bool scr_dyn_bytes_named(const char *method, const char *name) {
   return strcmp(method, name) == 0;
@@ -13684,6 +13694,38 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
          ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
+/* A pending extra property for the next error view (scr_error_seed_own_prop):
+ * AssertionError's generatedMessage, which Node assigns before the class
+ * name and the view appends at a fixed place. */
+static SCR_TL const char *scr_error_seed_key;
+static SCR_TL size_t scr_error_seed_key_len;
+static SCR_TL ScrDyn *scr_error_seed_value;
+/* One cleanup registration per thread, not one per assertion: a caught
+ * assertion seeds and consumes its property repeatedly, and worker
+ * executables allocate an exit-list entry per registration. */
+static SCR_TL bool scr_error_seed_exit_registered;
+static SCR_TL size_t scr_error_seed_exit_registrations;
+size_t scr_error_seed_registration_count(void) { return scr_error_seed_exit_registrations; }
+static void scr_error_seed_cleanup(void) {
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_value = NULL;
+}
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value) {
+  if (!scr_error_seed_exit_registered && scr_atexit(scr_error_seed_cleanup) == 0) {
+    scr_error_seed_exit_registered = true;
+    scr_error_seed_exit_registrations++;
+  }
+  scr_dyn_release(scr_error_seed_value);
+  scr_error_seed_key = key;
+  scr_error_seed_key_len = key_len;
+  scr_error_seed_value = value;
+}
+ScrDyn *scr_error_take_seed(void) {
+  ScrDyn *value = scr_error_seed_value;
+  scr_error_seed_value = NULL;
+  return value;
+}
+
 ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   ScrDyn *d = scr_dyn_new_obj();
   scr_dyn_obj_set(d, "%error", 6, scr_dyn_new_bool(true)); /* the checked-dynamic tree's error marker */
@@ -13708,6 +13750,12 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   if (e->message_present && !system) {
     scr_dyn_obj_set(d, "message", 7, scr_dyn_new_str(e->message));
     scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = e->message_enumerable;
+  }
+  /* The seeded property sits where its assignment put it in Node's
+   * constructor order — after the message, before the class name. */
+  if (scr_error_seed_value != NULL) {
+    scr_dyn_obj_set(d, scr_error_seed_key, scr_error_seed_key_len, scr_error_seed_value);
+    scr_error_seed_value = NULL;
   }
   if (e->system_message) {
     /* SystemError: code, name, message, then the read-only `info` context
@@ -22248,6 +22296,13 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
         (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
       return scr_typed_ref_array_has_own(v, key);
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+    /* A capsule with no view answers materialization with undefined and a
+     * pending refusal (an untyped generator: SC1071). Asking the undefined
+     * view would raise a property-read TypeError over that refusal. */
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return false;
+    }
     if (!view) return false;
     bool result = scr_dyn_has_own(view, key);
     scr_dyn_release(view);
@@ -23623,6 +23678,7 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   case SCR_DYN_HANDLE:
     if (key->v.handle.tag != SCR_DYNH_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_SHARED_ARRAY_BUFFER && key->v.handle.tag != SCR_DYNH_WEAK_MAP &&
         key->v.handle.tag != SCR_DYNH_WEAK_SET && key->v.handle.tag != SCR_DYNH_FINALIZATION_REGISTRY &&
+        key->v.handle.tag != SCR_DYNH_WEAK_REF &&
         key->v.handle.tag != SCR_DYNH_STDIO &&
         key->v.handle.tag != SCR_DYNH_FETCH_REQUEST && key->v.handle.tag != SCR_DYNH_FETCH_RESPONSE &&
         key->v.handle.tag != SCR_DYNH_WEB_STREAM &&
@@ -24645,6 +24701,11 @@ static void *scr_weak_ref_retain(void *ptr) {
 static void scr_weak_ref_release(void *ptr) {
   ScrWeakRef *ref = ptr;
   if (--ref->rc) return;
+  /* A WeakRef is an object, so it is a weak key and an unregister token
+   * (three.js registers each tracked texture with its WeakRef as both the
+   * held value and the token): weak collections keyed by it drop their
+   * entries. */
+  scr_weak_dispose(ref);
   scr_dyn_release(ref->target);
   free(ref);
 }

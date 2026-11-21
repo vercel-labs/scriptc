@@ -49,6 +49,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * ToString), and NUL-terminated C-string constants (scr_jb_puts /
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
+  /** See LlEmitter.contentSymbol. */
+  contentSymbol(prefix: string, text: string): string;
   readonly unionsById: Map<string, IrUnionDef>;
   /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
   mayHoldForeign(elem: IrType): boolean;
@@ -219,7 +221,7 @@ export class LlWalkers {
     const key = typeKey(t);
     const existing = this.jsonWriters.get(key);
     if (existing) return existing;
-    const name = `sc_jw_${this.jsonWriters.size}`;
+    const name = this.host.contentSymbol("sc_jw_", key);
     this.jsonWriters.set(key, name);
     this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
@@ -550,7 +552,7 @@ export class LlWalkers {
     const shape = this.host.recordsById.get(shapeId);
     if (!shape)
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
-    const name = `sc_jwf_${this.recordFieldWriters.size}`;
+    const name = this.host.contentSymbol("sc_jwf_", shapeId);
     this.recordFieldWriters.set(shapeId, name);
     this.host.journalAllocated?.(name, "walkers.recordFieldWriter", [shapeId]);
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
@@ -1024,7 +1026,7 @@ export class LlWalkers {
     if (existing) return existing;
     const def = this.host.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`llvm emitter bug: join of unknown union ${unionId}`);
-    const name = `sc_uj_${this.unionJoinFns.size}`;
+    const name = this.host.contentSymbol("sc_uj_", unionId);
     this.unionJoinFns.set(unionId, name);
     this.host.journalAllocated?.(name, "walkers.unionJoinHelper", [unionId]);
 

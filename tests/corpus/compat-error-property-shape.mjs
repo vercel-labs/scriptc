@@ -4,6 +4,7 @@
 // order (AssertionError's generatedMessage before its name, a SystemError's
 // code and name before its message), and reflection over a caught value
 // sees that order.
+import assert from "node:assert";
 import os from "node:os";
 
 function describe(label, make) {
@@ -26,6 +27,7 @@ describe("cause", () => new Error("m", { cause: 1 }));
 describe("aggregate", () => new AggregateError([new Error("x")], "m"));
 describe("aggregate empty", () => new AggregateError([]));
 describe("suppressed", () => new SuppressedError(new Error("e"), new Error("s"), "m"));
+describe("assertion", () => new assert.AssertionError({ actual: 1, expected: 2, operator: "o" }));
 describe("system", () => {
   try {
     os.setPriority(999999, 0);

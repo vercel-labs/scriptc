@@ -39,7 +39,12 @@ test("every workflow limits the default token", () => {
   }
   // CI and the release's build jobs only read the repository. Publishing, artifact reuse and the GitHub release
   // ask for more in their own jobs.
-  for (const path of [".github/workflows/ci.yml", ".github/workflows/release.yml"]) {
+  for (const path of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/release-build.yml",
+    ".github/workflows/release-dry-run.yml",
+  ]) {
     const workflow = load(read(path)) as { permissions: Record<string, string> };
     expect(workflow.permissions, path).toEqual({ contents: "read" });
   }
@@ -96,7 +101,7 @@ test("every download of a toolchain archive is checked against the pin file", ()
   expect(fetching).toEqual(
     expect.arrayContaining([
       ".github/workflows/ci.yml",
-      ".github/workflows/release.yml",
+      ".github/workflows/release-build.yml",
       ".github/workflows/llvm-dist.yml",
       ".github/actions/llvm-linux/action.yml",
       ...scripts,
@@ -120,7 +125,7 @@ test("every download of a toolchain archive is checked against the pin file", ()
   ]) {
     expect(pinned).toContain(`  ${name}\n`);
   }
-  const assets = [...read(".github/workflows/release.yml").matchAll(/llvm_asset: (\S+)/g)];
+  const assets = [...read(".github/workflows/release-build.yml").matchAll(/llvm_asset: (\S+)/g)];
   for (const asset of assets) expect(pinned).toContain(`  ${asset[1]}.tar.xz\n`);
 });
 

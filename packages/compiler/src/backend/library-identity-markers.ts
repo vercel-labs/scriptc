@@ -1,4 +1,5 @@
 import { InternalCompilerError } from "../errors.js";
+import { alignFunctionEntries } from "./llvm/function-alignment.js";
 
 const LLVM_LIBRARY_IDENTITY_BEGIN = "; scriptc-library-identity: begin";
 const LLVM_LIBRARY_IDENTITY_END = "; scriptc-library-identity: end";
@@ -56,7 +57,9 @@ export function replaceLibraryIdentity(source: string, identity: LibraryIdentity
   const offsets = identityOffsets(source);
   if (offsets === null)
     throw new InternalCompilerError("generated public library TU has no identity region");
-  const replacement = emitLibraryIdentityLines(identity).join("\n");
+  // The emitter aligns every function entry in the TU it writes, so the
+  // refreshed region must carry the same alignment as the one it replaces.
+  const replacement = alignFunctionEntries(emitLibraryIdentityLines(identity)).join("\n");
   return source.slice(0, offsets.start) + replacement + source.slice(offsets.end);
 }
 

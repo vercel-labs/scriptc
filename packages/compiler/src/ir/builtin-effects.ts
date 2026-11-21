@@ -113,6 +113,12 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "console.instCountReset",
   "console.instTable",
   "console.instTrace",
+  "console.instWriteArgs",
+  "console.instDirxmlArgs",
+  "console.instDirArgs",
+  "console.instTraceArgs",
+  "console.instAssertArgs",
+  "console.instGroupArgs",
   "console.dirDyn",
   "console.dirHidden",
   "worker.new",
@@ -342,6 +348,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // The runtime formatter calls toString, valueOf and toJSON, and refuses
   // renderings it has no lowering for.
   "insp.format",
+  "insp.formatSnapshot",
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
@@ -538,6 +545,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // getCipher throws the "not supported yet" error for a suite without a
   // known OpenSSL name.
   "tls.sockGetCipher",
+  // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
+  // ERR_INVALID_ARG_TYPE) and the TLS state error.
+  "tls.sockExportKeyingMaterial",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",
@@ -714,6 +724,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.wrap",
   "stream.wrapDyn",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.duplexFromWeb",
   "stream.destroy",
   "stream.destroyErr",
@@ -783,6 +794,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // markResourceTiming's argument reads and clearResourceTimings /
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
+  "perf.timerify",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",
@@ -799,6 +811,11 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.listEntries",
   // monitorEventLoopDelay's resolution: Node's ERR_OUT_OF_RANGE.
   "perf.eldNew",
+  // Histogram inference validates the confidence option and the other
+  // histogram before the readings are computed.
+  "perf.histoConfidence",
+  "perf.histoPercentileArg",
+  "perf.histoOther",
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",
@@ -1577,6 +1594,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "dgram.bindCb",
   "dgram.connect",
   "dgram.connectCb",
+  "dgram.connectDyn",
   "dgram.sendStr",
   "dgram.sendBytes",
   "dgram.sendChk",

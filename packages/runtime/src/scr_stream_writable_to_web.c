@@ -19,6 +19,10 @@ struct Stw3Ctx {
   ScrPromise *backpressure; /* +1 while a backpressured write waits */
   ScrPromise *closed;       /* +1 while the writer's close waits */
   ScrClosure *eos;          /* +1: the finished() registration */
+  /* +1: the close-step watcher that lets go when a stream closes without
+   * emitting 'close' (a clean destroy of an emitClose:false stream, which
+   * the eos watcher above never sees). */
+  ScrClosure *close_step;
   ScrClosure *error_cl;     /* the writable's 'error' listener */
   ScrStr *error_name;       /* +1 */
   Stw3Ctx *live_prev, *live_next;
@@ -60,9 +64,22 @@ static void stw3_retire(Stw3Ctx *c) {
     ((void (*)(ScrClosure *))eos->fn)(eos);
     scr_closure_release(eos);
   }
+  ScrClosure *close_step = c->close_step;
+  c->close_step = NULL;
+  if (close_step) {
+    ((void (*)(ScrClosure *))close_step->fn)(close_step);
+    scr_closure_release(close_step);
+  }
   ScrStream *w = c->writable;
   c->writable = NULL;
   if (w) scr_stream_release(w);
+  /* The sink's boxes hide the context from the collector, so the adapter's
+   * own reference to the controller would otherwise keep the stream's
+   * controller (and through it the web stream and the sink) alive after a
+   * dropped adapter. The stream keeps the controller itself. */
+  ScrDyn *controller = c->controller;
+  c->controller = NULL;
+  if (controller) scr_dyn_release(controller);
   stw3_unref(c); /* the live list's reference */
 }
 
@@ -76,6 +93,7 @@ static void stw3_unref(Stw3Ctx *c) {
     scr_emitter_unadd_quiet((ScrEmitter *)c->writable, c->drain_name, c->drain_cl);
   if (c->drain_name) scr_str_release(c->drain_name);
   if (c->eos) scr_closure_release(c->eos);
+  if (c->close_step) scr_closure_release(c->close_step);
   if (c->error_cl && c->writable)
     scr_emitter_unadd_quiet((ScrEmitter *)c->writable, c->error_name, c->error_cl);
   if (c->error_name) scr_str_release(c->error_name);
@@ -237,6 +255,18 @@ static void stw3_eos(ScrClosure *cl, ScrStream *s, ScrError *err) {
   stw3_unref(c);
 }
 
+/* The adapted stream closed without emitting 'close' (a clean destroy of an
+ * emitClose:false stream): the eos watcher never sees it, so this watcher
+ * lets the adapter go, as Node's adapter does. The writer's close stays
+ * pending, Node's shape for a stream that never finished. */
+static void stw3_close_step(ScrClosure *cl, ScrStream *s, ScrError *err) {
+  (void)s;
+  (void)err;
+  Stw3Ctx *c = stw3_of(cl);
+  if (c->eos != NULL) stw3_retire(c);
+  stw3_unref(c);
+}
+
 /* sink.start(controller) */
 static ScrDyn *stw3_start(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   Stw3Ctx *c = stw3_of(cl);
@@ -366,6 +396,68 @@ static ScrDyn *stw3_member(void *fn, ScrDynThunk thunk, uint32_t arity, const ch
   return scr_dyn_new_func(cl, thunk, arity, sig, name);
 }
 
+/* A string's UTF-16 length, Node's `chunk.length`: code points in the
+ * three-byte and shorter forms count once, a four-byte code point counts
+ * as the surrogate pair it becomes. */
+static double stw3_utf16_len(const ScrStr *s) {
+  size_t units = 0;
+  const unsigned char *p = (const unsigned char *)s->data;
+  const unsigned char *end = p + s->len;
+  while (p < end) {
+    unsigned char b = *p;
+    if (b < 0x80) {
+      units += 1;
+      p += 1;
+    } else if ((b & 0xE0) == 0xC0 && p + 1 < end) {
+      units += 1;
+      p += 2;
+    } else if ((b & 0xF0) == 0xE0 && p + 2 < end) {
+      units += 1;
+      p += 3;
+    } else if ((b & 0xF8) == 0xF0 && p + 3 < end) {
+      units += 2;
+      p += 4;
+    } else {
+      units += 1;
+      p += 1;
+    }
+  }
+  return (double)units;
+}
+
+/* Node's strategy size function: a byte chunk's byteLength, otherwise the
+ * value's length, and 1 in object mode (CountQueuingStrategy). */
+static ScrDyn *stw3_size(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
+  Stw3Ctx *c = stw3_of(cl);
+  double size = 1;
+  if (c->writable && scr_stream_prop(c->writable, "writableObjectMode") == 0 && argc > 0 &&
+      args[0] != NULL) {
+    const ScrDyn *chunk = args[0];
+    if (chunk->kind == SCR_DYN_BYTES && chunk->v.bytes != NULL) {
+      double length = 0;
+      if (scr_bytes_view_byte_length(chunk->v.bytes, &length)) size = length;
+    } else if (chunk->kind == SCR_DYN_STR && chunk->v.str != NULL) {
+      size = stw3_utf16_len(chunk->v.str);
+    } else if (chunk->kind == SCR_DYN_ARR) {
+      size = scr_dyn_arr_len(chunk);
+    }
+  }
+  stw3_unref(c);
+  return scr_dyn_new_num(size);
+}
+
+/* The queuing strategy Node builds from the wrapped writable: its
+ * highWaterMark and the size function above. */
+static ScrDyn *stw3_strategy(Stw3Ctx *c) {
+  ScrDyn *strategy = scr_dyn_new_obj();
+  double high_water_mark = scr_stream_prop(c->writable, "writableHighWaterMark");
+  scr_dyn_obj_set(strategy, "highWaterMark", 13, scr_dyn_new_num(high_water_mark));
+  ScrClosure *size_cl = stw3_closure((void *)&stw3_size, c);
+  scr_dyn_obj_set(strategy, "size", 4,
+                  scr_dyn_new_func(size_cl, &stw3_size, 1, "(chunk)", "size"));
+  return strategy;
+}
+
 /* A closed WritableStream: Node adapts a destroyed or non-writable stream to
  * one (`new WritableStream(); writable.close()`). */
 static ScrDyn *stw3_closed_stream(void) {
@@ -413,6 +505,7 @@ ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags) {
   ScrDyn *cls = scr_webstream_class(5); /* WritableStream */
   ScrDyn *ctorArgs = scr_dyn_new_arr();
   scr_dyn_arr_push(ctorArgs, scr_dyn_retain(sink));
+  scr_dyn_arr_push(ctorArgs, stw3_strategy(c));
   ScrStr *what = scr_str_new("Writable.toWeb", 15);
   ScrDyn *out = scr_dyn_construct(cls, ctorArgs, what);
   scr_str_release(what);
@@ -429,8 +522,17 @@ ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags) {
     if (stw3_live) stw3_live->live_prev = c;
     stw3_live = c;
     /* One end-of-stream watcher for the adapted stream (after the sink's
-     * start, so a synchronously finished stream still sees the controller). */
-    c->eos = scr_stream_finished_always(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos);
+     * start, so a synchronously finished stream still sees the controller).
+     * Node's adapter calls finished(streamWritable, { readable: false }):
+     * a Duplex's readable side can outlive the writable one (it ends only
+     * through a read), and the writer's close settles on the writable. */
+    c->eos = scr_stream_finished_opts(c->writable, stw3_closure((void *)&stw3_eos, c), &stw3_eos,
+                                      0, -1, true, NULL, NULL);
+    /* A silent close step is the one terminal point the eos watcher cannot
+     * report; this watcher only retires the adapter there (and is unhooked
+     * by stw3_retire when eos settles first). */
+    c->close_step = scr_stream_finished_always(
+        c->writable, stw3_closure((void *)&stw3_close_step, c), &stw3_close_step);
   }
   stw3_unref(c); /* the constructor's reference */
   return out;

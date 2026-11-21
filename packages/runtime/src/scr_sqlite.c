@@ -3939,6 +3939,14 @@ static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTa
     *out = NULL;
     return true;
   }
+  /* A call coming from a saved method value of this very handle and method
+   * (`db.exec = db.exec`) runs the implementation: the value is the class's
+   * method, not a replacement. The class's method-call path marks the call,
+   * so a function the program wrote over the property is dispatched as it
+   * was written. */
+  if (scr_dyn_method_value_target == h && scr_dyn_method_value_name != NULL &&
+      strcmp(scr_dyn_method_value_name, method) == 0)
+    return false;
   if (!scr_dyn_is_callable(callable)) {
     scr_dyn_release(callable);
     char message[192];

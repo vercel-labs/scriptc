@@ -2913,6 +2913,12 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
  * NULL with the exception pending. */
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc);
+/* The native method value whose call is running (a method read from a handle
+ * and called, possibly after being stored): the handle's implementation
+ * consults these to answer the method rather than a property of the same
+ * name that happens to hold that very value. NULL between calls. */
+extern SCR_TL void *scr_dyn_method_value_target;
+extern SCR_TL const char *scr_dyn_method_value_name;
 /* The class operations scr_json.c's handle paths reach (instanceof, a method
  * value's receiver and call, and `in`); scr_dyn_handle_class.c installs them
  * from a constructor, so scr_json.c builds one object whether or not a
@@ -2926,6 +2932,10 @@ typedef struct ScrDynHandleClassOps {
    * handle whose class declares none; an alias tag answers its class's
    * table. */
   const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
+  /* The class's own method function for `name` (+1), or NULL: the value a
+   * handle read answers, so a property that was written back with it is
+   * recognised as the method rather than as a replacement. */
+  ScrDyn *(*method_value)(ScrDynHandleTag tag, const char *name);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

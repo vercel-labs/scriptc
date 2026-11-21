@@ -9708,7 +9708,13 @@ static ScrDyn *scr_dynh_method_call(ScrClosure *closure, ScrDyn *const *args, si
     result = receiver ? scr_dyn_handle_class_ops->method_call(ops, receiver, method->name, args, argc) : NULL;
     scr_dyn_release(receiver);
   } else if (!scr_dyn_handle_class_ops && self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
+    void *prev_target = scr_dyn_method_value_target;
+    const char *prev_name = scr_dyn_method_value_name;
+    scr_dyn_method_value_target = self->v.handle.ptr;
+    scr_dyn_method_value_name = method->name;
     result = ops->invoke(self->v.handle.ptr, self, method->name, args, argc, method->name);
+    scr_dyn_method_value_target = prev_target;
+    scr_dyn_method_value_name = prev_name;
   } else {
     const char *message = method->invalid_this ? method->invalid_this
                           : ops->invalid_this  ? ops->invalid_this
@@ -26449,3 +26455,10 @@ static bool scr_record_reflects_static_probe(const void *rec, bool may_link) {
 bool scr_record_reflects_static(const void *rec, bool may_link) {
   return scr_record_reflects_static_probe(rec, may_link);
 }
+
+/* The native method value whose call is running (see scr_dyn.h): the
+ * handle-class unit sets it around a method value's call, and a handle's
+ * implementation reads it to answer the method instead of a same-named
+ * property that holds that very value. */
+SCR_TL void *scr_dyn_method_value_target = NULL;
+SCR_TL const char *scr_dyn_method_value_name = NULL;

@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/corpus/sqlite-saved-method-rebinding.cjs"
- ],
- "diags": []
-}

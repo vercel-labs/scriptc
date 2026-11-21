@@ -469,7 +469,13 @@ function summarizeTier(rows, key, chapterPolicy) {
     .slice(1)
     .filter((row) => row.scope === "api")
     .map((row) => row[key]);
-  const statuses = new Set(descendants.map((tier) => tier.status));
+  /* A descendant that does not apply cannot make its chapter partial: the
+   * public matrix drops those rows before it derives the chapter status,
+   * so counting them here would report a chapter the public artifact calls
+   * supported as partial. */
+  const statuses = new Set(
+    descendants.map((tier) => tier.status).filter((status) => status !== "not-applicable"),
+  );
   const tests = [...new Set(descendants.flatMap((tier) => tier.tests ?? []))].sort();
   if (statuses.size === 0 && chapterPolicy) {
     return tier(chapterPolicy, "", {

@@ -1,4 +1,14 @@
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
@@ -6,6 +16,7 @@ import { expect, test } from "vitest";
 import { preflight, publishedPackages, releaseNotes } from "../../scripts/release-preflight.mjs";
 import { decide, eligibleRuns, gateBranch } from "../../scripts/release-ci-gate.mjs";
 import { PUBLISHING_JOBS, staleRuns } from "../../scripts/release-supersede.mjs";
+import { payloadDifferences, tarballFiles } from "../../scripts/verify-npm-published.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 
@@ -145,4 +156,80 @@ test("CI on main keeps one group without cancelling, and pull requests keep canc
   };
   expect(ci.concurrency.group).toContain("github.event_name == 'push' && 'main'");
   expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
+});
+
+test("a version npm already holds counts as published only when npm holds this payload", () => {
+  // #4011: 0.4.15's runtime packs were refused as already published, by an
+  // earlier failed attempt from an older commit, and the release counted them
+  // as its own. The publish step now compares the payloads first.
+  const release = load(readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
+    jobs: Record<string, { steps: { id?: string; run?: string }[] }>;
+  };
+  const publish = release.jobs["publish"]!.steps.find((step) => step.id === "publish")!.run!;
+  const exists = publish.indexOf('if npm view "$name@$VERSION" version');
+  const verify = publish.indexOf(
+    'node scripts/verify-npm-published.mjs "$packed" "$name@$VERSION" || return 1',
+  );
+  const accept = publish.indexOf('echo "$name@$VERSION is now public"');
+  expect(exists).toBeGreaterThan(-1);
+  expect(verify).toBeGreaterThan(exists);
+  expect(accept).toBeGreaterThan(verify);
+  // The one place that accepts a version npm already has is that one.
+  expect(publish.split('if npm view "$name@$VERSION"').length).toBe(2);
+
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-npm-verify-test-"));
+  try {
+    const pack = (name: string, files: Record<string, string>, executable: string[] = []) => {
+      const root = join(dir, name);
+      for (const [path, contents] of Object.entries(files)) {
+        mkdirSync(join(root, "package", path, ".."), { recursive: true });
+        writeFileSync(join(root, "package", path), contents);
+        chmodSync(join(root, "package", path), executable.includes(path) ? 0o755 : 0o644);
+        utimesSync(
+          join(root, "package", path),
+          new Date(),
+          new Date(Date.now() - 1000 * name.length),
+        );
+      }
+      const tarball = join(dir, `${name}.tgz`);
+      const tar = spawnSync("tar", ["-czf", tarball, "-C", root, "package"]);
+      expect(tar.status, String(tar.stderr)).toBe(0);
+      return tarballFiles(tarball);
+    };
+    const files = {
+      "package.json": '{"name":"@scriptc/runtime-darwin-arm64","version":"0.4.15"}',
+      "runtime-pack.json": '{"runtime_abi":{"version":51}}',
+      "artifacts/release/libscr.a": "v51",
+      "bin/helper": "#!/bin/sh",
+    };
+    const local = pack("local", files, ["bin/helper"]);
+    // A retry of the same payload passes, whatever the timestamps.
+    expect(payloadDifferences(local, pack("same", files, ["bin/helper"]))).toEqual([]);
+    expect(
+      payloadDifferences(
+        local,
+        pack(
+          "stale",
+          {
+            ...files,
+            "runtime-pack.json": '{"runtime_abi":{"version":48}}',
+            "artifacts/release/libscr.a": "v48",
+            "artifacts/release/old.a": "old",
+          },
+          [],
+        ),
+      ),
+    ).toEqual([
+      "artifacts/release/libscr.a: differs",
+      "artifacts/release/old.a: only on npm",
+      "bin/helper: differs",
+      "runtime-pack.json: differs",
+    ]);
+    const { "bin/helper": _helper, ...withoutHelper } = files;
+    expect(payloadDifferences(local, pack("missing", withoutHelper))).toEqual([
+      "bin/helper: only in this release",
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -840,6 +840,11 @@ import {
 } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
 import {
+  clusterMemberValue,
+  lowerClusterMethodCall,
+  lowerClusterModuleCall,
+} from "./lower-cluster.js";
+import {
   lowerNodeTestModuleCall,
   lowerTestDirectCall,
   lowerTestMethodCall,
@@ -5710,6 +5715,10 @@ export class Lowerer {
    * function when a record replays the unit. */
   readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
+  /** Set when the program names node:cluster: %main then calls
+   * cluster.init and always uses the fork-target dispatch (target -1 is
+   * the entry, the module a worker restarts). */
+  clusterUsed = false;
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
    * parts (members resolve statically); "typeOnly" — a skipped
@@ -6964,6 +6973,13 @@ export class Lowerer {
         "writesOntoChildren",
         () => this.writesOntoChildren,
         () => (this.writesOntoChildren = true),
+      ),
+      // node:cluster: %main calls cluster.init and always uses the fork
+      // dispatch when the program names the module (buildMain).
+      flag(
+        "clusterUsed",
+        () => this.clusterUsed,
+        () => (this.clusterUsed = true),
       ),
       flag(
         "regexGroupResults",
@@ -25396,6 +25412,13 @@ export class Lowerer {
       const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
     }
+    // node:cluster's values are runtime reads (a compiled program can be
+    // a primary or a worker): isPrimary/isWorker/isMaster, the scheduling
+    // policy, settings, workers and the process's own worker handle.
+    if (bi.module === "cluster") {
+      const value = clusterMemberValue(this, bi.member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
     // module.builtinModules through a namespace binding — the baked
@@ -25547,6 +25570,10 @@ export class Lowerer {
    * answers JavaScript-only class/global spellings a box never needs). */
   lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
     const bi = { module, member };
+    if (module === "cluster") {
+      const value = clusterMemberValue(this, member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
@@ -25962,6 +25989,28 @@ export class Lowerer {
     loc: SrcLoc,
   ): IrExpr | null {
     return lowerDgramDnsModuleCall(this, expr, bi, loc);
+  }
+
+  // The cluster spoke (lower-cluster.ts): the module's value reads, its
+  // function calls, and the cluster object's event registration. Worker
+  // members are checked-dynamic calls onto the runtime handle.
+  lowerClusterModuleCall(
+    expr: ts.CallExpression,
+    bi: { module: string; member: string },
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return lowerClusterModuleCall(this, expr, bi, loc);
+  }
+
+  lowerClusterMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerClusterMethodCall(this, call, access);
+  }
+
+  clusterMemberValue(member: string, loc: SrcLoc): IrExpr | null {
+    return clusterMemberValue(this, member, loc);
   }
 
   lowerDgramMethodCall(

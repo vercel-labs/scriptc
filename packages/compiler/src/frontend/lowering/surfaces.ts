@@ -2511,7 +2511,16 @@ export const BUILTIN_MODULE_CONSTS: Record<
   // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
   // in the namespace inventory, and the worker lowering supplies the value.
   worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
-  cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // The boolean members are RUNTIME reads (a compiled program can be
+  // either a primary or a worker): their rows stay here for the namespace
+  // inventory, and lower-cluster.ts claims every read before this table.
+  cluster: {
+    isPrimary: true,
+    isMaster: true,
+    isWorker: false,
+    SCHED_NONE: 1,
+    SCHED_RR: 2,
+  },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
   // string length limit (code units), and the inspect preview width.

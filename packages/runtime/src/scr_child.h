@@ -201,7 +201,7 @@ typedef void (*ScrIpcSendFn)(ScrClosure *cb, ScrError *error);
 ScrChild *scr_spawn(ScrStr *cmd, ScrArr *args); /* +1, never throws */
 ScrChild *scr_fork(double target, ScrArr *args, double in_mode,
                    double out_mode, double err_mode, bool has_env,
-                   ScrArr *env_pairs, ScrStr *cwd); /* +1 */
+                   ScrArr *env_pairs, ScrStr *cwd, double uid, double gid); /* +1 */
 /* The options form (cp.spawnOpts): PER-SLOT stdio modes — 0 = ignore
  * (/dev/null), 1 = inherit, 2 = fd (out/err only: out_fd/err_fd dup2
  * into the child's slot, the openSync daemon-log idiom), 3 = pipe
@@ -285,6 +285,16 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* node:cluster's internal protocol messages ({ cmd: "NODE_CLUSTER" })
+ * travel on the same channel as user messages but are delivered to the
+ * cluster unit instead of the program's 'message' listeners. The hooks are
+ * installed once by scr_cluster_init; without them every message is a user
+ * message, so a program that never names cluster keeps this unit's default
+ * path. */
+typedef bool (*ScrClusterIsInternalFn)(const ScrDyn *message);
+typedef void (*ScrClusterDispatchFn)(ScrChild *child, ScrDyn *message);
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch);
 /* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
  * child (whose entry is null), as Node's own stdio array reports. */
 double scr_child_stdio_len(ScrChild *c);

@@ -216,6 +216,8 @@ export function lowerBuiltinCall(
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;
   }
+  const clusterServed = lowerer.lowerClusterModuleCall(expr, bi, loc);
+  if (clusterServed) return clusterServed;
   const served = lowerer.lowerNetModuleCall(expr, bi, loc);
   if (served) return served;
   const dgramServed = lowerer.lowerDgramDnsModuleCall(expr, bi, loc);

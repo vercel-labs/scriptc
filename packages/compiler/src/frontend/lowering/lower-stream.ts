@@ -7253,12 +7253,13 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
     );
   }
   const options = args[1];
+  let flags = 0;
   if (options !== undefined) {
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
         "Readable.toWeb options that are not an object literal",
         options,
-        "pass no options, or an empty object literal",
+        "pass { type } as an object literal",
       );
     }
     for (const member of options.properties.nodes) {
@@ -7269,20 +7270,49 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
           : null;
       if (key === "type" && ts.isPropertyAssignment(member)) {
         const t = lowerer.typeOf(member.initializer);
-        if (t.isStringLiteralType() && t.value === "bytes") {
-          lowerer.noLowering(
-            "Readable.toWeb with type: 'bytes'",
-            member,
-            "a byte stream has no lowering yet; omit the option",
+        if (t.isStringLiteralType()) {
+          if (t.value === "bytes") {
+            flags |= 1;
+            continue;
+          }
+          return nodeThrowExpr(
+            1,
+            "ERR_INVALID_ARG_VALUE",
+            `The property 'options.type' must be one of: 'bytes', undefined. Received '${t.value}'`,
+            DYN,
+            loc,
           );
         }
+        if (member.initializer.kind === ts.SyntaxKind.NullKeyword) {
+          return nodeThrowExpr(
+            1,
+            "ERR_INVALID_ARG_VALUE",
+            "The property 'options.type' must be one of: 'bytes', undefined. Received null",
+            DYN,
+            loc,
+          );
+        }
+        if (member.initializer.kind === ts.SyntaxKind.NumericLiteral) {
+          return nodeThrowExpr(
+            1,
+            "ERR_INVALID_ARG_VALUE",
+            `The property 'options.type' must be one of: 'bytes', undefined. Received ${(member.initializer as ts.NumericLiteral).text}`,
+            DYN,
+            loc,
+          );
+        }
+        lowerer.noLowering(
+          "the Readable.toWeb option 'type' with this value",
+          member,
+          'write "bytes" or omit it',
+        );
       }
       lowerer.noLowering(
         key === null
           ? "Readable.toWeb options with this member"
           : `the Readable.toWeb option '${key}'`,
         member,
-        "the supported form is Readable.toWeb(readable)",
+        "the supported form is Readable.toWeb(readable, { type: 'bytes' })",
       );
     }
   }
@@ -7304,7 +7334,7 @@ function lowerReadableToWeb(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
   return {
     kind: "libCall",
     fn: readable.type.kind === "dyn" ? "webstream.toWebReadableDyn" : "webstream.toWebReadable",
-    args: [readable, numLit(0, loc)],
+    args: [readable, numLit(flags, loc)],
     type: DYN,
     loc,
   };

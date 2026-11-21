@@ -17,6 +17,11 @@ struct StwCtx {
   size_t rc;
   ScrStream *readable; /* +1 until the source drops it */
   bool cancelled;
+  /* A type: "bytes" stream: a chunk larger than the pending read's view
+   * keeps its tail here for the next read. */
+  bool byte_mode;
+  size_t read_limit;
+  ScrBytes *remainder; /* +1 */
 };
 
 static StwCtx *stw_ref(StwCtx *c) {
@@ -27,6 +32,7 @@ static StwCtx *stw_ref(StwCtx *c) {
 static void stw_unref(StwCtx *c) {
   if (--c->rc > 0) return;
   if (c->readable) scr_stream_release(c->readable);
+  if (c->remainder) scr_bytes_release(c->remainder);
   free(c);
 }
 
@@ -104,7 +110,30 @@ static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
     r->sink->close(r->sink_ctx);
   } else {
     ScrDyn *chunk = stw_detach_chunk(r->ctx, value);
-    r->sink->chunk(r->sink_ctx, chunk);
+    bool split = false;
+    if (r->ctx->byte_mode && chunk->kind == SCR_DYN_BYTES && chunk->v.bytes != NULL) {
+      /* A byte stream's view may be smaller than the chunk: deliver what it
+       * holds and keep the tail for the next read. */
+      ScrBytes *bytes = chunk->v.bytes;
+      size_t limit = r->ctx->read_limit;
+      r->ctx->read_limit = 0;
+      if (limit > 0 && bytes->len > limit) {
+        /* The delivered head's buffer may be transferred into the view, so
+         * the tail is a copy of its own, not a view of that buffer. */
+        ScrBytes *tail = scr_bytes_new(SCR_BYTES_U8, (double)(bytes->len - limit));
+        memcpy(tail->data, bytes->data + limit, bytes->len - limit);
+        tail->is_buffer = false;
+        ScrBytes *head = scr_bytes_subarray(bytes, 0, (double)limit);
+        if (r->ctx->remainder) scr_bytes_release(r->ctx->remainder);
+        r->ctx->remainder = tail;
+        ScrDyn *head_dyn = scr_dyn_new_bytes(head);
+        r->sink->chunk(r->sink_ctx, head_dyn);
+        scr_dyn_release(head_dyn);
+        scr_bytes_release(head);
+        split = true;
+      }
+    }
+    if (!split) r->sink->chunk(r->sink_ctx, chunk);
     if (chunk != value) scr_dyn_release(chunk);
   }
   scr_dyn_release(end);
@@ -128,6 +157,25 @@ static ScrDyn *stw_on_error(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
  * adapter enqueues each 'data' chunk), answered through the sink. */
 static bool stw_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
   StwCtx *c = ctx;
+  if (c->byte_mode && c->remainder != NULL && c->remainder->len > 0) {
+    size_t want = c->read_limit > 0 && c->read_limit < c->remainder->len ? c->read_limit
+                                                                       : c->remainder->len;
+    ScrBytes *tail = NULL;
+    if (want < c->remainder->len) {
+      tail = scr_bytes_new(SCR_BYTES_U8, (double)(c->remainder->len - want));
+      memcpy(tail->data, c->remainder->data + want, c->remainder->len - want);
+      tail->is_buffer = false;
+    }
+    ScrBytes *head = scr_bytes_subarray(c->remainder, 0, (double)want);
+    scr_bytes_release(c->remainder);
+    c->remainder = tail;
+    c->read_limit = 0;
+    ScrDyn *chunk = scr_dyn_new_bytes(head);
+    sink->chunk(sink_ctx, chunk);
+    scr_dyn_release(chunk);
+    scr_bytes_release(head);
+    return true;
+  }
   ScrPromise *p = scr_stream_next_chunk_dyn_single(c->readable);
   if (!p) return false; /* the read reported its own error; the caller drops */
   StwRead *r = stw_read_new(c, sink, sink_ctx);
@@ -167,7 +215,11 @@ static ScrPromise *stw_cancel(void *ctx, ScrDyn *reason) {
 
 static void stw_release(void *ctx) { stw_unref((StwCtx *)ctx); }
 
-static const ScrWebStreamSource stw_source = {stw_read_into, stw_cancel, stw_release};
+/* The pending read's view size: the next read asks for no more than it. */
+static void stw_set_read_limit(void *ctx, size_t bytes) { ((StwCtx *)ctx)->read_limit = bytes; }
+
+static const ScrWebStreamSource stw_source = {stw_read_into, stw_cancel, stw_release,
+                                              stw_set_read_limit};
 
 /* The adapter's own 'error' listener: Node's toWeb keeps an eos watcher on
  * the readable, which is what stops a lifecycle error (a cancel reason
@@ -191,13 +243,15 @@ static void stw_watch_errors(ScrStream *s) {
 /* Readable.toWeb(readable[, options]): the web ReadableStream (+1). flags'
  * bit 1 asks for a byte stream (options.type === 'bytes'). */
 ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags) {
-  (void)flags;
   StwCtx *c = calloc(1, sizeof *c);
   if (!c) abort();
   c->rc = 1;
+  c->byte_mode = ((int)flags & 1) != 0;
   c->readable = scr_stream_retain(s);
   stw_watch_errors(s);
-  return scr_webstream_readable_over(&stw_source, c); /* the stream takes the context's reference */
+  /* the stream takes the context's reference */
+  return c->byte_mode ? scr_webstream_bytes_over(&stw_source, c)
+                      : scr_webstream_readable_over(&stw_source, c);
 }
 
 /* Readable.toWeb over a checked-dynamic value: a boxed native readable

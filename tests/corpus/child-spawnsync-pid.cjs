@@ -14,3 +14,9 @@ console.log("captured", captured.pid > 0, JSON.stringify(captured.stdout.trim())
 
 const killed = childProcess.spawnSync("sh", ["-c", "kill -TERM $$"]);
 console.log("killed", killed.pid > 0, killed.status, killed.signal);
+
+// A result reached through an untyped value reads the same member.
+function pidOf(result) {
+  return result.pid;
+}
+console.log("through a value", typeof pidOf(ran), pidOf(ran) > 0, pidOf(missing), pidOf(killed) > 0);

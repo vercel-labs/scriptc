@@ -8807,6 +8807,7 @@ static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
     return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
                                        : scr_dyn_new_null();
   }
+  if (len == 3 && memcmp(key, "pid", 3) == 0) return scr_dyn_new_num(scr_spawn_res_pid(r));
   if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
   if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
   if (len == 6 && memcmp(key, "signal", 6) == 0) {

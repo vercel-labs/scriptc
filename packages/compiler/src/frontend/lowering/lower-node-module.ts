@@ -19,6 +19,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   NULL_T,
   STRING,
   UNDEFINED_T,
@@ -206,7 +207,7 @@ export function isNodeModuleHandle(lowerer: Lowerer, node: ts.Node): boolean {
 }
 
 /** Whether `type` is the `Module` class the standard library declares. */
-function isNodeModuleType(lowerer: Lowerer, type: ts.Type): boolean {
+export function isNodeModuleType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   const symbol = type.getSymbol();
   return (
@@ -549,7 +550,20 @@ export function lowerRequireMainProperty(
   )
     return null;
   const entryId = lowerer.cjsModuleIdOf.get(lowerer.entry);
-  const raw = entryId === undefined ? numLit(-1, locOf(expr)) : numLit(entryId, locOf(expr));
+  const loc = locOf(expr);
+  // JavaScript types `require.main` as `any`: Node's Module object, the same
+  // one `module.children[i]` answers, so identity comparisons hold.
+  if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
+    if (entryId === undefined) return dynUndefined(loc);
+    return {
+      kind: "libCall",
+      fn: "module.dynObject",
+      args: [numLit(entryId, loc)],
+      type: DYN,
+      loc,
+    };
+  }
+  const raw = entryId === undefined ? numLit(-1, loc) : numLit(entryId, loc);
   return lowerer.maybeNarrow(optionalModule(lowerer, expr, raw, "undefined"), expr);
 }
 
@@ -639,6 +653,16 @@ export function lowerNodeModuleIdentifier(lowerer: Lowerer, expr: ts.Identifier)
   if (!isCjsModuleGlobal(lowerer, expr)) return null;
   const ref = cjsModuleRef(lowerer, expr);
   if (ref) {
+    // In JavaScript the identifier is itself a value (`child.parent ===
+    // module`, `module === require.main`), and Node compares objects: answer
+    // the checked-dynamic view of this module, the same object its children
+    // and `require.main` answer.
+    if (
+      (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) &&
+      ref.type.kind === "f64"
+    ) {
+      return { kind: "libCall", fn: "module.dynObject", args: [ref], type: DYN, loc: locOf(expr) };
+    }
     if (!keepsModuleTyped(lowerer, expr)) untypedModuleValueFence(lowerer, expr);
     return ref;
   }
@@ -658,6 +682,21 @@ function moduleArmOf(lowerer: Lowerer, type: IrType): IrType {
   if (type.kind !== "union") return type;
   const arms = lowerer.unions.get(type.unionId)?.arms.filter((arm) => !isUnitType(arm)) ?? [];
   return arms.length === 1 ? arms[0]! : type;
+}
+
+/** Whether the checker gives this expression `any` (an untyped JavaScript
+ * position, where Node's object itself is the value). */
+function isAnyTyped(lowerer: Lowerer, node: ts.Expression): boolean {
+  return (lowerer.typeOf(node).flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** The checked-dynamic undefined value, for a branch of a dynamic ternary. */
+function dynUndefined(loc: SrcLoc): IrExpr {
+  return { kind: "dynFrom", value: unitUndefined(loc), type: DYN, loc };
+}
+
+function unitUndefined(loc: SrcLoc): IrExpr {
+  return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
 }
 
 export function lowerNodeModuleProperty(
@@ -685,6 +724,11 @@ export function lowerNodeModuleProperty(
   let moduleRef = direct
     ? cjsModuleRef(lowerer, expr.expression)
     : lowerer.lowerExpr(expr.expression);
+  // A binding that holds a module view in checked-dynamic storage reads as
+  // the view itself: the checker's handle type must not narrow the read back
+  // to a number before the member is chosen.
+  if (moduleRef && moduleRef.kind === "dynCheck" && moduleRef.value.type.kind === "dyn")
+    moduleRef = moduleRef.value;
   if (moduleRef?.type.kind === "union") {
     // `module.parent` is `ScriptcModule | null | undefined`; the module arm
     // is the only non-unit arm, and it is the one every field read wants.
@@ -702,6 +746,19 @@ export function lowerNodeModuleProperty(
         loc: locOf(expr.expression),
       };
     }
+  }
+  if (moduleRef && moduleRef.type.kind === "dyn") {
+    // A JavaScript binding holds the checked-dynamic Module object (an alias
+    // of `module`, `require.main` or `module.children[i]`), so its members
+    // read from that object.
+    const memberLoc = locOf(expr);
+    return {
+      kind: "dynKeyGet",
+      value: moduleRef,
+      key: strLit(member, memberLoc),
+      type: DYN,
+      loc: memberLoc,
+    };
   }
   if (!moduleRef || moduleRef.type.kind !== "f64") return null;
   const loc = locOf(expr);
@@ -726,16 +783,28 @@ export function lowerNodeModuleProperty(
     case "paths":
       return call("module.paths", arrayOf(STRING));
     case "children":
-      return call("module.children", arrayOf(F64));
+      // JavaScript reads the CommonJS `module` global as `{ exports }`, so
+      // the member is `any`: Node's array of Module objects as checked
+      // values, where `children[i].id` and identity comparisons answer what
+      // Node answers (the static handle array is for typed programs).
+      return isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)
+        ? { kind: "libCall", fn: "module.dynChildren", args: [moduleRef], type: DYN, loc }
+        : call("module.children", arrayOf(F64));
     case "loaded":
       return call("module.loaded", BOOL);
     case "isPreloading":
       return boolLit(false, loc);
-    case "parent":
+    case "parent": {
+      if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
+        // The runtime keeps Node's two absent cases apart: the entry is
+        // `null` and a module with no CommonJS parent is `undefined`.
+        return { kind: "libCall", fn: "module.dynParent", args: [moduleRef], type: DYN, loc };
+      }
       return lowerer.maybeNarrow(
         optionalModule(lowerer, expr, call("module.parent", F64), "parent"),
         expr,
       );
+    }
     default:
       lowerer.noLowering(
         `module.${member}`,

@@ -438,6 +438,7 @@
           "tests/corpus/5523-assert-class-options.js",
           "tests/corpus/5524-assert-class-skip-prototype.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/node24-no-error-assertions-coercion.js",
           "tests/corpus/node24-no-error-assertions.cjs",
           "tests/corpus/node24-no-error-assertions.ts",
@@ -706,16 +707,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -844,16 +842,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.doesNotMatch",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -968,16 +963,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1000,16 +992,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1064,16 +1053,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.match",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -1220,16 +1206,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.ok",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -2093,7 +2076,11 @@
           "tests/corpus/7389-als-http2-secure-events.mjs",
           "tests/corpus/7391-als-response-end-and-finished.mjs",
           "tests/corpus/async-hooks-execution-ids.cjs",
-          "tests/corpus/async-local-storage-audit.cjs"
+          "tests/corpus/async-hooks-execution-resource.cjs",
+          "tests/corpus/async-local-storage-audit.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs",
+          "tests/corpus/async-resource-worker-exit.cjs",
+          "tests/corpus/async-resource.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -2231,8 +2218,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:async_hooks.AsyncResource",
+        "tests": [
+          "tests/corpus/async-resource.cjs",
+          "tests/corpus/async-resource-destroy-scope.cjs",
+          "tests/corpus/async-resource-worker-exit.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2306,7 +2299,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.init",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2332,7 +2326,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.type",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2358,7 +2353,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.triggerAsyncId",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2384,7 +2380,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.resource",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2433,7 +2430,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.before",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2459,7 +2457,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.after",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2485,7 +2484,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.destroy",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2511,7 +2511,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.promiseResolve",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2586,8 +2587,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:async_hooks"
+        "status": "partial",
+        "evidence": "compiler-feature:async_hooks.async_hooks.executionAsyncResource",
+        "tests": [
+          "tests/corpus/async-hooks-execution-resource.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -2612,7 +2616,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.async_hooks.executionAsyncId",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -2638,7 +2643,8 @@
         "status": "partial",
         "evidence": "compiler-feature:async_hooks.async_hooks.triggerAsyncId",
         "tests": [
-          "tests/corpus/async-hooks-execution-ids.cjs"
+          "tests/corpus/async-hooks-execution-ids.cjs",
+          "tests/corpus/async-hooks-execution-resource.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -19706,6 +19712,7 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-table-options.ts",
           "tests/corpus/console-method-format.ts",
           "tests/corpus/console-method-values.ts",
           "tests/corpus/console-native-value.js",
@@ -19844,7 +19851,8 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
-          "tests/corpus/console-instance-inspect-options.ts"
+          "tests/corpus/console-instance-inspect-options.ts",
+          "tests/corpus/console-instance-table-options.ts"
         ]
       },
       "anchorSource": "exact"
@@ -28231,16 +28239,13 @@
       "anchor": "dep0094-using-assertfail-with-more-than-one-argument",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert.fail",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"
@@ -30387,7 +30392,8 @@
           "tests/corpus/2160-dc-tracing-channel.cjs",
           "tests/corpus/2211-dc-trace-promise.cjs",
           "tests/corpus/2214-dc-bind-store.cjs",
-          "tests/corpus/diagnostics-channel-audit.cjs"
+          "tests/corpus/diagnostics-channel-audit.cjs",
+          "tests/corpus/diagnostics-channel-console.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -30805,8 +30811,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.log'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30828,8 +30837,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.info'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30851,8 +30863,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.debug'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30874,8 +30889,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.warn'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -30897,8 +30915,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "status": "partial",
+        "evidence": "compiler-feature:diagnostics_channel.'console.error'",
+        "tests": [
+          "tests/corpus/diagnostics-channel-console.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -31473,7 +31494,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:start'"
       },
       "anchorSource": "exact"
     },
@@ -31496,7 +31517,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:end'"
       },
       "anchorSource": "exact"
     },
@@ -31519,7 +31540,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.require:error'"
       },
       "anchorSource": "exact"
     },
@@ -31542,7 +31563,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:asyncStart'"
       },
       "anchorSource": "exact"
     },
@@ -31565,7 +31586,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:asyncEnd'"
       },
       "anchorSource": "exact"
     },
@@ -31588,7 +31609,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:diagnostics_channel"
+        "evidence": "compiler-feature:diagnostics_channel.'tracing:module.import:error'"
       },
       "anchorSource": "exact"
     },
@@ -47243,6 +47264,8 @@
           "tests/corpus/fs-filehandle-data-options.ts",
           "tests/corpus/fs-filehandle-lines.ts",
           "tests/corpus/fs-filehandle-web-stream.ts",
+          "tests/corpus/fs-lchmod-typed.ts",
+          "tests/corpus/fs-lchmod.cjs",
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
@@ -47634,8 +47657,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pull"
       },
       "anchorSource": "exact"
     },
@@ -47657,8 +47680,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.pullSync"
       },
       "anchorSource": "exact"
     },
@@ -48122,8 +48145,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.filehandle.writer"
       },
       "anchorSource": "exact"
     },
@@ -48429,8 +48452,12 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.fsPromises.lchmod",
+        "tests": [
+          "tests/corpus/fs-lchmod.cjs",
+          "tests/corpus/fs-lchmod-typed.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49762,8 +49789,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmod"
       },
       "anchorSource": "exact"
     },
@@ -51445,8 +51472,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:fs.fs.lchmodSync"
       },
       "anchorSource": "exact"
     },
@@ -72150,7 +72177,9 @@
           "tests/corpus/2860-require-resolve/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-alias-values/main.cjs",
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -72182,7 +72211,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72237,7 +72267,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72269,7 +72300,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72301,7 +72333,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72355,7 +72388,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72438,7 +72472,8 @@
         "evidence": "compiler-feature:modules.cache",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72493,7 +72528,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72547,7 +72583,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72574,7 +72611,8 @@
         "evidence": "compiler-feature:modules.children",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72606,7 +72644,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72638,7 +72677,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -72670,7 +72710,8 @@
           "tests/corpus/2830-cjs-require-self-name/main.cjs",
           "tests/corpus/2880-cjs-module-graph/main.cjs",
           "tests/corpus/2923-cjs-factory-export/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/cjs-module-alias-values/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72697,7 +72738,8 @@
         "evidence": "compiler-feature:modules.id",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72724,7 +72766,8 @@
         "evidence": "compiler-feature:modules.isPreloading",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72751,7 +72794,8 @@
         "evidence": "compiler-feature:modules.loaded",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72778,7 +72822,8 @@
         "evidence": "compiler-feature:modules.parent",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72805,7 +72850,8 @@
         "evidence": "compiler-feature:modules.path",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72832,7 +72878,8 @@
         "evidence": "compiler-feature:modules.paths",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -72859,7 +72906,8 @@
         "evidence": "compiler-feature:modules.Module",
         "tests": [
           "tests/corpus/2880-cjs-module-graph/main.cjs",
-          "tests/corpus/cjs-module-object-metadata/main.cjs"
+          "tests/corpus/cjs-module-object-metadata/main.cjs",
+          "tests/corpus/module-children-dynamic-fields/main.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -73245,6 +73293,8 @@
           "tests/corpus/2934-static-import-stored.ts",
           "tests/corpus/2935-module-namespace-values/main.ts",
           "tests/corpus/950-modules-basic/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
           "tests/corpus/node24-esm-metadata/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
@@ -73269,11 +73319,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.meta",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73323,11 +73375,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.dirname",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73351,11 +73405,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.filename",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73379,11 +73435,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.url",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -73407,11 +73465,13 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:esm.main",
         "tests": [
           "tests/corpus/2701-import-meta/main.mjs",
           "tests/corpus/node24-esm-metadata/main.mjs",
+          "tests/corpus/esm-import-meta-object/main.ts",
+          "tests/corpus/esm-import-meta-object-js/main.mjs",
           "tests/fixtures/node-types/esm-metadata.mts"
         ]
       },
@@ -74395,6 +74455,7 @@
         "status": "partial",
         "evidence": "derived:descendants",
         "tests": [
+          "packages/compiler/test/find-package-json.test.ts",
           "tests/corpus/2631-create-require/main.ts",
           "tests/corpus/2637-create-require-bare/main.ts",
           "tests/corpus/2675-create-require-nested-esm.js",
@@ -74404,6 +74465,7 @@
           "tests/corpus/module-compile-cache-entry.mjs",
           "tests/corpus/module-compile-cache-require.cjs",
           "tests/corpus/module-compile-cache-values.mjs",
+          "tests/corpus/module-find-package-json/main.ts",
           "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/harness/module-compile-cache.test.ts",
           "tests/harness/npm-static.test.ts"
@@ -74472,10 +74534,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:module.module.findPackageJSON",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/module-find-package-json/main.ts",
+          "packages/compiler/test/find-package-json.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -81072,6 +81135,7 @@
           "tests/corpus/perf-entry-globals.cjs",
           "tests/corpus/perf-entry-object-tag.ts",
           "tests/corpus/perf-event-loop-utilization.ts",
+          "tests/corpus/perf-histogram-inference.ts",
           "tests/corpus/perf-hooks-event-loop-histogram.ts",
           "tests/corpus/perf-hooks-now-arguments.cjs",
           "tests/corpus/perf-hooks-observer.ts",
@@ -81086,6 +81150,7 @@
           "tests/corpus/perf-observer-delivers-at-exit.ts",
           "tests/corpus/perf-observer-family.ts",
           "tests/corpus/perf-performance-tojson.ts",
+          "tests/corpus/perf-sliding-window-histogram.ts",
           "tests/corpus/perf-supported-entry-types.ts",
           "tests/fixtures/node-types/event-loop-metrics.ts"
         ]
@@ -83391,8 +83456,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.meanCI",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83471,8 +83539,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.percentileCI",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -83568,8 +83639,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.histogram.welchTest",
+        "tests": [
+          "tests/corpus/perf-histogram-inference.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84374,8 +84448,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.SlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84397,8 +84474,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.record",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84420,8 +84500,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.reset",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84443,8 +84526,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.slidingWindowHistogram.snapshot",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -84495,8 +84581,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:perf_hooks"
+        "status": "supported",
+        "evidence": "compiler-feature:perf_hooks.perf_hooks.createSlidingWindowHistogram",
+        "tests": [
+          "tests/corpus/perf-sliding-window-histogram.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -91933,8 +92022,10 @@
           "tests/corpus/sqlite-limits.ts",
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-return-arrays.ts",
+          "tests/corpus/sqlite-row-values.ts",
           "tests/corpus/sqlite-serialize.ts",
           "tests/corpus/sqlite-sessions.ts",
+          "tests/corpus/sqlite-statement-results.ts",
           "tests/corpus/sqlite-tag-store.ts",
           "tests/corpus/sqlite-user-functions.ts"
         ]
@@ -92685,7 +92776,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92738,7 +92831,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92768,7 +92863,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92798,7 +92895,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92828,7 +92927,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92858,7 +92959,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92888,7 +92991,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92918,7 +93023,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92948,7 +93055,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92978,7 +93087,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93008,7 +93119,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93038,7 +93151,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93068,7 +93183,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93098,7 +93215,9 @@
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-iterate.ts",
           "tests/corpus/sqlite-return-arrays.ts",
-          "tests/corpus/sqlite-errors.ts"
+          "tests/corpus/sqlite-errors.ts",
+          "tests/corpus/sqlite-statement-results.ts",
+          "tests/corpus/sqlite-row-values.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -98527,16 +98646,13 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
           "tests/corpus/5810-mock-method-records.ts",
           "tests/corpus/5811-mock-tracker-restore.ts",
           "tests/corpus/5813-mock-timers-module.ts",
           "tests/corpus/5814-mock-timers-date.ts",
           "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts",
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
@@ -99281,16 +99397,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:assert",
         "tests": [
           "tests/corpus/1600-assert-passing.ts",
-          "tests/corpus/1604-assert-deep-structures.ts",
-          "tests/corpus/1609-assert-async.ts",
           "tests/corpus/1721-assert-throws-regex-class.ts",
-          "tests/corpus/2936-static-loose-equality.ts",
-          "tests/corpus/5515-assert-deep-strict-typed-messages.ts",
-          "tests/corpus/assert-fail-deprecated-overloads.cjs"
+          "tests/corpus/assert-fail-deprecated-overloads.cjs",
+          "tests/corpus/assert-message-forms.ts"
         ]
       },
       "anchorSource": "exact"

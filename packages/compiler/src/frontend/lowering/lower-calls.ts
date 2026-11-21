@@ -1,3 +1,4 @@
+import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -248,6 +249,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
+import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
 import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
@@ -1173,6 +1175,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
             consoleMember === "log" || consoleMember === "info" || consoleMember === "debug",
             `console.${consoleMember}`,
             loc,
+            undefined,
+            lowerer.usesDiagnosticsChannel() ? consoleMember : undefined,
           )
         : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
     return receiver === null
@@ -2183,8 +2187,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramStatsMethodCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
+      lowerSlidingWindowMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??

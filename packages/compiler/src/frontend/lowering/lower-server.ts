@@ -4797,6 +4797,7 @@ function lowerH2StreamMethodCall(
       length = -1,
       wait = false;
     let check: IrExpr | null = null;
+    let onError: IrExpr | null = null;
     const options = args.length >= 3 ? args[2]! : undefined;
     if (options !== undefined) {
       if (!ts.isObjectLiteralExpression(options)) {
@@ -4849,6 +4850,28 @@ function lowerH2StreamMethodCall(
               "pass a function: statCheck: (stat, headers) => boolean",
             );
           }
+        } else if (key === "onError") {
+          // Node calls onError(err) instead of failing the stream when the
+          // open/stat fails.
+          const fnValue = lowerer.lowerExpr(init);
+          if (fnValue.type.kind === "dyn") {
+            onError = fnValue;
+          } else if (
+            fnValue.type.kind === "func" &&
+            canBoxFuncIntoDyn(
+              fnValue.type,
+              (id) => lowerer.shapes.get(id),
+              (id) => lowerer.unions.get(id),
+            )
+          ) {
+            onError = { kind: "dynFrom", value: fnValue, type: DYN, loc: locOf(init) };
+          } else {
+            lowerer.noLowering(
+              "an onError value that is not a function",
+              init,
+              "pass a function: onError: (err) => void",
+            );
+          }
         } else if (key === "waitForTrailers") {
           if (init.kind === ts.SyntaxKind.TrueKeyword) wait = true;
           else if (init.kind === ts.SyntaxKind.FalseKeyword) wait = false;
@@ -4875,6 +4898,7 @@ function lowerH2StreamMethodCall(
           num(length),
           boolLit(wait, loc),
           check ?? dynUndefinedExpr(loc),
+          onError ?? dynUndefinedExpr(loc),
         ],
         type: VOID,
         loc,
@@ -4892,6 +4916,7 @@ function lowerH2StreamMethodCall(
         num(length),
         boolLit(wait, loc),
         check ?? dynUndefinedExpr(loc),
+        onError ?? dynUndefinedExpr(loc),
       ],
       type: VOID,
       loc,

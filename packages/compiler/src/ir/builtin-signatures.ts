@@ -3702,11 +3702,11 @@ function buildLibFnSignatures() {
     "http2.streamPending": { argTypes: [HTTP2STREAM_T], result: BOOL },
     /** ...statCheck: the trailing slot is the (stat, headers) callback. */
     "http2.streamRespondWithFile": {
-      argTypes: [HTTP2STREAM_T, STRING, arrayOf(STRING), F64, F64, BOOL, DYN],
+      argTypes: [HTTP2STREAM_T, STRING, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
       result: VOID,
     },
     "http2.streamRespondWithFD": {
-      argTypes: [HTTP2STREAM_T, F64, arrayOf(STRING), F64, F64, BOOL, DYN],
+      argTypes: [HTTP2STREAM_T, F64, arrayOf(STRING), F64, F64, BOOL, DYN, DYN],
       result: VOID,
     },
     "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },

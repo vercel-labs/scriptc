@@ -1383,9 +1383,62 @@ static void scr_h2_stream_fire_close(ScrH2Stream *st) {
 
 static void scr_h2_stream_want_trailers(ScrH2Stream *st);
 
-static bool scr_h2_proto_pending(void) { return scr_h2_emits_head < scr_h2_emits_len; }
+/* The peer's HTTP/2 window is not the only bound on a file response: the
+ * socket's own write backlog is. A pump that would push the transport
+ * past this cap stops, and the sweep retries it once the backlog drains
+ * (Node's file pipe pauses on the stream's backpressure the same way). */
+#define SCR_H2_FILE_BACKLOG_BYTES (64.0 * 1024.0)
+static SCR_TL ScrH2Stream **scr_h2_file_wait = NULL;
+static SCR_TL size_t scr_h2_file_wait_n = 0, scr_h2_file_wait_cap = 0;
+
+static void scr_h2_stream_flush(ScrH2Stream *st);
+static void scr_h2_file_block(ScrH2Stream *st) {
+  for (size_t i = 0; i < scr_h2_file_wait_n; i++) {
+    if (scr_h2_file_wait[i] == st) return;
+  }
+  if (scr_h2_file_wait_n == scr_h2_file_wait_cap) {
+    scr_h2_file_wait_cap = scr_h2_file_wait_cap ? scr_h2_file_wait_cap * 2 : 4;
+    scr_h2_file_wait = realloc(scr_h2_file_wait, scr_h2_file_wait_cap * sizeof *scr_h2_file_wait);
+    if (!scr_h2_file_wait) scr_h2_oom();
+  }
+  scr_h2_file_wait[scr_h2_file_wait_n++] = scr_http2_stream_retain(st);
+}
+
+static void scr_h2_file_wait_drop(size_t i) {
+  scr_http2_stream_release(scr_h2_file_wait[i]);
+  memmove(scr_h2_file_wait + i, scr_h2_file_wait + i + 1,
+          (scr_h2_file_wait_n - i - 1) * sizeof *scr_h2_file_wait);
+  scr_h2_file_wait_n--;
+}
+
+/* Retry the pumps stopped by the transport backlog, as the sweep's turn. */
+static void scr_h2_file_retry(void) {
+  for (size_t i = 0; i < scr_h2_file_wait_n;) {
+    ScrH2Stream *st = scr_h2_file_wait[i];
+    if (st->destroyed || st->close_queued || st->file_fd < 0 || st->file_remaining <= 0) {
+      scr_h2_file_wait_drop(i);
+      continue;
+    }
+    ScrH2Session *sess = st->sess;
+    if (sess->sock == NULL || !scr_h2_sock_alive(sess) ||
+        scr_net_sock_writable_length(sess->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
+      i++;
+      continue;
+    }
+    scr_http2_stream_retain(st);
+    scr_h2_file_wait_drop(i);
+    scr_h2_stream_flush(st);
+    scr_http2_stream_release(st);
+  }
+}
+
+static bool scr_h2_proto_pending(void) {
+  return scr_h2_emits_head < scr_h2_emits_len || scr_h2_file_wait_n > 0;
+}
 
 static void scr_h2_proto_sweep(void) {
+  scr_h2_file_retry();
+  if (scr_exc_pending()) return;
   while (scr_h2_emits_head < scr_h2_emits_len) {
     ScrH2Emit e = scr_h2_emits[scr_h2_emits_head++];
     ScrAlsCtx *prev = scr_als_dispatch_enter(
@@ -1478,6 +1531,10 @@ static void scr_h2_cleanup_atexit(void) {
   free(scr_h2_emits);
   scr_h2_emits = NULL;
   scr_h2_emits_head = scr_h2_emits_len = scr_h2_emits_cap = 0;
+  for (size_t i = 0; i < scr_h2_file_wait_n; i++) scr_http2_stream_release(scr_h2_file_wait[i]);
+  free(scr_h2_file_wait);
+  scr_h2_file_wait = NULL;
+  scr_h2_file_wait_n = scr_h2_file_wait_cap = 0;
 }
 
 static const ScrHttpH2Ops scr_h2_compat_ops;
@@ -2602,8 +2659,10 @@ static const char *scr_h2_errno_name(int e) {
 
 /* Node reports a failed respondWithFile/respondWithFD open/read as the raw
  * fs error on the stream, then resets it with NGHTTP2_INTERNAL_ERROR. */
-static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action,
-                                    const char *path, size_t pathlen) {
+/* Node's ErrnoException message for a failed file open/stat ("ENOENT: no
+ * such file or directory, open '<path>'"), +1; `code` comes back borrowed. */
+static ScrStr *scr_h2_file_error_message(int err, const char *action, const char *path,
+                                          size_t pathlen, const char **code) {
   const char *name = scr_h2_errno_name(err);
   const char *text = strerror(err);
   char lower[160];
@@ -2623,9 +2682,17 @@ static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action
     scr_h2_buf_put(&msg, "'", 1);
   }
   ScrStr *m = scr_str_new(msg.data, msg.len);
+  free(msg.data);
+  *code = name;
+  return m;
+}
+
+static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action,
+                                    const char *path, size_t pathlen) {
+  const char *name = NULL;
+  ScrStr *m = scr_h2_file_error_message(err, action, path, pathlen, &name);
   ScrError *e = scr_error_from_event_message(m);
   scr_error_set_code(e, name);
-  free(msg.data);
   scr_h2_err_override = e;
   scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
   scr_h2_err_override = NULL;
@@ -2675,6 +2742,10 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
   ScrH2Session *s = st->sess;
   size_t max_frame = s->peer_max_frame ? s->peer_max_frame : SCR_H2_DEFAULT_MAX_FRAME;
   while (st->file_remaining > 0 && !st->destroyed) {
+    if (s->sock != NULL && scr_net_sock_writable_length(s->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
+      scr_h2_file_block(st);
+      return false;
+    }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
     if (window <= 0) return false;
     size_t chunk = (size_t)window;
@@ -2727,6 +2798,7 @@ typedef struct ScrH2FileCall {
   double offset, length;
   bool wait_trailers;
   ScrDyn *check;      /* +1; the statCheck callable, nullable */
+  ScrDyn *on_error;   /* +1; the onError callback, nullable */
 } ScrH2FileCall;
 
 static void *scr_h2_file_call_retain(void *p) {
@@ -2742,6 +2814,7 @@ static void scr_h2_file_call_release(void *p) {
   scr_str_release(c->path);
   scr_arr_release(c->pairs);
   scr_dyn_release(c->check);
+  scr_dyn_release(c->on_error);
   free(c);
 }
 
@@ -2815,6 +2888,30 @@ static bool scr_h2_pairs_has(ScrArr *pairs, const char *name) {
   return false;
 }
 
+/* Node's onError: the program's callback answers a failed open/stat
+ * instead of a stream 'error'. False when none is set. */
+static bool scr_h2_file_on_error(ScrH2FileCall *c, int err, const char *action, const char *path,
+                                  size_t pathlen) {
+  if (c->on_error == NULL || c->on_error->kind == SCR_DYN_NULL ||
+      c->on_error->kind == SCR_DYN_UNDEF) {
+    return false;
+  }
+  const char *code = NULL;
+  ScrStr *m = scr_h2_file_error_message(err, action, path, pathlen, &code);
+  ScrError *e = scr_error_from_event_message(m);
+  scr_error_set_code(e, code);
+  scr_str_release(m);
+  ScrDyn *arg = scr_dyn_from_error(e);
+  scr_error_release(e);
+  ScrDyn *args[1] = { arg };
+  ScrDyn *result = scr_dyn_call(c->on_error, args, 1, "onError");
+  scr_dyn_release(result);
+  scr_dyn_release(arg);
+  scr_dyn_release(c->on_error);
+  c->on_error = NULL;
+  return true;
+}
+
 static void scr_h2_file_call_cleanup(ScrH2FileCall *c) {
   scr_h2_file_call_release(c);
 }
@@ -2834,7 +2931,9 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     fd = scr_h2_open_read(cpath);
     if (fd < 0) {
       int err = errno;
-      scr_h2_stream_fail_file(st, err, "open", cpath, strlen(cpath));
+      if (!scr_h2_file_on_error(c, err, "open", cpath, strlen(cpath))) {
+        scr_h2_stream_fail_file(st, err, "open", cpath, strlen(cpath));
+      }
       scr_str_utf8_end(owned);
       scr_h2_file_call_cleanup(c);
       return;
@@ -2858,7 +2957,9 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
   if (!stat_ok) {
     int err = errno;
     if (owns) scr_h2_close_fd(fd);
-    scr_h2_stream_fail_file(st, err, "fstat", cpath, cpath != NULL ? strlen(cpath) : 0);
+    if (!scr_h2_file_on_error(c, err, "fstat", cpath, cpath != NULL ? strlen(cpath) : 0)) {
+      scr_h2_stream_fail_file(st, err, "fstat", cpath, cpath != NULL ? strlen(cpath) : 0);
+    }
     scr_str_utf8_end(owned);
     scr_h2_file_call_cleanup(c);
     return;
@@ -2962,7 +3063,8 @@ static void scr_h2_file_call_defer(ScrH2FileCall *c) {
 void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
                                        ScrArr *pairs /*borrowed, nullable*/, double offset,
                                        double length, bool wait_trailers,
-                                       ScrDyn *check /*moves, nullable*/) {
+                                       ScrDyn *check /*borrowed, nullable*/,
+                                       ScrDyn *on_error /*borrowed, nullable*/) {
   if (st->destroyed || st->respond_sent) {
     return;
   }
@@ -2982,12 +3084,14 @@ void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed
   c->length = length;
   c->wait_trailers = wait_trailers;
   c->check = check != NULL ? scr_dyn_retain(check) : NULL;
+  c->on_error = on_error != NULL ? scr_dyn_retain(on_error) : NULL;
   scr_h2_file_call_defer(c);
 }
 
 void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
                                       double offset, double length, bool wait_trailers,
-                                      ScrDyn *check /*moves, nullable*/) {
+                                      ScrDyn *check /*borrowed, nullable*/,
+                                      ScrDyn *on_error /*borrowed, nullable*/) {
   if (st->destroyed || st->respond_sent) {
     return;
   }
@@ -3002,6 +3106,7 @@ void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs 
   c->length = length;
   c->wait_trailers = wait_trailers;
   c->check = check != NULL ? scr_dyn_retain(check) : NULL;
+  c->on_error = on_error != NULL ? scr_dyn_retain(on_error) : NULL;
   scr_h2_file_call_defer(c);
 }
 

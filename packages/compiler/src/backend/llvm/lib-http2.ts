@@ -229,14 +229,13 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.streamRespondWithFD": {
       // The trailing statCheck value crosses as a checked-dynamic callable;
       // without one the runtime sees no check.
-      const check = args[6];
       return finishRuntimeCall(
         host,
         e,
         e.fn === "http2.streamRespondWithFile"
           ? "scr_http2_stream_respond_with_file"
           : "scr_http2_stream_respond_with_fd",
-        [...a.slice(0, 6), check !== undefined ? a[6]! : ptr()],
+        [...a.slice(0, 8)],
       );
     }
     case "http2.sessionClose":

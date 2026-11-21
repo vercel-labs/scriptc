@@ -133,10 +133,12 @@ void scr_http2_stream_respond(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullabl
 void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
                                        ScrArr *pairs /*borrowed, nullable*/, double offset,
                                        double length, bool wait_trailers,
-                                       ScrDyn *check /*borrowed, nullable*/);
+                                       ScrDyn *check /*borrowed, nullable*/,
+                                       ScrDyn *on_error /*borrowed, nullable*/);
 void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
                                       double offset, double length, bool wait_trailers,
-                                      ScrDyn *check /*borrowed, nullable*/);
+                                      ScrDyn *check /*borrowed, nullable*/,
+                                      ScrDyn *on_error /*borrowed, nullable*/);
 /* respond(headers, { endStream, waitForTrailers }): a waiting response's
  * HEADERS carries no END_STREAM; the trailer block ends the stream after
  * 'wantTrailers'. */

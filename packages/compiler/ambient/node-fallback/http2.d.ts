@@ -664,6 +664,7 @@ declare module "http2" {
         length?: number;
         waitForTrailers?: boolean;
         statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
       },
     ): void;
     respondWithFD(
@@ -674,6 +675,7 @@ declare module "http2" {
         length?: number;
         waitForTrailers?: boolean;
         statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
       },
     ): void;
     pushStream(

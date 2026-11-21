@@ -240,14 +240,21 @@ Environment:
   SCRIPTC_SANDBOX_SNAPSHOT  Optional prepared snapshot with the pinned toolchain (exclusive with IMAGE)
   SCRIPTC_SANDBOX_NATIVE_REFERENCE  Optional built checkout inside the snapshot; its LLVM helper
                             and runtime pack are reused when their inputs are identical
-  SCRIPTC_SANDBOX_VCPUS     vCPUs per sandbox (default: 8)
-  SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 45m)
+  SCRIPTC_SANDBOX_VCPUS     vCPUs per corpus sandbox (default: 8)
+  SCRIPTC_SANDBOX_NATIVE_VCPUS  vCPUs per native bootstrap sandbox (default: 32, 64 GB)
+  SCRIPTC_SANDBOX_TIMEOUT   sandbox lifetime (default: 150m) and the wall limit of
+                            commands that are not a native preparation step
+                            (a test command is capped at 90m)
+  SCRIPTC_SANDBOX_NATIVE_TIMEOUT  limit for one native preparation step, the LLVM helper,
+                            the runtime pack, or the libnode pack (default: 20m)
   SCRIPTC_TEST_WORKERS      Vitest workers per sandbox (default: 4)
   SCRIPTC_LOCAL_TEST_WORKERS Vitest workers per local lane (default: 2)
   SCRIPTC_LOCAL_CASE_SHARDS local shards per external suite lane (default: 2)
-  SCRIPTC_LIBNODE           Optional libnode pack inside the Sandbox (for example
-                            /vercel/sandbox/libnode-pack) that the lane exports, so the
-                            Node island tests run there as they do in CI`);
+  SCRIPTC_LIBNODE           Libnode pack inside the Sandbox for the Node island tests.
+                            Defaults to the pinned development pack this runner fetches
+                            into /tmp/scriptc-libnode-pack; set it to name a pack inside
+                            a prepared snapshot instead, so the lane exports that one
+                            and the pack is not fetched again`);
   process.exit(0);
 }
 
@@ -256,8 +263,50 @@ const nativeReference = sandboxNativeReference();
 const bootstrapCommand = sandboxBootstrapCommand(sourceConfig.prepared);
 const vercelConfig = sandboxVercelConfig();
 const vercelProcessEnv = sandboxVercelEnvironment(vercelConfig);
-const { vcpus, testWorkers, localTestWorkers, localCaseShards, sandboxTimeout, sandboxTimeoutMs } =
-  sandboxRunnerConfig();
+const {
+  vcpus,
+  nativeVcpus,
+  testWorkers,
+  localTestWorkers,
+  localCaseShards,
+  sandboxTimeout,
+  sandboxTimeoutMs,
+  nativeTimeoutMs,
+} = sandboxRunnerConfig();
+
+// The remote lanes run with CI=1, where the Node island tests require a
+// libnode pack instead of skipping (tests/harness/libnode.ts, as CI's
+// .github/actions/libnode provides). A pack named here lives inside a
+// prepared snapshot; without one the runner fetches the pinned development
+// pack into the Sandbox during preparation, so the managed image runs those
+// tests as well.
+const configuredLibnode = process.env.SCRIPTC_LIBNODE?.trim() ?? "";
+const libnodePack = configuredLibnode || "/tmp/scriptc-libnode-pack";
+
+/** The environment every remote test command of one lane receives. */
+const sandboxLaneTestEnv = (lane) => ({
+  ...sandboxLaneEnv(lane, { ...process.env, SCRIPTC_LIBNODE: libnodePack }),
+  // Platform artifact contracts run against the native host; remote lanes
+  // retain every portable behavior assertion.
+  SCRIPTC_PORTABLE_ONLY: "1",
+  ...(lane === "san"
+    ? {
+        // Match the macOS shipping lane: Apple ASan has no LeakSanitizer,
+        // while scriptc's RC audit owns leak detection (including its
+        // intentional-abandonment rules).
+        ASAN_OPTIONS: "detect_leaks=0",
+      }
+    : {}),
+});
+// The native steps print a line per flavor, not per translation unit. The
+// longest silent phase measured on Nov 13 is the PGO speed flavor at 116
+// seconds; five minutes of silence still means a stuck build.
+const nativeIdleTimeoutMs = Math.min(nativeTimeoutMs, 5 * 60_000);
+// One test command keeps a tighter wall limit than the Sandbox's lifetime: a
+// command that keeps printing must not be allowed to run for the whole lane,
+// while the Sandbox itself has to stay alive through the preparation barrier
+// and its shard.
+const testStepTimeoutMs = Math.min(sandboxTimeoutMs, 90 * 60_000);
 
 if (!["plain", "san", "both"].includes(values.lane)) {
   throw new Error(`--lane must be plain, san, or both (got ${values.lane})`);
@@ -300,6 +349,23 @@ const workers = lanes.flatMap((lane) =>
     };
   }),
 );
+// The native bootstrap builds the compiler with the compiler. CI runs it as
+// its own job, never beside the corpus, and gives the sanitized emitter a
+// swapfile because instrumenting and then compiling the compiler needs more
+// memory than a test runner has. Each lane gets its own Sandbox for it:
+// co-scheduled with the corpus workers it competes for the same memory and is
+// killed in its seed build.
+const nativeWorkers = lanes.map((lane) => ({
+  lane,
+  label: `${lane} native`,
+  name: `scriptc-${lane}-native-${nonce}`,
+  native: true,
+  // The sanitized emitter peaks near 13 GB and then has clang compile the
+  // result; a 16 GB Sandbox with the same swapfile CI uses was still killed
+  // in rebuild-emit, and a 64 GB one completes it.
+  vcpus: nativeVcpus,
+}));
+const allSandboxes = [...workers, ...nativeWorkers];
 const created = new Set();
 const children = new Set();
 let cleanupPromise;
@@ -671,7 +737,7 @@ async function createWorker(worker) {
     "--timeout",
     sandboxTimeout,
     "--vcpus",
-    vcpus,
+    worker.vcpus ?? vcpus,
     "--non-persistent",
   ];
   // Sandbox creation is rate limited per team in vCPUs per minute, so a
@@ -740,13 +806,13 @@ async function uploadArchive(worker, archive) {
   }
 }
 
-async function allWorkers(phase, task, concurrency = workers.length) {
+async function allWorkers(phase, task, concurrency = workers.length, group = workers) {
   const started = Date.now();
-  console.log(`\n${phase} (${workers.length} sandboxes)...`);
+  console.log(`\n${phase} (${group.length} sandboxes)...`);
   const results = [];
-  for (let offset = 0; offset < workers.length; offset += concurrency) {
+  for (let offset = 0; offset < group.length; offset += concurrency) {
     results.push(
-      ...(await Promise.allSettled(workers.slice(offset, offset + concurrency).map(task))),
+      ...(await Promise.allSettled(group.slice(offset, offset + concurrency).map(task))),
     );
   }
   const failures = results.filter((result) => result.status === "rejected");
@@ -820,22 +886,22 @@ let failure;
 try {
   await preflight();
   console.log(
-    `Running ${lanes.join("+")} corpus lanes in ${workers.length} ${vcpus}-vCPU sandboxes from ${sourceConfig.reference} (${shardCount} shards/lane).`,
+    `Running ${lanes.join("+")} corpus lanes in ${workers.length} ${vcpus}-vCPU sandboxes from ${sourceConfig.reference} (${shardCount} shards/lane), plus ${nativeWorkers.length} native bootstrap sandboxes.`,
   );
   console.log("Packing the exact tracked + untracked, non-ignored worktree...");
   await createArchive(archive);
 
   const remote = (async () => {
-    await allWorkers("Creating", async (worker) => {
-      created.add(worker.name);
-      await createWorker(worker);
-    });
-
-    await allWorkers("Uploading worktree", (worker) => uploadArchive(worker, archive), 8);
-
+    // Each Sandbox is created when its own preparation starts. A Sandbox's
+    // lifetime runs from creation, and with more Sandboxes than the
+    // preparation concurrency the first ones would otherwise spend their
+    // budget waiting for the last wave to finish preparing.
     await allWorkers(
       "Preparing worktree",
       async (worker) => {
+        created.add(worker.name);
+        await createWorker(worker);
+        await uploadArchive(worker, archive);
         if (bootstrapCommand) {
           await execIn(
             worker,
@@ -879,19 +945,39 @@ try {
         // Resetting the source tree removes dist but preserves node_modules,
         // including TypeScript's incremental metadata. Rebuild both together.
         await execIn(worker, "pnpm", ["build:fresh"], {}, "", 2 * 60_000);
+        if (!configuredLibnode) {
+          await execIn(
+            worker,
+            "node",
+            ["packages/libnode-common/fetch-dev-pack.mjs", "--out", libnodePack],
+            {},
+            "libnode pack",
+            nativeTimeoutMs,
+            "/workspace",
+            nativeIdleTimeoutMs,
+          );
+        }
         // Workspace builds deliberately do not rebuild packaged native artifacts.
         // Every remote lane needs the Linux helper and runtime from this worktree,
         // built from its sources or reused from a reference checkout whose
         // native inputs are identical.
-        await execIn(worker, ...nativeArtifactCommand("llvm"), {}, "LLVM helper", 5 * 60_000);
+        await execIn(
+          worker,
+          ...nativeArtifactCommand("llvm"),
+          {},
+          "LLVM helper",
+          nativeTimeoutMs,
+          "/workspace",
+          nativeIdleTimeoutMs,
+        );
         await execIn(
           worker,
           ...nativeArtifactCommand("runtime"),
           { CC: "zig", AR: "zig" },
           "runtime pack",
-          5 * 60_000,
+          nativeTimeoutMs,
           "/workspace",
-          3 * 60_000,
+          nativeIdleTimeoutMs,
         );
         // Keep Zig available to the portable compiler bootstrap and entropy
         // contract, without expanding the conditional cross-target cache tests.
@@ -911,25 +997,39 @@ try {
           "runtime toolchain cleanup",
           60_000,
         );
+        if (worker.native) {
+          // CI backs the sanitized emitter with a 24 GB swapfile. The seed
+          // build emits the compiler under AddressSanitizer and then has
+          // clang compile the result, which needs more than the Sandbox's
+          // memory; without swap it is killed.
+          await execIn(
+            worker,
+            "sh",
+            [
+              "-c",
+              [
+                "set -eu",
+                "sudo swapoff -a || true",
+                "sudo rm -f /mnt/swapfile",
+                "sudo fallocate -l 24G /mnt/swapfile",
+                "sudo chmod 600 /mnt/swapfile",
+                "sudo mkswap /mnt/swapfile >/dev/null",
+                "sudo swapon /mnt/swapfile",
+                "free -h",
+              ].join("\n"),
+            ],
+            {},
+            "native swap",
+            nativeTimeoutMs,
+          );
+        }
       },
-      sourceConfig.prepared ? workers.length : 8,
+      sourceConfig.prepared ? allSandboxes.length : 8,
+      allSandboxes,
     );
 
-    await allWorkers("Testing", async (worker) => {
-      const sharedTestEnv = {
-        ...sandboxLaneEnv(worker.lane),
-        // Platform artifact contracts run against the native host below.
-        // Remote lanes retain every portable behavior assertion.
-        SCRIPTC_PORTABLE_ONLY: "1",
-        ...(worker.lane === "san"
-          ? {
-              // Match the macOS shipping lane: Apple ASan has no
-              // LeakSanitizer, while scriptc's RC audit owns leak
-              // detection (including its intentional-abandonment rules).
-              ASAN_OPTIONS: "detect_leaks=0",
-            }
-          : {}),
-      };
+    const corpusTesting = allWorkers("Testing", async (worker) => {
+      const sharedTestEnv = sandboxLaneTestEnv(worker.lane);
       const workerCaseFiles = [
         ...laneCaseShardedFiles,
         ...(worker.lane === onceLane ? invariantCaseShardedFiles : []),
@@ -953,6 +1053,7 @@ try {
             SCRIPTC_LLVM_TEST_MODE: "dev",
           },
           "cases",
+          testStepTimeoutMs,
         );
       const files = () =>
         execIn(
@@ -979,6 +1080,7 @@ try {
             SCRIPTC_TEST_WORKERS: fileWorkers,
           },
           "files",
+          testStepTimeoutMs,
         );
       const cacheCases = () =>
         execIn(
@@ -995,9 +1097,26 @@ try {
             SCRIPTC_TEST_WORKERS: "1",
           },
           "cache",
+          testStepTimeoutMs,
         );
-      const nativeBuild = () =>
-        execIn(
+      // The corpus owns the remaining pool while file/cache processes share
+      // the reserved side slots (serially when only one slot is available).
+      const sideTasks = [files, ...(runCacheCases ? [cacheCases] : [])];
+      if (sideConcurrency === 0) {
+        await cases();
+        await runTaskQueue(sideTasks, 1);
+      } else {
+        await Promise.all([cases(), runTaskQueue(sideTasks, sideConcurrency)]);
+      }
+    });
+
+    // The native bootstrap builds the compiler with the compiler, in a
+    // Sandbox of its own per lane: CI runs it as its own job, and beside the
+    // corpus it is killed in its seed build. It runs while the shards test.
+    const nativeTesting = allWorkers(
+      "Testing native bootstrap",
+      async (worker) => {
+        await execIn(
           worker,
           "sh",
           [
@@ -1009,23 +1128,15 @@ try {
             "--reporter=dot",
             ...nativeBuildFiles,
           ],
-          { ...sharedTestEnv, SCRIPTC_TEST_WORKERS: "1" },
-          "native bootstrap",
+          { ...sandboxLaneTestEnv(worker.lane), SCRIPTC_TEST_WORKERS: "1" },
+          "bootstrap",
+          testStepTimeoutMs,
         );
-      // The corpus owns the remaining pool while file/cache processes share
-      // the reserved side slots (serially when only one slot is available).
-      const sideTasks = [
-        ...(worker.shard === 1 ? [nativeBuild] : []),
-        files,
-        ...(runCacheCases ? [cacheCases] : []),
-      ];
-      if (sideConcurrency === 0) {
-        await cases();
-        await runTaskQueue(sideTasks, 1);
-      } else {
-        await Promise.all([cases(), runTaskQueue(sideTasks, sideConcurrency)]);
-      }
-    });
+      },
+      nativeWorkers.length,
+      nativeWorkers,
+    );
+    await Promise.all([corpusTesting, nativeTesting]);
 
     if (hostSchedule.remoteArtifactContracts) {
       const contractWorker = workers.find(
@@ -1049,6 +1160,7 @@ try {
           SCRIPTC_TEST_WORKERS: fileWorkers,
         },
         "host artifact contracts",
+        testStepTimeoutMs,
       );
     }
   })();

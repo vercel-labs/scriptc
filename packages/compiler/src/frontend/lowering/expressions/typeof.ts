@@ -43,9 +43,8 @@ import { varRef } from "../../../ir/build.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { InternalCompilerError } from "../../../errors.js";
 import {
+  ambientErasedValueSymbolOf,
   ambientTypesOnlyGlobalSymbolOf,
-  ambientUndefinedFnSymbolOf,
-  ambientUndefinedVarSymbolOf,
   isNodeUndefinedGlobalRoot,
   nodeUndefinedGlobalProperty,
 } from "../lower-namespaces.js";
@@ -448,17 +447,37 @@ function lowerTypeofAnswer(
     if (isNodeUndefinedGlobalRoot(lowerer, tested, sym)) {
       return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
-    // A name the program declares ambiently but nothing defines
-    // (`declare const Bun`, `declare function f(): void`): Node erases the
-    // declaration, so typeof answers "undefined" without reading it, where
-    // a read throws ReferenceError.
+    // A name the program only DECLARES — an initializer-less ambient
+    // variable or body-less function, a `declare class`, `declare
+    // namespace` (a `declare global` augmentation included), a `declare
+    // enum`, or a global only a types-only package declares — has no
+    // runtime binding: typeof an unresolvable reference answers
+    // "undefined" and never throws, so no value read (and certainly no
+    // ReferenceError) may be emitted. A program that may have installed
+    // the name on the global object answers that property at run time
+    // instead, because an unbound identifier read consults the global
+    // object.
     if (
-      ambientUndefinedVarSymbolOf(lowerer, tested) ||
-      ambientUndefinedFnSymbolOf(lowerer, tested) ||
-      (ambientTypesOnlyGlobalSymbolOf(lowerer, tested) &&
-        !programMayWriteGlobalName(lowerer, tested.text, tested))
+      ambientErasedValueSymbolOf(lowerer, tested) ||
+      ambientTypesOnlyGlobalSymbolOf(lowerer, tested)
     ) {
-      return { kind: "strLit", value: "undefined", type: STRING, loc };
+      if (!programMayWriteGlobalName(lowerer, tested.text, tested))
+        return { kind: "strLit", value: "undefined", type: STRING, loc };
+      return {
+        kind: "libCall",
+        fn: "dyn.typeof",
+        args: [
+          {
+            kind: "libCall",
+            fn: "global.bindingValue",
+            args: [{ kind: "strLit", value: tested.text, type: STRING, loc }],
+            type: DYN,
+            loc,
+          },
+        ],
+        type: STRING,
+        loc,
+      };
     }
     // `const { inspect } = require("util")` / `import { inspect } from
     // "node:util"`: a binding of a builtin module's exported function,

@@ -32,6 +32,35 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     openssl req -new -key embedded-key.pem -out embedded.csr -subj "/CN=embedded pem" -config embedded.cnf
     openssl x509 -req -in embedded.csr -CA ca.pem -CAkey ca-key.pem -set_serial 4242 -out embedded.pem -days 36500 -extfile embedded.cnf -extensions ext
 
+`crl-leaf.pem`/`crl-leaf-key.pem` is a localhost leaf signed by `ca.pem` through the `openssl ca` database, and the `crl-*.pem` files are CRLs for that CA (one per verification outcome) plus `crl-untrusted.pem`, a CRL signed by `ca2.pem`. They are minted in a throwaway CA directory that copies `ca.pem`/`ca-key.pem`, so the committed `ca.srl` is untouched:
+
+    mkdir -p ca-db/newcerts && cp ca.pem ca-key.pem ca-db/
+    : > ca-db/index.txt && echo 1000 > ca-db/serial && echo 1000 > ca-db/crlnumber
+    # ca-db/ca.cnf: database/new_certs_dir/certificate/private_key/serial/crlnumber point at ca-db,
+    # x509_extensions=leaf_ext (localhost SAN, serverAuth), crl_extensions=crl_ext
+    openssl ecparam -genkey -name prime256v1 -noout -out crl-leaf-key.pem
+    openssl req -new -key crl-leaf-key.pem -subj "/CN=localhost" -out crl-leaf.csr
+    openssl ca -batch -config ca-db/ca.cnf -in crl-leaf.csr -out crl-leaf.pem -notext
+    openssl ca -config ca-db/ca.cnf -revoke crl-leaf.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20300101000000Z -out crl-revoked.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20210101000000Z -out crl-expired.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -crl_lastupdate 20270101000000Z -crl_nextupdate 20370101000000Z -out crl-future.pem
+    openssl ca -config ca-db/ca.cnf -gencrl -out crl-badsig.pem   # then flip one signature byte, as with badsig.pem
+    # crl-untrusted.pem repeats -gencrl in a second ca-db directory that copies ca2.pem/ca2-key.pem
+
+`crl-clean.pem` is the same valid-window CRL from a copy of the CA database with the revocation entry removed: an empty list, so the leaf verifies.
+
+`int-ca.pem`/`int-ca-key.pem`, `int-leaf.pem`/`int-leaf-key.pem` and the `int-*crl*.pem` files are the intermediate-chain CRL fixtures: a CA certificate signed by `ca.pem`, a localhost leaf signed by that intermediate, a root-issued CRL that revokes the intermediate (`int-crl-revoked.pem`) and its clean counterpart, plus a clean CRL issued by the intermediate for its leaf (`int-leaf-crl-clean.pem`). They are minted with `openssl ca` in throwaway CA directories that copy the fixture keys:
+
+    # root CA directory (copies ca.pem/ca-key.pem); issue int-ca with CA:TRUE, then:
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-clean.pem
+    openssl ca -config root-db/ca.cnf -revoke int-ca.pem
+    openssl ca -config root-db/ca.cnf -gencrl -out int-crl-revoked.pem
+    # intermediate CA directory (copies int-ca.pem/int-ca-key.pem); no revocations:
+    openssl ca -config int-db/ca.cnf -gencrl -out int-leaf-crl-clean.pem
+
+`int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs. `ca.srl` is untouched (the databases live in copies).
+
 `future.pem`/`future-key.pem` is a self-signed localhost certificate whose validity starts in 2027, for the CERT_NOT_YET_VALID shape: a client that trusts it through `ca` still fails verification because the window has not begun. The date is fixed, so the differential lane passes until 2037 and then starts failing like any expired fixture would:
 
     openssl ecparam -genkey -name prime256v1 -noout -out future-key.pem

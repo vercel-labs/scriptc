@@ -3212,6 +3212,21 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
     return false;
   }
   if (!scr_tls_opts_validate(opts)) return false; /* Node's typed errors first */
+  /* Node's Server constructor rejects the ALPN callback and protocol list
+   * together before it builds its own context. */
+  if (server_ok) {
+    const ScrDyn *alpn_cb = scr_dyn_obj_get(opts, "ALPNCallback", 12);
+    const ScrDyn *alpn_protocols = scr_dyn_obj_get(opts, "ALPNProtocols", 13);
+    if (alpn_cb != NULL && alpn_cb->kind != SCR_DYN_UNDEF && scr_tls_dyn_truthy(alpn_cb) &&
+        alpn_protocols != NULL && alpn_protocols->kind != SCR_DYN_UNDEF &&
+        scr_tls_dyn_truthy(alpn_protocols)) {
+      static const char msg[] =
+          "The ALPNCallback and ALPNProtocols TLS options are mutually exclusive";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1,
+                               "ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS");
+      return false;
+    }
+  }
   /* Snapshot the member names before any getter runs. A getter may delete an
    * earlier member, and the delete compacts the record: an index taken
    * across the getter calls would then skip the member that slid into place
@@ -3802,8 +3817,12 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
       continue;
     }
     if (strcmp(e.key, "secureContext") == 0) {
-      scr_tls_opt_fence(api, "secureContext",
-                        "secureContext lowers as a member of an options object literal");
+      /* A checked-dynamic record cannot carry a SecureContext handle;
+       * Node rejects any other value with ERR_TLS_INVALID_CONTEXT (null
+       * and undefined read as absent). */
+      if (e.value->kind == SCR_DYN_NULL || e.value->kind == SCR_DYN_UNDEF) continue;
+      static const char msg[] = "context must be a SecureContext";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_TLS_INVALID_CONTEXT");
       return NULL;
     }
     for (size_t k = 0; SCR_TLS_WRAP_FENCED_OPTIONS[k] != NULL; k++) {

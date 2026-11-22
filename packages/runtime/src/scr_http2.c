@@ -2088,8 +2088,16 @@ static void scr_h2_on_data_in(void *ctx, const char *buf, size_t n) {
     /* A frame past the SETTINGS_MAX_FRAME_SIZE this side advertised is a
      * connection error of type FRAME_SIZE_ERROR, decided on the eight-byte
      * header: the payload is never buffered. */
-    uint32_t recv_max = s->npending > 0 ? s->pending[s->npending - 1].after.max_frame_size
-                                        : s->local_settings.max_frame_size;
+    /* A reduction of SETTINGS_MAX_FRAME_SIZE only applies once the peer
+     * acknowledges it (RFC 9113 6.5.3): until then the peer may keep
+     * sending frames the previous, larger limit allowed. The enforced
+     * limit is therefore the largest acknowledged-or-pending value this
+     * side has advertised. */
+    uint32_t recv_max = s->local_settings.max_frame_size;
+    for (size_t i = 0; i < s->npending; i++) {
+      if (s->pending[i].after.max_frame_size > recv_max)
+        recv_max = s->pending[i].after.max_frame_size;
+    }
     if (recv_max == 0) recv_max = SCR_H2_DEFAULT_MAX_FRAME;
     if (len > (size_t)recv_max) {
       scr_h2_send_goaway(s, 6 /* NGHTTP2_FRAME_SIZE_ERROR */);

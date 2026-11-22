@@ -567,6 +567,13 @@ jobs:
     needs: [check-release, registry-smoke]
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' && needs.registry-smoke.result == 'success'
+    # One promotion at a time across runs, so one run's check of latest and
+    # its dist-tag update cannot interleave with another's: a release that
+    # finds a newer latest leaves it. Of the promotions that wait meanwhile,
+    # GitHub keeps only the newest pending one.
+    concurrency:
+      group: release-promote
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: Release

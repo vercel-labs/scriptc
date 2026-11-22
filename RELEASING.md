@@ -42,7 +42,8 @@ release's version, and build and run a hello-world program
 (`scripts/release-registry-smoke.mjs`). Only when every platform passes does
 the `promote` job point `latest` at the release (`scriptc` last; it never
 moves `latest` back to an older release, so a retried promotion of a
-superseded release changes nothing), and only
+superseded release changes nothing; promotions of different runs take turns
+in one concurrency group), and only
 then does the GitHub release, which marks the version complete, get created.
 A release that fails before `latest` moves leaves users on the previous
 release.

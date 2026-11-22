@@ -248,6 +248,7 @@ type ReleaseJob = {
   needs?: string[];
   if?: string;
   environment?: string;
+  concurrency?: { group: string; "cancel-in-progress": boolean };
   permissions?: Record<string, string>;
   strategy?: { matrix: { include: { platform: string; runner: string }[] } };
   steps: {
@@ -371,6 +372,11 @@ test("promoting a release never moves latest back to an older one", () => {
   expect(decide).toBeGreaterThan(-1);
   expect(move.indexOf('move) npm dist-tag add "$name@$VERSION" latest ;;')).toBeGreaterThan(decide);
   expect(move.match(/npm dist-tag add/g)).toHaveLength(1);
+  // Promotions of different runs never interleave their check and their update.
+  expect(releaseWorkflow().jobs["promote"]!.concurrency).toEqual({
+    group: "release-promote",
+    "cancel-in-progress": false,
+  });
 });
 
 test("the Windows registry smoke test installs Zig, which scriptc links Windows executables with", () => {

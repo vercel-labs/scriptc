@@ -3447,6 +3447,11 @@ void scr_process_exit_dyn(const ScrDyn *code) {
  * attribute monotonic stamp — the binary's own start, which is what
  * "the current Node.js process" means for a compiled program). */
 #ifdef _WIN32
+/* Node's performance.now() and process.uptime() read libuv's hrtime, which is
+ * QueryPerformanceCounter on Windows. GetTickCount64 moves in steps of the
+ * system timer (15.6 ms by default), so a frame loop paced by
+ * performance.now(), or an animation timed by it, advanced in those steps. */
+static double scr_uptime_now_ms(void) { return (double)scr_hrtime_ns() / 1e6; }
 #if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 /* The uptime anchor belongs to the host PROCESS, not to a library
  * instance. InitOnce keeps the lazy Windows spelling race-free when
@@ -3458,7 +3463,7 @@ static BOOL CALLBACK scr_uptime_anchor_once(PINIT_ONCE once, PVOID param,
   (void)once;
   (void)param;
   (void)ctx;
-  scr_uptime_t0_ms = (double)GetTickCount64();
+  scr_uptime_t0_ms = scr_uptime_now_ms();
   return TRUE;
 }
 static void scr_uptime_anchor_init(void) {
@@ -3466,9 +3471,8 @@ static void scr_uptime_anchor_init(void) {
 }
 #else
 static SCR_TL double scr_uptime_t0_ms;
-static void scr_uptime_anchor_init(void) { scr_uptime_t0_ms = (double)GetTickCount64(); }
+static void scr_uptime_anchor_init(void) { scr_uptime_t0_ms = scr_uptime_now_ms(); }
 #endif
-static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
 #else
 #include <sys/resource.h>
 #include <sys/time.h>

@@ -1,0 +1,12 @@
+{
+    "node-builtin.perf_hooks": ["tests/corpus/957-builtins-namespace.ts"],
+    "node-builtin.perf_hooks.performance.mark": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5213-perf-timing-errors.ts", "tests/corpus/5214-perf-entry-inspect.ts", "tests/corpus/5215-perf-timing-validation.js"],
+    "node-builtin.perf_hooks.performance.measure": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5213-perf-timing-errors.ts", "tests/corpus/5214-perf-entry-inspect.ts", "tests/corpus/5215-perf-timing-validation.js"],
+    "node-builtin.perf_hooks.performance.getEntries": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5214-perf-entry-inspect.ts", "tests/corpus/5215-perf-timing-validation.js"],
+    "node-builtin.perf_hooks.performance.clearMarks": ["tests/corpus/5212-perf-marks-measures.ts", "tests/corpus/5213-perf-timing-errors.ts", "tests/corpus/5215-perf-timing-validation.js"],
+    "node-builtin.perf_hooks.performance.clearMeasures": ["tests/corpus/5212-perf-marks-measures.ts"],
+    "node-builtin.perf_hooks.performance.eventLoopUtilization": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
+    "node-builtin.perf_hooks.monitorEventLoopDelay": ["tests/corpus/6397-event-loop-metrics.ts", "tests/fixtures/node-types/event-loop-metrics.ts"],
+    "node-builtin.perf_hooks.PerformanceMark": ["tests/corpus/perf-entry-classes.ts", "tests/corpus/perf-entry-constructors.cjs"],
+    "node-builtin.perf_hooks.PerformanceObserver": ["tests/corpus/perf-observer-family.ts", "tests/corpus/perf-observer-delivers-at-exit.ts", "tests/corpus/perf-entry-classes.ts", "tests/corpus/perf-entry-constructors.cjs"]
+}

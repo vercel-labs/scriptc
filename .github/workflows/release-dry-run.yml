@@ -81,6 +81,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
+      # The SHA-256 of every file the native and libnode artifacts carry, so two
+      # dry runs (two pipelines on one commit, or one pipeline twice) can be
+      # compared file by file: diff their release-content-sha256 artifacts.
+      - name: Record the artifacts' contents
+        run: |
+          (cd native-artifacts && find . -type f -print0 | sort -z | xargs -0 sha256sum) > "$RUNNER_TEMP/release-content-sha256.txt"
+          (cd libnode-artifacts && find . -type f -print0 | sort -z | xargs -0 sha256sum | sed 's#  \./#  libnode/#') >> "$RUNNER_TEMP/release-content-sha256.txt"
+          wc -l < "$RUNNER_TEMP/release-content-sha256.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-content-sha256
+          path: ${{ runner.temp }}/release-content-sha256.txt
+          retention-days: 30
       - name: Install and build
         run: |
           pnpm install --frozen-lockfile
@@ -117,12 +130,25 @@ jobs:
               continue
             fi
             name=$(node -p "require('./$pkg/package.json').name")
-            if ! tarball=$(cd "$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP/packed" --silent | tail -1); then
+            # pnpm's exit status decides, not the last line of its output: a
+            # pipe into tail would report tail's status and hide a failed pack.
+            if ! packed=$(cd "$pkg" && pnpm pack --pack-destination "$RUNNER_TEMP/packed" --silent); then
               echo "::error::$name did not pack"
               failed=1
               continue
             fi
+            tarball=$(printf '%s\n' "$packed" | tail -1)
+            if [ -z "$tarball" ]; then
+              echo "::error::$name did not report a tarball"
+              failed=1
+              continue
+            fi
             tarball="$RUNNER_TEMP/packed/$(basename "$tarball")"
+            if [ ! -f "$tarball" ]; then
+              echo "::error::$name: pnpm pack reported $tarball, which does not exist"
+              failed=1
+              continue
+            fi
             case "$pkg" in
               packages/llvm-darwin-*|packages/llvm-linux-*)
                 node scripts/verify-llvm-package-mode.mjs "$tarball" "$name" || { echo "::error::$name failed its file mode check"; failed=1; }

@@ -70,29 +70,29 @@ options-record.ts:43:41 - error SC2020: 'tls.createServer option 'ticketKeys'' i
 
   hint: cert and key (PEM strings or Buffers) are the supported options
 
-options-record.ts:49:20 - error SC2020: 'fs.watch with a non-utf8 encoding' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:48:20 - error SC2020: 'fs.watch with a non-utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 
-  48 | fs.watch("/tmp", { recursive: true }, () => {});
-  49 | fs.watch("/tmp", { encoding: "buffer" }, () => {});
+  47 | // (corpus fs-watch-ref-unref).
+  48 | fs.watch("/tmp", { encoding: "buffer" }, () => {});
      |                    ^~~~~~~~~~~~~~~~~~
-  50 | 
+  49 | 
 
   hint: the filename argument is a string — utf8 (the default) is the accepted encoding
 
-options-record.ts:55:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:54:44 - error SC2020: 'writeFileSync option '__proto__'' is part of the standard library types but has no scriptc lowering yet
 
-  54 | // These must fence instead of dropping an inherited flag or mode without a diagnostic.
-  55 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+  53 | // These must fence instead of dropping an inherited flag or mode without a diagnostic.
+  54 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
      |                                            ^~~~~~~~~~~~~~~~~~~~~~~~
-  56 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+  55 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
 
   hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered
 
-options-record.ts:56:57 - error SC2020: 'fs.promises.writeFile option '__proto__'' is part of the standard library types but has no scriptc lowering yet
+options-record.ts:55:57 - error SC2020: 'fs.promises.writeFile option '__proto__'' is part of the standard library types but has no scriptc lowering yet
 
-  55 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
-  56 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
+  54 | fs.writeFileSync("/tmp/proto-sync", "x", { __proto__: { flag: "a" } });
+  55 | void fs.promises.writeFile("/tmp/proto-promise", "x", { __proto__: { mode: 0o600 } });
      |                                                         ^~~~~~~~~~~~~~~~~~~~~~~~~~
-  57 | // Both calls must terminate in the explicit prototype-options fence.
+  56 | // Both calls must terminate in the explicit prototype-options fence.
 
   hint: a bare __proto__: value entry changes the options object's prototype, so inherited options cannot be lowered

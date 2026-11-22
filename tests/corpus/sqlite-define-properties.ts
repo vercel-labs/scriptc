@@ -282,3 +282,12 @@ attempt("saved-method-value", () => {
   dbx.close();
   return row.n;
 });
+
+// Keeping the limits object keeps its database alive, as in Node: the
+// database it reads through is still there after the program drops it.
+attempt("limits-survive-database", () => {
+  let db: DatabaseSync | null = new DatabaseSync(":memory:");
+  const limits = db.limits;
+  db = null;
+  return [limits.length, Object.keys(limits).slice(0, 2).join(",")];
+});

@@ -39,6 +39,36 @@ typedef struct ScrSqliteIter ScrSqliteIter;
 typedef struct ScrSqliteSession ScrSqliteSession;
 typedef struct ScrSqliteTagStore ScrSqliteTagStore;
 
+/* The connection's lifetime, shared by the database and every session it
+ * created: a session's SQLite object must be deleted before its connection
+ * closes (SQLite requires it), and the cycle collector frees a dead group
+ * in no particular order. The last owner closes the connection. */
+static void scr_sqlite_oom(void);
+
+typedef struct ScrSqliteConn {
+  size_t rc;
+  sqlite3 *conn; /* NULL once closed */
+} ScrSqliteConn;
+
+static ScrSqliteConn *scr_sqlite_conn_new(sqlite3 *conn) {
+  ScrSqliteConn *ref = malloc(sizeof *ref);
+  if (ref == NULL) scr_sqlite_oom();
+  ref->rc = 1;
+  ref->conn = conn;
+  return ref;
+}
+
+static ScrSqliteConn *scr_sqlite_conn_retain(ScrSqliteConn *ref) {
+  if (ref != NULL) ref->rc++;
+  return ref;
+}
+
+static void scr_sqlite_conn_release(ScrSqliteConn *ref) {
+  if (ref == NULL || --ref->rc > 0) return;
+  if (ref->conn != NULL) sqlite3_close_v2(ref->conn);
+  free(ref);
+}
+
 /* Cycle collection: the database, its statements, sessions, tag stores and
  * limits object are nodes of the collector's graph (their first member is
  * `rc`, as every heap object it owns), so a property added to an object
@@ -98,6 +128,9 @@ struct ScrSqliteStmt {
 struct ScrSqliteDb {
   size_t rc;
   sqlite3 *conn; /* NULL once closed */
+  /* The connection lifetime shared with live sessions, owned. NULL before
+   * the first open and after the connection closes. */
+  ScrSqliteConn *conn_ref;
   ScrStr *path; /* the location as given, owned */
   bool open_option;
   bool allow_extension; /* the constructor's allowExtension */
@@ -162,6 +195,9 @@ typedef struct ScrSqliteSession {
   size_t rc;
   ScrSqliteDb *db; /* owned */
   sqlite3_session *session; /* NULL once closed */
+  /* The connection lifetime, owned: it keeps the connection open until
+   * this session has been deleted. */
+  ScrSqliteConn *conn_ref;
   bool generating;
 } ScrSqliteSession;
 
@@ -727,7 +763,15 @@ static void scr_sqlite_stmt_release(void *h) {
   ScrSqliteStmt *s = h;
   if (s == NULL) return;
   if (--s->rc > 0) {
-    scr_cyc_released(s);
+    /* A tracked statement's only remaining reference can be the
+     * database's own: the program, a cache and every iterator have let it
+     * go, so nothing can reach it again. Finalize it and drop that
+     * reference instead of keeping the prepared query until the database
+     * closes. */
+    if (s->rc == 1 && s->stmt != NULL && s->db != &scr_sqlite_closed_db)
+      scr_sqlite_db_untrack(s->db, s); /* releases the database's reference */
+    else
+      scr_cyc_released(s);
     return;
   }
   scr_cyc_dead(s);
@@ -1682,9 +1726,16 @@ static void scr_sqlite_limits_gcfree(void *p) {
 /* A limits object freed without collection: its added properties are its
  * only child (the database it reads through borrows it, and owns it). */
 static void scr_sqlite_limits_destroy(ScrSqliteLimits *l) {
+  ScrSqliteDb *db = l->db;
+  l->db = NULL;
+  if (db != NULL) {
+    /* The database being torn down may still point back here. */
+    if (db->limits_object == l) db->limits_object = NULL;
+  }
   scr_dyn_release(l->expandos);
   l->expandos = NULL;
   scr_sqlite_limits_gcfree(l);
+  if (db != NULL) scr_sqlite_db_release(db);
 }
 
 static void scr_sqlite_limits_release(void *h) {
@@ -1700,6 +1751,7 @@ static void scr_sqlite_limits_release(void *h) {
 
 static void scr_sqlite_limits_trace(void *p, ScrTraceVisit visit, void *ctx) {
   ScrSqliteLimits *l = p;
+  visit(l->db, ctx);
   visit(l->expandos, ctx);
 }
 
@@ -2300,7 +2352,14 @@ static void *scr_sqlite_db_retain(void *h) {
  * statement is finalized, so the order the collector frees in is safe. */
 static void scr_sqlite_db_gcfree(void *p) {
   ScrSqliteDb *db = p;
-  if (db->conn != NULL) {
+  if (db->conn_ref != NULL) {
+    /* Sessions waiting to be deleted hold their own reference, so the
+     * connection outlives this teardown until they are gone. */
+    ScrSqliteConn *ref = db->conn_ref;
+    db->conn_ref = NULL;
+    db->conn = NULL;
+    scr_sqlite_conn_release(ref);
+  } else if (db->conn != NULL) {
     sqlite3_close_v2(db->conn);
     db->conn = NULL;
   }
@@ -2314,7 +2373,15 @@ static void scr_sqlite_db_gcfree(void *p) {
  * A tracked statement or session keeps a reference to the database, so both
  * lists are empty by the time this runs. */
 static void scr_sqlite_db_destroy(ScrSqliteDb *db) {
-  if (db->conn != NULL) sqlite3_close_v2(db->conn);
+  if (db->conn_ref != NULL) {
+    ScrSqliteConn *ref = db->conn_ref;
+    db->conn_ref = NULL;
+    db->conn = NULL;
+    scr_sqlite_conn_release(ref);
+  } else if (db->conn != NULL) {
+    sqlite3_close_v2(db->conn);
+    db->conn = NULL;
+  }
   if (db->limits_object != NULL) {
     db->limits_object->db = NULL;
     scr_sqlite_limits_release(db->limits_object);
@@ -2400,6 +2467,13 @@ static bool scr_sqlite_db_close_all(ScrSqliteDb *db) {
       return false;
     }
     db->conn = NULL;
+    if (db->conn_ref != NULL) {
+      /* Sessions still held by the program keep the cell alive; the
+       * connection itself is closed above. */
+      db->conn_ref->conn = NULL;
+      scr_sqlite_conn_release(db->conn_ref);
+      db->conn_ref = NULL;
+    }
   }
   return true;
 }
@@ -2465,6 +2539,8 @@ static bool scr_sqlite_db_open_connection(ScrSqliteDb *db) {
     scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
     return false;
   }
+  if (db->conn_ref == NULL) db->conn_ref = scr_sqlite_conn_new(db->conn);
+  else db->conn_ref->conn = db->conn;
   r = sqlite3_db_config(db->conn, SQLITE_DBCONFIG_DQS_DML, db->dqs ? 1 : 0, NULL);
   if (r != SQLITE_OK) {
     scr_sqlite_throw_db_error(db);
@@ -3131,6 +3207,11 @@ static void scr_sqlite_session_gcfree(void *p) {
   ScrSqliteSession *session = p;
   if (session->session != NULL) sqlite3session_delete(session->session);
   session->session = NULL;
+  /* The session is deleted before the connection's reference goes, so the
+   * connection cannot close first whatever order the collector frees in. */
+  ScrSqliteConn *ref = session->conn_ref;
+  session->conn_ref = NULL;
+  scr_sqlite_conn_release(ref);
   scr_cyc_free(session);
 }
 
@@ -3378,6 +3459,7 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
   session->rc = 1;
   session->db = scr_sqlite_db_retain(db);
   session->session = raw;
+  session->conn_ref = scr_sqlite_conn_retain(db->conn_ref);
   if (db->session_n == db->session_cap) {
     size_t cap = db->session_cap != 0 ? db->session_cap * 2 : 4;
     void *grown = realloc(db->sessions, cap * sizeof *db->sessions);
@@ -3795,7 +3877,10 @@ static ScrDyn *scr_sqlite_db_get(void *h, const char *key, size_t len) {
     if (l == NULL) {
       l = scr_cyc_alloc(sizeof *l, &scr_sqlite_limits_cyc);
       l->rc = 1; /* the database's reference */
-      l->db = db;
+      /* The limits object keeps its database alive, as Node's does: a
+       * program that keeps the limits and drops the database still reads
+       * the limits. */
+      l->db = scr_sqlite_db_retain(db);
       db->limits_object = l;
     }
     scr_dyn_handle_install(SCR_DYNH_SQLITE_LIMITS, &scr_sqlite_limits_ops);

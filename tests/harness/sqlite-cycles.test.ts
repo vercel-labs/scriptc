@@ -1,11 +1,12 @@
-/* A database, its statements, sessions, tag stores and limits object are
- * nodes of the cycle collector: a property that refers back at the object
- * (a cached tag store, a closure over the connection, metadata on a
- * statement) is reclaimed with the group instead of pinning it forever.
- * The fixture builds 400 such groups and prints the resident-set growth;
- * before the group took part in collection the growth tracked the retained
- * payloads (over a hundred MiB). Plain lane only: the sanitizer's allocator
- * quarantine holds freed memory, so resident size says nothing there. */
+/* SQLite objects are nodes of the cycle collector and finalize what nothing
+ * can reach: a database whose cache, closure or statement metadata points
+ * back at it is reclaimed with the group; statements a program drops are
+ * finalized at once instead of accumulating on a long-lived connection; and
+ * a session's SQLite object is deleted before its connection can close,
+ * whatever order the collector frees a dead group in. Each fixture prints
+ * the resident-set growth in MiB. Plain lane only: the sanitizer's
+ * allocator quarantine holds freed memory, so resident size says nothing
+ * there. */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -18,14 +19,31 @@ const repoRoot = join(import.meta.dirname, "../..");
 const outDir = join(repoRoot, "node_modules/.cache/scriptc-tests/sqlite-cycles");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-describe.skipIf(sanitize)("sqlite cycle collection", () => {
-  test(
-    "a database that owns its cache and metadata is reclaimed",
-    { timeout: 300_000 },
-    async () => {
+const cases = [
+  {
+    name: "a database that owns its cache and metadata is reclaimed",
+    fixture: "sqlite-cycles/main.ts",
+    bound: 20,
+  },
+  {
+    name: "dropped statements do not accumulate on a long-lived connection",
+    fixture: "sqlite-statement-lifetime/main.ts",
+    bound: 8,
+  },
+  {
+    name: "a database and its session are reclaimed together, session first",
+    fixture: "sqlite-session-teardown/main.ts",
+    bound: 40,
+  },
+];
+
+describe.skipIf(sanitize)("sqlite object lifetimes", () => {
+  for (const entry of cases) {
+    test(entry.name, { timeout: 300_000 }, async () => {
       mkdirSync(outDir, { recursive: true });
-      const result = await compile(join(repoRoot, "tests/fixtures/sqlite-cycles/main.ts"), {
-        outPath: join(outDir, "sqlite-cycles"),
+      const binary = join(outDir, entry.fixture.replace(/[/.]/g, "-"));
+      const result = await compile(join(repoRoot, "tests/fixtures", entry.fixture), {
+        outPath: binary,
         outDir,
         backend: "llvm",
       });
@@ -34,7 +52,7 @@ describe.skipIf(sanitize)("sqlite cycle collection", () => {
       }
       const run = await execFileAsync(result.binaryPath);
       expect(run.stderr).toBe("");
-      expect(Number(run.stdout.trim()), "growth in MiB").toBeLessThan(20);
-    },
-  );
+      expect(Number(run.stdout.trim()), "growth in MiB").toBeLessThan(entry.bound);
+    });
+  }
 });

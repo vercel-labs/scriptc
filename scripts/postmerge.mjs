@@ -171,9 +171,11 @@ export const recipes = [
     workflow: releaseBuild,
     job: "packs",
     steps: [
+      // It edits pnpm-workspace.yaml, so it runs before the install, as in the job.
       {
         step: "Let pnpm install musl platform packages",
         when: (m) => (m.cli_target ?? "").endsWith("-musl"),
+        beforeInstall: true,
       },
       { step: "Build native packages (POSIX)" },
       { step: "Build host helper for cross-libc bootstrap", when: (m) => Boolean(m.seed_helper) },
@@ -245,7 +247,12 @@ export function replaySteps(workflow, recipe, matrix, runnerTemp) {
             substitute(String(v), matrix, runnerTemp),
           ]),
         );
-        return { name: ref.step, env, run: substitute(step.run, matrix, runnerTemp) };
+        return {
+          name: ref.step,
+          env,
+          run: substitute(step.run, matrix, runnerTemp),
+          beforeInstall: ref.beforeInstall === true,
+        };
       });
   const steps = [];
   if (recipe.packsFirst) {
@@ -438,14 +445,58 @@ const output = (text) => {
   process.stdout.write(text);
 };
 
-/** The states of this workflow's earlier completed runs, newest first. */
+/** The events that start this workflow on main. A run of any other event, branch or repository (a pull request that
+ * adds a trigger to this file, a dispatch on another branch, a fork) never counts as a post-merge result. */
+export const TRUSTED_EVENTS = ["workflow_run", "schedule", "workflow_dispatch"];
+
+/** The runs whose results can count: this workflow's own, started on the repository's main by a trusted event. */
+export function trustedRuns(runs, repository, branch = "main") {
+  return runs.filter(
+    (run) =>
+      /^\.github\/workflows\/postmerge\.yml(@|$)/.test(String(run.path)) &&
+      TRUSTED_EVENTS.includes(run.event) &&
+      run.head_branch === branch &&
+      run.repository?.full_name === repository &&
+      run.head_repository?.full_name === repository,
+  );
+}
+
+/**
+ * A run's state when it is well formed and its commit is one that run could have tested: a full SHA that is the
+ * run's own commit or an ancestor of it (`isAncestor(sha, runSha)`), with lane job results only. Undefined
+ * otherwise.
+ */
+export function validState(state, run, isAncestor) {
+  if (typeof state !== "object" || state === null) return undefined;
+  if (typeof state.sha !== "string" || !/^[0-9a-f]{40}$/.test(state.sha)) return undefined;
+  if (typeof state.jobs !== "object" || state.jobs === null || Array.isArray(state.jobs))
+    return undefined;
+  for (const [name, conclusion] of Object.entries(state.jobs))
+    if (
+      !/^(macos|rehearsal) \//.test(name) ||
+      typeof conclusion !== "string" ||
+      !/^[a-z_]{1,32}$/.test(conclusion)
+    )
+      return undefined;
+  if (!isAncestor(state.sha, run.head_sha)) return undefined;
+  return { sha: state.sha, jobs: state.jobs, runId: run.id };
+}
+
+const isAncestor = (sha, of) =>
+  typeof of === "string" &&
+  spawnSync("git", ["merge-base", "--is-ancestor", sha, of], { stdio: "ignore" }).status === 0;
+
+/** The states of this workflow's earlier completed trusted runs on main, newest first. */
 function loadStates(limit = STATE_HISTORY) {
-  const runs = JSON.parse(
-    gh(
-      "api",
-      `repos/${repo()}/actions/workflows/postmerge.yml/runs?status=completed&per_page=${limit}`,
-    ),
-  ).workflow_runs;
+  const runs = trustedRuns(
+    JSON.parse(
+      gh(
+        "api",
+        `repos/${repo()}/actions/workflows/postmerge.yml/runs?branch=main&status=completed&per_page=100`,
+      ),
+    ).workflow_runs,
+    repo(),
+  ).slice(0, limit);
   const states = [];
   const dir = mkdtempSync(join(tmpdir(), "postmerge-state-"));
   for (const run of runs) {
@@ -459,7 +510,23 @@ function loadStates(limit = STATE_HISTORY) {
       },
     );
     if (got.status !== 0 || !existsSync(join(target, "state.json"))) continue;
-    states.push({ ...JSON.parse(readFileSync(join(target, "state.json"), "utf8")), runId: run.id });
+    let state;
+    try {
+      state = validState(
+        JSON.parse(readFileSync(join(target, "state.json"), "utf8")),
+        run,
+        isAncestor,
+      );
+    } catch {
+      state = undefined;
+    }
+    if (state === undefined) {
+      console.log(
+        `::warning::run ${run.id} left a postmerge-state that is not valid; it does not count`,
+      );
+      continue;
+    }
+    states.push(state);
   }
   return states;
 }
@@ -467,14 +534,19 @@ function loadStates(limit = STATE_HISTORY) {
 function pick() {
   const requested = process.env.POSTMERGE_SHA?.trim();
   let sha = requested;
+  if (requested && !(/^[0-9a-f]{40}$/.test(requested) && isAncestor(requested, "origin/main"))) {
+    throw new Error(`${requested} is not a full SHA of a commit on main`);
+  }
   if (!sha) {
     const runs = JSON.parse(
       gh(
         "api",
-        `repos/${repo()}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1`,
+        `repos/${repo()}/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20`,
       ),
     ).workflow_runs;
-    sha = runs[0]?.head_sha;
+    sha = runs.find(
+      (run) => run.head_repository?.full_name === repo() && isAncestor(run.head_sha, "origin/main"),
+    )?.head_sha;
   }
   if (!sha) {
     console.log("No green main commit found");
@@ -571,7 +643,20 @@ function plan(sha, stateDir) {
   output(`tasks=${JSON.stringify(matrix)}\n`);
 }
 
-function probeCommit(task, recipe, sha, logDir, current) {
+/**
+ * The order a probe runs its steps in: the replayed steps that must precede the install (beforeInstall), the
+ * install, the rest of the prelude, and the other replayed steps.
+ */
+export function probeOrder(prelude, steps) {
+  return [
+    ...steps.filter((step) => step.beforeInstall),
+    prelude[0] ?? install,
+    ...prelude.slice(1),
+    ...steps.filter((step) => !step.beforeInstall),
+  ];
+}
+
+function probeCommit(task, recipe, sha, logDir, current, load) {
   const runnerTemp = process.env.RUNNER_TEMP ?? tmpdir();
   const probeTemp = mkdtempSync(join(runnerTemp, "probe-"));
   const log = join(logDir, `${sha.slice(0, 12)}.log`);
@@ -599,11 +684,7 @@ function probeCommit(task, recipe, sha, logDir, current) {
     return r.status === 0;
   };
   const prelude = recipe.prelude(task.matrix);
-  // Install first: the workflow file is parsed with the probed commit's js-yaml.
-  const first = prelude[0] ?? install;
-  if (!exec(first)) return "fail";
   let steps;
-  const { load } = createRequire(join(process.cwd(), "package.json"))("js-yaml");
   try {
     steps = replaySteps(
       load(readFileSync(recipe.workflow, "utf8")),
@@ -618,7 +699,7 @@ function probeCommit(task, recipe, sha, logDir, current) {
     );
     steps = replaySteps(load(current[recipe.workflow]), recipe, task.matrix, probeTemp);
   }
-  for (const step of [...prelude.slice(1), ...steps]) if (!exec(step)) return "fail";
+  for (const step of probeOrder(prelude, steps)) if (!exec(step)) return "fail";
   return "pass";
 }
 
@@ -627,8 +708,10 @@ async function runBisect(taskKey, tasksFile, outDir) {
   if (!task) throw new Error(`no task ${taskKey}`);
   const recipe = recipes.find((r) => r.id === task.recipe);
   mkdirSync(join(outDir, "logs"), { recursive: true });
-  // Today's workflow file, for commits whose own cannot be replayed.
+  // Today's workflow file, for commits whose own cannot be replayed, and the YAML parser, loaded from this
+  // checkout's dependencies before the first probe removes them.
   const current = { [recipe.workflow]: readFileSync(recipe.workflow, "utf8") };
+  const { load } = createRequire(join(process.cwd(), "package.json"))("js-yaml");
   // Leave room for the report inside the bisect job's limit.
   const deadline = Date.now() + Number(process.env.POSTMERGE_MINUTES ?? 300) * 60_000;
   let result;
@@ -636,7 +719,7 @@ async function runBisect(taskKey, tasksFile, outDir) {
     result = await bisect(
       task.batchList,
       async (sha) => {
-        const r = probeCommit(task, recipe, sha, join(outDir, "logs"), current);
+        const r = probeCommit(task, recipe, sha, join(outDir, "logs"), current, load);
         console.log(`${sha}: ${r}`);
         return r;
       },

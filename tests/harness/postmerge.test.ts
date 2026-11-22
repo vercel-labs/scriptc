@@ -12,11 +12,14 @@ import {
   history,
   laneJobs,
   nativePackages,
+  probeOrder,
   recipeFor,
   recipes,
   replaySteps,
   search,
   substitute,
+  trustedRuns,
+  validState,
 } from "../../scripts/postmerge.mjs";
 
 const root = join(import.meta.dirname, "../..");
@@ -416,4 +419,128 @@ test("the state keeps the lane jobs of a run and the report names the first bad 
   expect(report).toContain("**First bad commit: `cccccccccccc` Break darwin**");
   expect(report).toContain("- macos / test (macOS, san, 4/10)");
   expect(report).toContain("macos / other: no recipe probes this job on one runner");
+});
+
+test("a musl platform build lets pnpm install musl packages before the install, as the job does", () => {
+  for (const id of ["release_packs", "release_cli"]) {
+    const recipe = recipes.find((r: { id: string }) => r.id === id);
+    const musl = platforms.find((p) => String(p.cli_target ?? "").endsWith("-musl"))!;
+    const steps = replaySteps(releaseBuild, recipe, musl, "/tmp/probe");
+    const order = probeOrder(recipe.prelude(musl), steps).map(
+      (step: { name: string }) => step.name,
+    );
+    expect(order.indexOf("Let pnpm install musl platform packages"), id).toBe(0);
+    expect(order.indexOf("Install"), id).toBe(1);
+  }
+  // In the job too, the step comes before pnpm install.
+  const packs = releaseBuild.jobs.packs!.steps!;
+  expect(packs.findIndex((s) => s.name === "Let pnpm install musl platform packages")).toBeLessThan(
+    packs.findIndex((s) => s.run === "pnpm install --frozen-lockfile"),
+  );
+});
+
+// The artifacts each workflow of a post-merge run uploads, and the patterns it downloads: one run holds them all.
+function artifactNames(path: string) {
+  const uploads: string[] = [];
+  const downloads: string[] = [];
+  for (const job of Object.values(workflow(path).jobs))
+    for (const step of job.steps ?? []) {
+      const name = step.with?.name;
+      const pattern = step.with?.pattern;
+      if (step.uses?.startsWith("actions/upload-artifact@") && typeof name === "string")
+        uploads.push(name);
+      if (step.uses?.startsWith("actions/download-artifact@"))
+        downloads.push(String(pattern ?? name));
+    }
+  return { uploads, downloads };
+}
+const glob = (pattern: string) =>
+  new RegExp(`^${pattern.replace(/\$\{\{[^}]*\}\}/g, ".+").replace(/\*/g, ".*")}$`);
+
+test("CI's artifacts in a post-merge run neither collide with the rehearsal's nor match what it downloads", () => {
+  const ciNames = artifactNames(".github/workflows/ci.yml");
+  const release = [
+    ".github/workflows/release-dry-run.yml",
+    ".github/workflows/release-build.yml",
+    ".github/workflows/libnode-packs.yml",
+  ].map(artifactNames);
+  const releaseUploads = release.flatMap((r) => r.uploads);
+  const releaseDownloads = release.flatMap((r) => r.downloads);
+  expect(ciNames.uploads.length).toBeGreaterThan(3);
+  for (const name of ciNames.uploads) {
+    for (const other of releaseUploads)
+      expect(
+        glob(other).test(name.replace(/\$\{\{[^}]*\}\}/g, "x")) || glob(name).test(other),
+        `${name} / ${other}`,
+      ).toBe(false);
+    for (const pattern of releaseDownloads)
+      expect(
+        glob(pattern).test(name.replace(/\$\{\{[^}]*\}\}/g, "x")),
+        `${pattern} matches ${name}`,
+      ).toBe(false);
+  }
+  // CI's own downloads find its uploads.
+  for (const pattern of ciNames.downloads)
+    expect(
+      ciNames.uploads.some((name) => glob(pattern).test(name) || pattern === name),
+      pattern,
+    ).toBe(true);
+});
+
+const repository = "vercel-labs/scriptc";
+const runOf = (id: number, fields: Record<string, unknown> = {}) => ({
+  id,
+  path: ".github/workflows/postmerge.yml",
+  event: "workflow_run",
+  head_branch: "main",
+  head_sha: "b".repeat(40),
+  repository: { full_name: repository },
+  head_repository: { full_name: repository },
+  ...fields,
+});
+
+test("only this workflow's runs on main, started by its own triggers, count as post-merge results", () => {
+  const runs = [
+    runOf(1),
+    runOf(2, { event: "schedule" }),
+    runOf(3, { event: "workflow_dispatch" }),
+    // A pull request that adds a trigger to postmerge.yml runs it as its own, and can upload a state.
+    runOf(4, { event: "pull_request", head_branch: "feature" }),
+    runOf(5, { event: "pull_request" }),
+    // A dispatch on another branch, and a fork whose branch is also called main.
+    runOf(6, { event: "workflow_dispatch", head_branch: "feature" }),
+    runOf(7, { head_repository: { full_name: "someone/scriptc" } }),
+    runOf(8, { path: ".github/workflows/other.yml" }),
+    runOf(9, { event: "push" }),
+  ];
+  expect(trustedRuns(runs, repository).map((run: { id: number }) => run.id)).toEqual([1, 2, 3]);
+  // The state loader reads trusted runs only.
+  const script = read("scripts/postmerge.mjs");
+  const loader = script.slice(
+    script.indexOf("function loadStates"),
+    script.indexOf("function pick"),
+  );
+  expect(loader).toContain("trustedRuns(");
+  expect(loader).toContain("validState(");
+});
+
+test("a state counts only when it is well formed and names a commit its run could have tested", () => {
+  const run = runOf(1);
+  const ancestors = new Set(["a".repeat(40), "b".repeat(40)]);
+  const isAncestor = (sha: string, of: string) => of === "b".repeat(40) && ancestors.has(sha);
+  const good = { sha: "a".repeat(40), jobs: { "macos / test (macOS, san, 4/10)": "success" } };
+  expect(validState(good, run, isAncestor)).toEqual({ ...good, runId: 1 });
+  // A commit that is not the run's or an ancestor of it: a state cannot claim an untested commit was tested.
+  expect(validState({ ...good, sha: "c".repeat(40) }, run, isAncestor)).toBeUndefined();
+  for (const bad of [
+    null,
+    "text",
+    { ...good, sha: "a".repeat(12) },
+    { ...good, sha: "A".repeat(40) },
+    { ...good, jobs: [] },
+    { ...good, jobs: { "pick / x": "success" } },
+    { ...good, jobs: { "macos / x": 1 } },
+    { ...good, jobs: { "macos / x": "success; rm -rf /" } },
+  ])
+    expect(validState(bad, run, isAncestor), JSON.stringify(bad)).toBeUndefined();
 });

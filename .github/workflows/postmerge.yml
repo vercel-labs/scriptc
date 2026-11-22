@@ -56,7 +56,10 @@ jobs:
       sha: ${{ steps.pick.outputs.sha }}
       skip: ${{ steps.pick.outputs.skip }}
     steps:
+      # The whole history: a commit counts only when it is on main.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
       - id: pick
         env:
           GH_TOKEN: ${{ github.token }}
@@ -152,6 +155,8 @@ jobs:
         with:
           name: postmerge-state
           path: ${{ runner.temp }}/postmerge-state
+      # The script parses each probed commit's workflow with this checkout's js-yaml.
+      - run: pnpm install --frozen-lockfile
       - name: Bisect
         env:
           KEY: ${{ matrix.key }}

@@ -64,6 +64,12 @@ import {
 
 const repoRoot = join(import.meta.dirname, "../../../..");
 const UPDATE = process.env["SCRIPTC_UPDATE_BASELINES"] === "1";
+/** Re-record only these fixtures (repository-relative paths, one per line);
+ * `pnpm regen` sets it to the baselines a merge left conflicted. */
+const UPDATE_ONLY = (process.env["SCRIPTC_UPDATE_BASELINES_ONLY"] ?? "")
+  .split("\n")
+  .map((line) => line.trim())
+  .filter((line) => line !== "");
 
 interface BaselineEntry {
   order: string[];
@@ -162,7 +168,8 @@ for (let i = 0; i < entries.length; i += CHUNK) chunks.push(entries.slice(i, i +
 if (UPDATE) {
   test("re-record baselines from the current native frontend", async () => {
     const written = new Set<string>();
-    const all = allEntries();
+    const all =
+      UPDATE_ONLY.length > 0 ? UPDATE_ONLY.map((name) => join(repoRoot, name)) : allEntries();
     for (let i = 0; i < all.length; i += CHUNK) {
       const batch = all.slice(i, i + CHUNK);
       const answers = await nativeAnswers(batch);
@@ -173,10 +180,12 @@ if (UPDATE) {
         written.add(path);
       }
     }
-    // Drop the baselines of fixtures that no longer exist.
-    for (const path of globSync(join(repoRoot, ORDER_BASELINE_DIR, "**/*.json"))) {
-      if (!written.has(path)) rmSync(path);
-    }
+    // Drop the baselines of fixtures that no longer exist, but only in a
+    // full recording: a targeted one must leave every other baseline alone.
+    if (UPDATE_ONLY.length === 0)
+      for (const path of globSync(join(repoRoot, ORDER_BASELINE_DIR, "**/*.json"))) {
+        if (!written.has(path)) rmSync(path);
+      }
   }, 600_000);
 } else {
   describe(`preflight/order canary vs recorded 5.9.3 baselines (${entries.length} entries${FULL ? ", full sweep" : ""})`, () => {

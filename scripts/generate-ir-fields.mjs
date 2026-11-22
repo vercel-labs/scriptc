@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stale } from "./generated-files.mjs";
 
 // Generates packages/compiler/src/ir/fields.generated.ts from the node types
 // in ir.ts: for each IrExpr and IrStmt kind, the fields that can hold a
@@ -385,6 +386,6 @@ if (process.argv[1] !== undefined && samePath(process.argv[1], fileURLToPath(imp
 
   if (process.argv.includes("--check")) {
     if (readFileSync(target, "utf8") !== text)
-      throw new Error("fields.generated.ts is stale; run node scripts/generate-ir-fields.mjs");
+      throw new Error(stale("fields.generated.ts is stale", "`pnpm generate:ir-fields`"));
   } else writeFileSync(target, text);
 }

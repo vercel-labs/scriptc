@@ -52,7 +52,7 @@ for (const flavor of ["plain", "san"])
   }
 for (const flavor of ["plain", "san"])
   table[flavor] = Object.fromEntries(
-    Object.entries(table[flavor]).sort(([a], [b]) => a.localeCompare(b)),
+    Object.entries(table[flavor]).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
 writeFileSync(path, JSON.stringify(table, null, 2) + "\n");
 console.log(`updated ${updated} program costs, folded ${folded} per-program cost files`);

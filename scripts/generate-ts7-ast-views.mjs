@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { stale } from "./generated-files.mjs";
 
 /** Generate class views rather than structural copies of native AST nodes.
  * The build-time parser reads declarations only; no parser joins the client. */
@@ -21,7 +22,7 @@ export function generateAstViews(root, packageRoot, version, check) {
     const output = lines.join("\n") + "\n";
     if (check) {
       if (readFileSync(path, "utf8") !== output)
-        throw new Error(`${name} is stale; run node scripts/generate-ts7-ast-schema.mjs`);
+        throw new Error(stale(`${name} is stale`, "`pnpm generate:ts7-ast`"));
     } else writeFileSync(path, output);
   };
   const interfaces = new Map(

@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateAstViews } from "./generate-ts7-ast-views.mjs";
+import { stale } from "./generated-files.mjs";
 
 // The binary AST is an unstable TypeScript protocol. Generate its constants
 // from the installed, pinned package; never translate TypeScript 5 numbers.
@@ -99,7 +100,7 @@ const enumOutput = enumLines.join("\n") + "\n";
 const enumTarget = join(root, "packages/compiler/src/frontend/ts7/enums.generated.ts");
 if (process.argv.includes("--check")) {
   if (readFileSync(enumTarget, "utf8") !== enumOutput)
-    throw new Error("TypeScript enums are stale; run node scripts/generate-ts7-ast-schema.mjs");
+    throw new Error(stale("TypeScript enums are stale", "`pnpm generate:ts7-ast`"));
 } else {
   writeFileSync(enumTarget, enumOutput);
 }
@@ -161,7 +162,7 @@ const output = lines.join("\n");
 const target = join(root, "packages/compiler/src/frontend/ts7/ast-schema.generated.ts");
 if (process.argv.includes("--check")) {
   if (readFileSync(target, "utf8") !== output)
-    throw new Error("TypeScript AST schema is stale; run node scripts/generate-ts7-ast-schema.mjs");
+    throw new Error(stale("TypeScript AST schema is stale", "`pnpm generate:ts7-ast`"));
 } else {
   writeFileSync(target, output);
 }
@@ -213,9 +214,7 @@ const semanticTarget = join(
 );
 if (process.argv.includes("--check")) {
   if (readFileSync(semanticTarget, "utf8") !== semanticOutput)
-    throw new Error(
-      "TypeScript semantic schema is stale; run node scripts/generate-ts7-ast-schema.mjs",
-    );
+    throw new Error(stale("TypeScript semantic schema is stale", "`pnpm generate:ts7-ast`"));
 } else {
   writeFileSync(semanticTarget, semanticOutput);
 }
@@ -270,9 +269,7 @@ const sessionOutput = sessionLines.join("\n") + "\n";
 const sessionTarget = join(root, "packages/compiler/src/frontend/ts7/session-schema.generated.ts");
 if (process.argv.includes("--check")) {
   if (readFileSync(sessionTarget, "utf8") !== sessionOutput)
-    throw new Error(
-      "TypeScript session schema is stale; run node scripts/generate-ts7-ast-schema.mjs",
-    );
+    throw new Error(stale("TypeScript session schema is stale", "`pnpm generate:ts7-ast`"));
 } else {
   writeFileSync(sessionTarget, sessionOutput);
 }
@@ -356,9 +353,7 @@ const after = before.replace(
 );
 if (process.argv.includes("--check")) {
   if (before !== after)
-    throw new Error(
-      "TypeScript AST child getters are stale; run node scripts/generate-ts7-ast-schema.mjs",
-    );
+    throw new Error(stale("TypeScript AST child getters are stale", "`pnpm generate:ts7-ast`"));
 } else {
   writeFileSync(nodeTarget, after);
 }

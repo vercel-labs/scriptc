@@ -67,7 +67,7 @@ for (const [name, table] of Object.entries(tables))
     table[flavor] = Object.fromEntries(
       Object.entries(table[flavor])
         .filter(([key]) => name !== "files" || !skipped.has(key))
-        .sort(([a], [b]) => a.localeCompare(b)),
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
     );
   }
 writeFileSync(filePath, JSON.stringify(tables.files, null, 2) + "\n");

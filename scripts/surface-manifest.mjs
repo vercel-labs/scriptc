@@ -26,6 +26,7 @@ import {
   generateSurfaceManifest,
   renderSurfaceManifest,
 } from "../packages/compiler/src/coverage/surface-manifest.ts";
+import { stale } from "./generated-files.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const readJson = (path) => JSON.parse(readFileSync(root + path, "utf8"));
@@ -77,7 +78,7 @@ if (process.argv.includes("--check")) {
     // fall through to the drift report
   }
   if (committed !== rendered) {
-    console.error("surface-manifest.json is stale — run 'pnpm manifest' and commit the result");
+    console.error(stale("surface-manifest.json is stale", "`pnpm manifest`"));
     process.exit(1);
   }
   console.log(

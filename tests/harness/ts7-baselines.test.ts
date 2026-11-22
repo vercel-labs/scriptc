@@ -13,7 +13,7 @@ test("baseline preflight reports every missing fixture before loading the compil
   };
   try {
     mkdirSync(join(root, "scripts"));
-    for (const name of ["test-ts7.mjs", "ts7-order-fixtures.mjs"]) {
+    for (const name of ["test-ts7.mjs", "ts7-order-fixtures.mjs", "generated-files.mjs"]) {
       copyFileSync(join(import.meta.dirname, "../../scripts", name), join(root, "scripts", name));
     }
     const fixtures = [

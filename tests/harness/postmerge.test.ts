@@ -18,6 +18,7 @@ import {
   replaySteps,
   search,
   substitute,
+  collectStates,
   trustedRuns,
   validState,
 } from "../../scripts/postmerge.mjs";
@@ -517,7 +518,7 @@ test("only this workflow's runs on main, started by its own triggers, count as p
   // The state loader reads trusted runs only.
   const script = read("scripts/postmerge.mjs");
   const loader = script.slice(
-    script.indexOf("function loadStates"),
+    script.indexOf("function* trustedRunPages"),
     script.indexOf("function pick"),
   );
   expect(loader).toContain("trustedRuns(");
@@ -543,4 +544,24 @@ test("a state counts only when it is well formed and names a commit its run coul
     { ...good, jobs: { "macos / x": "success; rm -rf /" } },
   ])
     expect(validState(bad, run, isAncestor), JSON.stringify(bad)).toBeUndefined();
+});
+
+test("runs that found nothing new do not push the last tested commit out of the lookup", () => {
+  // Five scheduled runs that skipped (no state), then the run that tested the commit.
+  const runs = [1, 2, 3, 4, 5, 6, 7].map((id) => ({ id }));
+  const states: Record<number, { sha: string }> = { 6: { sha: "tested" }, 7: { sha: "older" } };
+  const visited: number[] = [];
+  const found = collectStates(runs, 1, (run: { id: number }) => {
+    visited.push(run.id);
+    return states[run.id];
+  });
+  expect(found).toEqual([{ sha: "tested" }]);
+  // It stops once it has enough.
+  expect(visited).toEqual([1, 2, 3, 4, 5, 6]);
+  expect(collectStates(runs, 30, (run: { id: number }) => states[run.id])).toEqual([
+    { sha: "tested" },
+    { sha: "older" },
+  ]);
+  // pick asks for the newest state, however many runs skipped since.
+  expect(read("scripts/postmerge.mjs")).toContain("loadStates(1)");
 });

@@ -38,7 +38,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const STATE_ARTIFACT = "postmerge-state";
 export const BLAME_ARTIFACT = "postmerge-blame";
-/** Earlier runs whose results are read for a job's last green commit. */
+/** How many earlier results (runs that left a state) are read for a job's last green commit. */
 export const STATE_HISTORY = 30;
 /** At most this many bisections per run, one per recipe; they run in parallel. */
 export const MAX_BISECTIONS = 3;
@@ -486,30 +486,51 @@ const isAncestor = (sha, of) =>
   typeof of === "string" &&
   spawnSync("git", ["merge-base", "--is-ancestor", sha, of], { stdio: "ignore" }).status === 0;
 
-/** The states of this workflow's earlier completed trusted runs on main, newest first. */
-function loadStates(limit = STATE_HISTORY) {
-  const runs = trustedRuns(
-    JSON.parse(
+/**
+ * The first `limit` states the runs left, newest first. `limit` counts states, not runs: a run that found nothing new
+ * (pick's skip) leaves no state, and however many of those came since, the last tested commit is still found.
+ */
+export function collectStates(runs, limit, readState) {
+  const states = [];
+  for (const run of runs) {
+    if (states.length >= limit) break;
+    const state = readState(run);
+    if (state !== undefined) states.push(state);
+  }
+  return states;
+}
+
+/** The trusted completed runs on main, newest first, a page of 100 at a time, at most `pages` pages. */
+function* trustedRunPages(pages = 5) {
+  for (let page = 1; page <= pages; page++) {
+    const runs = JSON.parse(
       gh(
         "api",
-        `repos/${repo()}/actions/workflows/postmerge.yml/runs?branch=main&status=completed&per_page=100`,
+        `repos/${repo()}/actions/workflows/postmerge.yml/runs?branch=main&status=completed&per_page=100&page=${page}`,
       ),
-    ).workflow_runs,
-    repo(),
-  ).slice(0, limit);
-  const states = [];
+    ).workflow_runs;
+    yield* trustedRuns(runs, repo());
+    if (runs.length < 100) return;
+  }
+}
+
+/** The states of this workflow's earlier completed trusted runs on main, newest first. */
+function loadStates(limit = STATE_HISTORY) {
   const dir = mkdtempSync(join(tmpdir(), "postmerge-state-"));
-  for (const run of runs) {
-    if (String(run.id) === process.env.GITHUB_RUN_ID) continue;
+  const readState = (run) => {
+    if (String(run.id) === process.env.GITHUB_RUN_ID) return undefined;
+    // Most runs that found nothing new left no state; ask for it before downloading.
+    const listed = JSON.parse(
+      gh("api", `repos/${repo()}/actions/runs/${run.id}/artifacts?name=${STATE_ARTIFACT}`),
+    ).artifacts.filter((artifact) => !artifact.expired);
+    if (listed.length === 0) return undefined;
     const target = join(dir, String(run.id));
     const got = spawnSync(
       "gh",
       ["run", "download", String(run.id), "-R", repo(), "-n", STATE_ARTIFACT, "-D", target],
-      {
-        stdio: "ignore",
-      },
+      { stdio: "ignore" },
     );
-    if (got.status !== 0 || !existsSync(join(target, "state.json"))) continue;
+    if (got.status !== 0 || !existsSync(join(target, "state.json"))) return undefined;
     let state;
     try {
       state = validState(
@@ -520,15 +541,13 @@ function loadStates(limit = STATE_HISTORY) {
     } catch {
       state = undefined;
     }
-    if (state === undefined) {
+    if (state === undefined)
       console.log(
         `::warning::run ${run.id} left a postmerge-state that is not valid; it does not count`,
       );
-      continue;
-    }
-    states.push(state);
-  }
-  return states;
+    return state;
+  };
+  return collectStates(trustedRunPages(), limit, readState);
 }
 
 function pick() {
@@ -553,7 +572,7 @@ function pick() {
     output("sha=\nskip=true\n");
     return;
   }
-  const [latest] = loadStates(5);
+  const [latest] = loadStates(1);
   const skip = !requested && latest?.sha === sha;
   console.log(skip ? `${sha} was tested by run ${latest.runId}; nothing new` : `Test ${sha}`);
   output(`sha=${sha}\nskip=${skip}\n`);
@@ -598,7 +617,7 @@ function plan(sha, stateDir) {
     let reason;
     if (previous && red(previous.conclusion))
       reason = `already red at \`${previous.sha.slice(0, 12)}\` (run ${previous.runId}), so it did not turn red here`;
-    else if (!lastGreen) reason = `no green result in the last ${STATE_HISTORY} runs`;
+    else if (!lastGreen) reason = `no green result in the last ${STATE_HISTORY} results`;
     else if (!found) reason = "no recipe probes this job on one runner";
     else if (used.has(found.recipe.id))
       reason = `another ${found.recipe.id} job is bisected in this run`;

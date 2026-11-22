@@ -14,7 +14,8 @@ on:
   # A push to a pull request cancels the expensive tier still running on its older head.
   pull_request:
     types: [labeled, synchronize]
-  # A fork's pull request runs every lane but cannot write ci/full; this reports it.
+  # A passing expensive tier re-runs the pull request run's required test check, and a fork's pull request run,
+  # which runs every lane but cannot write ci/full, reports it here.
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -44,6 +45,8 @@ jobs:
       (github.event.action == 'synchronize' || github.event.label.name == 'ci:full')) ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name != github.repository) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'workflow_dispatch' &&
+      github.event.workflow_run.conclusion == 'success') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

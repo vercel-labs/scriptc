@@ -15,7 +15,8 @@
 // once the branch moves on. CI runs on the branch, never here: this workflow runs in the default branch's
 // context, whose caches main and the release restore.
 //
-// workflow_run completed: a fork's token cannot write statuses, so its pull request runs (which run every lane)
+// workflow_run completed: when a dispatched expensive tier passes, the pull request run's required test check,
+// which stays red on the fast tier alone, is re-run and finds ci/full green. And a fork's token cannot write statuses, so its pull request runs (which run every lane)
 // report ci/full through here, from the run's required test job.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -89,6 +90,20 @@ export function staleRuns(runs, headSha) {
   return runs.filter((run) => run.status !== "completed" && run.head_sha !== headSha);
 }
 
+/**
+ * The pull request run's test job to re-run after a dispatched expensive tier `run` ends: only when it passed,
+ * the pull request run is on the same commit, and its test job finished without passing; else null.
+ */
+export function testJobToRerun(run, prRun, jobs) {
+  if (run.event !== "workflow_dispatch" || run.conclusion !== "success" || prRun === undefined)
+    return null;
+  if (prRun.head_sha !== run.head_sha) return null;
+  const test = jobs.find((job) => job.name === "test");
+  if (test === undefined || test.status !== "completed" || test.conclusion === "success")
+    return null;
+  return test;
+}
+
 /** The ci/full status of a fork's pull request run, from its required test job; null when there is none. */
 export function forkStatus(run, jobs, repo) {
   if (run.event !== "pull_request" || run.head_repository?.full_name === repo) return null;
@@ -112,6 +127,35 @@ function main() {
   const eventName = process.env.GITHUB_EVENT_NAME;
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
   const defaultBranch = event.repository?.default_branch ?? "main";
+
+  if (eventName === "workflow_run" && event.workflow_run.event === "workflow_dispatch") {
+    // An expensive tier ended. When it passed, re-run the required test job of the pull request run on the same
+    // commit: that job passes only once ci/full is green, which this run has just reported.
+    const run = event.workflow_run;
+    const prRuns = json(
+      `repos/${repo}/actions/workflows/ci.yml/runs?event=pull_request&head_sha=${run.head_sha}&per_page=100`,
+    ).workflow_runs;
+    const prRun = prRuns.sort((a, b) => b.run_number - a.run_number)[0];
+    const jobs =
+      prRun === undefined
+        ? []
+        : json(
+            "--paginate",
+            "--slurp",
+            `repos/${repo}/actions/runs/${prRun.id}/jobs?per_page=100`,
+          ).flatMap((page) => page.jobs);
+    const target = testJobToRerun(run, prRun, jobs);
+    if (target === null)
+      return console.log(`Run ${run.html_url}: no pull request test check to re-run`);
+    console.log(`Re-running the test check of ${prRun.html_url} now that ${run.html_url} passed`);
+    try {
+      gh("--method", "POST", `repos/${repo}/actions/jobs/${target.id}/rerun`);
+    } catch (error) {
+      // A run still in progress cannot re-run a job; its test job reads ci/full itself when it gets there.
+      console.log(`  not re-run: ${error.message}`);
+    }
+    return;
+  }
 
   if (eventName === "workflow_run") {
     const run = event.workflow_run;

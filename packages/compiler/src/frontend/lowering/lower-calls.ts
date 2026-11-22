@@ -12,6 +12,7 @@ import {
 } from "./member-call-receivers.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
+  arrayClassDeclaresMember,
   arrayClassMemberOwner,
   applyDeferredArrayClassCheck,
   arrayClassReceiver,
@@ -5602,6 +5603,21 @@ function lowerDynReceiverMethodCall(
     lowerer.dynConvertible(recv.type)
   )
     recv = lowerer.coerceToExpected(recv, DYN);
+  // An untyped receiver that lowered to a native array can be an instance
+  // of a class declared `extends Array` over its elements: a member such a
+  // class declares answers through the dynamic dispatch, which tests the
+  // array's class (a live reference keeps the instance).
+  {
+    // An element read holds the array with the hole's unit arm.
+    const present = recv.type.kind === "union" ? lowerer.stripUndefinedArm(recv.type) : recv.type;
+    if (
+      checkerUntyped &&
+      present.kind === "array" &&
+      arrayClassDeclaresMember(lowerer, present, access.name.text) &&
+      lowerer.dynConvertible(recv.type)
+    )
+      recv = lowerer.coerceToExpected(recv, DYN);
+  }
   if (recv.type.kind !== "dyn") return null;
   // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
   // own member, so every primitive specialization below — which assumes a

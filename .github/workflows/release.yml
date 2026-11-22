@@ -150,6 +150,7 @@ jobs:
                   ':(exclude)scripts/wait-npm-available.mjs', ':(exclude)tests/harness/npm-available.test.ts',
                   ':(exclude)scripts/release-supersede.mjs', ':(exclude)scripts/release-preflight.mjs',
                   ':(exclude)scripts/release-ci-gate.mjs',
+                  ':(exclude)scripts/verify-npm-published.mjs',
                   ':(exclude)tests/harness/release-guards.test.ts',
                 ]).status !== 0) continue;
             const artifacts = api(`repos/${repo}/actions/runs/${run.id}/artifacts?per_page=100`).artifacts
@@ -400,7 +401,12 @@ jobs:
               echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-accepted.txt"
               return 0
             fi
+            # npm refused the upload because the version exists. Versions are
+            # immutable, so it counts as published only when npm holds this
+            # payload: an earlier failed attempt from another commit may have
+            # published it (0.4.15's runtime packs, #4011).
             if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+              node scripts/verify-npm-published.mjs "$packed" "$name@$VERSION" || return 1
               echo "$name@$VERSION is now public"
               echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-accepted.txt"
               return 0

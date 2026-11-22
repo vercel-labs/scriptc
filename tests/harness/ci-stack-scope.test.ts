@@ -250,7 +250,7 @@ test("every expensive CI job is gated and included in the required test check", 
       expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
       expect(job.needs, name).toContain("lanes");
       expect(
-        ["linux", "macos", "effects", "bootstrap", "profile", "islands", "fast"],
+        ["linux", "macos", "effects", "bootstrap", "profile", "islands", "macos_smoke", "fast"],
         name,
       ).toContain(lane);
     }
@@ -279,6 +279,7 @@ test("a lane the base revision's selector does not name leaves its job off", () 
     "islands",
     "linux",
     "macos",
+    "macos_smoke",
     "profile",
   ]);
   for (const [lane, output] of Object.entries(outputs))
@@ -293,6 +294,7 @@ function runGate(
     macos: "true",
     effects: "true",
     bootstrap: "true",
+    macos_smoke: "true",
     fast: "true",
   },
   tier = "full",
@@ -328,9 +330,26 @@ function runGate(
 test("the required test check passes only after full validation", () => {
   expect(runGate("true").status).toBe(0);
   // A lane that is off may skip its jobs; a lane that is on may not.
-  const linuxOnly = { linux: "true", macos: "false", effects: "false", bootstrap: "false" };
+  const linuxOnly = {
+    linux: "true",
+    macos: "false",
+    effects: "false",
+    bootstrap: "false",
+    macos_smoke: "false",
+  };
   expect(runGate("true", {}, linuxOnly).status).toBe(0);
   expect(runGate("true", { tests_macos: "skipped" }).status).toBe(1);
+  // A push to main runs the macOS smoke job in place of the macOS lane.
+  const mainPush = {
+    linux: "true",
+    macos: "false",
+    effects: "true",
+    bootstrap: "true",
+    macos_smoke: "true",
+  };
+  expect(runGate("true", {}, mainPush).status).toBe(0);
+  expect(runGate("true", { tests_macos_smoke: "skipped" }, mainPush).status).toBe(1);
+  expect(runGate("true", { tests_macos_smoke: "failure" }, mainPush).status).toBe(1);
   expect(runGate("true", { effects: "failure" }, linuxOnly).status).toBe(1);
   expect(runGate("true", { lanes: "failure" }).status).toBe(1);
   const deferred = runGate("false");

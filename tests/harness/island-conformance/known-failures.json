@@ -350,6 +350,12 @@
       "signature": "SC8006"
     }
   },
+  "npm/undici8": {
+    "island:undici": {
+      "category": "build",
+      "signature": "SC8006"
+    }
+  },
   "npm/workspace-dynamic-import-deps": {
     "island:wsdynamicdeps": {
       "category": "build",

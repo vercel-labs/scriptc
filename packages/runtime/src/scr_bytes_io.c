@@ -3276,7 +3276,25 @@ static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
     return;
   }
   double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
+  /* Node reaches a symbolic link's own entry on macOS by opening the path
+   * with O_SYMLINK and then fchmod(2), so a failure reports the step it
+   * happened in: a missing path is Node's "ENOENT: ..., open 'x'". The
+   * write access is Node's own (a writable but unreadable link is reached,
+   * and a directory fails the open with EISDIR rather than being chmodded).
+   * O_NONBLOCK keeps the inline call from waiting for a writer when the
+   * path is a FIFO: the open answers ENXIO instead of parking the loop. */
+#ifdef O_SYMLINK
+  int fd = open(p->data, O_WRONLY | O_SYMLINK | O_NONBLOCK);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", p);
+    scr_str_release(p);
+    return;
+  }
+  if (fchmod(fd, (mode_t)m) != 0) scr_fs_throw(errno, "fchmod", p);
+  close(fd);
+#else
   if (lchmod(p->data, (mode_t)m) != 0) scr_fs_throw(errno, "lchmod", p);
+#endif
   scr_str_release(p);
 }
 #endif

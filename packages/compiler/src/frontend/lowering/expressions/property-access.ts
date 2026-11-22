@@ -21,6 +21,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { fenceConsoleMemberValue } from "../coercions/console-records.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
+  arrayClassDeclaresMember,
   arrayClassMemberOwner,
   arrayClassReceiver,
   lowerArrayClassConstructorRead,
@@ -2585,6 +2586,33 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // An untyped receiver that lowered to a native array can be an instance
+  // of a class declared `extends Array` over its elements: a member that
+  // class declares is read on the array as a dynamic value, where the
+  // dispatch tests the array's class.
+  {
+    const present =
+      recvLowered.type.kind === "union"
+        ? lowerer.stripUndefinedArm(recvLowered.type)
+        : recvLowered.type;
+    if (
+      !ts.isPrivateIdentifier(expr.name) &&
+      (lowerer.typeOf(expr.expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 &&
+      present.kind === "array" &&
+      arrayClassDeclaresMember(lowerer, present, expr.name.text) &&
+      lowerer.dynConvertible(recvLowered.type)
+    )
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceToExpected(recvLowered, DYN),
+          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        expr,
+      );
   }
   if (!ts.isPrivateIdentifier(expr.name)) {
     const built = packageBuiltWithoutMember(lowerer, expr.expression, expr.name.text, "reading");

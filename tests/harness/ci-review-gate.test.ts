@@ -3,7 +3,13 @@ import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { FAST_TEST_BUDGET_MS, fastTests } from "../../scripts/ci-fast-tests.mjs";
-import { decide, forkStatus, reviewState, staleRuns } from "../../scripts/ci-review-gate.mjs";
+import {
+  decide,
+  forkStatus,
+  reviewState,
+  staleRuns,
+  testJobToRerun,
+} from "../../scripts/ci-review-gate.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const repo = "vercel-labs/scriptc";
@@ -152,6 +158,9 @@ test("a fork's pull request run reports ci/full from its test job", () => {
 test("the gate workflow triggers on the reviews, the label, fork runs and by hand, and runs no pull request code", () => {
   expect(gateWorkflow.on["check_run"]).toEqual({ types: ["completed"] });
   expect(gateWorkflow.on["pull_request"]).toEqual({ types: ["labeled", "synchronize"] });
+  expect(gateWorkflow.jobs["gate"]!.if).toContain(
+    "github.event.workflow_run.event == 'workflow_dispatch'",
+  );
   expect(gateWorkflow.on["workflow_run"]).toEqual({ workflows: ["CI"], types: ["completed"] });
   expect(gateWorkflow.on["workflow_dispatch"]).toBeDefined();
   expect(gateWorkflow.permissions).toEqual({ contents: "read" });
@@ -253,4 +262,28 @@ test("a re-run of the fast tier does not turn a reported ci/full back to pending
   expect(report.indexOf('if [ "$state" = pending ]; then')).toBeGreaterThan(-1);
   expect(keep).toBeGreaterThan(report.indexOf('if [ "$state" = pending ]; then'));
   expect(keep).toBeLessThan(report.indexOf("gh api --method POST"));
+});
+
+test("the fast tier alone cannot turn the required test check green", () => {
+  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as Workflow;
+  const steps = ci.jobs["test"]!.steps as { name?: string; if?: string; run?: string }[];
+  const require = steps.at(-1)!;
+  expect(require.name).toBe("Require the expensive tier (ci/full)");
+  expect(require.if).toBe("needs.validation_scope.outputs.tier == 'fast'");
+  expect(require.run).toContain('if [ "$reported" != success ]; then');
+  expect(require.run).toContain("exit 1");
+  // It runs after the lanes passed and after ci/full is reported.
+  expect(steps.findIndex((step) => step.name === "Report ci/full")).toBeLessThan(steps.length - 1);
+});
+
+test("a passing expensive tier re-runs the pull request run's test check on the same commit", () => {
+  const dispatch = { event: "workflow_dispatch", conclusion: "success", head_sha: sha };
+  const prRun = { head_sha: sha };
+  const failedTest = { id: 7, name: "test", status: "completed", conclusion: "failure" };
+  expect(testJobToRerun(dispatch, prRun, [failedTest])).toBe(failedTest);
+  expect(testJobToRerun({ ...dispatch, conclusion: "failure" }, prRun, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, { head_sha: "b".repeat(40) }, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, undefined, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, conclusion: "success" }])).toBeNull();
+  expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, status: "in_progress" }])).toBeNull();
 });

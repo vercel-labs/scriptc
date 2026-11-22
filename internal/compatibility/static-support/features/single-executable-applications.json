@@ -1,0 +1,3 @@
+[
+    { "chapter": "single-executable-applications", "signatures": ["`sea.isSea()`", "`sea.getAsset(key[, encoding])`", "`sea.getAssetAsBlob(key[, options])`", "`sea.getRawAsset(key)`", "`sea.getAssetKeys()`"], "status": "partial", "evidence": ["tests/corpus/8894-node-sea-outside-application/main.ts", "tests/corpus/8895-node-sea-untyped.cjs"] }
+]

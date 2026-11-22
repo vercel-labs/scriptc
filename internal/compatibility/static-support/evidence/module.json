@@ -1,0 +1,7 @@
+{
+    "node-builtin.module": ["tests/corpus/1598-cjs-builtin-require/main.js"],
+    "node-builtin.module.constants": ["tests/corpus/module-compile-cache-disabled.ts", "tests/corpus/module-compile-cache-values.mjs"],
+    "node-builtin.module.enableCompileCache": ["tests/corpus/module-compile-cache-disabled.ts", "tests/corpus/module-compile-cache-values.mjs", "tests/corpus/module-compile-cache-entry.mjs"],
+    "node-builtin.module.getCompileCacheDir": ["tests/corpus/module-compile-cache-disabled.ts", "tests/corpus/module-compile-cache-values.mjs"],
+    "node-builtin.module.flushCompileCache": ["tests/corpus/module-compile-cache-disabled.ts", "tests/corpus/module-compile-cache-values.mjs"]
+}

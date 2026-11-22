@@ -554,9 +554,15 @@ export function lowerArrayLiteral(
           const candidates: IrType[] = [];
           for (const el of expr.elements.nodes) {
             if (ts.isOmittedExpression(el)) continue;
-            const mappedEl = lowerer.mapTypeOf(lowerer.typeOf(ts.isSpreadElement(el) ? el.expression : el));
+            const mappedEl = lowerer.mapTypeOf(
+              lowerer.typeOf(ts.isSpreadElement(el) ? el.expression : el),
+            );
             if (mappedEl === null) continue;
-            const t = ts.isSpreadElement(el) ? (mappedEl.kind === "array" ? mappedEl.elem : null) : mappedEl;
+            const t = ts.isSpreadElement(el)
+              ? mappedEl.kind === "array"
+                ? mappedEl.elem
+                : null
+              : mappedEl;
             if (t !== null && !candidates.some((c) => typeEquals(c, t))) candidates.push(t);
           }
           const elem =

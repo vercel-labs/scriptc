@@ -139,7 +139,7 @@ function patternSpreadArrayJoin(
     }
   }
   const parts = [...arms.values()];
-  if (parts.length === 0 || parts.every(isUnitType)) return null;
+  if (parts.every(isUnitType)) return null;
   if (parts.length > 1) sortArms(parts);
   return {
     kind: "array",
@@ -151,7 +151,8 @@ export function lowerTernary(
   lowerer: Lowerer,
   expr: ts.ConditionalExpression,
   expected?: IrType,
-): IrExpr {  const loc = locOf(expr);
+): IrExpr {
+  const loc = locOf(expr);
   // `Array.isArray(x) ? x : [x]` over a `T | readonly T[]` union: tsc
   // narrows the TRUE branch to `any[]` (maybeNarrow's isArray bridge
   // rides that) but leaves the FALSE branch wide — a readonly array

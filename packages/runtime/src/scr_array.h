@@ -185,6 +185,11 @@ typedef struct ScrArrExt {
   /* Some slot may hold SCR_ARR_FOREIGN; release and copies walk the states
    * for their payloads only then. */
   bool foreign;
+  /* A traced Array subclass whose element type is an array the program
+   * never made cycle-capable: its rows carry no collector header, so the
+   * instance's trace leaves them to the teardown instead of handing them to
+   * the collector as objects. */
+  bool untraced_rows;
 } ScrArrExt;
 
 /* A program class that extends Array. Its instances are emitted structs

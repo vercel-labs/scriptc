@@ -1626,6 +1626,11 @@ void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b) {
  * element kind whose type carries the cycle header (an array forced cyclic
  * only for the prototype it received may hold elements that do not). */
 static bool scr_arr_elements_traced(const ScrArr *a) {
+  /* A traced subclass of an array-of-arrays holds rows of an element type
+   * the program never made cycle-capable: they carry no header, so only the
+   * teardown may touch them. */
+  const ScrArrExt *x = scr_arr_ext_of(a);
+  if (x != NULL && x->untraced_rows) return false;
   switch (a->elem) {
   /* Arrays are always collector objects. Bytes are not: their blocks have no
    * collector header, so a forced-cyclic array of them keeps them as value
@@ -2046,6 +2051,9 @@ void scr_arr_subclass_init(ScrArr *a, uint8_t elem, const ScrArrOps *ops, const 
   ScrArrExt *x = scr_arr_ext(a);
   if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
   x->cls = cls;
+  /* Rows of an array-of-arrays subclass whose element type is not
+   * cycle-capable carry no header: the collector must not walk them. */
+  if (cyc && elem == SCR_ELEM_ARR && ops == NULL) x->untraced_rows = true;
 #ifdef SCR_RC_AUDIT
   scr_live_arrays++;
 #endif

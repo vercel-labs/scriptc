@@ -34,6 +34,11 @@ if (effectConcurrency !== undefined && effectConcurrency !== "1" && effectConcur
 const failureReporters = process.env["SCRIPTC_CI_FAILURES"]
   ? [fileURLToPath(new URL("./scripts/ci-failure-reporter.mjs", import.meta.url))]
   : [];
+// With the failure reporter, the runner that counts the errors a test's body throws (scripts/ci-quarantine-runner.mjs),
+// so a hook's error is never taken for a quarantined test's.
+const failureRunner = process.env["SCRIPTC_CI_FAILURES"]
+  ? { runner: fileURLToPath(new URL("./scripts/ci-quarantine-runner.mjs", import.meta.url)) }
+  : {};
 
 export default defineConfig({
   resolve: {
@@ -116,6 +121,7 @@ export default defineConfig({
     // scripts/ci-test.mjs sets SCRIPTC_CI_FAILURES for each vitest process it runs, and
     // scripts/ci-failure-reporter.mjs writes that process's failures there, so a task whose only failures are
     // quarantined flaky tests (tests/harness/flaky-quarantine.json) can pass.
+    ...failureRunner,
     ...(process.env["GITHUB_ACTIONS"] === "true" && process.env["SCRIPTC_CI_PROGRESS"] !== "0"
       ? {
           reporters: [

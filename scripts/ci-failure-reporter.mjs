@@ -3,7 +3,8 @@
 // are quarantined flaky tests (scripts/ci-quarantine.mjs) from any other failure. It writes nothing otherwise.
 //
 // { "tests": [{ "file": "tests/harness/x.test.ts", "name": "the test's own name", "fullName": "suite > test" }],
-//   "other": ["descriptions of unhandled errors, failed hooks and files that failed outside their tests"] }
+//   "other": ["descriptions of unhandled errors, failed hooks, failures outside a test's body and files that
+//             failed outside their tests"] }
 
 import { writeFileSync } from "node:fs";
 import { relative } from "node:path";
@@ -22,9 +23,20 @@ export function failureReport(testModules, unhandledErrors = [], root = process.
         other.push(`${file} > ${suite.fullName}: ${describe(error)}`);
     let failedTests = 0;
     for (const testCase of testModule.children.allTests()) {
-      if (testCase.result().state !== "failed") continue;
+      const result = testCase.result();
+      if (result.state !== "failed") continue;
       failedTests++;
-      tests.push({ file, name: testCase.name, fullName: testCase.fullName });
+      // Only a failure the test's body threw can be a flaky test's: scripts/ci-quarantine-runner.mjs counts those
+      // errors. vitest adds hook errors, an expect.assertions count or a soft assertion to the same result.
+      const errors = result.errors?.length ?? 0;
+      const bodyErrors = testCase.meta()?.scriptcBodyErrors ?? 0;
+      if (bodyErrors > 0 && errors === bodyErrors)
+        tests.push({ file, name: testCase.name, fullName: testCase.fullName });
+      else
+        other.push(
+          `${file} > ${testCase.fullName}: ${errors - bodyErrors} of its ${errors} errors came from outside its body ` +
+            "(a hook, an assertion count or a soft assertion)",
+        );
     }
     // A file can fail with no failed test and no error of its own (a failure vitest records elsewhere).
     if (testModule.state() === "failed" && failedTests === 0 && testModule.errors().length === 0)

@@ -131,10 +131,13 @@ test("the CI runner passes a task whose only failures are quarantined, with a wa
 });
 
 test("the failure reporter records failed tests by file and name, and every error outside a test", () => {
-  const testCase = (name: string, state: string) => ({
+  // `errors` is how many errors the result holds, `bodyErrors` how many the body threw
+  // (scripts/ci-quarantine-runner.mjs).
+  const testCase = (name: string, state: string, errors = 0, bodyErrors?: number) => ({
     name,
     fullName: `suite > ${name}`,
-    result: () => ({ state }),
+    result: () => ({ state, errors: Array.from({ length: errors }, () => ({ message: "x" })) }),
+    meta: () => (bodyErrors === undefined ? {} : { scriptcBodyErrors: bodyErrors }),
   });
   const testModule = (
     file: string,
@@ -155,7 +158,15 @@ test("the failure reporter records failed tests by file and name, and every erro
     [
       testModule("tests/harness/a.test.ts", "failed", [
         testCase("passes", "passed"),
-        testCase("fails", "failed"),
+        testCase("fails", "failed", 1, 1),
+        // Failed on both attempts of a retry, each time in its body.
+        testCase("fails twice", "failed", 2, 2),
+        // A beforeEach hook threw: the body never ran.
+        testCase("hook before", "failed", 1),
+        // The body threw and then an afterEach hook threw too.
+        testCase("hook after", "failed", 2, 1),
+        // A soft assertion or an assertion count failed it; the body threw nothing.
+        testCase("soft", "failed", 1, 0),
       ]),
       testModule("tests/harness/b.test.ts", "failed", [], [{ message: "cannot load\nstack" }]),
       testModule(
@@ -171,9 +182,14 @@ test("the failure reporter records failed tests by file and name, and every erro
   );
   expect(report.tests).toEqual([
     { file: "tests/harness/a.test.ts", name: "fails", fullName: "suite > fails" },
+    { file: "tests/harness/a.test.ts", name: "fails twice", fullName: "suite > fails twice" },
   ]);
+  const outside = "came from outside its body (a hook, an assertion count or a soft assertion)";
   expect(report.other).toEqual([
     "unhandled error: unhandled rejection",
+    `tests/harness/a.test.ts > suite > hook before: 1 of its 1 errors ${outside}`,
+    `tests/harness/a.test.ts > suite > hook after: 1 of its 2 errors ${outside}`,
+    `tests/harness/a.test.ts > suite > soft: 1 of its 1 errors ${outside}`,
     "tests/harness/b.test.ts: cannot load",
     "tests/harness/c.test.ts > suite: beforeAll failed",
     "tests/harness/c.test.ts: failed without a failed test",

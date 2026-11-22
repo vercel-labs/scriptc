@@ -116,13 +116,15 @@ function patternSpreadArrayJoin(
   };
   if (!walk(expr) || !variableSpread) return null;
   const arms = new Map<string, IrType>();
-  const add = (t: IrType | null): boolean => {
+  const add = (t: IrType | null, arm = false): boolean => {
     if (t === null) return false;
     if (t.kind === "union") {
-      return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every((inner) => add(inner, true));
     }
     const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-    if (isUnitType(part)) return true;
+    // A position that is itself the unit value adds no element type; a unit
+    // ARM of the source's element type is a value the positions can hold.
+    if (isUnitType(part) && !arm) return true;
     arms.set(typeKey(part), part);
     return true;
   };
@@ -3063,13 +3065,15 @@ function arrayBesideLiteralUnderTuple(
     : lowerer.mapTypeOf(lowerer.typeOf(thenLit ? expr.whenFalse : expr.whenTrue));
   if (!bothLiterals && other?.kind !== "array") return null;
   const arms = new Map<string, IrType>();
-  const add = (t: IrType | null): boolean => {
+  const add = (t: IrType | null, arm = false): boolean => {
     if (t === null) return false;
     if (t.kind === "union") {
-      return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every((inner) => add(inner, true));
     }
     const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-    if (isUnitType(part)) return true;
+    // A position that is itself the unit value adds no element type; a unit
+    // ARM of the source's element type is a value the positions can hold.
+    if (isUnitType(part) && !arm) return true;
     arms.set(typeKey(part), part);
     return true;
   };

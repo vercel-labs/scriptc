@@ -35,3 +35,8 @@ const pair: [number, number] = [1, 2];
 const rest: number[] = [];
 const [p1, p2, p3] = [...pair, ...rest];
 console.log(p1, p2, p3);
+
+// A nullable element type survives the spread: null is a value, not absence.
+const nullable: ({ label: string } | null)[] = [null, { label: "x" }];
+const [n1, n2] = nullable.length > 0 ? [...nullable] : [];
+console.log(labelOf(n1 ?? undefined), labelOf(n2 ?? undefined));

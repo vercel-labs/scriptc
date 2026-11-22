@@ -12481,14 +12481,17 @@ export class Lowerer {
       };
       if (!walk(init) || !variableSpread) return null;
       const arms: IrType[] = [];
-      const note = (t: IrType | null): void => {
+      const note = (t: IrType | null, arm = false): void => {
         if (t === null) return;
         if (t.kind === "union") {
-          for (const arm of this.unions.get(t.unionId)?.arms ?? []) note(arm);
+          for (const inner of this.unions.get(t.unionId)?.arms ?? []) note(inner, true);
           return;
         }
         const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-        if (isUnitType(part)) return;
+        // A position that is itself the unit value says nothing about the
+        // element type; a unit ARM of the source's element type is a value
+        // the positions can hold.
+        if (isUnitType(part) && !arm) return;
         if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
       };
       for (const lit of leaves) {

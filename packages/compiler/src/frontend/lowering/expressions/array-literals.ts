@@ -552,8 +552,15 @@ export function lowerArrayLiteral(
           // type (a fixed tuple spread its positions); mixed positions keep
           // a union, and an unreadable set stays dynamic.
           const candidates: IrType[] = [];
-          const note = (t: IrType | null): void => {
-            if (t === null || isUnitType(t)) return;
+          const note = (t: IrType | null, arm = false): void => {
+            if (t === null) return;
+            if (t.kind === "union") {
+              for (const inner of lowerer.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+              return;
+            }
+            // A position that is itself the unit value adds no element type;
+            // a unit ARM of the source's element type is a real value.
+            if (isUnitType(t) && !arm) return;
             if (!candidates.some((c) => typeEquals(c, t))) candidates.push(t);
           };
           for (const el of expr.elements.nodes) {

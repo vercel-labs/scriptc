@@ -722,11 +722,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (sideEffectFreeOptionValue(expr.expression)) {
       return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
     }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile)",
-    );
+    // An effectful operand runs for its effects and the expression answers
+    // the undefined value: a sequence carries the statement before the
+    // result, exactly like statement-position `void e`.
+    const effect = lowerer.lowerExpr(expr.expression);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: effect, loc: locOf(expr) }],
+      result: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) },
+      type: UNDEFINED_T,
+      loc: locOf(expr),
+    };
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
   if (ts.isIdentifier(expr)) {

@@ -1327,6 +1327,25 @@ export function elemAccess(elem: IrType): "f64" | "bool" | "ref" {
  * arrayElemKindNumber): the plain scr_arr_new kinds, and SCR_ELEM_REF (5)
  * for everything else. The forced set also holds CREF (6), which the runtime
  * stamping forwards from REF. */
+/** SCR_ELEM_ARR: the kind an array of arrays allocates as (scr_array.h). */
+export const SCR_ELEM_ARR_KIND = 3;
+
+/** The largest SCR_ELEM_* kind (SCR_ELEM_I32, scr_array.h). */
+export const SCR_ELEM_LAST_KIND = 7;
+
+/** The kinds whose arrays carry the collector header: the kinds the program
+ * names, and every kind when it names an array-of-arrays kind. The runtime's
+ * scr_arr_force_cyclic_kind expands that way too — a traced outer array
+ * visits its row children, so every row needs the header — and the compiler
+ * expands before it decides layouts, trace adapters and Array-subclass
+ * headers, not only in the allocator. */
+export function expandedForcedArrayKinds(kinds: readonly number[] | undefined): Set<number> {
+  const forced = new Set(kinds ?? []);
+  if (forced.has(SCR_ELEM_ARR_KIND))
+    for (let kind = 0; kind <= SCR_ELEM_LAST_KIND; kind++) forced.add(kind);
+  return forced;
+}
+
 export function arrayAllocKind(elem: IrType): number {
   switch (elem.kind) {
     case "f64":

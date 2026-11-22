@@ -2248,11 +2248,17 @@ static bool scr_arr_subclass_elements_traced(const ScrArr *a) {
 }
 
 void scr_arr_subclass_trace(void *a, ScrTraceVisit visit, void *ctx) {
-  if (scr_arr_subclass_elements_traced((ScrArr *)a)) scr_arr_trace_v(a, visit, ctx);
+  /* The array's metadata and its installed prototype are traced whatever the
+   * element type is; scr_arr_trace_v visits the elements only when their kind
+   * carries references the collector walks. */
+  scr_arr_trace_v(a, visit, ctx);
 }
 
 void scr_arr_subclass_gc_drop(ScrArr *a) {
-  if (!scr_arr_subclass_elements_traced(a)) scr_arr_release_contents(a);
+  /* Complement of scr_arr_subclass_trace: the metadata, the prototype and
+   * the traced elements were visited, so only the untraced element slots are
+   * released here. */
+  if (!scr_arr_subclass_elements_traced(a)) scr_arr_release_untraced_elements(a);
   scr_arr_free_parts(a);
   a->data = NULL;
   a->len = a->cap = a->filled = 0;

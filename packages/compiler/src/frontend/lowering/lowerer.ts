@@ -6691,6 +6691,10 @@ export class Lowerer {
     "wholeSlotDegradation",
     "untypedConstructors",
     "dynamicClassValues",
+    // Element kinds the program gives a prototype: a program fact the
+    // setPrototypeOf lowerings record, and a replay of a unit records its
+    // kinds again (the set only grows with the program's own calls).
+    "prototypeArrayKinds",
     // Which refusals involve a held constructor (held-constructors.ts): a
     // count and its mark for the statement being lowered, and the answers
     // per named type, computed again when asked.

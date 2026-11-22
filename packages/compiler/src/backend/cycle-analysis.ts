@@ -54,7 +54,7 @@ export function prototypeOverrides(mod: IrModule): {
   const shapes = new Set<string>();
   let arrays = false;
   let allRecords = false;
-  const seen = new WeakSet<object>();
+  const seen = new Set<object>();
   const scan = (value: unknown): void => {
     if (typeof value !== "object" || value === null) return;
     if (seen.has(value)) return;

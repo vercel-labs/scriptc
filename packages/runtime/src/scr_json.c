@@ -4172,10 +4172,13 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
       scr_arr_set_prototype_override((ScrArr *)object->v.typed_ref.ptr, prototype);
     } else if (object->v.typed_ref.type_key_len >= 7 &&
                memcmp(object->v.typed_ref.type_key, "record:", 7) == 0) {
-      /* A native record keeps the prototype in its own slot. */
+      /* A native record whose compiled shape owns the hidden slot keeps the
+       * prototype past this capsule. One without a slot answers it from the
+       * view built above, as it always did: the process-wide table would keep
+       * the prototype (and whatever it captures) alive until the record dies,
+       * which a record that owns no slot can never make collector-visible. */
       if (record_ops && record_ops->proto_set)
         record_ops->proto_set(object->v.typed_ref.ptr, prototype);
-      else scr_instance_proto_set(object->v.typed_ref.ptr, prototype);
     } else if (object->v.typed_ref.type_key_len >= 7 &&
                memcmp(object->v.typed_ref.type_key, "object:", 7) == 0) {
       /* A program class instance keeps the prototype past this boxing: the

@@ -36,6 +36,7 @@ import {
 } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
 import { computeTraced, prototypeShapeIds } from "./cycle-analysis.js";
+import { expandedForcedArrayKinds } from "./llvm/shapes.js";
 import { constructorEscapePoint } from "./cycle-mutability.js";
 import { computeImmutableFields, type ImmutableFields } from "./immutability.js";
 import { computePublishedTypes, type PublishedTypes } from "./publication.js";
@@ -97,7 +98,7 @@ export function planTreeClasses(mod: IrModule, facts: TreeClassFacts): TreeClass
       undefined,
       undefined,
       prototypeShapeIds(mod),
-      new Set(mod.prototypeOverrideArrayKinds ?? []),
+      expandedForcedArrayKinds(mod.prototypeOverrideArrayKinds),
     );
   const immutable = facts.immutable !== undefined ? facts.immutable : computeImmutableFields(mod);
   const published = facts.published !== undefined ? facts.published : computePublishedTypes(mod);

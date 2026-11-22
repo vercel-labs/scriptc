@@ -475,6 +475,7 @@ import {
   boxReleaseSym,
   computeCyclic,
   computeTraced,
+  expandedForcedArrayKinds,
   prototypeShapeIds,
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
@@ -2910,7 +2911,7 @@ export class LlEmitter {
     // that answer. A checked-dynamic receiver can be any record, so every
     // shape then carries the slot.
     this.prototypeOverrideShapes = prototypeShapeIds(mod);
-    this.forcedCyclicArrayKinds = new Set(mod.prototypeOverrideArrayKinds ?? []);
+    this.forcedCyclicArrayKinds = expandedForcedArrayKinds(mod.prototypeOverrideArrayKinds);
     const traced = computeTraced(
       mod,
       dynamicStores,

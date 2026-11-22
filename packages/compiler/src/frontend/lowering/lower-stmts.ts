@@ -1388,21 +1388,35 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * initializing assignment may leave the temporal dead zone. */
 export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): boolean {
   const decl = symbol.valueDeclaration;
-  if (
-    !decl ||
-    !ts.isVariableDeclaration(decl) ||
-    decl.name === undefined ||
-    !ts.isIdentifier(decl.name)
-  )
+  if (!decl) return false;
+  // The declarator that binds this symbol: a plain one, or the target of a
+  // destructuring declarator (`const { hide } = control`, read by a closure
+  // created above it — the target is the symbol's value declaration).
+  let varDecl: ts.VariableDeclaration;
+  let nameNode: ts.BindingName;
+  if (ts.isVariableDeclaration(decl) && decl.name !== undefined) {
+    varDecl = decl;
+    nameNode = decl.name;
+  } else if (
+    ts.isBindingElement(decl) &&
+    decl.name !== undefined &&
+    ts.isBindingPattern(decl.parent) &&
+    ts.isVariableDeclaration(decl.parent.parent) &&
+    decl.parent.parent.name === decl.parent
+  ) {
+    varDecl = decl.parent.parent;
+    nameNode = decl.name;
+  } else {
     return false;
-  const flags = ts.getCombinedNodeFlags(decl);
+  }
+  if (!ts.isIdentifier(nameNode)) return false;
+  const flags = ts.getCombinedNodeFlags(varDecl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
   // `let x;` declares a binding JavaScript initializes to undefined at the
   // declaration; it has no initializer to lower, but the box below models
   // the same temporal dead zone, and the declaration itself clears it. A
-  // `const` without an initializer is not JavaScript (and a destructuring
-  // declaration writes several bindings), so both stay out.
-  if (!decl.initializer && (flags & ts.NodeFlags.Const) !== 0) return false;
+  // `const` without an initializer is not JavaScript, so it stays out.
+  if (!varDecl.initializer && (flags & ts.NodeFlags.Const) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
   // compile time (builtinClassAliasOf).
   if (builtinClassAliasOwnsNoSlot(lowerer, symbol)) return false;
@@ -1412,7 +1426,7 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
   // `const id = setInterval(cb)` self-capture — the global slot is the
   // binding). Function-scope declarations have no global; they predeclare.
   if (lowerer.globalsBySymbol.has(symbol)) return false;
-  const varStmt = decl.parent?.parent;
+  const varStmt = varDecl.parent?.parent;
   if (!ts.isVariableStatement(varStmt)) return false; // for-initializers stay out
   for (let i = lowerer.activeStmtLists.length - 1; i >= 0; i--) {
     const entry = lowerer.activeStmtLists[i]!;
@@ -1427,11 +1441,13 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // TDZ read until the initializing assign completes — JS exactly.
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
-    let type = lowerer.irTypeOf(decl.name);
+    let type = lowerer.irTypeOf(nameNode);
     if (
+      ts.isVariableDeclaration(decl) &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
+      decl.initializer !== undefined &&
       (ts.isObjectLiteralExpression(decl.initializer) ||
         (ts.isCallExpression(decl.initializer) &&
           ts.isPropertyAccessExpression(decl.initializer.expression) &&
@@ -1443,16 +1459,19 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // An island handle binding holds a checked-dynamic value whatever its
     // declared type says: its own declaration lowers as one, and so must
     // the slot a closure captured first.
-    if (islandHandleBinding(lowerer, decl.name)) type = DYN;
+    if (islandHandleBinding(lowerer, nameNode)) type = DYN;
     // So does a binding of a class's prototype view, and one of an object
     // made from that view.
-    if (isPrototypeViewBinding(lowerer, decl) || isPrototypeMadeBinding(lowerer, decl)) type = DYN;
+    if (varDecl !== decl) {
+      // A destructuring target has no view binding of its own.
+    } else if (isPrototypeViewBinding(lowerer, decl) || isPrototypeMadeBinding(lowerer, decl))
+      type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
     // `let x;` is undefined once its declaration runs, so the box holds the
     // declared type's undefined-armed form: the declaration initializes it
     // to that arm, and a write after the declaration keeps the slot.
-    if (!decl.initializer) type = lowerer.runtimeOptionalType(type);
-    const name = decl.name.text;
+    if (!varDecl.initializer) type = lowerer.runtimeOptionalType(type);
+    const name = nameNode.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
     entry.ctx.localCounters.set(name, count + 1);
     const local: IrLocal = {
@@ -7203,6 +7222,21 @@ export function bindPatternTarget(
     ) {
       type = value.type;
       runtimeOptional = true;
+    }
+    // A closure created above this declaration captured the binding first:
+    // its TDZ box exists, and this binding fills it (the simple declarator's
+    // rule, one target at a time).
+    const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+    if (pre !== undefined) {
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
+      out.push({
+        kind: "assign",
+        localId: pre.id,
+        value: lowerer.coerceInto(name, value, pre.type),
+        initializes: true,
+        loc,
+      });
+      return;
     }
     const coerced = lowerer.coerceInto(name, value, type);
     const local = lowerer.declareLocal(name, name.text, type, isLet);

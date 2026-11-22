@@ -24,10 +24,12 @@ typedef struct ScrDyn ScrDyn; /* full definition in scr_dyn.h (C11 repeat) */
 ScrStr *scr_intl_num_format_default(double x);
 
 /* process.config.variables.v8_enable_i18n_support: Node's own answer is the
- * number 1 (it bundles ICU). A compiled binary answers the same 1, and the
- * read is what links ICU — so the flag is true of the binary that reports
- * it, and no binary that reports it can lack ICU. */
+ * number 1 (it bundles ICU). A compiled binary answers 1 when this unit is
+ * linked and 0 otherwise. The pointer lives in the always-linked process
+ * core (scr_lib.c) and this unit installs it from a constructor, so a
+ * binary without ICU never holds an undefined reference to it. */
 double scr_intl_i18n_support(void);
+extern SCR_TL double (*scr_intl_i18n_support_fn)(void);
 
 /* Date.prototype.toLocaleString() and toLocaleTimeString() at the default
  * locale: ICU's best pattern for the skeleton V8 asks for ("yMdjms" /

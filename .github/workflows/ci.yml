@@ -364,7 +364,7 @@ jobs:
   # (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows the host
   # platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
   tests_macos_smoke:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos_smoke == 'true' }}
     name: test (macOS, plain, darwin smoke)
     runs-on: macos-15

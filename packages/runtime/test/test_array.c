@@ -1455,8 +1455,18 @@ static void test_dense_comparator_sort(void) {
         "a single value needs no comparator call");
   size_t rc = one->rc;
   one->rc = SIZE_MAX; /* as publication marks it */
-  check(!scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL), "a published array takes the general path");
+  check(scr_arr_sort_dense(one, &floor_fn, 2, false, 0, NULL) && sort_calls == 0,
+        "a published single value writes nothing");
   one->rc = rc;
+  ScrArr *published = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(published, 2);
+  scr_arr_push_f64(published, 1);
+  size_t published_rc = published->rc;
+  published->rc = SIZE_MAX; /* as publication marks it */
+  check(!scr_arr_sort_dense(published, &floor_fn, 2, false, 0, NULL),
+        "a published array takes the general path");
+  published->rc = published_rc;
+  scr_arr_release(published);
   scr_arr_release(one);
   scr_arr_release(undef);
   scr_arr_release(holes);

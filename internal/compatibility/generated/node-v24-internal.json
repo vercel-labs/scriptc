@@ -12088,6 +12088,7 @@
           "tests/corpus/child-symbol-dispose-js.cjs",
           "tests/corpus/child-symbol-dispose/main.ts",
           "tests/corpus/compat-child-process-handle.ts",
+          "tests/corpus/process-config-worker.cjs",
           "tests/fixtures/node-types/child-exec.ts",
           "tests/harness/project-config.test.ts"
         ]
@@ -12264,7 +12265,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/process-config-worker.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12381,7 +12383,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/process-config-worker.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12422,7 +12425,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/process-config-worker.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12463,7 +12467,8 @@
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawn-signal.ts",
           "tests/corpus/child-spawn-timeout-overflow.ts",
-          "tests/corpus/child-spawn-options-dynamic.cjs"
+          "tests/corpus/child-spawn-options-dynamic.cjs",
+          "tests/corpus/process-config-worker.cjs"
         ]
       },
       "anchorSource": "exact"

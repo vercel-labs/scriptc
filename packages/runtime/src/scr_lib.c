@@ -595,8 +595,9 @@ static SCR_TL ScrDyn *scr_process_config_obj = NULL;
 
 /* Whether the ICU unit is linked (scr_intl.c installs this from its
  * constructor): the always-linked storage keeps a binary without ICU free
- * of any reference to that unit. */
-SCR_TL double (*scr_intl_i18n_support_fn)(void) = NULL;
+ * of any reference to that unit. Process-wide, not thread-local: a worker
+ * must see the constructor's store too. */
+double (*scr_intl_i18n_support_fn)(void) = NULL;
 
 /* The cached configuration leaves with the process: scr_lib_cleanup runs
  * before the RC audit (its atexit handler is registered later, and atexit is

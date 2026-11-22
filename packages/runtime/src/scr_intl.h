@@ -29,7 +29,10 @@ ScrStr *scr_intl_num_format_default(double x);
  * core (scr_lib.c) and this unit installs it from a constructor, so a
  * binary without ICU never holds an undefined reference to it. */
 double scr_intl_i18n_support(void);
-extern SCR_TL double (*scr_intl_i18n_support_fn)(void);
+/* A process-wide constant (the unit's presence is a property of the binary),
+ * not thread-local: a worker would otherwise see a NULL copy of the slot and
+ * report 0 while ICU is linked. */
+extern double (*scr_intl_i18n_support_fn)(void);
 
 /* Date.prototype.toLocaleString() and toLocaleTimeString() at the default
  * locale: ICU's best pattern for the skeleton V8 asks for ("yMdjms" /

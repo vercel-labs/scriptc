@@ -28,12 +28,13 @@ import * as ts from "../ts7/adapter.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import {
   cjsExportAssignmentOf,
+  cjsExportDiscardReason,
   isCjsJsFile,
   isEsModuleStamp,
-  isJsSourceFile,
   locOf,
 } from "../program.js";
 import {
+  cjsConditionalWholeExportTargetsOf,
   cjsExportValueByName,
   cjsNamespaceModule,
   cjsNamespaceTargetOf,
@@ -61,10 +62,33 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
   const namesOf = (target: ts.SourceFile): ReadonlySet<string> => {
     let names = exportNames.get(target);
     if (names === undefined) {
-      names = new Set(cjsTableExportNamesInOrder(lowerer, target) ?? []);
+      const collected = new Set(cjsTableExportNamesInOrder(lowerer, target) ?? []);
+      // A conditional whole-export wrapper's members are the union its
+      // tables export: a static read of any of them answers through the
+      // wrapper's slots, so it is not a use of the object itself.
+      const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
+      if (conditional !== null)
+        for (const entry of conditional)
+          for (const name of cjsTableExportNamesInOrder(lowerer, entry.req.dep) ?? [])
+            collected.add(name);
+      names = collected;
       exportNames.set(target, names);
     }
     return names;
+  };
+  /** Record that `node` names `target`'s whole export as a value. A
+   * conditional whole-export wrapper has no object of its own: Node hands
+   * out the chosen table's object, so the tables are the modules that need
+   * one. */
+  const addValueUse = (node: ts.Expression, target: ts.SourceFile): void => {
+    if (!valueUse(node, target)) return;
+    const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
+    if (conditional === null) {
+      needed.add(target);
+      return;
+    }
+    for (const entry of conditional)
+      needed.add(cjsNamespaceTargetOf(lowerer, entry.req.dep) ?? entry.req.dep);
   };
   /** Whether `node` (a module binding or an inline require of `target`)
    * is used other than as the receiver of a static export's member. */
@@ -111,12 +135,24 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
     }
     return true;
   };
-  for (const sf of lowerer.program.getSourceFiles()) {
-    if (sf.isDeclarationFile || !isJsSourceFile(sf) || !isCjsJsFile(sf, lowerer.program)) continue;
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
     // The bindings a file declares from a require() call of a program
-    // module: only identifiers that resolve to one of these symbols can
-    // name a module binding.
+    // module, and the default and namespace import bindings of one: only
+    // identifiers that resolve to one of these symbols can name a module
+    // binding. The use site decides whether the binding is really a CommonJS
+    // module binding (an ESM import of an ES module is not one).
     const bindings = new Set<ts.Symbol>();
+    // The names those bindings have here: the identifier walk checks the
+    // name before asking the checker, so a file with one import binding does
+    // not pay a symbol lookup for every identifier in it.
+    const bindingNames = new Set<string>();
+    const addBinding = (name: ts.Identifier): void => {
+      const symbol = lowerer.checker.getSymbolAtLocation(name);
+      if (symbol === undefined) return;
+      bindings.add(symbol);
+      bindingNames.add(name.text);
+    };
     ts.walkPreorder(sf, (node) => {
       if (
         ts.isVariableDeclaration(node) &&
@@ -124,8 +160,12 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
         node.initializer !== undefined &&
         inlineProgramRequireOf(lowerer, node.initializer) !== null
       ) {
-        const symbol = lowerer.checker.getSymbolAtLocation(node.name);
-        if (symbol !== undefined) bindings.add(symbol);
+        addBinding(node.name);
+      } else if (ts.isImportDeclaration(node)) {
+        const clause = node.importClause;
+        if (clause?.name !== undefined) addBinding(clause.name);
+        const named = clause?.namedBindings;
+        if (named !== undefined && ts.isNamespaceImport(named)) addBinding(named.name);
       }
       return undefined;
     });
@@ -152,10 +192,10 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
         )
           return undefined;
         const target = cjsNamespaceTargetOf(lowerer, req.dep);
-        if (target !== null && valueUse(node, target)) needed.add(target);
+        if (target !== null) addValueUse(node, target);
         return undefined;
       }
-      if (!ts.isIdentifier(node) || bindings.size === 0) return undefined;
+      if (!ts.isIdentifier(node) || !bindingNames.has(node.text)) return undefined;
       const parent = node.parent;
       if (parent === undefined) return undefined;
       if (ts.isVariableDeclaration(parent) && parent.name === node) return undefined;
@@ -165,7 +205,7 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
       if (!lowerer.cjsLocalModuleBindingOf(node)) return undefined;
       const dep = lowerer.cjsModuleBindingDepOf(node);
       if (dep === null || !cjsNamespaceModule(lowerer, dep)) return undefined;
-      if (valueUse(node, dep)) needed.add(dep);
+      addValueUse(node, dep);
       return undefined;
     });
   }
@@ -331,6 +371,10 @@ export function cjsExportStatementObjectWrites(lowerer: Lowerer, stmt: ts.Statem
   if (g === null) return [];
   const cjs = cjsExportAssignmentOf(stmt);
   if (cjs === null) return [];
+  // A statement Node discards writes onto the exports object a
+  // `module.exports =` assignment replaced: the module's object no longer
+  // names that one, so there is nothing to mirror.
+  if (cjsExportDiscardReason(stmt) !== null) return [];
   const loc = locOf(cjs.expr);
   const out: IrStmt[] = [];
   /** The value the statement stored under `key`, checked-dynamic; `source`

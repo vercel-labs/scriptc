@@ -8297,9 +8297,20 @@ export function lowerVarDecl(
         ? [inferredObjectType]
         : [];
   const expandsObject = jsDeclarationExpandsObject(lowerer, decl, inferredObjectType);
+  // A binding initialized with a CommonJS module's whole export holds that
+  // export object itself: the local has no static shape to be unboxed into
+  // (unboxing would copy it, so `a === lib` would answer false where Node
+  // answers true).
+  let holdsCjsModuleValue = false;
+  if (!decl.type && !hasJsTypeAnnotation(decl) && decl.initializer !== undefined) {
+    let source: ts.Expression = decl.initializer;
+    while (ts.isParenthesizedExpression(source)) source = source.expression;
+    holdsCjsModuleValue = ts.isIdentifier(source) && lowerer.cjsLocalModuleBindingOf(source);
+  }
   let init: IrExpr;
   try {
     init =
+      holdsCjsModuleValue ||
       expandsObject ||
       (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
         !decl.type &&
@@ -8392,6 +8403,12 @@ export function lowerVarDecl(
     isDataViewPrototypeRead(lowerer, decl.initializer)
   )
     type = DYN;
+  // A binding initialized with a CommonJS module's whole export holds that
+  // export object itself: Node's object, the same one every requirer reads.
+  // Unboxing the checked-dynamic object into the checker's static shape
+  // would copy it, so `a === lib` would answer false where Node answers
+  // true. The local keeps the value instead.
+  if (holdsCjsModuleValue) type = DYN;
   // A Reflect member read as a value is a checked-dynamic closure that sees
   // the arity of its call, exactly like Node's own member: `Reflect.get(t,
   // k)` defaults the receiver to the target only when the receiver argument
@@ -10660,12 +10677,35 @@ function lowerCjsExportStatement(
   cjs: NonNullable<ReturnType<typeof cjsExportAssignmentOf>>,
 ): IrStmt {
   const loc = locOf(cjs.expr);
-  // Statements Node discards (a replaced export object) fence instead of
-  // shipping tsc's answer — the checker models them as live exports.
+  // Statements Node discards (a member attached to an exports object that a
+  // `module.exports =` assignment replaced) still EVALUATE their value, and
+  // the write lands on the replaced object. The checker models the member as
+  // a live export, so shipping its answer would diverge: evaluate the value
+  // and drop the member. A partial require cycle is the one case where the
+  // replaced object escaped (a cyclic importer holds it), so the write goes
+  // to the module's live exports object, exactly where Node puts it.
   {
     const stmt = cjs.expr.parent;
     const discarded = ts.isExpressionStatement(stmt) ? cjsExportDiscardReason(stmt) : null;
-    if (discarded !== null) lowerer.unsupported("SC1090", cjs.expr, discarded);
+    if (discarded !== null) {
+      const sf = ts.getSourceFileOfNode(cjs.expr);
+      const loc = locOf(cjs.expr);
+      if (cjs.kind === "member" && isPartialCjsCycleModule(lowerer, sf)) {
+        const name = ts.isIdentifier(cjs.name) ? cjs.name.text : null;
+        if (name !== null) {
+          const value = lowerer.lowerExpr(cjs.value);
+          return {
+            kind: "block",
+            body: cjsPartialExportMirror(lowerer, sf, name, value, cjs.value, loc),
+            loc,
+          };
+        }
+      }
+      // No one can observe the replaced object: the value's evaluation is
+      // all Node's statement does.
+      const valueNode = cjs.kind === "member" ? cjs.value : cjs.expr.right;
+      return { kind: "exprStmt", expr: lowerer.lowerExpr(valueNode), loc };
+    }
   }
   // A whole export that stands for an accessor installed as `module.exports`
   // (npm-static-cjs-exports-accessor.ts) holds the getter's value for the

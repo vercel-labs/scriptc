@@ -473,6 +473,177 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
           },
         ];
       });
+    case "defineProperty":
+      // The direct call's step: the Object operation over the checked
+      // objects the member accepts, answering Node's boolean true.
+      return reflectMemberFunction(lowerer, member, BOOL, 3, loc, (args, locals): IrStmt[] => {
+        const target = memberLocal(locals, "t.0", "target");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          guard(target),
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.defineProperty",
+              args: [target, actualArgument(args, 1, loc), actualArgument(args, 2, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+        ];
+      });
+    case "setPrototypeOf":
+      // Reflect.setPrototypeOf follows the specification: an unchanged
+      // prototype answers true (and touches nothing, so a non-extensible
+      // target still answers true), a changed one on a non-extensible target
+      // answers false where Object.setPrototypeOf throws, and everything
+      // else installs it. A target that is not an object and a prototype
+      // that is neither an object nor null keep Node's TypeError from the
+      // runtime entry.
+      return reflectMemberFunction(lowerer, member, BOOL, 2, loc, (args, locals): IrStmt[] => {
+        const target = memberLocal(locals, "t.0", "target");
+        const prototype = memberLocal(locals, "p.0", "prototype");
+        const unchanged = (): IrExpr => ({
+          kind: "libCall",
+          fn: "dyn.sameValue",
+          args: [
+            prototype,
+            { kind: "libCall", fn: "dyn.getPrototype", args: [target], type: DYN, loc },
+          ],
+          type: BOOL,
+          loc,
+        });
+        const answer = (value: boolean): IrStmt => ({
+          kind: "return",
+          value: { kind: "boolLit", value, type: BOOL, loc },
+          loc,
+        });
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          guard(target),
+          { kind: "varDecl", localId: "p.0", init: actualArgument(args, 1, loc), loc },
+          { kind: "if", cond: unchanged(), then: [answer(true)], else_: null, loc },
+          {
+            kind: "if",
+            cond: {
+              kind: "unary",
+              op: "!",
+              operand: {
+                kind: "libCall",
+                fn: "dyn.isExtensibleQuery",
+                args: [target],
+                type: BOOL,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            },
+            then: [answer(false)],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.setPrototype",
+              args: [target, prototype],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+          answer(true),
+        ];
+      });
+    case "construct":
+      // Reflect.construct(target, argsList): Node builds the list from any
+      // object and constructs the target through its [[Construct]]. The
+      // compiled construction entry takes an Array, and the three-argument
+      // form's new.target is not modeled, so those two shapes throw a named
+      // fence instead of constructing wrongly.
+      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals): IrStmt[] => {
+        const target = memberLocal(locals, "t.0", "target");
+        const list = memberLocal(locals, "l.0", "list");
+        const throwError = (message: IrExpr): IrStmt => ({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "error.nodeThrow",
+            args: [{ kind: "numLit", value: 1, type: F64, loc }, str("", loc), message],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          { kind: "varDecl", localId: "l.0", init: actualArgument(args, 1, loc), loc },
+          {
+            kind: "if",
+            cond: arityAtLeast(args, 3, loc),
+            then: [
+              {
+                kind: "runtimeFence",
+                code: "SC1090",
+                message: "Reflect.construct with an explicit newTarget [SC1090]",
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "if",
+            cond: {
+              kind: "unary",
+              op: "!",
+              operand: { kind: "dynTest", test: "array", value: list, type: BOOL, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: isObjectTarget(list, loc),
+                  type: BOOL,
+                  loc,
+                },
+                then: [throwError(str("CreateListFromArrayLike called on non-object", loc))],
+                else_: [
+                  {
+                    kind: "runtimeFence",
+                    code: "SC1090",
+                    message:
+                      "Reflect.construct with an argument list that is not an Array [SC1090]",
+                    loc,
+                  },
+                ],
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.construct",
+              args: [target, list, str("Reflect.construct", loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
     case "getPrototypeOf":
       // The direct call's two steps: Reflect's TypeError for a primitive
       // target, then the prototype edge of the checked-dynamic view.
@@ -660,6 +831,29 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.construct / Reflect.setPrototypeOf as direct calls: the same
+  // closure the member answers as a value, so the arity rules, target
+  // checks and argument-list handling cannot drift apart from it.
+  if (
+    (reflectMember === "construct" || reflectMember === "setPrototypeOf") &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    const value = reflectMemberValue(lowerer, reflectMember, loc);
+    if (value !== null) {
+      const invoked: IrExpr = {
+        kind: "dynCall",
+        callee: value,
+        calleeName: `Reflect.${reflectMember}`,
+        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+      return reflectMember === "construct"
+        ? invoked
+        : { kind: "dynCheck", value: invoked, type: BOOL, loc };
+    }
+  }
   // Reflect.getPrototypeOf(target) — the prototype object of the target's
   // checked-dynamic view, exactly Object.getPrototypeOf's answer.
   if (

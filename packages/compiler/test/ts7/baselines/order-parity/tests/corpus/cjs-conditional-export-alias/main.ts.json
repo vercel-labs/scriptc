@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-conditional-export-alias/prod.cjs",
+  "<repo>/tests/corpus/cjs-conditional-export-alias/dev.cjs",
+  "<repo>/tests/corpus/cjs-conditional-export-alias/lib.cjs",
+  "<repo>/tests/corpus/cjs-conditional-export-alias/main.ts"
+ ],
+ "diags": []
+}

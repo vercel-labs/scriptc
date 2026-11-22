@@ -9,7 +9,14 @@ import {
   type IrFunction,
   type IrStmt,
 } from "../../ir/ir.js";
-import { ClassDynamicDispatch, classPropertiesHelper } from "./class-dynamic-dispatch.js";
+import {
+  ClassDynamicDispatch,
+  caseBranchRuns,
+  classPropertiesHelper,
+  groupStaticFieldBranches,
+  type StaticFieldBranch,
+} from "./class-dynamic-dispatch.js";
+import { classCaseBranches } from "../../ir/class-case.js";
 import { classValueSlot } from "../../ir/class-key-index.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
@@ -41,6 +48,7 @@ function context() {
     classes: new Map(),
     liftedFns,
     liftedFnNamed: (name: string | undefined) => liftedFns.find((fn) => fn.name === name),
+    keyedNameKeys: new Map(),
     shareHelper: () => {},
     subclassLinks: 0,
     constructedClassCount: () => -1,
@@ -942,4 +950,198 @@ test("keeps returning and completing class branches in separate runs", () => {
   expect(completing!.cases.every(({ body }) => body[body.length - 1]!.kind === "break")).toBe(true);
   expect(returning!.cases.every(({ body }) => body.every((stmt) => stmt.kind === "if"))).toBe(true);
   expect(returning!.cases).toHaveLength(keys.length - 2);
+});
+
+test("regroups static-field branches by the class value they test", () => {
+  const value = variable("target");
+  const key = variable("key");
+  const ready = (cls: string): IrExpr => ({
+    kind: "varRef",
+    localId: `${cls}.ready`,
+    type: BOOL,
+    loc,
+  });
+  const identity = (keyClass: string, actual: string): IrExpr => ({
+    kind: "logical",
+    op: "&&",
+    left: {
+      kind: "libCall",
+      fn: "dyn.classIs",
+      args: [value, literal(`classval:${keyClass}`)],
+      type: BOOL,
+      loc,
+    },
+    right: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "dynCheck", value, type: { kind: "classval", className: keyClass }, loc },
+      right: {
+        kind: "classRef",
+        className: actual,
+        type: { kind: "classval", className: actual },
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  });
+  const branches = new Map<IrStmt, StaticFieldBranch>();
+  const fence = (keyClass: string, actual: string, field: string): IrStmt => {
+    const branch: IrStmt = {
+      kind: "if",
+      cond: {
+        kind: "logical",
+        op: "&&",
+        left: {
+          kind: "logical",
+          op: "&&",
+          left: ready(actual),
+          right: identity(keyClass, actual),
+          type: BOOL,
+          loc,
+        },
+        right: { kind: "dynScalarEq", left: key, right: literal(field), type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [{ kind: "runtimeFence", code: "SC1090", message: `${actual}.${field}`, loc }],
+      else_: null,
+      loc,
+    };
+    branches.set(branch, { value, keyClass, actual, ready: true });
+    return branch;
+  };
+  const head = statement(literal("head"));
+  const tail: IrStmt = { kind: "return", value: null, loc };
+  const run = [
+    fence("Base", "Sub", "B"),
+    fence("Base", "Base", "A"),
+    fence("Base", "Sub", "A"),
+    fence("Other", "Other", "C"),
+    fence("Base", "Base", "B"),
+    fence("Base", "Sub", "C"),
+    fence("Other", "Other", "D"),
+    fence("Base", "Base", "C"),
+  ];
+  // A branch another pass rebuilt is no longer listed and keeps its place.
+  const copied = { ...run[3]! };
+  const locals: string[] = [];
+  let next = 0;
+  const grouped = groupStaticFieldBranches(
+    [head, ...run, copied, tail],
+    branches,
+    () => `held.${next++}`,
+    (id) => locals.push(id),
+  );
+  expect(locals).toEqual(["held.0", "held.1"]);
+  expect(grouped[0]).toBe(head);
+  expect(grouped.slice(-2)).toEqual([copied, tail]);
+  const groups = grouped.slice(1, -2);
+  expect(groups).toHaveLength(2);
+  const messages = (stmt: IrStmt): string[][] => {
+    if (stmt.kind !== "if") throw new Error("expected a class test");
+    expect(stmt.then[0]).toMatchObject({ kind: "varDecl", init: { kind: "dynCheck", value } });
+    return stmt.then
+      .slice(1)
+      .map((held) =>
+        held.kind === "if"
+          ? held.then.map((test) =>
+              test.kind === "if" && test.then[0]!.kind === "runtimeFence"
+                ? test.then[0]!.message
+                : "",
+            )
+          : [],
+      );
+  };
+  // Each held class keeps its fields in the order the flat run tested them.
+  expect(messages(groups[0]!)).toEqual([
+    ["Sub.B", "Sub.A", "Sub.C"],
+    ["Base.A", "Base.B", "Base.C"],
+  ]);
+  expect(messages(groups[1]!)).toEqual([["Other.C", "Other.D"]]);
+  // A run shorter than the threshold stays flat.
+  const short = [fence("Base", "Sub", "A"), fence("Base", "Base", "A")];
+  expect(
+    groupStaticFieldBranches(
+      short,
+      branches,
+      () => "unused",
+      () => {},
+    ),
+  ).toBe(short);
+});
+
+/** `if (dyn.typedRefIs(p, key)) { r = ...; return <value> }`, a property
+ * helper's class branch. */
+const returning = (value: string): IrStmt[] => [{ kind: "return", value: literal(value), loc }];
+
+test("selects a run of returning class branches from a table after its head", () => {
+  const keys = Array.from({ length: 10 }, (_, i) => `object:Class${i}`);
+  // Classes 4 and 7 answer the same statements as class 2.
+  const same = new Set(["object:Class2", "object:Class4", "object:Class7"]);
+  const table = classTable("%dyn.class.property.0", keys, "dyn.typedRefIs", (key) =>
+    returning(same.has(key) ? "shared" : key),
+  );
+  const chain = table.body;
+  const body = caseBranchRuns(chain);
+  expect(body.map((stmt) => stmt.kind)).toEqual(["if", "if", "switch", "return"]);
+  expect(body.slice(0, 2)).toEqual(chain.slice(0, 2));
+  const dispatch = body[2]!;
+  if (dispatch.kind !== "switch" || dispatch.disc.kind !== "libCall") throw new Error("a switch");
+  expect(dispatch.disc.fn).toBe("dyn.classCase");
+  const table0 = dispatch.disc.args[1];
+  expect(table0?.kind === "strLit" ? table0.value.split("\n") : null).toEqual([
+    "1 object:Class2",
+    "2 object:Class3",
+    "1 object:Class4",
+    "3 object:Class5",
+    "4 object:Class6",
+    "1 object:Class7",
+    "5 object:Class8",
+    "6 object:Class9",
+  ]);
+  for (const [i, { test: caseTest, body: caseBody }] of dispatch.cases.entries()) {
+    expect(caseTest).toMatchObject({ kind: "numLit", value: i + 1 });
+    expect(caseBody.map((stmt) => stmt.kind)).toEqual(["block", "break"]);
+  }
+  // Readers of the table see the chain it was lowered from.
+  const branch = (stmt: IrStmt): unknown =>
+    stmt.kind === "if" && stmt.cond.kind === "libCall"
+      ? [
+          stmt.cond.fn,
+          stmt.cond.args.map((arg) => (arg.kind === "strLit" ? arg.value : arg.kind)),
+          stmt.then,
+        ]
+      : stmt;
+  expect(classCaseBranches(dispatch).map(branch)).toEqual(chain.slice(2, -1).map(branch));
+});
+
+test("keeps short runs, completing branches and repeated keys out of the table", () => {
+  const keys = Array.from({ length: 7 }, (_, i) => `object:Class${i}`);
+  // Five classes after the head: below the table's threshold.
+  const short = classTable("%dyn.class.property.1", keys, "dyn.typedRefIs", returning);
+  expect(caseBranchRuns(short.body)).toBe(short.body);
+  // A branch that can complete ends the run: the chain continues after it.
+  const completing = classTable("%dyn.class.property.2", keys, "dyn.typedRefIs", () => [
+    statement(variable("key")),
+  ]);
+  expect(caseBranchRuns(completing.body)).toBe(completing.body);
+  // A key that repeats after the head is unreachable the second time.
+  const repeated = classTable(
+    "%dyn.class.property.3",
+    [...keys, "object:Class3", "object:Class7"],
+    "dyn.typedRefIs",
+    returning,
+  );
+  const body = caseBranchRuns(repeated.body);
+  const dispatch = body[2]!;
+  if (dispatch.kind !== "switch" || dispatch.disc.kind !== "libCall") throw new Error("a switch");
+  const lines = dispatch.disc.args[1];
+  expect(
+    lines?.kind === "strLit" ? lines.value.split("\n").map((line) => line.split(" ")[1]) : null,
+  ).toEqual(
+    ["Class2", "Class3", "Class4", "Class5", "Class6", "Class7"].map((name) => `object:${name}`),
+  );
 });

@@ -1,8 +1,8 @@
 // A feature test of a built-in member that compares it with `void e` has one
-// answer whatever `e` is, and `e` still runs. The guard is not decided
-// without evaluating the test, so the operand is not dropped: the test lowers
-// as any other, where `void` with an operand that has effects is refused in
-// value position.
+// answer whatever `e` is, and `e` still runs. `void` with an effectful
+// operand now evaluates it and answers the undefined value; the comparison
+// itself is between the member, which this compiler leaves untyped, and that
+// value — an operator on an unknown value, which it still refuses.
 let calls = 0;
 function note(label: string): number {
   calls++;

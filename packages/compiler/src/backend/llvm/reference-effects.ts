@@ -151,6 +151,7 @@ function expressionPreservesEdges(
         e.fn === "dyn.typedRefIs" ||
         e.fn === "dyn.typedRefBrandIs" ||
         e.fn === "dyn.classHash" ||
+        e.fn === "dyn.classCase" ||
         e.fn === "dyn.classValueHash" ||
         // jsval conversions (ir/jsval.ts) answer as the dyn forms they
         // replace: moving a value between dyn and jsval reads it, and a

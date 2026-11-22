@@ -651,15 +651,32 @@ declare module "http2" {
       headers?: OutgoingHttpHeaders,
       options?: { endStream?: boolean; waitForTrailers?: boolean },
     ): void;
+    /* respondWithFile(path[, headers[, options]]) and respondWithFD: the
+     * stat and statCheck run on a later turn, then the bytes stream within
+     * the peer's windows. statCheck cancels the response on an explicit
+     * false; its record carries the stat's numeric fields (size, mode,
+     * dev, ino, nlink, uid, gid). */
     respondWithFile(
       path: string,
       headers?: OutgoingHttpHeaders,
-      options?: Record<string, unknown>,
+      options?: {
+        offset?: number;
+        length?: number;
+        waitForTrailers?: boolean;
+        statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
+      },
     ): void;
     respondWithFD(
       fd: number,
       headers?: OutgoingHttpHeaders,
-      options?: Record<string, unknown>,
+      options?: {
+        offset?: number;
+        length?: number;
+        waitForTrailers?: boolean;
+        statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
+      },
     ): void;
     pushStream(
       headers: OutgoingHttpHeaders,

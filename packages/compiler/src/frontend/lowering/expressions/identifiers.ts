@@ -37,7 +37,7 @@ import {
   recordTextCodecClass,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { isNodeModuleHandle, lowerNodeModuleIdentifier } from "../lower-node-module.js";
 import { builtinImportBindingByName } from "../builtins/module-bindings.js";
 import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
@@ -91,6 +91,7 @@ import {
   fenceEarlyAliasUse,
   isNodeUndefinedGlobalRoot,
   cjsNamespaceImportDep,
+  cjsNamespaceMemberSnapshotOf,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -114,7 +115,6 @@ import {
   builtinFenceHintOf,
   builtinModuleConstOf,
   builtinModuleFnOf,
-  builtinModulesArrayLit,
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
@@ -125,6 +125,7 @@ import {
 } from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { unloweredGlobalValue, unloweredModuleMemberValue } from "../node-value-reads.js";
+import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
 import { lowerEnumObjectValue } from "../enum-objects.js";
@@ -173,6 +174,18 @@ function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
+  }
+
+  // A member read through a CommonJS namespace binding for a member the
+  // module's own functions reassign: Node's namespace object kept the value
+  // the module finished evaluating with (lower-modules.ts,
+  // registerCjsNamespaceSnapshotGlobals), so the read is the snapshot slot.
+  {
+    const parent = expr.parent;
+    if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === expr) {
+      const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, parent);
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    }
   }
 
   // A createRequire loader as a VALUE (not the callee of a lowered call or
@@ -492,7 +505,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
-    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+    // A binding whose storage holds a CommonJS Module view reads that view:
+    // the checker's module type is the numeric handle, which cannot hold the
+    // object Node stores.
+    if (
+      local.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
@@ -622,7 +641,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
-    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
+    if (
+      g.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
+      return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name
@@ -807,10 +830,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       ) {
         return pathModuleValue(lowerer, `path/${bi.member}`, loc);
       }
-      // module.builtinModules — the baked Node v24 list, a fresh
-      // string[] per read.
+      // module.builtinModules — the baked Node v24 list as Node's one
+      // frozen array (same identity at every read).
       if (bi.module === "module" && bi.member === "builtinModules") {
-        return builtinModulesArrayLit(loc);
+        return lowerer.builtinModulesValue(loc);
       }
       if (bi.module === "http" && bi.member === "METHODS") {
         return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
@@ -913,6 +936,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           );
         }
       } else {
+        // util.getCallSites has a direct-call lowering but no function value:
+        // reading it hands back a callable (Node's typeof, identity and
+        // length), and only calling that value refuses, so a module that
+        // stores, compares or re-exports it keeps loading.
+        if (bi.module === "util" && bi.member === "getCallSites")
+          return builtinFunctionFenceValue(lowerer, bi, expr, loc);
         if (builtinModuleFnOf(lowerer, bi.module, bi.member)) {
           lowerer.unsupported(
             "SC1090",

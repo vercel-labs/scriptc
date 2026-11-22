@@ -6,6 +6,7 @@ import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isRebindableFunction } from "./rebindable-functions.js";
+import { isNodeModuleType } from "./lower-node-module.js";
 import {
   BOOL,
   DYN,
@@ -53,6 +54,27 @@ function bodyMayFallThrough(body: readonly IrStmt[]): boolean {
  * returned: a returned value the checker could not see (`any`) has to be
  * checked where it is dropped. An async function settles its promise with
  * the returned value and is not answered here. */
+/** Whether `decl`'s body has a return statement with an expression: with
+ * one, the function answers a value at run time even when the checker
+ * inferred `never` from the expressions' types. */
+function returnsAValue(decl: ts.SignatureDeclaration): boolean {
+  const body = (decl as ts.SignatureDeclaration & { body?: ts.Node }).body;
+  if (body === undefined) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      found = true;
+      return;
+    }
+    // A nested function's returns answer that function, not this one.
+    if (node !== body && ts.isFunctionLike(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return found;
+}
+
 export function returnsDeclaredUndefined(lowerer: Lowerer, node: ts.Node): boolean {
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
   let fn: ts.Node | undefined = node.parent;
@@ -323,6 +345,23 @@ function declaredReturnTypeInner(
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  // A JavaScript function that answers the CommonJS Module object — `module`,
+  // `require.main`, `module.parent`, a child view, or a binding of one — has
+  // the checker's module type as its result, and that type is the numeric
+  // handle: the slot cannot hold the object the body returns, so the result
+  // is checked-dynamic, the way Node answers the object. An async function
+  // resolves that value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.asteriskToken === undefined &&
+    isNodeModuleType(
+      lowerer,
+      lowerer.checker.getNonNullableType(lowerer.checker.getAwaitedType(retTsType) ?? retTsType),
+    )
+  )
+    return decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // An ASYNC object-literal method with no return annotation and a
   // contextual signature takes its return from that signature, as an async
   // arrow does: the body's `return` builds at the contextually typed
@@ -373,7 +412,15 @@ function declaredReturnTypeInner(
   // void with a stronger guarantee (`() => never` is assignable to
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
-  if (retTsType.flags & ts.TypeFlags.Never) return VOID;
+  if (retTsType.flags & ts.TypeFlags.Never) {
+    // In a JavaScript file the checker's `never` can come from a narrowing
+    // over a declaration that does not describe the value (a context made
+    // with `createContext(null)` and used as an object): a body that
+    // returns an expression still answers whatever the runtime produced, so
+    // its result keeps the value instead of the throw-only `void`.
+    if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsAValue(decl)) return DYN;
+    return VOID;
+  }
   // A generator whose result the checker cannot spell — a JS method
   // returning `yield*` of itself (yaml's Parser), or a TypeScript
   // annotation over a package generic alias the checker reduces to `any`

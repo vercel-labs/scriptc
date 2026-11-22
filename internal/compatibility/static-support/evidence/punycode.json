@@ -1,0 +1,3 @@
+{
+    "node-builtin.punycode": ["tests/corpus/6122-punycode-conversions.ts", "tests/corpus/6124-punycode-require-warnings.cjs", "tests/corpus/6126-punycode-dependency/main.cjs"]
+}

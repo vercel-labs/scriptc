@@ -9,13 +9,13 @@ name: Prerelease (macOS arm64)
 # hello-world program and prints the installed version. The tarballs upload as
 # one artifact. Nothing is published and the workflow uses no secrets.
 #
-# The build repeats the darwin-arm64 leg of release.yml's
-# build-native-packages job — the same macos-15 runner, LLVM toolchain, helper,
+# The build repeats the darwin-arm64 leg of release-build.yml's native job,
+# which release.yml calls — the same macos-15 runner, LLVM toolchain, helper,
 # runtime and CLI steps — rather than extracting those steps into a composite
 # action or reusable workflow: the release job is a cross-platform matrix whose
 # conditionals such an extraction would have to reproduce, and this workflow
 # must leave release.yml's behavior untouched. Keep the build steps below in
-# sync with release.yml's darwin-arm64 matrix entry.
+# sync with release-build.yml's darwin-arm64 matrix entry.
 #
 # A prerelease run does not collect the native compiler profile: release.yml's
 # cli-profile job builds an instrumented compiler for about two hours, and a
@@ -105,7 +105,7 @@ jobs:
             echo "full_sha=$full_sha"
           } >> "$GITHUB_OUTPUT"
 
-      # release.yml's darwin-arm64 entry: the helper builds against the
+      # release-build.yml's darwin-arm64 entry: the helper builds against the
       # runner's pinned LLVM (SCRIPTC_HELPER_LLVM_DIR is selected on Linux
       # only) and the runtime pack builds with the runner's clang.
       - name: Build native packages (POSIX)

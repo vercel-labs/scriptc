@@ -1867,6 +1867,13 @@ struct ScrChildStream {
   bool eof;
   bool close_wait;
   bool capture;
+  /* The bridged stream a program holds over this reader (+1 through the ops
+   * table): the child's 'close' waits for it to close. NULL until the bridge
+   * creates it, and in a build without the stream unit. */
+  ScrStream *bridge;
+  /* The child this reader belongs to (borrowed: the child releases its
+   * readers before it goes). */
+  ScrChild *child;
   /* process.channel.ref()/unref(): the IPC reader's explicit ref state.
    * Node's Control refs/unrefs the handle directly, so an explicit call
    * overrides the listener-driven state (unref lets the process exit with
@@ -1917,6 +1924,10 @@ struct ScrChildWriter {
   size_t n_finish, cap_finish;
   ScrChildErrEntry *err_ls;
   size_t n_write_err, cap_write_err;
+  /* Whether a bridge stream watches this writer for a pipe failure on bytes
+   * an accepted write left queued (both listener slots belong to that
+   * watcher). */
+  bool bridge_queued_watch;
   /* AsyncLocalStorage contexts (+1 each, NULL outside a store): the
    * latest write() call's, for 'drain' and 'error' (the spawn() call's
    * until the first write), and the end() call's, for 'finish'. */
@@ -2101,6 +2112,16 @@ static void scr_child_stream_drop_listeners(ScrChildStream *s) {
   s->n_data = s->n_end = s->cap_data = s->cap_end = 0;
 }
 
+/* The installed child stream bridge (scr_child_dyn_streams_install). */
+static SCR_TL const ScrChildStreamOps *scr_child_stream_ops;
+
+/* Drops the reader's hold on the bridged stream a program read through. */
+static void scr_child_stream_bridge_drop(ScrChildStream *s) {
+  ScrStream *bridge = s->bridge;
+  s->bridge = NULL;
+  if (bridge && scr_child_stream_ops) scr_child_stream_ops->release(bridge);
+}
+
 void scr_child_stream_release(ScrChildStream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
@@ -2112,6 +2133,7 @@ void scr_child_stream_release(ScrChildStream *s) {
     scr_str_release(s->encoding);
     free(s->capture_data);
     scr_als_ctx_release(s->als);
+    scr_child_stream_bridge_drop(s);
     free(s);
   }
 }
@@ -2513,6 +2535,7 @@ static void scr_child_writer_drop_zero_listeners(ScrChildWriter *w) {
 }
 
 static void scr_child_writer_drop_listeners(ScrChildWriter *w) {
+  w->bridge_queued_watch = false;
   scr_child_writer_drop_zero_listeners(w);
   for (size_t i = 0; i < w->n_write_err; i++) scr_closure_release(w->err_ls[i].cb);
   free(w->err_ls);
@@ -3110,6 +3133,8 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if (in_m == 3) c->in_stream = scr_child_writer_new(in_parent);
   if (out_m == 3) c->out_stream = scr_child_stream_new(out_parent);
   if (err_m == 3) c->err_stream = scr_child_stream_new(err_parent);
+  if (c->out_stream) c->out_stream->child = c;
+  if (c->err_stream) c->err_stream->child = c;
 
   if (sp.errname != NULL) {
     size_t len = 6 + cmd->len + 1 + strlen(sp.errname);
@@ -3504,10 +3529,53 @@ bool scr_children_failed_pending(void) {
   return false;
 }
 
+/* Whether the program-visible bridged stream over an output reader has not
+ * closed yet: its 'end' and 'close' are still to come, so the child's
+ * 'close' waits for them, as Node's maybeClose waits on the stdio streams. */
+static bool scr_child_stream_bridge_open(const ScrChildStream *s) {
+  return s != NULL && s->bridge != NULL && scr_child_stream_ops != NULL &&
+         !scr_child_stream_ops->closed(s->bridge);
+}
+
 static bool scr_child_close_ready(const ScrChild *c) {
   return (c->out_stream == NULL || c->out_stream->eof) &&
          (c->err_stream == NULL || c->err_stream->eof) &&
+         !scr_child_stream_bridge_open(c->out_stream) &&
+         !scr_child_stream_bridge_open(c->err_stream) &&
          scr_ipc_close_ready(c->ipc);
+}
+
+static void scr_child_fire_close(ScrChild *c);
+
+/* The program-visible stream over a child's output closed: the child's own
+ * 'close' may fire now, inside the stream's 'close' and before the
+ * program's listeners, as Node's maybeClose does. Called from the first
+ * 'close' listener the bridge registers on the stream. */
+/* Node's flushStdio: a view no consumer holds is resumed at exit so it
+ * reaches EOF and lets the child's 'close' fire. */
+static void scr_child_bridge_flush(ScrChildStream *s) {
+  if (!s || !s->bridge || !scr_child_stream_ops) return;
+  if (scr_child_stream_ops->closed(s->bridge)) return;
+  if (scr_child_stream_ops->wanted(s->bridge)) return;
+  scr_child_stream_ops->flush(s->bridge);
+}
+
+void scr_child_bridge_stream_closed(ScrChild *c) {
+  if (!c) return;
+  /* An island child's own object emits its 'close'; the runtime's running
+   * and closing registries never hold it. */
+  SCR_IF_ISLAND(c, return);
+  if (c->close_done || !scr_child_close_ready(c)) return;
+  /* Only the closing list owns a reference to fire 'close' from. A stream
+   * that closes while its child still runs records nothing here: the exit
+   * path re-checks readiness and completes 'close' once, with the settle
+   * registry's reference. */
+  ScrChild **link = &scr_children_closing;
+  while (*link && *link != c) link = &(*link)->next;
+  if (*link == NULL) return;
+  *link = c->next;
+  c->next = NULL;
+  scr_child_fire_close(c);
 }
 
 static void scr_child_fire_close_in(ScrChild *c);
@@ -3662,6 +3730,13 @@ static void scr_child_settle_in(ScrChild *c) {
     scr_child_flow_exit(c->err_stream);
   }
 #endif
+  /* A spawn failure has no output to drain, but its views still have to
+   * reach EOF so the child's 'close' can fire. */
+  if (!scr_exc_pending() &&
+      (c->state == SCR_CHILD_EXITED || c->state == SCR_CHILD_SPAWN_FAILED)) {
+    scr_child_bridge_flush(c->out_stream);
+    scr_child_bridge_flush(c->err_stream);
+  }
   scr_child_drop_terminal_listeners(c);
   if (c->n_close == 0) {
     c->close_done = true;
@@ -5198,6 +5273,11 @@ struct ScrChildStream {
   bool eof; /* 'end' delivered (or the stream never opened) */
   bool close_wait;
   bool capture;
+  /* The bridged stream a program holds over this reader (+1 through the ops
+   * table): the child's 'close' waits for it to close. */
+  ScrStream *bridge;
+  /* The child this reader belongs to (borrowed). */
+  ScrChild *child;
   /* process.channel.ref()/unref(): see the Windows arm's fields. */
   bool chan_ref;
   bool chan_unref;
@@ -5253,6 +5333,10 @@ struct ScrChildWriter {
   size_t n_finish, cap_finish;
   ScrChildErrEntry *err_ls;
   size_t n_write_err, cap_write_err;
+  /* Whether a bridge stream watches this writer for a pipe failure on bytes
+   * an accepted write left queued (both listener slots belong to that
+   * watcher). */
+  bool bridge_queued_watch;
   /* AsyncLocalStorage contexts (+1 each, NULL outside a store): the
    * latest write() call's, for 'drain' and 'error' (the spawn() call's
    * until the first write), and the end() call's, for 'finish'. */
@@ -5668,6 +5752,16 @@ static void scr_child_stream_drop_listeners(ScrChildStream *s) {
   s->n_data = s->n_end = s->cap_data = s->cap_end = 0;
 }
 
+/* The installed child stream bridge (scr_child_dyn_streams_install). */
+static SCR_TL const ScrChildStreamOps *scr_child_stream_ops;
+
+/* Drops the reader's hold on the bridged stream a program read through. */
+static void scr_child_stream_bridge_drop(ScrChildStream *s) {
+  ScrStream *bridge = s->bridge;
+  s->bridge = NULL;
+  if (bridge && scr_child_stream_ops) scr_child_stream_ops->release(bridge);
+}
+
 void scr_child_stream_release(ScrChildStream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
@@ -5680,6 +5774,7 @@ void scr_child_stream_release(ScrChildStream *s) {
     scr_str_release(s->encoding);
     free(s->capture_data);
     scr_als_ctx_release(s->als);
+    scr_child_stream_bridge_drop(s);
     free(s);
   }
 }
@@ -6418,6 +6513,7 @@ static void scr_child_writer_drop_zero_listeners(ScrChildWriter *w) {
 }
 
 static void scr_child_writer_drop_listeners(ScrChildWriter *w) {
+  w->bridge_queued_watch = false;
   scr_child_writer_drop_zero_listeners(w);
   for (size_t i = 0; i < w->n_write_err; i++) scr_closure_release(w->err_ls[i].cb);
   free(w->err_ls);
@@ -7096,6 +7192,8 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   if ((int)in_mode == 3) c->in_stream = scr_child_writer_new(in_pipe[1]);
   if ((int)out_mode == 3) c->out_stream = scr_child_stream_new(out_pipe[0]);
   if ((int)err_mode == 3) c->err_stream = scr_child_stream_new(err_pipe[0]);
+  if (c->out_stream) c->out_stream->child = c;
+  if (c->err_stream) c->err_stream->child = c;
 
   if (spawn_err != 0) {
     /* Node: `Error: spawn <cmd> <ERRNAME>` on the "error" event. */
@@ -7603,10 +7701,53 @@ static bool scr_child_stream_ended_now(const ScrChildStream *s) {
   return s != NULL && s->eof && s->eof_pass == scr_children_pass;
 }
 
+/* Whether the program-visible bridged stream over an output reader has not
+ * closed yet: its 'end' and 'close' are still to come, so the child's
+ * 'close' waits for them, as Node's maybeClose waits on the stdio streams. */
+static bool scr_child_stream_bridge_open(const ScrChildStream *s) {
+  return s != NULL && s->bridge != NULL && scr_child_stream_ops != NULL &&
+         !scr_child_stream_ops->closed(s->bridge);
+}
+
 static bool scr_child_close_ready(const ScrChild *c) {
   return (c->out_stream == NULL || c->out_stream->eof) &&
          (c->err_stream == NULL || c->err_stream->eof) &&
+         !scr_child_stream_bridge_open(c->out_stream) &&
+         !scr_child_stream_bridge_open(c->err_stream) &&
          scr_ipc_close_ready(c->ipc);
+}
+
+static void scr_child_fire_close(ScrChild *c);
+
+/* The program-visible stream over a child's output closed: the child's own
+ * 'close' may fire now, inside the stream's 'close' and before the
+ * program's listeners, as Node's maybeClose does. Called from the first
+ * 'close' listener the bridge registers on the stream. */
+/* Node's flushStdio: a view no consumer holds is resumed at exit so it
+ * reaches EOF and lets the child's 'close' fire. */
+static void scr_child_bridge_flush(ScrChildStream *s) {
+  if (!s || !s->bridge || !scr_child_stream_ops) return;
+  if (scr_child_stream_ops->closed(s->bridge)) return;
+  if (scr_child_stream_ops->wanted(s->bridge)) return;
+  scr_child_stream_ops->flush(s->bridge);
+}
+
+void scr_child_bridge_stream_closed(ScrChild *c) {
+  if (!c) return;
+  /* An island child's own object emits its 'close'; the runtime's running
+   * and closing registries never hold it. */
+  SCR_IF_ISLAND(c, return);
+  if (c->close_done || !scr_child_close_ready(c)) return;
+  /* Only the closing list owns a reference to fire 'close' from. A stream
+   * that closes while its child still runs records nothing here: the exit
+   * path re-checks readiness and completes 'close' once, with the settle
+   * registry's reference. */
+  ScrChild **link = &scr_children_closing;
+  while (*link && *link != c) link = &(*link)->next;
+  if (*link == NULL) return;
+  *link = c->next;
+  c->next = NULL;
+  scr_child_fire_close(c);
 }
 
 static void scr_child_fire_close_in(ScrChild *c);
@@ -7754,6 +7895,13 @@ static void scr_child_settle_in(ScrChild *c) {
     scr_child_flow_exit(c->err_stream);
   }
 #endif
+  /* A spawn failure has no output to drain, but its views still have to
+   * reach EOF so the child's 'close' can fire. */
+  if (!scr_exc_pending() &&
+      (c->state == SCR_CHILD_EXITED || c->state == SCR_CHILD_SPAWN_FAILED)) {
+    scr_child_bridge_flush(c->out_stream);
+    scr_child_bridge_flush(c->err_stream);
+  }
   scr_child_drop_terminal_listeners(c);
   if (c->n_close == 0) {
     c->close_done = true;
@@ -9923,6 +10071,12 @@ static void scr_child_bridge_end(ScrClosure *cb) {
   scr_child_stream_ops->end(stream);
   scr_child_stream_ops->release(stream);
 }
+static void scr_child_bridge_closed_inv(ScrClosure *cb) {
+  ScrChild *c = scr_box_get_ref(cb->caps[0]); /* +1 */
+  scr_child_bridge_stream_closed(c);
+  scr_child_release(c);
+}
+
 static ScrDyn *scr_child_bridge_readable(ScrChildStream *reader, ScrDyn **cached) {
   if (!reader) return scr_dyn_new_null();
   if (!scr_child_stream_ops) {
@@ -9935,6 +10089,16 @@ static ScrDyn *scr_child_bridge_readable(ScrChildStream *reader, ScrDyn **cached
     scr_child_stream_on_data(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_data),
         scr_child_bridge_data, false);
     scr_child_stream_on_end(reader, scr_child_bridge_callback(stream, (void *)scr_child_bridge_end), false);
+    /* the child's 'close' waits for this stream to close */
+    reader->bridge = scr_child_stream_ops->retain(stream);
+    if (reader->child) {
+      /* Node's maybeClose runs the child's 'close' inside the stdio
+       * stream's 'close'; this listener comes before the program's. */
+      ScrClosure *closed = scr_closure_new((void *)scr_child_bridge_closed_inv, 1);
+      closed->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+      scr_box_set_ref(closed->caps[0], scr_child_retain(reader->child));
+      scr_child_stream_ops->on_close(stream, closed);
+    }
     *cached = scr_child_readable_box(stream);
     scr_child_stream_ops->release(stream);
   }
@@ -10029,15 +10193,52 @@ static void scr_child_bridge_write_taken(ScrClosure *cb, ScrStr *message) {
   scr_child_stream_ops->release(stream);
 }
 
+/* The watch over bytes an accepted write left queued: a pipe failure after
+ * the write completed must still fail the bridged stream (its completion
+ * cannot, no write is pending), and the watch ends when the queue drains. */
+static void scr_child_bridge_queued_error(ScrClosure *cb, ScrStr *message);
+static void scr_child_bridge_queued_drained(ScrClosure *cb);
+
+/* Removes both halves of the queued watch. Safe to call from either half:
+ * the writer's listener tables are compacted in place, as the pending
+ * write's own removal does. */
+static void scr_child_bridge_queued_stop(ScrChildWriter *writer) {
+  if (!writer->bridge_queued_watch) return;
+  writer->bridge_queued_watch = false;
+  scr_child_bridge_remove_error(writer, scr_child_bridge_queued_error);
+  scr_child_bridge_remove_zero(writer->drain_ls, &writer->n_drain,
+      (void *)scr_child_bridge_queued_drained);
+}
+
+static void scr_child_bridge_queued_error(ScrClosure *cb, ScrStr *message) {
+  ScrStream *stream = scr_box_get_ref(cb->caps[0]);
+  ScrChildWriter *writer = scr_box_get_ref(cb->caps[1]);
+  scr_child_bridge_queued_stop(writer);
+  ScrError *error = scr_error_new(SCR_ERR_ERROR, message);
+  if (writer->err_code) scr_error_set_code(error, writer->err_code);
+  scr_child_stream_ops->fail(stream, error);
+  scr_error_release(error);
+  scr_child_writer_release(writer);
+  scr_child_stream_ops->release(stream);
+}
+
+static void scr_child_bridge_queued_drained(ScrClosure *cb) {
+  ScrStream *stream = scr_box_get_ref(cb->caps[0]);
+  ScrChildWriter *writer = scr_box_get_ref(cb->caps[1]);
+  scr_child_bridge_queued_stop(writer);
+  scr_child_writer_release(writer);
+  scr_child_stream_ops->release(stream);
+}
+
 static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *chunk) {
   ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
   SCR_IF_ISLAND(writer,
                 scr_child_island_ops->bridge_write(writer->island, stream, chunk, scr_child_stream_ops);
                 scr_child_writer_release(writer); return);
-  scr_child_writer_write_bytes(writer, chunk);
-  bool pending = scr_child_writer_queued(writer) > 0;
+  bool accepted = scr_child_writer_write_bytes(writer, chunk);
+  bool queued = scr_child_writer_queued(writer) > 0;
 #ifdef _WIN32
-  pending = pending || writer->write_pending;
+  queued = queued || writer->write_pending;
 #endif
   if (writer->error_pending || (writer->destroyed && writer->err_msg != NULL)) {
     /* The pipe failed inside this write — a reader that closed its end
@@ -10045,24 +10246,44 @@ static void scr_child_bridge_write(ScrClosure *cb, ScrStream *stream, ScrBytes *
      * Node's write answers false, and the completion callback and the
      * 'error' event wait for a tick, exactly what completing the stream's
      * write with the failure does. */
+    scr_child_bridge_queued_stop(writer);
     scr_child_writer_on_error(writer,
         scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_taken),
         scr_child_bridge_write_taken, true);
     scr_child_stream_ops->write_done(stream, scr_child_bridge_failure(writer));
-  } else if (pending) {
+  } else if (!accepted) {
+    /* The writer refused the write: its queue is at the high-water mark, so
+     * the stream's write completes at 'drain' (Node's refusal), and a pipe
+     * failure on the way completes it with the error. */
+    scr_child_bridge_queued_stop(writer);
     scr_child_writer_on_error(writer,
         scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_error),
         scr_child_bridge_write_error, true);
     writer->need_drain = true;
     scr_child_writer_on_drain(writer,
         scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_write_drained), true);
-  } else scr_child_stream_ops->write_done(stream, NULL);
+  } else {
+    /* The writer accepted the write (Node's answer): the stream's write
+     * completes now. Bytes it leaves queued are still in flight, so a pipe
+     * failure on them fails the stream through the queue's watch. */
+    if (queued && !writer->bridge_queued_watch) {
+      writer->bridge_queued_watch = true;
+      scr_child_writer_on_error(writer,
+          scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_queued_error),
+          scr_child_bridge_queued_error, true);
+      scr_child_writer_on_drain(writer,
+          scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_queued_drained), true);
+    }
+    scr_child_stream_ops->write_done(stream, NULL);
+  }
   scr_child_writer_release(writer);
 }
 static void scr_child_bridge_final(ScrClosure *cb, ScrStream *stream) {
   ScrChildWriter *writer = scr_box_get_ref(cb->caps[0]);
   SCR_IF_ISLAND(writer, scr_child_island_ops->bridge_final(writer->island, stream, scr_child_stream_ops);
                 scr_child_writer_release(writer); return);
+  /* The end takes over the queue's failure through its own completion. */
+  scr_child_bridge_queued_stop(writer);
   scr_child_writer_on_error(writer,
       scr_child_bridge_operation(stream, writer, (void *)scr_child_bridge_final_error),
       scr_child_bridge_final_error, true);

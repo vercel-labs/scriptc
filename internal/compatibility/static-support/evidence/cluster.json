@@ -1,0 +1,3 @@
+{
+    "node-builtin.cluster": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/cluster-fork-lifecycle.cjs", "tests/corpus/cluster-settings-policy.cjs", "tests/corpus/cluster-worker-marker/main.ts", "tests/corpus/cluster-disconnect-primary.cjs"]
+}

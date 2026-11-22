@@ -199,6 +199,7 @@ import {
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { carriesDebugSources, executableLinkFeatures } from "./backend/executable-features.js";
+import { sourceTextLoader } from "./backend/source-text-loader.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
@@ -1345,6 +1346,7 @@ async function prepareExecutableInput(
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
         positionSources: sourceTexts,
+        ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
         ...traceOptions,
         ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
@@ -1440,6 +1442,7 @@ async function prepareExecutableInput(
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
       positionSources: sourceTexts,
+      ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
       ...traceOptions,
       ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,

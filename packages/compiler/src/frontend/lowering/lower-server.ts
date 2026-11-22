@@ -2664,6 +2664,26 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // A tls or https server's NSS key-log lines: (line: Buffer). The
+      // listener takes the Buffer or nothing; a plain server never fires it.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.serverOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "newListener") {
       // Node's meta event, fired with the event name BEFORE a listener
       // joins its list (a handler that throws abandons the add).
@@ -4224,6 +4244,27 @@ function lowerNetSocketMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // TLSSocket's NSS key-log lines: each a Buffer holding
+      // "<LABEL> <client_random hex> <secret hex>\n"; a plain socket never
+      // fires it, like Node.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.sockOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "session") {
       // The received-ticket event: fires once per TLS client socket with
       // the serialized session (a Buffer); plain sockets never fire it.
@@ -4247,7 +4288,7 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", "session", and "keylog" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(

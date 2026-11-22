@@ -4423,7 +4423,11 @@ export class ClassDynamicDispatch {
                   ]
                 : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
-              name: `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}.${this.computed.size}`,
+              name: keyedHelperName(
+                lowerer,
+                `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}`,
+                key,
+              ),
               params,
               returnType:
                 (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,
@@ -4803,7 +4807,7 @@ export class ClassDynamicDispatch {
                 }
               : { ...write!, args: [bag, write!.args[1]!, varRef("p.1", DYN, loc)] };
             const helper: IrFunction = {
-              name: `%dyn.class.property.${this.properties.size}`,
+              name: keyedHelperName(lowerer, "%dyn.class.property", key),
               params,
               returnType: write ? VOID : DYN,
               locals: [
@@ -4978,7 +4982,7 @@ export class ClassDynamicDispatch {
           );
           params.push({ localId: "p.calleeName", name: "calleeName", type: STRING });
           const callback: IrFunction = {
-            name: `%dyn.class.callback.${this.dispatches.size}`,
+            name: keyedHelperName(lowerer, "%dyn.class.callback", key),
             params: [params[0]!],
             returnType: DYN,
             locals: [{ id: "p.0", name: "receiver", type: DYN, mutable: false }],
@@ -4986,7 +4990,7 @@ export class ClassDynamicDispatch {
             loc: expr.loc,
           };
           const helper: IrFunction = {
-            name: `%dyn.class.call.${this.dispatches.size}`,
+            name: keyedHelperName(lowerer, "%dyn.class.call", key),
             params,
             returnType: DYN,
             locals: params.map((p) => ({

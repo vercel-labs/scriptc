@@ -930,6 +930,7 @@ import {
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
   isArrayIterationCallback,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -19142,7 +19143,7 @@ export class Lowerer {
     // destination's representation (a bare unit literal has none).
     if (
       expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
+      isUnitType(expr.result.type) &&
       !typeEquals(expr.type, expected)
     ) {
       const result = this.coerceToExpected(expr.result, expected);
@@ -19832,6 +19833,32 @@ export class Lowerer {
         return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
       }
       return expr;
+    }
+    if (isUnitType(expr.type) && expr.kind === "seqExpr") {
+      // An undefined-typed sequence (an effectful `void` operand) flowing
+      // into an undefined-armed union: the wrap holds the unit literal, and
+      // the sequence's effects run before it.
+      const tag = this.armTag(expected.unionId, expr.type);
+      if (tag >= 0) {
+        const literal: IrExpr = {
+          kind: "unitLit",
+          unit: expr.type.kind === "nullT" ? "null" : "undefined",
+          type: expr.type,
+          loc: expr.loc,
+        };
+        const wrapped: IrExpr = {
+          kind: "unionWrap",
+          unionId: expected.unionId,
+          tag,
+          value: literal,
+          type: expected,
+          loc: expr.loc,
+        };
+        const effects = unitEffectStatements(expr);
+        return effects.length === 0
+          ? wrapped
+          : { kind: "seqExpr", stmts: effects, result: wrapped, type: expected, loc: expr.loc };
+      }
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -21836,9 +21863,14 @@ export class Lowerer {
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
       // `return void f()`: the sequence runs its effect and JS returns
-      // undefined, so its statements become the tail of the block.
+      // undefined, so its statements become the tail of the block (a
+      // nested sequence's result keeps its own effects too).
       if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
-        return { kind: "block", body: [...e.stmts, { kind: "return", value: null, loc }], loc };
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(e), { kind: "return", value: null, loc }],
+          loc,
+        };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {

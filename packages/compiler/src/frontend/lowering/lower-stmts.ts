@@ -403,6 +403,7 @@ import {
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
   nodeTypeError,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
@@ -2737,7 +2738,11 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
       if (value !== null && value.kind === "seqExpr" && value.type.kind === "undefinedT") {
         const bare: IrStmt = { kind: "return", value: null, loc: locOf(stmt) };
         lowerer.ctx.inferReturn.entries.push({ stmt: bare, node: null });
-        return { kind: "block", body: [...value.stmts, bare], loc: locOf(stmt) };
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(value), bare],
+          loc: locOf(stmt),
+        };
       }
       if (value !== null && value.type.kind === "void") {
         const bare: IrStmt = { kind: "return", value: null, loc: locOf(stmt) };

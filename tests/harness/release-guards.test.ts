@@ -13,7 +13,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
-import { preflight, publishedPackages, releaseNotes } from "../../scripts/release-preflight.mjs";
+import {
+  nextPatch,
+  npmPreflight,
+  preflight,
+  publishedNames,
+  publishedPackages,
+  releaseNotes,
+} from "../../scripts/release-preflight.mjs";
+import { hostPackages, versionMismatches } from "../../scripts/release-registry-smoke.mjs";
 import { decide, eligibleRuns, gateBranch } from "../../scripts/release-ci-gate.mjs";
 import { PUBLISHING_JOBS, staleRuns } from "../../scripts/release-supersede.mjs";
 import { payloadDifferences, tarballFiles } from "../../scripts/verify-npm-published.mjs";
@@ -232,4 +240,110 @@ test("a version npm already holds counts as published only when npm holds this p
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+type ReleaseJob = {
+  name?: string;
+  needs?: string[];
+  if?: string;
+  environment?: string;
+  permissions?: Record<string, string>;
+  strategy?: { matrix: { include: { platform: string; runner: string }[] } };
+  steps: { id?: string; name?: string; run?: string; with?: Record<string, unknown> }[];
+};
+const releaseWorkflow = () =>
+  load(readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
+    jobs: Record<string, ReleaseJob>;
+  };
+
+test("a release never reuses a version npm already has any package of", async () => {
+  const names = publishedNames(repoRoot);
+  const version = JSON.parse(
+    readFileSync(join(repoRoot, "packages/cli/package.json"), "utf8"),
+  ).version;
+  expect(names).toContain("scriptc");
+  expect(names).toContain("@scriptc/runtime-darwin-arm64");
+  expect(await npmPreflight(repoRoot, async () => false)).toBeNull();
+  // One stale runtime pack is enough to stop the run, before any build, naming the next patch.
+  const problem = await npmPreflight(repoRoot, async (name, at) => {
+    expect(at).toBe(version);
+    return name === "@scriptc/runtime-darwin-arm64";
+  });
+  expect(problem).toContain(`1 of the ${names.length} packages of ${version} are already on npm`);
+  expect(problem).toContain("@scriptc/runtime-darwin-arm64");
+  expect(problem).toContain(`release ${nextPatch(version)} instead`);
+  expect(nextPatch("0.4.15")).toBe("0.4.16");
+  expect(nextPatch("1.9.9-rc.1")).toBe("1.9.10");
+  expect(() => nextPatch("next")).toThrow();
+
+  // The check runs in check-release, which every build and publish job needs.
+  const { jobs } = releaseWorkflow();
+  const check = jobs["check-release"]!.steps.find(
+    (step) => step.name === "Check the release can publish",
+  )!;
+  expect(check.run).toBe("node scripts/release-preflight.mjs --npm");
+  for (const job of ["build-native-packages", "build-libnode-packs", "publish"])
+    expect(jobs[job]!.needs, job).toContain("check-release");
+  // Only this run's receipts resume a publish (re-running its failed jobs); no earlier run's.
+  expect(JSON.stringify(jobs)).not.toContain("receipt_run");
+});
+
+test("the release publishes under next, smoke-tests from npm on every host, then moves latest", () => {
+  const { jobs } = releaseWorkflow();
+  const publish = jobs["publish"]!.steps.find((step) => step.id === "publish")!.run!;
+  expect(publish).toContain('npm publish "$packed" $PROVENANCE --access public --tag next');
+  expect(publish.match(/npm publish /g)).toHaveLength(1);
+
+  const smoke = jobs["registry-smoke"]!;
+  expect(smoke.needs).toEqual(["check-release", "npm-available"]);
+  expect(smoke.strategy!.matrix.include.map(({ platform }) => platform)).toEqual([
+    "linux-x64",
+    "linux-arm64",
+    "darwin-arm64",
+    "darwin-x64",
+    "windows-x64",
+  ]);
+  expect(smoke.steps.at(-1)!.run).toBe(
+    "node scripts/release-registry-smoke.mjs ${{ needs.check-release.outputs.version }}",
+  );
+
+  const promote = jobs["promote"]!;
+  expect(promote.needs).toEqual(["check-release", "registry-smoke"]);
+  expect(promote.if).toContain("needs.registry-smoke.result == 'success'");
+  expect(promote.environment).toBe("Release");
+  expect(promote.permissions).toMatchObject({ "id-token": "write" });
+  const move = promote.steps.at(-1)!.run!;
+  // npm authorizes dist-tag over OIDC from 11.21.0.
+  expect(move).toContain("npm install --global npm@11.21.0");
+  expect(move).toContain('npm dist-tag add "$name@$VERSION" latest');
+  // The GitHub release, which marks the version complete, waits for latest.
+  expect(jobs["github-release"]!.needs).toContain("promote");
+  expect(jobs["github-release"]!.if).toContain("needs.promote.result == 'success'");
+});
+
+test("the registry smoke test checks the host's packages are all at the release's version", () => {
+  expect(hostPackages("darwin", "arm64")).toEqual([
+    "scriptc",
+    "@scriptc/cli-darwin-arm64",
+    "@scriptc/runtime-darwin-arm64",
+    "@scriptc/llvm-darwin-arm64",
+  ]);
+  expect(hostPackages("win32", "x64")[1]).toBe("@scriptc/cli-win32-x64-msvc");
+  expect(() => hostPackages("freebsd", "x64")).toThrow();
+  // Every name it checks is one the release publishes.
+  for (const [platform, arch] of [
+    ["linux", "x64"],
+    ["linux", "arm64"],
+    ["darwin", "arm64"],
+    ["darwin", "x64"],
+    ["win32", "x64"],
+  ] as const)
+    for (const name of hostPackages(platform, arch))
+      expect(publishedNames(repoRoot)).toContain(name);
+  expect(
+    versionMismatches({ scriptc: "0.4.16", "@scriptc/runtime-darwin-arm64": "0.4.15" }, "0.4.16"),
+  ).toEqual(["@scriptc/runtime-darwin-arm64 is 0.4.15, expected 0.4.16"]);
+  expect(versionMismatches({ "@scriptc/llvm-darwin-arm64": undefined }, "0.4.16")).toEqual([
+    "@scriptc/llvm-darwin-arm64 is missing, expected 0.4.16",
+  ]);
 });

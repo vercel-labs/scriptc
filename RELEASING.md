@@ -29,9 +29,30 @@ A release run fails early, with the reason in its log, when it cannot publish: `
 
 Publishing uses npm trusted publishing (OIDC) — there is no npm token secret.
 Each published package must have a GitHub Actions trusted publisher for
-`release.yml` and the `Release` environment. A missing configuration fails
-before upload. Re-runs skip package versions already present on npm, so a
-partially published release can be resumed safely.
+`release.yml` and the `Release` environment, with **Allow npm dist-tag**
+turned on (the promote job moves `latest` over OIDC, which npm allows from
+npm 11.21.0). A missing configuration fails before upload.
+
+Every package publishes under the `next` dist-tag. Once all of them resolve,
+the `registry-smoke` jobs install `scriptc@<version>` from npm into a clean
+directory on Linux x64 and arm64, macOS arm64 and x64, and Windows x64, check
+that the host's CLI, runtime pack and LLVM helper packages are all at the
+release's version, and build and run a hello-world program
+(`scripts/release-registry-smoke.mjs`). Only when every platform passes does
+the `promote` job point `latest` at the release (`scriptc` last), and only
+then does the GitHub release, which marks the version complete, get created.
+A release that fails before `latest` moves leaves users on the previous
+release.
+
+A release never reuses a version. Before building, `release-preflight.mjs
+--npm` stops the run, naming the next patch, when npm already has any package
+of the version: a run that published part of a version and then failed is
+followed by a release of the next patch, never by a second run of the same
+version (0.4.15 shipped CLIs beside runtime packs an earlier, failed attempt
+had published, #4011). Re-running the failed jobs of the run itself still
+finishes it, from that run's receipts, and the publish job accepts a version
+npm already has only when npm holds the same payload
+(`scripts/verify-npm-published.mjs`).
 
 ## libnode packs
 

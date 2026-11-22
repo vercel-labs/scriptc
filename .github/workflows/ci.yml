@@ -7,8 +7,10 @@ on:
   # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
   # it does. It runs what a push to main runs. Nothing starts such a run until then.
   merge_group:
-  # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
-  # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
+  # Nightly sweep of every lane but macos. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull
+  # requests run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs). The complete macOS suite
+  # runs on the newest green main commit in the post-merge lanes (postmerge.yml), which call this workflow with
+  # only_lane set to macos.
   schedule:
     - cron: "17 7 * * *"
   # A manual run, for example on a release candidate commit. It runs every lane; macos_suite selects the complete
@@ -25,6 +27,22 @@ on:
         type: choice
         options: [all, shape_overlay]
         default: all
+  # The post-merge lanes (postmerge.yml): one lane on a commit that is not the caller's. Every checkout reads ref, so
+  # the jobs test that commit and not the default branch's tip that a workflow_run or schedule caller starts on.
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to test. Empty tests the caller's commit.
+        type: string
+        default: ""
+      only_lane:
+        description: Run only this lane (macos); the other lanes are off and the shape overlay does not run.
+        type: string
+        default: ""
+      macos_suite:
+        description: The test suite to run on macOS (full or darwin)
+        type: string
+        default: full
 
 concurrency:
   # A new push to a pull request cancels its previous run. Pushes to main share one group without cancelling: a
@@ -33,8 +51,8 @@ concurrency:
   # covers every commit merged before it. Releases still require a green run on their own commit: the release's
   # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
   # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
-  # main pushes.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
+  # main pushes. A post-merge call runs in a group of its own run: the caller holds one run at a time.
+  group: ci-${{ inputs.only_lane && format('postmerge-{0}', github.run_id) || github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
@@ -87,8 +105,9 @@ jobs:
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos, whose jobs the nightly sweep runs on main; they run macos_smoke instead. The nightly
-  # sweep and manual runs run every lane but macos_smoke, which the complete macOS lane covers.
+  # every lane except macos, whose jobs the post-merge lanes (postmerge.yml) run on the newest green main commit; they
+  # run macos_smoke instead. The nightly sweep runs every lane but macos and macos_smoke, manual runs every lane but
+  # macos_smoke, which the complete macOS lane covers, and a post-merge call only the lane it names.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -120,12 +139,20 @@ jobs:
       - id: lanes
         env:
           EVENT: ${{ github.event_name }}
+          ONLY_LANE: ${{ inputs.only_lane }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"; }
-          if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
+          if [ "$ONLY_LANE" = macos ]; then
+            printf 'linux=false\nmacos=true\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ -n "$ONLY_LANE" ]; then
+            echo "::error::unknown lane $ONLY_LANE"
+            exit 1
+          elif [ "$EVENT" = schedule ]; then
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
             printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
@@ -145,6 +172,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -179,6 +208,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -261,6 +292,8 @@ jobs:
       SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -318,7 +351,8 @@ jobs:
     # arm64 macOS: same clang/libc the differential + number-formatting
     # oracles were verified against. Pull requests that change darwin code and
     # manual runs with macos_suite set to darwin run the darwin suite
-    # (scripts/ci-test-plan.mjs) in three slices; the nightly schedule and
+    # (scripts/ci-test-plan.mjs) in three slices; the post-merge lanes
+    # (postmerge.yml, one run at a time on the newest green main commit) and
     # other manual runs run the complete suite in ten. The complete suite on
     # every push needed more macOS runners than the repository has.
     runs-on: macos-15
@@ -338,6 +372,8 @@ jobs:
       SCRIPTC_CI_SUITE: ${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin' || 'full' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -378,6 +414,8 @@ jobs:
       SCRIPTC_CI_SUITE: darwin-smoke
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -402,6 +440,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -452,6 +492,8 @@ jobs:
       ASAN_OPTIONS: detect_leaks=0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -494,6 +536,8 @@ jobs:
       SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/4
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -527,6 +571,8 @@ jobs:
       SCRIPTC_TEST_WORKERS: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -554,6 +600,8 @@ jobs:
       LSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/harness/lsan.supp:print_suppressions=0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -603,6 +651,8 @@ jobs:
       ASAN_OPTIONS: detect_leaks=0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -626,12 +676,14 @@ jobs:
   # must build and run as in the default build. It builds its own native
   # packages, so it does not depend on the other lanes.
   shape_overlay_native:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     name: build (Linux x64 native packages, shape overlay)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -659,7 +711,7 @@ jobs:
 
   shape_overlay:
     needs: [shape_overlay_native]
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     name: test (Linux, shape overlay, ${{ matrix.suite }} ${{ matrix.shard }}/8)
     runs-on: ubuntu-24.04
     # Longest green shard 2026-11-07..21: 59 minutes (effect).
@@ -676,6 +728,8 @@ jobs:
       SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/8
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -719,6 +773,8 @@ jobs:
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -796,6 +852,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -843,6 +901,8 @@ jobs:
       SCRIPTC_BOOTSTRAP_PHASE: ${{ matrix.phase }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -912,6 +972,8 @@ jobs:
       SCRIPTC_NO_CACHE: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -937,6 +999,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -966,6 +1030,8 @@ jobs:
         optimization: [release, dev]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -992,6 +1058,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1044,6 +1112,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1090,6 +1160,8 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1138,6 +1210,8 @@ jobs:
       SCRIPTC_TEST_SHARD: ${{ matrix.shard }}/10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1179,6 +1253,8 @@ jobs:
     timeout-minutes: 70
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1268,6 +1344,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1318,6 +1396,8 @@ jobs:
       SCRIPTC_TARGET: x86_64-windows-gnu
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/zig
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
@@ -1404,6 +1484,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1478,6 +1560,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/mobile-runtime-pack
         with:
           runtime: ${{ matrix.runtime }}
@@ -1495,6 +1579,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
       - uses: ./.github/actions/mobile-runtime-pack
         with:
           runtime: ${{ matrix.runtime }}

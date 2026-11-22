@@ -269,14 +269,14 @@ test("CI runs the base commit's lane selection against the pull request's diff",
   expect(lanesScript.match(/every$/gm)).toHaveLength(2);
 });
 
-function runLanes(event: string) {
+function runLanes(event: string, onlyLane = "") {
   const directory = mkdtempSync(join(tmpdir(), "ci-lanes-"));
   try {
     const output = join(directory, "output");
     writeFileSync(output, "");
     const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
       encoding: "utf8",
-      env: { ...process.env, EVENT: event, GITHUB_OUTPUT: output },
+      env: { ...process.env, EVENT: event, ONLY_LANE: onlyLane, GITHUB_OUTPUT: output },
     });
     expect(result.status, result.stderr).toBe(0);
     return readFileSync(output, "utf8");
@@ -285,17 +285,20 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job; the nightly sweep every lane but macos, and manual runs every lane", () => {
   for (const event of ["push", "merge_group"])
     expect(runLanes(event), event).toBe(
       "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n",
     );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);
-  for (const event of ["schedule", "workflow_dispatch"])
-    expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
-    );
+  // The complete macOS suite runs in the post-merge lanes (postmerge.yml), not in the nightly sweep.
+  expect(runLanes("schedule")).toBe(
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
+  );
+  expect(runLanes("workflow_dispatch")).toBe(
+    "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
+  );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",
     type: "choice",
@@ -331,4 +334,26 @@ test("every job on a macOS runner is in the macos lane, but the main push smoke 
   expect(smoke.needs).toEqual(["validation_scope", "lanes", "code_quality"]);
   expect(smoke.strategy).toBeUndefined();
   expect(smoke.env).toMatchObject({ SCRIPTC_CI_SUITE: "darwin-smoke", SCRIPTC_TEST_SHARD: "1/1" });
+});
+
+test("a post-merge call runs only the lane it names, whatever event started its caller", () => {
+  for (const event of ["workflow_run", "schedule", "workflow_dispatch", "push"])
+    expect(runLanes(event, "macos"), event).toBe(
+      "linux=false\nmacos=true\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\n",
+    );
+  const directory = mkdtempSync(join(tmpdir(), "ci-lanes-"));
+  try {
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        EVENT: "schedule",
+        ONLY_LANE: "linux",
+        GITHUB_OUTPUT: join(directory, "out"),
+      },
+    });
+    expect(result.status).toBe(1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

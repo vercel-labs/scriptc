@@ -183,8 +183,9 @@ const laneOf = (name: string) =>
 test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
   for (const name of nightlyJobs) {
     expect(workflow.jobs[name], name).toBeDefined();
+    // A post-merge call (only_lane) starts from a schedule or manual caller too, and runs none of them.
     expect(workflow.jobs[name]!.if, name).toBe(
-      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+      "${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}",
     );
     expect(workflow.jobs.test!.needs, name).not.toContain(name);
   }

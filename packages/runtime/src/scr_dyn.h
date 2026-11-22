@@ -2283,6 +2283,8 @@ extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);
+/* The Error a dynamic error box was built from (+1), or NULL. */
+ScrError *scr_dyn_error_value(const ScrDyn *d);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 /* The `stack` member an error view reads as a non-empty string, for

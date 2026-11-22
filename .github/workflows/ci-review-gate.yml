@@ -27,9 +27,13 @@ on:
         required: true
         type: string
       # A fork's own CI run is never trusted (it runs the fork's workflow files). A maintainer who has checked it,
-      # workflow files included, records ci/full on the fork's head with this.
+      # workflow files included, records ci/full on the commit they checked with this. The sha names that commit:
+      # approval covers it alone, so a push that lands before the gate runs leaves the new head unapproved.
+      sha:
+        description: For a fork's pull request with fork_attest, the full sha of the commit whose CI run you checked
+        type: string
       fork_attest:
-        description: For a fork's pull request, record ci/full as passed (after checking its CI run and workflow files)
+        description: For a fork's pull request, record ci/full as passed on sha (after checking its CI run and workflow files)
         type: boolean
         default: false
 

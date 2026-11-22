@@ -21,7 +21,8 @@
 //
 // Nothing a fork's run reports becomes ci/full: a fork controls the workflow files its pull request runs. A
 // maintainer who has checked a fork's CI run, workflow files included, records ci/full by hand with a
-// workflow_dispatch naming the pull request and fork_attest.
+// workflow_dispatch naming the pull request, fork_attest, and that run's commit. The approval covers that commit
+// alone: a push that lands before this job reads the pull request leaves the new head unapproved.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -134,11 +135,19 @@ export function isTrustedCiRun(run, repo) {
   );
 }
 
-/** The ci/full status a maintainer's fork_attest dispatch records on a fork pull request's head, or null. */
-export function forkAttestation(pr, repo, attest, actor) {
+export const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * The ci/full status a maintainer's fork_attest dispatch records, or null. It is the status of the commit the
+ * maintainer checked (`approvedSha`) and of no other: a fork can push while the dispatch queues, so the pull
+ * request's head when this runs may be a commit nobody checked.
+ */
+export function forkAttestation(pr, repo, attest, actor, approvedSha) {
   if (!attest || pr.state !== "open" || pr.head?.repo?.full_name === repo) return null;
+  if (typeof approvedSha !== "string" || !FULL_SHA.test(approvedSha)) return null;
+  if (approvedSha !== pr.head.sha) return null;
   return {
-    sha: pr.head.sha,
+    sha: approvedSha,
     state: "success",
     description: `Fork CI checked by ${actor}, workflow files included`,
   };
@@ -234,17 +243,30 @@ function main() {
   for (const number of numbers) {
     const pr = json(`repos/${repo}/pulls/${number}`);
     if (mode === "manual" && pr.head?.repo?.full_name !== repo) {
+      const attest = event.inputs?.fork_attest === true || event.inputs?.fork_attest === "true";
+      const approvedSha = event.inputs?.sha;
       const attestation = forkAttestation(
         pr,
         repo,
-        event.inputs?.fork_attest === true || event.inputs?.fork_attest === "true",
+        attest,
         process.env.GITHUB_ACTOR ?? "a maintainer",
+        approvedSha,
       );
       if (attestation === null) {
-        console.log(
-          `#${number} comes from a fork: its own CI run is not trusted. After checking that run, workflow files included, dispatch again with fork_attest`,
+        if (!attest) {
+          console.log(
+            `#${number} comes from a fork: its own CI run is not trusted. After checking that run, workflow files included, dispatch again with fork_attest and sha`,
+          );
+          continue;
+        }
+        if (pr.state !== "open") throw new Error(`#${number} is ${pr.state}: nothing to attest`);
+        if (typeof approvedSha !== "string" || !FULL_SHA.test(approvedSha))
+          throw new Error(
+            "fork_attest approves the commit that was checked: pass sha, that commit's full sha",
+          );
+        throw new Error(
+          `#${number} is at ${pr.head.sha}, not the checked ${approvedSha}: not recording ${STATUS_CONTEXT}`,
         );
-        continue;
       }
       gh(
         "--method",

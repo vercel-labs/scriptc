@@ -18,7 +18,17 @@ const repo = "vercel-labs/scriptc";
 const sha = "a".repeat(40);
 
 type Workflow = {
-  on: Record<string, { types?: string[]; workflows?: string[] } | null>;
+  on: Record<
+    string,
+    {
+      types?: string[];
+      workflows?: string[];
+      inputs?: Record<
+        string,
+        { description?: string; type?: string; required?: boolean; default?: unknown }
+      >;
+    } | null
+  >;
   permissions: Record<string, string>;
   concurrency: { group: string; "cancel-in-progress": boolean };
   jobs: Record<
@@ -165,22 +175,41 @@ test("only CI's own dispatched runs count, and a fork's run never becomes ci/ful
     false,
   );
   expect(isTrustedCiRun({ ...ci, event: "pull_request" }, repo)).toBe(false);
-  // A fork's ci/full comes only from a maintainer's explicit attestation.
+  // A fork's ci/full comes only from a maintainer's explicit attestation of the commit they checked.
   const fork = pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } });
-  expect(forkAttestation(fork, repo, false, "ctate")).toBeNull();
-  expect(forkAttestation(fork, repo, true, "ctate")).toEqual({
+  expect(forkAttestation(fork, repo, false, "ctate", sha)).toBeNull();
+  expect(forkAttestation(fork, repo, true, "ctate", sha)).toEqual({
     sha,
     state: "success",
     description: "Fork CI checked by ctate, workflow files included",
   });
-  expect(forkAttestation(pr(), repo, true, "ctate")).toBeNull();
-  expect(forkAttestation({ ...fork, state: "closed" }, repo, true, "ctate")).toBeNull();
+  expect(forkAttestation(pr(), repo, true, "ctate", sha)).toBeNull();
+  expect(forkAttestation({ ...fork, state: "closed" }, repo, true, "ctate", sha)).toBeNull();
   const gate = gateWorkflow.jobs["gate"]!.if!;
   expect(gate).toContain("github.event.workflow_run.path == '.github/workflows/ci.yml'");
   expect(gate).toContain(
     "github.event.workflow_run.head_repository.full_name == github.repository",
   );
   expect(gate).not.toContain("github.event.workflow_run.event == 'pull_request'");
+});
+
+test("fork_attest approves only the exact commit the maintainer checked", () => {
+  const fork = pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  const pushed = "b".repeat(40);
+  expect(forkAttestation(fork, repo, true, "ctate", sha)?.sha).toBe(sha);
+  // The fork pushes while the dispatch queues: the new head is not the commit that was checked.
+  const movedFork = pr({ head: { sha: pushed, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  expect(forkAttestation(movedFork, repo, true, "ctate", sha)).toBeNull();
+  // What was checked is named as that commit's full sha; a prefix, another commit, or nothing approves none.
+  for (const approvedSha of [undefined, "", sha.slice(0, 12), pushed, sha.toUpperCase(), ` ${sha}`])
+    expect(forkAttestation(fork, repo, true, "ctate", approvedSha), String(approvedSha)).toBeNull();
+  // The status goes to the attested commit alone, and the dispatch carries the sha.
+  const script = readFileSync(join(repoRoot, "scripts/ci-review-gate.mjs"), "utf8");
+  expect(script).toContain("repos/${repo}/statuses/${attestation.sha}");
+  expect(script).toContain("event.inputs?.sha");
+  const dispatch = gateWorkflow.on["workflow_dispatch"]!.inputs!;
+  expect(dispatch["sha"]).toMatchObject({ type: "string" });
+  expect(dispatch["fork_attest"]!.description).toContain("sha");
 });
 
 test("the gate workflow triggers on the reviews, the label, fork runs and by hand, and runs no pull request code", () => {

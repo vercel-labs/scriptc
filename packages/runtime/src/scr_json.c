@@ -19813,6 +19813,10 @@ static ScrDyn *scr_fn_inherited_value(const char *key, size_t key_len) {
 /* Keyed read on a FUNC node (see scr_runtime.h): own props first, then
  * the function-instance built-ins name/length. +1 or NULL. */
 ScrDyn *scr_dyn_fn_get(const ScrDyn *d, const char *key, size_t key_len) {
+  /* Only a FUNC box carries a closure. A handle's v.handle.ptr aliases
+   * v.fn.clo, so reading one as a function would reinterpret the bridge
+   * reference (see the union in scr_dyn.h): answer no property instead. */
+  if (d->kind != SCR_DYN_FUNC) return scr_dyn_retain(scr_dyn_undefined());
   if (scr_dyn_is_stack_limit(d, key, key_len) && !scr_dyn_stack_limit_shadowed(d))
     return scr_dyn_new_num(scr_stack_limit_get());
   ScrClosure *owner = scr_closure_identity(d->v.fn.clo);
@@ -22510,10 +22514,14 @@ ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *argument
 }
 
 /* IsConstructor over a checked-dynamic value: an ordinary function with its
- * own prototype, a compiled class, a native constructor, or a handle that
- * boxes one (an island function). */
+ * own prototype, a compiled class, a native constructor, or an island handle
+ * that boxes a FUNCTION (an island constructor). An island object that is not
+ * a function is not a constructor, and a handle must never reach the native
+ * function-box paths. */
 static bool scr_dyn_constructible_value(const ScrDyn *value) {
-  if (value->kind == SCR_DYN_HANDLE) return scr_ni_dyn_handle(value);
+  if (value->kind == SCR_DYN_HANDLE)
+    return scr_ni_dyn_handle(value) && scr_ni_dyn_ops != NULL &&
+           scr_ni_dyn_ops->is_function(value);
   if (value->kind != SCR_DYN_FUNC) return false;
   if (value->v.fn.class_obj) return true;
   if (value->v.fn.sig && strncmp(value->v.fn.sig, "native:", 7) == 0) return true;
@@ -22587,6 +22595,16 @@ static ScrDyn *scr_dyn_reflect_construct_with(const ScrDyn *target, const ScrDyn
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
+  /* A newTarget that is a handle (an island function) has no native
+   * function box: reading its prototype must not enter scr_dyn_fn_get,
+   * which interprets v.fn.clo and would read the bridge reference as a
+   * closure. Refuse catchably until island construction is modeled. */
+  if (new_target->kind == SCR_DYN_HANDLE) {
+    static const char message[] =
+        "Reflect.construct with a distinct island newTarget is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
   ScrDyn *prototype = scr_dyn_fn_get(new_target, "prototype", 9);
   if (!prototype) return NULL;
   ScrDyn *receiver = scr_iterator_object(prototype) ? scr_dyn_obj_create(prototype) : scr_dyn_new_obj();
@@ -22609,23 +22627,24 @@ static ScrDyn *scr_dyn_reflect_construct_with(const ScrDyn *target, const ScrDyn
 }
 
 /* Reflect.construct(target, argumentsList[, newTarget]): Node's order — the
- * target must be a constructor, the list converts (CreateListFromArrayLike),
- * an explicit newTarget must be a constructor, then the construction runs.
- * The third ARGUMENT's presence decides whether newTarget is consulted: an
- * explicit undefined is `undefined is not a constructor`, as in Node. */
+ * target must be a constructor, an explicit newTarget must be a constructor,
+ * then the list converts (CreateListFromArrayLike), then the construction
+ * runs. The constructor checks precede the list read, so an invalid target
+ * or newTarget never runs the list's getters. The third ARGUMENT's presence
+ * decides whether newTarget is consulted: an explicit undefined is
+ * `undefined is not a constructor`, as in Node. */
 ScrDyn *scr_dyn_reflect_construct(const ScrDyn *target, const ScrDyn *arguments,
                                   const ScrDyn *new_target, bool explicit_new_target) {
   if (!scr_dyn_constructible_value(target)) {
     scr_dyn_not_constructor(target);
     return NULL;
   }
-  ScrDyn *args = scr_dyn_args_from_array_like(arguments, false, true);
-  if (!args) return NULL;
   if (explicit_new_target && !scr_dyn_constructible_value(new_target)) {
-    scr_dyn_release(args);
     scr_dyn_not_constructor(new_target);
     return NULL;
   }
+  ScrDyn *args = scr_dyn_args_from_array_like(arguments, false, true);
+  if (!args) return NULL;
   ScrStr *named = scr_dyn_v8_display_str(target);
   if (!named) {
     scr_dyn_release(args);

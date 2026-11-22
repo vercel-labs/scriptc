@@ -448,6 +448,11 @@ export function lowerExecSyncCall(
   // the unescaped concatenation once when args is non-empty. The args
   // expression evaluates once into a hidden local so both reads see it.
   if (shellEnabled) {
+    // JavaScript evaluates file(), then args(), then the options. The
+    // launch's first argument evaluates the file into a local (and answers
+    // the shell's path), so the SECOND argument's args() runs after it.
+    const heldFile = lowerer.declareHiddenLocal("%cpShellFile", cmd.type);
+    const fileRef = varRef(heldFile.id, cmd.type, loc);
     const held = lowerer.declareHiddenLocal("%cpShellArgs", argvExpr.type);
     const argsRef = varRef(held.id, argvExpr.type, loc);
     const deprecation: IrExpr = {
@@ -460,7 +465,7 @@ export function lowerExecSyncCall(
     const joined: IrExpr = {
       kind: "libCall",
       fn: "cp.shellCommand",
-      args: [cmd, argsRef],
+      args: [fileRef, argsRef],
       type: STRING,
       loc,
     };
@@ -474,7 +479,13 @@ export function lowerExecSyncCall(
       type: STRING,
       loc,
     };
-    cmdArg = { kind: "strLit", value: "/bin/sh", type: STRING, loc };
+    cmdArg = {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: heldFile.id, init: cmd, loc }],
+      result: { kind: "strLit", value: "/bin/sh", type: STRING, loc },
+      type: STRING,
+      loc,
+    };
     argvExpr = {
       kind: "arrayLit",
       elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, command],

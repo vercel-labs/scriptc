@@ -115,7 +115,14 @@ export function argumentsAliasingUnobservable(
       elementReads = true;
       return undefined;
     }
-    if (isReadOnlyUse?.(node)) return undefined;
+    if (isReadOnlyUse?.(node)) {
+      // A forwarding use reads every element (apply walks the list), so it
+      // counts like an indexed read: the parameter-write check below must
+      // still run, because a mapped arguments object would carry a written
+      // parameter's new value into the callee and the copy would not.
+      elementReads = true;
+      return undefined;
+    }
     escapes = true;
     return "stop";
   });

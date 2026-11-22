@@ -36,3 +36,19 @@ const saved = Reflect.construct;
 console.log(typeof saved);
 const throughValue = saved(Base, [6, 7]) as any;
 console.log(throughValue.sum);
+
+// Node checks IsConstructor on an explicit newTarget BEFORE converting the
+// argument list: the list's getters never run for an invalid newTarget.
+let listRead = false;
+const unreadList = {
+  get length(): number {
+    listRead = true;
+    return 0;
+  },
+};
+try {
+  Reflect.construct(Base, unreadList as any, 1 as any);
+} catch (error) {
+  console.log((error as Error).message);
+}
+console.log("list read", listRead);

@@ -29,3 +29,17 @@ console.log(Buffer.isBuffer(raw), raw.toString());
 // `shell: false` is execFileSync's default and takes the direct path.
 const direct = execFileSync("printf", ["direct"], { shell: false, encoding: "utf8" });
 console.log(JSON.stringify(direct));
+
+// JavaScript argument order: file() evaluates before args() before the
+// options, even though the shell form joins file and args afterwards.
+const order: string[] = [];
+const file = (): string => {
+  order.push("file");
+  return "echo";
+};
+const fileArgs = (): string[] => {
+  order.push("args");
+  return ["order"];
+};
+const ordered = execFileSync(file(), fileArgs(), { shell: true, encoding: "utf8" });
+console.log(JSON.stringify(ordered), order.join(","));

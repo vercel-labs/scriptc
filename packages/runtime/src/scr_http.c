@@ -8431,14 +8431,15 @@ static bool scr_http_proxy_target_valid(const ScrStr *host, double port, const S
   if (header_pairs != NULL) {
     double pairs = scr_arr_len(header_pairs);
     for (double i = 0; i + 1 < pairs; i += 2) {
-      ScrStr *name = (ScrStr *)scr_arr_get_ref(header_pairs, i);
+      /* borrowed: the pairs array outlives this read-only scan */
+      ScrStr *name = (ScrStr *)scr_arr_borrow_ref(header_pairs, i);
       if (name == NULL || name->len != 4) continue;
       if (tolower((unsigned char)name->data[0]) != 'h' ||
           tolower((unsigned char)name->data[1]) != 'o' ||
           tolower((unsigned char)name->data[2]) != 's' ||
           tolower((unsigned char)name->data[3]) != 't')
         continue;
-      ScrStr *value = (ScrStr *)scr_arr_get_ref(header_pairs, (double)(i + 1));
+      ScrStr *value = (ScrStr *)scr_arr_borrow_ref(header_pairs, (double)(i + 1));
       if (value == NULL) continue;
       if (value->len != authority->len ||
           memcmp(value->data, authority->data, authority->len) != 0) {

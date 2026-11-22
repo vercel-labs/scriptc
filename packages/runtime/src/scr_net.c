@@ -9349,6 +9349,11 @@ static void scr_net_sweep(void) {
         scr_net_ls_drop(&srv->timeout_ls);
         scr_net_ls_drop(&srv->new_listener_ls);
         scr_net_ls_drop(&srv->inert_ls);
+        /* the protocol and native contexts own listeners too: settle them as
+         * a close does, so a listener capturing the server cannot keep it
+         * alive through them after the failed listen */
+        if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
+        if (srv->native_settle && srv->native_ctx) srv->native_settle(srv->native_ctx);
         scr_net_server_unregister(srv);
       }
       if (scr_exc_pending()) {

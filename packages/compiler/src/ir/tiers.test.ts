@@ -78,6 +78,15 @@ test("dynamic operations and boundary operations are told apart", () => {
       loc,
     }),
   ).toBe("%dyn.class.property");
+  expect(
+    dynamicOperationOf({
+      kind: "call",
+      callee: "%dyn.class.property.0a1b2c3d4e5f",
+      args: [dynParam],
+      type: DYN,
+      loc,
+    }),
+  ).toBe("%dyn.class.property");
   // Boundary operations: conversions and kind tests.
   expect(dynamicOperationOf({ kind: "dynCheck", value: dynParam, type: F64, loc })).toBeNull();
   expect(

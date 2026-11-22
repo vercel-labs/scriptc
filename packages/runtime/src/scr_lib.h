@@ -40,6 +40,19 @@ ScrStr *scr_module_id(double module_id);
 ScrStr *scr_module_path(double module_id);
 ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
+/* The checked-dynamic Module object for a record, one per record (+1), and
+ * its children as a fresh checked-dynamic array (+1). */
+ScrDyn *scr_module_dyn_object(double module_id);
+ScrDyn *scr_module_dyn_children(double module_id);
+/* module.parent as a checked-dynamic value (+1): null, undefined or the
+ * parent's view, per the registry's absent markers. */
+ScrDyn *scr_module_dyn_parent(double module_id);
+/* A handle as its view, absent markers as undefined (+1). */
+ScrDyn *scr_module_dyn_object_or_absent(double module_id);
+/* The same for a checked-dynamic handle value (+1). */
+ScrDyn *scr_module_dyn_of_value(ScrDyn *value);
+/* The compiled prologue stores a module's exports value for that view. */
+void scr_module_set_exports_dyn(double module_id, ScrDyn *value);
 double scr_module_parent(double module_id);
 bool scr_module_loaded(double module_id);
 double scr_module_cache_get(ScrStr *filename);
@@ -287,6 +300,8 @@ void scr_histo_add(ScrDyn *handle, ScrDyn *other);
 void scr_histo_subtract(ScrDyn *handle, ScrDyn *other);
 double scr_histo_stat(ScrDyn *handle, double which);
 ScrBigInt *scr_histo_stat_big(ScrDyn *handle, double which);
+double scr_histo_ewma(ScrDyn *handle, double which);
+double scr_histo_burn_rate(ScrDyn *handle, ScrDyn *slo_target);
 double scr_histo_percentile(ScrDyn *handle, double percentile);
 ScrBigInt *scr_histo_percentile_big(ScrDyn *handle, double percentile);
 double scr_histo_count_at(ScrDyn *handle, double value);
@@ -301,9 +316,32 @@ double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other);
 double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other);
 double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
+/* histogram.linearBuckets(stepSize) / logBuckets(firstBucket, base): the
+ * argument validation (which 0 stepSize, 1 firstBucket, 2 base) and the
+ * per-thread bucket view the count rebuilds and the accessors read. */
+double scr_histo_bucket_arg(ScrDyn *value, double which);
+/* Set by the histogram unit the first time a thread builds a bucket map:
+ * frees that thread's view as a worker thread exits (scr_worker.c). */
+extern SCR_TL void (*scr_worker_bucket_exit)(void);
+double scr_histo_linear_buckets_count(ScrDyn *handle, double step);
+double scr_histo_log_buckets_count(ScrDyn *handle, double first, double base);
+double scr_histo_buckets_key(double index);
+double scr_histo_buckets_value(double index);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
+ScrBigInt *scr_histo_percentiles_value_big(ScrDyn *handle, double index);
+double scr_histo_linear_view(ScrDyn *handle, ScrDyn *step_size);
+double scr_histo_log_view(ScrDyn *handle, ScrDyn *first_bucket, ScrDyn *base);
+double scr_histo_percentiles_at_view(ScrDyn *handle, ScrDyn *percentiles);
 void scr_histo_dispose(ScrDyn *handle);
+/* createSlidingWindowHistogram: a window of histogram chunks rotated by
+ * chunkDuration (milliseconds) or recordsPerChunk; snapshot() merges the
+ * window. */
+ScrDyn *scr_sliding_new(ScrDyn *options);
+void scr_sliding_record_checked(ScrDyn *handle, double value);
+void scr_sliding_record_big(ScrDyn *handle, ScrBigInt *value);
+void scr_sliding_reset(ScrDyn *handle);
+ScrDyn *scr_sliding_snapshot(ScrDyn *handle);
 /* Histogram inference: the confidence-interval and Welch readings lower
  * through selectors after their arguments are validated once. */
 double scr_histo_confidence(ScrDyn *options);

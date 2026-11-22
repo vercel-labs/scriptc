@@ -70,6 +70,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   // ERR_INVALID_ARG_VALUE for a missing method.
   "test.accessorDescriptor",
   "test.accessorRequire",
+  // assert.register validates its function; a registered assertion and the
+  // missing-name error throw from the call the runner makes.
+  "test.assertRegister",
+  "test.ctxCustomAssert",
   "test.mockTimes",
   "test.registerEmpty",
   "test.sub",
@@ -450,6 +454,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
+  "http.agentCreateConnectionCheck",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
   "http.serverTimeoutGet",
@@ -482,6 +487,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "tls.createServerDyn",
   "tls.createSecureContextDyn",
   "tls.caCertsChk",
+  // tls.checkServerIdentity can throw ERR_TLS_CERT_ALTNAME_FORMAT from its
+  // alt-name parser.
+  "tls.checkServerIdentity",
   "tls.createServerDynCb",
   "https.createServerDyn",
   "https.createServerDynCb",
@@ -626,6 +634,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.getUnpackedSettings",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
+  "http2.streamRespondWithFile",
+  "http2.streamRespondWithFD",
   "http2.streamAdditionalHeaders",
   "http2.responseWriteInformation",
   "http2.streamRespond",
@@ -711,8 +721,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.toWebReadableOpts",
   "webstream.toWebReadableDyn",
   "webstream.writableToWebDyn",
+  "webstream.toWebReadableDynOpts",
   "webstream.toWebDuplexDyn",
   // The option walk behind duplexPair throws the not-supported Error for an
   // option it cannot apply; wrap refuses a stream that already carries native
@@ -723,6 +735,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.destroy",
   "stream.destroyErr",
   "stream.iteratorClose",
@@ -792,6 +805,12 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // setResourceTimingBufferSize validation.
   "perf.resourceMark",
   "perf.timerify",
+  // createSlidingWindowHistogram's options and record forms validate, and a
+  // snapshot can fail to allocate.
+  "perf.slidingNew",
+  "perf.slidingRecord",
+  "perf.slidingRecordBig",
+  "perf.slidingSnapshot",
   "perf.resourceClear",
   "perf.resourceBufferSize",
   "perf.measure",
@@ -816,6 +835,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",
+  "perf.histoBucketArg",
+  "perf.histoLinearBucketsCount",
+  "perf.histoLogBucketsCount",
   "perf.histoRecord",
   "perf.histoRecordBig",
   "perf.histoRecordCorrected",
@@ -830,6 +852,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoMannWhitneyU",
   "perf.histoMannWhitneyZ",
   "perf.histoMannWhitneyP",
+  // burnRate validates its SLO target (Node's ERR_INVALID_ARG_TYPE /
+  // ERR_OUT_OF_RANGE).
+  "perf.histoBurnRate",
+  // The bucket views validate their arguments (stepSize, firstBucket, base
+  // and percentilesAt's array) before iterating.
+  "perf.histoLinearView",
+  "perf.histoLogView",
+  "perf.histoPercentilesAtView",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1432,11 +1462,15 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "fs.lchmodChk",
   "fs.lchmodSyncChk",
   "fsp.lchmodChk",
+  "fsp.lchmod",
   "fs.readChk",
   "fs.streamOptsChk",
   "net.connectAttempt",
   "net.connectDyn",
   "net.connectDynCb",
+  "net.socketNew",
+  "net.sockConnect",
+  "net.sockConnectCb",
   "net.setAutoSelTimeout",
   "net.setDefaultAutoSel",
   "error.argTypeThrow",

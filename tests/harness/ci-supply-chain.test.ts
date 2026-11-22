@@ -101,7 +101,7 @@ test("every download of a toolchain archive is checked against the pin file", ()
   expect(fetching).toEqual(
     expect.arrayContaining([
       ".github/workflows/ci.yml",
-      ".github/workflows/release-build.yml",
+      ".github/actions/release-toolchain/action.yml",
       ".github/workflows/llvm-dist.yml",
       ".github/actions/llvm-linux/action.yml",
       ...scripts,
@@ -125,8 +125,10 @@ test("every download of a toolchain archive is checked against the pin file", ()
   ]) {
     expect(pinned).toContain(`  ${name}\n`);
   }
-  const assets = [...read(".github/workflows/release-build.yml").matchAll(/llvm_asset: (\S+)/g)];
-  for (const asset of assets) expect(pinned).toContain(`  ${asset[1]}.tar.xz\n`);
+  const platforms = JSON.parse(read(".github/release-platforms.json")) as { llvm_asset?: string }[];
+  const assets = platforms.flatMap((entry) => (entry.llvm_asset ? [entry.llvm_asset] : []));
+  expect(assets.length).toBeGreaterThan(0);
+  for (const asset of assets) expect(pinned).toContain(`  ${asset}.tar.xz\n`);
 });
 
 // ICU's release archives are downloaded by the pack build, not by a workflow step, and CI keeps them in a cache

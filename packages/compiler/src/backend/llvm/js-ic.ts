@@ -33,6 +33,7 @@
  *                v.typed_ref {ptr +16, type_key +40}.
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
+import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { CLASS_NORMALIZER } from "../../ir/function-references.js";
 import { inertValue } from "../../ir/js-groups.js";
@@ -420,14 +421,18 @@ function capsuleReads(host: Host, helper: IrFunction): CapsuleRead[] {
 
 /** A class table's branches in the order a receiver that matches none of
  * them reaches their guards: the statements of the body, with a
- * `dyn.classHash` switch replaced by its cases' branches. A capsule whose
+ * `dyn.classHash` switch replaced by its cases' branches and a class-case
+ * switch by the branches it was built from. A capsule whose
  * key is a branch's selects that case, whose guard is then true, so the
  * site can treat the branches as the chain they were lowered from. */
 function tableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
-  if (!body.some(isClassHashSwitch)) return body;
+  if (!body.some((stmt) => isClassHashSwitch(stmt) || isClassCaseDispatch(stmt))) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassHashSwitch(stmt)) {
+    // A class-case switch selects one of its branches by the receiver's
+    // key with the exact test each branch was guarded by.
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassHashSwitch(stmt)) {
       // A case of branches that can complete ends with a `break`.
       for (const { body: caseBody } of stmt.cases)
         for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/rejection-handled-throwing-listener.ts"
+ ],
+ "diags": []
+}

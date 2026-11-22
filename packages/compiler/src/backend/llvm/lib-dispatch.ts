@@ -17,6 +17,7 @@ import { BYTES_ELEMENT_SIZE, F64, type IrExpr, type IrType } from "../../ir/ir.j
 import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitJsLibCall } from "./jsval.js";
+import { classCaseEntries } from "../../ir/class-case.js";
 import type { LlvmEmitterContext, LibCallExpr, LibCallPrefix, LlValue } from "./expr-context.js";
 import {
   ASSERT_VERDICT_LIB_FNS,
@@ -29,7 +30,7 @@ import { isDynUndefined } from "../../ir/runtime-features.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { DYN_KIND } from "./dyn.js";
 import { typedRefRecipe } from "./expr-calls.js";
-import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX } from "../../ir/class-key-index.js";
+import { CLASS_KEY_LEN_MIX, CLASS_VALUE_SLOT_MIX, classKeyHash } from "../../ir/class-key-index.js";
 import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
@@ -809,6 +810,121 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
         signed: true,
         range: { min: -1, max: 2147483647 },
       },
+    };
+  }
+  if (e.fn === "dyn.classCase") {
+    // A generated class table's case selector. The table lists each class's
+    // key once with its case; the selector folds the capsule's key to the
+    // hash dyn.classHash computes (its length and last four bytes), switches
+    // on it to the classes of that hash, and confirms a class with the test
+    // `dyn.typedRefIs` makes: the same key pointer, or else
+    // scr_dyn_typed_ref_is_key. It answers that class's case, or 0, which no
+    // case holds, for a value that is not a capsule of one of the classes.
+    // Keys of different classes are different strings, so at most one
+    // class of the table passes its test.
+    const table = e.args[1]!;
+    if (table.kind !== "strLit" || table.value === "")
+      throw new InternalCompilerError("llvm emitter bug: dyn.classCase needs a literal table");
+    const entries = classCaseEntries(table.value);
+    const groups = new Map<number, { caseNumber: number; key: string }[]>();
+    for (const entry of entries) {
+      const hash = classKeyHash(entry.key);
+      if (!(entry.caseNumber > 0) || hash < 0)
+        throw new InternalCompilerError(`llvm emitter bug: class-case entry ${entry.key}`);
+      const group = groups.get(hash);
+      if (group) group.push(entry);
+      else groups.set(hash, [entry]);
+    }
+    const value = host.emitReadReceiver(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_dyn_typed_ref_is_key(ptr, ptr) memory(read)`);
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca i32`);
+    B.line(`store i32 0, ptr ${slot}`);
+    const inspect = B.newLabel("class.case.inspect");
+    const hashed = B.newLabel("class.case.hashed");
+    const done = B.newLabel("class.case.done");
+    const present = B.tmp();
+    B.line(`${present} = icmp ne ptr ${value.name}, null`);
+    B.condBr(present, inspect, done);
+    B.startBlock(inspect);
+    const kind = host.dynKind(value.name);
+    const keySlot = B.tmp(),
+      keyPtr = B.tmp(),
+      lenSlot = B.tmp(),
+      lenWord = B.tmp(),
+      len = B.tmp();
+    B.line(
+      `${keySlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(40, 28)} ; ->v.typed_ref.type_key`,
+    );
+    B.line(`${keyPtr} = load ptr, ptr ${keySlot}`);
+    B.line(
+      `${lenSlot} = getelementptr inbounds i8, ptr ${value.name}, i64 ${host.abiOffset(88, 52)} ; ->v.typed_ref.type_key_len`,
+    );
+    B.line(`${lenWord} = load i32, ptr ${lenSlot}`);
+    B.line(`${len} = and i32 ${lenWord}, ${TYPE_KEY_LEN_MASK}`);
+    const typed = B.tmp(),
+      hasKey = B.tmp(),
+      long = B.tmp(),
+      isCapsule = B.tmp(),
+      hashable = B.tmp();
+    B.line(`${typed} = icmp eq i32 ${kind}, ${DYN_KIND.TYPED_REF}`);
+    B.line(`${hasKey} = icmp ne ptr ${keyPtr}, null`);
+    B.line(`${long} = icmp sge i32 ${len}, 4`);
+    B.line(`${isCapsule} = and i1 ${typed}, ${hasKey}`);
+    B.line(`${hashable} = and i1 ${isCapsule}, ${long}`);
+    B.condBr(hashable, hashed, done);
+    B.startBlock(hashed);
+    const tailAt = B.tmp(),
+      tailStart = B.tmp(),
+      tailPtr = B.tmp(),
+      tail = B.tmp(),
+      folded = B.tmp(),
+      sum = B.tmp(),
+      hash = B.tmp();
+    B.line(`${tailAt} = sub i32 ${len}, 4`);
+    B.line(`${tailStart} = sext i32 ${tailAt} to i64`);
+    B.line(`${tailPtr} = getelementptr inbounds i8, ptr ${keyPtr}, i64 ${tailStart}`);
+    B.line(`${tail} = load i32, ptr ${tailPtr}, align 1`);
+    B.line(`${folded} = mul i32 ${len}, ${CLASS_KEY_LEN_MIX}`);
+    B.line(`${sum} = add i32 ${folded}, ${tail}`);
+    B.line(`${hash} = and i32 ${sum}, 2147483647`);
+    const groupLabels = [...groups.keys()].map(() => B.newLabel("class.case.key"));
+    B.terminate(
+      `switch i32 ${hash}, label %${done} [ ${[...groups.keys()]
+        .map((h, i) => `i32 ${h}, label %${groupLabels[i]!}`)
+        .join(" ")} ]`,
+    );
+    [...groups.values()].forEach((group, g) => {
+      group.forEach((entry, i) => {
+        if (i === 0) B.startBlock(groupLabels[g]!);
+        const full = B.newLabel("class.case.full");
+        const hit = B.newLabel("class.case.hit");
+        const next = i + 1 < group.length ? B.newLabel("class.case.key") : done;
+        const same = B.tmp();
+        B.line(`${same} = icmp eq ptr ${keyPtr}, ${host.cstr(entry.key)}`);
+        B.condBr(same, hit, full);
+        B.startBlock(full);
+        const matches = B.tmp();
+        B.line(
+          `${matches} = call zeroext i1 @scr_dyn_typed_ref_is_key(ptr ${value.name}, ptr ${host.internLiteral(entry.key)})`,
+        );
+        B.condBr(matches, hit, next);
+        B.startBlock(hit);
+        B.line(`store i32 ${entry.caseNumber}, ptr ${slot}`);
+        B.br(done);
+        if (next !== done) B.startBlock(next);
+      });
+    });
+    B.startBlock(done);
+    const selector = B.tmp();
+    B.line(`${selector} = load i32, ptr ${slot}`);
+    const cases = Math.max(...entries.map((entry) => entry.caseNumber));
+    const out = B.tmp();
+    B.line(`${out} = sitofp i32 ${selector} to double`);
+    return {
+      name: out,
+      type: e.type,
+      integer: { name: selector, type: "i32", signed: true, range: { min: 0, max: cases } },
     };
   }
   if (e.fn === "dyn.classValueHash") {

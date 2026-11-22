@@ -4677,6 +4677,37 @@ function validateFunction(
         err(`libCall ${e.fn} must take (readable, flags) and return a web stream`, e.loc);
       return true;
     }
+    if (e.fn === "webstream.toWebReadableOpts") {
+      // Readable.toWeb with a strategy: (readable, flags, strategy) → a web
+      // ReadableStream.
+      if (
+        e.args.length !== 3 ||
+        e.args[0]?.type.kind !== "object" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "dyn" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (readable, flags, strategy) and return a web stream`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.duplexFromWebOpts") {
+      // Duplex.fromWeb with options: (pair, flags, hwm, signal, encoding) →
+      // a Duplex.
+      if (
+        e.args.length !== 5 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "f64" ||
+        e.args[3]?.type.kind !== "dyn" ||
+        e.args[4]?.type.kind !== "string" ||
+        e.type.kind !== "object"
+      )
+        err(
+          `libCall ${e.fn} must take (pair, flags, hwm, signal, encoding) and return a Duplex`,
+          e.loc,
+        );
+      return true;
+    }
     if (e.fn === "webstream.duplexFromWeb") {
       // Duplex.fromWeb: (pair, flags) → a Duplex.
       if (
@@ -4724,6 +4755,17 @@ function validateFunction(
         e.type.kind !== "dyn"
       )
         err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
+    if (e.fn === "webstream.toWebReadableDynOpts") {
+      if (
+        e.args.length !== 3 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.args[2]?.type.kind !== "dyn" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags, strategy) and return a web stream`, e.loc);
       return true;
     }
 

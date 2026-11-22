@@ -1,0 +1,3 @@
+{
+    "node-builtin.console": ["tests/corpus/console-imports.cjs", "tests/corpus/2440-console-inspect-args.ts", "tests/corpus/console-native-value.js", "tests/harness/npm-static.test.ts"]
+}

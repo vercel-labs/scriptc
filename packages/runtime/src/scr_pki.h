@@ -101,7 +101,6 @@ ScrBytes *scr_pki_mlkem_decapsulate(const ScrPkiKey *key, const unsigned char *c
 void scr_pki_mlkem_encapsulate_failed(void);
 void scr_pki_mlkem_decapsulate_failed(void);
 void scr_pki_mlkem_expected_private(void);
-void scr_pki_mlkem_key_unsupported(void);
 /* The shared secret of an ECDH or X25519 key pair: X25519's 32 bytes or
  * ECDH's x coordinate at the field's width. NULL on failure (a public key
  * of another curve or type), with no error pending. */

@@ -10,13 +10,14 @@ type Job = {
   if?: string;
   permissions?: Record<string, string>;
   outputs?: Record<string, string>;
-  steps?: { name?: string; if?: string; run?: string; uses?: string }[];
+  steps?: { id?: string; name?: string; if?: string; run?: string; uses?: string }[];
 };
 const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
 ) as { jobs: Record<string, Job> };
 const scopeJob = workflow.jobs.validation_scope!;
-const scopeScript = scopeJob.steps!.find((step) => step.run)!.run!;
+const gateStep = scopeJob.steps!.find((step) => step.id === "gate")!;
+const scopeScript = scopeJob.steps!.find((step) => step.id === "scope")!.run!;
 // Validation jobs that run only nightly and on manual runs, outside the
 // required check (the shape overlay over the real-package suites).
 const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
@@ -40,7 +41,7 @@ function runScope(eventName: string, event: unknown) {
   return runScopeOutputs(eventName, event).replace(/^tier=.*\n/m, "");
 }
 
-function runScopeOutputs(eventName: string, event: unknown, sha = "") {
+function runScopeOutputs(eventName: string, event: unknown, sha = "", gatePresent = "true") {
   const directory = mkdtempSync(join(tmpdir(), "ci-stack-scope-"));
   try {
     const eventPath = join(directory, "event.json");
@@ -56,6 +57,7 @@ function runScopeOutputs(eventName: string, event: unknown, sha = "") {
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_OUTPUT: outputPath,
         GITHUB_SHA: sha,
+        GATE_PRESENT: gatePresent,
       },
     });
     expect(result.error).toBeUndefined();
@@ -175,9 +177,12 @@ test.each(["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "unkn
 test("scope selection treats branch metadata as data, without executing it", () => {
   expect(runScope("pull_request", stacked("feature/$(exit 1)\n'\"; exit 1"))).toBe("full=false\n");
   expect(scopeScript).not.toContain("${{");
-  expect(scopeJob.permissions).toEqual({});
-  expect(scopeJob.steps).toHaveLength(1);
-  expect(scopeJob.steps![0]!.uses).toBeUndefined();
+  expect(scopeJob.permissions).toEqual({ contents: "read" });
+  expect(scopeJob.steps).toHaveLength(2);
+  expect(gateStep.uses).toBeUndefined();
+  // The probe reads both files the gate needs; only their presence on the default branch counts.
+  expect(gateStep.run).toContain(".github/workflows/ci-review-gate.yml");
+  expect(gateStep.run).toContain("scripts/ci-review-gate.mjs");
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
 });
 
@@ -326,6 +331,32 @@ function runGate(
   expect(script).not.toContain("${{");
   return spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { encoding: "utf8" });
 }
+
+test("a pull request keeps full CI until the gate is on the default branch", () => {
+  const ordinary = {
+    repository: { full_name: repository, default_branch: "main" },
+    pull_request: {
+      author_association: "MEMBER",
+      head: { repo: { full_name: repository } },
+      base: { ref: "main", repo: { full_name: repository } },
+      labels: [],
+    },
+  };
+  expect(runScopeOutputs("pull_request", ordinary, "", "true")).toBe("full=true\ntier=fast\n");
+  // The pull request that introduces the gate cannot be gated yet: its own run validates every lane, as before.
+  expect(runScopeOutputs("pull_request", ordinary, "", "false")).toBe("full=true\ntier=full\n");
+  // A probe that reports nothing counts as absent.
+  expect(runScopeOutputs("pull_request", ordinary, "", "")).toBe("full=true\ntier=full\n");
+  // The label still asks for full CI, and other events never take the fast tier.
+  const labeled = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
+  };
+  expect(runScopeOutputs("pull_request", labeled, "", "false")).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("push", { repository: ordinary.repository }, "", "false")).toBe(
+    "full=true\ntier=full\n",
+  );
+});
 
 test("the required test check passes only after full validation", () => {
   expect(runGate("true").status).toBe(0);

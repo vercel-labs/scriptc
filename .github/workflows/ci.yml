@@ -68,7 +68,8 @@ jobs:
     name: Select CI scope
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
       # fast: a pull request from this repository runs the fast tier (code_quality, fast_tests) until both Vercel
@@ -77,7 +78,22 @@ jobs:
       # full. superseded: a dispatched expensive tier whose branch moved on runs nothing; the new head has its own.
       tier: ${{ steps.scope.outputs.tier }}
     steps:
+      # ci-review-gate.yml and scripts/ci-review-gate.mjs land together, in the pull request that introduces the
+      # gate. check_run events start only the default branch's workflows, so until both files are on the default
+      # branch nothing can start a pull request's expensive tier: the run keeps full CI, as it ran before the gate.
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          present=false
+          if gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ci-review-gate.yml" --silent &&
+             gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ci-review-gate.mjs" --silent; then
+            present=true
+          fi
+          echo "present=$present" >> "$GITHUB_OUTPUT"
       - id: scope
+        env:
+          GATE_PRESENT: ${{ steps.gate.outputs.present }}
         # Read GitHub's event directly; do not run scripts from a PR checkout.
         run: |
           node <<'NODE'
@@ -106,11 +122,19 @@ jobs:
           const superseded = gated && event.inputs?.sha !== process.env.GITHUB_SHA;
           const full = !upperLayer && !shapeOnly && !superseded;
           const fullLabel = (pr?.labels ?? []).some((label) => label?.name === 'ci:full');
+          // Without the gate on the default branch nothing starts a pull request's expensive tier; its run keeps
+          // full CI instead. The probe step reports the files; an absent report runs full CI too.
+          const gateInstalled = process.env.GATE_PRESENT === 'true';
+          const noGate = process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel &&
+            !gateInstalled;
           const tier = superseded ? 'superseded'
-            : process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel ? 'fast' : 'full';
+            : process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel && !noGate
+              ? 'fast'
+              : 'full';
           appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
           console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
             : !full ? 'Defer full CI until this PR becomes the lowest unmerged layer'
+            : noGate ? 'The gate is not on the default branch yet: run full CI'
             : tier === 'fast' ? 'Run the fast tier; the expensive tier waits for the Vercel reviews (ci-review-gate.yml)'
             : 'Run full CI');
           NODE

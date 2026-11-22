@@ -508,11 +508,24 @@ for (const host of hosts) {
 `;
   const { bin, entry } = await build("limits", source);
   const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxyPort}` };
+  // each process's sockets close a moment after it exits: settle before the
+  // next run so the peak measures one runtime's own concurrency
+  const settle = async () => {
+    const started = Date.now();
+    while (open !== 0 && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    peak = 0;
+  };
   const reference = await run(process.execPath, [entry], env);
+  expect(reference.stdout.trim()).toBe("done 2");
+  const referencePeak = peak;
+  await settle();
   const native = await run(bin, [], env);
   expect(native.stdout).toBe(reference.stdout);
-  expect(reference.stdout.trim()).toBe("done 2");
-  expect(peak).toBe(1);
+  const nativePeak = peak;
+  expect(referencePeak).toBe(1);
+  expect(nativePeak).toBe(1);
   expect([...heads].sort()).toEqual([
     "GET http://other.invalid/x HTTP/1.1",
     "GET http://other.invalid/x HTTP/1.1",

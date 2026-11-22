@@ -146,6 +146,10 @@ ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
  * vector borrowing the strings (alive while cmd/args are); free() the
  * vector only. */
 char **scr_child_argv(ScrStr *cmd, ScrArr *args);
+/* Node's shell form command line: [file, ...args].join(' '), the string a
+ * shell runs with -c. Reports DEP0190 once when the argument list is not
+ * empty. +1. */
+ScrStr *scr_child_shell_command(ScrStr *cmd, ScrArr *args);
 
 /* The asynchronous child: spawn starts it immediately (stdio all on
  * /dev/null — the compiler fences everything but { stdio: "ignore" })

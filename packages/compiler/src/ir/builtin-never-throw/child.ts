@@ -16,4 +16,7 @@ export const childNeverThrow: readonly IrLibFn[] = [
   "child.stdioCached",
   "child.stdioArray",
   "child.stdioStore",
+  // Node's shell form command line: a string join; the DEP0190 report is
+  // deferred to its own tick, so the call itself raises nothing.
+  "child.shellCommand",
 ];

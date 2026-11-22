@@ -568,6 +568,7 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
       return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals): IrStmt[] => {
         const target = memberLocal(locals, "t.0", "target");
         const list = memberLocal(locals, "l.0", "list");
+        const packed = memberLocal(locals, "a.0", "arguments");
         const throwError = (message: IrExpr): IrStmt => ({
           kind: "exprStmt",
           expr: {
@@ -631,12 +632,31 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
             else_: null,
             loc,
           },
+          // The accepted list may be a native array capsule (a typed
+          // `number[]`) or an island array, not the checked-dynamic ARR
+          // layout the construction entry reads. Packing its elements into
+          // a genuine dyn array gives the constructor thunks the argument
+          // storage they expect; every value the array test accepts is one
+          // the pack reads (arrays and typed-array capsules pack, island
+          // arrays through their own iter_pack).
+          {
+            kind: "varDecl",
+            localId: "a.0",
+            init: {
+              kind: "libCall",
+              fn: "dyn.iterPack",
+              args: [list, str("", loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
           {
             kind: "return",
             value: {
               kind: "libCall",
               fn: "dyn.construct",
-              args: [target, list, str("Reflect.construct", loc)],
+              args: [target, packed, str("Reflect.construct", loc)],
               type: DYN,
               loc,
             },

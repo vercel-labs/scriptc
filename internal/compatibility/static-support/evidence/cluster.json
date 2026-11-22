@@ -1,0 +1,3 @@
+{
+    "node-builtin.cluster": ["tests/corpus/957-builtins-namespace.ts"]
+}

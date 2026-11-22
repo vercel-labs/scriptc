@@ -71,16 +71,9 @@ generic-value-bindings.ts:46:10 - error SC1090: generic arrow/function-expressio
      |          ^~~~~~~~~~~~
   47 | }
 
-generic-value-bindings.ts:71:15 - error SC1090: calls of the generic method 'm' through this receiver (no compiled declaration with a body resolves statically here — ambient 'declare class' and interface-only methods are signature-only, and only class, static, and object-literal generic methods with bodies monomorphize) is not supported yet
+generic-value-bindings.ts:83:32 - error SC1090: generic arrow/function-expression bindings declared inside functions that code can call before their declaration runs (the binding 'picked' is a 'var' in a branch or block, or is called from a place that can run first — declare it with const before its uses) are not supported yet
 
-  70 | function throughParam(a: Amb): void {
-  71 |   console.log(a.m(4));
-     |               ^~~~~~
-  72 | }
-
-generic-value-bindings.ts:82:32 - error SC1090: generic arrow/function-expression bindings declared inside functions that code can call before their declaration runs (the binding 'picked' is a 'var' in a branch or block, or is called from a place that can run first — declare it with const before its uses) are not supported yet
-
-  81 |   }
-  82 |   const invoke = (): number => picked(1);
+  82 |   }
+  83 |   const invoke = (): number => picked(1);
      |                                ^~~~~~
-  83 |   return invoke();
+  84 |   return invoke();

@@ -1,0 +1,3 @@
+{
+    "node-builtin.timers": ["tests/corpus/1804-timers-module.ts", "tests/corpus/2093-timers-promises.ts"]
+}

@@ -632,6 +632,11 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
   "http2.getUnpackedSettings",
+  // altsvc()/origin() parse each string origin as a URL (ERR_INVALID_URL)
+  // and validate the argument shape, ranges and frame-length caps; a
+  // destroyed session throws.
+  "http2.sessionAltsvc",
+  "http2.sessionOrigin",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
   "http2.streamRespondWithFile",

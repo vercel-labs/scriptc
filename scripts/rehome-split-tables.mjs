@@ -615,11 +615,10 @@ function rehomeSignatures(baseText, tipText, report) {
       seen.add(chunk.key);
     }
     const final = [...result, ...additions];
-    for (const key of tipByKey.keys()) {
-      if (baseByKey.has(key) && !seen.has(key))
-        report.missing.push(
-          `signature ${key}: the branch edits it but main no longer has it; inspect by hand`,
-        );
+    for (const key of droppedSignatureEdits(prefix, tipByKey.keys(), baseByKey, seen)) {
+      report.missing.push(
+        `signature ${key}: the branch edits it but main no longer has it; inspect by hand`,
+      );
     }
     const file = `${SIG_DIR}/${prefix}.ts`;
     if (final.length === 0) {
@@ -654,6 +653,16 @@ function rehomeSignatures(baseText, tipText, report) {
     ).length,
     prefixes: [...touched].sort(),
   });
+}
+
+/** The branch's edited keys in `prefix` that this prefix's split file did
+ * not receive: present in the merge base and the branch tip, absent from the
+ * placed result. Only the prefix's own keys are considered; a table-wide scan
+ * would report every other module's unchanged entries as missing. */
+export function droppedSignatureEdits(prefix, tipKeys, baseKeys, placedKeys) {
+  return [...tipKeys].filter(
+    (key) => key.split(".")[0] === prefix && baseKeys.has(key) && !placedKeys.has(key),
+  );
 }
 
 function rehomeNeverThrow(baseText, tipText, report) {

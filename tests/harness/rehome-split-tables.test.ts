@@ -3,6 +3,7 @@ import {
   assertTableName,
   assertTablePath,
   CHAPTER_NAME,
+  droppedSignatureEdits,
   EVIDENCE_MODULE,
   keepRowsAfterDeletion,
   PREFIX_NAME,
@@ -114,5 +115,22 @@ describe("keepRowsAfterDeletion", () => {
 
   it("removes every occurrence of the branch's row", () => {
     expect(keepRowsAfterDeletion(path, [branchRow], [branchRow, branchRow])).toEqual([]);
+  });
+});
+
+describe("droppedSignatureEdits", () => {
+  const base = new Set(["fs.read", "http.start"]);
+  const tip = new Set(["fs.read", "http.start"]);
+
+  it("reports only the requested prefix's dropped edit", () => {
+    expect(droppedSignatureEdits("fs", tip, base, new Set())).toEqual(["fs.read"]);
+  });
+
+  it("does not report an entry another prefix kept", () => {
+    expect(droppedSignatureEdits("http", tip, base, new Set(["http.start"]))).toEqual([]);
+  });
+
+  it("ignores keys the branch did not edit", () => {
+    expect(droppedSignatureEdits("fs", tip, new Set(), new Set())).toEqual([]);
   });
 });

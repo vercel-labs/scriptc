@@ -2489,17 +2489,18 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   // ESM default import binds this value.
   const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
   const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
-  const store: IrStmt[] =
-    snapshot !== null && exportSlot !== null
+  const store: IrStmt[] = [
+    ...(snapshot !== null && exportSlot !== null
       ? [
           {
-            kind: "assign",
+            kind: "assign" as const,
             localId: snapshot.id,
-            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            value: { kind: "varRef" as const, localId: exportSlot.id, type: DYN, loc },
             loc,
           },
         ]
-      : [];
+      : []),
+  ];
   if (!stmt.expression)
     return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {

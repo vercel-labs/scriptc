@@ -3721,6 +3721,7 @@ typedef struct ScrHttpConn {
    * parser.maxHeaderPairs / 2, captured when the connection is set up);
    * 0 = no limit. */
   size_t max_header_pairs;
+  struct ScrHttpAgent *count_agent; /* the agent whose count this connection is in */
   struct ScrHttpSockCount *sock_count; /* client mode: the agent count that includes
                                         * this socket (+1), or NULL */
   struct ScrHttpAgent *pool_agent; /* client mode: the agent whose free list holds
@@ -3738,13 +3739,23 @@ typedef struct ScrHttpConn {
   struct ScrHttpClientReq *client; /* +1 in client mode; released at close */
 } ScrHttpConn;
 
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name);
+static struct ScrHttpAgent *scr_http_agent_retain(struct ScrHttpAgent *a);
+static void scr_http_agent_release(struct ScrHttpAgent *a);
+
 /* The connection's socket joins an agent's totalSocketCount when it starts
- * to dial, and leaves it when it closes. */
-static void scr_http_conn_count(ScrHttpConn *conn, ScrHttpSockCount *k) {
+ * to dial, and leaves it when it closes. The connection holds its own
+ * reference on the agent for that window: a socket that outlives the
+ * program's last reference (the exit sweep runs before the sockets close)
+ * still lowers a live count, and the wake it serves the queue with never
+ * reaches a freed agent. */
+static void scr_http_conn_count(ScrHttpConn *conn, ScrHttpSockCount *k,
+                                 struct ScrHttpAgent *ag) {
   if (conn == NULL || conn->sock_count != NULL) return;
   k->rc++;
   k->n++;
   conn->sock_count = k;
+  conn->count_agent = ag != NULL ? scr_http_agent_retain(ag) : NULL;
 }
 
 static void scr_http_conn_uncount(ScrHttpConn *conn) {
@@ -3753,6 +3764,14 @@ static void scr_http_conn_uncount(ScrHttpConn *conn) {
   conn->sock_count = NULL;
   k->n--;
   scr_http_sock_count_release(k);
+  /* a slot freed: the queued requests get their chance, as Node's
+   * removeSocket serves them (destroy() only tears the sockets down) */
+  if (conn->count_agent != NULL) {
+    struct ScrHttpAgent *ag = conn->count_agent;
+    conn->count_agent = NULL;
+    scr_http_agent_pump(ag, NULL);
+    scr_http_agent_release(ag);
+  }
 }
 
 /* ── HTTP/1 message checks ───────────────────────────────────────────────
@@ -8930,6 +8949,7 @@ typedef struct ScrHttpAgent {
   bool secure;      /* https.Agent: protocol/defaultPort answers */
   bool keep_alive;  /* keepAlive: finished connections return to free_socks */
   bool fifo;        /* scheduling: 'fifo' takes the oldest free socket, 'lifo' the newest */
+  ScrDyn *scheduling_val; /* the property: the constructor's value, then any assignment */
   double ka_msecs;
   double max_sockets; /* INFINITY = Node's default */
   double max_free;
@@ -8944,6 +8964,8 @@ typedef struct ScrHttpAgent {
   bool destroyed;
   ScrHttpAgentEnt *ents, *ents_last; /* append order — Node's FIFO queue */
   size_t nqueued; /* entries with queued set */
+  size_t pump_depth; /* a queue pass is running: wakes inside it are deferred to it */
+  bool pump_pending;  /* a wake arrived while a pass ran: the pass re-runs */
   struct ScrHttpAgentFree *free_socks; /* keepAlive: idle sockets, most recent first */
   ScrHttpSockCount *sock_count; /* totalSocketCount (+1) */
   bool in_registry;
@@ -8992,6 +9014,7 @@ static void scr_http_agent_release(ScrHttpAgent *a) {
     free(e);
     e = next;
   }
+  scr_dyn_release(a->scheduling_val);
   scr_http_sock_count_release(a->sock_count);
   free(a);
 }
@@ -9029,9 +9052,25 @@ static bool scr_http_key_same(const ScrStr *a, const ScrStr *b) {
 }
 
 /* Takes a free socket for `name` off the list, or NULL: the most recently
- * freed one under 'lifo' scheduling, the oldest under 'fifo'. */
+ * freed one under 'lifo' scheduling, the oldest under 'fifo'. Destroyed
+ * sockets leave the list first, as Node drops them before it picks
+ * (`while (freeSockets[0].destroyed) freeSockets.shift()`), so a request made
+ * right after agent.destroy() never takes a socket that is on its way out. */
 static ScrHttpAgentFree *scr_http_agent_free_take(ScrHttpAgent *a, const ScrStr *name,
                                                   const ScrStr *pool_key) {
+  ScrHttpAgentFree *dead_list = NULL;
+  for (ScrHttpAgentFree **link = &a->free_socks; *link;) {
+    if ((*link)->sock == NULL || !scr_net_sock_destroyed((*link)->sock)) {
+      link = &(*link)->next;
+      continue;
+    }
+    ScrHttpAgentFree *dead = *link;
+    *link = dead->next;
+    /* their release can run the socket's close and re-enter the agent, so
+     * they leave the list now and are released once the pick is made */
+    dead->next = dead_list;
+    dead_list = dead;
+  }
   ScrHttpAgentFree **found = NULL;
   for (ScrHttpAgentFree **link = &a->free_socks; *link; link = &(*link)->next) {
     if (!scr_http_name_same((*link)->name, name) || !scr_http_key_same((*link)->pool_key, pool_key))
@@ -9039,10 +9078,28 @@ static ScrHttpAgentFree *scr_http_agent_free_take(ScrHttpAgent *a, const ScrStr 
     found = link;
     if (!a->fifo) break;
   }
-  if (found == NULL) return NULL;
-  ScrHttpAgentFree *f = *found;
-  *found = f->next;
-  return f;
+  ScrHttpAgentFree *picked = found != NULL ? *found : NULL;
+  if (found != NULL) *found = picked->next;
+  /* the dead entries: Node's removeSocket bookkeeping — the slot leaves the
+   * totals and the queue gets the capacity */
+  while (dead_list != NULL) {
+    ScrHttpAgentFree *dead = dead_list;
+    dead_list = dead->next;
+    if (dead->conn != NULL) {
+      /* leave the pool before the slot does: the wake may run a teardown
+       * that reaches this connection again */
+      dead->conn->pool_agent = NULL;
+      scr_http_conn_uncount(dead->conn);
+    }
+    ScrStr *dead_name = dead->name; /* ownership moves to the pump */
+    ScrStr *dead_key = dead->pool_key;
+    scr_net_sock_release(dead->sock);
+    free(dead);
+    scr_http_agent_pump(a, dead_name);
+    scr_str_release(dead_name);
+    scr_str_release(dead_key);
+  }
+  return picked;
 }
 
 /* Puts a socket taken by scr_http_agent_free_take back where it was
@@ -9250,50 +9307,73 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
  * that name had nothing to start — the first queued request whose own origin
  * has no live socket and whose dial stays under maxTotalSockets (Node's
  * cross-origin path; the queue is not FIFO across origins). */
-static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
-  if (!ag->destroyed && ag->nqueued > 0) {
-    bool started = false;
-    if (name != NULL) {
-      for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
-        if (!(e->queued && e->name->len == name->len &&
-              memcmp(e->name->data, name->data, name->len) == 0))
-          continue;
-        ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
-        if (f != NULL) {
-          e->queued = false;
-          ag->nqueued--;
-          scr_http_client_rebind(e->client, f, false);
-          started = true;
-        } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
-                   (double)ag->sock_count->n < ag->max_total) {
-          e->queued = false;
-          ag->nqueued--;
-          if (e->client->sock) {
-            scr_http_conn_count(e->client->conn, ag->sock_count);
-            scr_net_sock_dial_start(e->client->sock);
-          }
-          started = true;
-        }
-        break;
-      }
-    }
-    /* Node's cross-origin path: when the name that just freed nothing (or
-     * the name's own queue is empty), a request queued under another name
-     * starts if that origin has no live socket and the total stays under
-     * maxTotalSockets. The queue is not FIFO across origins, as in Node. */
-    if (!started && (double)ag->sock_count->n < ag->max_total) {
-      for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
-        if (!e->queued || scr_http_agent_active(ag, e->name) > 0) continue;
+/* One pass over the queue: the named origin first, then a queued request
+ * under another origin when the total has room (Node's cross-origin path). */
+static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name) {
+  bool started = false;
+  if (name != NULL) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (!(e->queued && e->name->len == name->len &&
+            memcmp(e->name->data, name->data, name->len) == 0))
+        continue;
+      ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
+      if (f != NULL) {
+        e->queued = false;
+        ag->nqueued--;
+        scr_http_client_rebind(e->client, f, false);
+        started = true;
+      } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
+                 (double)ag->sock_count->n < ag->max_total) {
         e->queued = false;
         ag->nqueued--;
         if (e->client->sock) {
-          scr_http_conn_count(e->client->conn, ag->sock_count);
+          scr_http_conn_count(e->client->conn, ag->sock_count, ag);
           scr_net_sock_dial_start(e->client->sock);
         }
-        break;
+        started = true;
       }
+      break;
     }
   }
+  /* Node's cross-origin path: when the name that just freed nothing (or
+   * the name's own queue is empty), a request queued under another name
+   * starts if that origin has no live socket and the total stays under
+   * maxTotalSockets. The queue is not FIFO across origins, as in Node. */
+  if (!started && (double)ag->sock_count->n < ag->max_total) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (!e->queued || scr_http_agent_active(ag, e->name) > 0) continue;
+      e->queued = false;
+      ag->nqueued--;
+      if (e->client->sock) {
+        scr_http_conn_count(e->client->conn, ag->sock_count, ag);
+        scr_net_sock_dial_start(e->client->sock);
+      }
+      break;
+    }
+  }
+}
+
+static void scr_http_agent_pump(struct ScrHttpAgent *ag, const ScrStr *name) {
+  /* A wake raised while a pass is running (a pruned socket's slot coming
+   * back, a settle) is deferred to it: the pass re-runs and serves the
+   * released capacity, so no wake is lost and no waiter is dequeued twice. */
+  if (ag->pump_depth > 0) {
+    ag->pump_pending = true;
+    return;
+  }
+  /* Node's removeSocket serves the queue whenever a slot frees, including
+   * after destroy(): destroy() only tears the sockets down */
+  if (ag->nqueued == 0) return;
+  ag->pump_depth++;
+  ag->pump_pending = false;
+  scr_http_agent_pump_pass(ag, name);
+  /* a later pass scans every queued entry: the origin that woke the first
+   * pass is not the only one a release can serve */
+  while (ag->pump_pending && ag->nqueued > 0) {
+    ag->pump_pending = false;
+    scr_http_agent_pump_pass(ag, NULL);
+  }
+  ag->pump_depth--;
 }
 
 /* getName's string builder — Node's exact shape:
@@ -9335,6 +9415,11 @@ static ScrHttpAgent *scr_http_agent_alloc(bool secure, bool keep_alive, double k
   a->secure = secure;
   a->keep_alive = keep_alive;
   a->fifo = fifo;
+  {
+    ScrStr *sched = scr_str_new(fifo ? "fifo" : "lifo", 4);
+    a->scheduling_val = scr_dyn_new_str(sched);
+    scr_str_release(sched);
+  }
   a->ka_msecs = ka_msecs >= 0 ? ka_msecs : 1000;
   a->max_sockets = max_sockets >= 0 ? max_sockets : (double)INFINITY;
   a->max_free = max_free >= 0 ? max_free : 256;
@@ -9417,13 +9502,22 @@ ScrDyn *scr_http_global_agent_value(bool secure) {
  * sockets too; there is no free pool here. */
 static void scr_http_agent_destroy(ScrHttpAgent *a) {
   a->destroyed = true;
-  /* idle pooled sockets close; their 'close' removes each from the list */
-  while (a->free_socks) {
-    ScrNetSocket *sock = scr_net_sock_retain(a->free_socks->sock);
-    struct ScrHttpConn *conn = a->free_socks->conn;
-    scr_http_agent_free_remove(a, conn, false);
-    scr_net_sock_destroy(sock);
-    scr_net_sock_release(sock);
+  /* Idle pooled sockets close; each leaves the bookkeeping at its own
+   * 'close', as Node's do, so freeSockets still lists them right after
+   * destroy() and empties as they settle. */
+  size_t nfree = 0;
+  for (ScrHttpAgentFree *f = a->free_socks; f; f = f->next) nfree++;
+  if (nfree != 0) {
+    ScrNetSocket **socks = malloc(nfree * sizeof *socks);
+    if (!socks) scr_http_oom();
+    size_t i = 0;
+    for (ScrHttpAgentFree *f = a->free_socks; f != NULL && i < nfree; f = f->next)
+      socks[i++] = scr_net_sock_retain(f->sock);
+    for (size_t k = 0; k < i; k++) {
+      scr_net_sock_destroy(socks[k]);
+      scr_net_sock_release(socks[k]);
+    }
+    free(socks);
   }
   /* destroying sockets detaches entries re-entrantly — walk a snapshot */
   for (;;) {
@@ -9516,7 +9610,9 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
     scr_net_sock_set_timeout(c->sock, ag->timeout_ms);
   }
   if (reuse != NULL) scr_http_client_rebind(c, reuse, true);
-  else if (!queue) scr_http_conn_count(c->conn, ag->sock_count); /* dialed now */
+  else if (!queue) {
+    scr_http_conn_count(c->conn, ag->sock_count, ag); /* dialed now */
+  }
   c->agent = scr_http_agent_retain(ag);
   ScrHttpAgentEnt *e = calloc(1, sizeof *e);
   if (!e) scr_http_oom();
@@ -11359,12 +11455,7 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
   if (strcmp(key, "maxFreeSockets") == 0) return scr_dyn_new_num(a->max_free);
   if (strcmp(key, "keepAlive") == 0) return scr_dyn_new_bool(a->keep_alive);
   if (strcmp(key, "keepAliveMsecs") == 0) return scr_dyn_new_num(a->ka_msecs);
-  if (strcmp(key, "scheduling") == 0) {
-    ScrStr *s = scr_str_new(a->fifo ? "fifo" : "lifo", 4);
-    ScrDyn *d = scr_dyn_new_str(s);
-    scr_str_release(s);
-    return d;
-  }
+  if (strcmp(key, "scheduling") == 0) return scr_dyn_retain(a->scheduling_val);
   if (strcmp(key, "defaultPort") == 0) return scr_dyn_new_num(a->default_port);
   if (strcmp(key, "protocol") == 0) {
     ScrStr *s = scr_str_new(a->secure ? "https:" : "http:", a->secure ? 6 : 5);
@@ -11418,6 +11509,16 @@ static ScrDyn *scr_http_dynh_agent_get(void *h, const char *key, size_t key_len)
 static bool scr_http_dynh_agent_set(void *h, const char *key, size_t key_len, const ScrDyn *value) {
   ScrHttpAgent *a = (ScrHttpAgent *)h;
   (void)key_len;
+  if (strcmp(key, "scheduling") == 0) {
+    /* a plain property: any assigned value is kept, as Node's is, and the
+     * pick order follows it — Node reads `this.scheduling === 'fifo'` at
+     * the moment it takes a free socket */
+    scr_dyn_release(a->scheduling_val);
+    a->scheduling_val = scr_dyn_retain((ScrDyn *)value);
+    a->fifo = value->kind == SCR_DYN_STR && value->v.str->len == 4 &&
+              memcmp(value->v.str->data, "fifo", 4) == 0;
+    return true;
+  }
   if (strcmp(key, "defaultPort") == 0 || strcmp(key, "maxSockets") == 0 ||
       strcmp(key, "maxTotalSockets") == 0 || strcmp(key, "maxFreeSockets") == 0 ||
       strcmp(key, "keepAliveMsecs") == 0) {

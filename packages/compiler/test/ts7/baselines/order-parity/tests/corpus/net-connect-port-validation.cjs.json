@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/net-connect-port-validation.cjs"
+ ],
+ "diags": []
+}

@@ -9332,6 +9332,9 @@ static double scr_http_response_keep_alive(ScrHttpReq *res, const struct ScrHttp
 static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientReq *c, double hint) {
   ScrHttpAgent *ag = c->agent;
   if (ag == NULL || !ag->keep_alive || ag->destroyed || c->destroyed || c->aborted) return false;
+  /* the origin-keyed pool serves direct requests: a connection to the proxy
+   * would hand a later direct request to the proxy's operator */
+  if (c->proxied) return false;
   if (hint == -2 || !c->ended || conn->len != 0 || scr_http_client_has_header_value(c, "connection", "close"))
     return false;
   if (c->agent_ent == NULL) return false;
@@ -9716,7 +9719,9 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
    * proxied request never reuses a direct pooled connection and never gets
    * an origin-bound deferred dial, and a configured proxy that cannot be
    * used throws here, before anything is dialed. */
-  bool proxied = env_proxy && scr_http_proxy_configured(wrap != NULL, host, p);
+  /* an explicit socketPath names the destination: the proxy never covers it */
+  bool proxied = env_proxy && socket_path == NULL &&
+                 scr_http_proxy_configured(wrap != NULL, host, p);
   if (scr_exc_pending()) {
     if (cb) scr_closure_release(cb);
     scr_str_release(name);
@@ -9755,8 +9760,8 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
     presock = scr_net_connect_deferred(p, host);
   }
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
-                                               cb, fn, default_port, wrap, wrap_ctx, env_proxy,
-                                               presock);
+                                               cb, fn, default_port, wrap, wrap_ctx,
+                                               env_proxy && socket_path == NULL, presock);
   if (c == NULL) { /* a constructor check threw: nothing registered */
     if (reuse != NULL) scr_http_agent_free_untake(ag, reuse); /* back to the list it came from */
     scr_str_release(name);

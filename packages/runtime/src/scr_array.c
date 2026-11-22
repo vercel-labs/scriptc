@@ -1441,7 +1441,7 @@ static ScrCycType scr_arr_cyc_valued_type;
  * scr_arr_trace_v and skip the untraced slots. */
 static inline __attribute__((always_inline)) const ScrCycType *scr_arr_cyc_desc(
     ScrElemKind elem, const ScrArrOps *ops) {
-  if (elem == SCR_ELEM_ARR || elem == SCR_ELEM_BYTES) return &scr_arr_cyc_type;
+  if (elem == SCR_ELEM_ARR) return &scr_arr_cyc_type;
   if (elem == SCR_ELEM_REF && ops != NULL && ops->trace != NULL) return &scr_arr_cyc_type;
   return &scr_arr_cyc_valued_type;
 }
@@ -1627,9 +1627,10 @@ void scr_arr_swap_indexed_ext(ScrArr *a, ScrArr *b) {
  * only for the prototype it received may hold elements that do not). */
 static bool scr_arr_elements_traced(const ScrArr *a) {
   switch (a->elem) {
-  /* Arrays and bytes are always collector objects. */
+  /* Arrays are always collector objects. Bytes are not: their blocks have no
+   * collector header, so a forced-cyclic array of them keeps them as value
+   * slots the teardown releases. */
   case SCR_ELEM_ARR:
-  case SCR_ELEM_BYTES:
     return true;
   /* A typed reference's header exists only when its element type is
    * traceable; strings and values carry none. */

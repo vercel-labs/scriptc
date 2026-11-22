@@ -2020,8 +2020,10 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
   }
   case SCR_H2_F_ORIGIN: {
     /* Node accepts ORIGIN only on TLS sessions: a cleartext peer's frame is
-     * read and discarded, with no 'origin' event. */
-    if (!scr_http2_session_encrypted(s)) break;
+     * read and discarded, with no 'origin' event. With no listener the
+     * entries are not materialized at all; the frame-size limit above
+     * bounds the rest. */
+    if (!scr_http2_session_encrypted(s) || s->origin_ls.n == 0) break;
     ScrArr *origins = scr_arr_new(SCR_ELEM_STR, 4);
     size_t off = 0;
     while (off + 2 <= n) {
@@ -2083,6 +2085,18 @@ static void scr_h2_on_data_in(void *ctx, const char *buf, size_t n) {
   while (!s->destroyed && s->rlen - off >= 9) {
     const uint8_t *h = (const uint8_t *)s->rbuf + off;
     size_t len = ((size_t)h[0] << 16) | ((size_t)h[1] << 8) | h[2];
+    /* A frame past the SETTINGS_MAX_FRAME_SIZE this side advertised is a
+     * connection error of type FRAME_SIZE_ERROR, decided on the eight-byte
+     * header: the payload is never buffered. */
+    uint32_t recv_max = s->npending > 0 ? s->pending[s->npending - 1].after.max_frame_size
+                                        : s->local_settings.max_frame_size;
+    if (recv_max == 0) recv_max = SCR_H2_DEFAULT_MAX_FRAME;
+    if (len > (size_t)recv_max) {
+      scr_h2_send_goaway(s, 6 /* NGHTTP2_FRAME_SIZE_ERROR */);
+      scr_h2_session_fail(s, "Protocol error");
+      scr_http2_session_destroy(s);
+      goto done;
+    }
     if (s->rlen - off < 9 + len) break;
     uint8_t type = h[3];
     uint8_t flags = h[4];
@@ -4950,8 +4964,8 @@ static void scr_h2_dyn_fire_settings_cb(ScrClosure *cb, ScrDyn *settings /*+1*/)
 static void scr_h2_dyn_fire_altsvc(ScrClosure *cb, ScrStr *alt, ScrStr *origin,
                                     double stream_id) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
-  ScrDyn *dalt = scr_dyn_new_str(scr_str_retain(alt));
-  ScrDyn *dorigin = scr_dyn_new_str(scr_str_retain(origin));
+  ScrDyn *dalt = scr_dyn_new_str(alt); /* boxing retains; the callback's ref drops below */
+  ScrDyn *dorigin = scr_dyn_new_str(origin);
   ScrDyn *did = scr_dyn_new_num(stream_id);
   ScrDyn *args[3] = { dalt, dorigin, did };
   ScrDyn *r = scr_dyn_call(fn, args, 3, "listener");
@@ -4969,8 +4983,9 @@ static void scr_h2_dyn_fire_origin(ScrClosure *cb, ScrArr *origins) {
   ScrDyn *list = scr_dyn_new_arr();
   size_t n = (size_t)scr_arr_len(origins);
   for (size_t i = 0; i < n; i++) {
-    ScrStr *origin = scr_arr_get_ref(origins, (double)i);
-    scr_dyn_arr_push(list, scr_dyn_new_str(origin));
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i); /* +1 */
+    scr_dyn_arr_push(list, scr_dyn_new_str(origin));      /* boxing retains it */
+    scr_str_release(origin);
   }
   ScrDyn *args[1] = { list };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
@@ -5625,7 +5640,9 @@ void scr_http2_session_origin(ScrH2Session *s, ScrArr *origins /*borrowed*/) {
   size_t n = origins != NULL ? (size_t)scr_arr_len(origins) : 0;
   ScrDyn **args = n > 0 ? (ScrDyn **)calloc(n, sizeof *args) : NULL;
   for (size_t i = 0; i < n; i++) {
-    args[i] = scr_dyn_new_str(scr_arr_get_ref(origins, (double)i)); /* the +1 moves in */
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i); /* +1 */
+    args[i] = scr_dyn_new_str(origin);                    /* boxing retains it */
+    scr_str_release(origin);
   }
   scr_h2_session_origin_args(s, args, n);
   for (size_t i = 0; i < n; i++) scr_dyn_release(args[i]);

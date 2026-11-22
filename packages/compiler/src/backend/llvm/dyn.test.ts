@@ -67,7 +67,7 @@ function callThunk(llvm: string): {
   returned: string;
   blocks: Map<string, string>;
 } {
-  const body = /^define internal ptr @sc_dfk_0\(.*?\n}/ms.exec(llvm)?.[0];
+  const body = /^define internal ptr @sc_dfk_\d+\(.*?\n}/ms.exec(llvm)?.[0];
   if (body === undefined) throw new Error("no call thunk");
   const converted = /^ {2}(%\w+) = call ptr @sc_dc_\d+\(/m.exec(body)?.[1];
   const returned = /^ {2}(%\w+) = call ptr %\w+\(ptr %c, /m.exec(body)?.[1];

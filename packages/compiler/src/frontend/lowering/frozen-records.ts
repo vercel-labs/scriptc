@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
   VOID,
+  isClassOwnEnumerableFieldName,
   shapeHasAccessorSlots,
   typeKey,
   type IrExpr,
@@ -245,6 +246,91 @@ export function freezableTypes(
   return withPeers();
 }
 
+/** Checks the frozen bit before each write to a field of a class declared
+ * `extends Array` whose array type the program may freeze: Object.freeze of
+ * such an instance freezes the array, and its fields with it. A write to a
+ * frozen instance throws Node's TypeError in strict-mode code and leaves the
+ * field unchanged in sloppy-mode code. A field initializer (a define) runs
+ * before the instance can be frozen. */
+function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+  const arrayTypes = new Map<string, IrType>();
+  for (const info of lowerer.classes.values()) {
+    const elem = info.extendsArray?.elem;
+    if (elem === undefined) continue;
+    const arrayType: IrType = { kind: "array", elem };
+    if (lowerer.freezableArrays.has(typeKey(arrayType))) arrayTypes.set(info.def.name, arrayType);
+  }
+  if (arrayTypes.size === 0) return;
+  // The guarded stores this pass builds, which the walk then visits as
+  // children. A store CLASS_ATTRIBUTES guarding already checked
+  // (attributesChecked) is still guarded here: that word answers
+  // defineProperty and the integrity calls of compiled classes, while
+  // Object.freeze of an Array subclass instance sets the array's bit.
+  const guardedStores = new Set<IrStmt>();
+  for (const fn of functions) {
+    const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
+      const id = `%frozenFieldWrite.${fn.locals.length}`;
+      fn.locals.push({ id, name: id, type, mutable: false });
+      return { kind: "varRef", localId: id, type, loc };
+    };
+    fn.body = transformStmtList(fn.body, {
+      expr: (expr) => expr,
+      stmt: (statement) => {
+        if (statement.kind !== "fieldSet" || statement.define || guardedStores.has(statement))
+          return statement;
+        const arrayType = arrayTypes.get(statement.className);
+        if (arrayType === undefined || !isClassOwnEnumerableFieldName(statement.field))
+          return statement;
+        const loc = statement.loc;
+        const receiver = local(statement.obj.type, loc);
+        const value = local(statement.value.type, loc);
+        const store: IrStmt = { ...statement, obj: receiver, value };
+        guardedStores.add(store);
+        const reject: IrStmt[] = statement.sloppy
+          ? []
+          : [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "record.throwFrozen",
+                  args: [
+                    strLit(statement.field, loc),
+                    strLit("[object Array]", loc),
+                    numLit(0, loc),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ];
+        return {
+          kind: "block",
+          body: [
+            { kind: "varDecl", localId: receiver.localId, init: statement.obj, loc },
+            { kind: "varDecl", localId: value.localId, init: statement.value, loc },
+            {
+              kind: "if",
+              cond: {
+                kind: "libCall",
+                fn: "array.isFrozen",
+                args: [{ kind: "upcast", value: receiver, type: arrayType, loc }],
+                type: BOOL,
+                loc,
+              },
+              then: reject,
+              else_: [store],
+              loc,
+            },
+          ],
+          loc,
+        };
+      },
+    });
+  }
+}
+
 /** The guarded form of a write to a freezable record: the receiver and the
  * operands are evaluated first, in source order, then the frozen bit decides
  * between the write and `reject`. */
@@ -301,6 +387,7 @@ export function guardFrozenWrites(
     if (shape) shape.freezable = true;
   }
   for (const key of arrays) lowerer.freezableArrays.add(key);
+  guardArrayClassFieldWrites(lowerer, functions);
   if (freezable.size === 0) return;
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {

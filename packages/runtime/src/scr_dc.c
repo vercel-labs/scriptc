@@ -104,6 +104,22 @@ static bool dc_name_eq(const ScrDyn *a, const ScrDyn *b) {
   return false;
 }
 
+/* The console unit's publisher slot: installed the first time this unit
+ * creates a channel, so a program without diagnostics_channel never pays for
+ * it and no weak symbol is involved. */
+extern void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args));
+extern void scr_console_set_channel_active(bool (*active)(double member));
+void scr_dc_console_emit_args(double member, ScrDyn *args);
+bool scr_dc_console_active(double member);
+
+static void dc_install_console_publisher(void) {
+  static SCR_TL bool installed = false;
+  if (installed) return;
+  installed = true;
+  scr_console_set_channel_publisher(scr_dc_console_emit_args);
+  scr_console_set_channel_active(scr_dc_console_active);
+}
+
 /* Get-or-create by name; returns the channel's index. Borrows name. */
 static size_t dc_intern(ScrDyn *name) {
   for (size_t i = 0; i < dc_nchannels; i++) {
@@ -121,6 +137,7 @@ static size_t dc_intern(ScrDyn *name) {
     dc_teardown_registered = true;
     scr_atexit(scr_dc_teardown);
   }
+  dc_install_console_publisher();
   ScrDcChannel *ch = &dc_channels[dc_nchannels];
   ch->name = scr_dyn_retain(name);
   ch->subs = NULL;
@@ -1037,4 +1054,42 @@ void scr_dc_publish(double handle, ScrDyn *message) {
   scr_dyn_release(namev);
   for (size_t i = 0; i < n; i++) scr_dyn_release(snap[i]);
   free(snap);
+}
+
+/* ── the console channels ────────────────────────────────────────────
+ * Node's global console publishes each output member's own argument array
+ * on console.<member> before it writes the line, when the channel has
+ * subscribers. The console unit hands that array here
+ * (the console unit's publisher slot); every argument type is already a
+ * checked-dynamic value, so the message is the call's array unchanged. */
+static const char *const dc_console_channels[5] = {"console.log", "console.info", "console.debug",
+                                                   "console.warn", "console.error"};
+
+bool scr_dc_console_active(double member) {
+  int index = (int)member;
+  if (member != (double)index || index < 0 || index > 4) return false;
+  const char *name = dc_console_channels[index];
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  bool active = scr_dc_has_subscribers(key);
+  scr_dyn_release(key);
+  return active;
+}
+
+void scr_dc_console_emit_args(double member, ScrDyn *args) {
+  int index = (int)member;
+  if (member != (double)index || index < 0 || index > 4 || args == NULL) return;
+  const char *name = dc_console_channels[index];
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  if (!scr_dc_has_subscribers(key)) {
+    scr_dyn_release(key);
+    return;
+  }
+  double handle = scr_dc_channel(key);
+  scr_dyn_release(key);
+  if (handle != handle) return; /* an exception is pending; the line still writes */
+  scr_dc_publish(handle, args);
 }

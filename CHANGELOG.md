@@ -4,6 +4,18 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+<!-- release:start -->
+
+## 0.4.16
+
+### Highlights
+
+- **Fixes:**
+  - The npm runtime and LLVM helper packages now match the CLI. In 0.4.15 they were stale: an earlier, failed release attempt had published them for an older runtime ABI, so every 0.4.15 install rejected its runtime pack with SC3003 ("installed runtime-pack.json is malformed or incompatible") on every platform (#4011). The release now publishes a version npm already has only when npm holds the same files.
+<!-- release:end -->
+
+## 0.4.15
+
 ### Highlights
 
 - **Node.js parity:**
@@ -11,10 +23,36 @@ All notable changes to scriptc will be documented in this file.
   - A collection constructor's seed cast from an untyped value, `new Set(u as Key[])` where `u` is `unknown`, lowers as the ordinary checked array conversion rather than as a single key, so it compiles like `const keys = u as Key[]; new Set(keys)` and every element keeps the identity the untyped name still sees; a key written on its own (`set.add(u as Key)`) stays refused, because copying a key would change the object the collection holds.
   - A class declared in a module of an import cycle behaves as Node's temporal dead zone makes it: a reference that can run before the class statement — `new`, a static read, the class value, `instanceof`, a subclass's `extends` clause in another module, generic classes included — throws Node's `ReferenceError` naming the binding, and every later reference sees the one class, instead of the program failing to build with SC1016. The check sits where the class is read, so a computed `extends` expression keeps its own work and its unselected arms: only a heritage expression that IS the class value — a name, a namespace member, a parenthesized or asserted one — carries it, while an `implements` clause and a heritage type argument, which Node erases, carry none.
   - `RegExp(pattern, flags)` called without `new` compiles as the constructor call Node runs, instead of throwing SC2020 at startup, and a RegExp pattern whose flags argument is undefined — spelled that way or only undefined at run time — answers the pattern itself, keeping its identity and `lastIndex`; a pattern the compiler cannot see is a string is judged by the runtime, so an untyped pattern keeps that rule too.
+  - **sqlite:** `node:sqlite` compiles, from `DatabaseSync` and `StatementSync` through `backup()`, user functions, aggregates, sessions, serialization and tag stores, with statement results and row values that can be stored.
+  - **worker_threads:** workers answer `resourceLimits`, `cpuUsage` and loop metrics through `worker.performance`, carry `Blob`, `File`, `Map` and `Set` values through messages, validate transfer lists, answer a fresh promise from every `terminate()` call, and expose `stdout` and `stderr` without stream options.
+  - **http and https:** agents take Node's keep-alive hooks, `createConnection` and `maxTotalSockets`, requests take Node's header value forms and support `writeInformation`, write callbacks and cork/drain, and `IncomingMessage` reports `signal`, finished and destroyed state.
+  - **http2:** trailers, informational responses and stream error codes follow Node, alongside the server, settings and session surface.
+  - **stream:** `Readable.toWeb`, `Writable.toWeb`, `Duplex.fromWeb`, `duplexPair`, `readable.wrap` and `readable.iterator` compile, `ReadableStream.values()` works as a stored iterator, `stream/consumers` handles blobs, and high-water marks and close ordering match Node.
+  - **fs:** `fs.watch` recurses on Linux and Windows, `fsPromises.watch` and `StatWatcher` follow Node's liveness, `readdir` accepts every encoding with `withFileTypes` and recursive listing, `mkdtempDisposable` compiles, and `FileHandle` closes through `Symbol.asyncDispose` and answers a readable web stream.
+  - **crypto:** X448, ML-KEM, Argon2, KMAC, SHA-3, cSHAKE, TurboSHAKE and KangarooTwelve compile; WebCrypto adds AES-OCB, ChaCha20-Poly1305, ECDH, X25519 and RSA-OAEP, converts KeyObjects to CryptoKeys and back, and derives public keys.
+  - **tls:** servers build through the class, `tls.exportKeyingMaterial` compiles, and native verification applies Node's blocked-SPKI policy.
+  - **dgram:** the socket class, udp6 and the synchronous members compile, with block lists and bind options enforced as Node enforces them.
+  - **console and util:** the whole `Console` prototype compiles with per-instance state, `inspectOptions` and color mode are honored, `console.createTask` answers Node's task object, global console calls publish their arguments on their diagnostics channels, `util.inspect compact` and `util.getCallSites` compile, and `console.table` inspects cells with the instance's options.
+  - **module:** `module.findPackageJSON`, `import.meta` as a value, `export *` over CommonJS modules, CommonJS metadata reads and exports chosen at run time compile.
+  - **perf_hooks:** `createHistogram` and `RecordableHistogram` compile with skewness, kurtosis, confidence intervals and Welch's t-test, and `performance.timerify` and resource timing entries are supported.
+  - **node:test:** subtests with options, test tags, `t.plan` options, suite timeouts, `t.signal`, `t.error`, mock contexts and records, snapshot serializers, the callback form and tracing-channel events compile.
+  - **globals and events:** `BroadcastChannel`, `MessagePort` as an `EventTarget` with `MessageEvent` and `CloseEvent`, `structuredClone` of primitive wrappers, `AsyncResource` and `AsyncLocalStorage.withScope` over async hooks, `trace_events`, `AbortSignal` `instanceof`, `navigator` and performance entry tags compile.
+  - **buffer and assert:** `Buffer.copyBytesFrom` and `buffer.resolveObjectURL` compile, `Buffer` copy, search and optional positions match Node, and `assert` accepts `Error` objects and non-string messages with Node's `generatedMessage` and property order.
 - **TypeScript parity:**
   - A relative JavaScript import resolves to its sibling declaration for types, as tsc resolves it: `./lib.js` is typed by `lib.d.ts`, `./lib.mjs` by `lib.d.mts` and `./lib.cjs` by `lib.d.cts` when the file sits beside the JavaScript, while the compiled module is the JavaScript Node loads. A call is checked against the declaration (an optional declared parameter stays optional although the JavaScript's inferred parameter type requires it), so a vendored dependency keeps its published types instead of losing them to the JavaScript's inferred shape. A declaration a project's tsconfig `include` loads beside its implementation also stays in the program, where a JSX project previously reported it as a missing file.
-
-<!-- release:start -->
+  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
+  - A `fetch` overload set merged from `lib.dom` and the Node declarations compiles as one function, so a record holding it stays static.
+  - A `void` call's value, read through a variable in a truthiness test, compiles.
+  - A `var` read above its declaration compiles when every read follows the store.
+  - Operators in unchecked JavaScript read the value a binding actually holds.
+  - `arguments.length` counts in functions with optional, default or rest parameters.
+  - `require()` inside a function or immediately-invoked function evaluates once and answers the same exports object, while CommonJS `var` and `let` bindings holding `require()` stay mutable.
+  - Inline callbacks in JSX attributes take the attribute's contextual types.
+  - A destructuring of a `void`-typed value compiles, function declaration bindings can be replaced, and a named function expression's inner binding keeps its refusal.
+- **Performance:**
+  - Loop counters now carry integer facts and aligned function entries, and a small loop callee inlines together with the bodies it calls.
+  - Programs that do not use promises no longer link the promise unit, and programs without workers no longer link their dynamic invocation support.
+  - A self-slicing string scan reads the base string at an offset instead of copying it.
 
 ### Fixes
 
@@ -32,14 +70,9 @@ All notable changes to scriptc will be documented in this file.
 - A property descriptor read from a class's prototype through an untyped value, such as a UI SDK's `Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")`, builds and answers Node's descriptor — the accessor pair the class declares, with its attributes — instead of failing the build with an empty SC3004: a class value's static table reflects a static method whose parameters complete as the checked-dynamic function Node holds, and a member the table cannot hold leaves the class's statics fenced rather than aborting lowering. Building the prototype view itself no longer reports the retry's diagnostic for a member whose body cannot run over a dynamic receiver (a typed field used as a `Map` key, say); that statement fences at run time. A native build that fails inside the compiler now names the failure, and no SC3002–SC3004 diagnostic is empty.
 - A class method read from a prototype view — an untyped value's `Object.getPrototypeOf`, or a descriptor taken from it — runs its class's compiled method instead of throwing at run time: a member whose body reads a generic method through `this` (a DOM node's `insertBefore` calling `this.appendChild`) has no checked-dynamic form to hand out, so the view answers that member's compiled, receiver-checked value and the body keeps the class's own `this`, where the generic call lowers as its typed call site does.
 
-## 0.4.15
-
-### Highlights
-
-- **TypeScript parity:**
-  - A promise executor's `resolve` called without an argument, such as a `requestAnimationFrame` callback that settles its promise when the frame arrives, compiles instead of failing with SC0001: Node settles the promise with `undefined`, the checker reports the call as TS2810, the JavaScript spelling of the arity error that names the missing JSDoc hint, and unchecked JavaScript admits that diagnostic as it already admits TS2554, while a `// @ts-check` file, or a project that sets `checkJs`, keeps it. A program that does not hit the diagnostic compiles to the same IR.
-
-<!-- release:end -->
+- Release stack frames record call and throw positions, and `Error.prepareStackTrace` compiles as program state.
+- A class value's statics table and prototype views answer accessors, descriptors and subclass `instanceof` as Node does.
+- `require(esm)` and partial CommonJS cycles follow Node's semantics.
 
 ## 0.4.14
 

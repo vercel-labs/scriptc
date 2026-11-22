@@ -98,6 +98,10 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
     case "tls.createSecureContextDyn":
       return finishRuntimeCall(host, e, "scr_tls_create_secure_context_dyn", a);
+    case "tls.checkServerIdentity":
+      // (hostname, cert) → Error | undefined; may throw the alt-name
+      // format error from its parser.
+      return finishRuntimeCall(host, e, "scr_tls_check_server_identity", [a[0]!, a[1]!]);
     case "tls.pemDyn":
       return finishRuntimeCall(host, e, "scr_tls_pem_from_dyn", [
         a[0]!,

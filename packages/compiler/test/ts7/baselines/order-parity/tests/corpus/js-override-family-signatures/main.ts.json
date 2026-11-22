@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-override-family-signatures/shapes.js",
+  "<repo>/tests/corpus/js-override-family-signatures/main.ts"
+ ],
+ "diags": []
+}

@@ -26,6 +26,7 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isJsSourceFile,
+  isEsModuleStamp,
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
@@ -36,9 +37,20 @@ import {
   inlineProgramRequireOf,
 } from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { cjsAccessorValue } from "./lower-exprs.js";
+import { requireBindingTdzCheck } from "./require-initialization.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { moduleExportIgnoresThis } from "./module-member-this.js";
-import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrGlobal,
+  type IrStmt,
+  type SrcLoc,
+} from "../../ir/ir.js";
 
 /** True for the CommonJS wrapper's `exports` binding (not shadowed by any
  * source declaration) in a CommonJS JS file. */
@@ -682,4 +694,270 @@ function rereadableMemberValue(
   // other binding must be initialized before the write stores it.
   if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
   return bindingNeverReassigned(lowerer.bindingScope(), sym, decl);
+}
+
+/* ── partial require() cycles ───────────────────────────────────────────
+ * Node hands a requiring module the still-evaluating module's exports
+ * object, as it stands: members assigned before the require are there,
+ * members assigned later are missing (a read of one is undefined, and
+ * while the module evaluates Node warns). The compiled static export
+ * globals cannot show that state, so a CommonJS module of such a cycle
+ * also keeps a live checked-dynamic exports object (%exportsThis): every
+ * export write lands in both, and reads through a module binding read the
+ * live object. */
+
+/** True for a CommonJS module of a require() cycle whose partially
+ * initialized exports object a member of the cycle can observe. */
+export function isPartialCjsCycleModule(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  return lowerer.program.analysis.partialCjsCycleMembers.has(sf);
+}
+
+/** The live exports object of a partial-cycle module, or null. */
+export function cjsPartialExportsObject(lowerer: Lowerer, sf: ts.SourceFile): IrGlobal | null {
+  if (!isPartialCjsCycleModule(lowerer, sf)) return null;
+  return lowerer.cjsExportsThis.get(sf) ?? null;
+}
+
+function partialObjectRef(obj: IrGlobal, loc: SrcLoc): IrExpr {
+  return { kind: "varRef", localId: obj.id, type: DYN, loc };
+}
+
+/** The statements that also write one export member into the module's live
+ * exports object, at the same position as the static export global write. */
+export function cjsPartialExportMirror(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  key: string,
+  value: IrExpr,
+  blame: ts.Node,
+  loc: SrcLoc,
+): IrStmt[] {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null) return [];
+  return [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          partialObjectRef(obj, loc),
+          { kind: "strLit", value: key, type: STRING, loc },
+          lowerer.coerceInto(blame, value, DYN),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** The statement that replaces the module's exports object with a fresh
+ * one (`module.exports = { … }`), exactly where Node replaces it. */
+export function cjsPartialExportsReplaceStmt(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt | null {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null) return null;
+  return {
+    kind: "assign",
+    localId: obj.id,
+    value: { kind: "dynObjLit", fields: [], type: DYN, loc },
+    loc,
+  };
+}
+
+/** A read of export `key` through a module binding of `dep`: the live
+ * exports object's property as a checked-dynamic value. While `dep` still
+ * evaluates and the member is missing, the read first reports Node's
+ * circular-dependency warning (the proxy Node puts on the exports object
+ * for the window). */
+export function cjsPartialExportRead(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  key: string,
+  blame: ts.Node,
+): IrExpr | null {
+  // A read through a `const m = require(…)` binding uses the exports object
+  // that require answered (Node's per-requirer identity), not the target's
+  // current object a later replacement installed.
+  const receiverIdent =
+    ts.isPropertyAccessExpression(blame) && ts.isIdentifier(blame.expression)
+      ? blame.expression
+      : null;
+  const receiverSym =
+    receiverIdent === null
+      ? undefined
+      : (lowerer.checker.getSymbolAtLocation(receiverIdent) ??
+        lowerer.resolveValueSymbol(receiverIdent) ??
+        undefined);
+  const captured =
+    receiverSym === undefined
+      ? undefined
+      : lowerer.cjsPartialRequireObjects.get(receiverSym)?.object;
+  const obj = captured ?? cjsPartialExportsObject(lowerer, dep);
+  if (obj === null || obj === undefined) return null;
+  const loc = locOf(blame);
+  const receiver = partialObjectRef(obj, loc);
+  const keyRef: IrExpr = { kind: "strLit", value: key, type: STRING, loc };
+  const read: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.bagGet",
+    args: [receiver, keyRef, partialObjectRef(obj, loc)],
+    type: DYN,
+    loc,
+  };
+  // The binding itself may still be uninitialized (another member called a
+  // function of this module before its require returned): Node's TDZ.
+  const receiverNode = ts.isPropertyAccessExpression(blame) ? blame.expression : null;
+  const tdz = receiverNode === null ? null : requireBindingTdzCheck(lowerer, receiverNode, loc);
+  // Node installs its warning proxy only on a plain exports object: a
+  // module whose top level stamps __esModule keeps the silent object.
+  const evaluatingId = dep.statements.nodes.some(
+    (stmt) => ts.isExpressionStatement(stmt) && isEsModuleStamp(stmt.expression),
+  )
+    ? undefined
+    : lowerer.moduleEvaluatingOf.get(dep);
+  if (evaluatingId === undefined)
+    return tdz === null ? read : { kind: "seqExpr", stmts: [tdz], result: read, type: DYN, loc };
+  const warning: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "process.emitWarningText",
+      args: [
+        {
+          kind: "strLit",
+          value: `Accessing non-existent property '${key}' of module exports inside circular dependency`,
+          type: STRING,
+          loc,
+        },
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+  const missing: IrStmt = {
+    kind: "if",
+    cond: {
+      kind: "unary",
+      op: "!",
+      operand: {
+        kind: "libCall",
+        fn: "dyn.in",
+        args: [partialObjectRef(obj, loc), keyRef],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    then: [warning],
+    else_: null,
+    loc,
+  };
+  // Node unsets the warning proxy when a module finishes loading with the
+  // object still installed as module.exports. A requirer that got the object
+  // mid-cycle keeps it when the module later REPLACES module.exports, and
+  // that stale object keeps warning for the rest of the process; identity
+  // against the module's current exports object decides that case.
+  let warn: IrExpr = { kind: "varRef", localId: evaluatingId, type: BOOL, loc };
+  const currentObj = captured === undefined ? null : lowerer.cjsExportsThis.get(dep);
+  if (captured !== undefined && currentObj !== null && currentObj !== undefined) {
+    warn = {
+      kind: "logical",
+      op: "||",
+      left: warn,
+      right: {
+        kind: "unary",
+        op: "!",
+        operand: {
+          kind: "libCall",
+          fn: "dyn.sameValue",
+          args: [partialObjectRef(obj, loc), partialObjectRef(currentObj, loc)],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...(tdz === null ? [] : [tdz]),
+      { kind: "if", cond: warn, then: [missing], else_: null, loc },
+    ],
+    result: read,
+    type: DYN,
+    loc,
+  };
+}
+
+/** The statement that installs export `key`'s accessor descriptor on a
+ * partial-cycle module's live exports object (`module.exports = { get … }`):
+ * Node's exports object carries the getter/setter, so a read through a
+ * module binding runs it. Null for modules outside a partial cycle. */
+export function cjsPartialAccessorDefineStmt(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  key: string,
+  getter: ts.GetAccessorDeclaration | null,
+  setter: ts.SetAccessorDeclaration | null,
+  loc: SrcLoc,
+): IrStmt | null {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null || (getter === null && setter === null)) return null;
+  const fields: { key: IrExpr; value: IrExpr }[] = [];
+  const member = (
+    name: string,
+    accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+  ) => {
+    const value = cjsAccessorValue(lowerer, accessor, loc);
+    if (value === null) return false;
+    fields.push({
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      value: lowerer.coerceToExpected(value, DYN),
+    });
+    return true;
+  };
+  if (getter !== null && !member("get", getter)) return null;
+  if (setter !== null && !member("set", setter)) return null;
+  const truth = (): IrExpr => ({
+    kind: "dynFrom",
+    value: { kind: "boolLit", value: true, type: BOOL, loc },
+    type: DYN,
+    loc,
+  });
+  fields.push(
+    { key: { kind: "strLit", value: "enumerable", type: STRING, loc }, value: truth() },
+    { key: { kind: "strLit", value: "configurable", type: STRING, loc }, value: truth() },
+  );
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [
+        partialObjectRef(obj, loc),
+        {
+          kind: "dynFrom",
+          value: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        { kind: "dynObjLit", fields, type: DYN, loc },
+      ],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
 }

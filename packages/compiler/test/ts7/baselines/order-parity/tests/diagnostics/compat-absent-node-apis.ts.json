@@ -23,20 +23,11 @@
   },
   {
    "code": "SC0001",
-   "message": "Module '\"node:module\"' has no exported member 'findPackageJSON'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 333,
-    "end": 348
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Module '\"node:module\"' has no exported member 'register'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 350,
-    "end": 358
+    "start": 333,
+    "end": 341
    }
   },
   {
@@ -44,8 +35,8 @@
    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"worker\"' is not assignable to parameter of type '\"uncaughtException\" | \"uncaughtExceptionMonitor\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 890,
-    "end": 898
+    "start": 801,
+    "end": 809
    }
   },
   {
@@ -53,8 +44,8 @@
    "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"workerMessage\"' is not assignable to parameter of type '\"uncaughtException\" | \"uncaughtExceptionMonitor\"'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 922,
-    "end": 937
+    "start": 833,
+    "end": 848
    }
   },
   {
@@ -62,8 +53,8 @@
    "message": "Property 'execve' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 69 more ...; disconnect(): void; }'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-node-apis.ts",
-    "start": 958,
-    "end": 964
+    "start": 869,
+    "end": 875
    },
    "typeWorld": true,
    "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'execve' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"

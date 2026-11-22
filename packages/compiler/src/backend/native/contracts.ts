@@ -116,6 +116,10 @@ export interface CcOptions {
    * libCalls on the IR): compiles scr_inspect.c — the assert gating
    * precedent, so inspect-free binaries keep their exact size class. */
   inspect?: boolean;
+  /** A Console built with inspectOptions or colorMode: its methods' option-
+   * aware runtime entries, and the tty color tables colorMode 'auto' reads
+   * (scr_tty_colors.c). */
+  consoleOptions?: boolean;
   /** The program dispatches prototype methods on dyn receivers (index.ts
    * detects dynInvoke nodes / dyn.defineProps libCalls on the IR):
    * compiles scr_dyn_invoke.c — the assert gating precedent, so
@@ -405,7 +409,9 @@ export interface CcOptions {
   http2?: boolean;
   /** The program uses the node:dgram or node:dns surface (moduleUsesDgram
    * on the IR): compiles scr_dgram.c into the binary — the net gating
-   * precedent, so dgram-free binaries keep their exact link line. */
+   * precedent, so dgram-free binaries keep their exact link line — always
+   * alongside scr_net.c, which owns the net.BlockList matcher the options'
+   * block lists are read through (LINK_FEATURE_REQUIREMENTS). */
   dgram?: boolean;
   /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
@@ -574,6 +580,7 @@ export interface LibArchiveOptions {
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
+  consoleOptions?: boolean;
   symbol?: boolean;
   bigint?: boolean;
   searchParams?: boolean;

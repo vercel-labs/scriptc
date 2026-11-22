@@ -1,7 +1,7 @@
 /* The warnings a successful `build` reports on stderr, grouped the way the
  * build prints them: configuration settings the build does not use, type
- * patches that did not apply, a start-up failure, the divergence band, and the
- * performance warning.
+ * patches that did not apply, a start-up failure, the statements deferred to
+ * run time, the divergence band, and the performance warning.
  *
  * Both the CLI and the launcher's cached-build fast path (packages/cli/src/
  * bootstrap.ts) render through here. A restored build replays the warnings its
@@ -13,6 +13,7 @@ import { isTypePatchCode, type ScrDiagnostic } from "./diagnostic.js";
 import { isPerformanceCode, renderPerformanceWarnings } from "./dynamic-tier.js";
 import {
   renderConfigWarnings,
+  renderDeferredWarnings,
   renderStartupWarnings,
   renderTypePatchWarnings,
   renderWarnings,
@@ -52,11 +53,17 @@ export function renderBuildWarnings(
   const config = warnings.filter((d) => d.code === "SC8004");
   const patches = warnings.filter((d) => isTypePatchCode(d.code));
   const startup = warnings.filter((d) => d.code === "SC6201");
+  // The deferred statements (SC6015) get their own compact list: they are
+  // the sites that throw when they run, and a large program's hundred or
+  // more of them would be counted, not named, by the divergence band's
+  // source-frame limit.
+  const deferred = warnings.filter((d) => d.code === "SC6015");
   const divergences = warnings.filter(
     (d) =>
       !isPerformanceCode(d.code) &&
       d.code !== "SC8004" &&
       d.code !== "SC6201" &&
+      d.code !== "SC6015" &&
       !isTypePatchCode(d.code),
   );
   const performance = warnings.filter((d) => isPerformanceCode(d.code));
@@ -65,6 +72,7 @@ export function renderBuildWarnings(
   if (patches.length > 0)
     sections.push(renderTypePatchWarnings(patches, sourceTextByFile, options));
   if (startup.length > 0) sections.push(renderStartupWarnings(startup, sourceTextByFile, options));
+  if (deferred.length > 0) sections.push(renderDeferredWarnings(deferred, sourceTextByFile));
   if (divergences.length > 0) sections.push(renderWarnings(divergences, sourceTextByFile, options));
   if (performance.length > 0) sections.push(renderPerformanceWarnings(performance));
   return sections.join("\n\n");

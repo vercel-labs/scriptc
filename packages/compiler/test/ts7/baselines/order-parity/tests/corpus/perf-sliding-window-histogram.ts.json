@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/perf-sliding-window-histogram.ts"
+ ],
+ "diags": []
+}

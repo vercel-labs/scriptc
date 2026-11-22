@@ -472,14 +472,7 @@ try {
 
 test("proxied requests respect the global agent's socket limits", async () => {
   const heads: string[] = [];
-  let open = 0;
-  let peak = 0;
   const proxy = createNetServer((sock) => {
-    open += 1;
-    if (open > peak) peak = open;
-    sock.on("close", () => {
-      open -= 1;
-    });
     sock.once("data", (buf) => {
       heads.push(buf.toString("utf8").split("\r\n")[0] ?? "");
       // a slow answer: an unqueued second request would overlap this one
@@ -491,41 +484,47 @@ test("proxied requests respect the global agent's socket limits", async () => {
   servers.push(proxy);
   await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
   const proxyPort = (proxy.address() as { port: number }).port;
+  // The program counts the sockets it holds open, not the proxy's
+  // connections: a proxy that has not yet processed a closed connection
+  // must not read as an extra concurrent request.
   const source = `import * as http from "node:http";
 http.globalAgent.maxSockets = 1;
 http.globalAgent.maxTotalSockets = 1;
 const hosts = ["target.invalid", "other.invalid"];
 let done = 0;
+let active = 0;
+let peak = 0;
 for (const host of hosts) {
-  http.get({ host, port: 80, path: "/x" }, (res) => {
+  const req = http.get({ host, port: 80, path: "/x" }, (res) => {
     res.resume();
     res.on("end", () => {
       done += 1;
-      if (done === hosts.length) console.log("done", done);
+      if (done === hosts.length) console.log("done", done, "peak", peak);
     });
-  }).on("error", (e) => console.log("error", e.code));
+  });
+  req.on("socket", (socket) => {
+    // count a connection when it opens, not when the request is handed a
+    // socket object: a request waiting for a slot holds one before dialing
+    let connected = false;
+    socket.on("connect", () => {
+      connected = true;
+      active += 1;
+      if (active > peak) peak = active;
+    });
+    socket.on("close", () => {
+      if (connected) active -= 1;
+      connected = false;
+    });
+  });
+  req.on("error", (e) => console.log("error", e.code));
 }
 `;
   const { bin, entry } = await build("limits", source);
   const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxyPort}` };
-  // each process's sockets close a moment after it exits: settle before the
-  // next run so the peak measures one runtime's own concurrency
-  const settle = async () => {
-    const started = Date.now();
-    while (open !== 0 && Date.now() - started < 3000) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    peak = 0;
-  };
   const reference = await run(process.execPath, [entry], env);
-  expect(reference.stdout.trim()).toBe("done 2");
-  const referencePeak = peak;
-  await settle();
   const native = await run(bin, [], env);
   expect(native.stdout).toBe(reference.stdout);
-  const nativePeak = peak;
-  expect(referencePeak).toBe(1);
-  expect(nativePeak).toBe(1);
+  expect(reference.stdout.trim()).toBe("done 2 peak 1");
   expect([...heads].sort()).toEqual([
     "GET http://other.invalid/x HTTP/1.1",
     "GET http://other.invalid/x HTTP/1.1",

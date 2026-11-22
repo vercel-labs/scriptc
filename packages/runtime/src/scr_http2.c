@@ -1821,7 +1821,10 @@ static void scr_http2_session_set_timeout_impl(ScrH2Session *s, double ms,
                                          scr_http2_session_release_v, ms);
     if (cb != NULL) scr_net_ls_add(&s->timeout_ls, cb, NULL, once);
   } else if (cb != NULL) {
-    /* setTimeout(0, cb) removes the callback's 'timeout' registration */
+    /* setTimeout(0, cb) removes the callback's 'timeout' registration —
+     * Node's removeListener, which drops the most recent match — and the
+     * argument reference it came with. */
+    scr_net_ls_remove_last(&s->timeout_ls, cb);
     scr_closure_release(cb);
   }
 }
@@ -3610,6 +3613,9 @@ void scr_http2_stream_set_timeout(ScrH2Stream *st, double ms,
                                           scr_http2_stream_release_v, ms);
     if (cb != NULL) scr_net_ls_add(&st->timeout_ls, cb, NULL, once);
   } else if (cb != NULL) {
+    /* setTimeout(0, cb) removes the callback's 'timeout' registration, as on
+     * the session. */
+    scr_net_ls_remove_last(&st->timeout_ls, cb);
     scr_closure_release(cb);
   }
 }
@@ -4249,6 +4255,9 @@ static void scr_h2_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->request_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
+  /* A 'timeout' callback may capture the server; dropping the list at
+   * settle breaks that cycle (Node's server close releases them too). */
+  scr_net_ls_drop(&ctx->timeout_ls);
   if (ctx->http1_ctx != NULL) scr_http1_ctx_settle(ctx->http1_ctx);
 }
 

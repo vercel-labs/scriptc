@@ -1,0 +1,3 @@
+{
+    "node-builtin.fs/promises.open": ["tests/corpus/2686-fs-file-handle.ts", "tests/corpus/3135-fs-file-handle-controls.ts"]
+}

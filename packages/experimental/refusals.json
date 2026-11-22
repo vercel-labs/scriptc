@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "nodeVersion": "24.22.1",
-  "compilerVersion": "0.4.15",
+  "compilerVersion": "0.4.16",
   "refusals": [
     {
       "binding": {

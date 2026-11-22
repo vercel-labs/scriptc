@@ -438,6 +438,21 @@ typedef struct ScrChildStreamOps {
    * unread stream cannot grow without bound. NULL when the stream unit is
    * not linked. */
   bool (*wanted)(ScrStream *);
+  /* Fails the bridged stream with an error no pending write owns: the pipe
+   * failed after a write the writer accepted left bytes queued. The callee
+   * keeps the error's reference. */
+  void (*fail)(ScrStream *, ScrError *);
+  /* Whether the bridged stream has closed (its 'close' was emitted or it was
+   * destroyed): the child's 'close' waits for the stdio streams it holds, as
+   * Node's maybeClose does. */
+  bool (*closed)(ScrStream *);
+  /* Resumes a bridged stream no consumer holds, so a child that exited
+   * still reaches EOF and 'end' (Node's flushStdio). */
+  void (*flush)(ScrStream *);
+  /* Registers `cb` as the stream's first 'close' listener (the callee takes
+   * the closure's reference). The stream unit owns the emitter call, so a
+   * program that only spawns children does not link the events unit. */
+  void (*on_close)(ScrStream *, ScrClosure *);
 } ScrChildStreamOps;
 extern const ScrChildStreamOps scr_stream_child_ops;
 ScrDyn *scr_stream_dyn_view(ScrStream *stream); /* borrowed; +1 live method/property view */

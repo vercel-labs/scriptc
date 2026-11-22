@@ -20440,7 +20440,6 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
           "tests/corpus/1568-x509-fingerprint.ts",
           "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
@@ -20523,8 +20522,17 @@
           "tests/corpus/crypto-fips-namespace.mjs",
           "tests/corpus/crypto-introspection.ts",
           "tests/corpus/crypto-kdf-arguments.cjs",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
           "tests/corpus/crypto-key-object-properties.ts",
           "tests/corpus/crypto-key-sources.cjs",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem.ts",
           "tests/corpus/crypto-module-catalogs.ts",
           "tests/corpus/crypto-random-arguments.cjs",
           "tests/corpus/crypto-rsa-key-types.cjs",
@@ -21470,22 +21478,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.decapsulate",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.decapsulate",
         "tests": [
-          "tests/corpus/crypto-argon2.ts",
-          "tests/corpus/key-object-to-crypto-key.ts",
-          "tests/corpus/key-object-from-crypto-key.ts",
-          "tests/corpus/key-object-from-arguments.mjs",
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ml-kem.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21542,22 +21546,18 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "surface-manifest:node-builtin.crypto.encapsulate",
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.encapsulate",
         "tests": [
-          "tests/corpus/crypto-argon2.ts",
-          "tests/corpus/key-object-to-crypto-key.ts",
-          "tests/corpus/key-object-from-crypto-key.ts",
-          "tests/corpus/key-object-from-arguments.mjs",
-          "tests/corpus/1358-crypto-random.ts",
-          "tests/corpus/1534-crypto-hash-chain.ts",
-          "tests/corpus/2556-crypto-introspection.ts",
-          "tests/corpus/2890-crypto-static-utility.ts",
-          "tests/harness/npm-static.test.ts",
-          "tests/corpus/node24-crypto-sha2.ts",
-          "tests/corpus/node24-crypto-kdf.ts",
-          "tests/corpus/node24-crypto-kdf-errors.ts",
-          "tests/corpus/node24-crypto-kdf-options.ts"
+          "tests/corpus/crypto-ml-kem.ts",
+          "tests/corpus/crypto-ml-kem-callbacks.ts",
+          "tests/corpus/crypto-ml-kem-callback-errors.ts",
+          "tests/corpus/crypto-ml-kem-runtime-input.ts",
+          "tests/corpus/crypto-ml-kem-literal.ts",
+          "tests/corpus/crypto-kem-rsa.ts",
+          "tests/corpus/crypto-kem-dhkem.ts",
+          "tests/corpus/crypto-kem-callbacks.ts",
+          "tests/corpus/crypto-kem-crypto-key.ts"
         ]
       },
       "anchorSource": "exact"
@@ -34817,9 +34817,11 @@
           "tests/corpus/8783-child-max-buffer-refused-arguments.ts",
           "tests/corpus/8922-child-max-buffer-async.ts",
           "tests/corpus/9872-child-stream-pause-max-buffer.ts",
+          "tests/corpus/9984-message-port-construct.js",
           "tests/corpus/async-hooks-execution-ids.cjs",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/compat-error-capture-stack-trace.mjs",
+          "tests/corpus/compat-error-class-fidelity.mjs",
           "tests/corpus/compat-error-class-surface.mjs",
           "tests/corpus/compat-error-classes.cjs",
           "tests/corpus/compat-error-properties.mjs",
@@ -34829,6 +34831,7 @@
           "tests/corpus/compat-errors-buffer-encoding.mjs",
           "tests/corpus/compat-errors-cert-altname.mjs",
           "tests/corpus/compat-errors-cert-badsig.mjs",
+          "tests/corpus/compat-errors-cert-expired.mjs",
           "tests/corpus/compat-errors-cert-future.mjs",
           "tests/corpus/compat-errors-cert-pathlen.mjs",
           "tests/corpus/compat-errors-cli-tools.mjs",
@@ -34840,9 +34843,12 @@
           "tests/corpus/compat-errors-ip-blocked.mjs",
           "tests/corpus/compat-errors-net.mjs",
           "tests/corpus/compat-errors-process-codes.mjs",
+          "tests/corpus/compat-errors-socket-types.mjs",
           "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs",
+          "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
           "tests/corpus/compat-errors-worker.mjs",
           "tests/corpus/compat-http2-ping-settings.mjs",
@@ -34857,8 +34863,11 @@
           "tests/corpus/error-stack-limit.ts",
           "tests/corpus/fs-dir-dispose.ts",
           "tests/corpus/fs-dir-listing.ts",
+          "tests/corpus/fs-promises-watch-overflow.cjs",
           "tests/corpus/http-parser-response-checks.ts",
           "tests/corpus/http-response-header-errors.ts",
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts",
           "tests/corpus/http2-stream-error-code.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
@@ -34867,11 +34876,13 @@
           "tests/corpus/node24-crypto-kdf-errors.ts",
           "tests/corpus/os-error-codes.cjs",
           "tests/corpus/process-error-codes.cjs",
+          "tests/corpus/process-ipc-surface/main.ts",
           "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-value-types.ts",
           "tests/corpus/stream-end-already-finished.ts",
           "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/worker-cpu-usage.ts",
           "tests/corpus/zlib-codec-invalid-params.cjs",
           "tests/corpus/zstd-compress.cjs",
           "tests/diagnostics/compat-absent-node-apis.ts",
@@ -35054,12 +35065,13 @@
       "anchor": "class-assertionerror",
       "nodeStability": null,
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:errors.AssertionError",
         "tests": [
           "tests/corpus/compat-error-properties.mjs",
           "tests/corpus/compat-error-properties.ts",
-          "tests/corpus/compat-error-class-surface.mjs"
+          "tests/corpus/compat-error-class-surface.mjs",
+          "tests/corpus/compat-error-class-fidelity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -35512,8 +35524,11 @@
       "anchor": "errorfunction",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:errors.error.function",
+        "tests": [
+          "tests/corpus/compat-errors-crypto.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -35976,8 +35991,12 @@
       "anchor": "err_construct_call_invalid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_INVALID"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_CONSTRUCT_CALL_INVALID",
+        "tests": [
+          "tests/corpus/9984-message-port-construct.js",
+          "tests/corpus/worker-cpu-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -37468,8 +37487,11 @@
       "anchor": "err_fs_watch_queue_overflow",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_FS_WATCH_QUEUE_OVERFLOW"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_FS_WATCH_QUEUE_OVERFLOW",
+        "tests": [
+          "tests/corpus/fs-promises-watch-overflow.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38374,8 +38396,12 @@
       "anchor": "err_http_body_not_allowed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP_BODY_NOT_ALLOWED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP_BODY_NOT_ALLOWED",
+        "tests": [
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -38476,8 +38502,12 @@
       "anchor": "err_http_request_timeout",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_HTTP_REQUEST_TIMEOUT"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_HTTP_REQUEST_TIMEOUT",
+        "tests": [
+          "tests/corpus/http-server-reject-body-writes.ts",
+          "tests/corpus/http-server-timeout-enforcement.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -39572,8 +39602,11 @@
       "anchor": "err_ipc_channel_closed",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_IPC_CHANNEL_CLOSED",
+        "tests": [
+          "tests/corpus/process-ipc-surface/main.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -40884,8 +40917,11 @@
       "anchor": "err_socket_bad_type",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_TYPE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_SOCKET_BAD_TYPE",
+        "tests": [
+          "tests/corpus/compat-errors-socket-types.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41657,7 +41693,8 @@
         "status": "supported",
         "evidence": "compiler-feature:errors.ERR_TLS_INVALID_STATE",
         "tests": [
-          "tests/corpus/compat-errors-tls-keying-state.mjs"
+          "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-state.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -41789,8 +41826,11 @@
       "anchor": "err_tls_sni_from_server",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_SNI_FROM_SERVER",
+        "tests": [
+          "tests/corpus/compat-errors-tls-state.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41807,8 +41847,11 @@
       "anchor": "err_trace_events_category_required",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_CATEGORY_REQUIRED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TRACE_EVENTS_CATEGORY_REQUIRED",
+        "tests": [
+          "tests/corpus/compat-errors-tracing-categories.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -42639,8 +42682,12 @@
       "anchor": "err_worker_not_running",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_WORKER_NOT_RUNNING"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_WORKER_NOT_RUNNING",
+        "tests": [
+          "tests/corpus/9984-message-port-construct.js",
+          "tests/corpus/worker-cpu-usage.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44135,8 +44182,11 @@
       "anchor": "cert_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CERT_HAS_EXPIRED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-expired.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44785,6 +44835,7 @@
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/6491-events-once-streams.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs",
           "tests/corpus/emitter-surface.ts",
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/event-target-surface.ts",
@@ -46670,7 +46721,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'newListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -46696,7 +46748,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'removeListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -58709,6 +58762,7 @@
           "tests/corpus/2987-http-static-timeout-errors.ts",
           "tests/corpus/2988-http-static-client-abort.ts",
           "tests/corpus/5563-http-keep-alive-timeout.ts",
+          "tests/corpus/compat-http-class-identity.mjs",
           "tests/corpus/compat-http-client-connect.mjs",
           "tests/corpus/compat-http-client-connect.ts",
           "tests/corpus/compat-http-interim-responses.mjs",
@@ -61016,11 +61070,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.ServerResponse",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -61938,11 +61991,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.http.IncomingMessage",
         "tests": [
-          "tests/corpus/2981-http-static-events.ts",
-          "tests/corpus/2976-http-static-incoming-state.ts"
+          "tests/corpus/compat-http-class-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -63760,6 +63812,7 @@
           "tests/corpus/compat-http2-state.mjs",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -65999,10 +66052,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.pushStream",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.http2stream.pushStream"
       },
       "anchorSource": "exact"
     },
@@ -66051,10 +66101,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFD",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66077,10 +66127,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFile",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66131,10 +66181,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.pushAllowed",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.pushAllowed"
       },
       "anchorSource": "ancestor"
     },
@@ -76768,6 +76815,8 @@
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-chaining-dyn.cjs",
           "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs",
+          "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
@@ -77421,7 +77470,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77541,7 +77592,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78015,7 +78068,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78065,7 +78120,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78093,7 +78150,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78164,7 +78223,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78192,7 +78253,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78310,7 +78373,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78401,7 +78466,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79214,7 +79281,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79317,7 +79386,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79395,7 +79466,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81108,6 +81181,7 @@
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
           "tests/corpus/9976-timerify.js",
+          "tests/corpus/9977-histogram-bucket-helpers.js",
           "tests/corpus/9990-histogram-comparison.ts",
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -81119,6 +81193,8 @@
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
+          "tests/corpus/net-socket-construct-dyn.cjs",
+          "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
@@ -81455,7 +81531,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83386,7 +83464,7 @@
         "status": "supported",
         "evidence": "compiler-feature:perf_hooks.histogram.linearBuckets",
         "tests": [
-          "tests/corpus/perf-histogram-ewma.ts"
+          "tests/corpus/9977-histogram-bucket-helpers.js"
         ]
       },
       "anchorSource": "exact"
@@ -83412,7 +83490,7 @@
         "status": "supported",
         "evidence": "compiler-feature:perf_hooks.histogram.logBuckets",
         "tests": [
-          "tests/corpus/perf-histogram-ewma.ts"
+          "tests/corpus/9977-histogram-bucket-helpers.js"
         ]
       },
       "anchorSource": "exact"
@@ -103609,7 +103687,8 @@
           "tests/corpus/tls-server-members.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
-          "tests/corpus/tls-unix-connect.ts"
+          "tests/corpus/tls-unix-connect.ts",
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -104320,8 +104399,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'newSession'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104343,8 +104425,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'OCSPRequest'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104366,8 +104451,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'resumeSession'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104595,8 +104683,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.enableTrace",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104759,8 +104850,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getFinished",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104850,8 +104944,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getPeerFinished",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104989,8 +105086,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tlsSocket.getSharedSigalgs",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105648,8 +105748,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.'OCSPResponse'",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106126,8 +106229,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tls.getCiphers",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106149,8 +106255,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:tls.tls.getCertificateCompressionAlgorithms",
+        "tests": [
+          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+        ]
       },
       "anchorSource": "exact"
     },

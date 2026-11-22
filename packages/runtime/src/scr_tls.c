@@ -5399,12 +5399,32 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     *out = scr_tls_sock_get_cipher(s);
     return true;
   }
+  if (strcmp(method, "setServername") == 0) {
+    ScrTlsSock *t = scr_tls_sock_of(s);
+    if (argc < 1 || args[0]->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", argc < 1 ? scr_dyn_undefined() : args[0]);
+      *out = NULL;
+      return true;
+    }
+    if (t->srv != NULL) {
+      static const char msg[] = "Cannot issue SNI from a TLS server-side socket";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_SNI_FROM_SERVER");
+      *out = NULL;
+      return true;
+    }
+    /* a client's SNI is fixed when the socket starts its handshake */
+    static const char msg[] =
+        "changing the SNI of a started client socket has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    *out = NULL;
+    return true;
+  }
   static const char *const tls_methods[] = {
     "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
     "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
-    "enableTrace", "disableRenegotiation", "setServername", "setSession", NULL,
+    "enableTrace", "disableRenegotiation", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {
     if (strcmp(method, tls_methods[i]) == 0) {

@@ -275,16 +275,23 @@ declare module "crypto" {
     options: {} | undefined,
     callback: (err: Error | null, publicKey: KeyObject, privateKey: KeyObject) => void,
   ): void;
-  /* crypto.encapsulate/decapsulate: the KEM wrappers. Packet installments
-   * implement ML-KEM first; the other KEM-capable key types follow. */
-  export function encapsulate(key: KeyObject): { sharedKey: Buffer; ciphertext: Buffer };
+  /* crypto.encapsulate/decapsulate: the KEM wrappers over ML-KEM, raw RSA
+   * and DHKEM (the EC curves, X25519, X448). A key that is not a KeyObject
+   * goes through createPublicKey/createPrivateKey. */
+  export function encapsulate(key: KeyLike | PublicKeyInput | JsonWebKeyInput): {
+    sharedKey: Buffer;
+    ciphertext: Buffer;
+  };
   export function encapsulate(
-    key: KeyObject,
+    key: KeyLike | PublicKeyInput | JsonWebKeyInput,
     callback: (error: Error | null, result: { sharedKey: Buffer; ciphertext: Buffer }) => void,
   ): void;
-  export function decapsulate(key: KeyObject, ciphertext: ArrayBuffer | ScriptcBufferView): Buffer;
   export function decapsulate(
-    key: KeyObject,
+    key: KeyLike | PrivateKeyInput | JsonWebKeyInput,
+    ciphertext: ArrayBuffer | ScriptcBufferView,
+  ): Buffer;
+  export function decapsulate(
+    key: KeyLike | PrivateKeyInput | JsonWebKeyInput,
     ciphertext: ArrayBuffer | ScriptcBufferView,
     callback: (error: Error | null, sharedKey: Buffer) => void,
   ): void;

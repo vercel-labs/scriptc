@@ -5,6 +5,10 @@
 import * as dgram from "node:dgram";
 
 const address4 = "127.0.0.1";
+// A connect on an unbound socket implicitly binds to the lookup's answer.
+// Only 127.0.0.1 is assigned to loopback on macOS, so 127.0.0.2 fails with
+// EADDRNOTAVAIL in Node itself; Linux carries the whole 127/8.
+const connectAnswer = process.platform === "darwin" ? address4 : "127.0.0.2";
 
 const bindPhase = (): Promise<void> =>
   new Promise<void>((resolve) => {
@@ -28,7 +32,7 @@ const connectPhase = (): Promise<void> =>
       type: "udp4",
       lookup: (address, family, callback) => {
         console.log(`connect lookup ${address} ${family}`);
-        setTimeout(() => callback(null, "127.0.0.2"), 10);
+        setTimeout(() => callback(null, connectAnswer), 10);
       },
     });
     sock.on("close", () => resolve());

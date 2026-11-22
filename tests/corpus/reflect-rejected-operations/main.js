@@ -42,3 +42,16 @@ try {
 } catch (error) {
   console.log('primitive on non-extensible', error.name);
 }
+
+// A typed array element: an invalid index and any descriptor that is not a
+// plain writable data descriptor are rejected with false.
+const bytes = () => new Uint8Array(2);
+console.log(Reflect.defineProperty(bytes(), 0, { value: 5 }));
+console.log(Reflect.defineProperty(bytes(), 0, { value: 5, writable: false }));
+console.log(Reflect.defineProperty(bytes(), 0, { value: 5, configurable: false }));
+console.log(Reflect.defineProperty(bytes(), 0, { value: 5, enumerable: false }));
+console.log(Reflect.defineProperty(bytes(), 0, { get() { return 1; } }));
+console.log(Reflect.defineProperty(bytes(), 5, { value: 5 }));
+console.log(Reflect.defineProperty(bytes(), 1.5, { value: 5 }));
+console.log(Reflect.defineProperty(bytes(), -1, { value: 5 }));
+console.log(Reflect.defineProperty(bytes(), 'x', { value: 5 }));

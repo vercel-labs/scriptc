@@ -170,6 +170,9 @@ function reflectMemberFunction(
 const DEFINE_REJECTIONS: readonly string[] = [
   "Cannot redefine property: ",
   "Cannot define property ",
+  // A typed array's element rejects an invalid index (out of range,
+  // fractional, negative) with this TypeError; Reflect answers false.
+  "Invalid typed array index",
 ];
 const SET_PROTOTYPE_REJECTIONS: readonly string[] = [
   "Cyclic __proto__ value",

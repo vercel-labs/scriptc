@@ -1553,6 +1553,12 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* A Node module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`,
+ * …): one ordinary function with a prototype object per (module, name) per
+ * program, so `instanceof` and `constructor` identity compare one value.
+ * Answers +1; NULL with the exception pending when the allocation failed.
+ * scr_json.c. */
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity);
 /* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
  * (scr_dyn_global_constructor): false when `callee` is not one of them;
  * otherwise true with `new callee(...args)` in *result (+1, or NULL with

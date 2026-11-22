@@ -113,10 +113,20 @@ The Node.js compatibility system is an implementation inventory and planning too
 - `internal/compatibility/node-v24.json` pins the Node release, commit, official API inputs, and documentation URLs. The pinned Node API is the denominator.
 - Node's official documentation defines the public API hierarchy and stability metadata. Consult Node source when the docs do not fully specify behavior.
 - Running the pinned Node release is the behavior oracle for differential tests.
-- Compiler source and `packages/compiler/surface-manifest.json`, augmented by `internal/compatibility/static-support.json`, define static-native support.
+- Compiler source and `packages/compiler/surface-manifest.json`, augmented by the static-support overlay (`internal/compatibility/static-support.json` and the per-module files it indexes), define static-native support.
 - Test evidence determines positive behavioral claims. Source manifests alone do not prove Node-compatible behavior.
 
 Compatibility describes native compilation. There is no runtime JavaScript engine tier. `island-served` is the one explicit exception to "native compilation": it records that an island build answers an API through the Node island scriptc already embeds, and is never a native support claim.
+
+### Adding a row
+
+Each shared table is one file per builtin module, loaded by a small index. Add a row to the module's file, not to the index:
+
+- `internal/compatibility/static-support.json` indexes `static-support/chapter-policies.json` and `static-support/{evidence,features,dedicated}/<module>.json`. A feature row goes in `features/<chapter>.json`, a dedicated lowering row in `dedicated/<chapter>.json` (`_unassigned.json` when it names no chapter), and an evidence map entry in `evidence/<module>.json`. The index names directories, so a new module is a new file with no index edit.
+- `packages/compiler/src/ir/builtin-signatures.ts` indexes `builtin-signatures/<prefix>.ts`, one file per builtin-name prefix (`fs.`, `http.`, `dyn.`, `string.`, ...). Add the call slot to its prefix's file. A new prefix also needs its import and spread in the index.
+- `packages/compiler/src/ir/builtin-never-throw.ts` indexes `builtin-never-throw/<prefix>.ts` the same way.
+
+A branch or pull request written before the split is rehomed mechanically: `node scripts/rehome-split-tables.mjs --pr NUMBER --write` takes its edits to the old single files and re-applies them to the per-module files, reporting any row it cannot place. Then run the table's gates (`pnpm node-compat --local` for static-support; a compiler build and the builtin tests for the compiler tables).
 
 ### Status contract
 

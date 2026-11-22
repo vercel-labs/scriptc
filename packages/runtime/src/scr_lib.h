@@ -316,6 +316,17 @@ double scr_histo_mann_whitney_u(ScrDyn *handle, ScrDyn *other);
 double scr_histo_mann_whitney_z(ScrDyn *handle, ScrDyn *other);
 double scr_histo_mann_whitney_p(ScrDyn *handle, ScrDyn *other);
 double scr_histo_percentiles_count(ScrDyn *handle);
+/* histogram.linearBuckets(stepSize) / logBuckets(firstBucket, base): the
+ * argument validation (which 0 stepSize, 1 firstBucket, 2 base) and the
+ * per-thread bucket view the count rebuilds and the accessors read. */
+double scr_histo_bucket_arg(ScrDyn *value, double which);
+/* Set by the histogram unit the first time a thread builds a bucket map:
+ * frees that thread's view as a worker thread exits (scr_worker.c). */
+extern SCR_TL void (*scr_worker_bucket_exit)(void);
+double scr_histo_linear_buckets_count(ScrDyn *handle, double step);
+double scr_histo_log_buckets_count(ScrDyn *handle, double first, double base);
+double scr_histo_buckets_key(double index);
+double scr_histo_buckets_value(double index);
 double scr_histo_percentiles_key(ScrDyn *handle, double index);
 double scr_histo_percentiles_value(ScrDyn *handle, double index);
 ScrBigInt *scr_histo_percentiles_value_big(ScrDyn *handle, double index);

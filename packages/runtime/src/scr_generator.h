@@ -270,6 +270,15 @@ typedef struct ScrWebStreamSource {
  * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
  * reference moves in; the stream releases it when it goes away. */
 ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* The over-source over an explicit queuing strategy: the strategy's
+ * highWaterMark and size (NULL = the default size algorithm) drive the
+ * controller's pulls and desiredSize as new ReadableStream(source, strategy)
+ * does them. A null or undefined strategy keeps the zero high-water mark.
+ * A strategy the check refuses answers NULL with the exception pending and
+ * leaves ctx's reference with the caller; otherwise ctx's reference moves
+ * in. */
+ScrDyn *scr_webstream_readable_over_opts(const ScrWebStreamSource *source, void *ctx,
+                                         ScrDyn *strategy);
 /* The same source as Node's type: "bytes" stream: a BYOB reader hands the
  * stream its own view and the source's chunks are written into it, with the
  * controller's auto-allocated reads asked for 16 KiB at a time. ctx's

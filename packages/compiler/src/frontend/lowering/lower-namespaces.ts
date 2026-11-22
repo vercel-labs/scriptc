@@ -47,8 +47,8 @@ import { isIslandImportBinding } from "./lower-node-island.js";
 import { isNodeTypesPath } from "../dts-paths.js";
 import { funduleFunctionOf, funduleMemberOf, lowerFunduleMemberValue } from "./lower-fundule.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf } from "../program.js";
-import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
+import { isCjsJsFile, locOf } from "../program.js";
+import { F64, type IrExpr, type IrGlobal, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { COMMONJS_MODULE_BINDINGS } from "../builtin-modules.js";
 import { nodeGlobalKind } from "./node-values.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -465,7 +465,6 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
   )
     return null;
   const from = ts.getSourceFileOfNode(decl);
-  if (!isJsSourceFile(from)) return null;
   const dep = lowerer.facts.importedModule(from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&
@@ -517,18 +516,34 @@ export function nsMemberIdentOf(
   // module.exports itself.
   const cjs = cjsNamespaceImportDep(lowerer, access.expression);
   if (cjs !== null) {
-    const { names, assignedLater } = lowerer.cjsNamespaceOf(cjs);
+    const { names } = lowerer.cjsNamespaceOf(cjs);
     const name = access.name.text;
-    return name !== "default" &&
-      names.has(name) &&
-      assignedLater !== "all" &&
-      !assignedLater.has(name)
-      ? access.name
-      : null;
+    // A name a FUNCTION assigns during the module's evaluation is a member
+    // of the finished namespace too (Node's namespace keeps the end-of-init
+    // values); the read lowers like the named import, which already reads
+    // the exporter's binding.
+    return name !== "default" && names.has(name) ? access.name : null;
   }
   if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
   if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;
   return null;
+}
+
+/** The snapshot slot a namespace read observes when the member is one the
+ * CommonJS module's functions assign (registerCjsNamespaceSnapshotGlobals:
+ * Node's namespace object keeps the values `module.exports` held when the
+ * module finished evaluating). Null for members nothing reassigns — their
+ * live export storage IS the snapshot — and for receivers that are not a
+ * namespace-import binding. */
+export function cjsNamespaceMemberSnapshotOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrGlobal | null {
+  if (lowerer.cjsNamespaceMemberSnapshots.size === 0) return null;
+  if (access.questionDotToken !== undefined || !ts.isIdentifier(access.name)) return null;
+  const dep = cjsNamespaceImportDep(lowerer, access.expression);
+  if (dep === null) return null;
+  return lowerer.cjsNamespaceMemberSnapshots.get(dep)?.get(access.name.text)?.snapshot ?? null;
 }
 
 /** The ROOT identifier of a qualifier chain that denotes a user-file

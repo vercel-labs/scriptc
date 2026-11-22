@@ -1,0 +1,3 @@
+[
+    { "chapter": "typescript", "symbols": ["type"], "status": "supported", "evidence": ["tests/corpus/2702-type-import-link-static/main.ts", "tests/corpus/2703-type-import-link-static-reexport/main.ts", "tests/corpus/2704-type-import-link-static-success/main.ts", "tests/corpus/2707-type-import-link-static-default-reexport/main.ts", "tests/harness/errors.test.ts"] }
+]

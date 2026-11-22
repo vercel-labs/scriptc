@@ -70,6 +70,7 @@ const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classCase",
   "dyn.classValueHash",
   "dyn.classIs",
   "dyn.nativeSetIs",

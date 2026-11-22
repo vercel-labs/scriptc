@@ -328,7 +328,7 @@ test("every job on a macOS runner is in the macos lane, but the main push smoke 
   // The smoke job runs the darwin smoke suite on one runner, building its own
   // native packages.
   const smoke = workflow.jobs["tests_macos_smoke"]!;
-  expect(smoke.needs).toEqual(["validation_scope", "lanes"]);
+  expect(smoke.needs).toEqual(["validation_scope", "lanes", "code_quality"]);
   expect(smoke.strategy).toBeUndefined();
   expect(smoke.env).toMatchObject({ SCRIPTC_CI_SUITE: "darwin-smoke", SCRIPTC_TEST_SHARD: "1/1" });
 });

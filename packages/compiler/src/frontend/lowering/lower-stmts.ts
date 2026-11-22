@@ -1638,6 +1638,11 @@ function jsBindingKeepsCheckedObject(
    * object: a binding of `module`, `require.main`, `module.parent` or a
    * `module.children[i]` keeps the checked-dynamic view. */
   if (isNodeModuleHandle(lowerer, nameNode)) return true;
+  /* A binding the checker types `never` is an inference artifact — a
+   * declaration that does not describe the value a JavaScript runtime
+   * produced (a context made with `createContext(null)` and used as an
+   * object) — so the binding keeps whatever the value holds. */
+  if ((lowerer.typeOf(nameNode).flags & ts.TypeFlags.Never) !== 0) return true;
   const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
   return (
     arms.some((arm) => arm.kind === "record" || arm.kind === "array") &&

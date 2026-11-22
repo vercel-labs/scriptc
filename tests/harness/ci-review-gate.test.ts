@@ -9,6 +9,7 @@ import {
   reviewState,
   staleRuns,
   testJobToRerun,
+  isExpensiveTierOf,
 } from "../../scripts/ci-review-gate.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
@@ -120,6 +121,7 @@ test("the label and a manual run start the expensive tier whatever the reviews s
 test("a running or green expensive tier of the same commit is not started again", () => {
   const run = (status: string, conclusion: string | null) => ({
     head_sha: sha,
+    display_title: `Expensive tier of #42 at ${sha}`,
     status,
     conclusion,
     html_url: "https://example.test/run",
@@ -130,6 +132,22 @@ test("a running or green expensive tier of the same commit is not started again"
   // A failed or cancelled one may run again, for example after the label is added.
   expect(gate({ runs: [run("completed", "failure")] }).action).toBe("dispatch");
   expect(gate({ runs: [run("completed", "cancelled")] }).action).toBe("dispatch");
+  // A dispatch for an older commit that raced a push ran, green and empty, on this head: it does not count.
+  const raced = {
+    ...run("completed", "success"),
+    display_title: `Expensive tier of #42 at ${"c".repeat(40)}`,
+  };
+  expect(gate({ runs: [raced] }).action).toBe("dispatch");
+  expect(gate({ runs: [{ ...raced, status: "in_progress", conclusion: null }] }).action).toBe(
+    "dispatch",
+  );
+  // Another pull request's run on the same commit does not count either.
+  expect(
+    gate({
+      runs: [{ ...run("completed", "success"), display_title: `Expensive tier of #7 at ${sha}` }],
+    }).action,
+  ).toBe("dispatch");
+  expect(isExpensiveTierOf(run("queued", null), 42, sha)).toBe(true);
 });
 
 test("a fork's pull request run reports ci/full from its test job", () => {
@@ -178,9 +196,7 @@ test("the gate workflow triggers on the reviews, the label, fork runs and by han
   const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"))!;
   expect(checkout.with!["ref"]).toBe("${{ github.event.repository.default_branch }}");
   expect(checkout.with!["persist-credentials"]).toBe(false);
-  expect(job.steps.filter((step) => step.run).map((step) => step.run)).toEqual([
-    "node scripts/ci-review-gate.mjs",
-  ]);
+  expect(job.steps.filter((step) => step.run)).toHaveLength(1);
 });
 
 test("the fast tier runs the changed tests and the tests named after changed sources, within its budget", () => {
@@ -277,7 +293,12 @@ test("the fast tier alone cannot turn the required test check green", () => {
 });
 
 test("a passing expensive tier re-runs the pull request run's test check on the same commit", () => {
-  const dispatch = { event: "workflow_dispatch", conclusion: "success", head_sha: sha };
+  const dispatch = {
+    event: "workflow_dispatch",
+    conclusion: "success",
+    head_sha: sha,
+    display_title: `Expensive tier of #42 at ${sha}`,
+  };
   const prRun = { head_sha: sha };
   const failedTest = { id: 7, name: "test", status: "completed", conclusion: "failure" };
   expect(testJobToRerun(dispatch, prRun, [failedTest])).toBe(failedTest);
@@ -286,4 +307,25 @@ test("a passing expensive tier re-runs the pull request run's test check on the 
   expect(testJobToRerun(dispatch, undefined, [failedTest])).toBeNull();
   expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, conclusion: "success" }])).toBeNull();
   expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, status: "in_progress" }])).toBeNull();
+  // A raced dispatch, titled with an older commit, and manual runs vouch for nothing.
+  expect(
+    testJobToRerun(
+      { ...dispatch, display_title: `Expensive tier of #42 at ${"c".repeat(40)}` },
+      prRun,
+      [failedTest],
+    ),
+  ).toBeNull();
+  expect(testJobToRerun({ ...dispatch, display_title: "CI" }, prRun, [failedTest])).toBeNull();
+});
+
+test("expensive-tier runs carry their pull request and commit in their title, and the gate skips until it is on main", () => {
+  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+    "run-name": string;
+  };
+  expect(ci["run-name"]).toBe(
+    "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs.pr, inputs.sha) || '' }}",
+  );
+  const run = gateWorkflow.jobs["gate"]!.steps.at(-1)!.run!;
+  expect(run).toContain("if [ ! -f scripts/ci-review-gate.mjs ]; then");
+  expect(run.trim().endsWith("node scripts/ci-review-gate.mjs")).toBe(true);
 });

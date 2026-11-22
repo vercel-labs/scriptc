@@ -1,4 +1,8 @@
 name: CI
+# A pull request's expensive tier names the commit its reviews passed on. The runs API reports no inputs, and a
+# dispatch that raced a push runs on the new head (and does nothing there), so ci-review-gate.yml tells the runs
+# of a commit's expensive tier apart by this title. Every other run keeps GitHub's default title.
+run-name: "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs.pr, inputs.sha) || '' }}"
 
 on:
   push:

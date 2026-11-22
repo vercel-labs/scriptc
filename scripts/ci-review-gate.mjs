@@ -71,7 +71,9 @@ export function decide({ mode, pr, repo, defaultBranch, reviewedSha, checkRuns, 
       );
   }
   const live = runs.find(
-    (run) => run.head_sha === sha && (run.status !== "completed" || run.conclusion === "success"),
+    (run) =>
+      isExpensiveTierOf(run, pr.number, sha) &&
+      (run.status !== "completed" || run.conclusion === "success"),
   );
   if (live)
     return skip(
@@ -91,6 +93,15 @@ export function staleRuns(runs, headSha) {
 }
 
 /**
+ * Whether a CI run is the expensive tier of pull request `number` on commit `sha`: ci.yml titles those runs
+ * "Expensive tier of #<pr> at <sha>". A dispatch whose branch moved on before it started runs on the new head
+ * with the old commit in its title, and it does nothing there, so it is not that commit's expensive tier.
+ */
+export function isExpensiveTierOf(run, number, sha) {
+  return run.head_sha === sha && run.display_title === `Expensive tier of #${number} at ${sha}`;
+}
+
+/**
  * The pull request run's test job to re-run after a dispatched expensive tier `run` ends: only when it passed,
  * the pull request run is on the same commit, and its test job finished without passing; else null.
  */
@@ -98,6 +109,9 @@ export function testJobToRerun(run, prRun, jobs) {
   if (run.event !== "workflow_dispatch" || run.conclusion !== "success" || prRun === undefined)
     return null;
   if (prRun.head_sha !== run.head_sha) return null;
+  // A dispatch that raced a push ran, and did nothing, on the new head: it vouches for no commit.
+  if (!/^Expensive tier of #\d+ at /.test(run.display_title ?? "")) return null;
+  if (!run.display_title.endsWith(` at ${run.head_sha}`)) return null;
   const test = jobs.find((job) => job.name === "test");
   if (test === undefined || test.status !== "completed" || test.conclusion === "success")
     return null;

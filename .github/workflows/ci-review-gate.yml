@@ -71,4 +71,10 @@ jobs:
       - name: Gate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/ci-review-gate.mjs
+        # Until this workflow's script is on the default branch (the pull request that adds it), there is no gate.
+        run: |
+          if [ ! -f scripts/ci-review-gate.mjs ]; then
+            echo "::notice::The default branch has no scripts/ci-review-gate.mjs yet; nothing to gate"
+            exit 0
+          fi
+          node scripts/ci-review-gate.mjs

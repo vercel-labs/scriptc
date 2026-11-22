@@ -1637,6 +1637,29 @@ export function lowerHistogramMethodCall(
     const comparison = lowerHistogramComparison(lowerer, expr, access, name, loc);
     if (comparison !== null) return comparison;
   }
+  if (
+    (name === "linearBuckets" && args.length <= 1) ||
+    (name === "logBuckets" && args.length <= 2)
+  ) {
+    if (args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`Histogram.${name} with spread arguments`, expr);
+    }
+    const expected = name === "logBuckets" ? 2 : 1;
+    const lowered = args.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+    while (lowered.length < expected) lowered.push(dynUndefinedExpr(loc));
+    /* The interval histogram's own bucket layout answers through the
+     * runtime's count builder (the Recordable view builders read a
+     * RecordableHistogram's view); Node answers both classes. */
+    return histoBucketMap(
+      lowerer,
+      expr,
+      name === "linearBuckets" ? "linear" : "log",
+      handle(),
+      lowered,
+      lowerer.mapTypeOf(lowerer.typeOf(expr)) ?? mapOf(F64, F64),
+      loc,
+    );
+  }
   lowerer.noLowering(
     `IntervalHistogram.${name}`,
     expr,
@@ -2039,6 +2062,124 @@ function histoPercentilesMap(
   return { kind: "call", callee: helper, args: [handle], type: result, loc };
 }
 
+/** linearBuckets(stepSize) / logBuckets(firstBucket, base): the runtime
+ * validates each argument with Node's messages and rebuilds the bucket
+ * view, then the lifted helper stores each (boundary, count) pair in Node's
+ * Map order. */
+function histoBucketMap(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  kind: "linear" | "log",
+  handle: IrExpr,
+  args: IrExpr[],
+  result: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  if (result.kind !== "map") lowerer.noLowering(`Histogram.${kind}Buckets`, node);
+  const key = `perf.histo${kind}Buckets:${typeKey(result)}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, `%perf.histo${kind}Buckets`, key);
+    lowerer.valueHelpers.set(key, helper);
+    const h = varRef("h.0", DYN, loc);
+    const a = varRef("a.0", F64, loc);
+    const b = varRef("b.0", F64, loc);
+    const n = varRef("n.0", F64, loc);
+    const i = varRef("i.0", F64, loc);
+    const out = varRef("out.0", result, loc);
+    const call = (fn: IrLibFn, type: IrType, ...callArgs: IrExpr[]): IrExpr => ({
+      kind: "libCall",
+      fn,
+      args: callArgs,
+      type,
+      loc,
+    });
+    const params = [{ localId: "h.0", name: "h", type: DYN }];
+    const locals = [
+      { id: "h.0", name: "h", type: DYN, mutable: false },
+      { id: "a.0", name: "a", type: F64, mutable: false },
+      { id: "n.0", name: "n", type: F64, mutable: false },
+      { id: "out.0", name: "out", type: result, mutable: false },
+      { id: "i.0", name: "i", type: F64, mutable: true },
+    ] as { id: string; name: string; type: IrType; mutable: boolean }[];
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: "a.0",
+        init: call(
+          "perf.histoBucketArg",
+          F64,
+          varRef("a0.0", DYN, loc),
+          numLit(kind === "linear" ? 0 : 1, loc),
+        ),
+        loc,
+      },
+    ];
+    locals.push({ id: "a0.0", name: "a0", type: DYN, mutable: false });
+    params.push({ localId: "a0.0", name: "a0", type: DYN });
+    let countArgs: IrExpr[] = [h, a];
+    if (kind === "log") {
+      params.push({ localId: "b0.0", name: "b0", type: DYN });
+      locals.push({ id: "b0.0", name: "b0", type: DYN, mutable: false });
+      locals.push({ id: "b.0", name: "b", type: F64, mutable: false });
+      body.push({
+        kind: "varDecl",
+        localId: "b.0",
+        init: call("perf.histoBucketArg", F64, varRef("b0.0", DYN, loc), numLit(2, loc)),
+        loc,
+      });
+      countArgs = [h, a, b];
+    }
+    body.push(
+      {
+        kind: "varDecl",
+        localId: "n.0",
+        init: call(
+          kind === "linear" ? "perf.histoLinearBucketsCount" : "perf.histoLogBucketsCount",
+          F64,
+          ...countArgs,
+        ),
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "mapNew", type: result, loc },
+        loc,
+      },
+      {
+        kind: "for",
+        init: { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+        cond: { kind: "bin", op: "<", left: i, right: n, type: BOOL, loc },
+        update: {
+          kind: "assign",
+          localId: "i.0",
+          value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc },
+          loc,
+        },
+        body: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "mapIntrinsic",
+              method: "set",
+              receiver: out,
+              args: [call("perf.histoBucketsKey", F64, i), call("perf.histoBucketsValue", F64, i)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+      { kind: "return", value: out, loc },
+    );
+    lowerer.liftedFns.push({ name: helper, params, returnType: result, locals, body, loc });
+  }
+  return { kind: "call", callee: helper, args: [handle, ...args], type: result, loc };
+}
+
 /** A Map built from one of the histogram's bucket views. The runtime's view
  * builder runs Node's hdr iteration (and validates the call's arguments)
  * and leaves the pairs in the histogram's view; the helper copies each pair
@@ -2363,20 +2504,24 @@ export function lowerRecordableHistogramMethodCall(
     };
   }
   if (
-    (name === "linearBuckets" && args.length === 1) ||
-    (name === "logBuckets" && args.length === 2) ||
+    (name === "linearBuckets" && args.length <= 1) ||
+    (name === "logBuckets" && args.length <= 2) ||
     (name === "percentilesAt" && args.length === 1)
   ) {
     if (args.some(ts.isSpreadElement)) {
       lowerer.noLowering(`Histogram.${name} with spread arguments`, call);
     }
-    // The runtime validates each argument the way Node's JS wrapper does.
+    // The runtime validates each argument the way Node's JS wrapper does; a
+    // missing argument is the undefined the validation reports.
+    const expected = name === "logBuckets" ? 2 : 1;
+    const lowered = args.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+    while (lowered.length < expected) lowered.push(dynUndefinedExpr(loc));
     const result = lowerer.mapTypeOf(lowerer.typeOf(call)) ?? mapOf(F64, F64);
     return histoViewMap(
       lowerer,
       call,
       handle(),
-      args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      lowered,
       name === "linearBuckets"
         ? "perf.histoLinearView"
         : name === "logBuckets"

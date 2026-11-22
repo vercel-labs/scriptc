@@ -44826,6 +44826,7 @@
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/6491-events-once-streams.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs",
           "tests/corpus/emitter-surface.ts",
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/event-target-surface.ts",
@@ -46711,7 +46712,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'newListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -46737,7 +46739,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'removeListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -63800,6 +63803,7 @@
           "tests/corpus/compat-http2-state.mjs",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -66039,10 +66043,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.http2stream.pushStream",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.http2stream.pushStream"
       },
       "anchorSource": "exact"
     },
@@ -66091,10 +66092,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFD",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66117,10 +66118,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respondWithFile",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-respond-with-file/main.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66171,10 +66172,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-feature:http2.pushAllowed",
-        "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
-        ]
+        "evidence": "compiler-feature:http2.pushAllowed"
       },
       "anchorSource": "ancestor"
     },
@@ -76808,6 +76806,8 @@
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-chaining-dyn.cjs",
           "tests/corpus/net-socket-chaining.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs",
+          "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
@@ -77461,7 +77461,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -77581,7 +77583,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78055,7 +78059,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78105,7 +78111,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78133,7 +78141,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78204,7 +78214,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78232,7 +78244,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78350,7 +78364,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -78441,7 +78457,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79254,7 +79272,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79357,7 +79377,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -79435,7 +79457,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -81148,6 +81172,7 @@
           "tests/corpus/5215-perf-timing-validation.js",
           "tests/corpus/6397-event-loop-metrics.ts",
           "tests/corpus/9976-timerify.js",
+          "tests/corpus/9977-histogram-bucket-helpers.js",
           "tests/corpus/9990-histogram-comparison.ts",
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9994-histogram-short-lived.ts",
@@ -81159,6 +81184,8 @@
           "tests/corpus/compat-js-value-reads.mjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
+          "tests/corpus/net-socket-construct-dyn.cjs",
+          "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
@@ -81495,7 +81522,9 @@
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs"
+          "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-construct.ts",
+          "tests/corpus/net-socket-construct-dyn.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -83426,7 +83455,7 @@
         "status": "supported",
         "evidence": "compiler-feature:perf_hooks.histogram.linearBuckets",
         "tests": [
-          "tests/corpus/perf-histogram-ewma.ts"
+          "tests/corpus/9977-histogram-bucket-helpers.js"
         ]
       },
       "anchorSource": "exact"
@@ -83452,7 +83481,7 @@
         "status": "supported",
         "evidence": "compiler-feature:perf_hooks.histogram.logBuckets",
         "tests": [
-          "tests/corpus/perf-histogram-ewma.ts"
+          "tests/corpus/9977-histogram-bucket-helpers.js"
         ]
       },
       "anchorSource": "exact"

@@ -289,6 +289,16 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* node:cluster's internal protocol messages ({ cmd: "NODE_CLUSTER" })
+ * travel on the same channel as user messages but are delivered to the
+ * cluster unit instead of the program's 'message' listeners. The hooks are
+ * installed once by scr_cluster_init; without them every message is a user
+ * message, so a program that never names cluster keeps this unit's default
+ * path. */
+typedef bool (*ScrClusterIsInternalFn)(const ScrDyn *message);
+typedef void (*ScrClusterDispatchFn)(ScrChild *child, ScrDyn *message);
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch);
 /* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
  * child (whose entry is null), as Node's own stdio array reports. */
 double scr_child_stdio_len(ScrChild *c);

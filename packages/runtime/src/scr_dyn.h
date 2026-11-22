@@ -265,6 +265,7 @@ typedef enum {
   Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
   Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
+  Y(CLUSTER_WORKER) /* node:cluster worker handle (scr_cluster.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \

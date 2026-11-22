@@ -811,6 +811,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
         return captureRejectionSymbolValue(loc);
       }
+      // node:cluster: a named import reads the same runtime values the
+      // namespace member does (isPrimary/isWorker/isMaster, the policy,
+      // settings/workers/worker).
+      if (bi.module === "cluster") {
+        const value = lowerer.clusterMemberValue(bi.member, loc);
+        if (value) return value;
+      }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);
       // `import { posix, win32 } from "node:path"` as VALUES: the platform

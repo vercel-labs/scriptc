@@ -5324,7 +5324,23 @@ export function buildMain(lowerer: Lowerer): IrFunction {
     ];
   };
   const locals = [] as IrFunction["locals"];
-  if (lowerer.forkTargets.length === 0) {
+  // A cluster program always uses the dispatch: cluster.fork() restarts the
+  // artifact with target -1, which selects the entry module itself. The
+  // dispatch also initializes the inherited IPC channel, so cluster.init
+  // (which sends the worker's 'online' act over it) runs after it, at the
+  // top of the entry branch.
+  const clusterInit: IrStmt[] = lowerer.clusterUsed
+    ? [
+        {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "cluster.init", args: [], type: VOID, loc },
+          loc,
+        },
+      ]
+    : [];
+  const entryBranch: IrStmt[] = [...clusterInit, ...callRoot(lowerer.entry)];
+  const dispatch = lowerer.forkTargets.length > 0 || lowerer.clusterUsed;
+  if (!dispatch) {
     body.push(...callRoot(lowerer.entry));
   } else {
     const targetId = "%forkTarget.0";
@@ -5342,6 +5358,23 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
     const selector = (): IrExpr => ({ kind: "varRef", localId: targetId, type: F64, loc });
+    if (lowerer.forkTargets.length === 0) {
+      // Cluster only: -1 is the entry, and no other target exists.
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "<",
+          left: selector(),
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: entryBranch,
+        else_: null,
+        loc,
+      });
+    }
     let workerBranch: IrStmt[] | null = null;
     for (let id = lowerer.forkTargets.length - 1; id >= 0; id--) {
       workerBranch = [
@@ -5361,20 +5394,22 @@ export function buildMain(lowerer: Lowerer): IrFunction {
         },
       ];
     }
-    body.push({
-      kind: "if",
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: selector(),
-        right: { kind: "numLit", value: 0, type: F64, loc },
-        type: BOOL,
+    if (lowerer.forkTargets.length > 0) {
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "<",
+          left: selector(),
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: entryBranch,
+        else_: workerBranch,
         loc,
-      },
-      then: callRoot(lowerer.entry),
-      else_: workerBranch,
-      loc,
-    });
+      });
+    }
   }
   // `--define`: the program runs as if started with the defined variables
   // set, so every read of the environment, and each child process, agrees

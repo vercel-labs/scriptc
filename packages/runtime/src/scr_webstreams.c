@@ -1187,7 +1187,15 @@ static void ws_pull_fulfilled(void *ctx, ScrDyn *value) {
   c->pulling = false;
   if (c->pull_again) {
     c->pull_again = false;
-    ws_queue_microtask(ws_pull_again_step, ws_rcontroller_retain(c));
+    if (c->native) {
+      /* A native source answers inside the pull; pulling again in this stack
+       * would recurse once per queued read. */
+      ws_queue_microtask(ws_pull_again_step, ws_rcontroller_retain(c));
+    } else {
+      /* A program's pull algorithm settles through its promise reaction, as
+       * the specification's ordering has it. */
+      ws_rcontroller_call_pull_if_needed(c);
+    }
   }
 }
 

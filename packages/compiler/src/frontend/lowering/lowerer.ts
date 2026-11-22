@@ -21835,6 +21835,10 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return void f()`: the sequence runs its effect and JS returns
+      // undefined, so its statements become the tail of the block.
+      if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
+        return { kind: "block", body: [...e.stmts, { kind: "return", value: null, loc }], loc };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {

@@ -2466,10 +2466,14 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
     return { kind: "toBool", operand: e, type: BOOL, loc: e.loc };
   }
   // Bare unit values (undefined/null literals, the capability-probe
-  // reads that answer them): ToBoolean is constantly false. Units have
-  // no effectful producers, so folding the read away loses nothing.
+  // reads that answer them): ToBoolean is constantly false. A sequence
+  // still runs its effects (`Boolean(void f())` calls f), so only its
+  // result folds.
   if (isUnitType(e.type)) {
-    return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const folded: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    if (e.kind === "seqExpr")
+      return { kind: "seqExpr", stmts: e.stmts, result: folded, type: BOOL, loc: e.loc };
+    return folded;
   }
   // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
   // JavaScript source, tsc-codes.ts TS1345): the row admits only operands

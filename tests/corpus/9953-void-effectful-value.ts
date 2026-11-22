@@ -12,4 +12,8 @@ function early(flag: boolean): number | undefined {
   return touch(2)
 }
 const held: number | undefined = void touch(3)
-console.log(early(true), early(false), held, calls)
+report()
+console.log(early(true), early(false), held, Boolean(void touch(4)), calls)
+function report(): void {
+  return void touch(5)
+}

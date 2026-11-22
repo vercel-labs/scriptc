@@ -20478,6 +20478,16 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       scr_dyn_class_reflection_fence(current);
       return NULL;
     }
+    if (current->kind == SCR_DYN_HANDLE) {
+      /* A native handle answers through its class (the ops' getters, its
+       * methods as values and its prototype members). An island object keeps
+       * its members in Node and takes the paths below. */
+      if (scr_ni_dyn_handle(current)) break;
+      ScrStr *name = scr_str_new(key, key_len);
+      ScrDyn *value = scr_dyn_handle_key_get(current, name);
+      scr_str_release(name);
+      return value;
+    }
     if (current->kind == SCR_DYN_FUNC) {
       /* A class with no static property table answers name and length and
        * refuses every other key (scr_dyn_fn_get), as a keyed read does: an

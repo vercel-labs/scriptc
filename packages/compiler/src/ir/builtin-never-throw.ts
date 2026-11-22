@@ -23,6 +23,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // those are MAY_THROW.)
   "perf.histoStat",
   "perf.histoStatBig",
+  "perf.histoEwma",
   "perf.histoPercentile",
   "perf.histoPercentileBig",
   "perf.histoMeanCI",
@@ -36,12 +37,21 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "perf.histoPercentilesCount",
   "perf.histoPercentilesKey",
   "perf.histoPercentilesValue",
+  "perf.histoBucketsKey",
+  "perf.histoBucketsValue",
+  "dyn.moduleClassValue",
+  "perf.histoPercentilesValueBig",
   "perf.histoDispose",
+  "perf.slidingReset",
   // scr_test_ctx_signal reads the test's AbortSignal handle; creating the
   // controller runs no program code and raises no catchable error.
   "test.ctxSignal",
   // scr_test_ctx_log writes the ℹ line at once; printing cannot raise.
   "test.ctxLog",
+  // scr_test_ctx_assert_touch copies the custom-assertion registry (plain
+  // objects and functions) into the context's snapshot; it runs no program
+  // code and raises no catchable error.
+  "test.ctxAssertTouch",
   // scr_test_ctx_tags answers the cached frozen tag array; building it on the
   // first read copies the tag strings and allocates, running no program code.
   "test.ctxTags",
@@ -418,4 +428,9 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   // code and raising no catchable error.
   "error.prepareStackTraceGet",
   "error.prepareStackTraceSet",
+  // socket.timeout and socket.allowHalfOpen (scr_net.c): both getters read
+  // the socket's own state — the stored timeout and the constructor's
+  // half-open option — running no program code and raising nothing.
+  "net.sockTimeoutGet",
+  "net.sockAllowHalfOpen",
 ]);

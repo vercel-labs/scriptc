@@ -145,7 +145,7 @@ declare module "http" {
     appendHeader(name: string, value: string | readonly string[]): void;
     /* Node's OutgoingMessage.setHeaders: a Map (or Headers object) of
      * names to values, set-cookie's values kept as one array. */
-    setHeaders(headers: ReadonlyMap<string, string | readonly string[]>): void;
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): this;
     getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
@@ -252,12 +252,28 @@ declare module "http" {
       socketPath?: string;
       [option: string]: unknown;
     }): string;
+    /* 'lifo' by default; a plain property, so an assignment is kept as
+     * given (the constructor validates its own option). */
+    scheduling: "fifo" | "lifo";
     /* The keep-alive hooks the agent's pool runs: the socket is kept alive
      * with the agent's keepAliveMsecs and unref'd (answering true), then
      * referenced again for the next request. The dial hook,
      * createConnection, is not supported. */
     keepSocketAlive(socket: Socket): boolean;
     reuseSocket(socket: Socket, request: ClientRequest): void;
+    /* Node's default dialer, net.createConnection: the options record and the
+     * trailing connect listener dial one connection. */
+    createConnection(
+      options: {
+        port?: number;
+        host?: string;
+        path?: string;
+        localAddress?: string;
+        family?: number;
+        [option: string]: unknown;
+      },
+      connectListener?: () => void,
+    ): Socket;
     maxSockets: number;
     maxFreeSockets: number;
     /* Node's cap across every name: requests queue once the agent's live

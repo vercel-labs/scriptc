@@ -4045,6 +4045,21 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Per module some namespace import reads, the export members its
+   * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
+   * takes the values the module's exports held when the first ESM module
+   * imported it, and the live slot its writes keep updating. Node builds a
+   * CommonJS module's namespace object at that import, not when the module
+   * finished evaluating (a require-and-mutate can come between), so a
+   * namespace read observes the snapshot slot. Registered before any init
+   * lowers (collectProgram), filled by the first importing module's init. */
+  readonly cjsNamespaceMemberSnapshots = new Map<
+    ts.SourceFile,
+    Map<string, { snapshot: IrGlobal; source: IrGlobal }>
+  >();
+  /** Per namespace-imported module, the flag its snapshot copy sets so a
+   * later importer keeps the first snapshot instead of replacing it. */
+  readonly cjsNamespaceSnapshotTakenGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -5484,6 +5499,12 @@ export class Lowerer {
     ts.SourceFile,
     { global: IrGlobal; loadedId: string; build: () => IrExpr }
   >();
+  /** `module.builtinModules` as a value: one frozen string[] global per
+   * program (builtinModulesValue), so every read — the named binding, the
+   * namespace member, the boxed namespace and a dynamic import — answers
+   * the same array, as Node answers one frozen array. A journaled table, so
+   * a replayed unit keeps the same global. */
+  readonly builtinModulesEntry = new Map<string, { global: IrGlobal; loadedId: string }>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -6483,6 +6504,7 @@ export class Lowerer {
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
       checkedTable("importMetaObjects", () => this.importMetaObjects.size),
+      checkedTable("builtinModulesEntry", () => this.builtinModulesEntry.size),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
@@ -6777,6 +6799,8 @@ export class Lowerer {
     // program's modules (registered before lowering begins), and the memo is
     // a cache of that detection.
     "cjsRuntimeExportSnapshotGlobals",
+    "cjsNamespaceMemberSnapshots",
+    "cjsNamespaceSnapshotTakenGlobals",
     "cjsRuntimeRequireBindings",
     "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
@@ -9555,6 +9579,50 @@ export class Lowerer {
    * ESM default import of it binds — or null for every other module. */
   cjsRuntimeExportSnapshotOf(dep: ts.SourceFile): IrGlobal | null {
     return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
+  }
+
+  /** The stores that fill a module's namespace-member snapshot slots
+   * (`cjsNamespaceMemberSnapshots`) from its live export storage. */
+  cjsNamespaceSnapshotStores(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const slots = this.cjsNamespaceMemberSnapshots.get(dep);
+    if (slots === undefined) return [];
+    const stores: IrStmt[] = [];
+    for (const { snapshot, source } of slots.values()) {
+      stores.push({
+        kind: "assign",
+        localId: snapshot.id,
+        value: { kind: "varRef", localId: source.id, type: source.type, loc },
+        loc,
+      });
+    }
+    return stores;
+  }
+
+  /** The guarded copy an ESM link to CommonJS module `dep` emits right after
+   * `dep`'s initializer runs: the first link copies the namespace snapshot
+   * from `dep`'s current exports and sets the flag later links check. Node
+   * builds the namespace object at the first ESM import, so a dependency a
+   * require mutated before that import is what the namespace shows. */
+  cjsNamespaceSnapshotLinkStmts(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const stores = this.cjsNamespaceSnapshotStores(dep, loc);
+    const taken = this.cjsNamespaceSnapshotTakenGlobals.get(dep);
+    if (stores.length === 0 || taken === undefined) return [];
+    return [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: taken.id, type: taken.type, loc },
+          right: numLit(0, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [...stores, { kind: "assign", localId: taken.id, value: numLit(1, loc), loc }],
+        else_: null,
+        loc,
+      },
+    ];
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots
@@ -25398,10 +25466,10 @@ export class Lowerer {
     }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    // module.builtinModules through a namespace binding — the baked
-    // Node v24 list, a fresh string[] per read.
+    // module.builtinModules through a namespace binding — the baked Node v24
+    // list as Node's one frozen array.
     if (bi.module === "module" && bi.member === "builtinModules") {
-      return builtinModulesArrayLit(loc);
+      return this.builtinModulesValue(loc);
     }
     if (bi.module === "http" && bi.member === "METHODS") {
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
@@ -25506,6 +25574,17 @@ export class Lowerer {
    * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
    * are only dispatch sentinels for call-site-specific lowering. */
+  /** Module members Node exposes as a class: an ordinary function with its
+   * own prototype object. The value is the runtime's one-per-(module, name)
+   * class value, so `constructor` identity and `instanceof` compare one
+   * object. Values are the class's `length`. */
+  private static readonly MODULE_CLASS_VALUES: ReadonlyMap<string, number> = new Map([
+    ["http.IncomingMessage", 1],
+    ["http.ServerResponse", 2],
+    ["http2.Http2ServerRequest", 4],
+    ["http2.Http2ServerResponse", 2],
+  ]);
+
   lowerBuiltinCallableValue(bi: { module: string; member: string }, loc: SrcLoc): IrExpr | null {
     const assertion = assertFunctionValue(bi, loc);
     if (assertion) return assertion;
@@ -25533,8 +25612,236 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    if (bi.module === "module" && bi.member === "isBuiltin")
+      return this.lowerModuleIsBuiltinValue(loc);
+    if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
+      return this.lowerModuleSyncBuiltinValue(loc);
+    const classArity = Lowerer.MODULE_CLASS_VALUES.get(`${bi.module}.${bi.member}`);
+    if (classArity !== undefined) {
+      return {
+        kind: "libCall",
+        fn: "dyn.moduleClassValue",
+        args: [
+          { kind: "strLit", value: bi.module, type: STRING, loc },
+          { kind: "strLit", value: bi.member, type: STRING, loc },
+          numLit(classArity, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** `module.isBuiltin` as a value: Node's function that answers whether a
+   * module name is a builtin. A direct call folds a literal at build time; a
+   * held value is a real function over the same rule — the runtime
+   * canonicalises the id against the baked list (scr_process_builtin_id),
+   * and an empty answer means "not a builtin". Node's name and length ride
+   * on the value. */
+  lowerModuleIsBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.isBuiltin";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "isBuiltin");
+      this.builtinCallableValueLengths.set(fnName, 1);
+      const input = { localId: "input", name: "input", type: DYN };
+      const inputLocal = { id: "input", name: "input", type: DYN, mutable: false };
+      const id = { id: "id", name: "id", type: STRING, mutable: false };
+      this.liftedFns.push({
+        name: fnName,
+        params: [input],
+        returnType: BOOL,
+        locals: [inputLocal, id],
+        body: [
+          {
+            kind: "if",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: {
+                kind: "libCall",
+                fn: "dyn.typeof",
+                args: [varRef(inputLocal.id, DYN, loc)],
+                type: STRING,
+                loc,
+              },
+              right: { kind: "strLit", value: "string", type: STRING, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "varDecl",
+                localId: id.id,
+                init: {
+                  kind: "libCall",
+                  fn: "process.builtinId",
+                  args: [varRef(inputLocal.id, DYN, loc), builtinModulesArrayLit(loc)],
+                  type: STRING,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "return",
+                value: {
+                  kind: "strEq",
+                  negated: true,
+                  left: varRef(id.id, STRING, loc),
+                  right: { kind: "strLit", value: "", type: STRING, loc },
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: { kind: "boolLit", value: false, type: BOOL, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [DYN], ret: BOOL },
+        loc,
+      },
+      fnName: "isBuiltin",
+      fnLength: 1,
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** `module.syncBuiltinESMExports` as a value: the statement form refreshes
+   * the events module's ES module namespace copy of defaultMaxListeners; a
+   * held value calls the same runtime refresh and answers undefined, as
+   * Node's function does. */
+  lowerModuleSyncBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.syncBuiltinESMExports";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "syncBuiltinESMExports");
+      this.builtinCallableValueLengths.set(fnName, 0);
+      this.liftedFns.push({
+        name: fnName,
+        params: [],
+        returnType: VOID,
+        locals: [],
+        body: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "emitter.esmSync", args: [], type: VOID, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [], ret: VOID },
+        loc,
+      },
+      fnName: "syncBuiltinESMExports",
+      fnLength: 0,
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** `module.builtinModules` as a value: Node answers one frozen array
+   * (Object.isFrozen is true and every read is the same array). The first
+   * read builds the baked Node v24 list into a program global and freezes
+   * it; every later read — the named binding, the namespace member read, the
+   * boxed namespace, and a dynamic import's member — answers that array. */
+  builtinModulesValue(loc: SrcLoc): IrExpr {
+    const entryKey = "%g.builtinModules";
+    let entry = this.builtinModulesEntry.get(entryKey);
+    if (entry === undefined) {
+      const id = "%g.builtinModules";
+      const loadedId = "%g.builtinModules%loaded";
+      const global: IrGlobal = {
+        id,
+        name: "%builtinModules",
+        type: arrayOf(STRING),
+        mutable: true,
+      };
+      this.globalsList.push(global, { id: loadedId, name: "%loaded", type: BOOL, mutable: true });
+      entry = { global, loadedId };
+      this.builtinModulesEntry.set(entryKey, entry);
+    }
+    const arrayType = arrayOf(STRING);
+    const slot = this.declareHiddenLocal("%builtinModules", arrayType);
+    const built: IrExpr = {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: slot.id, init: builtinModulesArrayLit(loc), loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "array.freeze",
+            args: [varRef(slot.id, arrayType, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: varRef(slot.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "if",
+          cond: {
+            kind: "unary",
+            op: "!",
+            operand: { kind: "varRef", localId: entry.loadedId, type: BOOL, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "assign",
+              localId: entry.loadedId,
+              value: { kind: "boolLit", value: true, type: BOOL, loc },
+              loc,
+            },
+            { kind: "assign", localId: entry.global.id, value: built, loc },
+          ],
+          else_: null,
+          loc,
+        },
+      ],
+      result: varRef(entry.global.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
   }
 
   /** One builtin module member as a value BY NAME (no expression node): the
@@ -25549,7 +25856,7 @@ export class Lowerer {
     const bi = { module, member };
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

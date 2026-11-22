@@ -83,6 +83,11 @@ static bool scr_dyn_class_reflection_fence(const ScrDyn *value) {
 
 /* Set by scr_node_island_handle.c in programs that link the island units. */
 const ScrNiDynOps *scr_ni_dyn_ops = NULL;
+/* Set by the perf histogram unit the first time a thread builds a bucket
+ * map: frees that thread's view as a worker thread exits (scr_worker.c reads
+ * it). Defined here, in the unit every program links, so a program using
+ * histograms without the worker unit still links. */
+SCR_TL void (*scr_worker_bucket_exit)(void) = NULL;
 /* Set by scr_dyn_handle_class.c in programs with handle classes (web streams). */
 const ScrDynHandleClassOps *scr_dyn_handle_class_ops = NULL;
 /* Set by scr_module_namespace_dyn.c when this thread boxes a module
@@ -3200,6 +3205,13 @@ static const char *const scr_error_ctor_names[] = {
 #define SCR_ERROR_CTORS (sizeof scr_error_ctor_names / sizeof scr_error_ctor_names[0])
 static SCR_TL ScrDyn *scr_error_ctor_values[SCR_ERROR_CTORS];
 static SCR_TL bool scr_error_ctors_registered;
+/* SystemError's NodeError class as a value (its `constructor`). */
+static SCR_TL ScrDyn *scr_node_error_ctor;
+static void scr_node_error_ctor_cleanup(void) {
+  ScrDyn *ctor = scr_node_error_ctor;
+  scr_node_error_ctor = NULL;
+  scr_dyn_release(ctor);
+}
 
 static void scr_error_ctors_cleanup(void) {
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
@@ -3348,6 +3360,168 @@ ScrDyn *scr_dyn_error_prototype(void) {
     scr_atexit(scr_builtin_error_prototype_cleanup);
   }
   return scr_dyn_retain(scr_builtin_error_prototype);
+}
+
+/* ── Node module class values (http.IncomingMessage, …) ────────────────
+ * A module's class member read as a value is an ordinary function carrying
+ * the prototype object Node's class has: one value per (module, name) per
+ * program, so `req.constructor === http.IncomingMessage` and `instanceof`
+ * compare one identity. Calling one without `new` refuses as Node's classes
+ * do. */
+typedef struct {
+  const char *module; /* compiler-emitted literals: program lifetime */
+  const char *name;
+  ScrDyn *value; /* owned until exit */
+} ScrBuiltinClassEntry;
+/* Per-worker, like every other dyn cache: a worker's class values are its own
+ * objects, and its exit stack drains the entries it registered. */
+static SCR_TL ScrBuiltinClassEntry *scr_builtin_class_entries;
+static SCR_TL size_t scr_builtin_class_count, scr_builtin_class_capacity;
+
+static void scr_builtin_class_cleanup(void) {
+  for (size_t i = 0; i < scr_builtin_class_count; i++)
+    scr_dyn_release(scr_builtin_class_entries[i].value);
+  free(scr_builtin_class_entries);
+  scr_builtin_class_entries = NULL;
+  scr_builtin_class_count = scr_builtin_class_capacity = 0;
+}
+
+static ScrDyn *scr_builtin_class_construct_refusal(ScrClosure *closure, ScrDyn *const *args,
+                                                   size_t argc) {
+  (void)args;
+  (void)argc;
+  const char *name = closure->fn ? (const char *)closure->fn : "";
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Class constructor ");
+  scr_jb_puts(&message, name);
+  scr_jb_puts(&message, " cannot be invoked without 'new'");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return NULL;
+}
+
+static ScrDynHandleTag scr_builtin_class_tag(const char *module, const char *name) {
+  if (strcmp(module, "http") == 0) {
+    if (strcmp(name, "IncomingMessage") == 0) return SCR_DYNH_HTTP_REQ;
+    if (strcmp(name, "ServerResponse") == 0) return SCR_DYNH_HTTP_RES;
+  }
+  return SCR_DYNH_CAPACITY;
+}
+typedef struct {
+  ScrDynHandleTag tag;
+  ScrDyn *prototype; /* owned until exit */
+} ScrBuiltinClassTag;
+static SCR_TL ScrBuiltinClassTag scr_builtin_class_tags[8];
+static SCR_TL size_t scr_builtin_class_ntags;
+static void scr_builtin_class_tags_cleanup(void) {
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    scr_dyn_release(scr_builtin_class_tags[i].prototype);
+  scr_builtin_class_ntags = 0;
+}
+static void scr_builtin_class_register_tag(ScrDynHandleTag tag, ScrDyn *prototype) {
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    if (scr_builtin_class_tags[i].tag == tag) return;
+  if (scr_builtin_class_ntags == sizeof scr_builtin_class_tags / sizeof scr_builtin_class_tags[0])
+    return;
+  if (scr_builtin_class_ntags == 0) scr_atexit(scr_builtin_class_tags_cleanup);
+  scr_builtin_class_tags[scr_builtin_class_ntags++] =
+      (ScrBuiltinClassTag){tag, scr_dyn_retain(prototype)};
+}
+/* The class a handle tag belongs to, as the module class value that names it
+ * (the pair scr_builtin_class_tag maps from). */
+static bool scr_builtin_class_tag_pair(ScrDynHandleTag tag, const char **module,
+                                       const char **name, double *arity) {
+  if (tag == SCR_DYNH_HTTP_REQ) {
+    *module = "http";
+    *name = "IncomingMessage";
+    *arity = 1;
+    return true;
+  }
+  if (tag == SCR_DYNH_HTTP_RES) {
+    *module = "http";
+    *name = "ServerResponse";
+    *arity = 2;
+    return true;
+  }
+  return false;
+}
+
+static ScrDyn *scr_builtin_class_prototype_of_tag(ScrDynHandleTag tag) { /* +1 */
+  for (size_t i = 0; i < scr_builtin_class_ntags; i++)
+    if (scr_builtin_class_tags[i].tag == tag) return scr_dyn_retain(scr_builtin_class_tags[i].prototype);
+  return NULL;
+}
+
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity);
+
+/* The tag's class prototype, creating the class value (which registers it)
+ * when the program has not read the class yet: an instance's `constructor`
+ * read before `http.IncomingMessage` must answer the same value. */
+static ScrDyn *scr_builtin_class_prototype_for_tag(ScrDynHandleTag tag) { /* +1 */
+  ScrDyn *prototype = scr_builtin_class_prototype_of_tag(tag);
+  if (prototype != NULL) return prototype;
+  const char *module = NULL, *name = NULL;
+  double arity = 0;
+  if (!scr_builtin_class_tag_pair(tag, &module, &name, &arity)) return NULL;
+  /* The tag pair's own literals are program-lifetime, like the compiler's
+   * class reads, so nothing is allocated that outlives the call. */
+  ScrDyn *value = scr_builtin_class_make(module, name, arity);
+  scr_dyn_release(value);
+  return scr_builtin_class_prototype_of_tag(tag);
+}
+
+
+/* `module` and `name` are immortal program-lifetime literals: the registry
+ * entries and the function name borrow them, which is why both the
+ * compiler-emitted class reads (its string literals) and the tag pair's own
+ * literals may pass them here. */
+static ScrDyn *scr_builtin_class_make(const char *module, const char *name, double arity) {
+  for (size_t i = 0; i < scr_builtin_class_count; i++) {
+    const ScrBuiltinClassEntry *entry = &scr_builtin_class_entries[i];
+    if (strcmp(entry->module, module) == 0 && strcmp(entry->name, name) == 0)
+      return scr_dyn_retain(entry->value);
+  }
+  ScrDyn *value = scr_dyn_new_func(scr_closure_new((void *)name, 0),
+                                   scr_builtin_class_construct_refusal, (uint32_t)arity,
+                                   "builtin-class", name);
+  /* A function's own prototype object: hidden constructor, writable
+   * prototype, as Node's classes carry. */
+  ScrDyn *prototype = scr_dyn_new_obj();
+  scr_dyn_obj_set(prototype, "constructor", 11, scr_dyn_retain(value));
+  for (size_t i = 0; i < (size_t)prototype->v.obj.len; i++)
+    scr_dyn_obj_dict_entries(prototype)[i].enumerable = false;
+  ScrDynHandleTag tag = scr_builtin_class_tag(module, name);
+  if (tag != SCR_DYNH_CAPACITY) scr_builtin_class_register_tag(tag, prototype);
+  scr_dyn_fn_seed_prototype(value, prototype);
+  ScrDyn *table = scr_dyn_function_properties(value);
+  if (table != NULL) {
+    ScrDynEntry *entries = scr_dyn_obj_dict_entries(table);
+    for (size_t i = 0; i < (size_t)table->v.obj.len; i++) {
+      if (entries[i].key != NULL && entries[i].key_len == 9 &&
+          memcmp(entries[i].key, "prototype", 9) == 0)
+        entries[i].writable = true;
+    }
+    scr_dyn_release(table);
+  }
+  if (scr_builtin_class_count == scr_builtin_class_capacity) {
+    size_t capacity = scr_builtin_class_capacity ? scr_builtin_class_capacity * 2 : 8;
+    ScrBuiltinClassEntry *grown =
+        realloc(scr_builtin_class_entries, capacity * sizeof *grown);
+    if (grown == NULL) {
+      scr_dyn_release(value);
+      return NULL;
+    }
+    scr_builtin_class_entries = grown;
+    scr_builtin_class_capacity = capacity;
+  }
+  if (scr_builtin_class_count == 0) scr_atexit(scr_builtin_class_cleanup);
+  scr_builtin_class_entries[scr_builtin_class_count++] =
+      (ScrBuiltinClassEntry){module, name, scr_dyn_retain(value)};
+  return value;
+}
+
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity) {
+  return scr_builtin_class_make(module->data, name->data, arity);
 }
 
 /* Error.captureStackTrace called through its function value. The
@@ -7783,6 +7957,9 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
       ScrDyn *handle_prototype = value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops
                                      ? scr_dyn_handle_class_ops->prototype_of(value)
                                      : NULL;
+      if (handle_prototype == NULL && value->kind == SCR_DYN_HANDLE)
+        handle_prototype = scr_builtin_class_prototype_of_tag(value->v.handle.tag);
+
       if (handle_prototype || value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_FUNC) {
         ScrDyn *current = handle_prototype ? handle_prototype : scr_dyn_get_prototype((ScrDyn *)value);
         while (current && current->kind != SCR_DYN_NULL) {
@@ -9783,6 +9960,21 @@ ScrDyn *scr_dyn_handle_key_get(const ScrDyn *d, const ScrStr *k) {
     return NULL;
   }
   if (!r) r = scr_dynh_method_value(tag, ops, k->data, k->len);
+  /* A class value's prototype answers the members the handle models none
+   * of (its `constructor` names the class value, as Node's instances answer
+   * it through their class prototype). */
+  if (!r || r->kind == SCR_DYN_UNDEF) {
+    ScrDyn *prototype = scr_builtin_class_prototype_for_tag(tag);
+    if (prototype != NULL) {
+      ScrDyn *inherited = scr_dyn_obj_read(prototype, k->data, k->len);
+      scr_dyn_release(prototype);
+      if (inherited != NULL && inherited->kind != SCR_DYN_UNDEF) {
+        scr_dyn_release(r);
+        return inherited;
+      }
+      scr_dyn_release(inherited);
+    }
+  }
   /* Unmodeled names answer undefined — the checked-dynamic tree's own-property stance
    * (real-but-unmodeled members throw "not supported yet" inside ops->get instead;
    * SEMANTICS.md documents the remainder). */
@@ -13110,12 +13302,26 @@ static ScrStr *scr_dyn_string_tag(const ScrDyn *d) {
     scr_str_release(getter_tag);
     return out;
   }
-  if (scr_exc_pending() || !scr_to_string_tag_symbol) return NULL;
-  ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
-  if (!tag) return NULL;
-  ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
-  scr_dyn_release(tag);
-  return out;
+  if (!scr_exc_pending() && scr_to_string_tag_symbol) {
+    ScrDyn *tag = scr_dyn_symbol_key_get(d, scr_to_string_tag_symbol, true);
+    if (tag) {
+      ScrStr *out = tag->kind == SCR_DYN_STR ? scr_dyn_tag_string(tag->v.str) : NULL;
+      scr_dyn_release(tag);
+      return out;
+    }
+  }
+  if (scr_exc_pending()) return NULL;
+  /* A DOMException view's class tag is fixed and needs no symbol entry:
+   * the well-known Symbol.toStringTag is not interned in every program. */
+  if (d->kind == SCR_DYN_OBJ) {
+    ScrError *e = scr_errdyn_err_of(d);
+    if (e) {
+      bool domex = e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+      scr_error_release(e);
+      if (domex) return scr_str_new("DOMException", 12);
+    }
+  }
+  return NULL;
 }
 
 ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
@@ -13146,7 +13352,21 @@ ScrStr *scr_dyn_object_tag(const ScrDyn *d) {
     if (tag || scr_exc_pending()) return tag;
   }
   if (d->kind == SCR_DYN_TYPED_REF) {
-    if (scr_dyn_ref_is_error(d)) return scr_str_new("[object Error]", 14);
+    if (scr_dyn_ref_is_error(d)) {
+      /* A DOMException's class tag is DOMException, not Error (its view is
+       * the materialization the error registry knows). */
+      ScrDyn *materialized = scr_dyn_typed_ref_materialize(d);
+      if (!materialized) return NULL;
+      ScrError *e = scr_errdyn_err_of(materialized);
+      bool domex = e != NULL && e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+      if (e) scr_error_release(e);
+      scr_dyn_release(materialized);
+      if (domex) {
+        static const char domex_tag[] = "[object DOMException]";
+        return scr_str_new(domex_tag, sizeof domex_tag - 1);
+      }
+      return scr_str_new("[object Error]", 14);
+    }
     if (scr_dyn_generator(d)) {
       const char *gen_tag = __atomic_load_n(&scr_gen_tag_reader, __ATOMIC_RELAXED)(d->v.typed_ref.ptr);
       if (gen_tag[0] == '!') {
@@ -13826,6 +14046,21 @@ static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object) {
          ent->err->vt == &scr_error_vts[SCR_ERR_ERROR];
 }
 
+/* DOMException's legacy numeric `code` is on its prototype in Node, not an
+ * own property: the view's prototype answers it from the error the view
+ * belongs to. */
+static ScrDyn *scr_domex_view_code_get(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  (void)args;
+  (void)argc;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrError *e = scr_errdyn_err_of(self);
+  scr_dyn_release(self);
+  if (!e) return scr_dyn_retain(scr_dyn_undefined());
+  double code = e->vt == &scr_error_vts[SCR_ERR_DOMEX] ? scr_domex_code(e) : 0;
+  scr_error_release(e);
+  return scr_dyn_new_num(code);
+}
 /* A pending extra property for the next error view (scr_error_seed_own_prop):
  * AssertionError's generatedMessage, which Node assigns before the class
  * name and the view appends at a fixed place. */
@@ -13864,15 +14099,35 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   scr_dyn_obj_dict_entries(d)[d->v.obj.len - 1].enumerable = false;
   /* Node lists `stack` first among an error's own properties. */
   scr_error_dyn_add_stack(d);
-  if (!e->name_present || !e->message_present) {
+  bool domex = e->vt == &scr_error_vts[SCR_ERR_DOMEX];
+  if (!e->name_present || !e->message_present || domex) {
     ScrDyn *prototype = scr_dyn_new_obj();
     if (!e->name_present) {
       scr_dyn_obj_set(prototype, "name", 4, scr_dyn_new_str(e->name));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      /* A DOMException's name, message and code are enumerable accessors on
+       * the class prototype in Node, so `for...in` visits them; an ordinary
+       * error's prototype fields are not enumerable. */
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
     }
     if (!e->message_present) {
       scr_dyn_obj_set(prototype, "message", 7, scr_dyn_new_str(e->message));
-      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = false;
+      scr_dyn_obj_dict_entries(prototype)[prototype->v.obj.len - 1].enumerable = domex;
+    }
+    if (domex) {
+      /* WebIDL's DOMException: `code` is a prototype accessor and the class
+       * answers Error.prototype's toString. Own names are `stack` (and
+       * `cause` when present); Object.prototype.toString reads the
+       * DOMException tag without a symbol entry (scr_dyn_string_tag). */
+      ScrDyn *getter = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_domex_view_code_get, 0,
+                                        "native:DOMException", "get code");
+      scr_dyn_obj_set_accessor(prototype, "code", 4, getter, NULL);
+      ScrDynEntry *entry = scr_dyn_find_entry(prototype, "code", 4);
+      if (entry) entry->enumerable = true;
+      ScrDyn *to_string = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_error_prototype_to_string,
+                                          0, "native:Error", "toString");
+      scr_dyn_obj_set(prototype, "toString", 8, to_string);
+      entry = scr_dyn_find_entry(prototype, "toString", 8);
+      if (entry) entry->enumerable = false;
     }
     scr_dyn_release(scr_dyn_set_prototype(d, prototype));
     scr_dyn_release(prototype);
@@ -13948,7 +14203,6 @@ ScrDyn *scr_error_dyn_fields(const ScrError *e) {
   /* DOMException: `code` is the WebIDL legacy NUMBER (never the errno
    * string slot), and the options form's cause crosses as itself. */
   if (e->vt == &scr_error_vts[SCR_ERR_DOMEX]) {
-    scr_dyn_obj_set(d, "code", 4, scr_dyn_new_num(scr_domex_code(( ScrError *)e)));
     if (scr_domex_has_cause((ScrError *)e)) {
       scr_dyn_obj_set(d, "cause", 5, scr_domex_cause((ScrError *)e));
       /* Node defines the options form's cause non-enumerable, as Error's. */
@@ -15687,6 +15941,13 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_TYPED_REF && !scr_dyn_generator(v)) {
     if (scr_typed_ref_array_has_own(v, key)) return true;
+    /* An Array subclass instance: its class's methods and accessors are
+     * its prototype's members. */
+    if (v->v.typed_ref.array && !v->v.typed_ref.record && !v->v.typed_ref.klass &&
+        !v->v.typed_ref.bag_class) {
+      const ScrArrClass *cls = scr_arr_class_of(v->v.typed_ref.ptr);
+      if (cls && scr_dyn_name_in_strs(key, cls->members, cls->member_count)) return true;
+    }
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
     if (record) {
       /* With no checked view, the snapshot's prototype is Object.prototype. */
@@ -20454,6 +20715,18 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
       scr_str_release(domex_name);
       if (ctor != NULL) return ctor;
     }
+    /* A SystemError's class is Node's internal NodeError: not constructible
+     * from a program, but its `constructor.name` is observable. */
+    if (vt == &scr_error_vts[SCR_ERR_ERROR] && hit != SIZE_MAX &&
+        scr_errdyn_cache[hit].err->system_message != NULL) {
+      if (!scr_node_error_ctor) {
+        scr_node_error_ctor = scr_dyn_new_func(scr_closure_new((void *)"NodeError", 0),
+                                               scr_error_ctor_call, 1, "native:constructor",
+                                               "NodeError");
+        scr_atexit(scr_node_error_ctor_cleanup);
+      }
+      return scr_dyn_retain(scr_node_error_ctor);
+    }
     /* Every other error's constructor: the interned function value its
      * global reads as (scr_dyn_error_constructor). */
     static const char *const names[] = {
@@ -24000,6 +24273,13 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
  * entry of the native table has it. */
 #define SCR_WEAK_ISLAND_KIND (~0u)
 
+/* A target or token the registry cannot key weakly: it is accepted, keeps
+ * no entry, and unregister answers false for it. Distinct from every kind
+ * scr_weak_key answers (0 is a plain object, 4+tag are handles, 32 a typed
+ * reference, 0x10000 a promise, ~0 an island) and never reaches the weak
+ * tables. */
+#define SCR_WEAK_UNTRACKED_KIND 0x20000u
+
 /* Whether the island's collection holds the entries of `key`: an island
  * object, and, in a program with Node islands, a symbol. An island symbol
  * is a native symbol paired with it (scr_node_island_handle.c), so a symbol
@@ -24786,11 +25066,17 @@ size_t scr_weak_collect_entries(void) { return scr_weak_judge_all(); }
  * bookkeeping as Node does; the cleanup callback never runs, which
  * ECMAScript allows (an implementation need not collect a target or call
  * its cleanup), so the registry keeps neither the callback nor the held
- * values. The unregister tokens are keys of an internal WeakMap counting
- * each token's registrations, so the registry keeps no token alive. */
+ * values. A token with a weak lifetime is a key of an internal WeakMap
+ * counting its registrations, so it is not kept alive. A token the weak
+ * tables cannot key (a handle kind without a weak entry, a copied native
+ * value) is held here instead, compared by value, so unregister still
+ * answers for the registration the program made; the registry releases
+ * those tokens with itself. */
 typedef struct {
   size_t rc;
   ScrDyn *tokens; /* WeakMap: token -> registration count */
+  ScrDyn **held_tokens; /* tokens with no weak lifetime, compared by value */
+  size_t held_len, held_cap;
 } ScrFinalizationRegistry;
 
 static void *scr_finalization_registry_retain(void *ptr) {
@@ -24804,7 +25090,36 @@ static void scr_finalization_registry_release(void *ptr) {
   /* Weak collections keyed by the registry drop their entries. */
   scr_weak_dispose(registry);
   scr_dyn_release(registry->tokens);
+  for (size_t i = 0; i < registry->held_len; i++) scr_dyn_release(registry->held_tokens[i]);
+  /* The token array grows through scr_mem_realloc, whose block belongs to
+   * the small-object allocator: it goes back through scr_mem_free (which
+   * also takes a system block), never through the C library's free. */
+  scr_mem_free(registry->held_tokens);
   free(registry);
+}
+
+/* The position of a token the weak tables cannot key, compared the way
+ * JavaScript compares the token it is handed back (a handle's own identity,
+ * a copied value's own), or -1. */
+static long scr_finalization_held_index(const ScrFinalizationRegistry *registry,
+                                        const ScrDyn *token) {
+  for (size_t i = 0; i < registry->held_len; i++)
+    if (scr_dyn_strict_eq(registry->held_tokens[i], token)) return (long)i;
+  return -1;
+}
+
+/* Keep a token with no weak lifetime, once (one entry answers every
+ * registration with it, as the count does for a weak key). */
+static void scr_finalization_hold(ScrFinalizationRegistry *registry, ScrDyn *token) {
+  if (scr_finalization_held_index(registry, token) >= 0) return;
+  if (registry->held_len == registry->held_cap) {
+    size_t cap = registry->held_cap ? registry->held_cap * 2 : 4;
+    ScrDyn **grown = scr_mem_realloc(registry->held_tokens, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    registry->held_tokens = grown;
+    registry->held_cap = cap;
+  }
+  registry->held_tokens[registry->held_len++] = scr_dyn_retain(token);
 }
 
 static void scr_finalization_type_error(const char *message) {
@@ -24838,20 +25153,18 @@ static bool scr_finalization_key(const ScrDyn *value, void **ptr, unsigned *kind
   }
   int supported = scr_weak_key(value, ptr, kind);
   if (supported < 0) {
-    /* A TARGET whose reference kind has no weak lifetime lowering: the
-     * registry keeps no per-target entry (it counts unregister tokens only),
-     * and ECMAScript lets an implementation never collect a target or call
-     * its cleanup, so the registration is accepted and simply never
-     * collected. A TOKEN of such a kind still refuses: its count is the one
-     * thing the registry reads back. */
-    if (invalid) {
-      *ptr = NULL;
-      *kind = 0;
-      return true;
-    }
-    static const char message[] = "FinalizationRegistry unregister tokens of this native reference type have no weak lifetime lowering";
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    return false;
+    /* A target or token whose reference kind has no weak lifetime lowering
+     * (a copied native value, a handle kind without a weak entry): the
+     * registry keeps no entry for it. ECMAScript lets an implementation
+     * never collect a target or call its cleanup, so a registration with
+     * such a target is accepted and never collected; with such a token the
+     * count the registry would read back does not exist, so the
+     * registration is accepted without counting it and unregister answers
+     * false for the token. Anything that can be told apart from 'no entry'
+     * is SCR_WEAK_UNTRACKED_KIND. */
+    *ptr = NULL;
+    *kind = SCR_WEAK_UNTRACKED_KIND;
+    return true;
   }
   if (!supported) {
     if (invalid) {
@@ -24901,6 +25214,12 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
         scr_dyn_release(registered);
         return ok ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
       }
+      /* A token with no weak lifetime cannot be counted in the weak map:
+       * it is held by value instead, so unregister answers for it. */
+      if (kind == SCR_WEAK_UNTRACKED_KIND) {
+        scr_finalization_hold(registry, token);
+        return scr_dyn_retain(scr_dyn_undefined());
+      }
       ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
       double count = entry && entry->value->kind == SCR_DYN_NUM ? entry->value->v.num : 0;
       ScrDyn *next = scr_dyn_new_num(count + 1);
@@ -24915,6 +25234,15 @@ static ScrDyn *scr_finalization_registry_invoke(void *ptr, ScrDyn *self, const c
     if (kind == SCR_WEAK_ISLAND_KIND) {
       int found = scr_ni_dyn_ops->weak_test(tokens->island, false, first, true);
       return found < 0 ? NULL : scr_dyn_new_bool(found);
+    }
+    if (kind == SCR_WEAK_UNTRACKED_KIND) {
+      long at = scr_finalization_held_index(registry, first);
+      if (at < 0) return scr_dyn_new_bool(false);
+      ScrDyn *held = registry->held_tokens[at];
+      registry->held_len--;
+      registry->held_tokens[at] = registry->held_tokens[registry->held_len];
+      scr_dyn_release(held);
+      return scr_dyn_new_bool(true);
     }
     ScrWeakEntry *entry = scr_weak_find(tokens, identity, kind);
     if (entry) scr_weak_remove(entry);
@@ -26191,6 +26519,10 @@ void scr_error_accessor_set(ScrError *e, const ScrStr *key, ScrDyn *value) {
 }
 
 bool scr_error_has_key(ScrError *e, const ScrStr *key) {
+  /* DOMException's legacy `code` is inherited from its prototype. */
+  if (e->vt == &scr_error_vts[SCR_ERR_DOMEX] && key->len == 4 &&
+      memcmp(key->data, "code", 4) == 0)
+    return true;
   ScrDyn *view = scr_errdyn_view_of(e);
   if (view != NULL) {
     /* A checked view of a compiled class is a live capsule the view's own

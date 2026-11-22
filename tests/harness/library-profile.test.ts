@@ -590,6 +590,7 @@ describe("library profile fences", () => {
       "node-builtin.perf_hooks.PerformanceMark",
       "node-builtin.perf_hooks.PerformanceObserver",
       "node-builtin.perf_hooks.createHistogram",
+      "node-builtin.perf_hooks.createSlidingWindowHistogram",
       "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",

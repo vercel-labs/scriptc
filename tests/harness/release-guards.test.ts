@@ -15,6 +15,7 @@ import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
   nextPatch,
+  promoteAction,
   npmPreflight,
   preflight,
   publishedNames,
@@ -249,7 +250,14 @@ type ReleaseJob = {
   environment?: string;
   permissions?: Record<string, string>;
   strategy?: { matrix: { include: { platform: string; runner: string }[] } };
-  steps: { id?: string; name?: string; run?: string; with?: Record<string, unknown> }[];
+  steps: {
+    id?: string;
+    name?: string;
+    if?: string;
+    uses?: string;
+    run?: string;
+    with?: Record<string, unknown>;
+  }[];
 };
 const releaseWorkflow = () =>
   load(readFileSync(join(repoRoot, ".github/workflows/release.yml"), "utf8")) as {
@@ -346,4 +354,30 @@ test("the registry smoke test checks the host's packages are all at the release'
   expect(versionMismatches({ "@scriptc/llvm-darwin-arm64": undefined }, "0.4.16")).toEqual([
     "@scriptc/llvm-darwin-arm64 is missing, expected 0.4.16",
   ]);
+});
+
+test("promoting a release never moves latest back to an older one", () => {
+  expect(promoteAction("0.4.15", "0.4.16")).toBe("move");
+  expect(promoteAction("0.4.16", "0.4.16")).toBe("current");
+  // A retried promotion of 0.4.16 after 0.4.17 went out leaves 0.4.17.
+  expect(promoteAction("0.4.17", "0.4.16")).toBe("newer");
+  expect(promoteAction("0.10.0", "0.9.9")).toBe("newer");
+  expect(promoteAction("1.0.0-rc.1", "1.0.0")).toBe("move");
+  expect(promoteAction("1.0.0", "1.0.0-rc.1")).toBe("newer");
+  expect(promoteAction("", "0.4.16")).toBe("move");
+  expect(() => promoteAction("0.4.16", "next")).toThrow();
+  const move = releaseWorkflow().jobs["promote"]!.steps.at(-1)!.run!;
+  const decide = move.indexOf('node scripts/release-preflight.mjs --promote "$latest" "$VERSION"');
+  expect(decide).toBeGreaterThan(-1);
+  expect(move.indexOf('move) npm dist-tag add "$name@$VERSION" latest ;;')).toBeGreaterThan(decide);
+  expect(move.match(/npm dist-tag add/g)).toHaveLength(1);
+});
+
+test("the Windows registry smoke test installs Zig, which scriptc links Windows executables with", () => {
+  const smoke = releaseWorkflow().jobs["registry-smoke"]!;
+  const zig = smoke.steps.findIndex((step) => step.uses === "./.github/actions/zig");
+  expect(zig).toBeGreaterThan(-1);
+  expect(smoke.steps[zig]!.if).toBe("runner.os == 'Windows'");
+  expect(zig).toBeLessThan(smoke.steps.length - 1);
+  expect(String(smoke.steps[0]!.with!["sparse-checkout"])).toContain(".github/actions/zig");
 });

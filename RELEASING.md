@@ -35,11 +35,14 @@ npm 11.21.0). A missing configuration fails before upload.
 
 Every package publishes under the `next` dist-tag. Once all of them resolve,
 the `registry-smoke` jobs install `scriptc@<version>` from npm into a clean
-directory on Linux x64 and arm64, macOS arm64 and x64, and Windows x64, check
+directory on Linux x64 and arm64, macOS arm64 and x64, and Windows x64 (with
+Zig installed, which scriptc links Windows executables with), check
 that the host's CLI, runtime pack and LLVM helper packages are all at the
 release's version, and build and run a hello-world program
 (`scripts/release-registry-smoke.mjs`). Only when every platform passes does
-the `promote` job point `latest` at the release (`scriptc` last), and only
+the `promote` job point `latest` at the release (`scriptc` last; it never
+moves `latest` back to an older release, so a retried promotion of a
+superseded release changes nothing), and only
 then does the GitHub release, which marks the version complete, get created.
 A release that fails before `latest` moves leaves users on the previous
 release.

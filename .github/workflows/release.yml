@@ -542,13 +542,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          sparse-checkout: scripts/release-registry-smoke.mjs
+          sparse-checkout: |
+            scripts/release-registry-smoke.mjs
+            .github/actions/zig
           sparse-checkout-cone-mode: false
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      # scriptc links Windows executables with zig (docs/content/docs/platforms.mdx), as a user's machine must.
+      - name: Install Zig
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/zig
       - name: Install, build and run hello world from npm
         run: node scripts/release-registry-smoke.mjs ${{ needs.check-release.outputs.version }}
 
@@ -581,14 +587,17 @@ jobs:
         run: |
           npm install --global npm@11.21.0
           # scriptc last: until it moves, `npm i scriptc` still installs the previous release whole.
+          # latest only moves forward: a retried promotion of an older release
+          # leaves a newer release that already passed where it is.
           { node scripts/release-preflight.mjs --names | grep -vx scriptc; echo scriptc; } | while read -r name; do
-            if [ "$(npm view "$name" dist-tags.latest)" = "$VERSION" ]; then
-              echo "$name@$VERSION is already latest"
-            else
-              npm dist-tag add "$name@$VERSION" latest
-            fi
+            latest=$(npm view "$name" dist-tags.latest)
+            case "$(node scripts/release-preflight.mjs --promote "$latest" "$VERSION")" in
+              move) npm dist-tag add "$name@$VERSION" latest ;;
+              current) echo "$name@$VERSION is already latest" ;;
+              newer) echo "::warning::$name: latest is $latest, newer than $VERSION; leaving it" ;;
+            esac
           done
-          echo "latest is $VERSION for every package of the release" >> "$GITHUB_STEP_SUMMARY"
+          echo "latest is $VERSION, or a newer release, for every package of the release" >> "$GITHUB_STEP_SUMMARY"
 
   # Publish standalone native distributions and the surface manifest after
   # every npm package resolves and latest points at the release. The release

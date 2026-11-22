@@ -52,6 +52,26 @@ export function nextPatch(version) {
   return `${match[1]}.${match[2]}.${Number(match[3]) + 1}`;
 }
 
+/**
+ * What promoting `version` does to a package whose latest tag is `latest`: "move" it, leave it as "current",
+ * or leave a "newer" release there (latest never moves back). A missing or malformed latest moves.
+ */
+export function promoteAction(latest, version) {
+  if (latest === version) return "current";
+  const parse = (value) =>
+    /^(\d+)\.(\d+)\.(\d+)/
+      .exec(value ?? "")
+      ?.slice(1)
+      .map(Number);
+  const from = parse(latest);
+  const to = parse(version);
+  if (!to) throw new Error(`not a semver version: ${version}`);
+  if (!from) return "move";
+  for (let i = 0; i < 3; i++) if (from[i] !== to[i]) return from[i] > to[i] ? "newer" : "move";
+  // The same release number with a prerelease suffix on one side: the release wins.
+  return latest.includes("-") ? "move" : "newer";
+}
+
 /** Whether npm has name@version: `npm view` prints it, or fails with E404. Other failures throw. */
 export function npmHas(name, version) {
   return new Promise((resolve, reject) => {
@@ -108,14 +128,16 @@ export function publishedNames(root) {
   );
 }
 
-if (
-  import.meta.url === pathToFileURL(process.argv[1] ?? "").href &&
-  process.argv.includes("--names")
-) {
+const main = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (main && process.argv.includes("--promote")) {
+  // usage: release-preflight.mjs --promote <latest> <version> — prints move, current or newer (the promote job).
+  const at = process.argv.indexOf("--promote");
+  console.log(promoteAction(process.argv[at + 1], process.argv[at + 2]));
+} else if (main && process.argv.includes("--names")) {
   // usage: release-preflight.mjs [root] --names — one package name per line (the promote job's list).
   const root = process.argv.slice(2).find((arg) => !arg.startsWith("--")) ?? process.cwd();
   for (const name of publishedNames(root)) console.log(name);
-} else if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+} else if (main) {
   const root = process.argv.slice(2).find((arg) => !arg.startsWith("--")) ?? process.cwd();
   const { version, problems } = preflight(root);
   if (process.argv.includes("--npm")) {

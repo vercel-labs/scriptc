@@ -9,6 +9,7 @@ import {
   corpusFiles,
   darwinCorpusFiles,
   darwinFiles,
+  darwinSmokeCases,
   effectFiles,
   fileExclusions,
   caseShardedSideFiles,
@@ -84,7 +85,9 @@ test.for([1, 3, 5, 10, 20, 30])(
           expect(cache.env.SCRIPTC_CACHE_TEST_SHARD).toBe(plan.corpus.env.SCRIPTC_TEST_SHARD);
           expect(cache.env.SCRIPTC_TEST_STABLE_TOOLCHAIN).toBe("0");
         }
-        expect(plan.side.some((task) => task.name === "coverage sweep")).toBe(flavor === "plain");
+        expect(plan.side.some((task) => task.name === "coverage corpus sweep")).toBe(
+          flavor === "plain",
+        );
       }
     }
   },
@@ -452,6 +455,32 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
     if (!darwinCorpusFiles.includes(file)) expect(fileExclusions).not.toContain(file);
   }
   expect(corpusFiles).toEqual(expect.arrayContaining(darwinCorpusFiles));
+});
+
+test("the darwin smoke suite runs the corpus's fs and os programs in two processes", () => {
+  const plan = ciTestPlan({ shard: "1/1", flavor: "plain", workers: 2, suite: "darwin-smoke" });
+  expect(plan.sideWorkers).toBe(1);
+  expect(plan.side).toHaveLength(1);
+  const halves = [plan.corpus, plan.side[0]!];
+  expect(halves.map((half) => half.env.SCRIPTC_TEST_SHARD)).toEqual(["1/2", "2/2"]);
+  for (const half of halves) {
+    expect(half.args).toEqual(["test", ...darwinCorpusFiles, "-t", darwinSmokeCases]);
+    expect(half.env.SCRIPTC_TEST_WORKERS).toBe("1");
+  }
+  // vitest matches the pattern against "<file> <describe title> <case>", the
+  // case being the program's path under tests/corpus.
+  const pattern = new RegExp(darwinSmokeCases);
+  const title = "tests/harness/differential.test.ts differential corpus (3720 programs, shard 1/2)";
+  for (const name of [
+    "fs-lchmod.cjs",
+    "118-fs-stored-callbacks.cjs",
+    "1353-os-basics.ts",
+    "9-fs_x/main.ts",
+  ])
+    expect(pattern.test(`${title} ${name}`), name).toBe(true);
+  for (const name of ["process-env.ts", "node-fs-x.ts", "1-osc.ts", "2-cfs-x.ts"])
+    expect(pattern.test(`${title} ${name}`), name).toBe(false);
+  expect(pattern.test(title)).toBe(false);
 });
 
 /** Expands the ${{ }} expressions of a workflow value for one event: string

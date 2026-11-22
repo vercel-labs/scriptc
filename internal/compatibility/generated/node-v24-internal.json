@@ -44828,6 +44828,7 @@
           "tests/corpus/5885-events-max-listener-helpers.ts",
           "tests/corpus/6491-events-once-streams.ts",
           "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs",
           "tests/corpus/emitter-surface.ts",
           "tests/corpus/emitter-symbol-names.ts",
           "tests/corpus/event-target-surface.ts",
@@ -46713,7 +46714,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'newListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -46739,7 +46741,8 @@
         "status": "partial",
         "evidence": "compiler-feature:events.'removeListener'",
         "tests": [
-          "tests/corpus/compat-emitter-listener-events.ts"
+          "tests/corpus/compat-emitter-listener-events.ts",
+          "tests/corpus/emitter-meta-symbol-events.cjs"
         ]
       },
       "anchorSource": "exact"

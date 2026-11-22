@@ -1638,6 +1638,11 @@ function jsBindingKeepsCheckedObject(
    * object: a binding of `module`, `require.main`, `module.parent` or a
    * `module.children[i]` keeps the checked-dynamic view. */
   if (isNodeModuleHandle(lowerer, nameNode)) return true;
+  /* A binding the checker types `never` is an inference artifact — a
+   * declaration that does not describe the value a JavaScript runtime
+   * produced (a context made with `createContext(null)` and used as an
+   * object) — so the binding keeps whatever the value holds. */
+  if ((lowerer.typeOf(nameNode).flags & ts.TypeFlags.Never) !== 0) return true;
   const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
   return (
     arms.some((arm) => arm.kind === "record" || arm.kind === "array") &&
@@ -2489,17 +2494,18 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   // ESM default import binds this value.
   const snapshot = lowerer.cjsRuntimeExportSnapshotOf(sf);
   const exportSlot = lowerer.cjsRuntimeWholeExportValueSlotOf(sf);
-  const store: IrStmt[] =
-    snapshot !== null && exportSlot !== null
+  const store: IrStmt[] = [
+    ...(snapshot !== null && exportSlot !== null
       ? [
           {
-            kind: "assign",
+            kind: "assign" as const,
             localId: snapshot.id,
-            value: { kind: "varRef", localId: exportSlot.id, type: DYN, loc },
+            value: { kind: "varRef" as const, localId: exportSlot.id, type: DYN, loc },
             loc,
           },
         ]
-      : [];
+      : []),
+  ];
   if (!stmt.expression)
     return store.length === 0 ? ret : { kind: "block", body: [...store, ret], loc };
   return {

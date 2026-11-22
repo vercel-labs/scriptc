@@ -1,0 +1,3 @@
+{
+    "node-builtin.events": ["tests/corpus/1677-emitter-listeners.ts", "tests/corpus/2620-ee-override-once-order.ts", "tests/corpus/events-erased-emit-args.ts"]
+}

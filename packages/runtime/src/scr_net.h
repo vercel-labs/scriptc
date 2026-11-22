@@ -268,6 +268,17 @@ void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves
 void scr_net_server_on_inert(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
 ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+/* new net.Socket([options]): an unconnected socket (+1, or NULL with the
+ * throw pending). allowHalfOpen and signal lower; a descriptor (a number
+ * argument or options.fd) and the readable/writable sides throw the
+ * lowering fence. */
+ScrNetSocket *scr_net_sock_construct(const ScrDyn *options,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                     const ScrStr *fence);
+/* socket.connect(port[, host][, connectListener]): an idle socket dials
+ * (port and host validated first). */
+void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
+                               ScrClosure *cb /*moves, nullable*/);
 bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
 /* connect with a validated autoSelectFamilyAttemptTimeout option: the
  * budget runs Node's validateInt32-from-1 ladder (ERR_OUT_OF_RANGE /
@@ -359,6 +370,8 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
+ScrDyn *scr_net_sock_timeout_get(ScrNetSocket *s); /* +1 */
+bool scr_net_sock_allow_half_open(ScrNetSocket *s);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_net_sock_remote_address(ScrNetSocket *s); /* +1 or NULL (undefined arm) */
 double scr_net_sock_remote_port(ScrNetSocket *s);    /* NaN = undefined */

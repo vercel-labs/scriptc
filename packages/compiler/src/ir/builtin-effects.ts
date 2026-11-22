@@ -634,6 +634,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.getUnpackedSettings",
   "http2.streamRespondWait",
   "http2.streamSendTrailers",
+  "http2.streamRespondWithFile",
+  "http2.streamRespondWithFD",
   "http2.streamAdditionalHeaders",
   "http2.responseWriteInformation",
   "http2.streamRespond",
@@ -719,7 +721,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
 
 const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
+  "webstream.toWebReadableOpts",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableDynOpts",
   "webstream.toWebDuplexDyn",
   // The option walk behind duplexPair throws the not-supported Error for an
   // option it cannot apply; wrap refuses a stream that already carries native
@@ -830,6 +834,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   // createHistogram's options and RecordableHistogram's record forms: Node's
   // ERR_OUT_OF_RANGE / ERR_INVALID_ARG_TYPE validation.
   "perf.histoNew",
+  "perf.histoBucketArg",
+  "perf.histoLinearBucketsCount",
+  "perf.histoLogBucketsCount",
   "perf.histoRecord",
   "perf.histoRecordBig",
   "perf.histoRecordCorrected",
@@ -844,6 +851,14 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoMannWhitneyU",
   "perf.histoMannWhitneyZ",
   "perf.histoMannWhitneyP",
+  // burnRate validates its SLO target (Node's ERR_INVALID_ARG_TYPE /
+  // ERR_OUT_OF_RANGE).
+  "perf.histoBurnRate",
+  // The bucket views validate their arguments (stepSize, firstBucket, base
+  // and percentilesAt's array) before iterating.
+  "perf.histoLinearView",
+  "perf.histoLogView",
+  "perf.histoPercentilesAtView",
   // Non-TTY stdin: Node's stdin has no setRawMode member, so the call is
   // the exact catchable TypeError.
   "process.stdinSetRawMode",
@@ -1452,6 +1467,9 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "net.connectAttempt",
   "net.connectDyn",
   "net.connectDynCb",
+  "net.socketNew",
+  "net.sockConnect",
+  "net.sockConnectCb",
   "net.setAutoSelTimeout",
   "net.setDefaultAutoSel",
   "error.argTypeThrow",

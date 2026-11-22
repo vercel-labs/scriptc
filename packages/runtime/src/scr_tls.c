@@ -847,7 +847,13 @@ typedef struct ScrTlsSock {
   bool vrfy_leaf_self;
   bool vrfy_chain_self;
   bool vrfy_expired;
+  bool vrfy_future;
+  bool vrfy_bad_sig;
+  bool vrfy_pathlen;
   bool vrfy_cn_mismatch;
+  /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
+   * while the peer chain is alive for Node's altname-failure message */
+  char *vrfy_altnames;
   /* a certificate of the chain carried a blocked public key: the failure
    * Node reports as CERT_REVOKED, ahead of every other verification error */
   bool vrfy_blocked;
@@ -1076,6 +1082,152 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * IP literal against the IP SANs, another name with mbedtls_x509_crt_verify
  * on the leaf alone, keeping only its CN_MISMATCH bit. No name to check is
  * a mismatch. */
+/* mbedTLS folds every chain failure into BADCERT_NOT_TRUSTED, while
+ * OpenSSL separates a leaf whose signature does not verify
+ * (CERT_SIGNATURE_FAILURE) from one whose issuer never arrived. When the
+ * leaf names an issuer the trust list holds, verify the leaf's signature
+ * against that issuer's key: a failure is Node's CERT_SIGNATURE_FAILURE. */
+static bool scr_tls_leaf_bad_sig(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  if (t->vrfy_trust == NULL || leaf->MBEDTLS_PRIVATE(sig).len == 0) return false;
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(leaf->MBEDTLS_PRIVATE(sig_md));
+  if (md == NULL) return false;
+  for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+    if (ca->subject_raw.len != leaf->issuer_raw.len ||
+        memcmp(ca->subject_raw.p, leaf->issuer_raw.p, leaf->issuer_raw.len) != 0)
+      continue;
+    if (!mbedtls_pk_can_do(&ca->pk, leaf->MBEDTLS_PRIVATE(sig_pk))) return false;
+    unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+    if (mbedtls_md(md, leaf->tbs.p, leaf->tbs.len, hash) != 0) return false;
+    int rc = mbedtls_pk_verify_ext(leaf->MBEDTLS_PRIVATE(sig_pk), leaf->MBEDTLS_PRIVATE(sig_opts),
+                                   &ca->pk, leaf->MBEDTLS_PRIVATE(sig_md), hash,
+                                   mbedtls_md_get_size(md), leaf->MBEDTLS_PRIVATE(sig).p,
+                                   leaf->MBEDTLS_PRIVATE(sig).len);
+    return rc != 0;
+  }
+  return false;
+}
+
+/* Node's ERR_TLS_CERT_ALTNAME_INVALID message carries the leaf's
+ * subjectAltName as OpenSSL renders it ("DNS:a, IP Address:1.2.3.4"). The
+ * peer chain is gone once the handshake has failed, so render it on the
+ * leaf's turn in the verify callback. */
+static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  free(t->vrfy_altnames);
+  t->vrfy_altnames = NULL;
+  /* Two passes over the SANs: size the exact rendering, then write it.
+   * Nothing is copied from a fixed-size temporary, so a SAN longer than a
+   * small stack buffer cannot turn a truncated snprintf result into an
+   * out-of-bounds read. Sizing and writing read the same mbedTLS sequence. */
+  size_t total = 0;
+  size_t items = 0;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    size_t prefix;
+    size_t value;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      prefix = sizeof "DNS:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      if (cur->buf.len != 4 && cur->buf.len != 16) continue;
+      prefix = sizeof "IP Address:" - 1;
+      value = 64; /* an IPv6 address in eight uncompressed groups at most */
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      prefix = sizeof "email:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      prefix = sizeof "URI:" - 1;
+      value = cur->buf.len;
+    } else {
+      continue;
+    }
+    if (value > SIZE_MAX - prefix || prefix + value > SIZE_MAX - total) scr_tls_oom();
+    total += prefix + value;
+    items++;
+  }
+  if (items > 1) {
+    if (items - 1 > SIZE_MAX / 2 || 2 * (items - 1) > SIZE_MAX - total) scr_tls_oom();
+    total += 2 * (items - 1);
+  }
+  if (total == SIZE_MAX) scr_tls_oom();
+  char *out = malloc(total + 1); /* the terminator sits after the content */
+  if (out == NULL) scr_tls_oom();
+  size_t used = 0;
+  bool first = true;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    const char *prefix;
+    char ip[64];
+    const unsigned char *payload = cur->buf.p;
+    size_t len = cur->buf.len;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      prefix = "DNS:";
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      prefix = "IP Address:";
+      if (len == 4) {
+        snprintf(ip, sizeof ip, "%u.%u.%u.%u", payload[0], payload[1], payload[2], payload[3]);
+      } else if (len == 16) {
+        /* OpenSSL prints an iPAddress SAN as eight uncompressed groups */
+        const unsigned char *b = payload;
+        snprintf(ip, sizeof ip, "%x:%x:%x:%x:%x:%x:%x:%x", (b[0] << 8) | b[1],
+                 (b[2] << 8) | b[3], (b[4] << 8) | b[5], (b[6] << 8) | b[7],
+                 (b[8] << 8) | b[9], (b[10] << 8) | b[11], (b[12] << 8) | b[13],
+                 (b[14] << 8) | b[15]);
+      } else {
+        continue;
+      }
+      payload = (const unsigned char *)ip;
+      len = strlen(ip);
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      prefix = "email:";
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      prefix = "URI:";
+    } else {
+      continue;
+    }
+    if (!first) {
+      out[used++] = ',';
+      out[used++] = ' ';
+    }
+    size_t prefix_len = strlen(prefix);
+    memcpy(out + used, prefix, prefix_len);
+    used += prefix_len;
+    memcpy(out + used, payload, len);
+    used += len;
+    first = false;
+  }
+  out[used] = '\0';
+  t->vrfy_altnames = out;
+}
+
+/* OpenSSL's path length check: a CA certificate's basicConstraints
+ * pathlen caps the number of non-self-issued CA certificates below it.
+ * mbedTLS refuses the over-long parent as a candidate and reports the
+ * chain as untrusted, and its callback runs top-down, so the constraint is
+ * checked per certificate against the depth mbedTLS reports (stored
+ * pathlen is one higher than the limit; the trust anchor sits one level
+ * above the topmost presented certificate). */
+static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int depth) {
+  const mbedtls_x509_crt *anchor = NULL;
+  if (crt->next == NULL && t->vrfy_trust != NULL && crt->issuer_raw.len > 0) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crt->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crt->issuer_raw.p, crt->issuer_raw.len) == 0) {
+        anchor = ca;
+        break;
+      }
+    }
+  }
+  if (crt->MBEDTLS_PRIVATE(ca_istrue) && crt->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth > crt->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  if (anchor != NULL && anchor->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth + 1 > anchor->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  return false;
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
@@ -1136,10 +1288,18 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   bool self = crt->issuer_raw.len == crt->subject_raw.len &&
               memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
   if (*flags & MBEDTLS_X509_BADCERT_EXPIRED) t->vrfy_expired = true;
-  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) t->vrfy_cn_mismatch = true;
+  if (*flags & MBEDTLS_X509_BADCERT_FUTURE) t->vrfy_future = true;
+  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) {
+    t->vrfy_cn_mismatch = true;
+    scr_tls_record_altnames(t, crt);
+  }
   if (*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
+    if (depth == 0 && !self && scr_tls_leaf_bad_sig(t, crt)) t->vrfy_bad_sig = true;
+    if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && !self &&
+      scr_tls_pathlen_exceeded(t, crt, depth))
+    t->vrfy_pathlen = true;
   }
   return 0;
 }
@@ -1317,6 +1477,18 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
     snprintf(out, n, "certificate has expired");
     return;
   }
+  if (t->vrfy_future) {
+    snprintf(out, n, "certificate is not yet valid");
+    return;
+  }
+  if (t->vrfy_bad_sig) {
+    snprintf(out, n, "certificate signature failure");
+    return;
+  }
+  if (t->vrfy_pathlen) {
+    snprintf(out, n, "path length constraint exceeded");
+    return;
+  }
   /* Node appends the --use-system-ca hint for exactly these two codes
    * (src/crypto/crypto_common.cc: DEPTH_ZERO_SELF_SIGNED_CERT and
    * UNABLE_TO_VERIFY_LEAF_SIGNATURE) — and NOT for the in-chain one. */
@@ -1334,7 +1506,37 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
    * (checkServerIdentity runs after verification succeeds) */
   if (t->vrfy_cn_mismatch &&
       (mbedtls_ssl_get_verify_result(&t->ssl) & MBEDTLS_X509_BADCERT_NOT_TRUSTED) == 0) {
-    snprintf(out, n, "Hostname/IP does not match certificate's altnames");
+    const char *name = t->cli != NULL ? t->cli->verify_name : NULL;
+    const char *names = t->vrfy_altnames != NULL ? t->vrfy_altnames : "";
+    if (name != NULL && scr_tls_is_ip(name)) {
+      /* Node lists only the certificate's IP entries for an IP request */
+      char ips[1024];
+      size_t used = 0;
+      const char *at = names;
+      while (*at != '\0') {
+        const char *comma = strstr(at, ", ");
+        size_t len = comma != NULL ? (size_t)(comma - at) : strlen(at);
+        if (len >= 11 && memcmp(at, "IP Address:", 11) == 0) {
+          if (used != 0 && used + 2 < sizeof ips) {
+            memcpy(ips + used, ", ", 2);
+            used += 2;
+          }
+          if (used + len < sizeof ips) {
+            memcpy(ips + used, at, len);
+            used += len;
+          }
+        }
+        if (comma == NULL) break;
+        at = comma + 2;
+      }
+      ips[used] = '\0';
+      snprintf(out, n, "Hostname/IP does not match certificate's altnames: IP: %s is not in the cert's list: %s",
+               name, ips);
+    } else {
+      snprintf(out, n,
+               "Hostname/IP does not match certificate's altnames: Host: %s. is not in the cert's altnames: %s",
+               name != NULL ? name : "", names);
+    }
     return;
   }
   snprintf(out, n, "unable to verify the first certificate%s", hint);
@@ -1823,9 +2025,24 @@ static int scr_tls_handshake(void *tctx) {
     else t->hang_up_pending = true;
     return -1;
   }
-  char msg[160];
+  char msg[512];
+  const char *err = msg;
+  char *heap_msg = NULL;
   if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
-    scr_tls_verify_msg(t, msg, sizeof msg);
+    /* the altname rendering can be longer than the fixed buffer: size the
+     * message to it rather than truncating a certificate's SAN list */
+    size_t cap = sizeof msg;
+    if (t->vrfy_altnames != NULL) {
+      size_t alt = strlen(t->vrfy_altnames);
+      if (alt > SIZE_MAX - sizeof msg) scr_tls_oom();
+      cap = alt + sizeof msg;
+    }
+    if (cap > sizeof msg) {
+      heap_msg = malloc(cap);
+      if (heap_msg == NULL) scr_tls_oom();
+      err = heap_msg;
+    }
+    scr_tls_verify_msg(t, heap_msg != NULL ? heap_msg : msg, cap);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF) {
     /* The peer closed the connection mid-handshake: Node's socket ends,
      * then fails with ECONNRESET, for tls.connect and https.request
@@ -1861,7 +2078,8 @@ static int scr_tls_handshake(void *tctx) {
      * string (SEMANTICS.md divergence 55) */
     snprintf(msg, sizeof msg, "client TLS handshake failed");
   }
-  scr_net_sock_transport_error(t->sock, msg);
+  scr_net_sock_transport_error(t->sock, err);
+  free(heap_msg);
   return -1;
 }
 
@@ -1926,6 +2144,7 @@ static void scr_tls_free(void *tctx) {
   mbedtls_x509_crt_free(&t->served_chain);
   if (t->server) scr_net_server_release(t->server);
   free(t->held);
+  free(t->vrfy_altnames);
   free(t);
 }
 
@@ -4672,6 +4891,9 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
   if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
+  if (t->vrfy_future) return "CERT_NOT_YET_VALID";
+  if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
+  if (t->vrfy_pathlen) return "PATH_LENGTH_EXCEEDED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
   if (vr & MBEDTLS_X509_BADCERT_NOT_TRUSTED) return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
@@ -5352,12 +5574,32 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     *out = scr_tls_sock_get_cipher(s);
     return true;
   }
+  if (strcmp(method, "setServername") == 0) {
+    ScrTlsSock *t = scr_tls_sock_of(s);
+    if (argc < 1 || args[0]->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", argc < 1 ? scr_dyn_undefined() : args[0]);
+      *out = NULL;
+      return true;
+    }
+    if (t->srv != NULL) {
+      static const char msg[] = "Cannot issue SNI from a TLS server-side socket";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_SNI_FROM_SERVER");
+      *out = NULL;
+      return true;
+    }
+    /* a client's SNI is fixed when the socket starts its handshake */
+    static const char msg[] =
+        "changing the SNI of a started client socket has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    *out = NULL;
+    return true;
+  }
   static const char *const tls_methods[] = {
     "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
     "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
-    "enableTrace", "disableRenegotiation", "setServername", "setSession", NULL,
+    "enableTrace", "disableRenegotiation", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {
     if (strcmp(method, tls_methods[i]) == 0) {

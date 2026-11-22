@@ -4045,6 +4045,21 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Per module some namespace import reads, the export members its
+   * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
+   * takes the values the module's exports held when the first ESM module
+   * imported it, and the live slot its writes keep updating. Node builds a
+   * CommonJS module's namespace object at that import, not when the module
+   * finished evaluating (a require-and-mutate can come between), so a
+   * namespace read observes the snapshot slot. Registered before any init
+   * lowers (collectProgram), filled by the first importing module's init. */
+  readonly cjsNamespaceMemberSnapshots = new Map<
+    ts.SourceFile,
+    Map<string, { snapshot: IrGlobal; source: IrGlobal }>
+  >();
+  /** Per namespace-imported module, the flag its snapshot copy sets so a
+   * later importer keeps the first snapshot instead of replacing it. */
+  readonly cjsNamespaceSnapshotTakenGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -6784,6 +6799,8 @@ export class Lowerer {
     // program's modules (registered before lowering begins), and the memo is
     // a cache of that detection.
     "cjsRuntimeExportSnapshotGlobals",
+    "cjsNamespaceMemberSnapshots",
+    "cjsNamespaceSnapshotTakenGlobals",
     "cjsRuntimeRequireBindings",
     "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
@@ -8928,15 +8945,25 @@ export class Lowerer {
    * module, and the lowering compiles the JavaScript. A declaration bridge
    * (`export * from "../types"`) re-exports a declaration another module
    * implements, so the import the reference came through answers too. Null
-   * when no compiled module implements the symbol. */
+   * when no compiled module implements the symbol.
+   *
+   * The import's own module answers first. A declaration can re-export a
+   * name from another package's declaration (`@types/react/jsx-runtime`'s
+   * `export { Fragment } from "./"`) while the JavaScript Node loads defines
+   * its own binding of that name (react-jsx-runtime's
+   * `exports.Fragment = REACT_FRAGMENT_TYPE`). The declaration's own twin is
+   * then a different module, whose storage the importer's module may not
+   * have initialized yet, so it is only the fallback. */
   declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
-    const direct = this.declarationTwinDirectSymbolOf(symbol);
-    if (direct !== null || alias === null) return direct;
-    const cached = this.declarationTwinRouted.get(alias);
-    if (cached !== undefined) return cached;
-    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
-    this.declarationTwinRouted.set(alias, routed);
-    return routed;
+    if (alias !== null) {
+      let routed = this.declarationTwinRouted.get(alias);
+      if (routed === undefined) {
+        routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+        this.declarationTwinRouted.set(alias, routed);
+      }
+      if (routed !== null) return routed;
+    }
+    return this.declarationTwinDirectSymbolOf(symbol);
   }
 
   private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
@@ -9016,7 +9043,28 @@ export class Lowerer {
     const name = ts.isImportClause(imported)
       ? "default"
       : (imported.propertyName ?? imported.name).text;
-    return this.moduleExportSymbolOf(dep, name, symbol);
+    const exported = this.moduleExportSymbolOf(dep, name, symbol);
+    if (exported !== null && !this.declaredOnlyInDeclarationFiles(exported)) return exported;
+    // `module.exports = require("./impl.cjs")`: the checker types the
+    // require from impl's own declaration, which can again name a third
+    // module's declaration. The binding is the one impl defines, when the
+    // modules the export forwards to agree on it.
+    let forwarded: ts.Symbol | null = null;
+    for (const mod of cjsReexportedModules(this.program, dep).slice(1)) {
+      if (mod.isDeclarationFile) continue;
+      const own = this.moduleExportSymbolOf(mod, name, symbol);
+      if (own === null || this.declaredOnlyInDeclarationFiles(own)) continue;
+      if (forwarded !== null && forwarded !== own) return null;
+      forwarded = own;
+    }
+    return forwarded;
+  }
+
+  private declaredOnlyInDeclarationFiles(symbol: ts.Symbol): boolean {
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)
+    );
   }
 
   private moduleExportSymbolOf(
@@ -9562,6 +9610,50 @@ export class Lowerer {
    * ESM default import of it binds — or null for every other module. */
   cjsRuntimeExportSnapshotOf(dep: ts.SourceFile): IrGlobal | null {
     return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
+  }
+
+  /** The stores that fill a module's namespace-member snapshot slots
+   * (`cjsNamespaceMemberSnapshots`) from its live export storage. */
+  cjsNamespaceSnapshotStores(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const slots = this.cjsNamespaceMemberSnapshots.get(dep);
+    if (slots === undefined) return [];
+    const stores: IrStmt[] = [];
+    for (const { snapshot, source } of slots.values()) {
+      stores.push({
+        kind: "assign",
+        localId: snapshot.id,
+        value: { kind: "varRef", localId: source.id, type: source.type, loc },
+        loc,
+      });
+    }
+    return stores;
+  }
+
+  /** The guarded copy an ESM link to CommonJS module `dep` emits right after
+   * `dep`'s initializer runs: the first link copies the namespace snapshot
+   * from `dep`'s current exports and sets the flag later links check. Node
+   * builds the namespace object at the first ESM import, so a dependency a
+   * require mutated before that import is what the namespace shows. */
+  cjsNamespaceSnapshotLinkStmts(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const stores = this.cjsNamespaceSnapshotStores(dep, loc);
+    const taken = this.cjsNamespaceSnapshotTakenGlobals.get(dep);
+    if (stores.length === 0 || taken === undefined) return [];
+    return [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: taken.id, type: taken.type, loc },
+          right: numLit(0, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [...stores, { kind: "assign", localId: taken.id, value: numLit(1, loc), loc }],
+        else_: null,
+        loc,
+      },
+    ];
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots
@@ -25513,6 +25605,17 @@ export class Lowerer {
    * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
    * are only dispatch sentinels for call-site-specific lowering. */
+  /** Module members Node exposes as a class: an ordinary function with its
+   * own prototype object. The value is the runtime's one-per-(module, name)
+   * class value, so `constructor` identity and `instanceof` compare one
+   * object. Values are the class's `length`. */
+  private static readonly MODULE_CLASS_VALUES: ReadonlyMap<string, number> = new Map([
+    ["http.IncomingMessage", 1],
+    ["http.ServerResponse", 2],
+    ["http2.Http2ServerRequest", 4],
+    ["http2.Http2ServerResponse", 2],
+  ]);
+
   lowerBuiltinCallableValue(bi: { module: string; member: string }, loc: SrcLoc): IrExpr | null {
     const assertion = assertFunctionValue(bi, loc);
     if (assertion) return assertion;
@@ -25544,6 +25647,20 @@ export class Lowerer {
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
       return this.lowerModuleSyncBuiltinValue(loc);
+    const classArity = Lowerer.MODULE_CLASS_VALUES.get(`${bi.module}.${bi.member}`);
+    if (classArity !== undefined) {
+      return {
+        kind: "libCall",
+        fn: "dyn.moduleClassValue",
+        args: [
+          { kind: "strLit", value: bi.module, type: STRING, loc },
+          { kind: "strLit", value: bi.member, type: STRING, loc },
+          numLit(classArity, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
   }

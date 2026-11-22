@@ -5614,6 +5614,7 @@ void scr_http_set_max_idle_parsers(const ScrDyn *max /*borrowed*/) {
  * resolve the proxy per target when they are made. */
 typedef struct {
   bool enabled;
+  bool from_process; /* configured by NODE_USE_ENV_PROXY, not by the caller */
   ScrStr *http_proxy;  /* HTTP_PROXY / http_proxy */
   ScrStr *https_proxy; /* HTTPS_PROXY / https_proxy */
   ScrStr *no_proxy;    /* NO_PROXY / no_proxy */
@@ -5671,6 +5672,7 @@ static void scr_http_proxy_env_apply(const ScrDyn *env /*borrowed, nullable*/) {
 
 void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
   scr_http_proxy_env_apply(env);
+  scr_http_proxy_env.from_process = false;
   scr_http_proxy_env_explicit = true;
   scr_http_proxy_env_checked = true;
 }
@@ -5684,6 +5686,7 @@ static void scr_http_proxy_env_default(void) {
   const char *use = getenv("NODE_USE_ENV_PROXY");
   if (use == NULL || strcmp(use, "1") != 0) return;
   scr_http_proxy_env_apply(NULL);
+  scr_http_proxy_env.from_process = true;
 }
 
 /* The createServer option checks Node's constructor runs as it reads each
@@ -8390,6 +8393,47 @@ static ScrStr *scr_http_proxy_display(const ScrStr *spec) { /* +1, nullable */
   return answer;
 }
 
+/* The configured value for ERR_PROXY_INVALID_CONFIG's message: credentials
+ * replaced by "[redacted]", and Node's prefix when the value came from the
+ * process environment rather than from a setGlobalProxyFromEnv call. */
+static ScrStr *scr_http_proxy_invalid_text(const ScrStr *spec) { /* +1 */
+  ScrStr *shown;
+  size_t scheme_end = SIZE_MAX;
+  for (size_t i = 0; i + 2 < spec->len; i++)
+    if (spec->data[i] == ':' && spec->data[i + 1] == '/' && spec->data[i + 2] == '/') {
+      scheme_end = i + 3;
+      break;
+    }
+  size_t path_at = spec->len;
+  for (size_t i = scheme_end == SIZE_MAX ? 0 : scheme_end; i < spec->len; i++)
+    if (spec->data[i] == '/') {
+      path_at = i;
+      break;
+    }
+  size_t at_sign = SIZE_MAX;
+  if (scheme_end != SIZE_MAX)
+    for (size_t i = scheme_end; i < path_at; i++)
+      if (spec->data[i] == '@') at_sign = i;
+  if (at_sign == SIZE_MAX) {
+    shown = scr_str_retain((ScrStr *)spec);
+  } else {
+    ScrHttpBuf out = {NULL, 0, 0};
+    scr_http_buf_append(&out, spec->data, scheme_end);
+    scr_http_buf_str(&out, "[redacted]");
+    scr_http_buf_append(&out, spec->data + at_sign, spec->len - at_sign);
+    shown = scr_str_new(out.data, out.len);
+    free(out.data);
+  }
+  if (!scr_http_proxy_env.from_process) return shown;
+  ScrHttpBuf prefixed = {NULL, 0, 0};
+  scr_http_buf_str(&prefixed, "Invalid proxy URL: ");
+  scr_http_buf_append(&prefixed, shown->data, shown->len);
+  ScrStr *text = scr_str_new(prefixed.data, prefixed.len);
+  free(prefixed.data);
+  scr_str_release(shown);
+  return text;
+}
+
 /* Whether the configured proxy applies to this target, and that it is one
  * this runtime can dial. A configured value that cannot be used fails closed
  * here (Node's ERR_PROXY_INVALID_CONFIG for a malformed value, a named
@@ -8403,7 +8447,9 @@ static bool scr_http_proxy_configured(bool secure, const ScrStr *host, double po
       scr_http_no_proxy_matches(scr_http_proxy_env.no_proxy, host, port))
     return false;
   if (scr_http_proxy_spec_invalid(spec)) {
-    scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
+    ScrStr *text = scr_http_proxy_invalid_text(spec);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_PROXY_INVALID_CONFIG");
+    scr_str_release(text);
     return false;
   }
   if (spec->len < 7 || memcmp(spec->data, "http://", 7) != 0) {
@@ -8415,18 +8461,57 @@ static bool scr_http_proxy_configured(bool secure, const ScrStr *host, double po
   return true;
 }
 
+/* Whether the connection hostname is a plain host or a complete IPv6
+ * literal on its own: no controls, whitespace, userinfo or path syntax can
+ * reach the proxy's request line through it. */
+static bool scr_http_host_literal_valid(const ScrStr *host) {
+  if (host->len == 0) return false;
+  if (host->data[0] == '[') {
+    if (host->len < 3 || host->data[host->len - 1] != ']') return false;
+    bool colon = false;
+    for (size_t i = 1; i + 1 < host->len; i++) {
+      unsigned char ch = (unsigned char)host->data[i];
+      if (ch == ':') colon = true;
+      else if (!(isxdigit(ch) || ch == '.' || ch == '%')) return false;
+    }
+    return colon;
+  }
+  for (size_t i = 0; i < host->len; i++) {
+    unsigned char ch = (unsigned char)host->data[i];
+    if (ch <= 0x20 || ch >= 0x7f) return false;
+    if (ch == '/' || ch == '?' || ch == '#' || ch == '@' || ch == '[' || ch == ']' ||
+        ch == '\\')
+      return false;
+  }
+  return true;
+}
+
+/* A validated hostname in a request line or header: a bare IPv6 literal gets
+ * its one pair of brackets, an already-bracketed one keeps them. */
+static void scr_http_buf_host(ScrHttpBuf *b, const ScrStr *host) {
+  bool bracketed = host->len > 1 && host->data[0] == '[' && host->data[host->len - 1] == ']';
+  bool v6 = !bracketed && memchr(host->data, ':', host->len) != NULL;
+  if (v6) scr_http_buf_str(b, "[");
+  scr_http_buf_append(b, host->data, host->len);
+  if (v6) scr_http_buf_str(b, "]");
+}
+
 /* Node's proxied-request target checks (RFC 9112 3.2.2): the authority must
  * parse as a URL, a supplied Host header must name that authority, and the
  * path must be origin-form or an absolute URI for the same authority. Throws
  * Node's errors; the request never dials. */
 static bool scr_http_proxy_target_valid(const ScrStr *host, double port, const ScrStr *path,
                                         ScrArr *header_pairs /*borrowed, nullable*/, bool secure) {
+  /* the raw bytes go into the proxy's request line, so they are checked
+   * before any URL parser can normalize a delimiter away */
+  if (!scr_http_host_literal_valid(host)) {
+    static const char msg[] = "Invalid URL";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "ERR_INVALID_URL");
+    return false;
+  }
   ScrHttpBuf base = {NULL, 0, 0};
-  bool v6 = memchr(host->data, ':', host->len) != NULL;
   scr_http_buf_str(&base, secure ? "https://" : "http://");
-  if (v6) scr_http_buf_str(&base, "[");
-  scr_http_buf_append(&base, host->data, host->len);
-  if (v6) scr_http_buf_str(&base, "]");
+  scr_http_buf_host(&base, host);
   if ((int)port != (secure ? 443 : 80)) {
     char pbuf[16];
     snprintf(pbuf, sizeof pbuf, ":%d", (int)port);
@@ -8587,6 +8672,7 @@ static bool scr_http_proxy_resolve(const ScrStr *host, double port, bool secure,
         if (p[i] < '0' || p[i] > '9') goto fail;
         want = want * 10 + (p[i] - '0');
       }
+      if (want > 65535) goto fail;
       proxy_port = want;
     }
   } else {
@@ -8599,6 +8685,7 @@ static bool scr_http_proxy_resolve(const ScrStr *host, double port, bool secure,
         if (p[i] < '0' || p[i] > '9') goto fail;
         want = want * 10 + (p[i] - '0');
       }
+      if (want > 65535) goto fail;
       proxy_port = want;
       hn = colon;
     }
@@ -8633,6 +8720,62 @@ static void scr_http_tunnel_message(void *ctx, int status, const char *head, siz
   scr_str_release(text);
   if (c->destroy_error != NULL) scr_error_release(c->destroy_error);
   c->destroy_error = err;
+}
+
+/* The proxy half of a request whose socket already connects to the proxy:
+ * the CONNECT tunnel for a secure target, or the absolute-form target and
+ * the proxy credentials for a plain one. Takes the target's strings. */
+static void scr_http_client_proxy_setup(ScrHttpClientReq *c, ScrHttpProxyTarget *proxy,
+                                        bool secure) {
+  if (secure) {
+    ScrHttpBuf head = {NULL, 0, 0};
+    char abuf[48];
+    scr_http_buf_str(&head, "CONNECT ");
+    scr_http_buf_host(&head, c->host);
+    snprintf(abuf, sizeof abuf, ":%d HTTP/1.1\r\n", c->port);
+    scr_http_buf_str(&head, abuf);
+    if (proxy->auth != NULL) {
+      scr_http_buf_str(&head, "proxy-authorization: ");
+      scr_http_buf_append(&head, proxy->auth->data, proxy->auth->len);
+      scr_http_buf_str(&head, "\r\n");
+    }
+    scr_http_buf_str(&head, "proxy-connection: keep-alive\r\n");
+    scr_http_buf_str(&head, "host: ");
+    scr_http_buf_host(&head, c->host);
+    snprintf(abuf, sizeof abuf, ":%d\r\n\r\n", c->port);
+    scr_http_buf_str(&head, abuf);
+    c->tunnel_pending = true;
+    scr_net_sock_set_tunnel_ex(c->sock, head.data, head.len, &scr_http_tunnel_message, c);
+    free(head.data);
+    scr_str_release(proxy->auth);
+    proxy->auth = NULL;
+    scr_str_release(proxy->host);
+    proxy->host = NULL;
+    return;
+  }
+  /* the request line carries the absolute URI, as Node's proxy form does;
+   * an absolute-form path already names it and is not prefixed again */
+  bool absolute_path =
+      c->path->len > 0 && c->path->data[0] != '/' && scr_url_can_parse(c->path);
+  if (absolute_path) {
+    c->proxy_forward = scr_str_retain(c->path);
+  } else {
+    ScrHttpBuf forward = {NULL, 0, 0};
+    scr_http_buf_str(&forward, "http://");
+    scr_http_buf_host(&forward, c->host);
+    if (c->port != 80) {
+      char pbuf[16];
+      snprintf(pbuf, sizeof pbuf, ":%d", c->port);
+      scr_http_buf_str(&forward, pbuf);
+    }
+    scr_http_buf_append(&forward, c->path->data, c->path->len);
+    c->proxy_forward = scr_str_new(forward.data, forward.len);
+    free(forward.data);
+  }
+  c->proxy_auth = proxy->auth;
+  proxy->auth = NULL;
+  scr_str_release(proxy->host);
+  proxy->host = NULL;
 }
 
 static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double port,
@@ -8672,7 +8815,9 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
         const ScrStr *spec = scr_http_proxy_spec(wrap != NULL);
         if (cb) scr_closure_release(cb);
         if (presock) scr_net_sock_release(presock);
-        scr_throw_error_msg_code(SCR_ERR_TYPE, spec->data, spec->len, "ERR_PROXY_INVALID_CONFIG");
+        ScrStr *text = scr_http_proxy_invalid_text(spec);
+        scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_PROXY_INVALID_CONFIG");
+        scr_str_release(text);
         return NULL;
       }
     }
@@ -8710,10 +8855,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     /* Node queues the implicit Host header at construction, so all three
      * outgoing header readers see it before end()/flushHeaders(). */
     ScrHttpBuf hostbuf = {NULL, 0, 0};
-    bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;
-    if (v6) scr_http_buf_str(&hostbuf, "[");
-    scr_http_buf_append(&hostbuf, c->host->data, c->host->len);
-    if (v6) scr_http_buf_str(&hostbuf, "]");
+    scr_http_buf_host(&hostbuf, c->host);
     if (c->port != c->default_port) {
       char portbuf[16];
       snprintf(portbuf, sizeof portbuf, ":%d", c->port);
@@ -8728,82 +8870,29 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   }
   if (cb) scr_net_ls_add(&c->resp_ls, cb, (void *)fn, true);
 
-  if (presock != NULL && !proxied) {
+  if (presock != NULL) {
     c->sock = presock;
     scr_net_sock_set_context(c->sock, c->als);
-  } else {
-    /* a proxied request never keeps an origin-bound socket */
-    if (presock != NULL) {
-      scr_net_sock_release(presock);
-      presock = NULL;
-    }
-    if (proxied && wrap != NULL) {
-      /* https through the proxy: the net unit's CONNECT tunnel; the TLS
-       * handshake starts when the proxy answers 200 */
-      ScrStr *dial = scr_net_blocking_lookup(proxy.host);
-      c->sock = scr_net_connect(proxy.port, dial, NULL);
-      scr_str_release(dial);
-      ScrHttpBuf head = {NULL, 0, 0};
-      bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;
-      char abuf[48];
-      scr_http_buf_str(&head, "CONNECT ");
-      if (v6) scr_http_buf_str(&head, "[");
-      scr_http_buf_append(&head, c->host->data, c->host->len);
-      if (v6) scr_http_buf_str(&head, "]");
-      snprintf(abuf, sizeof abuf, ":%d HTTP/1.1\r\n", c->port);
-      scr_http_buf_str(&head, abuf);
-      if (proxy.auth != NULL) {
-        scr_http_buf_str(&head, "proxy-authorization: ");
-        scr_http_buf_append(&head, proxy.auth->data, proxy.auth->len);
-        scr_http_buf_str(&head, "\r\n");
-      }
-      scr_http_buf_str(&head, "proxy-connection: keep-alive\r\n");
-      scr_http_buf_str(&head, "host: ");
-      if (v6) scr_http_buf_str(&head, "[");
-      scr_http_buf_append(&head, c->host->data, c->host->len);
-      if (v6) scr_http_buf_str(&head, "]");
-      snprintf(abuf, sizeof abuf, ":%d\r\n\r\n", c->port);
-      scr_http_buf_str(&head, abuf);
-      c->tunnel_pending = true;
-      scr_net_sock_set_tunnel_ex(c->sock, head.data, head.len, &scr_http_tunnel_message, c);
-      free(head.data);
+    if (proxied) scr_http_client_proxy_setup(c, &proxy, wrap != NULL);
+  } else if (proxied) {
+    /* the socket connects to the proxy, never to the origin */
+    ScrStr *dial = scr_net_blocking_lookup(proxy.host);
+    c->sock = scr_net_connect(proxy.port, dial, NULL);
+    scr_str_release(dial);
+    if (c->sock == NULL) {
+      scr_str_release(proxy.host);
       scr_str_release(proxy.auth);
-      scr_str_release(proxy.host);
-    } else if (proxied) {
-      /* the request line carries the absolute URI, as Node's proxy form
-       * does; an absolute-form path already names it and is not prefixed
-       * again */
-      bool absolute_path = c->path->len > 0 && c->path->data[0] != '/' &&
-                           scr_url_can_parse(c->path);
-      if (absolute_path) {
-        c->proxy_forward = scr_str_retain(c->path);
-      } else {
-        ScrHttpBuf forward = {NULL, 0, 0};
-        bool v6 = memchr(c->host->data, ':', c->host->len) != NULL;
-        scr_http_buf_str(&forward, "http://");
-        if (v6) scr_http_buf_str(&forward, "[");
-        scr_http_buf_append(&forward, c->host->data, c->host->len);
-        if (v6) scr_http_buf_str(&forward, "]");
-        if (c->port != 80) {
-          char pbuf[16];
-          snprintf(pbuf, sizeof pbuf, ":%d", c->port);
-          scr_http_buf_str(&forward, pbuf);
-        }
-        scr_http_buf_append(&forward, c->path->data, c->path->len);
-        c->proxy_forward = scr_str_new(forward.data, forward.len);
-        free(forward.data);
-      }
-      c->proxy_auth = proxy.auth;
-      proxy.auth = NULL;
-      ScrStr *dial = scr_net_blocking_lookup(proxy.host);
-      c->sock = scr_net_connect(proxy.port, dial, NULL);
-      scr_str_release(dial);
-      scr_str_release(proxy.host);
-    } else {
-      ScrStr *dial = scr_net_blocking_lookup(host);
-      c->sock = scr_net_connect(port, dial, NULL);
-      scr_str_release(dial);
+      ScrStr *text = scr_http_proxy_invalid_text(scr_http_proxy_spec(wrap != NULL));
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_PROXY_INVALID_CONFIG");
+      scr_str_release(text);
+      scr_http_client_release(c);
+      return NULL;
     }
+    scr_http_client_proxy_setup(c, &proxy, wrap != NULL);
+  } else {
+    ScrStr *dial = scr_net_blocking_lookup(host);
+    c->sock = scr_net_connect(port, dial, NULL);
+    scr_str_release(dial);
   }
   ScrHttpConn *conn = calloc(1, sizeof *conn);
   if (!conn) scr_http_oom();
@@ -9587,15 +9676,29 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
     scr_str_release(name);
     return NULL;
   }
-  /* a free pooled socket for the name serves the request right away */
+  /* a free pooled socket for the name serves the request right away; a
+   * proxied request never takes one, since the pool holds direct dials */
   ScrHttpAgentFree *reuse =
       !proxied && ag->keep_alive ? scr_http_agent_free_take(ag, name, pool_key) : NULL;
-  bool queue = !proxied && reuse == NULL && (scr_http_agent_active(ag, name) >= ag->max_sockets ||
-                                             (double)ag->sock_count->n >= ag->max_total);
-  ScrNetSocket *presock = proxied ? NULL
-                          : socket_path != NULL ? scr_http_socket_dialer(socket_path, queue || reuse)
-                          : queue || reuse    ? scr_net_connect_deferred(p, host)
-                                              : NULL;
+  /* the agent's limits cover proxied requests too */
+  bool queue = reuse == NULL && (scr_http_agent_active(ag, name) >= ag->max_sockets ||
+                                 (double)ag->sock_count->n >= ag->max_total);
+  ScrNetSocket *presock = NULL;
+  if (proxied) {
+    if (queue || reuse != NULL) {
+      /* a waiting request's dial targets the proxy, never the origin */
+      ScrHttpProxyTarget target;
+      if (scr_http_proxy_resolve(host, p, wrap != NULL, &target)) {
+        presock = scr_net_connect_deferred(target.port, target.host);
+        scr_str_release(target.host);
+        scr_str_release(target.auth);
+      }
+    }
+  } else if (socket_path != NULL) {
+    presock = scr_http_socket_dialer(socket_path, queue || reuse != NULL);
+  } else if (queue || reuse != NULL) {
+    presock = scr_net_connect_deferred(p, host);
+  }
   ScrHttpClientReq *c = scr_http_request_impl(host, p, path, method, timeout_ms, header_pairs,
                                                cb, fn, default_port, wrap, wrap_ctx, env_proxy,
                                                presock);

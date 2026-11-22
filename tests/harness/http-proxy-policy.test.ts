@@ -385,3 +385,138 @@ http.get({ host: "target.invalid", port: 80, path: "http://target.invalid/z?q=1"
     "GET http://target.invalid/z?q=1 HTTP/1.1",
   ]);
 });
+
+test("an out-of-range proxy port fails closed instead of crashing", async () => {
+  const proxy = await recordingProxy(okAnswer("prox"));
+  const source = `import * as http from "node:http";
+try {
+  http.get({ host: "target.invalid", port: 80, path: "/x" }).on("error", (e) => console.log("error", e.code));
+  console.log("constructed");
+} catch (e) {
+  console.log("throw", e.code, e.message);
+}
+`;
+  const { bin } = await build("badport", source);
+  const native = await run(bin, [], {
+    NODE_USE_ENV_PROXY: "1",
+    HTTP_PROXY: `http://user:secret@127.0.0.1:${proxy.port + 100000}`,
+  });
+  expect(native.code).toBe(0);
+  expect(native.stdout).toContain("throw ERR_PROXY_INVALID_CONFIG");
+  expect(native.stdout).toContain("Invalid proxy URL: http://[redacted]@127.0.0.1:");
+  expect(native.stdout).not.toContain("secret");
+  expect(proxy.cons.length).toBe(0);
+});
+
+test("an explicit setGlobalProxyFromEnv value with a bad port is refused, credentials removed", async () => {
+  const source = `import * as http from "node:http";
+try {
+  http.setGlobalProxyFromEnv({ http_proxy: "http://relay:hunter2@127.0.0.1:99999" });
+  http.get({ host: "target.invalid", port: 80, path: "/x" }).on("error", (e) => console.log("error", e.code));
+  console.log("constructed");
+} catch (e) {
+  console.log("throw", e.code, e.message);
+}
+`;
+  const { bin } = await build("badportexplicit", source);
+  const native = await run(bin, [], {});
+  expect(native.code).toBe(0);
+  expect(native.stdout).toContain("throw ERR_PROXY_INVALID_CONFIG");
+  expect(native.stdout).toContain("http://[redacted]@127.0.0.1:99999");
+  expect(native.stdout).not.toContain("hunter2");
+});
+
+test("a bracketed IPv6 host reaches the proxy once bracketed", async () => {
+  const proxy = await recordingProxy(okAnswer("prox"));
+  const source = `import * as http from "node:http";
+http.get({ host: "[::1]", port: 80, path: "/x" }, (res) => {
+  let body = "";
+  res.setEncoding("utf8");
+  res.on("data", (chunk) => { body += chunk; });
+  res.on("end", () => console.log("body", body));
+}).on("error", (e) => console.log("error", e.code));
+`;
+  const { bin, entry } = await build("v6host", source);
+  const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxy.port}` };
+  const reference = await run(process.execPath, [entry], env);
+  const native = await run(bin, [], env);
+  expect(native.stdout).toBe(reference.stdout);
+  expect(reference.stdout.trim()).toBe("body prox");
+  expect(proxy.heads).toEqual(["GET http://[::1]/x HTTP/1.1", "GET http://[::1]/x HTTP/1.1"]);
+});
+
+test("a hostname that smuggles line breaks into the proxy target is rejected", async () => {
+  const proxy = await recordingProxy(okAnswer("prox"));
+  const source = `import * as http from "node:http";
+try {
+  http.get({
+    host: "[::1]\\r\\nX-Evil: 1",
+    port: 80,
+    path: "/x",
+    headers: { host: "[::1]" },
+  }).on("error", () => {});
+  console.log("accepted");
+} catch (e) {
+  console.log("throw", e.code, e.message);
+}
+`;
+  const { bin } = await build("v6inject", source);
+  const native = await run(bin, [], {
+    NODE_USE_ENV_PROXY: "1",
+    HTTP_PROXY: `http://127.0.0.1:${proxy.port}`,
+  });
+  expect(native.code).toBe(0);
+  expect(native.stdout.trim()).toBe("throw ERR_INVALID_URL Invalid URL");
+  expect(proxy.cons.length).toBe(0);
+});
+
+test("proxied requests respect the global agent's socket limits", async () => {
+  const heads: string[] = [];
+  let open = 0;
+  let peak = 0;
+  const proxy = createNetServer((sock) => {
+    open += 1;
+    if (open > peak) peak = open;
+    sock.on("close", () => {
+      open -= 1;
+    });
+    sock.once("data", (buf) => {
+      heads.push(buf.toString("utf8").split("\r\n")[0] ?? "");
+      // a slow answer: an unqueued second request would overlap this one
+      setTimeout(() => {
+        sock.end("HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+      }, 150);
+    });
+  });
+  servers.push(proxy);
+  await new Promise<void>((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+  const proxyPort = (proxy.address() as { port: number }).port;
+  const source = `import * as http from "node:http";
+http.globalAgent.maxSockets = 1;
+http.globalAgent.maxTotalSockets = 1;
+const hosts = ["target.invalid", "other.invalid"];
+let done = 0;
+for (const host of hosts) {
+  http.get({ host, port: 80, path: "/x" }, (res) => {
+    res.resume();
+    res.on("end", () => {
+      done += 1;
+      if (done === hosts.length) console.log("done", done);
+    });
+  }).on("error", (e) => console.log("error", e.code));
+}
+`;
+  const { bin, entry } = await build("limits", source);
+  const env = { NODE_USE_ENV_PROXY: "1", HTTP_PROXY: `http://127.0.0.1:${proxyPort}` };
+  const reference = await run(process.execPath, [entry], env);
+  const native = await run(bin, [], env);
+  expect(native.stdout).toBe(reference.stdout);
+  expect(reference.stdout.trim()).toBe("done 2");
+  expect(peak).toBe(1);
+  expect([...heads].sort()).toEqual([
+    "GET http://other.invalid/x HTTP/1.1",
+    "GET http://other.invalid/x HTTP/1.1",
+    "GET http://target.invalid/x HTTP/1.1",
+    "GET http://target.invalid/x HTTP/1.1",
+  ]);
+});

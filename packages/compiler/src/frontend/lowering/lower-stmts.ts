@@ -1445,8 +1445,10 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // An array-destructuring position can be missing at run time (a shorter
     // array): the binding takes the same undefined-armed type the ordinary
     // pattern binding adopts, so the box holds the missing element.
+    let widenedBox = false;
     if (ts.isBindingElement(decl) && ts.isArrayBindingPattern(decl.parent)) {
       type = lowerer.runtimeOptionalType(type);
+      widenedBox = true;
     }
     if (
       ts.isVariableDeclaration(decl) &&
@@ -1494,8 +1496,16 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     entry.ctx.tdzPredeclared.set(symbol, local);
     // A widened box (an array-destructuring target) keeps its union at
     // reads: the checker types the binding by the element type, which a
-    // missing element contradicts.
-    if (local.type.kind === "union") {
+    // missing element contradicts. An ordinary forward-captured binding
+    // keeps its declared type exactly: a union there admits no undefined,
+    // and marking it runtime-optional would answer undefined from a guard
+    // that narrowed it. Only a mark the storage can actually answer is
+    // legal: the widened type must carry the undefined arm.
+    if (
+      widenedBox &&
+      local.type.kind === "union" &&
+      lowerer.armTag(local.type.unionId, UNDEFINED_T) >= 0
+    ) {
       const root = lowerer.runtimeOptionalRootOf(local);
       lowerer.runtimeOptionalLocals.add(root);
       lowerer.runtimeOptionalStorageLocals.add(root);
@@ -7252,8 +7262,15 @@ export function bindPatternTarget(
       });
       // A widened box (an array-destructuring target) keeps its union at
       // reads: the checker types the binding by the element type, which a
-      // missing element contradicts.
-      if (pre.type.kind === "union") {
+      // missing element contradicts. Only a box wider than the checker's
+      // binding type was widened (an ordinary forward-captured target keeps
+      // its declared type, undefined arm or not), and only a box whose
+      // storage really carries the undefined arm may be marked.
+      if (
+        pre.type.kind === "union" &&
+        lowerer.armTag(pre.type.unionId, UNDEFINED_T) >= 0 &&
+        !typeEquals(pre.type, lowerer.irTypeOf(name))
+      ) {
         const root = lowerer.runtimeOptionalRootOf(pre);
         lowerer.runtimeOptionalLocals.add(root);
         lowerer.runtimeOptionalStorageLocals.add(root);

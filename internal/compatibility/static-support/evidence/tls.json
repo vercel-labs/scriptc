@@ -1,0 +1,3 @@
+{
+    "node-builtin.tls": ["tests/corpus/2331-tls-server-options-typed.ts", "tests/corpus/2557-tls-ca-store.ts"]
+}

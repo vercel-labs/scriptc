@@ -930,6 +930,7 @@ import {
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
   isArrayIterationCallback,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -8945,15 +8946,25 @@ export class Lowerer {
    * module, and the lowering compiles the JavaScript. A declaration bridge
    * (`export * from "../types"`) re-exports a declaration another module
    * implements, so the import the reference came through answers too. Null
-   * when no compiled module implements the symbol. */
+   * when no compiled module implements the symbol.
+   *
+   * The import's own module answers first. A declaration can re-export a
+   * name from another package's declaration (`@types/react/jsx-runtime`'s
+   * `export { Fragment } from "./"`) while the JavaScript Node loads defines
+   * its own binding of that name (react-jsx-runtime's
+   * `exports.Fragment = REACT_FRAGMENT_TYPE`). The declaration's own twin is
+   * then a different module, whose storage the importer's module may not
+   * have initialized yet, so it is only the fallback. */
   declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
-    const direct = this.declarationTwinDirectSymbolOf(symbol);
-    if (direct !== null || alias === null) return direct;
-    const cached = this.declarationTwinRouted.get(alias);
-    if (cached !== undefined) return cached;
-    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
-    this.declarationTwinRouted.set(alias, routed);
-    return routed;
+    if (alias !== null) {
+      let routed = this.declarationTwinRouted.get(alias);
+      if (routed === undefined) {
+        routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+        this.declarationTwinRouted.set(alias, routed);
+      }
+      if (routed !== null) return routed;
+    }
+    return this.declarationTwinDirectSymbolOf(symbol);
   }
 
   private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
@@ -9033,7 +9044,28 @@ export class Lowerer {
     const name = ts.isImportClause(imported)
       ? "default"
       : (imported.propertyName ?? imported.name).text;
-    return this.moduleExportSymbolOf(dep, name, symbol);
+    const exported = this.moduleExportSymbolOf(dep, name, symbol);
+    if (exported !== null && !this.declaredOnlyInDeclarationFiles(exported)) return exported;
+    // `module.exports = require("./impl.cjs")`: the checker types the
+    // require from impl's own declaration, which can again name a third
+    // module's declaration. The binding is the one impl defines, when the
+    // modules the export forwards to agree on it.
+    let forwarded: ts.Symbol | null = null;
+    for (const mod of cjsReexportedModules(this.program, dep).slice(1)) {
+      if (mod.isDeclarationFile) continue;
+      const own = this.moduleExportSymbolOf(mod, name, symbol);
+      if (own === null || this.declaredOnlyInDeclarationFiles(own)) continue;
+      if (forwarded !== null && forwarded !== own) return null;
+      forwarded = own;
+    }
+    return forwarded;
+  }
+
+  private declaredOnlyInDeclarationFiles(symbol: ts.Symbol): boolean {
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)
+    );
   }
 
   private moduleExportSymbolOf(
@@ -19111,7 +19143,7 @@ export class Lowerer {
     // destination's representation (a bare unit literal has none).
     if (
       expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
+      isUnitType(expr.result.type) &&
       !typeEquals(expr.type, expected)
     ) {
       const result = this.coerceToExpected(expr.result, expected);
@@ -19801,6 +19833,32 @@ export class Lowerer {
         return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
       }
       return expr;
+    }
+    if (isUnitType(expr.type) && expr.kind === "seqExpr") {
+      // An undefined-typed sequence (an effectful `void` operand) flowing
+      // into an undefined-armed union: the wrap holds the unit literal, and
+      // the sequence's effects run before it.
+      const tag = this.armTag(expected.unionId, expr.type);
+      if (tag >= 0) {
+        const literal: IrExpr = {
+          kind: "unitLit",
+          unit: expr.type.kind === "nullT" ? "null" : "undefined",
+          type: expr.type,
+          loc: expr.loc,
+        };
+        const wrapped: IrExpr = {
+          kind: "unionWrap",
+          unionId: expected.unionId,
+          tag,
+          value: literal,
+          type: expected,
+          loc: expr.loc,
+        };
+        const effects = unitEffectStatements(expr);
+        return effects.length === 0
+          ? wrapped
+          : { kind: "seqExpr", stmts: effects, result: wrapped, type: expected, loc: expr.loc };
+      }
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -21804,6 +21862,15 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return void f()`: the sequence runs its effect and JS returns
+      // undefined, so its statements become the tail of the block (a
+      // nested sequence's result keeps its own effects too).
+      if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(e), { kind: "return", value: null, loc }],
+          loc,
+        };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {

@@ -17109,12 +17109,11 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Until the program writes its first
-    // constructor value, values are not looked at, so a diagnostic made
-    // that early is marked too: lowering order is not evaluation order, and
-    // the mark counts only if the program turns out to hold a constructor.
-    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
-      d.heldConstructor = true;
+    // (held-constructors.ts). Values are looked at from the first statement
+    // lowered, so a diagnostic made before the program writes its first
+    // constructor value is marked only when its own statement met one; the
+    // mark counts only if the program turns out to hold a constructor.
+    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in

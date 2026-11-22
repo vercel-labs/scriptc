@@ -19,17 +19,19 @@
  * fewer refusals, a refusal deferred to run time counting like a build
  * error behind the errors (constructorRefusals, fewerRefusals).
  *
- * This module answers which refusals involve one. Once the program has
- * written a constructor as a value (Lowerer.constructorFunctionTypes), the
- * lowerer counts each value it lowers whose type holds a constructor's
- * function type and each mapping of such a type
+ * This module answers which refusals involve one. From the first statement
+ * lowered, the lowerer counts each value it lowers whose type holds a
+ * constructor's function type and each mapping of such a type
  * (Lowerer.constructorTouches); a diagnostic made after the innermost
  * statement being lowered counted one is marked
- * (ScrDiagnostic.heldConstructor), and so is every diagnostic made before
- * that first value. The mark over-approximates on purpose: it decides
- * only whether the comparison pass runs, never which pass stands. A program
- * that writes no constructor as a value looks at nothing and never
- * compares. */
+ * (ScrDiagnostic.heldConstructor). Counting starts before the program
+ * writes its first constructor value (Lowerer.constructorFunctionTypes),
+ * because lowering order is not evaluation order; marking every diagnostic
+ * made before that value instead sent programs with unrelated refusals
+ * (React's untyped code, for one) through a whole second lowering whose
+ * result they then discarded. The mark over-approximates on purpose: it
+ * decides only whether the comparison pass runs, never which pass stands.
+ * A program that writes no constructor as a value never compares. */
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import {
   BIGINT_T,

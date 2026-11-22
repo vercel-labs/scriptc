@@ -368,17 +368,25 @@ static void scr_net_dyn_fire_arg(ScrClosure *cb, const ScrDyn *arg) {
   scr_dyn_release(fn);
 }
 
-/* The JS function a listener entry stands for: the boxed function of a
- * dyn listener closure, otherwise the closure's own identity. */
-static ScrClosure *scr_net_listener_root(const ScrNetL *e) {
-  ScrClosure *c = e->cb;
-  if (e->fn == (void *)&scr_net_dyn_fire_arg || c->fn == (void *)&scr_dyn_listener_fire0) {
+/* The JS function a listener closure stands for: the boxed function of a
+ * dynamic listener adapter (the same unwrapping a stored entry gets),
+ * otherwise the closure's own identity. Removal has to unwrap the closure
+ * it is given exactly like the entries it compares against, or a
+ * setTimeout(0, cb) whose cb was wrapped in a fresh adapter never finds
+ * the registration the first adapter made. */
+static ScrClosure *scr_net_closure_root(ScrClosure *c) {
+  if (c->fn == (void *)&scr_dyn_listener_fire0 || c->fn == (void *)&scr_net_dyn_fire_arg) {
     ScrDyn *boxed = scr_dyn_listener_fn(c);
     ScrClosure *inner = boxed->kind == SCR_DYN_FUNC ? boxed->v.fn.clo : NULL;
     scr_dyn_release(boxed);
     if (inner != NULL) return inner->identity ? inner->identity : inner;
   }
   return c->identity ? c->identity : c;
+}
+
+/* The JS function a listener entry stands for. */
+static ScrClosure *scr_net_listener_root(const ScrNetL *e) {
+  return scr_net_closure_root(e->cb);
 }
 
 /* The closure array 'listeners' answers: every entry's function value in
@@ -407,7 +415,7 @@ void scr_net_new_listener_thunk1(ScrClosure *cb, ScrStr *name) {
 }
 
 void scr_net_ls_remove_last(ScrNetLs *l, ScrClosure *cb /*borrowed*/) {
-  ScrClosure *root = cb->identity ? cb->identity : cb;
+  ScrClosure *root = scr_net_closure_root(cb);
   for (size_t left = l->n; left > 0; left--) {
     size_t i = left - 1;
     if (scr_net_listener_root(&l->ls[i]) != root) continue;
@@ -422,7 +430,7 @@ void scr_net_ls_remove_last(ScrNetLs *l, ScrClosure *cb /*borrowed*/) {
 /* The listener standing for the same function as `root` (through any
  * adapter) leaves the list: removeListener's first match. */
 static void scr_net_ls_remove_fn(ScrNetLs *l, ScrClosure *root) {
-  root = root->identity ? root->identity : root;
+  root = scr_net_closure_root(root);
   for (size_t i = 0; i < l->n; i++) {
     ScrClosure *c = l->ls[i].cb;
     if (scr_net_listener_root(&l->ls[i]) != root) continue;

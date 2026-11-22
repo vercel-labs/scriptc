@@ -119,18 +119,29 @@ describe("keepRowsAfterDeletion", () => {
 });
 
 describe("droppedSignatureEdits", () => {
-  const base = new Set(["fs.read", "http.start"]);
-  const tip = new Set(["fs.read", "http.start"]);
+  const base = new Map([
+    ["fs.read", { text: "old fs" }],
+    ["http.start", { text: "old http" }],
+  ]);
+  const tip = new Map([
+    ["fs.read", { text: "new fs" }],
+    ["http.start", { text: "old http" }],
+  ]);
 
-  it("reports only the requested prefix's dropped edit", () => {
+  it("reports the requested prefix's edited entry main no longer has", () => {
     expect(droppedSignatureEdits("fs", tip, base, new Set())).toEqual(["fs.read"]);
   });
 
-  it("does not report an entry another prefix kept", () => {
-    expect(droppedSignatureEdits("http", tip, base, new Set(["http.start"]))).toEqual([]);
+  it("does not report an unchanged entry main removed", () => {
+    expect(droppedSignatureEdits("http", tip, base, new Set())).toEqual([]);
   });
 
-  it("ignores keys the branch did not edit", () => {
-    expect(droppedSignatureEdits("fs", tip, new Set(), new Set())).toEqual([]);
+  it("does not report an edit that was placed", () => {
+    expect(droppedSignatureEdits("fs", tip, base, new Set(["fs.read"]))).toEqual([]);
+  });
+
+  it("does not report an entry the branch did not touch", () => {
+    const untouched = new Map([["fs.read", { text: "old fs" }]]);
+    expect(droppedSignatureEdits("fs", untouched, base, new Set())).toEqual([]);
   });
 });

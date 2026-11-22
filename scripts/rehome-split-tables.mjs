@@ -615,7 +615,7 @@ function rehomeSignatures(baseText, tipText, report) {
       seen.add(chunk.key);
     }
     const final = [...result, ...additions];
-    for (const key of droppedSignatureEdits(prefix, tipByKey.keys(), baseByKey, seen)) {
+    for (const key of droppedSignatureEdits(prefix, tipByKey, baseByKey, seen)) {
       report.missing.push(
         `signature ${key}: the branch edits it but main no longer has it; inspect by hand`,
       );
@@ -659,10 +659,16 @@ function rehomeSignatures(baseText, tipText, report) {
  * not receive: present in the merge base and the branch tip, absent from the
  * placed result. Only the prefix's own keys are considered; a table-wide scan
  * would report every other module's unchanged entries as missing. */
-export function droppedSignatureEdits(prefix, tipKeys, baseKeys, placedKeys) {
-  return [...tipKeys].filter(
-    (key) => key.split(".")[0] === prefix && baseKeys.has(key) && !placedKeys.has(key),
-  );
+export function droppedSignatureEdits(prefix, tipByKey, baseByKey, placedKeys) {
+  return [...tipByKey]
+    .filter(
+      ([key, chunk]) =>
+        key.split(".")[0] === prefix &&
+        baseByKey.has(key) &&
+        !placedKeys.has(key) &&
+        chunk.text !== baseByKey.get(key).text,
+    )
+    .map(([key]) => key);
 }
 
 function rehomeNeverThrow(baseText, tipText, report) {
@@ -703,8 +709,8 @@ function rehomeNeverThrow(baseText, tipText, report) {
       if (!baseByName.has(name) && !present.has(name)) result.push({ text });
     }
     const finalNames = new Set(result.map((chunk) => entryName(chunk.text)));
-    for (const name of tipByName.keys()) {
-      if (baseByName.has(name) && !finalNames.has(name))
+    for (const [name, text] of tipByName) {
+      if (baseByName.has(name) && !finalNames.has(name) && text !== baseByName.get(name))
         report.missing.push(
           `never-throw ${name}: the branch edits it but main no longer has it; inspect by hand`,
         );
@@ -778,7 +784,10 @@ function rehomeStaticSupport(baseText, tipText, report) {
     for (const [key, text] of tipByKey) {
       if (present.has(key)) continue;
       if (beforeByKey.has(key)) {
-        report.missing.push(`${path}: the branch edits a row main no longer has; inspect by hand`);
+        if (text !== beforeByKey.get(key))
+          report.missing.push(
+            `${path}: the branch edits a row main no longer has; inspect by hand`,
+          );
         continue;
       }
       // The branch added this row, but main may have reshaped the same rows

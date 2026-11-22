@@ -3,6 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
+import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
 import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -780,10 +781,11 @@ function assignsLocal(statements: readonly IrStmt[], localId: string): boolean {
  * branch by its class's key and the branch keeps its own key guard, so a
  * reader treats the branches as the chain they were lowered from. */
 function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
-  if (!body.some(isClassDispatch)) return body;
+  if (!body.some((stmt) => isClassDispatch(stmt) || isClassCaseDispatch(stmt))) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassDispatch(stmt)) {
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassDispatch(stmt)) {
       // A case of branches that can complete ends with a `break`.
       for (const { body: caseBody } of stmt.cases)
         for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
@@ -799,6 +801,122 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
     stmt.disc.kind === "libCall" &&
     (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
   );
+}
+
+/** The fewest distinct classes a run of returning capsule branches selects
+ * among for caseBranchRuns to replace it with a table, after the run's head
+ * (CLASS_DISPATCH_HEAD), which stays in the chain. */
+const MIN_CLASS_CASE_KEYS = 6;
+
+/** A branch caseBranchRuns can move into a case: `if (dyn.typedRefIs(r,
+ * "object:C")) { ... return }` on a receiver local `r`, whose statements
+ * end by returning, never write `r`, and hold no `break` the switch would
+ * bind. Its exact key test is the one the table's selector makes. */
+function caseBranch(stmt: IrStmt): { receiver: string; key: string } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const cond = stmt.cond;
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
+  if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  if (key.value.includes("\n") || classKeyHash(key.value) < 0) return null;
+  if (stmt.then[stmt.then.length - 1]?.kind !== "return") return null;
+  if (assignsLocal(stmt.then, value.localId) || leavesSwitch(stmt.then)) return null;
+  return { receiver: value.localId, key: key.value };
+}
+
+/** A statement list's text without source positions, which decides when
+ * two classes' branches are the same statements. */
+function statementsText(statements: readonly IrStmt[]): string {
+  return JSON.stringify(statements, (field, value: unknown) =>
+    field === "loc" ? undefined : value,
+  );
+}
+
+/** Replace each run of consecutive returning capsule branches on one
+ * receiver (caseBranch), after the run's first CLASS_DISPATCH_HEAD branches,
+ * with a switch on `dyn.classCase(receiver, table)` when the rest tests at
+ * least MIN_CLASS_CASE_KEYS distinct classes. The table names each class's
+ * key once with the case that holds its branch's statements; the selector
+ * answers the case of the class whose exact key test passes (the backend
+ * switches on the key's hash and compares the key pointer once,
+ * backend/llvm/lib-dispatch.ts), so the cases need no guards of their own.
+ * Classes of the same key never pass different tests, so a later branch of
+ * a key already in the table is unreachable and leaves; branches whose
+ * statements are the same share a case. Each case returns, as its branch
+ * did, and any other value (0) takes the statements after the run, as the
+ * chain's failing tests did. The head runs first, as before, so a class it
+ * selects never computes the index. */
+export function caseBranchRuns(body: IrStmt[]): IrStmt[] {
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const start = i;
+    const first = caseBranch(body[i]!);
+    if (first === null) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    const run: { key: string; stmt: IrStmt & { kind: "if" } }[] = [];
+    let branch: ReturnType<typeof caseBranch> = first;
+    while (branch !== null && branch.receiver === first.receiver) {
+      run.push({ key: branch.key, stmt: body[i] as IrStmt & { kind: "if" } });
+      i++;
+      branch = i < body.length ? caseBranch(body[i]!) : null;
+    }
+    const head = Math.min(CLASS_DISPATCH_HEAD, run.length);
+    const rest = run.slice(head);
+    const keys = new Set(rest.map((entry) => entry.key));
+    if (keys.size < MIN_CLASS_CASE_KEYS) {
+      if (rebuilt) for (const entry of run) rebuilt.push(entry.stmt);
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    for (const entry of run.slice(0, head)) rebuilt.push(entry.stmt);
+    // A key the head tests never reaches the switch; a repeated key's later
+    // branch is unreachable in the chain too.
+    const seen = new Set(run.slice(0, head).map((entry) => entry.key));
+    const caseOf = new Map<string, number>();
+    const lines: string[] = [];
+    const cases: { test: IrExpr; body: IrStmt[] }[] = [];
+    const loc = rest[0]!.stmt.loc;
+    for (const entry of rest) {
+      if (seen.has(entry.key)) continue;
+      seen.add(entry.key);
+      const text = statementsText(entry.stmt.then);
+      let number = caseOf.get(text);
+      if (number === undefined) {
+        number = cases.length + 1;
+        caseOf.set(text, number);
+        // The block keeps the branch's locals its own, as its `if` did: a
+        // switch's cases share one scope.
+        cases.push({
+          test: numLit(number, entry.stmt.loc),
+          body: [
+            { kind: "block", body: entry.stmt.then, loc: entry.stmt.loc },
+            { kind: "break", loc: entry.stmt.loc },
+          ],
+        });
+      }
+      lines.push(`${number} ${entry.key}`);
+    }
+    const receiver = (rest[0]!.stmt.cond as IrExpr & { kind: "libCall" }).args[0]!;
+    rebuilt.push({
+      kind: "switch",
+      disc: {
+        kind: "libCall",
+        fn: "dyn.classCase",
+        args: [receiver, { kind: "strLit", value: lines.join("\n"), type: STRING, loc }],
+        type: F64,
+        loc,
+      },
+      cases,
+      loc,
+    });
+  }
+  return rebuilt ?? body;
 }
 
 /** One class branch of a run: the receiver local it tests, the key it tests
@@ -7736,9 +7854,13 @@ export class ClassDynamicDispatch {
    * keep the chain. */
   private indexClassBranches(lowerer: Lowerer): void {
     const seen = new Set<IrFunction>();
+    const propertyHelpers = new Set([...this.properties.values()].map((dispatch) => dispatch.fn));
     for (const fn of [...this.generated, ...lowerer.liftedFns]) {
       if (seen.has(fn)) continue;
       seen.add(fn);
+      // A property helper's runs of class branches select their class from
+      // a table (caseBranchRuns); the runs it leaves keep the indexing below.
+      if (propertyHelpers.has(fn)) fn.body = caseBranchRuns(fn.body);
       fn.body = indexBranchRuns(fn.body);
     }
   }

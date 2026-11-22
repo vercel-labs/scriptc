@@ -5405,10 +5405,11 @@ export function lowerServerProperty(
         type: unionType,
         loc,
       };
-      // The declared type is the HTTP/2 stream, so a plain read narrows
-      // the HTTP/1 undefined arm away; the method-call forms above keep
-      // it for the allowHTTP1 handler shape.
-      return lowerer.coerceInto(expr, optional, HTTP2STREAM_T);
+      // A plain read keeps the HTTP/1 undefined arm: on an allowHTTP1
+      // server req.stream is Node's undefined there, so a presence test,
+      // a binding or a nullish default sees it (the direct-call forms
+      // above still throw JS's member TypeError for it).
+      return optional;
     }
     if (name === "session") {
       // Http2ServerRequest's h2-only members are not exposed through the

@@ -103,6 +103,7 @@ declare module "http2" {
   }
   export interface Http2SecureServer {
     listen(port: number, callback?: () => void): void;
+    listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort

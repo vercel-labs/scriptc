@@ -2194,35 +2194,33 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
   case SCR_H2_F_GOAWAY: {
     if (n < 8) goto proto_err;
     uint32_t code = ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) | ((uint32_t)p[6] << 8) | p[7];
-    bool first_goaway = !s->goaway_recv;
     s->goaway_recv = true;
     s->goaway_code = code;
-    /* Node's session closes on the first GOAWAY (its socket goes away), so
-     * its listeners hear one; a peer's later GOAWAY never reaches it. */
-    if (first_goaway) {
-      ScrNetL *snap;
-      size_t nl = scr_net_ls_snapshot(&s->goaway_ls, &snap);
-      int32_t last = (int32_t)((((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]) & 0x7fffffff);
-      /* the opaque data, when the frame carries any (a Buffer; Node passes
-       * undefined otherwise) */
-      ScrBytes *opaque = NULL;
-      if (n > 8 && nl > 0) {
-        opaque = scr_bytes_new(SCR_BYTES_U8, (double)(n - 8));
-        opaque->is_buffer = true;
-        memcpy(opaque->data, p + 8, n - 8);
-      }
-      scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
-      for (size_t i = 0; i < nl; i++) {
-        if (!scr_exc_pending()) {
-          ((ScrH2GoawayFn)snap[i].fn)(snap[i].cb, (double)code, (double)last, opaque);
-        }
-        scr_closure_release(snap[i].cb);
-      }
-      scr_dyn_this_pop();
-      free(snap);
-      if (opaque != NULL) scr_bytes_release(opaque);
-      if (scr_exc_pending()) return false;
+    /* Every received GOAWAY reaches the listeners: a graceful two-stage
+     * close sends one that stops new streams, then a later one carrying
+     * the final last stream id, and Node emits 'goaway' for each. */
+    ScrNetL *snap;
+    size_t nl = scr_net_ls_snapshot(&s->goaway_ls, &snap);
+    int32_t last = (int32_t)((((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]) & 0x7fffffff);
+    /* the opaque data, when the frame carries any (a Buffer; Node passes
+     * undefined otherwise) */
+    ScrBytes *opaque = NULL;
+    if (n > 8 && nl > 0) {
+      opaque = scr_bytes_new(SCR_BYTES_U8, (double)(n - 8));
+      opaque->is_buffer = true;
+      memcpy(opaque->data, p + 8, n - 8);
     }
+    scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+    for (size_t i = 0; i < nl; i++) {
+      if (!scr_exc_pending()) {
+        ((ScrH2GoawayFn)snap[i].fn)(snap[i].cb, (double)code, (double)last, opaque);
+      }
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+    if (opaque != NULL) scr_bytes_release(opaque);
+    if (scr_exc_pending()) return false;
     if (code != 0) {
       /* an error GOAWAY tears the session down NOW */
       scr_http2_session_destroy(s);

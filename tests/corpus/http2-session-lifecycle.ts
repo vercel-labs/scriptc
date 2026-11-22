@@ -21,13 +21,39 @@ await new Promise<void>((resolve) => {
     const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
     client.on("connect", () => {
       client.goaway(0, 0, Buffer.from([0xde, 0xad]));
-      client.goaway(0, 1);
       client.unref();
       client.ref();
       void delay(100).then(() => {
-        client.close(() => server.close(() => resolve()));
+        client.destroy();
+        server.close(() => resolve());
       });
     });
+  });
+});
+
+await new Promise<void>((resolve) => {
+  const server = http2.createServer();
+  server.on("stream", (stream) => {
+    stream.respond({ ":status": 200 });
+    stream.end("ok");
+  });
+  server.on("session", (session) => {
+    session.on("goaway", (code, lastStreamID) => {
+      lines.push(`goaway ${code} ${lastStreamID}`);
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+    const request = client.request({ ":path": "/" });
+    request.resume();
+    request.on("end", () => {
+      client.goaway(0, 2);
+      void delay(100).then(() => {
+        client.destroy();
+        server.close(() => resolve());
+      });
+    });
+    request.end();
   });
 });
 

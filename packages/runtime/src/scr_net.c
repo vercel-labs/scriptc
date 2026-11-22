@@ -8750,7 +8750,9 @@ void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
 
 void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
                                 ScrNetTunnelMsgFn msg_fn, void *ctx) {
-  if (s->fd < 0 || !s->connecting || s->tunnel != NULL) return;
+  /* a deferred socket has no descriptor yet but is connecting: its CONNECT
+   * exchange runs when the dial starts (connect_done pumps the tunnel) */
+  if (!s->connecting || s->tunnel != NULL) return;
   ScrNetTunnel *t = calloc(1, sizeof *t);
   if (!t) scr_net_oom();
   t->out = malloc(len);

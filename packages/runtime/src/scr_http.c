@@ -9407,6 +9407,27 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
  * that name had nothing to start — the first queued request whose own origin
  * has no live socket and whose dial stays under maxTotalSockets (Node's
  * cross-origin path; the queue is not FIFO across origins). */
+/* Closes one idle pooled socket and frees its slot. */
+static void scr_http_agent_free_drop_one(ScrHttpAgent *a) {
+  if (a->free_socks == NULL) return;
+  ScrNetSocket *sock = scr_net_sock_retain(a->free_socks->sock);
+  ScrHttpConn *conn = a->free_socks->conn;
+  scr_http_agent_free_remove(a, conn, false);
+  scr_net_sock_destroy(sock);
+  scr_net_sock_release(sock);
+}
+
+/* Makes room for a proxied request when idle pooled connections hold the
+ * total: such a request can never use them, and a kept-alive connection must
+ * not hold capacity it cannot give back until its idle timeout. True when the
+ * total has room afterwards. */
+static bool scr_http_agent_reclaim_slot(ScrHttpAgent *ag) {
+  if ((double)ag->sock_count->n < ag->max_total) return true;
+  if (ag->free_socks == NULL) return false;
+  scr_http_agent_free_drop_one(ag);
+  return (double)ag->sock_count->n < ag->max_total;
+}
+
 /* One pass over the queue: the named origin first, then a queued request
  * under another origin when the total has room (Node's cross-origin path). */
 static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name) {
@@ -9426,6 +9447,8 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
         ag->nqueued--;
         scr_http_client_rebind(e->client, f, false);
         started = true;
+      } else if (e->client->proxied && !scr_http_agent_reclaim_slot(ag)) {
+        /* idle pooled connections hold the total and cannot serve it */
       } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
                  (double)ag->sock_count->n < ag->max_total) {
         e->queued = false;
@@ -9443,6 +9466,14 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
    * the name's own queue is empty), a request queued under another name
    * starts if that origin has no live socket and the total stays under
    * maxTotalSockets. The queue is not FIFO across origins, as in Node. */
+  if (!started && (double)ag->sock_count->n >= ag->max_total) {
+    for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
+      if (e->queued && e->client->proxied) {
+        scr_http_agent_reclaim_slot(ag);
+        break;
+      }
+    }
+  }
   if (!started && (double)ag->sock_count->n < ag->max_total) {
     for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
       if (!e->queued || scr_http_agent_active(ag, e->name) > 0) continue;
@@ -9752,6 +9783,9 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   else ag->ents = e;
   ag->ents_last = e;
   c->agent_ent = e;
+  /* a proxied request that could not start may be able to now that serving
+   * it cannot take a pooled connection (and idle ones may be reclaimed) */
+  if (queue && proxied) scr_http_agent_pump_pass(ag, NULL);
   return scr_http_client_constructed(c, auto_end);
 }
 

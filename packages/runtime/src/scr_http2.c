@@ -4964,6 +4964,11 @@ void scr_http2_session_on_settings(ScrH2Session *s, ScrClosure *cb /*moves*/, Sc
 }
 
 ScrDyn *scr_http2_session_settings_get(ScrH2Session *s, bool local) {
+  /* Node's getters answer an empty record while the session is connecting
+   * (and for a session destroyed before it ever connected); the real
+   * records appear once it is established and stay readable after a later
+   * destroy, because Node caches them on the first connected read. */
+  if (scr_http2_session_connecting(s)) return scr_dyn_new_obj();
   return scr_h2_settings_dom(local ? &s->local_settings : &s->remote_settings, false);
 }
 

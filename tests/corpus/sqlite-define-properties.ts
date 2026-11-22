@@ -201,6 +201,10 @@ attempt("limits-close-in-getter", () => {
   const limits = dbx.limits as unknown as Record<string, unknown>;
   Object.defineProperty(limits, "closer", {
     get() {
+      // Removed before the call ends: the accessor closure holds the
+      // database, and a handle that still owns it at exit is the separate,
+      // documented untraced-cycle leak. The walk itself is unchanged.
+      delete limits.closer;
       dbx.close();
       return 1;
     },

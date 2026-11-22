@@ -12074,6 +12074,7 @@
           "tests/corpus/child-execfile-timeout-overflow.ts",
           "tests/corpus/child-fork-send-arguments/main.ts",
           "tests/corpus/child-kill-signal-case.ts",
+          "tests/corpus/child-shell-file-validation.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
@@ -12268,7 +12269,8 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
-          "tests/corpus/child-shell-separate-args.ts"
+          "tests/corpus/child-shell-separate-args.ts",
+          "tests/corpus/child-shell-file-validation.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12387,7 +12389,8 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
-          "tests/corpus/child-shell-separate-args.ts"
+          "tests/corpus/child-shell-separate-args.ts",
+          "tests/corpus/child-shell-file-validation.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12430,7 +12433,8 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
-          "tests/corpus/child-shell-separate-args.ts"
+          "tests/corpus/child-shell-separate-args.ts",
+          "tests/corpus/child-shell-file-validation.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12473,7 +12477,8 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
-          "tests/corpus/child-shell-separate-args.ts"
+          "tests/corpus/child-shell-separate-args.ts",
+          "tests/corpus/child-shell-file-validation.cjs"
         ]
       },
       "anchorSource": "exact"

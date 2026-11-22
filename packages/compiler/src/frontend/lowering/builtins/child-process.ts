@@ -2434,13 +2434,44 @@ export function lowerExecFileCall(
   let shellCommand: IrExpr = first;
   if (execShell && !staticallyEmptyArgs(shellArgsNode)) {
     const file = lowerer.declareHiddenLocal("%shellFile", STRING);
+    const list = lowerer.declareHiddenLocal("%shellArgs", arrayOf(STRING));
+    const fileRef = varRef(file.id, STRING, loc);
+    const listRef = varRef(list.id, arrayOf(STRING), loc);
     shellCommand = {
       kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: file.id, init: first, loc }],
+      stmts: [
+        { kind: "varDecl", localId: file.id, init: first, loc },
+        {
+          kind: "varDecl",
+          localId: list.id,
+          init: lowerChildArgsArg(lowerer, shellArgsNode, loc),
+          loc,
+        },
+        // Node validates the file (empty, NUL bytes) and each argument
+        // (NUL bytes) BEFORE it joins them, so an empty file is the
+        // ERR_INVALID_ARG_VALUE it throws, never a command run.
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "cp.checkArgs",
+            args: [
+              numLit(0, loc),
+              fileRef,
+              listRef,
+              { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+              strLit("", loc),
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
       result: {
         kind: "libCall",
         fn: "child.shellCommand",
-        args: [varRef(file.id, STRING, loc), lowerChildArgsArg(lowerer, shellArgsNode, loc)],
+        args: [fileRef, listRef],
         type: STRING,
         loc,
       },

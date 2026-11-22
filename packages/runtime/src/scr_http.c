@@ -6256,6 +6256,7 @@ struct ScrHttpClientReq {
   ScrStr *host, *path, *method;
   ScrStr *proxy_forward; /* proxied: the absolute URI for the request line (+1) */
   ScrStr *proxy_auth;    /* proxied: the proxy-authorization value (+1) or NULL */
+  bool proxied;          /* this request goes through the module's proxy */
   bool tunnel_pending;   /* https: the proxy's CONNECT reply is not in yet */
   bool chunk_end_owed;   /* the message ended while the tunnel was pending:
                           * its terminating chunk and trailers still follow */
@@ -8722,6 +8723,15 @@ static void scr_http_tunnel_message(void *ctx, int status, const char *head, siz
   c->destroy_error = err;
 }
 
+/* A socket the request constructor will not use: closing it takes it out of
+ * the net registry too, so a rejected request leaves no socket (and no
+ * captured request context) behind. */
+static void scr_http_discard_socket(ScrNetSocket *sock) {
+  if (sock == NULL) return;
+  scr_net_sock_destroy(sock);
+  scr_net_sock_release(sock);
+}
+
 /* The proxy half of a request whose socket already connects to the proxy:
  * the CONNECT tunnel for a secure target, or the absolute-form target and
  * the proxy credentials for a plain one. Takes the target's strings. */
@@ -8791,7 +8801,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
    * an options record check its headers before they take a socket. */
   if (!scr_http_request_checks(NULL, path, method, NULL)) {
     if (cb) scr_closure_release(cb);
-    if (presock) scr_net_sock_release(presock);
+    scr_http_discard_socket(presock);
     return NULL;
   }
   /* The proxy decision comes before any socket exists. A configured proxy
@@ -8806,7 +8816,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
     if (scr_exc_pending() ||
         (usable && !scr_http_proxy_target_valid(host, port, path, header_pairs, wrap != NULL))) {
       if (cb) scr_closure_release(cb);
-      if (presock) scr_net_sock_release(presock);
+      scr_http_discard_socket(presock);
       return NULL;
     }
     if (usable) {
@@ -8814,7 +8824,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
       if (!proxied) {
         const ScrStr *spec = scr_http_proxy_spec(wrap != NULL);
         if (cb) scr_closure_release(cb);
-        if (presock) scr_net_sock_release(presock);
+        scr_http_discard_socket(presock);
         ScrStr *text = scr_http_proxy_invalid_text(spec);
         scr_throw_error_msg_code(SCR_ERR_TYPE, text->data, text->len, "ERR_PROXY_INVALID_CONFIG");
         scr_str_release(text);
@@ -8836,6 +8846,7 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   c->method = scr_http_method_upper(method);
   c->port = (int)port;
   c->default_port = default_port;
+  c->proxied = proxied;
   size_t npairs = (size_t)scr_arr_len(header_pairs);
   if (npairs >= 2) {
     c->hnames = malloc((npairs / 2) * sizeof *c->hnames);
@@ -9405,7 +9416,11 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
       if (!(e->queued && e->name->len == name->len &&
             memcmp(e->name->data, name->data, name->len) == 0))
         continue;
-      ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
+      /* a proxied request never takes a pooled direct connection: its
+       * buffered head carries proxy routing and credentials */
+      ScrHttpAgentFree *f = e->client->proxied
+                                ? NULL
+                                : scr_http_agent_free_take(ag, name, e->client->pool_key);
       if (f != NULL) {
         e->queued = false;
         ag->nqueued--;
@@ -9672,6 +9687,15 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
    * used throws here, before anything is dialed. */
   bool proxied = env_proxy && scr_http_proxy_configured(wrap != NULL, host, p);
   if (scr_exc_pending()) {
+    if (cb) scr_closure_release(cb);
+    scr_str_release(name);
+    return NULL;
+  }
+  /* a covered request's target is checked before the agent takes, defers or
+   * creates any socket: a rejected target leaves nothing behind */
+  if (proxied && !scr_http_proxy_target_valid(host, p, path,
+                                              option_headers ? header_pairs : NULL,
+                                              wrap != NULL)) {
     if (cb) scr_closure_release(cb);
     scr_str_release(name);
     return NULL;

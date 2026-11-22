@@ -8,6 +8,7 @@ import { lowerInGlobalObject } from "../expressions/relational.js";
 import { noteUntypedIntegrity } from "../frozen-records.js";
 import {
   BOOL,
+  CAUGHT,
   DYN,
   F64,
   type IrExpr,
@@ -162,11 +163,139 @@ function reflectMemberFunction(
   };
 }
 
-/** The function value of the Reflect member `member`, or null for the three
- * whose behavior has no faithful lowering yet (setPrototypeOf answers false
- * where Object.setPrototypeOf throws, defineProperty answers false for a
- * non-configurable member, and construct takes a new.target — each would
- * need runtime work, so they keep their call-time fence). */
+/** The runtime TypeErrors that mean the operation was REJECTED, where
+ * Reflect answers false but Object throws. Every other failure (an invalid
+ * descriptor, an unsupported target, a user getter's own error) keeps its
+ * throw. */
+const DEFINE_REJECTIONS: readonly string[] = [
+  "Cannot redefine property: ",
+  "Cannot define property ",
+];
+const SET_PROTOTYPE_REJECTIONS: readonly string[] = [
+  "Cyclic __proto__ value",
+  "Cannot set prototype of a non-extensible object",
+];
+
+/** Runs `attempt`, which returns from the lifted function on success, and
+ * answers false instead when it threw one of `rejections` (a TypeError with
+ * that message, the split Object's throwing form and Reflect's false form
+ * share). Any other failure is rethrown with its original payload. */
+function answerFalseOnRejection(
+  locals: IrLocal[],
+  loc: SrcLoc,
+  attempt: IrStmt[],
+  rejections: readonly string[],
+): IrStmt {
+  const error: IrLocal = {
+    id: "%reflectError",
+    name: "%reflectError",
+    type: CAUGHT,
+    mutable: false,
+  };
+  const caught: IrLocal = {
+    id: "%reflectCaught",
+    name: "%reflectCaught",
+    type: DYN,
+    mutable: false,
+  };
+  const name: IrLocal = {
+    id: "%reflectErrorName",
+    name: "%reflectErrorName",
+    type: STRING,
+    mutable: false,
+  };
+  const message: IrLocal = {
+    id: "%reflectErrorMessage",
+    name: "%reflectErrorMessage",
+    type: STRING,
+    mutable: false,
+  };
+  locals.push(error, caught, name, message);
+  const field = (key: string): IrExpr => ({
+    kind: "libCall",
+    fn: "dyn.toStringCoerce",
+    args: [
+      {
+        kind: "dynKeyGet",
+        key: str(key, loc),
+        value: varRef(caught.id, DYN, loc),
+        type: DYN,
+        loc,
+      },
+    ],
+    type: STRING,
+    loc,
+  });
+  const matches = rejections.map((prefix): IrExpr => ({
+    kind: "strIntrinsic",
+    method: "startsWith",
+    receiver: varRef(message.id, STRING, loc),
+    args: [str(prefix, loc)],
+    type: BOOL,
+    loc,
+  }));
+  const anyMatch = matches.reduce((left, right) => ({
+    kind: "logical",
+    op: "||",
+    left,
+    right,
+    type: BOOL,
+    loc,
+  }));
+  return {
+    kind: "tryCatch",
+    tryBody: attempt,
+    catchBody: [
+      {
+        kind: "varDecl",
+        localId: caught.id,
+        init: { kind: "caughtToDyn", value: varRef(error.id, CAUGHT, loc), type: DYN, loc },
+        loc,
+      },
+      {
+        kind: "if",
+        // A thrown primitive has no fields to read; it is not a rejection.
+        cond: isObjectTarget(varRef(caught.id, DYN, loc), loc),
+        then: [
+          { kind: "varDecl", localId: name.id, init: field("name"), loc },
+          { kind: "varDecl", localId: message.id, init: field("message"), loc },
+          {
+            kind: "if",
+            cond: {
+              kind: "logical",
+              op: "&&",
+              left: {
+                kind: "strEq",
+                negated: false,
+                left: varRef(name.id, STRING, loc),
+                right: str("TypeError", loc),
+                type: BOOL,
+                loc,
+              },
+              right: anyMatch,
+              type: BOOL,
+              loc,
+            },
+            then: [
+              { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+            ],
+            else_: null,
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      },
+      { kind: "rethrow", localId: error.id, loc },
+    ],
+    catchLocalId: error.id,
+    finallyBody: null,
+    loc,
+  };
+}
+
+/** The function value of the Reflect member `member`, or null for a member
+ * whose call form this file does not model. */
 export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   const memberLocal = (locals: IrLocal[], ident: string, label: string): IrExpr => {
     locals.push({ id: ident, name: label, type: DYN, mutable: false });
@@ -474,39 +603,69 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
         ];
       });
     case "defineProperty":
-      // The direct call's step: the Object operation over the checked
-      // objects the member accepts, answering Node's boolean true.
+      // Reflect.defineProperty is Object.defineProperty that answers false
+      // where the Object operation throws for a REJECTED definition (a
+      // non-extensible target, or a non-configurable property's incompatible
+      // descriptor) and still throws for an invalid descriptor or an
+      // unsupported target, Node's split too.
       return reflectMemberFunction(lowerer, member, BOOL, 3, loc, (args, locals): IrStmt[] => {
         const target = memberLocal(locals, "t.0", "target");
         return [
           { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
           guard(target),
-          {
-            kind: "exprStmt",
-            expr: {
-              kind: "libCall",
-              fn: "dyn.defineProperty",
-              args: [target, actualArgument(args, 1, loc), actualArgument(args, 2, loc)],
-              type: DYN,
-              loc,
-            },
+          answerFalseOnRejection(
+            locals,
             loc,
-          },
-          { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+            [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.defineProperty",
+                  args: [target, actualArgument(args, 1, loc), actualArgument(args, 2, loc)],
+                  type: DYN,
+                  loc,
+                },
+                loc,
+              },
+              { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+            ],
+            DEFINE_REJECTIONS,
+          ),
         ];
       });
     case "setPrototypeOf":
-      // Reflect.setPrototypeOf follows the specification: an unchanged
-      // prototype answers true (and touches nothing, so a non-extensible
-      // target still answers true), a changed one on a non-extensible target
-      // answers false where Object.setPrototypeOf throws, and everything
-      // else installs it. A target that is not an object and a prototype
-      // that is neither an object nor null keep Node's TypeError from the
-      // runtime entry.
+      // Reflect.setPrototypeOf's order: a primitive target throws, then a
+      // primitive prototype throws (the runtime's own TypeError), an
+      // unchanged prototype answers true (touching nothing, so a
+      // non-extensible target and Object.prototype itself are fine), and a
+      // change answers false where Object.setPrototypeOf throws for a
+      // non-extensible target or a cyclic link.
       return reflectMemberFunction(lowerer, member, BOOL, 2, loc, (args, locals): IrStmt[] => {
         const target = memberLocal(locals, "t.0", "target");
         const prototype = memberLocal(locals, "p.0", "prototype");
-        const unchanged = (): IrExpr => ({
+        const invalidPrototype: IrExpr = {
+          kind: "logical",
+          op: "&&",
+          left: {
+            kind: "unary",
+            op: "!",
+            operand: isObjectTarget(prototype, loc),
+            type: BOOL,
+            loc,
+          },
+          right: {
+            kind: "dynTest",
+            test: "null",
+            negated: true,
+            value: prototype,
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        };
+        const unchanged: IrExpr = {
           kind: "libCall",
           fn: "dyn.sameValue",
           args: [
@@ -515,48 +674,58 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
           ],
           type: BOOL,
           loc,
-        });
-        const answer = (value: boolean): IrStmt => ({
-          kind: "return",
-          value: { kind: "boolLit", value, type: BOOL, loc },
-          loc,
-        });
+        };
         return [
           { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
           guard(target),
           { kind: "varDecl", localId: "p.0", init: actualArgument(args, 1, loc), loc },
-          { kind: "if", cond: unchanged(), then: [answer(true)], else_: null, loc },
           {
             kind: "if",
-            cond: {
-              kind: "unary",
-              op: "!",
-              operand: {
-                kind: "libCall",
-                fn: "dyn.isExtensibleQuery",
-                args: [target],
-                type: BOOL,
+            cond: invalidPrototype,
+            then: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.setPrototype",
+                  args: [target, prototype],
+                  type: DYN,
+                  loc,
+                },
                 loc,
               },
-              type: BOOL,
-              loc,
-            },
-            then: [answer(false)],
+            ],
             else_: null,
             loc,
           },
           {
-            kind: "exprStmt",
-            expr: {
-              kind: "libCall",
-              fn: "dyn.setPrototype",
-              args: [target, prototype],
-              type: DYN,
-              loc,
-            },
+            kind: "if",
+            cond: unchanged,
+            then: [
+              { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+            ],
+            else_: null,
             loc,
           },
-          answer(true),
+          answerFalseOnRejection(
+            locals,
+            loc,
+            [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.setPrototype",
+                  args: [target, prototype],
+                  type: DYN,
+                  loc,
+                },
+                loc,
+              },
+              { kind: "return", value: { kind: "boolLit", value: true, type: BOOL, loc }, loc },
+            ],
+            SET_PROTOTYPE_REJECTIONS,
+          ),
         ];
       });
     case "construct":
@@ -851,11 +1020,14 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
-  // Reflect.construct / Reflect.setPrototypeOf as direct calls: the same
-  // closure the member answers as a value, so the arity rules, target
-  // checks and argument-list handling cannot drift apart from it.
+  // Reflect.construct, Reflect.defineProperty and Reflect.setPrototypeOf as
+  // direct calls: the same closure the member answers as a value, so the
+  // arity rules, target checks and false-for-a-rejected-operation answer
+  // cannot drift apart from it.
   if (
-    (reflectMember === "construct" || reflectMember === "setPrototypeOf") &&
+    (reflectMember === "construct" ||
+      reflectMember === "defineProperty" ||
+      reflectMember === "setPrototypeOf") &&
     !call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     const loc = locOf(call);
@@ -1038,26 +1210,6 @@ export function lowerReflectCall(
         },
       ],
     );
-  }
-  // Reflect.defineProperty over checked objects (execa's Promise mixin):
-  // the Object operation, with defineProperty answering true.
-  if (reflectMember === "defineProperty" && call.arguments.nodes.length === 3) {
-    if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
-    const loc = locOf(call);
-    const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
-    return {
-      kind: "seqExpr",
-      stmts: [
-        {
-          kind: "exprStmt",
-          expr: { kind: "libCall", fn: "dyn.defineProperty", args, type: DYN, loc },
-          loc,
-        },
-      ],
-      result: { kind: "boolLit", value: true, type: BOOL, loc },
-      type: BOOL,
-      loc,
-    };
   }
   // Reflect.deleteProperty over a value with a live property table: a
   // checked-dynamic value, or a JavaScript class whose statics are runtime

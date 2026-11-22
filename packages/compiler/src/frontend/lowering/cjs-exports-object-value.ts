@@ -82,11 +82,13 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
    * one. */
   const addValueUse = (node: ts.Expression, target: ts.SourceFile): void => {
     if (!valueUse(node, target)) return;
+    // A conditional wrapper's module.exports IS the chosen table's object,
+    // so the wrapper needs its own slot too: reads and writes through its
+    // binding must reach the same live object, not the per-member slots a
+    // mutation through the object would leave stale.
+    needed.add(target);
     const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
-    if (conditional === null) {
-      needed.add(target);
-      return;
-    }
+    if (conditional === null) return;
     for (const entry of conditional)
       needed.add(cjsNamespaceTargetOf(lowerer, entry.req.dep) ?? entry.req.dep);
   };
@@ -209,7 +211,20 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
       return undefined;
     });
   }
-  for (const target of [...needed]) if (!mirrorable(lowerer, target)) needed.delete(target);
+  for (const target of [...needed]) {
+    if (mirrorable(lowerer, target)) continue;
+    // A conditional wrapper's object is the chosen table's own, so it can
+    // answer whenever every table can.
+    const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
+    if (
+      conditional !== null &&
+      conditional.every((entry) =>
+        mirrorable(lowerer, cjsNamespaceTargetOf(lowerer, entry.req.dep) ?? entry.req.dep),
+      )
+    )
+      continue;
+    needed.delete(target);
+  }
   return needed;
 }
 
@@ -461,8 +476,11 @@ export function cjsExportsObjectMember(
 ): CjsExportsObjectMember | null {
   if (lowerer.cjsExportsObjects.size === 0) return null;
   if (access.questionDotToken || !ts.isIdentifier(access.name)) return null;
+  // Any program file may read a module binding's member through the live
+  // object; the module's own `exports`/`module.exports` receivers resolve
+  // only inside a CommonJS file (their predicates say so themselves).
   const sf = ts.getSourceFileOfNode(access);
-  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (sf.isDeclarationFile) return null;
   let recv: ts.Expression = access.expression;
   while (ts.isParenthesizedExpression(recv)) recv = recv.expression;
   const loc = locOf(access);

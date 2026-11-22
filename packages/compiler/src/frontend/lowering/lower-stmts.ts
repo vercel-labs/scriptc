@@ -11230,6 +11230,22 @@ function lowerCjsConditionalWholeExportStatement(
       loc,
     });
   }
+  // The wrapper's module.exports object IS the chosen table's object: a
+  // binding of the wrapper read or written as a value must reach that live
+  // object, so a mutation through it is visible to later reads (the copied
+  // member slots below serve named imports, which Node snapshots).
+  {
+    const wrapperObject = lowerer.cjsExportsObjects.get(sf);
+    const tableFile = cjsNamespaceTargetOf(lowerer, target.req.dep) ?? target.req.dep;
+    const tableObject = lowerer.cjsExportsObjects.get(tableFile);
+    if (wrapperObject !== undefined && tableObject !== undefined)
+      body.push({
+        kind: "assign",
+        localId: wrapperObject.id,
+        value: varRef(tableObject.id, DYN, loc),
+        loc,
+      });
+  }
   // Record which table was taken, after the copies: a member the table
   // assigns later forwards to these slots only while they are its own.
   const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(sf);

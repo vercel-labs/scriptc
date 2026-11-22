@@ -1401,6 +1401,10 @@ export function cjsExportsObjectValue(
     const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
     const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(target);
     if (conditional !== null && select !== undefined) {
+      // The wrapper's own slot (assigned the chosen table's object by the
+      // branch statement) answers reads and writes through its binding.
+      const own = lowerer.cjsExportsObjects.get(target);
+      if (own !== undefined) return varRef(own.id, DYN, loc);
       const refs = conditional.map((entry) => cjsExportsObjectRef(lowerer, entry.req.dep, loc));
       if (refs.some((ref) => ref === null)) return null;
       let chosen = refs[refs.length - 1]!;

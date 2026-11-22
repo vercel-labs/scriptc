@@ -7,8 +7,8 @@ on:
   # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
   # it does. It runs what a push to main runs. Nothing starts such a run until then.
   merge_group:
-  # Nightly full macOS sweep. Pushes to main run no macOS jobs, and pull requests run them only when they change
-  # darwin code (scripts/ci-lanes.mjs).
+  # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
+  # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
   schedule:
     - cron: "17 7 * * *"
   # A manual run, for example on a release candidate commit. It runs every lane; macos_suite selects the complete
@@ -87,8 +87,8 @@ jobs:
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every
-  # lane.
+  # every lane except macos, whose jobs the nightly sweep runs on main; they run macos_smoke instead. The nightly
+  # sweep and manual runs run every lane but macos_smoke, which the complete macOS lane covers.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -107,6 +107,7 @@ jobs:
       bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
       islands: ${{ steps.lanes.outputs.islands || 'false' }}
+      macos_smoke: ${{ steps.lanes.outputs.macos_smoke || 'false' }}
       # The shards of the effects lane to run: all sixteen, or the one that a pull request changing compiler or
       # runtime sources samples (scripts/ci-lanes.mjs).
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
@@ -123,9 +124,9 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"; }
           if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
           elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -135,6 +136,9 @@ jobs:
             every
           fi
 
+  # The preflight gate: every expensive lane waits on this job (native_linux, and each lane that does not wait on
+  # native_linux), so a pull request that fails formatting, lint, the TypeScript build or a generated-file check
+  # ends red in minutes without starting a shard. `pnpm preflight` (scripts/preflight.mjs) runs the same checks.
   code_quality:
     name: lint and format
     runs-on: ubuntu-24.04
@@ -149,10 +153,12 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm lint
+      - name: TypeScript build
+        run: pnpm build
       - name: Code quality and CI policy contracts
-        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts
+        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts
         env:
           SCRIPTC_TEST_WORKERS: "1"
       - name: Verify mixed-source generated AST getters
@@ -163,7 +169,7 @@ jobs:
         run: pnpm generate:ir-codec --check
 
   native_macos:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: build (macOS arm64 native packages)
     runs-on: macos-15
@@ -245,7 +251,7 @@ jobs:
       # (scripts/ci-test-plan.mjs, tests/harness/lsan.supp).
       ASAN_OPTIONS: detect_leaks=0
       # Within-file partition for the large case-driven harnesses
-      # (differential, llvm-differential, npm, server, Test262, coverage, and
+      # (differential, llvm-differential, npm, server, Test262, coverage corpus, and
       # Vercel E2E): partition stable case names into slice i of the job's
       # shard count, twenty on the plain lane and thirty on the sanitized one
       # (tests/harness/shard.ts). The shards' unions run every case exactly
@@ -353,8 +359,42 @@ jobs:
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
 
+  # Pushes to main run no macOS lane, so a darwin-only regression could land unseen until the nightly sweep. This
+  # one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin smoke suite
+  # (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows the host
+  # platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
+  tests_macos_smoke:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos_smoke == 'true' }}
+    name: test (macOS, plain, darwin smoke)
+    runs-on: macos-15
+    # A hang detector at about twice the longest expected run: native packages
+    # took 21 minutes at most on a cache miss (native_macos), the smoke corpus
+    # about four on top. Typical runs take 6 to 12 minutes.
+    timeout-minutes: 50
+    env:
+      SCRIPTC_TEST_WORKERS: "2"
+      SCRIPTC_TEST_SHARD: 1/1
+      SCRIPTC_CI_SUITE: darwin-smoke
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/native-packages
+        with:
+          target: darwin-arm64
+      - run: pnpm build
+      - name: Tests (darwin smoke suite)
+        run: node scripts/ci-test.mjs
+
   native_linux:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: build (Linux x64 native packages)
     runs-on: ubuntu-24.04
@@ -471,6 +511,32 @@ jobs:
       # fails rather than skips when none is configured.
       - uses: ./.github/actions/libnode
       - run: pnpm test tests/harness/island-conformance.test.ts
+
+  # The coverage report snapshots and fixtures (tests/harness/coverage.test.ts), once per run. They ran in every
+  # plain shard, where one stale snapshot failed twenty jobs; the corpus half of the sweep
+  # (coverage-corpus.test.ts) still splits the corpus across the plain shards (scripts/ci-test-plan.mjs). The
+  # coverage analysis runs the frontend only, so this job needs no native packages.
+  coverage:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux, coverage report)
+    runs-on: ubuntu-24.04
+    # About two minutes of tests.
+    timeout-minutes: 20
+    env:
+      SCRIPTC_TEST_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test tests/harness/coverage.test.ts
 
   # The sanitized three.js nodes build alone: beside the san corpus's other
   # workers it took 860 to more than 1200 seconds of its shard
@@ -639,7 +705,7 @@ jobs:
   # Build each instrumented seed once. Downstream contracts retain the same
   # compiler and source artifacts without repeating seed construction.
   bootstrap_seed:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' }}
     name: build (Linux, ${{ matrix.flavor }}, bootstrap seed)
     runs-on: ubuntu-24.04
@@ -722,7 +788,7 @@ jobs:
   # itself is judged by the zero-cost gate, which has a baseline build to pair
   # it with.
   native_profile:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
     name: check (native compiler profile)
     runs-on: ubuntu-24.04
@@ -835,7 +901,7 @@ jobs:
   # Linux feature-test macro omissions at compile time and separate-libm
   # omissions/order errors at link time.
   linux_host_clang:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (linux host clang/glibc)
     runs-on: ubuntu-24.04
@@ -864,7 +930,7 @@ jobs:
   # The TS7 parity sweep exercises the compiler frontend, so it can run
   # alongside the Linux LLVM/runtime package build instead of following it.
   ts7_parity:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (TypeScript 7 parity)
     runs-on: ubuntu-24.04
@@ -886,7 +952,7 @@ jobs:
   # tsc-ts, the default checker, and tsgo (SCRIPTC_CHECKER=tsgo) serve the same TypeScript 7 API. Every corpus
   # program must compile to the same LLVM IR, with the same diagnostics, with either checker.
   checker_identity:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (tsgo and tsc-ts give the same IR, ${{ matrix.optimization }})
     runs-on: ubuntu-24.04
@@ -1194,7 +1260,7 @@ jobs:
             packages/cli-darwin-arm64 packages/libnode-darwin-arm64
 
   llvm_artifacts_macos_x64:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
@@ -1328,7 +1394,7 @@ jobs:
           --testNamePattern "Windows CA roots honor"
 
   llvm_artifacts_windows_x64:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (Windows x64 MSVC LLVM artifacts)
     # The official LLVM 22 Windows archives are MSVC-built and the helper
@@ -1401,7 +1467,7 @@ jobs:
           retention-days: 1
 
   mobile_runtime_packs:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (${{ matrix.runtime }})
     strategy:
@@ -1418,7 +1484,7 @@ jobs:
 
   # The iOS runtime packs build on macOS runners, so they run in the macos lane.
   mobile_runtime_packs_ios:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (${{ matrix.runtime }})
     strategy:
@@ -1445,10 +1511,12 @@ jobs:
         native_macos,
         tests,
         tests_macos,
+        tests_macos_smoke,
         native_linux,
         effects,
         island_conformance,
         three_nodes_san,
+        coverage,
         native_frontend_san,
         bootstrap_seed,
         native_profile,
@@ -1484,10 +1552,12 @@ jobs:
               lane native_macos "${{ needs.native_macos.result }}" "${{ needs.lanes.outputs.macos }}"
               lane tests "${{ needs.tests.result }}" "${{ needs.lanes.outputs.linux }}"
               lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
+              lane tests_macos_smoke "${{ needs.tests_macos_smoke.result }}" "${{ needs.lanes.outputs.macos_smoke }}"
               lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
               lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
               lane island_conformance "${{ needs.island_conformance.result }}" "${{ needs.lanes.outputs.islands }}"
               lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane coverage "${{ needs.coverage.result }}" "${{ needs.lanes.outputs.linux }}"
               lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
               lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
               lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.profile }}"

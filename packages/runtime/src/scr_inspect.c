@@ -866,6 +866,41 @@ static ScrStr *insp_bracketed_class(const char *cls) {
   return insp_styled(ib_take(&out), INSP_SPECIAL);
 }
 
+/* The length of a rendered body's circular-target prefix, `<ref *N> `
+ * style-wrapped included (Node writes it BEFORE a custom inspector's class
+ * name: `<ref *1> DatabaseSync { ... }`). 0 when the body has none. */
+static size_t insp_ref_prefix_len(const ScrStr *body) {
+  if (body->len < 8) return 0;
+  size_t probe = body->len < 64 ? body->len : 64;
+  const char *at = NULL;
+  for (size_t i = 0; i + 6 <= probe; i++) {
+    if (body->data[i] == '<' && memcmp(body->data + i, "<ref *", 6) == 0) {
+      at = body->data + i;
+      break;
+    }
+  }
+  if (at == NULL) return 0;
+  size_t start = (size_t)(at - body->data);
+  /* Only style escapes may precede the marker. */
+  if (start > 0 && (unsigned char)body->data[0] != 0x1b) return 0;
+  const char *gt = memchr(at + 6, '>', probe - start - 6);
+  if (gt == NULL) return 0;
+  size_t end = (size_t)(gt - body->data) + 1;
+  /* An optional style close, then the separating space. */
+  while (end < body->len && (unsigned char)body->data[end] == 0x1b) {
+    end++;
+    if (end < body->len && body->data[end] == '[') {
+      end++;
+      while (end < body->len &&
+             ((body->data[end] >= '0' && body->data[end] <= '9') || body->data[end] == ';'))
+        end++;
+      if (end < body->len) end++; /* the final letter */
+    }
+  }
+  if (end < body->len && body->data[end] == ' ') end++;
+  return end;
+}
+
 ScrStr *scr_insp_date(double ms) {
   if (isnan(ms)) return scr_str_new("Invalid Date", 12);
   return scr_date_to_iso(ms);
@@ -5176,6 +5211,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       if (ops->inspect_text)
         return recurse > depth ? insp_bracketed_class(ops->cls) : ops->inspect_text(d->v.handle.ptr);
       if (ops->inspect_view) {
+        /* A value already on the traversal stack is Node's circular
+         * reference BEFORE the depth budget applies: at any depth a nested
+         * view of the same handle prints [Circular *N], not [cls]. */
+        double circular = scr_insp_circ_check(d->v.handle.ptr);
+        if (circular > 0) return scr_insp_circular(circular);
         /* Node's custom inspectors answer the bare class name beyond the
          * depth limit (`depth < 0`); the ones that return `this` there
          * print util.inspect's `[cls]`. */
@@ -5191,13 +5231,25 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           if (!ops->inspect_bracketed_past_depth) return scr_str_new(ops->cls, strlen(ops->cls));
           return insp_bracketed_class(ops->cls);
         }
+        /* The native handle is this value's identity in the walk: the view
+         * is built fresh per visit, so without this alias a value whose
+         * metadata points back to it would take a new identity at every
+         * step and recurse until the stack ends. The next container frame
+         * (the view's own object) keys itself by the handle through
+         * insp_container_key, exactly as the compiled inspect helpers key a
+         * view by the value behind it. */
+        g_seen_alias = d->v.handle.ptr;
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         /* The class's view is built by reading native state and threw
          * (a closed database): the caller reports the exception. */
-        if (view == NULL) return scr_str_new("", 0);
+        if (view == NULL) {
+          g_seen_alias = NULL;
+          return scr_str_new("", 0);
+        }
         if (ops->inspect_view_nested) {
           scr_insp_nested_begin();
           ScrStr *inner = scr_insp_dyn(view, 0, depth);
+          g_seen_alias = NULL;
           scr_dyn_release(view);
           ScrStr *prefix = scr_str_new(ops->cls, strlen(ops->cls));
           ScrStr *rendered = scr_insp_nested_end(prefix, inner);
@@ -5206,9 +5258,14 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           return rendered;
         }
         ScrStr *body = scr_insp_dyn(view, recurse, depth);
+        g_seen_alias = NULL;
         scr_dyn_release(view);
         if (ops->inspect_view_bare) return body;
+        /* A circular target's `<ref *N> ` prefix goes before the class
+         * name, as Node's formatValue writes the base first. */
+        size_t ref_len = insp_ref_prefix_len(body);
         InspBuf out = {0};
+        if (ref_len) ib_bytes(&out, body->data, ref_len);
         if (insp_tag_names_class(ops->to_string_tag, ops->cls)) {
           ib_cstr(&out, ops->to_string_tag);
         } else {
@@ -5220,7 +5277,7 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           }
         }
         ib_char(&out, ' ');
-        ib_bytes(&out, body->data, body->len);
+        ib_bytes(&out, body->data + ref_len, body->len - ref_len);
         scr_str_release(body);
         return ib_take(&out);
       }

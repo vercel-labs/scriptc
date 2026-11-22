@@ -32,7 +32,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url))) + "/";
@@ -46,13 +46,53 @@ const NT_DIR = "packages/compiler/src/ir/builtin-never-throw";
 const STATIC_OLD = "internal/compatibility/static-support.json";
 const STATIC_DIR = "internal/compatibility/static-support";
 
+/** A chapter is a Node module chapter slug and a builtin prefix is the call
+ * name's first segment. Both become file names, so a value that came from a
+ * branch is accepted only when it is one plain path segment. */
+export const CHAPTER_NAME = /^[a-z0-9][a-z0-9_-]*$/;
+export const PREFIX_NAME = /^[A-Za-z][A-Za-z0-9]*$/;
+export const EVIDENCE_MODULE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/** The only files and directories this script may read, write or remove. */
+const TABLE_ROOTS = [STATIC_OLD, STATIC_DIR, SIG_OLD, SIG_DIR, NT_OLD, NT_DIR];
+
+export function assertTableName(kind, name, pattern) {
+  if (typeof name !== "string" || !pattern.test(name)) {
+    throw new Error(`rehome: refusing unsafe ${kind} name ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
+/** Refuse any path that is not under one of the split table's own files or
+ * directories. `join` normalizes `..`, so containment has to be checked
+ * before joining, not after. */
+export function assertTablePath(rel) {
+  const normalized = rel.replace(/\\/g, "/");
+  const under = TABLE_ROOTS.some(
+    (tableRoot) => normalized === tableRoot || normalized.startsWith(`${tableRoot}/`),
+  );
+  const absolute = resolve(root, normalized);
+  const base = resolve(root);
+  if (
+    normalized.startsWith("/") ||
+    normalized.split("/").includes("..") ||
+    !under ||
+    !(absolute === base || absolute.startsWith(`${base}${sep}`))
+  ) {
+    throw new Error(`rehome: refusing path outside the table directories: ${rel}`);
+  }
+  return normalized;
+}
+
 let dryRun = false;
-const read = (rel) => readFileSync(join(root, rel), "utf8");
+const read = (rel) => readFileSync(join(root, assertTablePath(rel)), "utf8");
 const writeOut = (rel, text) => {
-  if (!dryRun) writeFileSync(join(root, rel), text);
+  const path = assertTablePath(rel);
+  if (!dryRun) writeFileSync(join(root, path), text);
 };
 const removeOut = (rel) => {
-  if (!dryRun && existsSync(join(root, rel))) rmSync(join(root, rel));
+  const path = assertTablePath(rel);
+  if (!dryRun && existsSync(join(root, path))) rmSync(join(root, path));
 };
 const show = (ref, rel) => {
   try {
@@ -250,6 +290,7 @@ export function renderSignatureModule(prefix, entries, vocabulary) {
 /** Rewrite the index's import and spread lines for `prefixes`, keeping every
  * other line (the documentation) as it is. */
 function updateSignatureIndex(prefixes) {
+  for (const prefix of prefixes) assertTableName("builtin prefix", prefix, PREFIX_NAME);
   const lines = read(SIG_OLD).split("\n");
   const fnIndex = lines.findIndex((line) => line.startsWith("function buildLibFnSignatures"));
   if (fnIndex < 0) throw new Error(`${SIG_OLD}: no buildLibFnSignatures`);
@@ -355,6 +396,7 @@ export function renderNeverThrowModule(prefix, entries) {
 }
 
 function updateNeverThrowIndex(prefixes) {
+  for (const prefix of prefixes) assertTableName("builtin prefix", prefix, PREFIX_NAME);
   const lines = read(NT_OLD).split("\n");
   const exportIndex = lines.findIndex((line) =>
     line.startsWith("export const NEVER_THROW_LIB_FNS"),
@@ -432,10 +474,13 @@ export function splitStatic(text, label) {
   const evidence = staticBlock(lines, "evidenceByManifestPrefix");
   for (const entry of staticLines(lines, evidence.start, evidence.end)) {
     const key = Object.keys(JSON.parse(`{${entry}}`))[0];
-    const module = (
-      key.startsWith("node-builtin.") ? key.split(".")[1] : key.split(".")[0]
-    ).replace(/\//g, "-");
+    const module = assertTableName(
+      "evidence module",
+      (key.startsWith("node-builtin.") ? key.split(".")[1] : key.split(".")[0]).replace(/\//g, "-"),
+      EVIDENCE_MODULE,
+    );
     const part = `static-support/evidence/${module}.json`;
+    assertTablePath(`internal/compatibility/${part}`);
     if (!parts.has(part)) parts.set(part, { opener: "{", closer: "}", entries: [] });
     parts.get(part).entries.push(entry);
   }
@@ -447,8 +492,12 @@ export function splitStatic(text, label) {
     const block = staticBlock(lines, key);
     for (const entry of staticLines(lines, block.start, block.end)) {
       const value = JSON.parse(entry);
-      const name = value.chapter ?? "_unassigned";
+      const name =
+        value.chapter === undefined
+          ? "_unassigned"
+          : assertTableName("chapter", value.chapter, CHAPTER_NAME);
       const part = `static-support/${dir}/${name}.json`;
+      assertTablePath(`internal/compatibility/${part}`);
       if (!parts.has(part)) parts.set(part, { opener, closer, entries: [] });
       parts.get(part).entries.push(entry);
     }
@@ -458,7 +507,7 @@ export function splitStatic(text, label) {
 }
 
 function readStaticPart(path) {
-  const text = readFileSync(join(root, path), "utf8");
+  const text = read(path);
   return text
     .split("\n")
     .filter(
@@ -543,6 +592,7 @@ function rehomeSignatures(baseText, tipText, report) {
     if (!tipByKey.has(key)) touched.add(baseByKey.get(key).prefix);
 
   for (const prefix of touched) {
+    assertTableName("builtin prefix", prefix, PREFIX_NAME);
     const ours = byPrefix.get(prefix) ?? [];
     const result = [];
     for (const entry of ours) {
@@ -576,7 +626,7 @@ function rehomeSignatures(baseText, tipText, report) {
       ...vocabulary.filter((name) => !existing.includes(name)),
     ];
     const text = renderSignatureModule(prefix, final, moduleVocabulary);
-    if (!existsSync(join(root, file)) || read(file) !== text) {
+    if (!existsSync(join(root, assertTablePath(file))) || read(file) !== text) {
       writeOut(file, text);
       changedParts++;
     }
@@ -615,6 +665,7 @@ function rehomeNeverThrow(baseText, tipText, report) {
     byPrefix.set(file.slice(0, -3), moduleNeverThrowChunks(`${NT_DIR}/${file}`));
 
   for (const prefix of touched) {
+    assertTableName("builtin prefix", prefix, PREFIX_NAME);
     const ours = byPrefix.get(prefix) ?? [];
     // Names are the identity: a comment changed on main since the branch does
     // not turn a deletion into a duplicate.

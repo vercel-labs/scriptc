@@ -59,18 +59,32 @@ import { dynUndefinedExpr, strLit, varRef } from "../../ir/build.js";
 export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
   const needed = new Set<ts.SourceFile>();
   const exportNames = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** The members a module exports, for deciding whether a property access
+   * is a static export read. A module whose writes do not form a static
+   * table (a bundler's `__export` getter table) answers the checker's
+   * export list, the surface its named imports and reads type against. */
+  const tableNames = (file: ts.SourceFile): readonly string[] | null => {
+    const table = cjsTableExportNamesInOrder(lowerer, file);
+    if (table !== null && table.length > 0) return table;
+    const moduleSym = lowerer.checker.getSymbolAtLocation(file);
+    if (moduleSym === undefined) return table;
+    const names = lowerer.checker
+      .getExportsOfModule(moduleSym)
+      .map((symbol) => ts.symbolName(symbol))
+      .filter((name) => name !== "export=");
+    return names.length > 0 ? names : table;
+  };
   const namesOf = (target: ts.SourceFile): ReadonlySet<string> => {
     let names = exportNames.get(target);
     if (names === undefined) {
-      const collected = new Set(cjsTableExportNamesInOrder(lowerer, target) ?? []);
+      const collected = new Set(tableNames(target) ?? []);
       // A conditional whole-export wrapper's members are the union its
       // tables export: a static read of any of them answers through the
       // wrapper's slots, so it is not a use of the object itself.
       const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
       if (conditional !== null)
         for (const entry of conditional)
-          for (const name of cjsTableExportNamesInOrder(lowerer, entry.req.dep) ?? [])
-            collected.add(name);
+          for (const name of tableNames(entry.req.dep) ?? []) collected.add(name);
       names = collected;
       exportNames.set(target, names);
     }
@@ -201,6 +215,9 @@ export function cjsExportsObjectModules(lowerer: Lowerer): Set<ts.SourceFile> {
       const parent = node.parent;
       if (parent === undefined) return undefined;
       if (ts.isVariableDeclaration(parent) && parent.name === node) return undefined;
+      // The import binding's own name is its declaration, not a use.
+      if ((ts.isImportClause(parent) || ts.isNamespaceImport(parent)) && parent.name === node)
+        return undefined;
       if (ts.isPropertyAccessExpression(parent) && parent.name === node) return undefined;
       const symbol = lowerer.checker.getSymbolAtLocation(node);
       if (symbol === undefined || !bindings.has(symbol)) return undefined;

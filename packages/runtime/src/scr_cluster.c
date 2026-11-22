@@ -858,7 +858,9 @@ static void scr_cl_child_exit_thunk(ScrClosure *cb, bool has_code, double code,
                                     const char *signal_name) {
   ScrClusterWorker *w = scr_cl_box_of(cb);
   if (w == NULL) return;
-  if (!w->self && !scr_child_ipc_connected(w->child)) scr_cl_maybe_remove(w);
+  /* The process has exited: it no longer lists as a worker even when the
+   * channel's EOF has not been read yet (the exit can be observed first). */
+  if (!w->self) scr_cl_maybe_remove(w);
   w->exited = true;
   w->state = "dead";
   ScrDyn *code_arg = has_code ? scr_dyn_new_num(code) : scr_dyn_new_null();

@@ -403,6 +403,7 @@ import {
   lowerNativeFunctionAssignment,
   lowerStrictEquality,
   nodeTypeError,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
@@ -1638,6 +1639,11 @@ function jsBindingKeepsCheckedObject(
    * object: a binding of `module`, `require.main`, `module.parent` or a
    * `module.children[i]` keeps the checked-dynamic view. */
   if (isNodeModuleHandle(lowerer, nameNode)) return true;
+  /* A binding the checker types `never` is an inference artifact — a
+   * declaration that does not describe the value a JavaScript runtime
+   * produced (a context made with `createContext(null)` and used as an
+   * object) — so the binding keeps whatever the value holds. */
+  if ((lowerer.typeOf(nameNode).flags & ts.TypeFlags.Never) !== 0) return true;
   const arms = type.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [type];
   return (
     arms.some((arm) => arm.kind === "record" || arm.kind === "array") &&
@@ -2734,6 +2740,15 @@ export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt
     // undefined: the expression statement plus a recorded bare return.
     if (lowerer.ctx.inferReturn) {
       const value = stmt.expression ? lowerer.lowerExpr(stmt.expression) : null;
+      if (value !== null && value.kind === "seqExpr" && value.type.kind === "undefinedT") {
+        const bare: IrStmt = { kind: "return", value: null, loc: locOf(stmt) };
+        lowerer.ctx.inferReturn.entries.push({ stmt: bare, node: null });
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(value), bare],
+          loc: locOf(stmt),
+        };
+      }
       if (value !== null && value.type.kind === "void") {
         const bare: IrStmt = { kind: "return", value: null, loc: locOf(stmt) };
         lowerer.ctx.inferReturn.entries.push({ stmt: bare, node: null });

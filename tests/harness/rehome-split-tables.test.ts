@@ -4,6 +4,7 @@ import {
   assertTablePath,
   CHAPTER_NAME,
   EVIDENCE_MODULE,
+  keepRowsAfterDeletion,
   PREFIX_NAME,
   splitStatic,
 } from "../../scripts/rehome-split-tables.mjs";
@@ -89,5 +90,29 @@ describe("assertTablePath", () => {
       /outside the table/,
     );
     expect(() => assertTablePath("package.json")).toThrow(/outside the table/);
+  });
+});
+
+describe("keepRowsAfterDeletion", () => {
+  const path = "static-support/features/http.json";
+  const branchRow =
+    '{ "chapter": "http", "symbols": ["http.request"], "status": "partial", "evidence": ["tests/corpus/a.ts"] }';
+  const mainRow =
+    '{ "chapter": "http", "symbols": ["http.get"], "status": "partial", "evidence": ["tests/corpus/b.ts"] }';
+  const reshapedRow =
+    '{ "chapter": "http", "symbols": ["http.request", "http.get"], "status": "partial", "evidence": ["tests/corpus/c.ts"] }';
+
+  it("keeps a row main added after the branch was cut", () => {
+    expect(keepRowsAfterDeletion(path, [branchRow], [branchRow, mainRow])).toEqual([mainRow]);
+  });
+
+  it("keeps a row main reshaped into a different identity", () => {
+    expect(keepRowsAfterDeletion(path, [branchRow], [branchRow, reshapedRow])).toEqual([
+      reshapedRow,
+    ]);
+  });
+
+  it("removes every occurrence of the branch's row", () => {
+    expect(keepRowsAfterDeletion(path, [branchRow], [branchRow, branchRow])).toEqual([]);
   });
 });

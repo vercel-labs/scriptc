@@ -615,6 +615,12 @@ function rehomeSignatures(baseText, tipText, report) {
       seen.add(chunk.key);
     }
     const final = [...result, ...additions];
+    for (const key of tipByKey.keys()) {
+      if (baseByKey.has(key) && !seen.has(key))
+        report.missing.push(
+          `signature ${key}: the branch edits it but main no longer has it; inspect by hand`,
+        );
+    }
     const file = `${SIG_DIR}/${prefix}.ts`;
     if (final.length === 0) {
       removeOut(file);
@@ -687,6 +693,13 @@ function rehomeNeverThrow(baseText, tipText, report) {
     for (const [name, text] of tipByName) {
       if (!baseByName.has(name) && !present.has(name)) result.push({ text });
     }
+    const finalNames = new Set(result.map((chunk) => entryName(chunk.text)));
+    for (const name of tipByName.keys()) {
+      if (baseByName.has(name) && !finalNames.has(name))
+        report.missing.push(
+          `never-throw ${name}: the branch edits it but main no longer has it; inspect by hand`,
+        );
+    }
     const file = `${NT_DIR}/${prefix}.ts`;
     if (result.length === 0) {
       removeOut(file);
@@ -725,6 +738,14 @@ export function staticEntryKey(path, text) {
   ].join("\u0000");
 }
 
+/** The rows of `ours` that survive deleting the branch's rows in `before`:
+ * a row's identity, not its text, decides. Rows main added (no identity in
+ * `before`) stay. */
+export function keepRowsAfterDeletion(path, before, ours) {
+  const deleted = new Set(before.map((text) => staticEntryKey(path, text)));
+  return ours.filter((text) => !deleted.has(staticEntryKey(path, text)));
+}
+
 function rehomeStaticSupport(baseText, tipText, report) {
   const base = splitStatic(baseText, "origin merge-base static-support");
   const tip = splitStatic(tipText, "branch static-support");
@@ -746,7 +767,11 @@ function rehomeStaticSupport(baseText, tipText, report) {
     }
     const present = new Set(result.map((text) => staticEntryKey(path, text)));
     for (const [key, text] of tipByKey) {
-      if (beforeByKey.has(key) || present.has(key)) continue;
+      if (present.has(key)) continue;
+      if (beforeByKey.has(key)) {
+        report.missing.push(`${path}: the branch edits a row main no longer has; inspect by hand`);
+        continue;
+      }
       // The branch added this row, but main may have reshaped the same rows
       // since the branch was cut. Sharing a parent heading is ordinary;
       // claiming one of the same rows is a conflict worth a look.
@@ -779,11 +804,17 @@ function rehomeStaticSupport(baseText, tipText, report) {
   }
   for (const path of base.keys()) {
     if (tip.has(path)) continue;
+    const basePart = base.get(path);
+    if (basePart.entries.length === 0) continue;
     const rel = `internal/compatibility/${path}`;
-    if (existsSync(join(root, rel))) {
-      removeOut(rel);
-      changed++;
-    }
+    const ours = existsSync(join(root, rel)) ? readStaticPart(rel) : [];
+    // The branch deleted its rows; a row main added after the branch was cut
+    // is not the branch's row to delete.
+    const kept = keepRowsAfterDeletion(path, basePart.entries, ours);
+    if (kept.length === ours.length) continue;
+    if (kept.length === 0) removeOut(rel);
+    else writeOut(rel, renderStaticPart(kept, basePart.opener, basePart.closer));
+    changed++;
   }
   report.tables.push({ table: "static-support", changed });
 }

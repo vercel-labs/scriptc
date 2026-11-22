@@ -263,3 +263,22 @@ attempt("shadow-method-value", () => {
     return [e.name, e.message];
   }
 });
+
+// A saved method value runs the class's implementation; a program's own
+// replacement runs as written.
+attempt("saved-method-value", () => {
+  const dbx = new DatabaseSync(":memory:");
+  const fields = dbx as unknown as Record<string, unknown>;
+  fields.exec = dbx.exec.bind(dbx);
+  dbx.exec("CREATE TABLE t(x)");
+  const insert = dbx.prepare("INSERT INTO t VALUES (1)");
+  const savedRun = insert.run.bind(insert);
+  fields.savedRun = savedRun;
+  insert.run();
+  const tag = dbx.createTagStore(2);
+  fields.clear = tag.clear.bind(tag);
+  tag.clear();
+  const row = dbx.prepare("SELECT count(*) AS n FROM t").get() as { n: number };
+  dbx.close();
+  return row.n;
+});

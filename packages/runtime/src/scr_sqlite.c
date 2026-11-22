@@ -37,6 +37,31 @@ typedef struct ScrSqliteStmt ScrSqliteStmt;
 typedef struct ScrSqliteLimits ScrSqliteLimits;
 typedef struct ScrSqliteIter ScrSqliteIter;
 typedef struct ScrSqliteSession ScrSqliteSession;
+typedef struct ScrSqliteTagStore ScrSqliteTagStore;
+
+/* Cycle collection: the database, its statements, sessions, tag stores and
+ * limits object are nodes of the collector's graph (their first member is
+ * `rc`, as every heap object it owns), so a property added to an object
+ * that refers back to it -- a cached tag store, a closure, metadata -- is
+ * reclaimed instead of keeping the group alive. Each trace visits exactly
+ * the strong references to other collector nodes, and the teardown of a
+ * freed node releases those same children; the collector's own free
+ * releases only what is not traced. */
+static void scr_sqlite_db_trace(void *p, ScrTraceVisit visit, void *ctx);
+static void scr_sqlite_db_gcfree(void *p);
+static void scr_sqlite_stmt_trace(void *p, ScrTraceVisit visit, void *ctx);
+static void scr_sqlite_stmt_gcfree(void *p);
+static void scr_sqlite_limits_trace(void *p, ScrTraceVisit visit, void *ctx);
+static void scr_sqlite_limits_gcfree(void *p);
+static void scr_sqlite_tag_trace(void *p, ScrTraceVisit visit, void *ctx);
+static void scr_sqlite_tag_gcfree(void *p);
+static void scr_sqlite_session_trace(void *p, ScrTraceVisit visit, void *ctx);
+static void scr_sqlite_session_gcfree(void *p);
+static ScrCycType scr_sqlite_db_cyc = {scr_sqlite_db_trace, scr_sqlite_db_gcfree, SCR_CYC_KIND_NONE, 0};
+static ScrCycType scr_sqlite_stmt_cyc = {scr_sqlite_stmt_trace, scr_sqlite_stmt_gcfree, SCR_CYC_KIND_NONE, 0};
+static ScrCycType scr_sqlite_limits_cyc = {scr_sqlite_limits_trace, scr_sqlite_limits_gcfree, SCR_CYC_KIND_NONE, 0};
+static ScrCycType scr_sqlite_tag_cyc = {scr_sqlite_tag_trace, scr_sqlite_tag_gcfree, SCR_CYC_KIND_NONE, 0};
+static ScrCycType scr_sqlite_session_cyc = {scr_sqlite_session_trace, scr_sqlite_session_gcfree, SCR_CYC_KIND_NONE, 0};
 
 /* Node's kLimitMapping (src/node_sqlite.h): the limits object's own names in
  * its own order, where index = the SQLITE_LIMIT_* id. */
@@ -617,10 +642,10 @@ static bool scr_sqlite_bind_value(ScrSqliteStmt *s, int index, const ScrDyn *val
 
 static void *scr_sqlite_db_retain(void *h);
 static void scr_sqlite_db_release(void *h);
+static void scr_sqlite_stmt_release(void *h);
 
 static ScrSqliteStmt *scr_sqlite_stmt_alloc(ScrSqliteDb *db, sqlite3_stmt *stmt) {
-  ScrSqliteStmt *s = calloc(1, sizeof *s);
-  if (s == NULL) scr_sqlite_oom();
+  ScrSqliteStmt *s = scr_cyc_alloc(sizeof *s, &scr_sqlite_stmt_cyc);
   s->rc = 1;
   s->db = scr_sqlite_db_retain(db);
   s->stmt = stmt;
@@ -655,7 +680,7 @@ static void scr_sqlite_stmt_finalize(ScrSqliteStmt *s) {
 }
 
 /* Removes `s` from its database's live-statement list. */
-static void scr_sqlite_db_untrack(ScrSqliteDb *db, ScrSqliteStmt *s) {
+static void scr_sqlite_db_detach(ScrSqliteDb *db, ScrSqliteStmt *s) {
   for (size_t i = 0; i < db->stmt_n; i++) {
     if (db->stmts[i] == s) {
       db->stmts[i] = db->stmts[db->stmt_n - 1];
@@ -665,17 +690,54 @@ static void scr_sqlite_db_untrack(ScrSqliteDb *db, ScrSqliteStmt *s) {
   }
 }
 
-static void scr_sqlite_stmt_release(void *h) {
-  ScrSqliteStmt *s = h;
-  if (s == NULL || --s->rc > 0) return;
+/* Drops the database's reference to a live statement it tracked. */
+static void scr_sqlite_db_untrack(ScrSqliteDb *db, ScrSqliteStmt *s) {
+  size_t before = db->stmt_n;
+  scr_sqlite_db_detach(db, s);
+  if (db->stmt_n != before) scr_sqlite_stmt_release(s);
+}
+
+/* The collector's teardown of a statement: no traced child is released
+ * (the collector accounts for them, and a neighbour may already be freed),
+ * so the database is only detached from its list by the database itself. */
+static void scr_sqlite_stmt_gcfree(void *p) {
+  ScrSqliteStmt *s = p;
+  if (s->stmt != NULL) sqlite3_finalize(s->stmt);
+  s->stmt = NULL;
+  scr_sqlite_stmt_clear_bare(s);
+  scr_cyc_free(s);
+}
+
+/* A statement freed without collection: release its children, then the
+ * block. The database keeps a reference to every live statement, so a
+ * tracked statement cannot reach this point; the detach is defensive. */
+static void scr_sqlite_stmt_destroy(ScrSqliteStmt *s) {
   ScrSqliteDb *db = s->db;
   if (s->stmt != NULL) {
     scr_sqlite_db_untrack(db, s);
     scr_sqlite_stmt_finalize(s);
   }
   scr_dyn_release(s->expandos);
-  free(s);
-  scr_sqlite_db_release(db);
+  s->expandos = NULL;
+  if (db != &scr_sqlite_closed_db) scr_sqlite_db_release(db);
+  scr_sqlite_stmt_gcfree(s);
+}
+
+static void scr_sqlite_stmt_release(void *h) {
+  ScrSqliteStmt *s = h;
+  if (s == NULL) return;
+  if (--s->rc > 0) {
+    scr_cyc_released(s);
+    return;
+  }
+  scr_cyc_dead(s);
+  scr_rc_destroy(s, (void (*)(void *))scr_sqlite_stmt_destroy);
+}
+
+static void scr_sqlite_stmt_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrSqliteStmt *s = p;
+  if (s->db != &scr_sqlite_closed_db) visit(s->db, ctx);
+  visit(s->expandos, ctx);
 }
 
 static bool scr_sqlite_stmt_is_finalized(const ScrSqliteStmt *s) { return s->stmt == NULL; }
@@ -1311,22 +1373,49 @@ static void *scr_sqlite_tag_retain(void *h) {
   return h;
 }
 
-static void scr_sqlite_tag_release(void *h) {
-  ScrSqliteTagStore *store = h;
-  if (store == NULL || --store->rc > 0) return;
+/* The collector's teardown of a tag store: the database, its cached
+ * statements and its added properties are traced children. */
+static void scr_sqlite_tag_gcfree(void *p) {
+  ScrSqliteTagStore *store = p;
+  for (size_t i = 0; i < store->count; i++) scr_str_release(store->entries[i].sql);
+  free(store->entries);
+  scr_cyc_free(store);
+}
+
+/* A tag store freed without collection: release its children, then the
+ * block. */
+static void scr_sqlite_tag_destroy(ScrSqliteTagStore *store) {
   for (size_t i = 0; i < store->count; i++) {
     /* A cached statement the program still holds (an iterator) stays
      * usable: dropping the cache's reference finalizes it only when
      * nothing else does. */
     scr_sqlite_db_untrack(store->db, store->entries[i].stmt);
     scr_sqlite_stmt_release(store->entries[i].stmt);
-    scr_str_release(store->entries[i].sql);
   }
-  free(store->entries);
-  ScrSqliteDb *db = store->db;
   scr_dyn_release(store->expandos);
-  free(store);
+  store->expandos = NULL;
+  ScrSqliteDb *db = store->db;
+  /* Releases the SQL strings and the entries array. */
+  scr_sqlite_tag_gcfree(store);
   scr_sqlite_db_release(db);
+}
+
+static void scr_sqlite_tag_release(void *h) {
+  ScrSqliteTagStore *store = h;
+  if (store == NULL) return;
+  if (--store->rc > 0) {
+    scr_cyc_released(store);
+    return;
+  }
+  scr_cyc_dead(store);
+  scr_rc_destroy(store, (void (*)(void *))scr_sqlite_tag_destroy);
+}
+
+static void scr_sqlite_tag_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrSqliteTagStore *store = p;
+  visit(store->db, ctx);
+  visit(store->expandos, ctx);
+  for (size_t i = 0; i < store->count; i++) visit(store->entries[i].stmt, ctx);
 }
 
 /* Drops the cache's references without touching SQLite (Node's Clear). */
@@ -1567,8 +1656,7 @@ static ScrDyn *scr_sqlite_db_create_tag_store(ScrSqliteDb *db, ScrDyn *const *ar
     }
     capacity = (size_t)value;
   }
-  ScrSqliteTagStore *store = calloc(1, sizeof *store);
-  if (store == NULL) scr_sqlite_oom();
+  ScrSqliteTagStore *store = scr_cyc_alloc(sizeof *store, &scr_sqlite_tag_cyc);
   store->rc = 1;
   store->db = scr_sqlite_db_retain(db);
   store->capacity = capacity;
@@ -1587,11 +1675,32 @@ static void *scr_sqlite_limits_retain(void *h) {
   return h;
 }
 
+static void scr_sqlite_limits_gcfree(void *p) {
+  scr_cyc_free(p);
+}
+
+/* A limits object freed without collection: its added properties are its
+ * only child (the database it reads through borrows it, and owns it). */
+static void scr_sqlite_limits_destroy(ScrSqliteLimits *l) {
+  scr_dyn_release(l->expandos);
+  l->expandos = NULL;
+  scr_sqlite_limits_gcfree(l);
+}
+
 static void scr_sqlite_limits_release(void *h) {
   ScrSqliteLimits *l = h;
-  if (l == NULL || --l->rc > 0) return;
-  scr_dyn_release(l->expandos);
-  free(l);
+  if (l == NULL) return;
+  if (--l->rc > 0) {
+    scr_cyc_released(l);
+    return;
+  }
+  scr_cyc_dead(l);
+  scr_rc_destroy(l, (void (*)(void *))scr_sqlite_limits_destroy);
+}
+
+static void scr_sqlite_limits_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrSqliteLimits *l = p;
+  visit(l->expandos, ctx);
 }
 
 /* Whether the limits object still reaches an open connection. A database
@@ -2184,13 +2293,28 @@ static void *scr_sqlite_db_retain(void *h) {
   return h;
 }
 
-static void scr_sqlite_db_release(void *h) {
-  ScrSqliteDb *db = h;
-  if (db == NULL || --db->rc > 0) return;
+/* The collector's teardown of a database: its statements, sessions, limits
+ * object and added properties are traced children the collector frees, so
+ * only untraced state (the connection, the path string, the list arrays)
+ * goes here. sqlite3_close_v2 leaves the connection open until its last
+ * statement is finalized, so the order the collector frees in is safe. */
+static void scr_sqlite_db_gcfree(void *p) {
+  ScrSqliteDb *db = p;
   if (db->conn != NULL) {
     sqlite3_close_v2(db->conn);
     db->conn = NULL;
   }
+  scr_str_release(db->path);
+  free(db->stmts);
+  free(db->sessions);
+  scr_cyc_free(db);
+}
+
+/* A database freed without collection: release every child, then the block.
+ * A tracked statement or session keeps a reference to the database, so both
+ * lists are empty by the time this runs. */
+static void scr_sqlite_db_destroy(ScrSqliteDb *db) {
+  if (db->conn != NULL) sqlite3_close_v2(db->conn);
   if (db->limits_object != NULL) {
     db->limits_object->db = NULL;
     scr_sqlite_limits_release(db->limits_object);
@@ -2199,10 +2323,28 @@ static void scr_sqlite_db_release(void *h) {
   scr_dyn_release(db->authorizer);
   db->authorizer = NULL;
   scr_dyn_release(db->expandos);
-  scr_str_release(db->path);
-  free(db->stmts);
-  free(db->sessions);
-  free(db);
+  db->expandos = NULL;
+  scr_sqlite_db_gcfree(db);
+}
+
+static void scr_sqlite_db_release(void *h) {
+  ScrSqliteDb *db = h;
+  if (db == NULL) return;
+  if (--db->rc > 0) {
+    scr_cyc_released(db);
+    return;
+  }
+  scr_cyc_dead(db);
+  scr_rc_destroy(db, (void (*)(void *))scr_sqlite_db_destroy);
+}
+
+static void scr_sqlite_db_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrSqliteDb *db = p;
+  visit(db->limits_object, ctx);
+  visit(db->expandos, ctx);
+  visit(db->authorizer, ctx);
+  for (size_t i = 0; i < db->stmt_n; i++) visit(db->stmts[i], ctx);
+  for (size_t i = 0; i < db->session_n; i++) visit(db->sessions[i], ctx);
 }
 
 static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db);
@@ -2224,6 +2366,9 @@ static void scr_sqlite_db_close_statements(ScrSqliteDb *db) {
       scr_sqlite_db_release(s->db);
       s->db = &scr_sqlite_closed_db;
     }
+    /* The database's own reference to the statement goes too; a program
+     * that still holds the statement keeps it. */
+    scr_sqlite_stmt_release(s);
   }
 }
 
@@ -2243,6 +2388,9 @@ static bool scr_sqlite_db_close_all(ScrSqliteDb *db) {
       scr_sqlite_db_release(s->db);
       s->db = &scr_sqlite_closed_db;
     }
+    /* The database's own reference to the statement goes too; a program
+     * that still holds the statement keeps it. */
+    scr_sqlite_stmt_release(s);
   }
   scr_sqlite_db_delete_sessions(db);
   if (db->conn != NULL) {
@@ -2364,6 +2512,7 @@ static ScrSqliteDb *scr_sqlite_db_of(const ScrDyn *box) {
 
 /* Tracks a freshly created statement on its database. */
 static void scr_sqlite_db_track(ScrSqliteDb *db, ScrSqliteStmt *s) {
+  scr_sqlite_stmt_retain(s);
   if (db->stmt_n == db->stmt_cap) {
     size_t cap = db->stmt_cap != 0 ? db->stmt_cap * 2 : 8;
     void *grown = realloc(db->stmts, cap * sizeof *db->stmts);
@@ -2977,16 +3126,37 @@ static void *scr_sqlite_session_retain(void *h) {
   return h;
 }
 
+/* The collector's teardown of a session: its database is a traced child. */
+static void scr_sqlite_session_gcfree(void *p) {
+  ScrSqliteSession *session = p;
+  if (session->session != NULL) sqlite3session_delete(session->session);
+  session->session = NULL;
+  scr_cyc_free(session);
+}
+
+/* A session freed without collection: delete it, release the database,
+ * then the block. */
+static void scr_sqlite_session_destroy(ScrSqliteSession *session) {
+  ScrSqliteDb *db = session->db;
+  scr_sqlite_session_delete(session);
+  if (db != &scr_sqlite_closed_db) scr_sqlite_db_release(db);
+  scr_sqlite_session_gcfree(session);
+}
+
 static void scr_sqlite_session_release(void *h) {
   ScrSqliteSession *session = h;
-  if (session == NULL || --session->rc > 0) return;
-  ScrSqliteDb *db = session->db;
-  /* Delete (which is idempotent and unlinks the session from the
-   * database) before the wrapper goes: a database close later must not
-   * walk a freed wrapper. */
-  scr_sqlite_session_delete(session);
-  free(session);
-  scr_sqlite_db_release(db);
+  if (session == NULL) return;
+  if (--session->rc > 0) {
+    scr_cyc_released(session);
+    return;
+  }
+  scr_cyc_dead(session);
+  scr_rc_destroy(session, (void (*)(void *))scr_sqlite_session_destroy);
+}
+
+static void scr_sqlite_session_trace(void *p, ScrTraceVisit visit, void *ctx) {
+  ScrSqliteSession *session = p;
+  visit(session->db, ctx);
 }
 
 /* Node's Session::Delete: frees the SQLite session and untracks it. */
@@ -3008,6 +3178,9 @@ static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db) {
       sqlite3session_delete(session->session);
       session->session = NULL;
     }
+    /* The database's reference to the session goes; a program that still
+     * holds the session keeps a closed one. */
+    scr_sqlite_session_release(session);
   }
 }
 
@@ -3060,6 +3233,8 @@ static ScrDyn *scr_sqlite_session_invoke(void *h, ScrDyn *self, const char *meth
       return NULL;
     }
     scr_sqlite_session_delete(session);
+    /* The database's reference goes with it. */
+    scr_sqlite_session_release(session);
     return scr_dyn_retain(scr_dyn_undefined());
   }
   scr_sqlite_not_a_function(what);
@@ -3119,8 +3294,10 @@ static ScrDyn *scr_sqlite_session_dispose_call(ScrClosure *clo, ScrDyn *const *a
   ScrDyn *out = NULL;
   if (session != NULL) {
     /* Disposal swallows the state errors of an already closed session. */
-    if (session->db->conn != NULL && session->session != NULL && !session->generating)
+    if (session->db->conn != NULL && session->session != NULL && !session->generating) {
       scr_sqlite_session_delete(session);
+      scr_sqlite_session_release(session);
+    }
     out = scr_dyn_retain(scr_dyn_undefined());
   } else {
     scr_sqlite_not_a_function("[Symbol.dispose]");
@@ -3197,8 +3374,7 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
   scr_str_release(held_table);
   scr_str_release(held_db);
 
-  ScrSqliteSession *session = calloc(1, sizeof *session);
-  if (session == NULL) scr_sqlite_oom();
+  ScrSqliteSession *session = scr_cyc_alloc(sizeof *session, &scr_sqlite_session_cyc);
   session->rc = 1;
   session->db = scr_sqlite_db_retain(db);
   session->session = raw;
@@ -3209,6 +3385,7 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
     db->sessions = grown;
     db->session_cap = cap;
   }
+  scr_sqlite_session_retain(session);
   db->sessions[db->session_n++] = session;
   scr_dyn_handle_install(SCR_DYNH_SQLITE_SESSION, &scr_sqlite_session_ops);
   ScrDyn *out = scr_dyn_new_handle(session, SCR_DYNH_SQLITE_SESSION);
@@ -3616,8 +3793,7 @@ static ScrDyn *scr_sqlite_db_get(void *h, const char *key, size_t len) {
      * the native pointer). */
     ScrSqliteLimits *l = db->limits_object;
     if (l == NULL) {
-      l = calloc(1, sizeof *l);
-      if (l == NULL) scr_sqlite_oom();
+      l = scr_cyc_alloc(sizeof *l, &scr_sqlite_limits_cyc);
       l->rc = 1; /* the database's reference */
       l->db = db;
       db->limits_object = l;
@@ -4511,7 +4687,7 @@ ScrDyn *scr_sqlite_db_new(ScrDyn *path, ScrDyn *options) {
   char *location = scr_sqlite_validate_path(path);
   if (location == NULL) return NULL;
 
-  ScrSqliteDb *db = calloc(1, sizeof *db);
+  ScrSqliteDb *db = scr_cyc_alloc(sizeof *db, &scr_sqlite_db_cyc);
   if (db == NULL) scr_sqlite_oom();
   db->rc = 1;
   db->path = scr_str_new(location, strlen(location));
@@ -4525,7 +4701,7 @@ ScrDyn *scr_sqlite_db_new(ScrDyn *path, ScrDyn *options) {
   do {                               \
     scr_str_release(db->path);       \
     free(db->stmts);                 \
-    free(db);                        \
+    scr_cyc_free(db);                \
     return NULL;                     \
   } while (0)
 
@@ -4589,7 +4765,7 @@ ScrDyn *scr_sqlite_db_new(ScrDyn *path, ScrDyn *options) {
     scr_str_release(db->path);
     free(db->stmts);
     free(db->sessions);
-    free(db);
+    scr_cyc_free(db);
     return NULL;
   }
 

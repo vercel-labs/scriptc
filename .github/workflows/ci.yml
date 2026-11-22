@@ -1342,8 +1342,12 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
-    # The Node island tests take most of it.
-    timeout-minutes: 45
+    # The Intel runner is slow: the native packages build alone took 26
+    # minutes, and the Node island tests, which take most of the rest, were
+    # still running when the 45-minute limit cancelled the job after 45m13s.
+    # Keep half an hour of slack, as the arm64 contracts job does, so a busy
+    # runner finishes them rather than timing out in them.
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

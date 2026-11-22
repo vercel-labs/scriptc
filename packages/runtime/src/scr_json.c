@@ -20582,7 +20582,25 @@ static void scr_function_apply_cleanup(void) {
   scr_function_apply_value = NULL;
 }
 
-ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what) {
+/* The over-limit argument list, named by the operation that asked. */
+static void scr_dyn_apply_args_limit(void) {
+  static const char message[] = "Function.prototype.apply exceeds the native argument limit";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+static void scr_dyn_reflect_args_limit(void) {
+  static const char message[] = "Reflect.construct exceeds the native argument limit";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
+/* CreateListFromArrayLike (Reflect.apply's and Reflect.construct's shared
+ * step): a fresh dyn array of the value's elements, +1, or NULL with the
+ * exception pending. `nullish_empty` is Function.prototype.apply's rule
+ * (an absent list means no arguments); Reflect.construct passes false, so
+ * an undefined or null list is Node's "CreateListFromArrayLike called on
+ * non-object" TypeError. `reflect` only names the over-limit report. */
+static ScrDyn *scr_dyn_args_from_array_like(const ScrDyn *arguments, bool nullish_empty,
+                                            bool reflect) {
   ScrDyn *list = scr_dyn_new_arr();
   if (arguments && arguments->kind != SCR_DYN_UNDEF && arguments->kind != SCR_DYN_NULL) {
     if (!scr_iterator_object(arguments)) {
@@ -20594,8 +20612,8 @@ ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, c
       bool ok = length && scr_dyn_number_coerce_js(length, &count);
       scr_dyn_release(length);
       if (ok && count > 1000000) {
-        static const char message[] = "Function.prototype.apply exceeds the native argument limit";
-        scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+        if (reflect) scr_dyn_reflect_args_limit();
+        else scr_dyn_apply_args_limit();
       } else if (ok) for (size_t i = 0; (double)i < floor(count); i++) {
         char key[32];
         int size = snprintf(key, sizeof key, "%zu", i);
@@ -20604,7 +20622,20 @@ ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, c
         scr_dyn_arr_push(list, value);
       }
     }
+  } else if (!nullish_empty) {
+    static const char message[] = "CreateListFromArrayLike called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
   }
+  if (scr_exc_pending()) {
+    scr_dyn_release(list);
+    return NULL;
+  }
+  return list;
+}
+
+ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what) {
+  ScrDyn *list = scr_dyn_args_from_array_like(arguments, true, false);
+  if (!list) return NULL;
   ScrDyn *result = NULL;
   if (!scr_exc_pending()) {
     scr_dyn_this_push_dyn(receiver);
@@ -22476,6 +22507,138 @@ void scr_dyn_pack_push_spread_iter(ScrDyn *pack, const ScrDyn *src) {
  * retained (+1) — identity, like JS. */
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list) {
   return scr_dyn_apply_array_like(target, receiver, arguments_list, "Reflect.apply");
+}
+
+/* IsConstructor over a checked-dynamic value: an ordinary function with its
+ * own prototype, a compiled class, a native constructor, or a handle that
+ * boxes one (an island function). */
+static bool scr_dyn_constructible_value(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_HANDLE) return scr_ni_dyn_handle(value);
+  if (value->kind != SCR_DYN_FUNC) return false;
+  if (value->v.fn.class_obj) return true;
+  if (value->v.fn.sig && strncmp(value->v.fn.sig, "native:", 7) == 0) return true;
+  return value->v.fn.clo != NULL &&
+         (scr_closure_identity(value->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) ==
+             SCR_CLOSURE_KIND_OWN_PROTOTYPE;
+}
+
+/* V8's rendering of a value inside a TypeError message: a function's source
+ * text, "[object Array]" for an array, "#<Object>" for an ordinary object,
+ * and the primitive's own text otherwise. Only the forms
+ * scr_dyn_not_constructor names are rendered here, so this unit keeps no
+ * dependency on the dyn-invoke unit's display. */
+static void scr_dyn_v8_display(ScrJsonBuf *b, const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
+  case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
+  case SCR_DYN_BOOL: scr_jb_puts(b, value->v.b ? "true" : "false"); return;
+  case SCR_DYN_NUM: {
+    ScrStr *text = scr_f64_to_scrstr(value->v.num);
+    scr_jb_write(b, text->data, text->len);
+    scr_str_release(text);
+    return;
+  }
+  case SCR_DYN_STR: scr_jb_write(b, value->v.str->data, value->v.str->len); return;
+  case SCR_DYN_BIGINT: {
+    ScrStr *text = scr_bigint_to_string(value->v.bigint, 10);
+    scr_jb_write(b, text->data, text->len);
+    scr_str_release(text);
+    return;
+  }
+  case SCR_DYN_FUNC: {
+    const char *source = scr_dyn_fn_source_text(value);
+    if (source != NULL) scr_jb_puts(b, source);
+    else scr_jb_puts(b, "function");
+    return;
+  }
+  case SCR_DYN_ARR: scr_jb_puts(b, "[object Array]"); return;
+  default: scr_jb_puts(b, "#<Object>"); return;
+  }
+}
+
+static ScrStr *scr_dyn_v8_display_str(const ScrDyn *value) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_dyn_v8_display(&b, value);
+  return scr_jb_finish(&b);
+}
+
+/* `<rendered> is not a constructor`, Node's TypeError text. */
+static void scr_dyn_not_constructor(const ScrDyn *value) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_dyn_v8_display(&b, value);
+  scr_jb_puts(&b, " is not a constructor");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Reflect.construct(target, args, newTarget) with a DISTINCT newTarget: the
+ * receiver takes newTarget's prototype and the target runs over it as its
+ * `this`, Node's ordinary construction. A class or native target builds its
+ * instance itself, so it keeps an honest "not supported yet" Error rather
+ * than diverging. */
+static ScrDyn *scr_dyn_reflect_construct_with(const ScrDyn *target, const ScrDyn *args,
+                                               const ScrDyn *new_target, const ScrStr *named) {
+  if (target->kind != SCR_DYN_FUNC || target->v.fn.class_obj || target->v.fn.clo == NULL ||
+      (scr_closure_identity(target->v.fn.clo)->function_kind & SCR_CLOSURE_KIND_MASK) !=
+          SCR_CLOSURE_KIND_OWN_PROTOTYPE) {
+    static const char message[] =
+        "Reflect.construct with a distinct newTarget for this target is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  ScrDyn *prototype = scr_dyn_fn_get(new_target, "prototype", 9);
+  if (!prototype) return NULL;
+  ScrDyn *receiver = scr_iterator_object(prototype) ? scr_dyn_obj_create(prototype) : scr_dyn_new_obj();
+  scr_dyn_release(prototype);
+  if (!receiver) return NULL;
+  scr_dyn_name_prototype_chain(receiver);
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(target, args->v.arr.items, args->v.arr.len, named->data);
+  scr_dyn_this_pop();
+  if (!result) {
+    scr_dyn_release(receiver);
+    return NULL;
+  }
+  if (scr_iterator_object(result)) {
+    scr_dyn_release(receiver);
+    return result;
+  }
+  scr_dyn_release(result);
+  return receiver;
+}
+
+/* Reflect.construct(target, argumentsList[, newTarget]): Node's order — the
+ * target must be a constructor, the list converts (CreateListFromArrayLike),
+ * an explicit newTarget must be a constructor, then the construction runs.
+ * The third ARGUMENT's presence decides whether newTarget is consulted: an
+ * explicit undefined is `undefined is not a constructor`, as in Node. */
+ScrDyn *scr_dyn_reflect_construct(const ScrDyn *target, const ScrDyn *arguments,
+                                  const ScrDyn *new_target, bool explicit_new_target) {
+  if (!scr_dyn_constructible_value(target)) {
+    scr_dyn_not_constructor(target);
+    return NULL;
+  }
+  ScrDyn *args = scr_dyn_args_from_array_like(arguments, false, true);
+  if (!args) return NULL;
+  if (explicit_new_target && !scr_dyn_constructible_value(new_target)) {
+    scr_dyn_release(args);
+    scr_dyn_not_constructor(new_target);
+    return NULL;
+  }
+  ScrStr *named = scr_dyn_v8_display_str(target);
+  if (!named) {
+    scr_dyn_release(args);
+    return NULL;
+  }
+  ScrDyn *result;
+  if (!explicit_new_target || scr_dyn_strict_eq(new_target, target))
+    result = scr_dyn_construct(target, args, named);
+  else
+    result = scr_dyn_reflect_construct_with(target, args, new_target, named);
+  scr_dyn_release(args);
+  scr_str_release(named);
+  return result;
 }
 
 ScrDyn *scr_dyn_assign_all(ScrDyn *target, const ScrDyn *sources) {

@@ -80,6 +80,10 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * result and those error outputs decode the captured bytes through it (the
  * compiler validates the name; an unknown one reads as utf8). All args
  * borrowed. */
+/* `execFileSync(file, args, { shell: true })`'s command line: the file
+ * and every argument joined with single spaces, unquoted — what Node
+ * hands `/bin/sh -c`. Result +1. Both args borrowed. Never throws. */
+ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args);
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,

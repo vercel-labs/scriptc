@@ -2677,6 +2677,24 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+/* DEP0190: execFileSync with `shell: true` and a NON-EMPTY args array
+ * concatenates the arguments unescaped. Node reports it once per process,
+ * through the same deprecation path as the report above. */
+void scr_child_shell_deprecation(ScrArr *args) {
+  static SCR_TL bool reported = false;
+  if (reported || scr_arr_len(args) <= 0) return;
+  reported = true;
+  static const char text[] =
+      "Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0190", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
 static void scr_timer_this_fire(ScrClosure *self) {
   ScrClosure *cb = scr_box_get_ref(self->caps[0]);
   double handle = scr_timer_running_handle();

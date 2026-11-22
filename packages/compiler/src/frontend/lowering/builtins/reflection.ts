@@ -1,4 +1,4 @@
-import { nodeThrowExpr, varRef } from "../../../ir/build.js";
+import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -162,11 +162,10 @@ function reflectMemberFunction(
   };
 }
 
-/** The function value of the Reflect member `member`, or null for the three
- * whose behavior has no faithful lowering yet (setPrototypeOf answers false
- * where Object.setPrototypeOf throws, defineProperty answers false for a
- * non-configurable member, and construct takes a new.target — each would
- * need runtime work, so they keep their call-time fence). */
+/** The function value of the Reflect member `member`, or null for the two
+ * whose VALUE has no faithful lowering yet (setPrototypeOf answers false
+ * where Object.setPrototypeOf throws, and defineProperty answers false for
+ * a non-configurable member, so a saved value keeps the read-time fence). */
 export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   const memberLocal = (locals: IrLocal[], ident: string, label: string): IrExpr => {
     locals.push({ id: ident, name: label, type: DYN, mutable: false });
@@ -187,6 +186,31 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
     loc,
   });
   switch (member) {
+    case "construct":
+      // The member as a value (`const construct = Reflect.construct`, React's
+      // feature test — where `newTarget` is the third argument's PRESENCE):
+      // the same checked-dynamic construction the direct call lowers to.
+      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        const list = memberLocal(locals, "l.0", "list");
+        const newTarget = memberLocal(locals, "n.0", "newTarget");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          { kind: "varDecl", localId: "l.0", init: actualArgument(args, 1, loc), loc },
+          { kind: "varDecl", localId: "n.0", init: actualArgument(args, 2, loc), loc },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectConstruct",
+              args: [target, list, newTarget, arityAtLeast(args, 3, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
     case "isExtensible":
       // The handle-aware query: the target arrives untyped, so it may be a
       // native handle whose integrity the handle property table tracks (a
@@ -660,6 +684,33 @@ export function lowerReflectCall(
   }
   if (call.questionDotToken) return null;
   const reflectMember = lowerer.stdlibGlobalMember(access, "Reflect");
+  // Reflect.construct(target, argumentsList[, newTarget]) — the checked-
+  // dynamic construction with Node's checks and order (the runtime applies
+  // IsConstructor, CreateListFromArrayLike and the newTarget prototype).
+  // React's error-stack formatter builds a receiver from a fake
+  // constructor's prototype this way.
+  if (reflectMember === "construct" && !access.questionDotToken) {
+    const args = call.arguments.nodes;
+    if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        "Reflect.construct with this argument shape",
+        call,
+        "the supported form is Reflect.construct(target, argumentsList[, newTarget])",
+      );
+    }
+    const loc = locOf(call);
+    const target = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const list = lowerer.lowerExprExpecting(args[1]!, DYN);
+    const newTarget =
+      args[2] !== undefined ? lowerer.lowerExprExpecting(args[2], DYN) : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "dyn.reflectConstruct",
+      args: [target, list, newTarget, boolLit(args.length === 3, loc)],
+      type: DYN,
+      loc,
+    };
+  }
   // Reflect.getPrototypeOf(target) — the prototype object of the target's
   // checked-dynamic view, exactly Object.getPrototypeOf's answer.
   if (

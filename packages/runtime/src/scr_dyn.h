@@ -2182,6 +2182,11 @@ bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list);
+/* Reflect.construct(target, argumentsList, newTarget): Node's construction
+ * with an explicit newTarget's prototype on the receiver. +1 or NULL with
+ * the exception pending. */
+ScrDyn *scr_dyn_reflect_construct(const ScrDyn *target, const ScrDyn *arguments,
+                                  const ScrDyn *new_target, bool explicit_new_target);
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);

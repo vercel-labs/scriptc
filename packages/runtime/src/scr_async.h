@@ -525,6 +525,9 @@ void scr_process_set_emit_warning(ScrDyn *fn);
  * made from node_modules) — at once for a static ES import, which Node
  * links before any module evaluates, otherwise on the next tick. */
 void scr_punycode_warn(bool immediate, bool report);
+/* DEP0190, once per process, for execFileSync with `shell: true` over a
+ * non-empty args array (the arguments are concatenated unescaped). */
+void scr_child_shell_deprecation(ScrArr *args);
 /* The deprecated Buffer() and new Buffer() called outside node_modules
  * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
  * 10000-call check (scr_buffer_deprecation_count). */

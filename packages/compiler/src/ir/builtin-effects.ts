@@ -151,6 +151,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "strdec.nextDyn",
   "dyn.construct",
   "dyn.reflectApply",
+  "dyn.reflectConstruct",
   "dyn.reflectGet",
   "dyn.usingMethod",
   "dyn.usingDispose",
@@ -941,6 +942,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
+  // DEP0190 reaches the program's 'warning' listeners, whose replacements
+  // may throw.
+  "cp.shellDeprecation",
   // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
   // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
   "cp.execFileOpts",

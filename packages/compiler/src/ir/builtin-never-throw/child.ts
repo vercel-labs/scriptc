@@ -16,4 +16,8 @@ export const childNeverThrow: readonly IrLibFn[] = [
   "child.stdioCached",
   "child.stdioArray",
   "child.stdioStore",
+  // cp.shellCommand joins the file and its arguments into one command
+  // string: reads the strings the caller already validated and allocates
+  // the result, with no coercion, accessor or program code.
+  "cp.shellCommand",
 ];

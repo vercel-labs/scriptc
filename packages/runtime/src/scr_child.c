@@ -1601,6 +1601,33 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
   return out;
 }
 
+/* execFileSync's shell form: Node joins the file and its arguments with
+ * single spaces (no quoting — the shell splits them) and passes the
+ * string to `/bin/sh -c`. */
+ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args) {
+  size_t n = (size_t)scr_arr_len(args);
+  size_t total = file->len;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    total += 1 + s->len;
+    scr_str_release(s);
+  }
+  char *out = malloc(total ? total : 1);
+  if (!out) scr_child_oom();
+  memcpy(out, file->data, file->len);
+  size_t at = file->len;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    out[at++] = ' ';
+    memcpy(out + at, s->data, s->len);
+    at += s->len;
+    scr_str_release(s);
+  }
+  ScrStr *command = scr_str_new(out, at);
+  free(out);
+  return command;
+}
+
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
                                        bool with_stderr, bool always_nl,
                                        const ScrStr *encoding) {
@@ -4690,6 +4717,33 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
   }
   out[at] = '\0';
   return out;
+}
+
+/* execFileSync's shell form: Node joins the file and its arguments with
+ * single spaces (no quoting — the shell splits them) and passes the
+ * string to `/bin/sh -c`. */
+ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args) {
+  size_t n = (size_t)scr_arr_len(args);
+  size_t total = file->len;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    total += 1 + s->len;
+    scr_str_release(s);
+  }
+  char *out = malloc(total ? total : 1);
+  if (!out) scr_child_oom();
+  memcpy(out, file->data, file->len);
+  size_t at = file->len;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
+    out[at++] = ' ';
+    memcpy(out + at, s->data, s->len);
+    at += s->len;
+    scr_str_release(s);
+  }
+  ScrStr *command = scr_str_new(out, at);
+  free(out);
+  return command;
 }
 
 /* Builds a NULL-terminated envp from [k,v,...] pairs ("k=v" strings, each

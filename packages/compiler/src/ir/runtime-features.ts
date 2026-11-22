@@ -154,6 +154,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // DEP0190 for execFileSync's unescaped args under shell: true.
+  "cp.shellDeprecation",
   // DEP0094 for assert.fail's deprecated multi-argument form.
   "assert.failDeprecation",
   // util.aborted answers a checked-dynamic promise, and so do the
@@ -977,6 +979,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",

@@ -88,7 +88,13 @@ function isDeclarationWrite(id: ts.Identifier): boolean {
  * never observes the aliasing, and element reads cannot observe it while
  * nothing writes an element or a parameter. The object itself must not
  * escape, since another holder could write through it. */
-export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): boolean {
+export function argumentsAliasingUnobservable(
+  fn: ts.SignatureDeclaration,
+  /** A use that only READS the object without letting another holder keep
+   * it (Function.prototype.apply's argumentsList): the receiver cannot
+   * write through it, so aliasing with the parameters stays unobservable. */
+  isReadOnlyUse?: (id: ts.Identifier) => boolean,
+): boolean {
   if (fn.body === undefined) return false;
   let elementReads = false;
   let escapes = false;
@@ -109,6 +115,7 @@ export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): bool
       elementReads = true;
       return undefined;
     }
+    if (isReadOnlyUse?.(node)) return undefined;
     escapes = true;
     return "stop";
   });

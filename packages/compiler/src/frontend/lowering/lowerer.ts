@@ -12458,6 +12458,61 @@ export class Lowerer {
       }
       return out;
     };
+    /** The array a pattern-position literal builds when one of its
+     * positions spreads a VARIABLE-length array: its length is a run-time
+     * fact, so the pattern's contextual tuple cannot hold it and the literal
+     * is lowered as the array it is. The element type joins the literal's
+     * positions and its spread sources' elements; null when the initializer
+     * is not such a literal (or holds a position this analysis cannot
+     * describe). */
+    const spreadLiteralType = (init: ts.Expression): IrType | null => {
+      const leaves: ts.ArrayLiteralExpression[] = [];
+      let variableSpread = false;
+      const walk = (e: ts.Expression): boolean => {
+        let x = e;
+        while (ts.isParenthesizedExpression(x)) x = x.expression;
+        if (ts.isConditionalExpression(x)) return walk(x.whenTrue) && walk(x.whenFalse);
+        if (!ts.isArrayLiteralExpression(x)) return false;
+        leaves.push(x);
+        for (const el of x.elements.nodes)
+          if (ts.isSpreadElement(el) && !this.checker.isTupleType(this.typeOf(el.expression)))
+            variableSpread = true;
+        return true;
+      };
+      if (!walk(init) || !variableSpread) return null;
+      const arms: IrType[] = [];
+      const add = (t: IrType | null): boolean => {
+        if (t === null) return false;
+        if (t.kind === "union") {
+          return (this.unions.get(t.unionId)?.arms ?? []).every(add);
+        }
+        const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+        if (
+          part.kind !== "f64" &&
+          part.kind !== "string" &&
+          part.kind !== "bool" &&
+          !isUnitType(part)
+        )
+          return false;
+        if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+        return true;
+      };
+      for (const lit of leaves) {
+        for (const el of lit.elements.nodes) {
+          if (ts.isSpreadElement(el)) {
+            const spread = this.mapTypeOf(this.typeOf(el.expression));
+            if (spread?.kind !== "array" || !add(spread.elem)) return null;
+            continue;
+          }
+          if (ts.isOmittedExpression(el)) continue;
+          if (!add(this.mapTypeOf(this.typeOf(el)))) return null;
+        }
+      }
+      if (arms.length === 0 || arms.every(isUnitType)) return null;
+      return arrayOf(
+        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) },
+      );
+    };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (ts.isObjectBindingPattern(name)) {
         // `const { 0: a, 1: b, length } = parts` reads positions like the
@@ -12482,7 +12537,8 @@ export class Lowerer {
         return scanPositions(positions, init, arrayType);
       }
       if (!ts.isArrayBindingPattern(name)) return false;
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+      let sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "array") sourceType = spreadLiteralType(init);
       if (sourceType?.kind !== "array") return false;
       return scanPositions(
         name.elements.nodes.filter((el): el is ts.BindingElement => !ts.isOmittedExpression(el)),

@@ -7125,20 +7125,6 @@ export function bindPatternTarget(
     if (g) {
       if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
         g.type = DYN;
-      // A module-level pattern position whose source length is only known
-      // at run time (a fixed-position literal that spreads a variable-length
-      // array) may be missing; the read answers the source's undefined-armed
-      // union, so the global takes it and keeps it at reads (the same
-      // widening the optional-read analysis records for a known array
-      // source).
-      else if (
-        value.type.kind === "union" &&
-        lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
-        typeEquals(lowerer.stripUndefinedArm(value.type), g.type)
-      ) {
-        g.type = value.type;
-        lowerer.runtimeOptionalGlobals.add(g);
-      }
       out.push({
         kind: "assign",
         localId: g.id,

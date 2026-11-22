@@ -122,8 +122,7 @@ function patternSpreadArrayJoin(
       return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
     }
     const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-    if (part.kind !== "f64" && part.kind !== "string" && part.kind !== "bool" && !isUnitType(part))
-      return false;
+    if (isUnitType(part)) return true;
     arms.set(typeKey(part), part);
     return true;
   };
@@ -131,8 +130,22 @@ function patternSpreadArrayJoin(
     for (const el of lit.elements.nodes) {
       if (ts.isSpreadElement(el)) {
         const spread = lowerer.mapTypeOf(lowerer.typeOf(el.expression));
-        if (spread?.kind !== "array" || !add(spread.elem)) return null;
-        continue;
+        if (spread === null) continue;
+        if (spread.kind === "array") {
+          if (!add(spread.elem)) return null;
+          continue;
+        }
+        if (spread.kind === "string") {
+          if (!add(STRING)) return null;
+          continue;
+        }
+        const spreadShape =
+          spread.kind === "record" ? lowerer.shapes.get(spread.shapeId) : undefined;
+        if (spreadShape?.tuple) {
+          if (!spreadShape.fields.every((field) => add(field.type))) return null;
+          continue;
+        }
+        return null;
       }
       if (ts.isOmittedExpression(el)) continue;
       if (!add(lowerer.mapTypeOf(lowerer.typeOf(el)))) return null;
@@ -3056,8 +3069,7 @@ function arrayBesideLiteralUnderTuple(
       return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
     }
     const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-    if (part.kind !== "f64" && part.kind !== "string" && part.kind !== "bool" && !isUnitType(part))
-      return false;
+    if (isUnitType(part)) return true;
     arms.set(typeKey(part), part);
     return true;
   };
@@ -3073,8 +3085,22 @@ function arrayBesideLiteralUnderTuple(
       if (ts.isSpreadElement(element)) {
         if (!bothLiterals) return null;
         const spread = lowerer.mapTypeOf(lowerer.typeOf(element.expression));
-        if (spread?.kind !== "array" || !add(spread.elem)) return null;
-        continue;
+        if (spread === null) continue;
+        if (spread.kind === "array") {
+          if (!add(spread.elem)) return null;
+          continue;
+        }
+        if (spread.kind === "string") {
+          if (!add(STRING)) return null;
+          continue;
+        }
+        const spreadShape =
+          spread.kind === "record" ? lowerer.shapes.get(spread.shapeId) : undefined;
+        if (spreadShape?.tuple) {
+          if (!spreadShape.fields.every((field) => add(field.type))) return null;
+          continue;
+        }
+        return null;
       }
       if (ts.isOmittedExpression(element)) continue;
       if (!add(lowerer.mapTypeOf(lowerer.typeOf(element)))) return null;

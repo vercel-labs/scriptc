@@ -12481,37 +12481,46 @@ export class Lowerer {
       };
       if (!walk(init) || !variableSpread) return null;
       const arms: IrType[] = [];
-      const add = (t: IrType | null): boolean => {
-        if (t === null) return false;
+      const note = (t: IrType | null): void => {
+        if (t === null) return;
         if (t.kind === "union") {
-          return (this.unions.get(t.unionId)?.arms ?? []).every(add);
+          for (const arm of this.unions.get(t.unionId)?.arms ?? []) note(arm);
+          return;
         }
         const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-        if (
-          part.kind !== "f64" &&
-          part.kind !== "string" &&
-          part.kind !== "bool" &&
-          !isUnitType(part)
-        )
-          return false;
+        if (isUnitType(part)) return;
         if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
-        return true;
       };
       for (const lit of leaves) {
         for (const el of lit.elements.nodes) {
-          if (ts.isSpreadElement(el)) {
-            const spread = this.mapTypeOf(this.typeOf(el.expression));
-            if (spread?.kind !== "array" || !add(spread.elem)) return null;
+          if (ts.isOmittedExpression(el)) continue;
+          if (!ts.isSpreadElement(el)) {
+            note(this.mapTypeOf(this.typeOf(el)));
             continue;
           }
-          if (ts.isOmittedExpression(el)) continue;
-          if (!add(this.mapTypeOf(this.typeOf(el)))) return null;
+          const spread = this.mapTypeOf(this.typeOf(el.expression));
+          if (spread === null) continue;
+          if (spread.kind === "array") {
+            note(spread.elem);
+            continue;
+          }
+          if (spread.kind === "string") {
+            note(STRING);
+            continue;
+          }
+          const spreadShape =
+            spread.kind === "record" ? this.shapes.get(spread.shapeId) : undefined;
+          if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
         }
       }
-      if (arms.length === 0 || arms.every(isUnitType)) return null;
-      return arrayOf(
-        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) },
-      );
+      if (arms.every(isUnitType)) return null;
+      const elem: IrType =
+        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) };
+      // The widening this analysis records arms the element type; one it
+      // cannot arm has no missing position to describe.
+      const widened =
+        elem.kind === "union" ? this.withUndefinedArmOf(elem) : this.withUndefinedArm(elem);
+      return widened ? arrayOf(elem) : null;
     };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (ts.isObjectBindingPattern(name)) {

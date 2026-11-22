@@ -549,21 +549,30 @@ export function lowerArrayLiteral(
           // checked-dynamic tree): a dynamic element would turn a missing
           // position into the checked read's TypeError instead of the
           // undefined Node binds. A spread contributes its array's element
-          // type; mixed positions keep a union, and an unreadable set stays
-          // dynamic.
+          // type (a fixed tuple spread its positions); mixed positions keep
+          // a union, and an unreadable set stays dynamic.
           const candidates: IrType[] = [];
+          const note = (t: IrType | null): void => {
+            if (t === null || isUnitType(t)) return;
+            if (!candidates.some((c) => typeEquals(c, t))) candidates.push(t);
+          };
           for (const el of expr.elements.nodes) {
             if (ts.isOmittedExpression(el)) continue;
             const mappedEl = lowerer.mapTypeOf(
               lowerer.typeOf(ts.isSpreadElement(el) ? el.expression : el),
             );
             if (mappedEl === null) continue;
-            const t = ts.isSpreadElement(el)
-              ? mappedEl.kind === "array"
-                ? mappedEl.elem
-                : null
-              : mappedEl;
-            if (t !== null && !candidates.some((c) => typeEquals(c, t))) candidates.push(t);
+            if (!ts.isSpreadElement(el)) {
+              note(mappedEl);
+              continue;
+            }
+            if (mappedEl.kind === "array") {
+              note(mappedEl.elem);
+              continue;
+            }
+            const spreadShape =
+              mappedEl.kind === "record" ? lowerer.shapes.get(mappedEl.shapeId) : undefined;
+            if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
           }
           const elem: IrType =
             candidates.length === 0

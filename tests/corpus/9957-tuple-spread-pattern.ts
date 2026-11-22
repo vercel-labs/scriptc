@@ -21,3 +21,17 @@ console.log(x, y, z);
 const xs: number[] = [1];
 const [m1, m2, m3] = [...xs, "x"];
 console.log(m1, m2, m3);
+
+// Record positions keep a missing element as undefined too.
+function labelOf(item: { label: string } | undefined): string {
+  return item === undefined ? "none" : item.label;
+}
+const emptyItems: { label: string }[] = [];
+const [firstItem, secondItem] = [...emptyItems, { label: "b" }];
+console.log(labelOf(firstItem), labelOf(secondItem));
+
+// A fixed-tuple spread beside a variable-length one.
+const pair: [number, number] = [1, 2];
+const rest: number[] = [];
+const [p1, p2, p3] = [...pair, ...rest];
+console.log(p1, p2, p3);

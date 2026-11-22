@@ -565,12 +565,12 @@ export function lowerArrayLiteral(
               : mappedEl;
             if (t !== null && !candidates.some((c) => typeEquals(c, t))) candidates.push(t);
           }
-          const elem =
+          const elem: IrType =
             candidates.length === 0
               ? DYN
               : candidates.length === 1
                 ? candidates[0]!
-                : lowerer.unions.intern(candidates);
+                : { kind: "union", unionId: lowerer.unions.intern(candidates) };
           return lowerArrayLiteral(lowerer, expr, arrayOf(elem) as IrType & { kind: "array" });
         }
         return lowerTupleSpreadLiteral(lowerer, expr, mapped, shape);

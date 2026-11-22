@@ -3061,7 +3061,9 @@ function arrayBesideLiteralUnderTuple(
     arms.set(typeKey(part), part);
     return true;
   };
-  if (!bothLiterals && !add(other!.elem)) return null;
+  // The single-literal form pairs the literal with an ARRAY-typed sibling
+  // arm; the both-literals form is the whole pair.
+  if (!bothLiterals && other?.kind === "array" && !add(other.elem)) return null;
   // A pattern-position literal that spreads a VARIABLE-length array has a
   // run-time length, so neither arm is the pattern's fixed tuple: the
   // ternary is the array both arms build, and the pattern reads positions

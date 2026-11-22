@@ -16,3 +16,8 @@ console.log(matrixParts([1, 0, 0, 1, 10, 20], true));
 const m = [5];
 const [x, y, z] = [...m, 0];
 console.log(x, y, z);
+
+// A spread whose positions disagree keeps each value it produces.
+const xs: number[] = [1];
+const [m1, m2, m3] = [...xs, "x"];
+console.log(m1, m2, m3);

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-// Starts a pull request's expensive CI tier once both Vercel reviews pass on its head, and reports ci/full for
-// fork pull requests. Run by .github/workflows/ci-review-gate.yml (reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and
+// Starts a pull request's expensive CI tier once both Vercel reviews pass on its head. Run by .github/workflows/ci-review-gate.yml (reads GITHUB_EVENT_NAME, GITHUB_EVENT_PATH and
 // GITHUB_REPOSITORY; calls `gh api` with GH_TOKEN, which needs actions: write, checks: read, pull-requests: read and
 // statuses: write).
 //
@@ -16,8 +15,13 @@
 // context, whose caches main and the release restore.
 //
 // workflow_run completed: when a dispatched expensive tier passes, the pull request run's required test check,
-// which stays red on the fast tier alone, is re-run and finds ci/full green. And a fork's token cannot write statuses, so its pull request runs (which run every lane)
-// report ci/full through here, from the run's required test job.
+// which stays red on the fast tier alone, is re-run and finds ci/full green. Only CI itself counts: the run must
+// come from .github/workflows/ci.yml on a branch of this repository. workflow_run matches workflows by name, and
+// a pull request can add a workflow of any name; a fork's pull request runs its own copy of every workflow file.
+//
+// Nothing a fork's run reports becomes ci/full: a fork controls the workflow files its pull request runs. A
+// maintainer who has checked a fork's CI run, workflow files included, records ci/full by hand with a
+// workflow_dispatch naming the pull request and fork_attest.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -118,17 +122,25 @@ export function testJobToRerun(run, prRun, jobs) {
   return test;
 }
 
-/** The ci/full status of a fork's pull request run, from its required test job; null when there is none. */
-export function forkStatus(run, jobs, repo) {
-  if (run.event !== "pull_request" || run.head_repository?.full_name === repo) return null;
-  const test = jobs.find((job) => job.name === "test");
-  if (test === undefined || test.status !== "completed") return null;
+export const CI_WORKFLOW = ".github/workflows/ci.yml";
+
+/** Whether a workflow_run is CI's own expensive tier: CI's workflow file, dispatched on a branch of this repo. */
+export function isTrustedCiRun(run, repo) {
+  return (
+    run.path === CI_WORKFLOW &&
+    run.event === "workflow_dispatch" &&
+    run.repository?.full_name === repo &&
+    run.head_repository?.full_name === repo
+  );
+}
+
+/** The ci/full status a maintainer's fork_attest dispatch records on a fork pull request's head, or null. */
+export function forkAttestation(pr, repo, attest, actor) {
+  if (!attest || pr.state !== "open" || pr.head?.repo?.full_name === repo) return null;
   return {
-    sha: run.head_sha,
-    state: test.conclusion === "success" ? "success" : "failure",
-    description:
-      test.conclusion === "success" ? "Every CI lane passed" : "A CI lane failed or was cancelled",
-    target_url: run.html_url,
+    sha: pr.head.sha,
+    state: "success",
+    description: `Fork CI checked by ${actor}, workflow files included`,
   };
 }
 
@@ -142,7 +154,11 @@ function main() {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
   const defaultBranch = event.repository?.default_branch ?? "main";
 
-  if (eventName === "workflow_run" && event.workflow_run.event === "workflow_dispatch") {
+  if (eventName === "workflow_run") {
+    if (!isTrustedCiRun(event.workflow_run, repo))
+      return console.log(
+        `Run ${event.workflow_run.html_url} is not CI's expensive tier; ignoring it`,
+      );
     // An expensive tier ended. When it passed, re-run the required test job of the pull request run on the same
     // commit: that job passes only once ci/full is green, which this run has just reported.
     const run = event.workflow_run;
@@ -169,31 +185,6 @@ function main() {
       console.log(`  not re-run: ${error.message}`);
     }
     return;
-  }
-
-  if (eventName === "workflow_run") {
-    const run = event.workflow_run;
-    const jobs = json(
-      "--paginate",
-      "--slurp",
-      `repos/${repo}/actions/runs/${run.id}/jobs?per_page=100`,
-    ).flatMap((page) => page.jobs);
-    const status = forkStatus(run, jobs, repo);
-    if (status === null) return console.log(`Run ${run.html_url} reports no ${STATUS_CONTEXT}`);
-    gh(
-      "--method",
-      "POST",
-      `repos/${repo}/statuses/${status.sha}`,
-      "-f",
-      `state=${status.state}`,
-      "-f",
-      `context=${STATUS_CONTEXT}`,
-      "-f",
-      `description=${status.description}`,
-      "-f",
-      `target_url=${status.target_url}`,
-    );
-    return console.log(`${STATUS_CONTEXT} on ${status.sha}: ${status.state}`);
   }
 
   let mode, numbers, reviewedSha;
@@ -242,6 +233,35 @@ function main() {
 
   for (const number of numbers) {
     const pr = json(`repos/${repo}/pulls/${number}`);
+    if (mode === "manual" && pr.head?.repo?.full_name !== repo) {
+      const attestation = forkAttestation(
+        pr,
+        repo,
+        event.inputs?.fork_attest === true || event.inputs?.fork_attest === "true",
+        process.env.GITHUB_ACTOR ?? "a maintainer",
+      );
+      if (attestation === null) {
+        console.log(
+          `#${number} comes from a fork: its own CI run is not trusted. After checking that run, workflow files included, dispatch again with fork_attest`,
+        );
+        continue;
+      }
+      gh(
+        "--method",
+        "POST",
+        `repos/${repo}/statuses/${attestation.sha}`,
+        "-f",
+        "state=success",
+        "-f",
+        `context=${STATUS_CONTEXT}`,
+        "-f",
+        `description=${attestation.description}`,
+      );
+      console.log(
+        `#${number}: ${STATUS_CONTEXT} on ${attestation.sha}: ${attestation.description}`,
+      );
+      continue;
+    }
     const checkRuns =
       mode === "review"
         ? // By name: a head carries well over a hundred check runs, CI's own included.

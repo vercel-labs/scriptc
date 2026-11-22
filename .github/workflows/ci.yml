@@ -1679,7 +1679,8 @@ jobs:
           esac
       # ci/full, the status the merge gate requires beside this check: pending while a pull request has only run its
       # fast tier, and the result of every lane once a run of the expensive tier ends. A fork's token cannot write
-      # statuses; ci-review-gate.yml reports its runs (workflow_run). Pushes to main and the nightly sweep need none.
+      # statuses, and a fork's run is not trusted to: a maintainer records ci/full for it (ci-review-gate.yml,
+      # fork_attest). Pushes to main and the nightly sweep need none.
       - name: Report ci/full
         if: >-
           always() && needs.validation_scope.outputs.tier != 'superseded' &&

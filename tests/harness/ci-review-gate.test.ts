@@ -5,7 +5,8 @@ import { expect, test } from "vitest";
 import { FAST_TEST_BUDGET_MS, fastTests } from "../../scripts/ci-fast-tests.mjs";
 import {
   decide,
-  forkStatus,
+  forkAttestation,
+  isTrustedCiRun,
   reviewState,
   staleRuns,
   testJobToRerun,
@@ -150,27 +151,36 @@ test("a running or green expensive tier of the same commit is not started again"
   expect(isExpensiveTierOf(run("queued", null), 42, sha)).toBe(true);
 });
 
-test("a fork's pull request run reports ci/full from its test job", () => {
-  const run = {
-    event: "pull_request",
-    head_sha: sha,
-    html_url: "https://example.test/run",
-    head_repository: { full_name: "someone/scriptc" },
+test("only CI's own dispatched runs count, and a fork's run never becomes ci/full", () => {
+  const ci = {
+    path: ".github/workflows/ci.yml",
+    event: "workflow_dispatch",
+    repository: { full_name: repo },
+    head_repository: { full_name: repo },
   };
-  expect(
-    forkStatus(run, [{ name: "test", status: "completed", conclusion: "success" }], repo),
-  ).toEqual({
+  expect(isTrustedCiRun(ci, repo)).toBe(true);
+  // workflow_run matches by name: another workflow named CI, a fork's run, or CI's own pull request run is not it.
+  expect(isTrustedCiRun({ ...ci, path: ".github/workflows/fake-ci.yml" }, repo)).toBe(false);
+  expect(isTrustedCiRun({ ...ci, head_repository: { full_name: "someone/scriptc" } }, repo)).toBe(
+    false,
+  );
+  expect(isTrustedCiRun({ ...ci, event: "pull_request" }, repo)).toBe(false);
+  // A fork's ci/full comes only from a maintainer's explicit attestation.
+  const fork = pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  expect(forkAttestation(fork, repo, false, "ctate")).toBeNull();
+  expect(forkAttestation(fork, repo, true, "ctate")).toEqual({
     sha,
     state: "success",
-    description: "Every CI lane passed",
-    target_url: run.html_url,
+    description: "Fork CI checked by ctate, workflow files included",
   });
-  expect(
-    forkStatus(run, [{ name: "test", status: "completed", conclusion: "failure" }], repo)!.state,
-  ).toBe("failure");
-  // This repository's runs report ci/full themselves; pushes report none.
-  expect(forkStatus({ ...run, head_repository: { full_name: repo } }, [], repo)).toBeNull();
-  expect(forkStatus({ ...run, event: "push" }, [], repo)).toBeNull();
+  expect(forkAttestation(pr(), repo, true, "ctate")).toBeNull();
+  expect(forkAttestation({ ...fork, state: "closed" }, repo, true, "ctate")).toBeNull();
+  const gate = gateWorkflow.jobs["gate"]!.if!;
+  expect(gate).toContain("github.event.workflow_run.path == '.github/workflows/ci.yml'");
+  expect(gate).toContain(
+    "github.event.workflow_run.head_repository.full_name == github.repository",
+  );
+  expect(gate).not.toContain("github.event.workflow_run.event == 'pull_request'");
 });
 
 test("the gate workflow triggers on the reviews, the label, fork runs and by hand, and runs no pull request code", () => {

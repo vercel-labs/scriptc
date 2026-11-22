@@ -14,8 +14,8 @@ on:
   # A push to a pull request cancels the expensive tier still running on its older head.
   pull_request:
     types: [labeled, synchronize]
-  # A passing expensive tier re-runs the pull request run's required test check, and a fork's pull request run,
-  # which runs every lane but cannot write ci/full, reports it here.
+  # A passing expensive tier re-runs the pull request run's required test check. workflow_run matches by name, so
+  # the gate also checks the run's workflow file and repository: only CI's own dispatched runs count.
   workflow_run:
     workflows: [CI]
     types: [completed]
@@ -26,6 +26,12 @@ on:
         description: Pull request number
         required: true
         type: string
+      # A fork's own CI run is never trusted (it runs the fork's workflow files). A maintainer who has checked it,
+      # workflow files included, records ci/full on the fork's head with this.
+      fork_attest:
+        description: For a fork's pull request, record ci/full as passed (after checking its CI run and workflow files)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,10 +49,10 @@ jobs:
       (github.event.check_run.name == 'Vercel Agent Review' || github.event.check_run.name == 'Vercel Security Review')) ||
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
       (github.event.action == 'synchronize' || github.event.label.name == 'ci:full')) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.head_repository.full_name != github.repository) ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.conclusion == 'success') ||
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
+      github.event.workflow_run.head_repository.full_name == github.repository) ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 5

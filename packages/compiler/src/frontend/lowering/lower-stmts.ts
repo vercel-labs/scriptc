@@ -1442,6 +1442,12 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
     let type = lowerer.irTypeOf(nameNode);
+    // An array-destructuring position can be missing at run time (a shorter
+    // array): the binding takes the same undefined-armed type the ordinary
+    // pattern binding adopts, so the box holds the missing element.
+    if (ts.isBindingElement(decl) && ts.isArrayBindingPattern(decl.parent)) {
+      type = lowerer.runtimeOptionalType(type);
+    }
     if (
       ts.isVariableDeclaration(decl) &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -1486,6 +1492,14 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     entry.frame.set(symbol, local);
     entry.out.push({ kind: "varDecl", localId: local.id, init: null, loc: locOf(decl) });
     entry.ctx.tdzPredeclared.set(symbol, local);
+    // A widened box (an array-destructuring target) keeps its union at
+    // reads: the checker types the binding by the element type, which a
+    // missing element contradicts.
+    if (local.type.kind === "union") {
+      const root = lowerer.runtimeOptionalRootOf(local);
+      lowerer.runtimeOptionalLocals.add(root);
+      lowerer.runtimeOptionalStorageLocals.add(root);
+    }
     return true;
   }
   return false;
@@ -7236,6 +7250,14 @@ export function bindPatternTarget(
         initializes: true,
         loc,
       });
+      // A widened box (an array-destructuring target) keeps its union at
+      // reads: the checker types the binding by the element type, which a
+      // missing element contradicts.
+      if (pre.type.kind === "union") {
+        const root = lowerer.runtimeOptionalRootOf(pre);
+        lowerer.runtimeOptionalLocals.add(root);
+        lowerer.runtimeOptionalStorageLocals.add(root);
+      }
       return;
     }
     const coerced = lowerer.coerceInto(name, value, type);

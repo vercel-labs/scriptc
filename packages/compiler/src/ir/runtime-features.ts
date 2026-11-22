@@ -115,6 +115,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // Formatting a checked-dynamic value from a retained snapshot boxes any
+  // promise it holds (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "insp.formatSnapshot",
   // sqlite.backup answers a promise minted by the dyn-async unit.
   "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
@@ -214,6 +217,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "ah.providers",
   "ah.enable",
   "ah.executionId",
+  "ah.executionResource",
   "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.
@@ -375,12 +379,16 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -470,12 +478,16 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -2016,9 +2028,13 @@ const RUNTIME_FEATURE_RULES = {
       // sink members through scr_dyn_invoke.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2250,6 +2266,14 @@ const RUNTIME_FEATURE_RULES = {
       (node.fn === "cp.spawnArmed" &&
         node.args[14] !== undefined &&
         !isDynUndefined(node.args[14])) ||
+      // net.Socket's constructor options read options.signal at run time and
+      // attach it through addAbortListener; the lowering's flag says the
+      // emitted call references that helper (a dynamic options value, or a
+      // literal naming a signal). Without the flag the bare form links the
+      // net unit alone.
+      (node.fn === "net.socketNew" &&
+        (node.args[2] === undefined ||
+          (node.args[2].kind === "boolLit" && node.args[2].value === true))) ||
       // dgram's createSocket options form reads options.signal at run time
       // and closes the socket on abort through addAbortListener. Only the
       // options form: the bare type string links the dgram unit alone.
@@ -2360,10 +2384,14 @@ const RUNTIME_FEATURE_RULES = {
   icu: rule({ prefixes: ["icu."] }),
   /** A Console built with inspectOptions or colorMode formats its methods
    * through the runtime's option-aware entries: scr_inspect.c's console
-   * entries with scr_console_native.c's argument forms. colorMode 'auto'
-   * reads the environment's color depth (scr_tty_colors.c). */
+   * entries with scr_console_native.c's argument forms. console.table
+   * inspects its cells over the same options, and both tables color per
+   * colorMode, so colorMode 'auto' reads the environment's color depth
+   * (scr_tty_colors.c). */
   consoleOptions: rule({
     fns: [
+      "console.table",
+      "console.instTable",
       "console.instWriteArgs",
       "console.instDirxmlArgs",
       "console.instDirArgs",
@@ -2389,9 +2417,13 @@ const RUNTIME_FEATURE_RULES = {
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.

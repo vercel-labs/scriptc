@@ -119,6 +119,8 @@ declare module "node:test" {
     throws(fn: () => unknown, expected?: unknown, message?: string): void;
     match(value: string, regExp: RegExp, message?: string): void;
     doesNotMatch(value: string, regExp: RegExp, message?: string): void;
+    /* A custom assertion registered through node:test's assert.register. */
+    [name: string]: (...args: any[]) => any;
   }
   /* The name, options and function are each optional, as in Node: a test
    * without a name takes the function's name, or "<anonymous>". */
@@ -279,7 +281,9 @@ declare module "node:test" {
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
-  const assert: { register(name: string, fn: (...args: unknown[]) => unknown): void };
+  const assert: {
+    register(name: string, fn: (this: TestContext, ...args: any[]) => any): void;
+  };
   function run(options?: unknown): unknown;
   /* The module-level snapshot registry: setDefaultSnapshotSerializers
    * covers the list every snapshot assertion without its own serializers

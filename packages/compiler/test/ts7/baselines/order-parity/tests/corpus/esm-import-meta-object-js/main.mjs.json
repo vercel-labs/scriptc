@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/esm-import-meta-object-js/child.mjs",
+  "<repo>/tests/corpus/esm-import-meta-object-js/main.mjs"
+ ],
+ "diags": []
+}

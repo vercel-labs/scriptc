@@ -109,7 +109,7 @@ import {
   tryLowerIndexTruthiness,
   tryLowerNumericIndexRead,
 } from "./array-values.js";
-import { nsMemberIdentOf } from "./lower-namespaces.js";
+import { cjsNamespaceImportDep, nsMemberIdentOf } from "./lower-namespaces.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitMonoFile } from "./generic-functions.js";
 import { lowerPrimitiveUnionNumber, lowerTaggedTemplate } from "./lower-calls.js";
@@ -118,6 +118,7 @@ import { lowerYield } from "./lower-generators.js";
 import { unionWideningTags } from "../../ir/analysis.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { everyExprChild } from "../../ir/traverse.js";
+import { importMetaValue } from "./import-meta.js";
 import { declareContextLocal } from "./function-context.js";
 import { hasOptionalChainGuard, isOptionalChainTail } from "./expressions/optional-chains.js";
 import { classToStringConversion, classUnionToString } from "./class-to-primitive.js";
@@ -1098,6 +1099,8 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // carry.
   if (isNewTarget(expr)) return lowerNewTarget(lowerer, expr);
   if (ts.isMetaProperty(expr)) {
+    if (expr.keywordToken === ts.SyntaxKind.ImportKeyword && expr.name.text === "meta")
+      return importMetaValue(lowerer, expr);
     const name =
       expr.keywordToken === ts.SyntaxKind.NewKeyword ? "new.target" : `import.${expr.name.text}`;
     lowerer.unsupported(
@@ -2855,6 +2858,16 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     // Namespace members are bindings, not fields of a runtime namespace
     // object. Their ordinary read already preserves optional storage.
     if (!expr.questionDotToken && nsMemberIdentOf(lowerer, expr)) return null;
+    // `ns.default` through a CommonJS namespace import is module.exports,
+    // not a field of a runtime namespace object: its ordinary read (the
+    // module's default-import value) already preserves optional storage.
+    if (
+      !expr.questionDotToken &&
+      ts.isIdentifier(expr.name) &&
+      expr.name.text === "default" &&
+      cjsNamespaceImportDep(lowerer, expr.expression) !== null
+    )
+      return null;
     // The tail of an optional chain (`a?.b.c`) is absent when the chain
     // short-circuits: the chain's own lowering answers that undefined and
     // reads the field, with its absence, off a present receiver. A field

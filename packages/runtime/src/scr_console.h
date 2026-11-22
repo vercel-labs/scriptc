@@ -40,6 +40,24 @@ typedef struct {
 
 /* Space-joined args + '\n', submitted before return. Borrows string args. */
 void scr_console_log(size_t n, const ScrLogArg *args);
+/* The global console output member's diagnostics channel: publishes the
+ * call's own argument array (spreads already expanded) on console.<member>
+ * (0 log, 1 info, 2 debug, 3 warn, 4 error) when it has subscribers, before
+ * the line is written. The diagnostics_channel unit supplies the publisher
+ * through a weak slot; a program that never imports it pays one null check. */
+void scr_console_publish_args(double member, ScrDyn *args);
+/* The diagnostics_channel unit installs its console publisher here the first
+ * time it creates a channel: a program that never imports
+ * diagnostics_channel has no subscribers and keeps the null check. */
+void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args));
+/* Whether console.<member> (0 log .. 4 error) has a subscriber. False when
+ * the diagnostics_channel unit never installed its probe. */
+bool scr_console_channel_active(double member);
+void scr_console_set_channel_active(bool (*active)(double member));
+/* A private copy of a console argument pack, each element retained: a
+ * channel subscriber can mutate the published array from a formatted
+ * value's hook while the line is formatted. */
+ScrDyn *scr_console_snapshot_pack(ScrDyn *pack);
 /* The stderr twin (console.error AND console.warn — one stream in Node):
  * identical formatting, with stdout settled first so merged (2>&1) output
  * keeps source order. */
@@ -102,9 +120,11 @@ void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
 ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
- * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
- * Infinity. +1. */
-ScrStr *scr_insp_table_cell(ScrDyn *value);
+ * 0 (-1 for objects that are not arrays and hold more than two enumerable
+ * keys), maxArrayLength 3, breakLength Infinity, then the console's own
+ * inspectOptions and colorMode answer. +1, or NULL with the exception
+ * pending. */
+ScrStr *scr_insp_table_cell(ScrDyn *value, ScrDyn *inspect_options, int colors_mode);
 /* Node's getStringWidth over UTF-8 text (the non-ICU tables). */
 size_t scr_insp_display_width(const char *data, size_t len);
 /* process.emitWarning(message) with the default Warning type, emitted on

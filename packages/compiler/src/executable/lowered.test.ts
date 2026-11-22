@@ -281,6 +281,55 @@ test("an IR artifact records nothing, so it builds only with every kind accepted
   expect(wrong).toContain(`was lowered from another entry (${entry})`);
 }, 120_000);
 
+test("a build from an IR artifact records the frame positions its sources give", async () => {
+  vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const frames = join(project, "src/frames.ts");
+  writeFileSync(
+    frames,
+    `function inner(): string {
+  return new Error("boom").stack ?? "";
+}
+function outer(): string {
+  return inner();
+}
+console.log(outer());
+`,
+  );
+  // A release build carries no debug sources, so every observed call site
+  // records its line and column, read from the sources the artifact names.
+  const shape = { optimization: "release" as const };
+  const straightBuild = await compile(frames, {
+    outDir: out,
+    outPath: join(out, "frames.ll"),
+    outputKind: "llvm",
+    ...shape,
+  });
+  expect(straightBuild.ok).toBe(true);
+  const expected = readFileSync(join(out, "frames.ll"), "utf8");
+  expect(expected).toMatch(
+    /getelementptr inbounds \{ ptr, ptr, ptr, ptr, i32, i32 \}, ptr %source_frame, i32 0, i32 5\n {2}store i32 \d+, ptr/,
+  );
+  const artifact = join(out, "frames.ir.json");
+  const ir = await compile(frames, {
+    outDir: out,
+    outPath: artifact,
+    outputKind: "ir",
+    ...shape,
+  });
+  expect(ir.ok).toBe(true);
+  const all = ["compiler", "options", "inputs"];
+  const resumed = await compile(frames, {
+    outDir: out,
+    outPath: join(out, "frames-resumed.ll"),
+    outputKind: "llvm",
+    ...shape,
+    fromLowered: artifact,
+    fromLoweredAccept: all,
+  });
+  expect(resumed.ok).toBe(true);
+  expect(readFileSync(join(out, "frames-resumed.ll"), "utf8")).toBe(expected);
+}, 120_000);
+
 test("a file this compiler cannot read is refused whatever is accepted", async () => {
   vi.spyOn(process.stderr, "write").mockImplementation(() => true);
   const all = ["compiler", "options", "inputs"];

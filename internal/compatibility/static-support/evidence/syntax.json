@@ -1,0 +1,8 @@
+{
+    "syntax.using-declarations": ["tests/corpus/2841-using-sync.ts"],
+    "syntax.await-using-declarations": ["tests/corpus/2842-await-using.ts"],
+    "syntax.for-using-of": ["tests/corpus/2845-for-using-of.ts"],
+    "syntax.finally-abrupt-completions": ["tests/corpus/2840-finally-completions.ts"],
+    "syntax.for-await-readable-streams": ["tests/corpus/2861-readable-iterator-close.ts", "tests/corpus/2862-web-readable-async-iteration.ts"],
+    "syntax.for-await-class-async-iterators": ["tests/corpus/2863-class-async-iterator.ts"]
+}

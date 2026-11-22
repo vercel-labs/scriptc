@@ -246,6 +246,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_cluster.c",
+  "function": "scr_cluster_fork",
+  "message": "cluster.fork with uid/gid is not supported: a worker's credentials cannot be dropped before exec on this runtime",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_console_native.c",
   "function": "scr_console_method_call",
   "message": "Calling %s through a stored value has no lowering; call it directly",

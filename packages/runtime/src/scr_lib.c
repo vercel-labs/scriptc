@@ -442,42 +442,13 @@ void scr_lib_init(int argc, char **argv) {
      * node:cluster restarts its workers with (scr_cluster.c). */
     long long target = 0;
     unsigned long long read_handle = 0, write_handle = 0;
-    long long uid = -1, gid = -1;
     char tail = '\0';
-    int fields = sscanf(argv[1] + 15, "%lld,%llu,%llu,%lld,%lld%c", &target,
-                        &read_handle, &write_handle, &uid, &gid, &tail);
-    if (fields != 5) {
-      uid = gid = -1;
-      fields = sscanf(argv[1] + 15, "%lld,%llu,%llu%c", &target, &read_handle,
-                      &write_handle, &tail);
-    }
-    if (fields == 3 || fields == 5) {
+    if (sscanf(argv[1] + 15, "%lld,%llu,%llu%c", &target, &read_handle,
+               &write_handle, &tail) == 3) {
       scr_lib_has_fork = true;
       scr_lib_fork_target_id = (double)target;
       scr_lib_fork_read_handle = (uintptr_t)read_handle;
       scr_lib_fork_write_handle = (uintptr_t)write_handle;
-#if !defined(_WIN32) && !defined(__wasi__)
-      /* A cluster worker starts with the primary's setupPrimary
-       * credentials: drop to the requested gid and then uid (Node's spawn
-       * order) before any module, process-global or user code runs. The
-       * primary's supplementary groups go first — they would otherwise
-       * outlive the drop and keep the access a privileged primary had. A
-       * failed drop is fatal and reported here, never silently ignored. */
-      if (uid >= 0 || gid >= 0) {
-        if (geteuid() == 0 && setgroups(0, NULL) != 0) {
-          fprintf(stderr, "scriptc: cannot clear supplementary groups: %s\n", strerror(errno));
-          _exit(1);
-        }
-        if (gid >= 0 && setgid((gid_t)gid) != 0) {
-          fprintf(stderr, "scriptc: cannot set gid %lld: %s\n", gid, strerror(errno));
-          _exit(1);
-        }
-        if (uid >= 0 && setuid((uid_t)uid) != 0) {
-          fprintf(stderr, "scriptc: cannot set uid %lld: %s\n", uid, strerror(errno));
-          _exit(1);
-        }
-      }
-#endif
       scr_lib_argv_owned = malloc((size_t)argc * sizeof(char *));
       if (!scr_lib_argv_owned) scr_trap("out of memory");
       scr_lib_argv_owned[0] = argv[0];

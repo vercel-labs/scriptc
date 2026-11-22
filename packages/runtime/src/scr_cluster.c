@@ -394,7 +394,22 @@ static ScrDyn *scr_cl_default_settings(void) {
 
 /* Copies `source`'s own enumerable string-keyed entries onto `target`. */
 static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
-  if (source == NULL || source->kind != SCR_DYN_OBJ) return;
+  if (source == NULL) return;
+  /* A typed settings record crosses as a capsule; its properties live on
+   * its materialized view. */
+  ScrDyn *view = NULL;
+  if (source->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(source); /* +1 */
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return;
+    }
+    source = view;
+  }
+  if (source->kind != SCR_DYN_OBJ) {
+    scr_dyn_release(view);
+    return;
+  }
   ScrArr *names = scr_dyn_obj_key_strs(source); /* +1 */
   size_t n = (size_t)scr_arr_len(names);
   for (size_t i = 0; i < n; i++) {
@@ -404,6 +419,7 @@ static void scr_cl_object_assign(ScrDyn *target, const ScrDyn *source) {
     scr_str_release(key);
   }
   scr_arr_release(names);
+  scr_dyn_release(view);
 }
 
 static void scr_cl_fire_setup(void) {
@@ -433,7 +449,7 @@ static void scr_cl_setup_impl(const ScrDyn *options) {
   ScrDyn *previous = scr_cl_settings;
   ScrDyn *settings = scr_cl_default_settings();
   if (previous != NULL) scr_cl_object_assign(settings, previous);
-  if (options != NULL && options->kind == SCR_DYN_OBJ) scr_cl_object_assign(settings, options);
+  if (options != NULL) scr_cl_object_assign(settings, options);
   scr_dyn_release(previous);
   scr_cl_settings = settings;
   scr_cl_schedule_setup(settings);
@@ -573,7 +589,10 @@ static ScrDyn *scr_cl_worker_handle(ScrClusterWorker *w) {
 
 static ScrDyn *scr_cl_worker_process_value(ScrClusterWorker *w) {
   if (w->self) return scr_cl_undefined();
-  return scr_dyn_new_handle(scr_child_retain(w->child), SCR_DYNH_CHILD);
+  /* scr_dyn_new_handle retains the child itself; retaining here as well
+   * would strand one reference per read, keeping every completed worker's
+   * arguments, streams and AsyncLocalStorage context alive. */
+  return scr_dyn_new_handle(w->child, SCR_DYNH_CHILD);
 }
 
 static bool scr_cl_worker_connected(ScrClusterWorker *w) {
@@ -932,6 +951,27 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
     return NULL;
   }
   scr_cl_setup_impl(NULL);
+#if !defined(_WIN32) && !defined(__wasi__)
+  /* A worker's credentials would have to be dropped before exec; this
+   * runtime re-executes the artifact and would drop them in the child,
+   * which runs the dynamic loader (and any loader constructors) with the
+   * primary's identity first. Refuse the launch until a pre-exec drop
+   * exists, rather than treat uid/gid as enforced. Windows ignores them,
+   * as Node does. */
+  if (scr_cl_settings != NULL && scr_cl_settings->kind == SCR_DYN_OBJ) {
+    ScrDyn *u = scr_dyn_obj_get(scr_cl_settings, "uid", 3); /* borrowed */
+    ScrDyn *g = scr_dyn_obj_get(scr_cl_settings, "gid", 3); /* borrowed */
+    bool credentialed = (u != NULL && u->kind != SCR_DYN_UNDEF) ||
+                        (g != NULL && g->kind != SCR_DYN_UNDEF);
+    if (credentialed) {
+      const char msg[] =
+          "cluster.fork with uid/gid is not supported: a worker's credentials "
+          "cannot be dropped before exec on this runtime";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+      return NULL;
+    }
+  }
+#endif
 
   double id = ++scr_cl_next_id;
   ScrStr **keys = NULL, **values = NULL;
@@ -961,7 +1001,6 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
   ScrArr *args = scr_cl_worker_args();
   ScrStr *cwd = scr_str_new("", 0);
   bool silent = false;
-  double uid = -1, gid = -1;
   if (scr_cl_settings != NULL && scr_cl_settings->kind == SCR_DYN_OBJ) {
     ScrDyn *s = scr_dyn_obj_get(scr_cl_settings, "silent", 6); /* borrowed */
     if (s != NULL && s->kind == SCR_DYN_BOOL) silent = s->v.b;
@@ -970,35 +1009,9 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
       scr_str_release(cwd);
       cwd = scr_str_retain(c->v.str);
     }
-    /* The worker starts with setupPrimary's credentials: the child drops
-     * them (setgid then setuid) before its first module runs. A value that
-     * is not a non-negative integer is Node's ERR_INVALID_ARG_VALUE. */
-    ScrDyn *u = scr_dyn_obj_get(scr_cl_settings, "uid", 3); /* borrowed */
-    ScrDyn *g = scr_dyn_obj_get(scr_cl_settings, "gid", 3); /* borrowed */
-    if (u != NULL && u->kind != SCR_DYN_UNDEF) {
-      /* The value must fit the platform's uid_t: a larger double would
-       * wrap in the child's setuid and silently keep a privileged primary's
-       * identity. */
-      if (u->kind != SCR_DYN_NUM || u->v.num < 0 || u->v.num > 4294967295.0 ||
-          (double)(unsigned long long)u->v.num != u->v.num) {
-        const char msg[] = "The \"uid\" option must be a non-negative integer below 2^32";
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
-        return NULL;
-      }
-      uid = u->v.num;
-    }
-    if (g != NULL && g->kind != SCR_DYN_UNDEF) {
-      if (g->kind != SCR_DYN_NUM || g->v.num < 0 || g->v.num > 4294967295.0 ||
-          (double)(unsigned long long)g->v.num != g->v.num) {
-        const char msg[] = "The \"gid\" option must be a non-negative integer below 2^32";
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
-        return NULL;
-      }
-      gid = g->v.num;
-    }
   }
   double mode = silent ? 3 : 1;
-  ScrChild *child = scr_fork(-1, args, mode, mode, mode, true, pairs, cwd, uid, gid);
+  ScrChild *child = scr_fork(-1, args, mode, mode, mode, true, pairs, cwd);
 
   scr_str_release(cwd);
   scr_arr_release(args);

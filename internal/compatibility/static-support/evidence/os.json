@@ -1,0 +1,20 @@
+{
+    "node-builtin.os": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts"],
+    "node-builtin.os.availableParallelism": ["tests/corpus/4598-os-available-parallelism.ts"],
+    "node-builtin.os.arch": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.cpus": ["tests/corpus/5140-os-host-facts.ts", "tests/corpus/os-cpus-rows.cjs"],
+    "node-builtin.os.devNull": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.endianness": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.freemem": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.getPriority": ["tests/corpus/5140-os-host-facts.ts", "tests/corpus/os-priority-numeric-arguments.cjs", "tests/corpus/os-priority-callable.cjs"],
+    "node-builtin.os.setPriority": ["tests/corpus/5883-os-set-priority.ts", "tests/corpus/os-priority-numeric-arguments.cjs", "tests/corpus/os-priority-callable.cjs"],
+    "node-builtin.os.homedir": ["tests/corpus/1353-os-basics.ts", "tests/corpus/os-homedir-env-cascade.ts", "tests/corpus/os-tmpdir-homedir-env.cjs"],
+    "node-builtin.os.tmpdir": ["tests/corpus/1353-os-basics.ts", "tests/corpus/os-tmpdir-homedir-env.cjs"],
+    "node-builtin.os.hostname": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.loadavg": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.machine": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.uptime": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.version": ["tests/corpus/5140-os-host-facts.ts"],
+    "node-builtin.os.constants": ["tests/corpus/5141-os-constants.ts"],
+    "node-builtin.os.userInfo": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts", "tests/corpus/1540-os-userinfo.ts", "tests/corpus/os-userinfo-passwd-entry.ts", "tests/corpus/9204-os-user-info-buffer.ts", "tests/corpus/os-user-info-encoding.ts", "tests/corpus/os-userinfo-options.cjs"]
+}

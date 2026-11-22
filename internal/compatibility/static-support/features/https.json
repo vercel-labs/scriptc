@@ -1,0 +1,10 @@
+[
+    { "chapter": "https", "parent": "HTTPS", "signatures": ["Class: `https.Agent`", "`https.globalAgent`"], "status": "partial", "evidence": ["tests/corpus/compat-http-outgoing-headers.ts"] },
+    { "chapter": "https", "parent": "HTTPS", "signatures": ["Class: `https.Server`"], "status": "partial", "evidence": ["tests/corpus/compat-http-server-tail.mjs"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`server[Symbol.asyncDispose]()`"], "status": "supported", "evidence": ["tests/corpus/net-server-dispose-http.ts"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`server.close([callback])`", "`server.listen()`", "`timeout` Type: {number} **Default:** 0 (no timeout)"], "status": "supported", "evidence": ["tests/corpus/https-server-close-surface.mjs", "tests/corpus/https-server-inherited-surface.ts", "tests/corpus/compat-http-server-tail.ts", "tests/corpus/2689-http-server-timeout-properties.ts"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`server.closeAllConnections()`", "`server.closeIdleConnections()`"], "status": "supported", "evidence": ["tests/corpus/https-server-inherited-surface.ts", "tests/corpus/compat-http-server-tail.ts", "tests/corpus/5597-http-agent-idle-sockets.ts"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`maxHeadersCount` Type: {number} **Default:** `1000`"], "status": "supported", "evidence": ["tests/corpus/https-server-max-headers-count.ts"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`headersTimeout` Type: {number} **Default:** `60000`", "`requestTimeout` Type: {number} **Default:** `300000`", "`keepAliveTimeout` Type: {number} **Default:** `5000` (5 seconds)"], "status": "supported", "evidence": ["tests/corpus/https-server-http-options.ts"] },
+    { "chapter": "https", "parent": "Class: `https.Server`", "signatures": ["`server.setTimeout([msecs][, callback])`"], "status": "partial", "evidence": ["tests/corpus/compat-http-server-tail.mjs", "tests/corpus/compat-http-server-tail.ts"] }
+]

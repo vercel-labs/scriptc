@@ -8945,15 +8945,25 @@ export class Lowerer {
    * module, and the lowering compiles the JavaScript. A declaration bridge
    * (`export * from "../types"`) re-exports a declaration another module
    * implements, so the import the reference came through answers too. Null
-   * when no compiled module implements the symbol. */
+   * when no compiled module implements the symbol.
+   *
+   * The import's own module answers first. A declaration can re-export a
+   * name from another package's declaration (`@types/react/jsx-runtime`'s
+   * `export { Fragment } from "./"`) while the JavaScript Node loads defines
+   * its own binding of that name (react-jsx-runtime's
+   * `exports.Fragment = REACT_FRAGMENT_TYPE`). The declaration's own twin is
+   * then a different module, whose storage the importer's module may not
+   * have initialized yet, so it is only the fallback. */
   declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
-    const direct = this.declarationTwinDirectSymbolOf(symbol);
-    if (direct !== null || alias === null) return direct;
-    const cached = this.declarationTwinRouted.get(alias);
-    if (cached !== undefined) return cached;
-    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
-    this.declarationTwinRouted.set(alias, routed);
-    return routed;
+    if (alias !== null) {
+      let routed = this.declarationTwinRouted.get(alias);
+      if (routed === undefined) {
+        routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+        this.declarationTwinRouted.set(alias, routed);
+      }
+      if (routed !== null) return routed;
+    }
+    return this.declarationTwinDirectSymbolOf(symbol);
   }
 
   private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
@@ -9033,7 +9043,28 @@ export class Lowerer {
     const name = ts.isImportClause(imported)
       ? "default"
       : (imported.propertyName ?? imported.name).text;
-    return this.moduleExportSymbolOf(dep, name, symbol);
+    const exported = this.moduleExportSymbolOf(dep, name, symbol);
+    if (exported !== null && !this.declaredOnlyInDeclarationFiles(exported)) return exported;
+    // `module.exports = require("./impl.cjs")`: the checker types the
+    // require from impl's own declaration, which can again name a third
+    // module's declaration. The binding is the one impl defines, when the
+    // modules the export forwards to agree on it.
+    let forwarded: ts.Symbol | null = null;
+    for (const mod of cjsReexportedModules(this.program, dep).slice(1)) {
+      if (mod.isDeclarationFile) continue;
+      const own = this.moduleExportSymbolOf(mod, name, symbol);
+      if (own === null || this.declaredOnlyInDeclarationFiles(own)) continue;
+      if (forwarded !== null && forwarded !== own) return null;
+      forwarded = own;
+    }
+    return forwarded;
+  }
+
+  private declaredOnlyInDeclarationFiles(symbol: ts.Symbol): boolean {
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)
+    );
   }
 
   private moduleExportSymbolOf(

@@ -65078,7 +65078,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.clienthttp2session.request",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs"
@@ -65242,7 +65242,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.close",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65347,7 +65347,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.aborted",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65400,7 +65400,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.closed",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65427,7 +65427,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.destroyed",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65532,7 +65532,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.rstCode",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65628,7 +65628,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.session",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -65678,7 +65678,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'aborted'",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65705,7 +65705,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs",
@@ -65980,7 +65980,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'response'",
         "tests": [
           "tests/corpus/compat-http2-headers.mjs"
@@ -66078,7 +66078,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.respond",
         "tests": [
           "tests/corpus/compat-http2-state.mjs",
@@ -66157,7 +66157,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.headersSent",
         "tests": [
           "tests/corpus/compat-http2-state.mjs",
@@ -67324,7 +67324,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.complete",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -67481,7 +67481,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.rawTrailers",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"
@@ -67585,7 +67585,7 @@
         "inherited": true
       },
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:http2.trailers",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"
@@ -67663,7 +67663,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",

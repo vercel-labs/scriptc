@@ -110,6 +110,28 @@ async function main(): Promise<void> {
     log.push(`null ${Buffer.from(first.value ?? new Uint8Array()).toString()}`);
     await none.cancel();
   }
+  {
+    // Option initializers run in the order the literal writes them, even when
+    // the strategy comes first and `type` is answered from its static value.
+    const web = Readable.toWeb(makeSource("order"), {
+      strategy: { highWaterMark: (log.push("order strategy"), 1) },
+      type: (log.push("order type"), "bytes") as "bytes",
+    });
+    const reader = web.getReader({ mode: "byob" });
+    await reader.read(new Uint8Array(2));
+    await reader.cancel();
+    log.push("order done");
+  }
+  {
+    const web = Readable.toWeb(makeSource("order2"), {
+      type: (log.push("order2 type"), "bytes") as "bytes",
+      strategy: { highWaterMark: (log.push("order2 strategy"), 1) },
+    });
+    const reader = web.getReader({ mode: "byob" });
+    await reader.read(new Uint8Array(2));
+    await reader.cancel();
+    log.push("order2 done");
+  }
 }
 
 async function refusals(): Promise<void> {

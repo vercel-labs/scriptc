@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/runtime.d.cts",
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/runtime-index.d.cts",
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/runtime-select.d.cts",
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/shim.ts",
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/core.d.cts",
+  "<repo>/tests/corpus/cjs-export-alias-declaration-reexport/main.ts"
+ ],
+ "diags": []
+}

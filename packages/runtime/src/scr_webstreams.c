@@ -1170,13 +1170,24 @@ static ScrDyn *ws_rcontroller_desired_size(WsRController *c) {
   }
 }
 
+/* A pull the source answered while another pull was in flight waits here:
+ * a native source can answer inside the pull (the web adapters deliver a
+ * buffered remainder synchronously), and pulling again in that same stack
+ * would recurse once per queued read. The spec's pull loop spends a promise
+ * settlement between pulls; this does the same. */
+static void ws_pull_again_step(void *ctx, ScrDyn *value) {
+  (void)value;
+  WsRController *c = ctx;
+  ws_rcontroller_call_pull_if_needed(c);
+}
+
 static void ws_pull_fulfilled(void *ctx, ScrDyn *value) {
   (void)value;
   WsRController *c = ctx;
   c->pulling = false;
   if (c->pull_again) {
     c->pull_again = false;
-    ws_rcontroller_call_pull_if_needed(c);
+    ws_queue_microtask(ws_pull_again_step, ws_rcontroller_retain(c));
   }
 }
 

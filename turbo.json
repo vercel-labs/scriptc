@@ -28,7 +28,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:toolchain": {
@@ -43,7 +43,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:2"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:native": {
@@ -68,7 +68,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:native:musl": {
@@ -93,7 +93,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:native:wasi": {
@@ -115,7 +115,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:libnode": {
@@ -129,7 +129,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:2"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:code-quality": {
@@ -152,7 +152,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:coverage": {
@@ -171,7 +171,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:ts7-parity": {
@@ -192,7 +192,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:checker-identity:release": {
@@ -210,7 +210,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:checker-identity:dev": {
@@ -228,7 +228,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:linux-host-clang": {
@@ -246,7 +246,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:1": {
@@ -268,7 +268,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:2": {
@@ -290,7 +290,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:3": {
@@ -312,7 +312,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:4": {
@@ -334,7 +334,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:5": {
@@ -356,7 +356,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:6": {
@@ -378,7 +378,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:7": {
@@ -400,7 +400,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:8": {
@@ -422,7 +422,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:9": {
@@ -444,7 +444,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:10": {
@@ -466,7 +466,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:11": {
@@ -488,7 +488,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:12": {
@@ -510,7 +510,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:13": {
@@ -532,7 +532,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:14": {
@@ -554,7 +554,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:15": {
@@ -576,7 +576,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:16": {
@@ -598,7 +598,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:17": {
@@ -620,7 +620,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:18": {
@@ -642,7 +642,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:19": {
@@ -664,7 +664,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:plain:20": {
@@ -686,7 +686,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:test:san:1": {
@@ -2158,7 +2158,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:islands:2": {
@@ -2188,7 +2188,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:islands:3": {
@@ -2218,7 +2218,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:islands:4": {
@@ -2248,7 +2248,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:three-nodes-san": {
@@ -2267,7 +2267,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:native-frontend-san:programs": {
@@ -2345,7 +2345,7 @@
       ],
       "tags": [
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:setup:seed:san": {
@@ -2400,7 +2400,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:bootstrap:plain:rebuild": {
@@ -2428,7 +2428,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:bootstrap:san:commands": {
@@ -2459,7 +2459,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:bootstrap:san:rebuild-frontend": {
@@ -2559,7 +2559,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:llvm-artifacts:musl": {
@@ -2583,7 +2583,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     },
     "//#ci:lane:llvm-artifacts:wasi": {
@@ -2605,7 +2605,7 @@
       "tags": [
         "ci",
         "ci:os:ubuntu",
-        "ci:cpus:4"
+        "ci:cpus:8"
       ]
     }
   }

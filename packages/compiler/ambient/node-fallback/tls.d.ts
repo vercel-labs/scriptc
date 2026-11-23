@@ -56,6 +56,9 @@ declare module "tls" {
     getProtocol(): string | null;
     /* OpenSSL's suite name, the IANA name and the suite's version */
     getCipher(): CipherNameAndProtocol;
+    /* the key-exchange group the handshake negotiated; null for a server
+     * socket, before the handshake and after close */
+    getEphemeralKeyInfo(): EphemeralKeyInfo | object | null;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
     /* derive keying material with the TLS exporter; the result is a Buffer */
@@ -129,6 +132,13 @@ declare module "tls" {
     name: string;
     standardName: string;
     version: string;
+  }
+  /** getEphemeralKeyInfo(): 'ECDH' with the group's bit size (TLS 1.2) or
+   * the TLS 1.3 group name. */
+  export interface EphemeralKeyInfo {
+    type: string;
+    name: string;
+    size?: number;
   }
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;

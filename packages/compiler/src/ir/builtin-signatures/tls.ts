@@ -90,6 +90,9 @@ export const tlsSignatures = defineLibFnSignatures({
    * evaluated (and its exceptions still surface). */
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getEphemeralKeyInfo(): the negotiated key-exchange group as a dyn
+   * object, or null. */
+  "tls.sockEphemeralKeyInfo": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   /** getPeerCertificate(detailed) and getCertificate() (the legacy object,

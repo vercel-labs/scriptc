@@ -111,6 +111,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_authorized", a);
     case "tls.sockGetProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
+    case "tls.sockEphemeralKeyInfo":
+      return finishRuntimeCall(host, e, "scr_tls_sock_ephemeral_key_info", a);
     case "tls.sockGetCipher":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
     case "tls.sockAlpnProtocol":

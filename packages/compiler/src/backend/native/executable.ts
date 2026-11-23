@@ -548,6 +548,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       ? [
           "-I",
           join(vendorTlsDir(), "include"),
+          /* scr_tls.c reads the negotiated key-exchange group from the
+           * handshake params (ssl_misc.h), a private header */
+          "-I",
+          join(vendorTlsDir(), "library"),
           ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
           ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
           ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
@@ -1275,7 +1279,9 @@ export async function compileCInternal(
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
-    ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...(tlsArchive !== null
+      ? ["-I", join(vendorTlsDir(), "include"), "-I", join(vendorTlsDir(), "library")]
+      : []),
     ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...(sqliteArchive !== null ? ["-I", vendorSqliteDir()] : []),
     ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),

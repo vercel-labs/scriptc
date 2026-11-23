@@ -97,14 +97,22 @@
 #include <arpa/inet.h>
 #endif
 
+/* The engine keeps its handshake state private; ssl_misc.h (below) reads it
+ * directly, as the library's own sources do, so this unit asks the headers
+ * for the plain member names (same layout, MBEDTLS_PRIVATE then names the
+ * member as written). */
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
 #include "mbedtls/md.h"
 #include "mbedtls/net_sockets.h" /* the MBEDTLS_ERR_NET_* codes the BIOs answer */
 #include "mbedtls/pk.h"
+#include "mbedtls/psa_util.h" /* mbedtls_ecc_group_from_psa */
 #include "mbedtls/sha256.h"
 #include "mbedtls/ssl.h"
+/* the private handshake params carry the negotiated key-exchange group */
+#include "ssl_misc.h"
 #include "mbedtls/x509_crt.h"
 
 static void scr_tls_oom(void) {
@@ -833,6 +841,10 @@ typedef struct ScrTlsSock {
   ScrTlsCli *cli;     /* owned client side, NULL server side */
   bool notify_sent;
   bool established; /* the handshake stood — socket.authorized reads gate on it */
+  /* the negotiated key-exchange group (getEphemeralKeyInfo), as an
+   * mbedtls_ecp_group_id copied out while the engine's handshake params
+   * are alive, since wrapup frees them */
+  unsigned eph_group;
   /* the client 'session' event: listeners + the fired-once latch (Node
    * fires per received ticket; this surface fires once per socket) */
   ScrNetLs session_ls;
@@ -1965,6 +1977,30 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
   (void)scr_set_immediate(cb);
 }
 
+/* getEphemeralKeyInfo reads the group the handshake negotiated; the engine
+ * frees its handshake params at wrapup, so each step copies the group out
+ * (the last observation wins, and a later handshake overwrites it). */
+static void scr_tls_capture_eph(ScrTlsSock *t) {
+  mbedtls_ssl_handshake_params *h = t->ssl.handshake;
+  if (h == NULL) return;
+#if defined(MBEDTLS_KEY_EXCHANGE_SOME_XXDH_PSA_ANY_ENABLED)
+  /* TLS 1.3 (and a PSA-backed TLS 1.2): the group is recorded as a PSA key
+   * type, whose low byte is the curve family */
+  if (h->xxdh_psa_bits != 0) {
+    mbedtls_ecp_group_id id = mbedtls_ecc_group_from_psa(
+        (psa_ecc_family_t)((unsigned)h->xxdh_psa_type & 0xffu), h->xxdh_psa_bits);
+    if (id != MBEDTLS_ECP_DP_NONE) t->eph_group = (unsigned)id;
+    return;
+  }
+#endif
+#if !defined(MBEDTLS_USE_PSA_CRYPTO) && \
+    defined(MBEDTLS_KEY_EXCHANGE_SOME_ECDH_OR_ECDHE_1_2_ENABLED)
+  /* TLS 1.2's classic ECDHE path keeps the group in the ECDH context */
+  mbedtls_ecp_group_id legacy = mbedtls_ecdh_get_grp_id(&h->ecdh_ctx);
+  if (legacy != MBEDTLS_ECP_DP_NONE) t->eph_group = (unsigned)legacy;
+#endif
+}
+
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   if (t->cli != NULL && t->cli->no_protocols) {
@@ -1985,6 +2021,7 @@ static int scr_tls_handshake(void *tctx) {
   int r = t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized
               ? scr_tls_handshake_requiring_cert(t)
               : mbedtls_ssl_handshake(&t->ssl);
+  scr_tls_capture_eph(t);
   scr_tls_current = NULL;
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
@@ -4919,7 +4956,57 @@ static const char *scr_tls_client_cert_code(ScrTlsSock *t) {
 static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
   return (ScrTlsSock *)scr_net_sock_transport_ctx_for(s, &SCR_TLS_OPS);
 }
-
+/* TLSSocket.getEphemeralKeyInfo(): the key-exchange group Node reports —
+ * { type: 'ECDH', name, size } for TLS 1.2, { type: 'TLSGroup', name } for
+ * TLS 1.3 — or null for a server socket, before the handshake and after
+ * close. +1. */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->cli == NULL || !t->established || scr_net_sock_destroyed(s))
+    return scr_dyn_new_null();
+  const char *name = NULL;
+  double size = 0;
+  switch (t->eph_group) {
+    case MBEDTLS_ECP_DP_CURVE25519:
+      name = "X25519";
+      size = 253; /* OpenSSL's reported size for the curve */
+      break;
+    case MBEDTLS_ECP_DP_CURVE448:
+      name = "X448";
+      size = 448;
+      break;
+    case MBEDTLS_ECP_DP_SECP256R1:
+      name = "prime256v1";
+      size = 256;
+      break;
+    case MBEDTLS_ECP_DP_SECP384R1:
+      name = "secp384r1";
+      size = 384;
+      break;
+    case MBEDTLS_ECP_DP_SECP521R1:
+      name = "secp521r1";
+      size = 521;
+      break;
+    case MBEDTLS_ECP_DP_SECP256K1:
+      name = "secp256k1";
+      size = 256;
+      break;
+    default:
+      break;
+  }
+  if (name == NULL) return scr_dyn_new_null();
+  const char *ver = mbedtls_ssl_get_version(&t->ssl);
+  bool tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
+  ScrDyn *out = scr_dyn_new_obj();
+  ScrStr *kind = scr_str_new(tls13 ? "TLSGroup" : "ECDH", tls13 ? 8 : 4);
+  scr_dyn_obj_set(out, "type", 4, scr_dyn_new_str(kind));
+  scr_str_release(kind);
+  ScrStr *nm = scr_str_new(name, strlen(name));
+  scr_dyn_obj_set(out, "name", 4, scr_dyn_new_str(nm));
+  scr_str_release(nm);
+  if (!tls13) scr_dyn_obj_set(out, "size", 4, scr_dyn_new_num(size));
+  return out;
+}
 
 /* The client 'session' event: fires ONCE per socket with the serialized
  * mbedTLS session — the established session for TLS 1.2 (its ticket rides
@@ -5574,6 +5661,10 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     *out = scr_tls_sock_get_cipher(s);
     return true;
   }
+  if (strcmp(method, "getEphemeralKeyInfo") == 0) {
+    *out = scr_tls_sock_ephemeral_key_info(s);
+    return true;
+  }
   if (strcmp(method, "setServername") == 0) {
     ScrTlsSock *t = scr_tls_sock_of(s);
     if (argc < 1 || args[0]->kind != SCR_DYN_STR) {
@@ -5596,7 +5687,7 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
   }
   static const char *const tls_methods[] = {
     "getPeerCertificate", "getCertificate", "getSession",
-    "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
+    "getTLSTicket", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
     "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
     "enableTrace", "disableRenegotiation", "setSession", NULL,

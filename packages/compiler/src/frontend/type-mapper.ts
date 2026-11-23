@@ -6784,6 +6784,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // tlsSocket.getEphemeralKeyInfo()'s group record: the members depend on
+  // the negotiated version ({ type, name, size } on TLS 1.2, { type, name }
+  // on TLS 1.3), so the record stays a runtime-shaped object.
+  if (isStdlibInterface("EphemeralKeyInfo")) return DYN;
   // child_process.ExecFileSyncOptionsWithStringEncoding: the exec-options
   // interface interned explicitly on the AddressInfo pattern, so a TYPED
   // options value (`const commandOptions: ExecFileSyncOptions... = {...}`,

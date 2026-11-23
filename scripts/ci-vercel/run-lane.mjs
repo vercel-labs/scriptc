@@ -20,6 +20,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,6 +104,13 @@ function firstCpus(count) {
   return cpus.slice(0, count);
 }
 
+/** Removes a setup output before rebuilding it. A checkout may carry files under .ci/ (an ignored path can still be
+ * force-added), so a setup build starts from an empty directory and trusts nothing it finds there. */
+function fresh(directory) {
+  rmSync(directory, { recursive: true, force: true });
+  return directory;
+}
+
 /** "pr" for a push to a pull request's branch, "main" for the default branch, "unknown" otherwise. */
 function pushMode() {
   if ((process.env.VERCEL_GIT_PULL_REQUEST_ID ?? "") !== "") return "pr";
@@ -170,7 +178,11 @@ switch (lane) {
     break;
   }
   case "libnode": {
-    run(process.execPath, ["packages/libnode-common/fetch-dev-pack.mjs", "--out", ".ci/libnode"]);
+    run(process.execPath, [
+      "packages/libnode-common/fetch-dev-pack.mjs",
+      "--out",
+      fresh(libnodeDirectory),
+    ]);
     break;
   }
 
@@ -359,9 +371,10 @@ switch (lane) {
     const flavor = args[0];
     if (flavor !== "plain" && flavor !== "san")
       throw new Error("bootstrap-seed needs plain or san");
+    const seedDirectory = fresh(join(root, ".ci/bootstrap-seed", flavor));
     run(process.execPath, ["scripts/bootstrap-seed.mjs"], {
       SCRIPTC_SAN: flavor === "san" ? "1" : "",
-      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: join(root, ".ci/bootstrap-seed", flavor),
+      SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: seedDirectory,
     });
     break;
   }

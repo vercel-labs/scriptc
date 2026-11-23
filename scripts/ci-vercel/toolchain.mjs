@@ -14,6 +14,11 @@
  *   ninja         CMake's generator
  *
  * Every archive is checked against its pinned SHA-256 before it is unpacked.
+ * A checkout may carry files under .ci/ (git does not refuse a forced add of
+ * an ignored path), so no file found there is trusted: every execution starts
+ * from an empty tree and installs only from the pinned archives. Vercel Remote
+ * Cache is the only way a run reuses a toolchain, and it restores one that an
+ * execution built this way.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -37,7 +42,10 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const ci = join(root, ".ci");
 const downloads = join(ci, "downloads");
 const toolchain = join(ci, "toolchain");
-const marker = join(toolchain, ".complete");
+// The installation revision, written into the tree and part of this file (one
+// of the task's inputs): raising it invalidates cached toolchains built by an
+// older revision.
+const revision = 2;
 
 // The LLVM pin is the repository's: scripts/toolchain.sha256 pins every LLVM
 // archive the native builds use.
@@ -159,11 +167,10 @@ function place(from, to) {
 }
 
 async function main() {
-  if (existsSync(marker)) {
-    console.log(".ci/toolchain is already installed");
-    return;
-  }
+  // Nothing already under .ci/ is an input: the checkout may carry files there, and the archives it could carry
+  // are only accepted when their SHA-256 matches the pin.
   rmSync(toolchain, { recursive: true, force: true });
+  rmSync(downloads, { recursive: true, force: true });
   mkdirSync(downloads, { recursive: true });
   const archives = new Map();
   for (const source of sources) archives.set(source.name, await download(source));
@@ -194,8 +201,8 @@ async function main() {
     if (!existsSync(join(toolchain, path))) throw new Error(`.ci/toolchain is missing ${path}`);
 
   rmSync(staging, { recursive: true, force: true });
-  writeFileSync(marker, `${new Date().toISOString()}\n`);
-  console.log(".ci/toolchain installed");
+  writeFileSync(join(toolchain, ".revision"), `${revision}\n`);
+  console.log(`.ci/toolchain installed (revision ${revision})`);
 }
 
 await main();

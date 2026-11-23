@@ -4,6 +4,14 @@ import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 const runner = fileURLToPath(new URL("../../scripts/ci-vercel/run-lane.mjs", import.meta.url));
+const runnerSource = readFileSync(
+  new URL("../../scripts/ci-vercel/run-lane.mjs", import.meta.url),
+  "utf8",
+);
+const toolchainSource = readFileSync(
+  new URL("../../scripts/ci-vercel/toolchain.mjs", import.meta.url),
+  "utf8",
+);
 const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
   tasks: Record<string, { env?: string[]; inputs?: string[] }>;
 };
@@ -57,4 +65,20 @@ test("the TS7 parity task hashes the fixtures whose baselines it checks", () => 
     "scripts/ts7-order-fixtures.mjs",
   ])
     expect(inputs, fixtures).toContain(fixtures);
+});
+
+test("the toolchain task rebuilds from the pinned archives instead of trusting a checkout's tree", () => {
+  // A checkout can carry an ignored .ci/ path (a forced git add), so no marker or installed file may short-circuit
+  // the install; only the task cache, filled by an install from these archives, skips it.
+  expect(toolchainSource).not.toContain("already installed");
+  expect(toolchainSource).not.toContain(".complete");
+  expect(toolchainSource).toMatch(/rmSync\(toolchain/);
+  expect(toolchainSource).toMatch(/rmSync\(downloads/);
+  // The script is one of the task's inputs, so an install revision written into it invalidates older cached trees.
+  expect(turbo.tasks["//#ci:setup:toolchain"]!.inputs).toContain("scripts/ci-vercel/toolchain.mjs");
+});
+
+test("the other setup outputs are rebuilt from empty directories", () => {
+  expect(runnerSource).toContain("fresh(libnodeDirectory)");
+  expect(runnerSource).toContain('fresh(join(root, ".ci/bootstrap-seed", flavor))');
 });

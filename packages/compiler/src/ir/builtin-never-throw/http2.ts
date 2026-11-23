@@ -23,4 +23,6 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   "http2.streamBufferSize",
   "http2.reqAuthority",
   "http2.reqScheme",
+  "http2.streamOnPush",
+  "http2.streamPushAllowed",
 ];

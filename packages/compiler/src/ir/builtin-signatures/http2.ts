@@ -92,8 +92,10 @@ export const http2Signatures = defineLibFnSignatures({
   // string/Buffer ("" = the system anchors).
   /** connect(authority[, listener]) — h2c prior knowledge; the listener
    * closure (if any) is the 'connect' once-listener. */
-  "http2.connect": { argTypes: [STRING, BOOL, null], result: HTTP2SESSION_T },
-  "http2.connectCb": { argTypes: [STRING, BOOL, null, null], result: HTTP2SESSION_T },
+  /** connect(authority[, options][, listener]): the trailing number is
+   * settings.enablePush (-1 when the options record leaves it alone). */
+  "http2.connect": { argTypes: [STRING, BOOL, null, F64], result: HTTP2SESSION_T },
+  "http2.connectCb": { argTypes: [STRING, BOOL, null, F64, null], result: HTTP2SESSION_T },
   /** session.request(pairs?, endStream) — endStream is a tri-state f64:
    * -1 the method's payload-meaningless default, 0/1 explicit. */
   "http2.sessionRequest": {
@@ -204,4 +206,11 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
   "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
   "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
+  /** pushStream(headers, { endStream }, callback). */
+  "http2.streamPushStream": {
+    argTypes: [HTTP2STREAM_T, arrayOf(STRING), BOOL, null],
+    result: VOID,
+  },
+  "http2.streamOnPush": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  "http2.streamPushAllowed": { argTypes: [HTTP2STREAM_T], result: BOOL },
 });

@@ -646,6 +646,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.streamRespondWithFile",
   "http2.streamRespondWithFD",
   "http2.streamAdditionalHeaders",
+  // pushStream throws ERR_HTTP2_PUSH_DISABLED when the peer or the
+  // stream's state forbids a push, and ERR_HTTP2_NESTED_PUSH on a
+  // promised stream; the callback itself runs later, on a turn of its own.
+  "http2.streamPushStream",
   "http2.responseWriteInformation",
   "http2.streamRespond",
   "http2.streamWrite",

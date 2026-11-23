@@ -152,6 +152,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.streamAborted": "scr_http2_stream_aborted",
     "http2.streamPending": "scr_http2_stream_pending",
     "http2.streamHeadersSent": "scr_http2_stream_headers_sent",
+    "http2.streamPushAllowed": "scr_http2_stream_push_allowed",
     "http2.reqComplete": "scr_http2_req_complete",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
@@ -215,7 +216,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     }
     case "http2.connect":
     case "http2.connectCb": {
-      const cb = args[3];
+      const cb = args[4];
       const handler =
         cb === undefined
           ? [ptr(), ptr()]
@@ -228,6 +229,24 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       return finishRuntimeCall(host, e, "scr_http2_connect", [
         ...a.slice(0, 2),
         ...caBytes(host, args[2]!),
+        a[3]!,
+        ...handler,
+      ]);
+    }
+    case "http2.streamPushStream": {
+      // pushStream(headers, options?, callback): the callback reports
+      // (err, pushStream, headers) on the next turn.
+      const cb = args[3]!;
+      const handler = callbackAdapter(
+        host,
+        cb,
+        `scr_http2_push_thunk${Math.min(callbackType(cb).params.length, 3)}`,
+        ["ptr", "ptr", "ptr", "ptr"],
+      );
+      return finishRuntimeCall(host, e, "scr_http2_stream_push_stream", [
+        a[0]!,
+        a[1]!,
+        a[2]!,
         ...handler,
       ]);
     }
@@ -323,6 +342,11 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.streamOnResponse":
       runtime = "scr_http2_stream_on_response";
+      thunk = "scr_http2_resp_thunk";
+      params = ["ptr", "ptr", "double", "double"];
+      break;
+    case "http2.streamOnPush":
+      runtime = "scr_http2_stream_on_push";
       thunk = "scr_http2_resp_thunk";
       params = ["ptr", "ptr", "double", "double"];
       break;

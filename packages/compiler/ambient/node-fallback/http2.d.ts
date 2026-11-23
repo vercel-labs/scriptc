@@ -553,6 +553,23 @@ declare module "http2" {
   }
 
   export interface ClientHttp2Session extends Http2Session {
+    /* A promise the peer sent opens a ClientHttp2Stream and raises the
+     * session's 'stream' with the request headers it carried. */
+    on(
+      event: "stream",
+      listener: (stream: ClientHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    once(
+      event: "stream",
+      listener: (stream: ClientHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    addListener(
+      event: "stream",
+      listener: (stream: ClientHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
+    ): void;
+    on(event: string, listener: (...args: any[]) => void): void;
+    once(event: string, listener: (...args: any[]) => void): void;
+    addListener(event: string, listener: (...args: any[]) => void): void;
     request(
       headers?: OutgoingHttpHeaders,
       options?: {
@@ -686,13 +703,17 @@ declare module "http2" {
         onError?: (err: any) => void;
       },
     ): void;
+    /* pushStream(headers[, { endStream }], callback): the promise's
+     * headers arrive as the checked-dynamic record Node builds (the
+     * caller's fields, then :method/:authority/:scheme/:path). */
     pushStream(
       headers: OutgoingHttpHeaders,
-      callback: (
-        err: Error | null,
-        pushStream: ServerHttp2Stream,
-        headers: OutgoingHttpHeaders,
-      ) => void,
+      callback: (err: Error, pushStream: ServerHttp2Stream, headers: any) => void,
+    ): void;
+    pushStream(
+      headers: OutgoingHttpHeaders,
+      options: { endStream?: boolean },
+      callback: (err: Error, pushStream: ServerHttp2Stream, headers: any) => void,
     ): void;
     readonly headersSent: boolean;
     readonly pushAllowed: boolean;

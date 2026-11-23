@@ -105,6 +105,9 @@ struct ScrStreamState {
    * EVENT is suppressed unless a user listener exists (Node's iterator
    * registers its own handler, so no unhandled-'error' crash occurs) */
   bool next_err_consumed;
+  /* Duplex.from adapted this stream from a web stream pair: the pipeline
+   * pipes into it like a stream the program wrote, never as a body. */
+  bool web_pair_body;
   ScrError *errored; /* owned */
 
   /* readable side. The buffer holds owned ScrBytes* chunks — or, once an
@@ -2150,6 +2153,10 @@ ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
 static ScrStream *scr_stream_boxed(const ScrDyn *value);
 static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed);
 
+/* The web stream unit's pair adaptation, installed at its first use. NULL
+ * when that unit is not linked. */
+ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value) = NULL;
+
 ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
   ScrStream *native = scr_stream_of_handle(body); /* +1 */
   if (!native) native = scr_stream_boxed(body);   /* +1 */
@@ -2162,6 +2169,14 @@ ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
     return d;
   }
   if (body->kind == SCR_DYN_PROMISE) return scr_dupx_from_boxed(scr_dyn_retain(body));
+  if (scr_stream_web_pair_hook != NULL) {
+    ScrStream *paired = scr_stream_web_pair_hook(body);
+    if (paired) {
+      paired->st->web_pair_body = true;
+      return paired;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
   bool unsupported = body->kind == SCR_DYN_FUNC;
   if (!unsupported && body->kind == SCR_DYN_OBJ) {
     static const char *const keys[] = {"then", "readable", "writable"};
@@ -9840,7 +9855,7 @@ ScrStream *scr_stream_unbox_dyn_stage(const ScrDyn *value, const ScrStr *message
   }
   if (scr_exc_pending()) return NULL;
   ScrStream *d = scr_stream_duplex_from_dyn((ScrDyn *)value);
-  if (d) d->st->pipeline_body = true;
+  if (d && !d->st->web_pair_body) d->st->pipeline_body = true;
   return d;
 }
 

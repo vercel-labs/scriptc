@@ -248,6 +248,12 @@ ScrStream *scr_stream_writable_from_web_opts(struct ScrDyn *web, double flags, d
  * over the pair's web readable and writable, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending. */
 ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
+/* The web stream unit's pair adaptation (set by its install): a value with
+ * web ReadableStream and WritableStream members answers a Duplex over the
+ * pair (+1) — a web { readable, writable } pair, or a TransformStream whose
+ * members are the same — and any other value answers NULL with nothing
+ * pending. */
+extern ScrStream *(*scr_stream_web_pair_hook)(struct ScrDyn *value);
 /* The same with the options: flags bit 1 allowHalfOpen, bit 2 objectMode,
  * bit 4 decodeStrings: false; hwm < 0 takes the default; encoding is NULL
  * when absent; signal may be NULL. */

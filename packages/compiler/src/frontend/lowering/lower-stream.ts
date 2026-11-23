@@ -3681,6 +3681,21 @@ function streamArgOf(
   lowered: IrExpr,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
 ): IrExpr {
+  if (what === "compose" && (lowered.type.kind === "dyn" || lowered.type.kind === "jsval")) {
+    // A checked-dynamic compose stage: the runtime adapts a web stream pair
+    // (or a TransformStream, whose members are one) and answers Node's error
+    // for anything else.
+    const loc = locOf(node);
+    const stage: IrExpr =
+      lowered.type.kind === "dyn" ? lowered : { kind: "dynFrom", value: lowered, type: DYN, loc };
+    return {
+      kind: "libCall",
+      fn: "stream.duplexFromDyn",
+      args: [stage],
+      type: { kind: "object", className: "%Duplex" },
+      loc,
+    };
+  }
   // A Hash, Hmac, Cipheriv or Decipheriv stage is its Transform; pipeline
   // and compose stages keep the value alive until the stream settles.
   const v = isValueStream(lowerer, node)

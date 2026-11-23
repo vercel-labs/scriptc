@@ -431,6 +431,9 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
    * audit, which must see nothing this thread's worker events still hold. */
   void (*events_detach)(void) = atomic_load_explicit(&scr_worker_events_detach, memory_order_relaxed);
   if (events_detach) events_detach();
+  /* The thread's bucket-map view is thread-local: free it with the thread
+   * rather than only at process exit. */
+  if (scr_worker_bucket_exit) scr_worker_bucket_exit();
   scr_context_cleanup();
   /* Frees the group arenas and chunks the thread kept for reuse before the
    * parent sees the exit. */

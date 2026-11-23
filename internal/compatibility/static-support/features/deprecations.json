@@ -1,0 +1,5 @@
+[
+    { "chapter": "deprecations", "symbols": ["util.toUSVString"], "status": "not-applicable" },
+    { "chapter": "deprecations", "symbols": ["util.debug"], "status": "not-applicable" },
+    { "chapter": "deprecations", "signatures": ["DEP0015: `fs.readSync` legacy String interface"], "status": "not-applicable" }
+]

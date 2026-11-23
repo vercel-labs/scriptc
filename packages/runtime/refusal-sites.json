@@ -246,6 +246,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_cluster.c",
+  "function": "scr_cluster_fork",
+  "message": "cluster.fork with uid/gid is not supported: a worker's credentials cannot be dropped before exec on this runtime",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_console_native.c",
   "function": "scr_console_method_call",
   "message": "Calling %s through a stored value has no lowering; call it directly",
@@ -351,12 +357,6 @@
   "file": "scr_crypto_args.h",
   "function": "ca_throw_formatted",
   "message": " that is a function or an instance of a class defining toString has no lowering; pass the name as a string",
-  "code": "SC2020"
- },
- {
-  "file": "scr_dgram.c",
-  "function": "scr_dgram_create_chk",
-  "message": "a custom lookup function is not supported yet",
   "code": "SC2020"
  },
  {
@@ -781,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_proxy_configured",
+  "message": "environment proxy URLs other than http:// are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"
@@ -807,6 +813,12 @@
   "file": "scr_http.c",
   "function": "scr_http_agent_create_connection",
   "message": "http.Agent createConnection options here are not supported by the runtime",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
   "code": "SC2020"
  },
  {
@@ -939,18 +951,6 @@
   "file": "scr_inspect.c",
   "function": "scr_insp_inspect",
   "message": "with a depth argument that is not a number or null has no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding Error values have no lowering",
-  "code": "SC2020"
- },
- {
-  "file": "scr_inspect.c",
-  "function": "insp_table_cell",
-  "message": "console.table cells holding accessor properties have no lowering",
   "code": "SC2020"
  },
  {
@@ -1312,6 +1312,18 @@
   "function": "scr_dyn_for_in_keys",
   "message": "for-in over this checked-dynamic kind is not supported yet",
   "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct island newTarget is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",
@@ -1819,7 +1831,7 @@
  },
  {
   "file": "scr_stream_to_web.c",
-  "function": "scr_stream_to_web_readable_dyn",
+  "function": "scr_stream_to_web_readable_dyn_opts",
   "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },
@@ -1935,6 +1947,12 @@
   "file": "scr_tls.c",
   "function": "scr_tls_sock_get_cipher",
   "message": "tlsSocket.getCipher() for %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_dynh_invoke",
+  "message": "changing the SNI of a started client socket has no lowering",
   "code": "SC2020"
  },
  {
@@ -2329,8 +2347,14 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_apply_array_like",
+  "function": "scr_dyn_apply_args_limit",
   "message": "Function.prototype.apply exceeds the native argument limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_args_limit",
+  "message": "Reflect.construct exceeds the native argument limit",
   "code": "SC2020"
  },
  {

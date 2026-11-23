@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsx-automatic-runtime-npm-package/classic.tsx",
+  "<repo>/tests/corpus/jsx-automatic-runtime-npm-package/page.tsx",
+  "<repo>/tests/corpus/jsx-automatic-runtime-npm-package/main.ts"
+ ],
+ "diags": []
+}

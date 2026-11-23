@@ -25,6 +25,12 @@ declare module "net" {
      * Both chain, Node's shape. */
     ref(): Socket;
     unref(): Socket;
+    /* Node's socket.connect ladder: an idle socket dials like net.connect.
+     * The port form lowers; the path and options forms do not yet. */
+    connect(port: number, host: string, connectionListener?: () => void): Socket;
+    connect(port: number, connectionListener?: () => void): Socket;
+    connect(options: { port: number; host?: string }, connectionListener?: () => void): Socket;
+    connect(path: string, connectionListener?: () => void): Socket;
     readonly remoteAddress: string | undefined;
     /* The peer's fields are cached at first read, like remoteAddress; the
      * local ones are undefined while connecting and after close. */
@@ -36,6 +42,11 @@ declare module "net" {
     readonly bytesRead: number;
     readonly connecting: boolean;
     readonly pending: boolean;
+    /* new net.Socket({ allowHalfOpen }): the peer FIN leaves the write half
+     * open; setTimeout(ms) sets the idle timeout the 'timeout' event and
+     * socket.timeout report (undefined until one is set, 0 once disabled) */
+    readonly allowHalfOpen: boolean;
+    readonly timeout: number | undefined;
     readonly readyState: "opening" | "open" | "readOnly" | "writeOnly" | "closed";
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
@@ -133,6 +144,7 @@ declare module "net" {
     on(event: "close", listener: (hadError: boolean) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "session", listener: (session: Buffer) => void): void;
+    on(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     on(
       event: "lookup",
@@ -168,6 +180,7 @@ declare module "net" {
     addListener(event: "close", listener: (hadError: boolean) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "session", listener: (session: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     addListener(
       event: "lookup",
@@ -200,6 +213,7 @@ declare module "net" {
     once(event: "close", listener: (hadError: boolean) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "session", listener: (session: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     once(
       event: "lookup",
@@ -280,6 +294,11 @@ declare module "net" {
       event: "tlsClientError",
       listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
     ): void;
+    /* tls and https servers: the NSS key-log lines of their connections;
+     * a plain server keeps the listener inert, as Node's EventEmitter does */
+    on(event: "keylog", listener: (line: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
@@ -514,10 +533,19 @@ declare module "net" {
   export function isIP(input: string): number;
   export function isIPv4(input: string): boolean;
   export function isIPv6(input: string): boolean;
-  /* The Socket VALUE — the `x instanceof net.Socket` narrowing target
-   * (the h2 compat 'connect' listener's test). Constructing bare sockets
-   * has no lowering; the construct signature exists for instanceof. */
-  export const Socket: abstract new () => Socket;
+  /* The Socket VALUE — the `x instanceof net.Socket` narrowing target and
+   * the unconnected-socket constructor: new net.Socket([options]) answers
+   * an idle socket that connect()/listen() style use starts. allowHalfOpen
+   * and signal lower; a descriptor (fd) and the readable/writable sides are
+   * refused by name where they run. */
+  export interface SocketConstructorOpts {
+    fd?: number;
+    allowHalfOpen?: boolean;
+    readable?: boolean;
+    writable?: boolean;
+    signal?: AbortSignal;
+  }
+  export const Socket: new (options?: SocketConstructorOpts) => Socket;
   export function createServer(connectionListener?: (socket: Socket) => void): Server;
   export function connect(port: number, host?: string, connectListener?: () => void): Socket;
   export function createConnection(

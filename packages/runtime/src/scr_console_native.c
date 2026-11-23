@@ -318,6 +318,8 @@ static bool scr_console_inst_set(void *ptr, const char *key, size_t len, const S
 
 /* Dynamic calls render like the stored global methods: every argument
  * through the dyn inspector (strings verbatim), space-joined. */
+static int scr_console_member_index(const char *key, size_t len);
+
 static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key, ScrDyn *const *args,
                                        size_t argc, const char *what) {
   (void)self; (void)what;
@@ -331,6 +333,14 @@ static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
       scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
       return NULL;
     }
+  }
+  int member = scr_console_member_index(key, strlen(key));
+  if (member >= 0 && scr_console_channel_active((double)member)) {
+    ScrDyn *pack = scr_dyn_new_arr();
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(pack, scr_dyn_retain(args[i]));
+    scr_console_inst_write_args(self, (double)member, pack);
+    scr_dyn_release(pack);
+    return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
   ScrStr **parts = calloc(argc ? 2 * argc : 1, sizeof *parts);
   if (!parts) scr_trap("scriptc: out of memory\n");
@@ -892,9 +902,19 @@ static ScrStr *scr_console_inst_format(ScrConsoleInst *inst, int which, const ch
                                  scr_console_inst_colors_mode(inst, which));
 }
 
+/* The output member's index in Node's binding order, or -1. */
+static int scr_console_member_index(const char *key, size_t len) {
+  static const char *const names[] = {"log", "info", "debug", "warn", "error"};
+  for (int i = 0; i < 5; i++)
+    if (strlen(names[i]) == len && memcmp(names[i], key, len) == 0) return i;
+  return -1;
+}
+
 /* console.log/info/debug/warn/error over a run-time argument pack. `member`
  * is the output member's index in Node's binding order (0 log, 1 info, 2
- * debug, 3 warn, 4 error). */
+ * debug, 3 warn, 4 error). With a channel subscriber the pack is published
+ * and the line is formatted from a private snapshot of it, as Node
+ * publishes its arguments and then formats a spread copy. */
 void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack) {
   static const char *const surfaces[] = {"console.log", "console.info", "console.debug",
                                          "console.warn", "console.error"};
@@ -902,15 +922,24 @@ void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack) {
   if (index < 0 || index > 4) index = 0;
   int which = index >= 3 ? 1 : 0;
   ScrConsoleInst *inst = scr_console_inst_peek(console);
-  ScrStr *line;
-  if (inst != NULL) {
-    line = scr_console_inst_format(inst, which, surfaces[index], pack);
-  } else if (scr_console_is_global_value(console)) {
-    line = scr_console_global_format(pack, surfaces[index], which);
-  } else {
+  if (inst == NULL && !scr_console_is_global_value(console)) {
     scr_console_inst_require(console, "Console method");
     return;
   }
+  ScrDyn *snapshot = NULL;
+  if (scr_console_channel_active((double)index)) {
+    scr_console_publish_args((double)index, pack);
+    if (scr_exc_pending()) return;
+    snapshot = scr_console_snapshot_pack(pack);
+    pack = snapshot;
+  }
+  ScrStr *line;
+  if (inst != NULL) {
+    line = scr_console_inst_format(inst, which, surfaces[index], pack);
+  } else {
+    line = scr_console_global_format(pack, surfaces[index], which);
+  }
+  scr_dyn_release(snapshot);
   if (line == NULL) return;
   if (inst != NULL) scr_console_inst_print(inst, which, line);
   else scr_console_global_write(which, line);
@@ -1378,6 +1407,12 @@ static void scr_table_print(ScrConsoleInst *inst, ScrStr *const *head,
 }
 
 static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConsoleInst *inst) {
+  /* The cells inspect over the instance's options and colorMode; the
+   * global console has neither and answers 'auto' over stdout. */
+  ScrDyn *inspect_options = inst != NULL ? inst->inspect_options : NULL;
+  int colors_mode = inst != NULL
+                        ? scr_console_inst_colors_mode(inst, 0)
+                        : scr_console_target_colors_mode(2, scr_process_is_tty(1));
   ScrDyn *data = scr_table_view(data_in);
   /* `tabularData === null || typeof tabularData !== 'object'`: log it. */
   if (data->kind != SCR_DYN_OBJ && data->kind != SCR_DYN_ARR && data->kind != SCR_DYN_BYTES) {
@@ -1429,14 +1464,15 @@ static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConso
     }
     if (!props && primitive) {
       has_primitives = true;
-      values[i] = scr_insp_table_cell(item);
+      values[i] = scr_insp_table_cell(item, inspect_options, colors_mode);
     } else if (props) {
       for (size_t k = 0; k < props->v.arr.len && !scr_exc_pending(); k++) {
         ScrStr *key = props->v.arr.items[k]->v.str;
         ScrTableColumn *col = scr_table_column(&t, key);
         ScrDyn *value = primitive ? NULL : scr_table_own_value(item, key);
         if (col->cells[i]) scr_str_release(col->cells[i]);
-        col->cells[i] = value ? scr_insp_table_cell(value) : scr_str_new("", 0);
+        col->cells[i] = value ? scr_insp_table_cell(value, inspect_options, colors_mode)
+                              : scr_str_new("", 0);
         if (value) scr_dyn_release(value);
       }
     } else {
@@ -1448,7 +1484,7 @@ static void scr_console_table_impl(ScrDyn *data_in, ScrDyn *properties, ScrConso
           ScrDyn *value = scr_table_own_value(item, keys[k]);
           if (value) {
             if (col->cells[i]) scr_str_release(col->cells[i]);
-            col->cells[i] = scr_insp_table_cell(value);
+            col->cells[i] = scr_insp_table_cell(value, inspect_options, colors_mode);
             scr_dyn_release(value);
           }
         }

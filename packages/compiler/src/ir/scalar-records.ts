@@ -182,10 +182,14 @@ export function scalarizeNumericRecords(mod: IrModule): IrModule {
   }
   if (producers.size === 0) return mod;
   let changed = false;
+  // Every function's fresh names must avoid the program's globals, but the
+  // globals are the same for all of them: a shared set keeps a fresh name
+  // from rebuilding the global id list per function.
+  const globalIds = new Set((mod.globals ?? []).map((g) => g.id));
   const functions = mod.functions.map((fn): IrFunction => {
     if (fn.async || fn.generator) return fn;
     const locals = new Map(fn.locals.map((l) => [l.id, l]));
-    const used = new Set([...locals.keys(), ...(mod.globals ?? []).map((g) => g.id)]);
+    const used = new Set(locals.keys());
     collectLabels(fn.body, used);
     // A header accepts one statement, not an inlined block. Local ids are
     // unique within a function and fieldOnlyUses proves one declaration.
@@ -205,7 +209,7 @@ export function scalarizeNumericRecords(mod: IrModule): IrModule {
       let id: string;
       do {
         id = `%scalar.${next++}`;
-      } while (used.has(id));
+      } while (used.has(id) || globalIds.has(id));
       used.add(id);
       return id;
     };

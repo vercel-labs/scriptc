@@ -12,6 +12,44 @@ export interface CompilerImplementationDependency {
   size: number;
   mtimeMs: number;
   ctimeMs: number;
+  /** The entry's CONTENT digest: a file's bytes, or a directory's sorted
+   * child names and kinds. The proof compares this and the kind, never the
+   * metadata above: a rebuild that leaves the compiler's content the same
+   * (its files rewritten with identical bytes, or its directories touched)
+   * must keep the identity, or no unit or executable cache entry keyed by it
+   * is ever found again. */
+  content: string;
+}
+
+/** `names` (sorted) as a directory's content digest. */
+function directoryContent(
+  entries: readonly { name: string; isDirectory: () => boolean }[],
+): string {
+  const hash = createHash("sha256");
+  for (const entry of entries) {
+    hash.update(entry.name);
+    hash.update("\0");
+    hash.update(entry.isDirectory() ? "d" : "f");
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/** `bytes` as a file's content digest. */
+function fileContent(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** An entry's kind and content digest as the proof compares them. */
+async function entryContent(
+  path: string,
+  info: Awaited<ReturnType<typeof lstat>>,
+): Promise<{ kind: "file" | "directory"; content: string } | null> {
+  if (info.isFile()) return { kind: "file", content: fileContent(await readFile(path)) };
+  if (!info.isDirectory()) return null;
+  const children = await readdir(path, { withFileTypes: true });
+  children.sort((a, b) => a.name.localeCompare(b.name));
+  return { kind: "directory", content: directoryContent(children) };
 }
 
 export interface CompilerImplementationIdentity {
@@ -56,6 +94,7 @@ export function compilerImplementationRoot(): string {
 function dependency(
   path: string,
   info: Awaited<ReturnType<typeof lstat>>,
+  content: string,
 ): CompilerImplementationDependency | null {
   const kind = info.isFile() ? "file" : info.isDirectory() ? "directory" : null;
   return kind === null
@@ -68,6 +107,7 @@ function dependency(
         size: Number(info.size),
         mtimeMs: Number(info.mtimeMs),
         ctimeMs: Number(info.ctimeMs),
+        content,
       };
 }
 
@@ -142,11 +182,15 @@ export async function compilerImplementationIdentity(
   const entries: { path: string; directory: CompilerImplementationDependency | null }[] = [];
   const dependencies: CompilerImplementationDependency[] = [];
   const walk = async (directory: string): Promise<void> => {
-    // Capture directories BEFORE enumeration: a new child arriving during
-    // the scan must invalidate this proof, even if readdir did not see it.
-    entries.push({ path: directory, directory: dependency(directory, await lstat(directory)) });
+    const directoryInfo = await lstat(directory);
     const children = await readdir(directory, { withFileTypes: true });
     children.sort((a, b) => a.name.localeCompare(b.name));
+    // A directory's content is its children's names and kinds: a child
+    // arriving during the scan changes this digest on the next check.
+    entries.push({
+      path: directory,
+      directory: dependency(directory, directoryInfo, directoryContent(children)),
+    });
     for (const entry of children) {
       // The record directory is outside the identity; it is created before
       // the scan so the root directory's captured metadata stays stable.
@@ -174,8 +218,9 @@ export async function compilerImplementationIdentity(
     const batch = await Promise.all(
       entries.slice(start, start + batchSize).map(async (entry) => {
         if (entry.directory !== null) return { ...entry, info: entry.directory, bytes: null };
-        const info = dependency(entry.path, await lstat(entry.path));
-        return { ...entry, info, bytes: await readFile(entry.path) };
+        const bytes = await readFile(entry.path);
+        const info = dependency(entry.path, await lstat(entry.path), fileContent(bytes));
+        return { ...entry, info, bytes };
       }),
     );
     for (const entry of batch) {
@@ -203,7 +248,8 @@ function validDependency(value: unknown): value is CompilerImplementationDepende
     typeof item.ino === "number" &&
     typeof item.size === "number" &&
     typeof item.mtimeMs === "number" &&
-    typeof item.ctimeMs === "number"
+    typeof item.ctimeMs === "number" &&
+    typeof item.content === "string"
   );
 }
 
@@ -211,13 +257,29 @@ export async function compilerImplementationDependenciesStillMatch(
   dependencies: readonly CompilerImplementationDependency[],
 ): Promise<boolean> {
   if (!Array.isArray(dependencies) || !dependencies.every(validDependency)) return false;
-  const current = await Promise.all(
-    dependencies.map(async (expected) => {
-      const info = await lstat(expected.path).catch(() => null);
-      if (info === null) return false;
-      const observed = dependency(expected.path, info);
-      return observed !== null && JSON.stringify(observed) === JSON.stringify(expected);
-    }),
-  );
-  return current.every(Boolean);
+  // The proof compares each entry's kind and CONTENT, not its metadata: a
+  // rebuild that rewrites the compiler's files with identical bytes leaves
+  // its identity (and every cache entry keyed by it) intact.
+  //
+  // Read bounded batches: a compiler package can hold more files than the
+  // process may keep open at once, and opening them all would fail the proof
+  // for an unchanged package — and with it every cache fast path keyed by the
+  // identity.
+  const batchSize = 64;
+  for (let start = 0; start < dependencies.length; start += batchSize) {
+    const batch = await Promise.all(
+      dependencies.slice(start, start + batchSize).map(async (expected) => {
+        const info = await lstat(expected.path).catch(() => null);
+        if (info === null) return false;
+        const observed = await entryContent(expected.path, info).catch(() => null);
+        return (
+          observed !== null &&
+          observed.kind === expected.kind &&
+          observed.content === expected.content
+        );
+      }),
+    );
+    if (!batch.every(Boolean)) return false;
+  }
+  return true;
 }

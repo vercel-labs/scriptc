@@ -530,6 +530,13 @@ declare var process: {
     pause(): void;
     resume(): void;
     isPaused(): boolean;
+    /* Node's handle refcount: unref() lets the process exit with a
+     * consumer still registered, and ref() (the default) makes a consumer
+     * keep it alive again. Data still arrives while other work holds the
+     * loop, as in Node. Node returns `this` for chaining; this call is
+     * statement-position only. */
+    ref(): void;
+    unref(): void;
     read(size?: number): Buffer | null;
     readonly readableLength: number;
     destroy(): void;
@@ -2102,12 +2109,25 @@ declare module "node:perf_hooks" {
     readonly min: number;
     readonly minBigInt: bigint;
     readonly percentiles: Map<number, number>;
+    /* Node's Map holds the percentile tick as a number key and the bucket
+     * value as a BigInt (@types/node declares bigint keys, but the running
+     * implementation stores the numbers it gets from hdr_iter_percentile). */
+    readonly percentilesBigInt: Map<number, bigint>;
     readonly stddev: number;
+    readonly skewness: number;
+    readonly kurtosis: number;
+    readonly ewmaMean: number;
+    readonly ewmaStddev: number;
+    readonly ewmaErrorRate: number;
     percentile(percentile: number): number;
     percentileBigInt(percentile: number): bigint;
+    percentilesAt(percentiles: number[]): Map<number, number>;
     countAt(value: number): number;
     cdf(value: number): number;
     ccdf(value: number): number;
+    linearBuckets(stepSize: number): Map<number, number>;
+    logBuckets(firstBucket: number, base: number): Map<number, number>;
+    burnRate(sloTarget: number): number;
     ksTest(other: Histogram): number;
     cohensD(other: Histogram): number;
     cliffsD(other: Histogram): number;
@@ -2115,6 +2135,24 @@ declare module "node:perf_hooks" {
       readonly uStatistic: number;
       readonly zScore: number;
       readonly pValue: number;
+    };
+    meanCI(options?: { confidence?: number }): {
+      readonly mean: number;
+      readonly lower: number;
+      readonly upper: number;
+    };
+    percentileCI(
+      percentile: number,
+      options?: { confidence?: number },
+    ): { readonly value: number; readonly lower: number; readonly upper: number };
+    welchTest(
+      other: Histogram,
+      options?: { confidence?: number },
+    ): {
+      readonly tStatistic: number;
+      readonly degreesOfFreedom: number;
+      readonly pValue: number;
+      readonly confidenceInterval: { readonly lower: number; readonly upper: number };
     };
     reset(): void;
   }
@@ -2130,6 +2168,8 @@ declare module "node:perf_hooks" {
     lowest?: number | bigint | undefined;
     highest?: number | bigint | undefined;
     figures?: number | undefined;
+    halfLife?: number | undefined;
+    threshold?: number | undefined;
   }
   export interface RecordableHistogram extends Histogram {
     record(val: number | bigint): void;
@@ -2139,6 +2179,26 @@ declare module "node:perf_hooks" {
     subtract(other: RecordableHistogram): void;
   }
   export function createHistogram(options?: CreateHistogramOptions): RecordableHistogram;
+  /* createSlidingWindowHistogram keeps a fixed number of histogram chunks
+   * and rotates them by time (chunkDuration, milliseconds) or by recorded
+   * count (recordsPerChunk); snapshot() answers a Histogram over the
+   * chunks still inside the window. */
+  export interface SlidingWindowHistogramOptions {
+    chunks: number;
+    chunkDuration?: number | undefined;
+    recordsPerChunk?: number | undefined;
+    lowest?: number | bigint | undefined;
+    highest?: number | bigint | undefined;
+    figures?: number | undefined;
+  }
+  export interface SlidingWindowHistogram {
+    record(val: number | bigint): void;
+    snapshot(): Histogram;
+    reset(): void;
+  }
+  export function createSlidingWindowHistogram(
+    options: SlidingWindowHistogramOptions,
+  ): SlidingWindowHistogram;
   export interface TimerifyOptions {
     histogram?: RecordableHistogram | undefined;
   }

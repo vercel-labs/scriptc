@@ -2488,6 +2488,7 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
 #define SCR_DYN_COMPAT_STR __attribute__((section(".rodata.scr_dyn_compat")))
 #endif
 static const char dyn_s_error_tag[] SCR_DYN_COMPAT_STR = "[object Error]";
+static const char dyn_s_domex_tag[] SCR_DYN_COMPAT_STR = "[object DOMException]";
 static const char dyn_s0[] SCR_DYN_COMPAT_STR = "calling the %s constructor%s through a stored value is not supported yet";
 static const char dyn_s1[] SCR_DYN_COMPAT_STR = "calling '%s' through a stored value is not supported yet";
 static const char dyn_s3[] SCR_DYN_COMPAT_STR = "scriptc: invalid global constructor name\n";
@@ -2832,7 +2833,11 @@ __attribute__((constructor)) static void dyn_global_constructor_hook_install(voi
 /* Object.prototype.toString's tag: errors answer "[object Error]" (the
  * shared tag walk in scr_json.c answers "[object Object]" for them). */
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_OBJ && scr_dyn_err_instanceof(d, 0)) return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
+  if (d->kind == SCR_DYN_OBJ && scr_dyn_err_instanceof(d, 0)) {
+    if (scr_dyn_err_instanceof(d, SCR_ERR_DOMEX))
+      return scr_str_new(dyn_s_domex_tag, sizeof dyn_s_domex_tag - 1);
+    return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
+  }
   return scr_dyn_object_tag(d);
 }
 

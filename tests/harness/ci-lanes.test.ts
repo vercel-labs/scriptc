@@ -226,8 +226,9 @@ test("the Effect job runs the shards the lane selection names", () => {
     "${{ fromJSON(needs.lanes.outputs.effect_shards) }}",
   );
   expect(effects.env!["SCRIPTC_TEST_SHARD"]).toBe(`\${{ matrix.shard }}/${effectShardCount}`);
+  // A pull request's expensive tier, dispatched on its branch (ci-review-gate.yml), samples as its pull request.
   expect(lanes.steps.find((step) => step.id === "lanes")!.env!["PR"]).toBe(
-    "${{ github.event.pull_request.number }}",
+    "${{ github.event.pull_request.number || inputs.pr }}",
   );
   expect(lanesScript).toContain('--pr "$PR" --github-output');
 });
@@ -269,14 +270,14 @@ test("CI runs the base commit's lane selection against the pull request's diff",
   expect(lanesScript.match(/every$/gm)).toHaveLength(2);
 });
 
-function runLanes(event: string) {
+function runLanes(event: string, tier = "full") {
   const directory = mkdtempSync(join(tmpdir(), "ci-lanes-"));
   try {
     const output = join(directory, "output");
     writeFileSync(output, "");
     const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
       encoding: "utf8",
-      env: { ...process.env, EVENT: event, GITHUB_OUTPUT: output },
+      env: { ...process.env, EVENT: event, TIER: tier, GITHUB_OUTPUT: output },
     });
     expect(result.status, result.stderr).toBe(0);
     return readFileSync(output, "utf8");
@@ -285,16 +286,16 @@ function runLanes(event: string) {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos; the nightly sweep and manual runs run every lane", () => {
+test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job; the nightly sweep and manual runs run every lane", () => {
   for (const event of ["push", "merge_group"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
+      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n",
     );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);
   for (const event of ["schedule", "workflow_dispatch"])
     expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n",
+      "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
     );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",
@@ -304,7 +305,17 @@ test("pushes to main and merge queue groups run every lane except macos; the nig
   });
 });
 
-test("every job on a macOS runner is in the macos lane", () => {
+test("a pull request's fast tier turns every lane off and runs the fast tests", () => {
+  expect(runLanes("pull_request", "fast")).toBe(
+    "linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n",
+  );
+  // Its expensive tier is a dispatch on the pull request's branch, which selects lanes as the pull request would.
+  const step = workflow.jobs["lanes"]!.steps.find((candidate) => candidate.id === "lanes")!;
+  expect(step.env!["EVENT"]).toBe("${{ inputs.pr != '' && 'pull_request' || github.event_name }}");
+  expect(step.env!["TIER"]).toBe("${{ needs.validation_scope.outputs.tier }}");
+});
+
+test("every job on a macOS runner is in the macos lane, but the main push smoke job", () => {
   const macosJobs = Object.entries(workflow.jobs).filter(([, job]) =>
     [job["runs-on"], ...(job.strategy?.matrix?.include ?? []).map((entry) => entry.runner)].some(
       (runner) => runner?.startsWith("macos"),
@@ -317,7 +328,18 @@ test("every job on a macOS runner is in the macos lane", () => {
     "mobile_runtime_packs_ios",
     "native_macos",
     "tests_macos",
+    "tests_macos_smoke",
   ]);
   for (const [name, job] of macosJobs)
-    expect(job.if, name).toContain("needs.lanes.outputs.macos == 'true'");
+    expect(job.if, name).toContain(
+      name === "tests_macos_smoke"
+        ? "needs.lanes.outputs.macos_smoke == 'true'"
+        : "needs.lanes.outputs.macos == 'true'",
+    );
+  // The smoke job runs the darwin smoke suite on one runner, building its own
+  // native packages.
+  const smoke = workflow.jobs["tests_macos_smoke"]!;
+  expect(smoke.needs).toEqual(["validation_scope", "lanes", "code_quality"]);
+  expect(smoke.strategy).toBeUndefined();
+  expect(smoke.env).toMatchObject({ SCRIPTC_CI_SUITE: "darwin-smoke", SCRIPTC_TEST_SHARD: "1/1" });
 });

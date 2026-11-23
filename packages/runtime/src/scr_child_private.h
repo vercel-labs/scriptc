@@ -95,6 +95,8 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the checked-dynamic child.stdio array (+1). */
+  ScrDyn *stdio_dyn;
   /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
    * the channel was made (a fork that failed to spawn keeps stdio's fourth
    * entry). */
@@ -183,6 +185,8 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* Mirrors scr_child.c: the checked-dynamic child.stdio array (+1). */
+  ScrDyn *stdio_dyn;
   /* Mirrors scr_child.c: the launch configured an IPC slot, whether or not
    * the channel was made (a fork that failed to spawn keeps stdio's fourth
    * entry). */

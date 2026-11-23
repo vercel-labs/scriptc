@@ -6302,6 +6302,8 @@ struct ScrHttpClientReq {
   bool abort_emitted;
   bool sock_ready;
   bool socket_emitted;
+  bool socket_emit_owed; /* queued for an agent slot: the socket is assigned
+                          * (and announced) when the queue starts it */
   bool pre_flushing; /* a flush of the pre-socket writes is in progress */
   bool finish_queued;
   bool writable_finished;
@@ -8922,7 +8924,11 @@ static ScrHttpClientReq *scr_http_request_impl(ScrStr *host /*borrowed*/, double
   c->timeout_ms = timeout_ms > 0 ? timeout_ms : 0;
   if (timeout_ms > 0) scr_net_sock_set_timeout(c->sock, timeout_ms);
   scr_http_client_register(c);
-  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_SOCKET, scr_http_client_retain(c));
+  /* Node emits 'socket' when the agent assigns a socket: a request that
+   * queued for a slot holds its socket object already, but the event waits
+   * for the queue to start it */
+  if (presock != NULL && scr_net_sock_dial_pending(presock)) c->socket_emit_owed = true;
+  else scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_SOCKET, scr_http_client_retain(c));
   return c;
 }
 
@@ -9406,6 +9412,14 @@ static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpCl
   scr_str_release(name);
 }
 
+/* The 'socket' event for a request the queue has just started: Node assigns
+ * and announces the socket at that moment, not when the request was made. */
+static void scr_http_client_socket_assigned(ScrHttpClientReq *c) {
+  if (!c->socket_emit_owed) return;
+  c->socket_emit_owed = false;
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_SOCKET, scr_http_client_retain(c));
+}
+
 /* Starts the requests queued under the freed name (Node's FIFO), then — when
  * that name had nothing to start — the first queued request whose own origin
  * has no live socket and whose dial stays under maxTotalSockets (Node's
@@ -9448,6 +9462,8 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
       if (f != NULL) {
         e->queued = false;
         ag->nqueued--;
+        /* 'socket' precedes the 'finish' the rebind queues */
+        scr_http_client_socket_assigned(e->client);
         scr_http_client_rebind(e->client, f, false);
         started = true;
       } else if (e->client->proxied && !scr_http_agent_reclaim_slot(ag)) {
@@ -9460,6 +9476,7 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
           scr_http_conn_count(e->client->conn, ag->sock_count, ag);
           scr_net_sock_dial_start(e->client->sock);
         }
+        scr_http_client_socket_assigned(e->client);
         started = true;
       }
       break;
@@ -9486,6 +9503,7 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
         scr_http_conn_count(e->client->conn, ag->sock_count, ag);
         scr_net_sock_dial_start(e->client->sock);
       }
+      scr_http_client_socket_assigned(e->client);
       break;
     }
   }
@@ -9772,8 +9790,11 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
     c->timeout_ms = ag->timeout_ms;
     scr_net_sock_set_timeout(c->sock, ag->timeout_ms);
   }
-  if (reuse != NULL) scr_http_client_rebind(c, reuse, true);
-  else if (!queue) {
+  if (reuse != NULL) {
+    /* 'socket' precedes the 'finish' the rebind queues */
+    scr_http_client_socket_assigned(c);
+    scr_http_client_rebind(c, reuse, true);
+  } else if (!queue) {
     scr_http_conn_count(c->conn, ag->sock_count, ag); /* dialed now */
   }
   c->agent = scr_http_agent_retain(ag);

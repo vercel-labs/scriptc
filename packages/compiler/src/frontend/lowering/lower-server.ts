@@ -5967,6 +5967,17 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
+    if (m === "sentHeaders" || m === "sentInfoHeaders" || m === "sentTrailers" || m === "state") {
+      const fn: IrLibFn =
+        m === "sentHeaders"
+          ? "http2.streamSentHeaders"
+          : m === "sentInfoHeaders"
+            ? "http2.streamSentInfoHeaders"
+            : m === "sentTrailers"
+              ? "http2.streamSentTrailers"
+              : "http2.streamState";
+      return { kind: "libCall", fn, args: [recv()], type: DYN, loc };
+    }
     if (m === "endAfterHeaders")
       return {
         kind: "libCall",

@@ -184,6 +184,12 @@ double scr_http2_stream_buffer_size(ScrH2Stream *st);
 ScrStr *scr_http2_req_authority(ScrHttpReq *r);
 ScrStr *scr_http2_req_scheme(ScrHttpReq *r);
 bool scr_http2_stream_headers_sent(ScrH2Stream *st);
+/* sentHeaders/sentInfoHeaders/sentTrailers as the dyn records the stream
+ * holds (undefined before a block was sent), and the state snapshot. */
+ScrDyn *scr_http2_stream_sent_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_info_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_trailers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_state(ScrH2Stream *st);
 bool scr_http2_req_complete(ScrHttpReq *r);
 /* Every value `name` has in a received pairs array, in order (the array a
  * headers object holds for set-cookie). */

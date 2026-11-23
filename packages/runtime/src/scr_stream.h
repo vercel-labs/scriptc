@@ -822,6 +822,10 @@ ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box)
  * setDefaultEncoding (validated; answers the stream +1). The chaining
  * forms answer the stream (+1). */
 void scr_stream_set_decode_strings(ScrStream *s, bool decode);
+/* The web pair adapter's chunks pass through as web values: in object mode
+ * a null chunk is one entry or one write, not EOF and not the null-values
+ * error. */
+void scr_stream_set_web_chunks(ScrStream *s, bool on);
 ScrStream *scr_stream_decode_strings(ScrStream *s, bool decode);
 /* Runtime decodeStrings/defaultEncoding option values: checked before
  * construction (ERR_UNKNOWN_ENCODING thrown), then applied to the fresh

@@ -108,6 +108,11 @@ struct ScrStreamState {
   /* Duplex.from adapted this stream from a web stream pair: the pipeline
    * pipes into it like a stream the program wrote, never as a body. */
   bool web_pair_body;
+  /* The pair adaptation passes web chunks through in object mode, so a
+   * null chunk is a value there — a push entry and a write value, where a
+   * node readable's push(null) ends the stream and a node write of null is
+   * the null-values error. */
+  bool web_chunks;
   ScrError *errored; /* owned */
 
   /* readable side. The buffer holds owned ScrBytes* chunks — or, once an
@@ -1432,7 +1437,8 @@ ScrDyn *scr_stream_done_dyn_l(ScrClosure *clo, ScrDyn *const *args, size_t argc)
  * readableAddChunkPushByteMode does. Borrow d. */
 bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d) {
   ScrStreamState *st = s->st;
-  if (d->kind != SCR_DYN_NULL && st->has_r && st->r.object_entries)
+  if ((d->kind != SCR_DYN_NULL || st->web_chunks) && st->has_r &&
+      st->r.object_entries)
     return scr_stream_push_object(s, d) > 0;
   switch (d->kind) {
   case SCR_DYN_BYTES: {
@@ -1463,7 +1469,8 @@ bool scr_stream_push_dyn(ScrStream *s, const ScrDyn *d) {
 static bool scr_stream_write_value(ScrStream *s, ScrDyn *v, ScrClosure *cb);
 
 bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb) {
-  if (d->kind != SCR_DYN_NULL && s->st->has_w && s->st->w.object_mode)
+  if ((d->kind != SCR_DYN_NULL || s->st->web_chunks) && s->st->has_w &&
+      s->st->w.object_mode)
     return scr_stream_write_value(s, (ScrDyn *)d, cb);
   switch (d->kind) {
   case SCR_DYN_BYTES: {
@@ -7147,6 +7154,11 @@ void scr_stream_set_object_mode(ScrStream *s, bool readable, bool writable) {
   }
   if (writable) st->w.object_mode = st->w.values = true;
 }
+
+/* The web pair adaptation's chunks are web values: in object mode a null
+ * chunk is one entry (a push) or one write, not the end of the stream and
+ * not the null-values error. */
+void scr_stream_set_web_chunks(ScrStream *s, bool on) { s->st->web_chunks = on; }
 
 /* decodeStrings: false — string writes stay strings (scr_stream_write_string). */
 void scr_stream_set_decode_strings(ScrStream *s, bool decode) {

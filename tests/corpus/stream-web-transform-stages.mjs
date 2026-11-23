@@ -121,6 +121,63 @@ function collectTyped() {
   console.log("compose pair", out.join(","));
 }
 
+// A null chunk from a web stage is a web value: the next web stage sees it
+// (and so does every chunk after it in the same stage), where a node
+// readable's push(null) would end the adapted stream.
+{
+  const { out, writable } = collect();
+  const nuller = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+    },
+  });
+  const watcher = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk === null ? "null seen" : `other:${chunk}`);
+    },
+  });
+  await pipeline(Readable.from(["a"]), nuller, watcher, writable);
+  console.log("null stage", out.join(","));
+}
+
+{
+  const { out, writable } = collect();
+  const mixed = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+      controller.enqueue("after");
+    },
+  });
+  const watcher = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk === null ? "null seen" : `other:${chunk}`);
+    },
+  });
+  await pipeline(Readable.from(["a"]), mixed, watcher, writable);
+  console.log("null then value", out.join(","));
+}
+
+{
+  const { out, writable } = collect();
+  const nuller = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+    },
+  });
+  const watcher = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk === null ? "null seen" : `other:${chunk}`);
+    },
+  });
+  await pipeline(
+    Readable.from(["a"]),
+    { readable: nuller.readable, writable: nuller.writable },
+    watcher,
+    writable,
+  );
+  console.log("pair null stage", out.join(","));
+}
+
 {
   const single = compose(upper());
   const seen = [];

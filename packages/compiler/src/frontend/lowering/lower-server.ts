@@ -2892,8 +2892,10 @@ function lowerNetServerMethodCall(
         return !!def && def.arms.some((a) => a.kind === "netSocket");
       };
       /* An untyped JavaScript listener (dyn parameters) crosses the
-       * checked-dynamic boundary with the event's (req, socket, head)
-       * payload, like the request handler does. */
+       * checked-dynamic boundary with the event's payload, like the request
+       * handler does: the socket (or the h2 compatibility response, which
+       * the h2 server's CONNECT hands over instead) and the head arrive as
+       * dynamic values, so one listener serves both arms. */
       const { cb } = lowerCallbackArgShared(
         lowerer,
         args[1]!,
@@ -2907,7 +2909,7 @@ function lowerNetServerMethodCall(
               : p.kind === "bytes" && p.elem === "u8",
         "use (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
         {
-          dynTuple: [HTTPREQ_T, NETSOCKET_T, BYTES_U8],
+          dynTuple: [HTTPREQ_T, DYN, DYN],
           rejectValueReturn: true,
         },
       );

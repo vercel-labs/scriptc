@@ -1,5 +1,5 @@
 import { InternalCompilerError } from "../../errors.js";
-import { typeKey } from "../../ir/ir.js";
+import { HTTPRES_T, NETSOCKET_T, typeKey } from "../../ir/ir.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { abiValue, callbackType, finishRuntimeCall, ptr } from "./lib-abi.js";
 import { FN_ATTRS } from "./shapes.js";
@@ -8,12 +8,19 @@ import { registerReplay } from "./emit-journal.js";
 /** CONNECT transfers owned request/socket/response values to the listener. */
 function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): string {
   const type = callbackType(cb),
-    union = type.params[1];
-  if (union?.kind !== "union")
-    throw new InternalCompilerError("CONNECT adapter requires a union slot");
+    second = type.params[1];
+  /* A typed listener takes the union of the two arms; an untyped one
+   * (dynamic slot) receives whichever value the arm carries, boxed as the
+   * handle it is, so its member uses dispatch at runtime. */
+  const secondDyn = second?.kind === "dyn";
+  if (!secondDyn && second?.kind !== "union")
+    throw new InternalCompilerError("CONNECT adapter requires a union or dynamic slot");
   const kind = h2 ? "httpRes" : "netSocket";
-  const tag = host.unionsById.get(union.unionId)?.arms.findIndex((arm) => arm.kind === kind) ?? -1;
-  if (tag < 0) throw new InternalCompilerError(`CONNECT union lacks its ${kind} arm`);
+  let tag = -1;
+  if (!secondDyn) {
+    tag = host.unionsById.get(second.unionId)?.arms.findIndex((arm) => arm.kind === kind) ?? -1;
+    if (tag < 0) throw new InternalCompilerError(`CONNECT union lacks its ${kind} arm`);
+  }
   const key = `connect:${h2}:${typeKey(type)}`;
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
@@ -24,17 +31,53 @@ function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): str
   const release = h2 ? "scr_http_res_release_v" : "scr_net_sock_release_v";
   host.declare(`declare ptr @${retain}(ptr)`);
   host.declare(`declare void @${release}(ptr)`);
-  host.declare("declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)");
-  const third = !h2 && type.params.length === 3;
-  if (!h2 && !third) host.declare("declare void @scr_bytes_release(ptr)");
+  if (!secondDyn) host.declare("declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)");
+  /* The listener's third slot: HTTP/1 hands the head over as a Buffer. A
+   * dynamic slot (an untyped JavaScript listener) takes a boxed Buffer
+   * there, and the h2 arm — which has no head bytes — sends undefined, so
+   * the second argument stays a valid value on both arms. */
+  const third = type.params[2];
+  const thirdDyn = third?.kind === "dyn";
+  const passHead = !h2 && third !== undefined;
+  const boxHead = passHead && thirdDyn;
+  if (boxHead) {
+    host.declare("declare ptr @scr_dyn_new_bytes(ptr)");
+    host.declare("declare void @scr_bytes_release(ptr)");
+  } else if (!h2 && !passHead) {
+    host.declare("declare void @scr_bytes_release(ptr)");
+  }
+  if (h2 && thirdDyn) {
+    host.declare("declare ptr @scr_dyn_undefined()");
+    host.declare("declare ptr @scr_dyn_retain_v(ptr)");
+  }
+  const callHead = passHead || (h2 && thirdDyn);
+  const headArg = passHead && !thirdDyn ? "%head" : "%headv";
   host.resolveThunkDefs.push(
     `define internal void @${symbol}(ptr %cb, ptr %request, ptr %value${h2 ? "" : ", ptr %head"}) ${FN_ATTRS} {`,
     "entry:",
-    ...(!h2 && !third ? ["  call void @scr_bytes_release(ptr %head)"] : []),
-    `  %union = call ptr @scr_union_new_ref(i32 ${tag}, ptr %value, ptr @${retain}, ptr @${release}, ptr null)`,
+    ...(!h2 && !passHead ? ["  call void @scr_bytes_release(ptr %head)"] : []),
+    ...(boxHead
+      ? [
+          "  %headv = call ptr @scr_dyn_new_bytes(ptr %head)",
+          "  call void @scr_bytes_release(ptr %head)",
+        ]
+      : h2 && thirdDyn
+        ? [
+            "  %undef = call ptr @scr_dyn_undefined()",
+            "  %headv = call ptr @scr_dyn_retain_v(ptr %undef)",
+          ]
+        : []),
+    ...(secondDyn
+      ? [
+          `  %slot = call ptr @${host.dyn.toDynHelper(h2 ? HTTPRES_T : NETSOCKET_T)}(ptr %value)`,
+          `  call void @${release}(ptr %value)`,
+        ]
+      : [
+          `  %slot = call ptr @scr_union_new_ref(i32 ${tag}, ptr %value, ptr @${retain}, ptr @${release}, ptr null)`,
+        ]),
     "  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1",
     "  %fn = load ptr, ptr %fnp",
-    `  call void %fn(ptr %cb, ptr %request, ptr %union${third ? ", ptr %head" : ""})`,
+    `  call void %fn(ptr %cb, ptr %request, ptr %slot${callHead ? `, ptr ${headArg}` : ""})`,
     "  ret void",
     "}",
     "",
@@ -57,6 +100,11 @@ export function emitConnectListener(host: LlvmEmitterContext, e: LibCallExpr): L
     h1 = "@" + connectAdapter(host, cb, false);
     if (host.unionsById.get(second.unionId)?.arms.some((arm) => arm.kind === "httpRes"))
       h2 = "@" + connectAdapter(host, cb, true);
+  } else if (second?.kind === "dyn") {
+    /* One dynamic slot serves both arms: the h2 server's CONNECT hands the
+     * compatibility response over instead of a socket. */
+    h1 = "@" + connectAdapter(host, cb, false);
+    h2 = "@" + connectAdapter(host, cb, true);
   } else {
     h1 = `@scr_http_upgrade_thunk${Math.min(arity, 3)}`;
     host.declare(`declare void ${h1}(ptr, ptr, ptr, ptr)`);

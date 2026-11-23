@@ -5093,11 +5093,16 @@ function validateFunction(
           if (e.fn === "http.serverOnConnect" && p1?.kind === "union") {
             const def = unions.get(p1.unionId);
             if (!def || !def.arms.some((a) => a.kind === "netSocket")) ok = false;
-          } else {
+          } else if (!(e.fn === "http.serverOnConnect" && p1?.kind === "dyn")) {
             ok = false;
           }
         }
-        if (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8")) ok = false;
+        if (
+          p2 !== undefined &&
+          !(p2.kind === "bytes" && p2.elem === "u8") &&
+          !(e.fn === "http.serverOnConnect" && p2.kind === "dyn")
+        )
+          ok = false;
       }
       if (!ok) {
         err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);

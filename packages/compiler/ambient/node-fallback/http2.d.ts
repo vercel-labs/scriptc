@@ -129,13 +129,7 @@ declare module "http2" {
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
-    on(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    on(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
     once(event: "connection", listener: (socket: Socket) => void): void;
     once(
       event: "request",
@@ -149,13 +143,7 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     once(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
     addListener(event: "connection", listener: (socket: Socket) => void): void;
     addListener(
       event: "request",
@@ -172,13 +160,7 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    addListener(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    addListener(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
   }
   export interface SecureServerOptions {
     allowHTTP1?: boolean;
@@ -798,6 +780,11 @@ declare module "http2" {
     on(event: "close" | "listening" | "timeout", listener: () => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    /* HTTP CONNECT, as on the secure server above: the compatibility
+     * response on an HTTP/2 stream, the raw socket on an HTTP/1.1
+     * (allowHTTP1) connection. Without this declaration a JavaScript
+     * listener infers the neighboring 'stream' overload's parameters. */
+    on(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
     once(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -811,6 +798,7 @@ declare module "http2" {
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
     addListener(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -827,6 +815,7 @@ declare module "http2" {
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
     ): void;
+    addListener(event: "connect", listener: (req: any, resOrSocket: any, head: any) => void): void;
   }
 
   export interface ServerOptions {

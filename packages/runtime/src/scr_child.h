@@ -146,6 +146,10 @@ ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
  * vector borrowing the strings (alive while cmd/args are); free() the
  * vector only. */
 char **scr_child_argv(ScrStr *cmd, ScrArr *args);
+/* Node's shell form command line: [file, ...args].join(' '), the string a
+ * shell runs with -c. Reports DEP0190 once when the argument list is not
+ * empty. +1. */
+ScrStr *scr_child_shell_command(ScrStr *cmd, ScrArr *args);
 
 /* The asynchronous child: spawn starts it immediately (stdio all on
  * /dev/null — the compiler fences everything but { stdio: "ignore" })
@@ -285,6 +289,16 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* node:cluster's internal protocol messages ({ cmd: "NODE_CLUSTER" })
+ * travel on the same channel as user messages but are delivered to the
+ * cluster unit instead of the program's 'message' listeners. The hooks are
+ * installed once by scr_cluster_init; without them every message is a user
+ * message, so a program that never names cluster keeps this unit's default
+ * path. */
+typedef bool (*ScrClusterIsInternalFn)(const ScrDyn *message);
+typedef void (*ScrClusterDispatchFn)(ScrChild *child, ScrDyn *message);
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch);
 /* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
  * child (whose entry is null), as Node's own stdio array reports. */
 double scr_child_stdio_len(ScrChild *c);
@@ -438,6 +452,21 @@ typedef struct ScrChildStreamOps {
    * unread stream cannot grow without bound. NULL when the stream unit is
    * not linked. */
   bool (*wanted)(ScrStream *);
+  /* Fails the bridged stream with an error no pending write owns: the pipe
+   * failed after a write the writer accepted left bytes queued. The callee
+   * keeps the error's reference. */
+  void (*fail)(ScrStream *, ScrError *);
+  /* Whether the bridged stream has closed (its 'close' was emitted or it was
+   * destroyed): the child's 'close' waits for the stdio streams it holds, as
+   * Node's maybeClose does. */
+  bool (*closed)(ScrStream *);
+  /* Resumes a bridged stream no consumer holds, so a child that exited
+   * still reaches EOF and 'end' (Node's flushStdio). */
+  void (*flush)(ScrStream *);
+  /* Registers `cb` as the stream's first 'close' listener (the callee takes
+   * the closure's reference). The stream unit owns the emitter call, so a
+   * program that only spawns children does not link the events unit. */
+  void (*on_close)(ScrStream *, ScrClosure *);
 } ScrChildStreamOps;
 extern const ScrChildStreamOps scr_stream_child_ops;
 ScrDyn *scr_stream_dyn_view(ScrStream *stream); /* borrowed; +1 live method/property view */

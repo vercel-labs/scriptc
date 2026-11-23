@@ -181,6 +181,36 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", [a[0]!, a[1]!, ptr()]);
     case "tls.wrapSocketCtx":
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", a);
+    case "tls.sockOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_sock_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
+    case "tls.serverOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_server_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
     case "tls.sockOnSession": {
       const cb = args[1]!,
         type = callbackType(cb);

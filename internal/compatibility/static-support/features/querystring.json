@@ -1,0 +1,3 @@
+[
+    { "chapter": "querystring", "symbols": ["querystring.decode", "querystring.encode", "querystring.escape", "querystring.parse", "querystring.stringify", "querystring.unescape"], "status": "supported", "evidence": ["tests/corpus/querystring-codec-matrix.ts", "tests/corpus/querystring-runtime-values.js", "tests/corpus/querystring-stringify-live-records.ts", "tests/corpus/querystring-stringify-live-values.js"] }
+]

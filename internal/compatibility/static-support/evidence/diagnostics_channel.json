@@ -1,0 +1,3 @@
+{
+    "node-builtin.diagnostics_channel": ["tests/corpus/2214-dc-bind-store.cjs"]
+}

@@ -93,6 +93,9 @@ ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const struct ScrD
                                               const struct ScrDyn *context, bool has_context);
 bool scr_tls_server_is_dyn(const struct ScrDyn *v);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* TLSSocket / tls.Server 'keylog': Node's NSS key-log lines as Buffers. */
+void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
  * secureConnect listeners on a client) and again when a renegotiation
  * completes; released unread on a plain socket, kept until the socket

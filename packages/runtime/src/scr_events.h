@@ -76,6 +76,11 @@ void scr_stdin_on_error(ScrClosure *cb, ScrChildErrFn fn, bool once);
 void scr_stdin_on_readable(ScrClosure *cb, bool once);
 void scr_stdin_pause(void);
 void scr_stdin_resume(void);
+/* process.stdin.ref()/unref(): Node's handle refcount. unref() lets the
+ * process exit with a consumer still registered; data still arrives while
+ * other work keeps the loop alive. ref() restores the default. */
+void scr_stdin_ref(void);
+void scr_stdin_unref(void);
 bool scr_stdin_is_paused(void);
 double scr_stdin_readable_length(void);
 /* read([size]): the held input up to `size` bytes (+1), or NULL; Node's

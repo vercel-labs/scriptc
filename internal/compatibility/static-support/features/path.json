@@ -1,0 +1,3 @@
+[
+    { "chapter": "path", "symbols": ["path.basename", "path.dirname", "path.extname", "path.format", "path.matchesGlob", "path.isAbsolute", "path.join", "path.normalize", "path.parse", "path.relative", "path.resolve", "path.toNamespacedPath", "delimiter", "posix", "sep", "win32"], "status": "supported", "evidence": ["tests/corpus/path-posix-edges.ts", "tests/corpus/path-win32-edges.ts", "tests/corpus/path-format-values.js", "tests/corpus/5142-path-parse-format.ts", "tests/corpus/5145-path-matches-glob-basics.ts", "tests/corpus/9205-path-namespace-members.ts", "tests/corpus/path-parse-dynamic-binding/main.ts", "packages/runtime/test/path.test.ts", "packages/runtime/test/glob.test.ts"] }
+]

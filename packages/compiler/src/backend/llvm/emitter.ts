@@ -9312,7 +9312,11 @@ export class LlEmitter {
   }
 
   /** The frozen-array guard (scr_throw_published_array's ops): `index` and
-   * `count` are doubles (the written index, the argument count). */
+   * `count` are doubles (the written index, the argument count). Answers the
+   * i1 "this operation writes nothing" for a guard whose op can be a no-op
+   * on an immutable receiver, else null: the caller returns the receiver
+   * there instead of running the mutating helper, which would rebuild the
+   * storage of an array that stays as it is. */
   emitPublishedArrayGuard(
     arr: string,
     arrType: IrType,
@@ -9320,33 +9324,84 @@ export class LlEmitter {
     index = f64Lit(0),
     count = f64Lit(0),
     third: string | null = null,
-  ): void {
+  ): string | null {
     const published = this.publishedTypes;
-    if (published?.containerGuarded(arrType) !== true) return;
+    if (published?.containerGuarded(arrType) !== true) return null;
     const B = this.B;
+    // The cold block below holds the answer; the join must see it through a
+    // slot that the entry block dominates. Only the ops whose walk can end
+    // with no write at all need it.
+    const answered = op === 7 || op === 8 || op === 9 || op === 11;
+    const noOpSlot = answered ? B.slot() : null;
+    if (noOpSlot !== null) {
+      B.entryAllocas.push(`${noOpSlot} = alloca i1`);
+      B.line(`store i1 false, ptr ${noOpSlot}`);
+    }
     const guards = published.arrayGuards(arrType);
     const ok = guards.frozen
       ? this.emitFrozenArrayTest(arr, guards.published)
       : this.emitPublishedTest(arr);
-    const threw = B.tmp();
+    const code = B.tmp();
     if (third === null) {
-      this.declare(`declare zeroext i1 @scr_throw_published_array(i32, ptr, double, double)`);
+      this.declare(`declare i32 @scr_throw_published_array(i32, ptr, double, double)`);
       B.line(
-        `${threw} = call zeroext i1 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
+        `${code} = call i32 @scr_throw_published_array(i32 ${op}, ptr ${arr}, double ${index}, double ${count})`,
       );
     } else {
       this.declare(
-        `declare zeroext i1 @scr_throw_published_array_range(i32, ptr, double, double, double)`,
+        `declare i32 @scr_throw_published_array_range(i32, ptr, double, double, double)`,
       );
       B.line(
-        `${threw} = call zeroext i1 @scr_throw_published_array_range(i32 ${op}, ptr ${arr}, double ${index}, double ${count}, double ${third})`,
+        `${code} = call i32 @scr_throw_published_array_range(i32 ${op}, ptr ${arr}, double ${index}, double ${count}, double ${third})`,
       );
+    }
+    const threw = B.tmp();
+    B.line(`${threw} = icmp eq i32 ${code}, 1 ; the guard threw`);
+    if (noOpSlot !== null) {
+      const noOp = B.tmp();
+      B.line(`${noOp} = icmp eq i32 ${code}, 2 ; an immutable no-op`);
+      B.line(`store i1 ${noOp}, ptr ${noOpSlot}`);
     }
     const unwind = B.newLabel("pub.throw");
     B.condBr(threw, unwind, ok);
     B.startBlock(unwind);
     this.emitUnwind();
     B.startBlock(ok);
+    if (noOpSlot === null) return null;
+    const answer = B.tmp();
+    B.line(`${answer} = load i1, ptr ${noOpSlot}`);
+    return answer;
+  }
+
+  /** The result of an in-place array call whose guard can answer "writes
+   * nothing": the +1 receiver then, the call's own result otherwise. */
+  emitArrayMutationResult(
+    arr: string,
+    arrType: IrType,
+    noOp: string | null,
+    call: () => string,
+  ): string {
+    const B = this.B;
+    if (noOp === null) return call();
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const lNoOp = B.newLabel("arr.noop");
+    const lRun = B.newLabel("arr.run");
+    const lJoin = B.newLabel("arr.result");
+    B.condBr(noOp, lNoOp, lRun);
+    B.startBlock(lNoOp);
+    const held = B.tmp();
+    B.line(`${held} = call ptr ${retainSym(this.shapeHost, arrType)}(ptr ${arr})`);
+    B.line(`store ptr ${held}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lRun);
+    const made = call();
+    B.line(`store ptr ${made}, ptr ${slot}`);
+    B.br(lJoin);
+    B.startBlock(lJoin);
+    const result = B.tmp();
+    B.line(`${result} = load ptr, ptr ${slot}`);
+    return result;
   }
 
   /** The published Map/Set guard: "Cannot modify a published Map/Set". */

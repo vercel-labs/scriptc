@@ -13,7 +13,11 @@ export const corpusFiles = [
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",
 ];
-const coverageFile = "tests/harness/coverage.test.ts";
+// The coverage report snapshots and fixtures run once per run, in their own job (coverage in
+// .github/workflows/ci.yml), so a stale snapshot fails one job instead of every plain shard. The corpus half of the
+// sweep splits the corpus across the plain shards.
+export const coverageFile = "tests/harness/coverage.test.ts";
+export const coverageCorpusFile = "tests/harness/coverage-corpus.test.ts";
 const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 // Expensive integration suites run in their own vitest process, serially
 // beside the corpus, avoiding worker contention between large compilations.
@@ -51,6 +55,7 @@ export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
   coverageFile,
+  coverageCorpusFile,
   cacheFile,
   ...isolatedFiles.map(([, file]) => file),
   ...caseShardedSideFiles.map(([, file]) => file),
@@ -177,10 +182,15 @@ export function sideOwners(flavor, count, platform = process.platform) {
 // macOS, which keeps the darwin clang/libc/kqueue oracles: the Node
 // differential corpus, plus every file whose assertions run only on darwin or
 // take darwin-specific branches (including the Mach-O library localization arm
-// and the arm64 runtime string oracle). Pushes to main run no macOS jobs. The
-// nightly schedule and manual runs run the full suite on macOS, or the darwin
-// suite with macos_suite set to darwin.
+// and the arm64 runtime string oracle). Pushes to main run only the darwin
+// smoke suite on macOS (below). The nightly schedule and manual runs run the
+// full suite on macOS, or the darwin suite with macos_suite set to darwin.
 export const darwinCorpusFiles = ["tests/harness/differential.test.ts"];
+// The darwin smoke suite: the differential corpus's fs and os programs, whose
+// Node oracle answers as the host platform does (fs-lchmod.cjs failed on macOS
+// while main stayed green). A vitest name pattern over the corpus case names,
+// which are the programs' paths under tests/corpus.
+export const darwinSmokeCases = String.raw`(?:^|[ /])(?:\d+-)?(?:fs|os)[-_.]`;
 export const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
   "packages/cli/test/native-link-info.test.ts",
@@ -245,24 +255,28 @@ export function ciTestPlan({
     throw new Error("invalid CI shard");
   if (flavor !== "plain" && flavor !== "san") throw new Error("invalid CI flavor");
   if (!Number.isInteger(workers) || workers < 1) throw new Error("invalid CI worker budget");
-  if (suite !== "full" && suite !== "darwin") throw new Error("invalid CI suite");
+  if (suite !== "full" && suite !== "darwin" && suite !== "darwin-smoke")
+    throw new Error("invalid CI suite");
   const index = Number(match[1]),
     count = Number(match[2]);
   const sideWorkers = workers === 1 ? 0 : 1;
   const env = { SCRIPTC_TEST_SHARD: shard, SCRIPTC_SAN: flavor === "san" ? "1" : "" };
-  if (suite === "darwin") {
+  if (suite === "darwin" || suite === "darwin-smoke") {
     // vitest runs one file's cases in sequence, so the shard's corpus cases
     // run as two halves in separate processes: case shards 2i-1 and 2i of
-    // 2n. The second half follows the darwin contracts in the side queue.
+    // 2n. The second half follows the darwin contracts in the side queue;
+    // the smoke suite runs only its corpus cases.
+    const smoke = suite === "darwin-smoke";
     const half = (part) => ({
       name: `case-sharded differential corpus ${part}/2`,
-      args: ["test", ...darwinCorpusFiles],
+      args: ["test", ...darwinCorpusFiles, ...(smoke ? ["-t", darwinSmokeCases] : [])],
       env: {
         ...env,
         SCRIPTC_TEST_SHARD: `${2 * index - 2 + part}/${2 * count}`,
         SCRIPTC_TEST_WORKERS: "1",
       },
     });
+    if (smoke) return { sideWorkers, corpus: half(1), side: [half(2)] };
     return {
       sideWorkers,
       corpus: half(1),
@@ -330,8 +344,8 @@ export function ciTestPlan({
       },
     });
     side.push({
-      name: "coverage sweep",
-      args: ["test", coverageFile],
+      name: "coverage corpus sweep",
+      args: ["test", coverageCorpusFile],
       env: { ...env, SCRIPTC_TEST_WORKERS: "1" },
     });
   }

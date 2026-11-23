@@ -379,6 +379,8 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -386,6 +388,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -475,6 +478,8 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
   "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
@@ -482,6 +487,7 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebDuplexDyn",
   "readable.iterator",
   "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -971,6 +977,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",
@@ -1815,6 +1823,25 @@ const RUNTIME_FEATURE_RULES = {
       "cp.spawnArmed",
     ],
   }),
+  /** node:cluster's module surface: scr_cluster.c, a unit of its own so a
+   * program that never names cluster links nothing of it. The unit also
+   * carries the %main cluster.init call and the worker-mode dispatch. */
+  cluster: rule({
+    fns: [
+      "cluster.init",
+      "cluster.isPrimary",
+      "cluster.isWorker",
+      "cluster.schedulingPolicy",
+      "cluster.fork",
+      "cluster.setup",
+      "cluster.disconnect",
+      "cluster.settings",
+      "cluster.workers",
+      "cluster.worker",
+      "cluster.on",
+      "cluster.off",
+    ],
+  }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
    * reads a capture keeps scr_child.c's layout — the memo's thread-local
@@ -2022,10 +2049,13 @@ const RUNTIME_FEATURE_RULES = {
       // sink members through scr_dyn_invoke.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2257,6 +2287,14 @@ const RUNTIME_FEATURE_RULES = {
       (node.fn === "cp.spawnArmed" &&
         node.args[14] !== undefined &&
         !isDynUndefined(node.args[14])) ||
+      // net.Socket's constructor options read options.signal at run time and
+      // attach it through addAbortListener; the lowering's flag says the
+      // emitted call references that helper (a dynamic options value, or a
+      // literal naming a signal). Without the flag the bare form links the
+      // net unit alone.
+      (node.fn === "net.socketNew" &&
+        (node.args[2] === undefined ||
+          (node.args[2].kind === "boolLit" && node.args[2].value === true))) ||
       // dgram's createSocket options form reads options.signal at run time
       // and closes the socket on abort through addAbortListener. Only the
       // options form: the bare type string links the dgram unit alone.
@@ -2400,10 +2438,13 @@ const RUNTIME_FEATURE_RULES = {
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
       "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
       "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
@@ -2996,6 +3037,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childLifecycle: false,
     processFeatures: false,
     childOptionExt: false,
+    cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
     childStreamFlow: false,

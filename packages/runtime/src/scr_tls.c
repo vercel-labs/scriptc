@@ -455,6 +455,10 @@ typedef struct ScrTlsSrv {
   } *contexts;
   size_t ncontexts;
   ScrSecureCtx *default_ctx;
+  /* tls.Server's 'keylog' listeners: Node attaches the SSL_CTX keylog
+   * callback for the server's connections, so every secret line reaches
+   * them whether or not the socket has a listener of its own. */
+  ScrNetLs keylog_ls;
 } ScrTlsSrv;
 
 /* The ALPN answers (static storage — mbedTLS keeps the pointers). Plain
@@ -571,10 +575,19 @@ static void scr_tls_srv_release(ScrTlsSrv *s) {
   }
   free(s->contexts);
   scr_secure_ctx_release(s->default_ctx);
+  scr_net_ls_drop(&s->keylog_ls);
   free(s);
 }
 
 static void scr_tls_srv_release_v(void *p) { scr_tls_srv_release((ScrTlsSrv *)p); }
+
+/* The server settled: its 'keylog' listeners can no longer fire, and one
+ * that captures the server must not keep it alive through the TLS context
+ * (scr_net.c calls this at settlement). */
+static void scr_tls_srv_settle(void *ctx) {
+  ScrTlsSrv *s = (ScrTlsSrv *)ctx;
+  scr_net_ls_drop(&s->keylog_ls);
+}
 
 /* The client-certificate options of a server: requestCert, rejectUnauthorized
  * (Node's true default) and ca (+1, NULL for none). */
@@ -837,13 +850,24 @@ typedef struct ScrTlsSock {
   /* the client 'session' event: listeners + the fired-once latch (Node
    * fires per received ticket; this surface fires once per socket) */
   ScrNetLs session_ls;
+  ScrNetLs keylog_ls; /* TLSSocket.on('keylog') */
   bool session_fired;
+  /* a 'session' listener existed when the handshake completed: Node's TLS
+   * 1.2 ticket rides the handshake, so only a listener that was already
+   * there when it arrived sees the event (a later one is never replayed) */
+  bool session_armed;
   /* what the verify callback saw (the peer chain is gone once the
    * handshake has failed, so the shape is recorded as it verifies) */
   bool vrfy_leaf_self;
   bool vrfy_chain_self;
   bool vrfy_expired;
+  bool vrfy_future;
+  bool vrfy_bad_sig;
+  bool vrfy_pathlen;
   bool vrfy_cn_mismatch;
+  /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
+   * while the peer chain is alive for Node's altname-failure message */
+  char *vrfy_altnames;
   /* a certificate of the chain carried a blocked public key: the failure
    * Node reports as CERT_REVOKED, ahead of every other verification error */
   bool vrfy_blocked;
@@ -1091,6 +1115,152 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * IP literal against the IP SANs, another name with mbedtls_x509_crt_verify
  * on the leaf alone, keeping only its CN_MISMATCH bit. No name to check is
  * a mismatch. */
+/* mbedTLS folds every chain failure into BADCERT_NOT_TRUSTED, while
+ * OpenSSL separates a leaf whose signature does not verify
+ * (CERT_SIGNATURE_FAILURE) from one whose issuer never arrived. When the
+ * leaf names an issuer the trust list holds, verify the leaf's signature
+ * against that issuer's key: a failure is Node's CERT_SIGNATURE_FAILURE. */
+static bool scr_tls_leaf_bad_sig(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  if (t->vrfy_trust == NULL || leaf->MBEDTLS_PRIVATE(sig).len == 0) return false;
+  const mbedtls_md_info_t *md = mbedtls_md_info_from_type(leaf->MBEDTLS_PRIVATE(sig_md));
+  if (md == NULL) return false;
+  for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+    if (ca->subject_raw.len != leaf->issuer_raw.len ||
+        memcmp(ca->subject_raw.p, leaf->issuer_raw.p, leaf->issuer_raw.len) != 0)
+      continue;
+    if (!mbedtls_pk_can_do(&ca->pk, leaf->MBEDTLS_PRIVATE(sig_pk))) return false;
+    unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+    if (mbedtls_md(md, leaf->tbs.p, leaf->tbs.len, hash) != 0) return false;
+    int rc = mbedtls_pk_verify_ext(leaf->MBEDTLS_PRIVATE(sig_pk), leaf->MBEDTLS_PRIVATE(sig_opts),
+                                   &ca->pk, leaf->MBEDTLS_PRIVATE(sig_md), hash,
+                                   mbedtls_md_get_size(md), leaf->MBEDTLS_PRIVATE(sig).p,
+                                   leaf->MBEDTLS_PRIVATE(sig).len);
+    return rc != 0;
+  }
+  return false;
+}
+
+/* Node's ERR_TLS_CERT_ALTNAME_INVALID message carries the leaf's
+ * subjectAltName as OpenSSL renders it ("DNS:a, IP Address:1.2.3.4"). The
+ * peer chain is gone once the handshake has failed, so render it on the
+ * leaf's turn in the verify callback. */
+static void scr_tls_record_altnames(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+  free(t->vrfy_altnames);
+  t->vrfy_altnames = NULL;
+  /* Two passes over the SANs: size the exact rendering, then write it.
+   * Nothing is copied from a fixed-size temporary, so a SAN longer than a
+   * small stack buffer cannot turn a truncated snprintf result into an
+   * out-of-bounds read. Sizing and writing read the same mbedTLS sequence. */
+  size_t total = 0;
+  size_t items = 0;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    size_t prefix;
+    size_t value;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      prefix = sizeof "DNS:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      if (cur->buf.len != 4 && cur->buf.len != 16) continue;
+      prefix = sizeof "IP Address:" - 1;
+      value = 64; /* an IPv6 address in eight uncompressed groups at most */
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      prefix = sizeof "email:" - 1;
+      value = cur->buf.len;
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      prefix = sizeof "URI:" - 1;
+      value = cur->buf.len;
+    } else {
+      continue;
+    }
+    if (value > SIZE_MAX - prefix || prefix + value > SIZE_MAX - total) scr_tls_oom();
+    total += prefix + value;
+    items++;
+  }
+  if (items > 1) {
+    if (items - 1 > SIZE_MAX / 2 || 2 * (items - 1) > SIZE_MAX - total) scr_tls_oom();
+    total += 2 * (items - 1);
+  }
+  if (total == SIZE_MAX) scr_tls_oom();
+  char *out = malloc(total + 1); /* the terminator sits after the content */
+  if (out == NULL) scr_tls_oom();
+  size_t used = 0;
+  bool first = true;
+  for (const mbedtls_x509_sequence *cur = &leaf->subject_alt_names; cur != NULL; cur = cur->next) {
+    if (cur->buf.p == NULL) continue;
+    unsigned char tag = (unsigned char)cur->buf.tag & MBEDTLS_ASN1_TAG_VALUE_MASK;
+    const char *prefix;
+    char ip[64];
+    const unsigned char *payload = cur->buf.p;
+    size_t len = cur->buf.len;
+    if (tag == MBEDTLS_X509_SAN_DNS_NAME) {
+      prefix = "DNS:";
+    } else if (tag == MBEDTLS_X509_SAN_IP_ADDRESS) {
+      prefix = "IP Address:";
+      if (len == 4) {
+        snprintf(ip, sizeof ip, "%u.%u.%u.%u", payload[0], payload[1], payload[2], payload[3]);
+      } else if (len == 16) {
+        /* OpenSSL prints an iPAddress SAN as eight uncompressed groups */
+        const unsigned char *b = payload;
+        snprintf(ip, sizeof ip, "%x:%x:%x:%x:%x:%x:%x:%x", (b[0] << 8) | b[1],
+                 (b[2] << 8) | b[3], (b[4] << 8) | b[5], (b[6] << 8) | b[7],
+                 (b[8] << 8) | b[9], (b[10] << 8) | b[11], (b[12] << 8) | b[13],
+                 (b[14] << 8) | b[15]);
+      } else {
+        continue;
+      }
+      payload = (const unsigned char *)ip;
+      len = strlen(ip);
+    } else if (tag == MBEDTLS_X509_SAN_RFC822_NAME) {
+      prefix = "email:";
+    } else if (tag == MBEDTLS_X509_SAN_UNIFORM_RESOURCE_IDENTIFIER) {
+      prefix = "URI:";
+    } else {
+      continue;
+    }
+    if (!first) {
+      out[used++] = ',';
+      out[used++] = ' ';
+    }
+    size_t prefix_len = strlen(prefix);
+    memcpy(out + used, prefix, prefix_len);
+    used += prefix_len;
+    memcpy(out + used, payload, len);
+    used += len;
+    first = false;
+  }
+  out[used] = '\0';
+  t->vrfy_altnames = out;
+}
+
+/* OpenSSL's path length check: a CA certificate's basicConstraints
+ * pathlen caps the number of non-self-issued CA certificates below it.
+ * mbedTLS refuses the over-long parent as a candidate and reports the
+ * chain as untrusted, and its callback runs top-down, so the constraint is
+ * checked per certificate against the depth mbedTLS reports (stored
+ * pathlen is one higher than the limit; the trust anchor sits one level
+ * above the topmost presented certificate). */
+static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int depth) {
+  const mbedtls_x509_crt *anchor = NULL;
+  if (crt->next == NULL && t->vrfy_trust != NULL && crt->issuer_raw.len > 0) {
+    for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+      if (ca->subject_raw.len == crt->issuer_raw.len &&
+          memcmp(ca->subject_raw.p, crt->issuer_raw.p, crt->issuer_raw.len) == 0) {
+        anchor = ca;
+        break;
+      }
+    }
+  }
+  if (crt->MBEDTLS_PRIVATE(ca_istrue) && crt->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth > crt->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  if (anchor != NULL && anchor->MBEDTLS_PRIVATE(max_pathlen) > 0 &&
+      depth + 1 > anchor->MBEDTLS_PRIVATE(max_pathlen))
+    return true;
+  return false;
+}
+
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   if (t->vrfy_walk_done) {
@@ -1166,10 +1336,18 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   bool self = crt->issuer_raw.len == crt->subject_raw.len &&
               memcmp(crt->issuer_raw.p, crt->subject_raw.p, crt->subject_raw.len) == 0;
   if (*flags & MBEDTLS_X509_BADCERT_EXPIRED) t->vrfy_expired = true;
-  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) t->vrfy_cn_mismatch = true;
+  if (*flags & MBEDTLS_X509_BADCERT_FUTURE) t->vrfy_future = true;
+  if (*flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) {
+    t->vrfy_cn_mismatch = true;
+    scr_tls_record_altnames(t, crt);
+  }
   if (*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
+    if (depth == 0 && !self && scr_tls_leaf_bad_sig(t, crt)) t->vrfy_bad_sig = true;
+    if ((*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) != 0 && !self &&
+      scr_tls_pathlen_exceeded(t, crt, depth))
+    t->vrfy_pathlen = true;
   }
   if (depth == 0) {
     /* the leaf closes the walk: the chain it borrowed is freed when the
@@ -1398,6 +1576,18 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
     snprintf(out, n, "certificate has expired");
     return;
   }
+  if (t->vrfy_future) {
+    snprintf(out, n, "certificate is not yet valid");
+    return;
+  }
+  if (t->vrfy_bad_sig) {
+    snprintf(out, n, "certificate signature failure");
+    return;
+  }
+  if (t->vrfy_pathlen) {
+    snprintf(out, n, "path length constraint exceeded");
+    return;
+  }
   /* Node appends the --use-system-ca hint for exactly these two codes
    * (src/crypto/crypto_common.cc: DEPTH_ZERO_SELF_SIGNED_CERT and
    * UNABLE_TO_VERIFY_LEAF_SIGNATURE) — and NOT for the in-chain one. */
@@ -1415,7 +1605,37 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
    * (checkServerIdentity runs after verification succeeds) */
   if (t->vrfy_cn_mismatch &&
       (mbedtls_ssl_get_verify_result(&t->ssl) & MBEDTLS_X509_BADCERT_NOT_TRUSTED) == 0) {
-    snprintf(out, n, "Hostname/IP does not match certificate's altnames");
+    const char *name = t->cli != NULL ? t->cli->verify_name : NULL;
+    const char *names = t->vrfy_altnames != NULL ? t->vrfy_altnames : "";
+    if (name != NULL && scr_tls_is_ip(name)) {
+      /* Node lists only the certificate's IP entries for an IP request */
+      char ips[1024];
+      size_t used = 0;
+      const char *at = names;
+      while (*at != '\0') {
+        const char *comma = strstr(at, ", ");
+        size_t len = comma != NULL ? (size_t)(comma - at) : strlen(at);
+        if (len >= 11 && memcmp(at, "IP Address:", 11) == 0) {
+          if (used != 0 && used + 2 < sizeof ips) {
+            memcpy(ips + used, ", ", 2);
+            used += 2;
+          }
+          if (used + len < sizeof ips) {
+            memcpy(ips + used, at, len);
+            used += len;
+          }
+        }
+        if (comma == NULL) break;
+        at = comma + 2;
+      }
+      ips[used] = '\0';
+      snprintf(out, n, "Hostname/IP does not match certificate's altnames: IP: %s is not in the cert's list: %s",
+               name, ips);
+    } else {
+      snprintf(out, n,
+               "Hostname/IP does not match certificate's altnames: Host: %s. is not in the cert's altnames: %s",
+               name != NULL ? name : "", names);
+    }
     return;
   }
   snprintf(out, n, "unable to verify the first certificate%s", hint);
@@ -1908,9 +2128,24 @@ static int scr_tls_handshake(void *tctx) {
     else t->hang_up_pending = true;
     return -1;
   }
-  char msg[160];
+  char msg[512];
+  const char *err = msg;
+  char *heap_msg = NULL;
   if (r == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
-    scr_tls_verify_msg(t, msg, sizeof msg);
+    /* the altname rendering can be longer than the fixed buffer: size the
+     * message to it rather than truncating a certificate's SAN list */
+    size_t cap = sizeof msg;
+    if (t->vrfy_altnames != NULL) {
+      size_t alt = strlen(t->vrfy_altnames);
+      if (alt > SIZE_MAX - sizeof msg) scr_tls_oom();
+      cap = alt + sizeof msg;
+    }
+    if (cap > sizeof msg) {
+      heap_msg = malloc(cap);
+      if (heap_msg == NULL) scr_tls_oom();
+      err = heap_msg;
+    }
+    scr_tls_verify_msg(t, heap_msg != NULL ? heap_msg : msg, cap);
   } else if (r == MBEDTLS_ERR_SSL_CONN_EOF) {
     /* The peer closed the connection mid-handshake: Node's socket ends,
      * then fails with ECONNRESET, for tls.connect and https.request
@@ -1946,7 +2181,8 @@ static int scr_tls_handshake(void *tctx) {
      * string (SEMANTICS.md divergence 55) */
     snprintf(msg, sizeof msg, "client TLS handshake failed");
   }
-  scr_net_sock_transport_error(t->sock, msg);
+  scr_net_sock_transport_error(t->sock, err);
+  free(heap_msg);
   return -1;
 }
 
@@ -1957,6 +2193,9 @@ static void scr_tls_on_established(void *tctx) {
     const char *ver = mbedtls_ssl_get_version(&t->ssl);
     t->is_tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
   }
+  /* sampled before secureConnect's listeners run: the 1.2 session belongs
+   * to the listeners the handshake found */
+  t->session_armed = t->cli != NULL && t->session_ls.n > 0;
   /* the walk already released its borrowed top pointer when the leaf's
    * turn closed it; this clear covers a walk that never reached the leaf
    * (the chain the callback borrowed is freed with the session) */
@@ -1969,7 +2208,6 @@ static void scr_tls_on_established(void *tctx) {
     scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
     if (scr_exc_pending()) return;
   }
-  if (t->cli != NULL) scr_tls_fire_session(t); /* the 1.2 arm; 1.3 fires on ticket receipt */
   if (t->srv != NULL && t->srv->h2_conn != NULL) {
     /* the h2 secure server: dispatch on the NEGOTIATED protocol — the
      * h2 session attaches as the socket's native reader (it reads
@@ -2017,6 +2255,7 @@ static void scr_tls_free(void *tctx) {
   if (t->srv) scr_tls_srv_release(t->srv);
   if (t->cli) scr_tls_cli_free(t->cli);
   scr_net_ls_drop(&t->session_ls);
+  scr_net_ls_drop(&t->keylog_ls);
   scr_net_ls_drop(&t->secure_ls);
   free(t->hello);
   scr_secure_ctx_release(t->sni_ctx);
@@ -2024,6 +2263,7 @@ static void scr_tls_free(void *tctx) {
   mbedtls_x509_crt_free(&t->served_chain);
   if (t->server) scr_net_server_release(t->server);
   free(t->held);
+  free(t->vrfy_altnames);
   free(t);
 }
 
@@ -2039,8 +2279,19 @@ static void scr_tls_drain(void *tctx) {
  * the settle drops them. */
 static void scr_tls_after_established(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* The 1.2 session arrives after secureConnect and before 'secure', as
+   * Node emits it. A 1.3 ticket comes after the handshake, so a listener
+   * added during secureConnect still sees that session. */
+  if (t->cli != NULL && !scr_exc_pending()) {
+    const char *ver = mbedtls_ssl_get_version(&t->ssl);
+    bool tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
+    if (tls13 ? t->session_ls.n > 0 : t->session_armed) scr_tls_fire_session(t);
+  }
+  if (scr_exc_pending()) return;
   /* a client's 'secure' follows its secureConnect listeners; a server's
-   * already fired in on_established, before 'secureConnection' */
+   * already fired in on_established, before 'secureConnection'. The
+   * listeners stay registered: a completed renegotiation fires 'secure'
+   * again, and the settle drops them. */
   if (t->srv == NULL) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
   if (t->renego_requested && !scr_exc_pending()) {
     /* renegotiate() called while the first handshake ran: Node queues it
@@ -2065,6 +2316,7 @@ static void scr_tls_settle(void *tctx) {
   t->settled = true;
   scr_net_ls_drop(&t->secure_ls);
   scr_net_ls_drop(&t->session_ls);
+  scr_net_ls_drop(&t->keylog_ls);
   if (t->hang_up_pending) {
     t->hang_up_pending = false;
     scr_tls_client_error(t, "socket hang up", "ECONNRESET");
@@ -2086,6 +2338,14 @@ static const ScrNetTransportOps SCR_TLS_OPS = {
 
 /* ── the server surface ──────────────────────────────────────────────── */
 
+/* The 'keylog' export callback (defined with the event surface below): the
+ * engine exports each handshake secret through it. */
+static void scr_tls_keylog_cb(void *ctx, mbedtls_ssl_key_export_type type,
+                              const unsigned char *secret, size_t secret_len,
+                              const unsigned char client_random[32],
+                              const unsigned char server_random[32],
+                              mbedtls_tls_prf_types tls_prf_type);
+
 /* The server's native-connection hook: one TLS engine per accepted
  * socket; the deferred 'connection' fires from the net pump once the
  * handshake stands. */
@@ -2095,6 +2355,7 @@ static void scr_tls_srv_on_conn(void *ctx, ScrNetSocket *sock) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &srv->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   if (srv->request_cert) {
     mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
     t->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
@@ -2148,6 +2409,7 @@ static ScrNetServer *scr_tls_create_server_alpn(const char *cert, size_t cert_le
    * accept. */
   ScrNetServer *s = scr_net_create_server(NULL, NULL);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   if (handler != NULL) scr_net_server_on_secure_connection(s, handler, fn, false);
   return s;
@@ -2182,6 +2444,7 @@ static ScrNetServer *scr_https_create_server_auth(const char *cert, size_t cert_
   /* wrap the parser hook: TLS first, parser at establishment */
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   return s;
 }
@@ -2208,6 +2471,7 @@ ScrNetServer *scr_https_create_server_sni(const char *cert, size_t cert_len, con
   }
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s);
   return s;
 }
@@ -2220,6 +2484,7 @@ static void scr_tls_cli_wrap(ScrNetSocket *sock, void *ctx) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   /* NULL sends no SNI and skips mbedTLS's name check; the verify callback
    * checks cli->verify_name instead */
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
@@ -2317,6 +2582,7 @@ static ScrTlsSock *scr_tls_cli_sock(ScrNetSocket *sock, ScrTlsCli *cli) {
   if (!t) scr_tls_oom();
   mbedtls_ssl_init(&t->ssl);
   if (mbedtls_ssl_setup(&t->ssl, &cli->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&t->ssl, &scr_tls_keylog_cb, t);
   (void)mbedtls_ssl_set_hostname(&t->ssl, cli->hostname);
   mbedtls_ssl_set_verify(&t->ssl, &scr_tls_vrfy_cb, t);
   if (cli->verify_recorded)
@@ -3595,12 +3861,19 @@ static int scr_tls_f_cert(mbedtls_ssl_context *ssl) {
 }
 
 /* The TLS config of a tls or https server, or NULL with the fence thrown. */
-static ScrTlsSrv *scr_tls_srv_of_server(ScrNetServer *server, const char *what) {
+/* The TLS server behind a server handle, or NULL without throwing (a plain
+ * server registration stays inert, as Node's EventEmitter keeps it). */
+static ScrTlsSrv *scr_tls_srv_of_server_or_null(ScrNetServer *server) {
   ScrNetNativeConnFn fn = NULL;
   void *ctx = NULL;
   void (*ctx_free)(void *) = NULL;
   scr_net_server_get_native_conn(server, &fn, &ctx, &ctx_free);
-  if (fn == &scr_tls_srv_on_conn && ctx != NULL) return (ScrTlsSrv *)ctx;
+  return fn == &scr_tls_srv_on_conn && ctx != NULL ? (ScrTlsSrv *)ctx : NULL;
+}
+
+static ScrTlsSrv *scr_tls_srv_of_server(ScrNetServer *server, const char *what) {
+  ScrTlsSrv *found = scr_tls_srv_of_server_or_null(server);
+  if (found != NULL) return found;
   char msg[160];
   int n = snprintf(msg, sizeof msg, "%s on a server that is not a tls or https server is not supported yet", what);
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)(n < (int)sizeof msg ? n : (int)sizeof msg - 1), "SC2020");
@@ -3791,6 +4064,7 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   if (!ts) scr_tls_oom();
   mbedtls_ssl_init(&ts->ssl);
   if (mbedtls_ssl_setup(&ts->ssl, &srv->conf) != 0) scr_tls_oom();
+  mbedtls_ssl_set_export_keys_cb(&ts->ssl, &scr_tls_keylog_cb, ts);
   if (srv->request_cert) {
     mbedtls_ssl_set_verify(&ts->ssl, &scr_tls_vrfy_cb, ts);
     ts->vrfy_trust = srv->has_ca ? &srv->ca : scr_tls_system_ca();
@@ -4251,6 +4525,7 @@ void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len,
     mbedtls_ssl_conf_sni(&srv->conf, &scr_tls_f_sni, NULL);
   }
   scr_net_server_set_native_conn(s, &scr_tls_srv_on_conn, srv, &scr_tls_srv_release_v);
+  scr_net_server_set_native_settle(s, &scr_tls_srv_settle);
   scr_net_server_defer_connections(s); /* 'connection'/'secureConnection' wait for the handshake */
 }
 
@@ -4752,6 +5027,9 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   uint32_t vr = mbedtls_ssl_get_verify_result(&t->ssl);
   if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_expired) return "CERT_HAS_EXPIRED";
+  if (t->vrfy_future) return "CERT_NOT_YET_VALID";
+  if (t->vrfy_bad_sig) return "CERT_SIGNATURE_FAILURE";
+  if (t->vrfy_pathlen) return "PATH_LENGTH_EXCEEDED";
   if (t->vrfy_leaf_self) return "DEPTH_ZERO_SELF_SIGNED_CERT";
   if (t->vrfy_chain_self) return "SELF_SIGNED_CERT_IN_CHAIN";
   if (vr & MBEDTLS_X509_BADCERT_NOT_TRUSTED) return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
@@ -4780,10 +5058,11 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
 
 
 /* The client 'session' event: fires ONCE per socket with the serialized
- * mbedTLS session — a real ticket where one arrived (the 1.3 receipt
- * path), the established session otherwise (1.2). Node fires per
- * received ticket; the once-latch satisfies the suite's once-listener
- * shapes, and resumption itself stays out (divergence 55). */
+ * mbedTLS session — the established session for TLS 1.2 (its ticket rides
+ * the handshake), the ticket receipt for TLS 1.3. Node delivers the event
+ * once per received ticket and replays nothing to later listeners; this
+ * surface's server issues one session, and resumption stays out
+ * (SEMANTICS.md divergence 55). */
 /* The current session as a Buffer (+1), NULL when the handshake has no
  * resumable session yet (a TLS 1.3 client before its ticket). */
 static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
@@ -4805,6 +5084,105 @@ static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
     return NULL;
   }
   return buf;
+}
+
+/* ── the 'keylog' event: Node's NSS key-log lines ──────────────────────
+ * mbedTLS hands the exported secrets to scr_tls_keylog_cb — the master
+ * secret for TLS 1.2 and the TLS 1.3 handshake/application traffic secrets
+ * — and each line is emitted as Node's is: a Buffer holding
+ * "<LABEL> <client_random hex> <secret hex>\n", to the socket's listeners
+ * and to the server's. mbedTLS exports no TLS 1.3 exporter secret, so a
+ * TLS 1.3 handshake emits no EXPORTER_SECRET line (see the ledger row). */
+
+static void scr_tls_keylog_fire(ScrTlsSock *t, ScrBytes *line) {
+  if (t->keylog_ls.n > 0) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&t->keylog_ls, &snap);
+    scr_dyn_this_push(t->sock, SCR_DYNH_NET_SOCKET);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, line);
+      scr_closure_release(snap[i].cb);
+    }
+    scr_dyn_this_pop();
+    free(snap);
+  }
+  if (t->srv != NULL && t->srv->keylog_ls.n > 0 && !scr_exc_pending()) {
+    ScrNetL *snap;
+    size_t n = scr_net_ls_snapshot(&t->srv->keylog_ls, &snap);
+    /* the server-level listener runs with `this` = the server, as Node's
+     * EventEmitter calls it */
+    if (t->server != NULL) scr_dyn_this_push(t->server, SCR_DYNH_NET_SERVER);
+    for (size_t i = 0; i < n; i++) {
+      if (!scr_exc_pending()) ((ScrNetDataFn)snap[i].fn)(snap[i].cb, line);
+      scr_closure_release(snap[i].cb);
+    }
+    if (t->server != NULL) scr_dyn_this_pop();
+    free(snap);
+  }
+}
+
+static void scr_tls_keylog_line(ScrTlsSock *t, const char *label, const unsigned char *secret,
+                                size_t secret_len, const unsigned char client_random[32]) {
+  static const char hex[] = "0123456789abcdef";
+  size_t label_len = strlen(label);
+  size_t len = label_len + 1 + 64 + 1 + secret_len * 2 + 1;
+  ScrBytes *line = scr_bytes_new(SCR_BYTES_U8, (double)len);
+  line->is_buffer = true; /* the event carries a Buffer */
+  char *p = (char *)line->data;
+  memcpy(p, label, label_len);
+  p += label_len;
+  *p++ = ' ';
+  for (size_t i = 0; i < 32; i++) {
+    *p++ = hex[client_random[i] >> 4];
+    *p++ = hex[client_random[i] & 0x0f];
+  }
+  *p++ = ' ';
+  for (size_t i = 0; i < secret_len; i++) {
+    *p++ = hex[secret[i] >> 4];
+    *p++ = hex[secret[i] & 0x0f];
+  }
+  *p = '\n';
+  scr_tls_keylog_fire(t, line);
+  scr_bytes_release(line);
+}
+
+static void scr_tls_keylog_cb(void *ctx, mbedtls_ssl_key_export_type type,
+                              const unsigned char *secret, size_t secret_len,
+                              const unsigned char client_random[32],
+                              const unsigned char server_random[32],
+                              mbedtls_tls_prf_types tls_prf_type) {
+  (void)server_random;
+  (void)tls_prf_type;
+  ScrTlsSock *t = ctx;
+  const char *label = NULL;
+  switch (type) {
+    case MBEDTLS_SSL_KEY_EXPORT_TLS12_MASTER_SECRET:
+      label = "CLIENT_RANDOM";
+      break;
+#if defined(MBEDTLS_SSL_PROTO_TLS1_3)
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_EARLY_SECRET:
+      label = "CLIENT_EARLY_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_EARLY_EXPORTER_SECRET:
+      label = "EARLY_EXPORTER_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_HANDSHAKE_TRAFFIC_SECRET:
+      label = "CLIENT_HANDSHAKE_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_HANDSHAKE_TRAFFIC_SECRET:
+      label = "SERVER_HANDSHAKE_TRAFFIC_SECRET";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_CLIENT_APPLICATION_TRAFFIC_SECRET:
+      label = "CLIENT_TRAFFIC_SECRET_0";
+      break;
+    case MBEDTLS_SSL_KEY_EXPORT_TLS1_3_SERVER_APPLICATION_TRAFFIC_SECRET:
+      label = "SERVER_TRAFFIC_SECRET_0";
+      break;
+#endif
+    default:
+      return;
+  }
+  scr_tls_keylog_line(t, label, secret, secret_len, client_random);
 }
 
 static void scr_tls_fire_session(ScrTlsSock *t) {
@@ -5240,6 +5618,26 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
   scr_net_ls_add(&t->secure_ls, cb, NULL, once);
 }
 
+void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) {
+    scr_closure_release(cb); /* a plain socket never fires it, like Node */
+    return;
+  }
+  scr_net_ls_add(&t->keylog_ls, cb, fn, once);
+}
+
+void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  ScrTlsSrv *s = scr_tls_srv_of_server_or_null(server);
+  if (s == NULL) {
+    /* Node's EventEmitter keeps a listener for any event name: a plain net
+     * or HTTP server's 'keylog' listener is registered and never fires */
+    scr_net_server_on_inert(server, cb, fn, once);
+    return;
+  }
+  scr_net_ls_add(&s->keylog_ls, cb, fn, once);
+}
+
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL) {
@@ -5251,7 +5649,6 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
     return;
   }
   scr_net_ls_add(&t->session_ls, cb, fn, once);
-  if (t->established) scr_tls_fire_session(t); /* the ticket already arrived */
 }
 
 /* ── TLSSocket.renegotiate(options[, callback]) ──────────────────────── */
@@ -5427,12 +5824,14 @@ static bool scr_tls_dynh_on(ScrNetSocket *s, const char *event, const ScrDyn *cb
     scr_tls_sock_on_secure(s, scr_dyn_listener_closure0(cb), once);
     return true;
   }
+  if (strcmp(event, "keylog") == 0) {
+    scr_net_ls_add(&t->keylog_ls, scr_dyn_listener_closure_data(cb),
+                   (void *)&scr_dyn_listener_fire_data, once);
+    return true;
+  }
   if (strcmp(event, "session") == 0) {
     scr_net_ls_add(&t->session_ls, scr_dyn_listener_closure_data(cb),
                    (void *)&scr_dyn_listener_fire_data, once);
-    /* a late registration on an established socket fires directly (the
-     * ticket already arrived — nothing further would trigger it) */
-    if (t->established) scr_tls_fire_session(t);
     return true;
   }
   return false;
@@ -5440,8 +5839,6 @@ static bool scr_tls_dynh_on(ScrNetSocket *s, const char *event, const ScrDyn *cb
 
 static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *const *args,
                                  size_t argc, ScrDyn **out) {
-  (void)args;
-  (void)argc;
   if (scr_tls_sock_of(s) == NULL) return false;
   if (strcmp(method, "getProtocol") == 0) {
     *out = scr_tls_sock_get_protocol(s);
@@ -5449,6 +5846,26 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
   }
   if (strcmp(method, "getCipher") == 0) {
     *out = scr_tls_sock_get_cipher(s);
+    return true;
+  }
+  if (strcmp(method, "setServername") == 0) {
+    ScrTlsSock *t = scr_tls_sock_of(s);
+    if (argc < 1 || args[0]->kind != SCR_DYN_STR) {
+      scr_dyn_arg_type_fail("name", "of type string", argc < 1 ? scr_dyn_undefined() : args[0]);
+      *out = NULL;
+      return true;
+    }
+    if (t->srv != NULL) {
+      static const char msg[] = "Cannot issue SNI from a TLS server-side socket";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_SNI_FROM_SERVER");
+      *out = NULL;
+      return true;
+    }
+    /* a client's SNI is fixed when the socket starts its handshake */
+    static const char msg[] =
+        "changing the SNI of a started client socket has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    *out = NULL;
     return true;
   }
   if (strcmp(method, "renegotiate") == 0) {
@@ -5462,7 +5879,7 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
     "exportKeyingMaterial", "isSessionReused", "setMaxSendFragment",
-    "enableTrace", "disableRenegotiation", "setServername", "setSession", NULL,
+    "enableTrace", "disableRenegotiation", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {
     if (strcmp(method, tls_methods[i]) == 0) {

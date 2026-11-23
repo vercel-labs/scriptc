@@ -17,7 +17,7 @@ CI (`.github/workflows/release.yml`) compares the version in `packages/cli/packa
 
 The release job builds each pinned LLVM helper, precompiled runtime pack, and native CLI on its matching host, through `.github/workflows/release-build.yml`. The release dry run (`.github/workflows/release-dry-run.yml`) calls the same workflow nightly on main and on pull requests that bump `packages/cli/package.json` or change how the release builds; it restores the libnode packs, assembles and packs every package as the publish job does, and packages the standalone compilers, but uploads nothing. A green dry run on the release commit means the release run's builds will pass; run it by hand (Actions → Release dry run) on a release-prep branch before merging it. Each LLVM helper package also carries the comptime evaluator, `bin/scriptc-comptime`, built with the helper. The native CLI package bundles its TypeScript checker and declarations, and depends on its platform's LLVM helper and runtime pack packages at the same version; the compiler resolves them beside itself. The standalone archives bundle the helper and runtime pack too. npm postinstall installs the matching native executable; Node is needed for npm installation but not native compilation or execution. The user's toolchain performs the final platform link. Sanitized builds also use it to instrument program LLVM and compile the C runtime. Platform packages publish ahead of `@scriptc/compiler` and `scriptc`. The GitHub release attaches standalone compiler archives, their SHA-256 checksums, and the surface manifest after npm publication succeeds.
 
-Release builds of the native CLI optimize the compiler with a profile collected on the release commit. The `cli-profile` job runs `node scripts/refresh-cli-profile.mjs` on Linux x64, which builds an instrumented compiler, runs it on tsc-ts, a slice of the corpus, and the runtime benchmark workloads, and writes the merged profile. The profile keeps the functions that training never ran, with zero counts, so the CLI builds optimize them as cold code and place them after the code that ran. Every platform's CLI build uses that profile (`SCRIPTC_NATIVE_PROFILE_USE`), and the GitHub release attaches it as `scriptc-<version>-cli.profdata.gz`. Code the profile does not describe, or describes from older compiler sources, is optimized as without a profile. When the profile job fails, the CLI builds use the committed profile `packages/compiler/native/cli.profdata.gz`, which local and CI builds of the native compiler also use. The nightly `profile-refresh` workflow (`profile-refresh.yml`) refreshes the committed profile from main: it collects one with the committed layout, builds the native compiler with it to report the match, and opens a pull request that replaces `packages/compiler/native/cli.profdata.gz`. To refresh it by hand, run `node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout>` on a quiet Linux x64 host and commit the new profile on its own. CI's `native_profile` job builds the native compiler with the committed layout and profile and reports the share of the profiled functions that match, with a warning below 95%; a stale profile does not fail it. It fails when the profile cannot be judged: missing, unreadable, or describing a build laid out differently from the one that collected it.
+Release builds of the native CLI optimize the compiler with a profile collected on the release commit. The `cli-profile` job runs `node scripts/refresh-cli-profile.mjs` on Linux x64, which builds an instrumented compiler, runs it on tsc-ts, a slice of the corpus, and the runtime benchmark workloads, and writes the merged profile. The profile keeps the functions that training never ran, with zero counts, so the CLI builds optimize them as cold code and place them after the code that ran. Every platform's CLI build uses that profile (`SCRIPTC_NATIVE_PROFILE_USE`), and the GitHub release attaches it as `scriptc-<version>-cli.profdata.gz`. Only the CLI builds wait for the profile: each platform's LLVM helper and runtime pack build while it is collected (release-build.yml's `packs` jobs, platforms listed in `.github/release-platforms.json`), and its CLI job starts from them once the profile is ready. Code the profile does not describe, or describes from older compiler sources, is optimized as without a profile. When the profile job fails, the CLI builds use the committed profile `packages/compiler/native/cli.profdata.gz`, which local and CI builds of the native compiler also use. The nightly `profile-refresh` workflow (`profile-refresh.yml`) refreshes the committed profile from main: it collects one with the committed layout, builds the native compiler with it to report the match, and opens a pull request that replaces `packages/compiler/native/cli.profdata.gz`. To refresh it by hand, run `node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout>` on a quiet Linux x64 host and commit the new profile on its own. CI's `native_profile` job builds the native compiler with the committed layout and profile and reports the share of the profiled functions that match, with a warning below 95%; a stale profile does not fail it. It fails when the profile cannot be judged: missing, unreadable, or describing a build laid out differently from the one that collected it.
 
 Builds of the native compiler also order its functions by the committed layout `packages/compiler/native/cli.layout.gz`: the functions that `--version` and rebuilds of unchanged programs run come first, then the ones other builds run, ordered by the share of the layout's training builds that run each, so a run maps fewer pages of the executable. Functions the layout does not list keep their usual order. Function names of closures and generated helpers change with nearby edits, so the `cli-profile` job also collects a layout on the release commit (`scripts/refresh-cli-layout.mjs`), and the CLI builds use it (`SCRIPTC_NATIVE_LAYOUT`). Instrumented builds use the same layout as optimized builds, because a function laid out in a different partition than in the instrumented build no longer matches its profile record. The job therefore collects the layout first and then builds the instrumented compiler for the profile with that layout. Refresh the committed layout the same way, with `node scripts/refresh-cli-layout.mjs`, before the profile, and commit each on its own.
 
@@ -29,9 +29,34 @@ A release run fails early, with the reason in its log, when it cannot publish: `
 
 Publishing uses npm trusted publishing (OIDC) — there is no npm token secret.
 Each published package must have a GitHub Actions trusted publisher for
-`release.yml` and the `Release` environment. A missing configuration fails
-before upload. Re-runs skip package versions already present on npm, so a
-partially published release can be resumed safely.
+`release.yml` and the `Release` environment, with **Allow npm dist-tag**
+turned on (the promote job moves `latest` over OIDC, which npm allows from
+npm 11.21.0). A missing configuration fails before upload.
+
+Every package publishes under the `next` dist-tag. Once all of them resolve,
+the `registry-smoke` jobs install `scriptc@<version>` from npm into a clean
+directory on Linux x64 and arm64, macOS arm64 and x64, and Windows x64 (with
+Zig installed, which scriptc links Windows executables with), check
+that the host's CLI, runtime pack and LLVM helper packages are all at the
+release's version, and build and run a hello-world program
+(`scripts/release-registry-smoke.mjs`). Only when every platform passes does
+the `promote` job point `latest` at the release (`scriptc` last; it never
+moves `latest` back to an older release, so a retried promotion of a
+superseded release changes nothing; promotions of different runs take turns
+in one concurrency group), and only
+then does the GitHub release, which marks the version complete, get created.
+A release that fails before `latest` moves leaves users on the previous
+release.
+
+A release never reuses a version. Before building, `release-preflight.mjs
+--npm` stops the run, naming the next patch, when npm already has any package
+of the version: a run that published part of a version and then failed is
+followed by a release of the next patch, never by a second run of the same
+version (0.4.15 shipped CLIs beside runtime packs an earlier, failed attempt
+had published, #4011). Re-running the failed jobs of the run itself still
+finishes it, from that run's receipts, and the publish job accepts a version
+npm already has only when npm holds the same payload
+(`scripts/verify-npm-published.mjs`).
 
 ## libnode packs
 

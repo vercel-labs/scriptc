@@ -26,6 +26,7 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
 import type { IrLibFn } from "./builtin-signatures.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
+import { classCaseBranches, isClassCaseDispatch } from "./class-case.js";
 
 export type JsIcSite =
   | { kind: "get"; key: string }
@@ -71,10 +72,11 @@ const CAPSULE_TESTS = new Set<IrLibFn>([
  * test, so a reader treats the switch's cases as the capsule branches they
  * were lowered from (frontend/lowering/class-dynamic-dispatch.ts). */
 function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
-  if (!body.some(isClassDispatch)) return body;
+  if (!body.some((stmt) => isClassDispatch(stmt) || isClassCaseDispatch(stmt))) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassDispatch(stmt)) {
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassDispatch(stmt)) {
       // A case of branches that can complete ends with a `break`.
       for (const { body: caseBody } of stmt.cases)
         for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);

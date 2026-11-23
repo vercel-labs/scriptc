@@ -202,6 +202,10 @@ typedef struct ScrArrClass {
    * and flatMap, and Array.of / Array.from called on the class. NULL when
    * the class's constructor cannot take that argument. */
   ScrArr *(*species)(double length, bool with_length);
+  /* The names of the methods and accessors the class declares (immortal
+   * strings), which `in` answers on an instance as its prototype's. */
+  size_t member_count;
+  ScrStr *const *members;
 } ScrArrClass;
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
  * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like
@@ -258,10 +262,28 @@ bool scr_arr_is_frozen(const ScrArr *a);
  * `op` makes to a frozen array of length `len`, or answers false when the
  * operation writes nothing. op: 0 index write (x = index), 1 push (y =
  * argument count), 2 pop, 3 length write, 4 unshift (y = argument count),
- * 5 delete (x = index), 6 shift, 7 reverse or sort, 8 fill (x = start, y =
- * end), 9 copyWithin (x = target, y = start, z = end), 10 splice (x =
- * start, y = delete count, z = item count). */
+ * 5 delete (x = index), 6 shift, 7 reverse, 8 fill (x = start, y = end),
+ * 9 copyWithin (x = target, y = start, z = end), 10 splice (x = start, y =
+ * delete count, z = item count), 11 default (no comparator) sort. */
 bool scr_array_frozen_error(int op, size_t len, double x, double y, double z);
+/* How the immutable-array guard's operation ends. */
+enum {
+  /* The operation must run (the array is not immutable, or its writes
+   * happen outside the guard's walk). */
+  SCR_FROZEN_RUN = 0,
+  /* The operation threw Node's TypeError. */
+  SCR_FROZEN_THREW = 1,
+  /* The operation writes nothing (Node returns the receiver): the caller
+   * must not run the mutating helper, which would rebuild the storage of
+   * an array that stays as it is. */
+  SCR_FROZEN_NOOP = 2,
+};
+/* The same walk for an emitted guard that has the array: it follows the
+ * elements the array actually holds (a hole is absent) and answers
+ * SCR_FROZEN_NOOP where the operation writes nothing. `a` may be NULL when
+ * the caller has no array (scr_array_frozen_error): presence is then
+ * unknown and every index counts as holding a value. */
+int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double y, double z);
 /* Node's TypeErrors for a write that a non-extensible or sealed array
  * refuses: adding the element at `index`, or deleting it. */
 void scr_array_not_extensible_error(double index);

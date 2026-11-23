@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7797-array-subclass-dynamic-concat-receiver.js"
+ ],
+ "diags": []
+}

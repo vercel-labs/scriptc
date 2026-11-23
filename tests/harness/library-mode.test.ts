@@ -378,6 +378,11 @@ version: sdk-1.0
     expect(run.stderr).toBe("");
   });
 
+  test("a dev library carries its .ts lines, as a dev executable does", async () => {
+    const { outDir } = await buildLibrary("dev-lines", emission);
+    expect(readFileSync(join(outDir, "lib.lib.ll"), "utf8")).toContain('DIFile(filename: "lib.ts"');
+  });
+
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 
   test("cstring parameters, results, and callback arguments", async () => {

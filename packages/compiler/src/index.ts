@@ -3081,6 +3081,7 @@ async function compileLibraryTracked(
       sanitizeAttributes: opts.sanitize === true,
       timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
+      ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
     });
     timing("llvm-emit", {
       output_bytes:

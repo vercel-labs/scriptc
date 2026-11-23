@@ -789,6 +789,9 @@ export function prepareNativeLibrary(
     sanitizeAttributes: options.sanitize === true,
     timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
+    ...(carriesDebugSources(profile.optimization, false)
+      ? { debugSources: prepared.sourceTexts }
+      : {}),
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

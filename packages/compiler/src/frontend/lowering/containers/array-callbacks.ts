@@ -637,6 +637,25 @@ export type ArrayHelperRecipe =
       hasInit: boolean;
     };
 
+/** The library method name the recipe's helper stands for, as a longer
+ * call to an array method is reported (variadic-functions.ts). */
+export function arrayHelperConsumer(recipe: ArrayHelperRecipe): string {
+  switch (recipe.family) {
+    case "hof":
+      return recipe.method;
+    case "find":
+      return "find";
+    case "findIndex":
+      return "findIndex";
+    case "someEvery":
+      return recipe.method;
+    case "flatMapArray":
+      return "flatMap";
+    case "reduce":
+      return recipe.method;
+  }
+}
+
 /** The helper `recipe` describes, for a callback that takes everything
  * JavaScript passes: the element, the index and the array (after the
  * accumulator for the reduce family). Null when the recipe's helper already
@@ -656,7 +675,9 @@ export function widerArrayHelper(
     };
     return reduceHelper(lowerer, recipe.method, elem, recipe.accT, full, recipe.hasInit, loc);
   }
-  if (recipe.arity < 1 || recipe.arity >= 3) return null;
+  // A callback that names no parameter still receives every argument
+  // JavaScript passes; its wide helper takes all of them.
+  if (recipe.arity >= 3) return null;
   const { elem, fnRet, present, withThis } = recipe;
   switch (recipe.family) {
     case "hof":

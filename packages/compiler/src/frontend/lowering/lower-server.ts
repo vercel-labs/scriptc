@@ -2684,6 +2684,26 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // A tls or https server's NSS key-log lines: (line: Buffer). The
+      // listener takes the Buffer or nothing; a plain server never fires it.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.serverOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "newListener") {
       // Node's meta event, fired with the event name BEFORE a listener
       // joins its list (a handler that throws abandons the add).
@@ -4244,6 +4264,27 @@ function lowerNetSocketMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // TLSSocket's NSS key-log lines: each a Buffer holding
+      // "<LABEL> <client_random hex> <secret hex>\n"; a plain socket never
+      // fires it, like Node.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.sockOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "session") {
       // The received-ticket event: fires once per TLS client socket with
       // the serialized session (a Buffer); plain sockets never fire it.
@@ -4267,7 +4308,7 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", "session", and "keylog" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(
@@ -5325,6 +5366,17 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqSocket", args: [receiver], type: NETSOCKET_T, loc };
     }
+    if (name === "authority" || name === "scheme") {
+      // The HTTP/2 request's pseudo-headers.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return {
+        kind: "libCall",
+        fn: name === "authority" ? "http2.reqAuthority" : "http2.reqScheme",
+        args: [receiver],
+        type: STRING,
+        loc,
+      };
+    }
     if (name === "httpVersion") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqHttpVersion", args: [receiver], type: STRING, loc };
@@ -5402,11 +5454,23 @@ export function lowerServerProperty(
           loc,
         };
       }
-      lowerer.noLowering(
-        "reading 'stream' from a request outside a method call",
-        expr,
-        "call req.stream methods directly; optional calls remain undefined on HTTP/1 and use the live stream on HTTP/2",
-      );
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      const unionType: IrType = {
+        kind: "union",
+        unionId: lowerer.unions.intern([HTTP2STREAM_T, UNDEFINED_T]),
+      };
+      const optional: IrExpr = {
+        kind: "libCall",
+        fn: "http.reqH2Stream",
+        args: [receiver],
+        type: unionType,
+        loc,
+      };
+      // A plain read keeps the HTTP/1 undefined arm: on an allowHTTP1
+      // server req.stream is Node's undefined there, so a presence test,
+      // a binding or a nullish default sees it (the direct-call forms
+      // above still throw JS's member TypeError for it).
+      return optional;
     }
     if (name === "session") {
       // Http2ServerRequest's h2-only members are not exposed through the
@@ -5948,6 +6012,22 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
+    if (m === "endAfterHeaders")
+      return {
+        kind: "libCall",
+        fn: "http2.streamEndAfterHeaders",
+        args: [recv()],
+        type: BOOL,
+        loc,
+      };
+    if (m === "bufferSize")
+      return {
+        kind: "libCall",
+        fn: "http2.streamBufferSize",
+        args: [recv()],
+        type: F64,
+        loc,
+      };
     if (m === "session")
       return {
         kind: "libCall",
@@ -6837,6 +6917,23 @@ function lowerHttpModuleCall(
       type: VOID,
       loc,
     };
+  }
+  if (bi.member === "setGlobalProxyFromEnv") {
+    requireStatementPosition(lowerer, expr, "http.setGlobalProxyFromEnv(...)");
+    const args = expr.arguments.nodes;
+    if (args.length > 1 || args.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering(
+        "http.setGlobalProxyFromEnv arguments",
+        expr,
+        "pass at most one proxy-environment object",
+      );
+    }
+    let env: IrExpr = dynUndefinedExpr(loc);
+    if (args.length === 1) {
+      const value = lowerer.lowerExpr(args[0]!);
+      env = value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    }
+    return { kind: "libCall", fn: "http.setGlobalProxyFromEnv", args: [env], type: VOID, loc };
   }
   if (bi.member === "setMaxIdleHTTPParsers") {
     // Node sizes a pool of idle parser objects; the compiled parser is

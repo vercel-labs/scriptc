@@ -24,16 +24,20 @@ attempt("ed25519 encapsulate", () => encapsulate(ed.publicKey));
 
 let returned = false;
 let shared = false;
+let decapsulated = false;
 encapsulate(kp.publicKey, (error, result) => {
   console.log("encapsulate callback", returned, error, result?.ciphertext.length);
   shared = decapsulate(kp.privateKey, result!.ciphertext).equals(result!.sharedKey);
+  // The second decapsulate starts from the first callback: two crypto
+  // requests submitted together finish in whatever order the thread pool
+  // runs them, so callbacks printed from both would swap lines between
+  // hosts. Chained, the two callbacks have one order everywhere.
+  decapsulate(kp.privateKey, sync.ciphertext, (error, value) => {
+    console.log("decapsulate callback", error, value?.length, value?.equals(sync.sharedKey));
+    decapsulated = true;
+    console.log("end", shared, decapsulated);
+  });
 });
 returned = true;
-let decapsulated = false;
-decapsulate(kp.privateKey, sync.ciphertext, (error, value) => {
-  console.log("decapsulate callback", error, value?.length, value?.equals(sync.sharedKey));
-  decapsulated = true;
-});
 process.nextTick(() => console.log("tick"));
-setTimeout(() => console.log("end", shared, decapsulated), 20);
 console.log("returned");

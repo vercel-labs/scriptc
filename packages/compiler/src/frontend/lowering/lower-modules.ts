@@ -2916,12 +2916,18 @@ export function collectGlobals(
       // module.exports gets its own export slot here, while `x` keeps the
       // ordinary declaration storage registered below. Reassigning `x`
       // therefore leaves the exported value alone, as in Node.
-      const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
+      const discarded = cjsExportDiscardReason(stmt);
+      const cjs = discarded === null ? cjsExportAssignmentOf(stmt) : null;
       const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void =>
         registerCjsExportGlobal(lowerer, sf, tag, nameNode, name, typeNode);
       // Export members assigned in VALUE position at the module's top
-      // level (`const src = exports.src = []`) are exports too.
-      for (const nested of nestedCjsExportAssignmentsOf(stmt, cjs?.expr)) {
+      // level (`const src = exports.src = []`) are exports too. A
+      // statement Node discards registers nothing: its write lands on the
+      // exports object a `module.exports =` assignment replaced, which no
+      // importer reads.
+      for (const nested of discarded === null
+        ? nestedCjsExportAssignmentsOf(stmt, cjs?.expr)
+        : []) {
         registerExport(nested.name, nested.name.text, nested.value);
       }
       if (cjs?.kind === "member" && ts.isIdentifier(cjs.name)) {
@@ -3974,7 +3980,25 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode))
           )
             continue;
-          let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // A binding initialized with a CommonJS module's whole export
+          // holds that export object itself: Node's object, the same one
+          // every requirer reads. Unboxing the checked-dynamic object into
+          // the checker's static shape would copy it, so `a === lib` would
+          // answer false where Node answers true. (lowerVarDecl takes the
+          // same rule for locals.)
+          let holdsCjsModuleValue = false;
+          if (!decl.type && !hasJsTypeAnnotation(decl) && ts.isIdentifier(decl.name)) {
+            let source: ts.Expression | undefined = decl.initializer;
+            while (source !== undefined && ts.isParenthesizedExpression(source))
+              source = source.expression;
+            holdsCjsModuleValue =
+              source !== undefined &&
+              ts.isIdentifier(source) &&
+              lowerer.cjsLocalModuleBindingOf(source);
+          }
+          let type = holdsCjsModuleValue
+            ? DYN
+            : (handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode)));
           // `const made = new V()` where V is a mixin RESULT binding: the
           // checker types the value by the class expression the mixin body
           // returns, but the binding holds the call site's INSTANTIATION
@@ -5324,7 +5348,23 @@ export function buildMain(lowerer: Lowerer): IrFunction {
     ];
   };
   const locals = [] as IrFunction["locals"];
-  if (lowerer.forkTargets.length === 0) {
+  // A cluster program always uses the dispatch: cluster.fork() restarts the
+  // artifact with target -1, which selects the entry module itself. The
+  // dispatch also initializes the inherited IPC channel, so cluster.init
+  // (which sends the worker's 'online' act over it) runs after it, at the
+  // top of the entry branch.
+  const clusterInit: IrStmt[] = lowerer.clusterUsed
+    ? [
+        {
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn: "cluster.init", args: [], type: VOID, loc },
+          loc,
+        },
+      ]
+    : [];
+  const entryBranch: IrStmt[] = [...clusterInit, ...callRoot(lowerer.entry)];
+  const dispatch = lowerer.forkTargets.length > 0 || lowerer.clusterUsed;
+  if (!dispatch) {
     body.push(...callRoot(lowerer.entry));
   } else {
     const targetId = "%forkTarget.0";
@@ -5342,6 +5382,23 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
     const selector = (): IrExpr => ({ kind: "varRef", localId: targetId, type: F64, loc });
+    if (lowerer.forkTargets.length === 0) {
+      // Cluster only: -1 is the entry, and no other target exists.
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "<",
+          left: selector(),
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: entryBranch,
+        else_: null,
+        loc,
+      });
+    }
     let workerBranch: IrStmt[] | null = null;
     for (let id = lowerer.forkTargets.length - 1; id >= 0; id--) {
       workerBranch = [
@@ -5361,20 +5418,22 @@ export function buildMain(lowerer: Lowerer): IrFunction {
         },
       ];
     }
-    body.push({
-      kind: "if",
-      cond: {
-        kind: "bin",
-        op: "<",
-        left: selector(),
-        right: { kind: "numLit", value: 0, type: F64, loc },
-        type: BOOL,
+    if (lowerer.forkTargets.length > 0) {
+      body.push({
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "<",
+          left: selector(),
+          right: { kind: "numLit", value: 0, type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        then: entryBranch,
+        else_: workerBranch,
         loc,
-      },
-      then: callRoot(lowerer.entry),
-      else_: workerBranch,
-      loc,
-    });
+      });
+    }
   }
   // `--define`: the program runs as if started with the defined variables
   // set, so every read of the environment, and each child process, agrees

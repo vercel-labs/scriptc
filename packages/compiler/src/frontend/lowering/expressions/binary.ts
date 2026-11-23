@@ -66,6 +66,7 @@ import {
 } from "../lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
+import { isRuntimeOptionalHttp2StreamRead } from "./narrowing.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { findStaticOn, storedClassValueType } from "../lower-classes.js";
@@ -425,6 +426,9 @@ function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
     );
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // Http2ServerRequest.stream on an allowHTTP1 server's HTTP/1 request:
+    // declared as the stream, but Node answers undefined there.
+    if (isRuntimeOptionalHttp2StreamRead(lowerer, expr)) return true;
     // A CommonJS module member the module may leave unassigned.
     if (cjsRuntimeOptionalExportStorage(lowerer, expr) !== null) return true;
     const type = lowerer.checker.getTypeAtLocation(expr.expression);

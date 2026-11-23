@@ -6,6 +6,7 @@ import { arNeverThrow } from "./builtin-never-throw/ar.js";
 import { bytesNeverThrow } from "./builtin-never-throw/bytes.js";
 import { childNeverThrow } from "./builtin-never-throw/child.js";
 import { closureNeverThrow } from "./builtin-never-throw/closure.js";
+import { clusterNeverThrow } from "./builtin-never-throw/cluster.js";
 import { consoleNeverThrow } from "./builtin-never-throw/console.js";
 import { cryptoNeverThrow } from "./builtin-never-throw/crypto.js";
 import { dcNeverThrow } from "./builtin-never-throw/dc.js";
@@ -66,6 +67,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...bytesNeverThrow,
   ...childNeverThrow,
   ...closureNeverThrow,
+  ...clusterNeverThrow,
   ...consoleNeverThrow,
   ...cryptoNeverThrow,
   ...dcNeverThrow,

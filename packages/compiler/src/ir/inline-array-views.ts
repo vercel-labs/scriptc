@@ -90,6 +90,7 @@ const READS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classCase",
   "dyn.classValueHash",
   "dyn.classTestPrototype",
   "dyn.hasKey",

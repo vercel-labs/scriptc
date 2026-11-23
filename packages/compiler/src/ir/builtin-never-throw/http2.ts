@@ -19,4 +19,8 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   "http2.pairsValues",
   "http2.statusMessageUnsupported",
   "http2.statusMessageRead",
+  "http2.streamEndAfterHeaders",
+  "http2.streamBufferSize",
+  "http2.reqAuthority",
+  "http2.reqScheme",
 ];

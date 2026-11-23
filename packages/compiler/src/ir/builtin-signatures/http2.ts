@@ -200,4 +200,8 @@ export const http2Signatures = defineLibFnSignatures({
   // Http2ServerResponse.statusMessage writes: evaluate the value, warn once.
   "http2.statusMessageUnsupported": { argTypes: [HTTPRES_T, DYN], result: VOID },
   "http2.statusMessageRead": { argTypes: [HTTPRES_T], result: VOID },
+  "http2.streamEndAfterHeaders": { argTypes: [HTTP2STREAM_T], result: BOOL },
+  "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
+  "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
+  "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
 });

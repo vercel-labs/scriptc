@@ -1,5 +1,4 @@
-/* Peak memory and wall time per compilation phase for the separate-compilation
- * Peak memory and wall time per compilation phase for app builds. Runs each
+/* Peak memory and wall time per compilation phase for app builds. Runs each
  * scenario as an ordinary app build, samples the
  * PSS of the build's whole process tree every half second, and attributes each
  * sample to the SCRIPTC_TIMING phase that was running. Partition reuse is
@@ -334,8 +333,8 @@ function measure(scenario, context) {
     stderr += chunk.toString();
   });
   // The shim tees the compiler's stderr to `timingLog`; follow the file and
-  // timestamp each phase as its line appears, so PSS samples attribute to the
-  // phase that was running then.
+  // timestamp each phase line as it appears. A line ends its phase, so it
+  // bounds the samples that belong to that phase (see `samples` below).
   let offset = 0;
   let carry = "";
   const drainTiming = () => {
@@ -367,26 +366,23 @@ function measure(scenario, context) {
       closeSync(fd);
     }
   };
-  const peaks = new Map();
+  // A timing line ends the phase it names (its phase_ms is that interval), so
+  // a sample belongs to the line that arrives after it, not the one before.
+  // Samples wait here until the run ends and the lines say where they fall.
+  const samples = [];
   let peakBytes = 0;
-  let last = null;
   const sample = () => {
     drainTiming();
     const bytes = child.pid === undefined ? 0 : treePssBytes(child.pid);
     if (bytes > peakBytes) peakBytes = bytes;
-    const phase = phases.length === 0 ? "(startup)" : phases[phases.length - 1].phase;
+    samples.push({ at: Date.now(), bytes });
     if (process.env["SCRIPTC_BENCH_DEBUG"] === "1") {
+      const completed = phases.length === 0 ? "(startup)" : phases[phases.length - 1].phase;
       const tree = child.pid === undefined ? [] : processTree(child.pid);
       console.error(
-        `bench sample phase=${phase} mb=${Math.round(bytes / 2 ** 20)} pids=${tree.length}`,
+        `bench sample completed=${completed} mb=${Math.round(bytes / 2 ** 20)} pids=${tree.length}`,
       );
     }
-    if (last !== phase) {
-      last = phase;
-      if (!peaks.has(phase)) peaks.set(phase, 0);
-    }
-    const current = peaks.get(phase) ?? 0;
-    if (bytes > current) peaks.set(phase, bytes);
   };
   const timer = setInterval(sample, Math.min(sampleMs, 200));
   sample();
@@ -411,18 +407,30 @@ function measure(scenario, context) {
       drainTiming();
       const endedAt = Date.now();
       const after = partitionEntries(context.cacheDirectory);
+      // Each phase's samples are those taken before the line that completed
+      // it and after the line that completed the phase before it.
+      const phasePeaks = [];
+      let next = 0;
+      for (const phase of phases) {
+        let peak = 0;
+        while (next < samples.length && samples[next].at <= phase.at) {
+          if (samples[next].bytes > peak) peak = samples[next].bytes;
+          next++;
+        }
+        phasePeaks.push(peak);
+      }
       resolveRun({
         name: scenario.name,
         status,
         wall_ms: endedAt - startedAt,
         peak_mb: peakBytes / (1024 * 1024),
-        phases: phases.map((event) => ({
+        phases: phases.map((event, index) => ({
           phase: event.phase,
           phase_ms: event.phase_ms,
           total_ms: event.total_ms,
           rss_mb: event.rss_mb,
           cpu_ms: event.cpu_ms,
-          peak_mb: (peaks.get(event.phase) ?? 0) / (1024 * 1024),
+          peak_mb: (phasePeaks[index] ?? 0) / (1024 * 1024),
         })),
         reuse: summarizeReuse(before, after, startedAt),
         stderr: stderr.length > 200_000 ? stderr.slice(-200_000) : stderr,
@@ -516,10 +524,12 @@ async function runScenario(scenario, measured) {
   // A measured build starts from a prepared app directory; the compiler
   // cache it measures stays empty.
   if (measured) ensurePrepared(config.apps[scenario.app], context);
-  prepare(scenario, context);
   const undo = applyEdit(scenario);
   try {
     for (let run = 0; run < (measured ? runs : 1); run++) {
+      // A cold scenario starts every run with an empty cache; otherwise a
+      // second run would be warm and the median would mix the two.
+      prepare(scenario, context);
       const result = await measure(scenario, context);
       if (!measured) {
         if (result.status !== 0) {

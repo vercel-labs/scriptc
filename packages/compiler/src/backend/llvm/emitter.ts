@@ -3011,8 +3011,6 @@ export class LlEmitter {
       checkedCollectionNew: (type) => checkedCollectionNewCall(this, type),
       liveDynUnionRefAdapter: (type) => this.liveDynUnionRefAdapter(type),
       declBoundary: () => this.mod.declBoundary === true,
-      // A library's archive carries a fixed runtime selection without the
-      // adoption unit (libraryArchiveFeatures): its conversions keep the copy.
       declAdopt: () => this.runtimeFeatures.declAdopt,
       dynPromiseAdapter: (type) => this.dynPromiseAdapter(type),
       isErrorClass: (name) => this.classMeta.get(name)?.root.def.name === "%Error",

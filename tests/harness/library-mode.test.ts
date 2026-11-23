@@ -692,6 +692,15 @@ survived, sink_calls=1
     expect(run.stdout).toBe("run: 40000\n".repeat(3));
   });
 
+  platformTest("K10: casts and instanceof over dynamic values link under ASan", async () => {
+    const { archive, outDir } = await buildLibrary("dynamic-units", emission, { sanitize: true });
+    const probe = buildProbe("dynamic-units", archive, outDir, { sanitize: true });
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`cast shares: true\nslot shares: true\nclass test: true\n`);
+  });
+
   platformTest("K10: K5/K7 under ASan", async () => {
     const { archive, outDir } = await buildLibrary("traps", emission, { sanitize: true });
     const probe = buildProbe("traps", archive, outDir, { sanitize: true });

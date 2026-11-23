@@ -9,7 +9,7 @@ export const config = defineConfig({
   defaultLanguage: "en",
   translations: { en: { displayName: "English" } },
   logo: (
-    <span className="flex items-center font-[family-name:var(--font-geist-sans)] text-[24.4px] font-semibold tracking-[-0.05em] text-black dark:text-white">
+    <span className="translate-y-[-0.5px] flex items-center font-[family-name:var(--font-geist-sans)] text-[24.4px] font-semibold tracking-[-0.05em] text-black dark:text-white">
       {siteName}
     </span>
   ),

@@ -189,6 +189,39 @@ static int scr_tls_parse_crt(mbedtls_x509_crt *crt, const char *pem, size_t len)
   return r;
 }
 
+/* A bounded substring search over a PEM bundle that is not NUL-terminated. */
+static const char *scr_tls_find_bytes(const char *hay, size_t hay_len, const char *needle) {
+  size_t n = strlen(needle);
+  if (n == 0 || hay_len < n) return NULL;
+  for (size_t i = 0; i + n <= hay_len; i++)
+    if (memcmp(hay + i, needle, n) == 0) return hay + i;
+  return NULL;
+}
+
+/* A CA bundle: OpenSSL reads the PEM blocks in order and stops at the first
+ * one it cannot parse, keeping the blocks before it. mbedTLS skips a bad
+ * block and keeps parsing later ones, so the blocks are fed one at a time. */
+static int scr_tls_parse_ca_bundle(mbedtls_x509_crt *crt, const char *pem, size_t len) {
+  static const char begin[] = "-----BEGIN CERTIFICATE-----";
+  static const char end[] = "-----END CERTIFICATE-----";
+  const char *at = pem;
+  const char *limit = pem + len;
+  bool any = false;
+  for (;;) {
+    const char *b = scr_tls_find_bytes(at, (size_t)(limit - at), begin);
+    if (b == NULL) break;
+    const char *e = scr_tls_find_bytes(b, (size_t)(limit - b), end);
+    if (e == NULL) break;
+    e += sizeof end - 1;
+    int one = scr_tls_parse_crt(crt, b, (size_t)(e - b));
+    if (one != 0) return any ? 0 : one;
+    any = true;
+    at = e;
+  }
+  if (any) return 0;
+  return scr_tls_parse_crt(crt, pem, len); /* a bare DER certificate */
+}
+
 static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len) {
   unsigned char *buf = malloc(len + 1);
   if (!buf) scr_tls_oom();
@@ -668,9 +701,11 @@ static void scr_tls_srv_client_auth(ScrTlsSrv *s, const ScrTlsClientAuth *auth) 
   /* An empty ca Buffer is an empty trust store, not the default one. */
   if (auth->ca != NULL) {
     if (auth->ca->len > 0) {
-      int r = scr_tls_parse_crt(&s->ca, (const char *)auth->ca->data, auth->ca->len);
-      /* Node ignores a CA certificate OpenSSL cannot parse. */
-      if (r != 0) {
+      int r = scr_tls_parse_ca_bundle(&s->ca, (const char *)auth->ca->data, auth->ca->len);
+      /* Node ignores a CA certificate OpenSSL cannot parse; mbedTLS
+       * reports a positive count when it kept the other certificates, so
+       * only a hard failure clears the store. */
+      if (r < 0) {
         mbedtls_x509_crt_free(&s->ca);
         mbedtls_x509_crt_init(&s->ca);
       } else if (s->ctx == NULL) {
@@ -825,10 +860,11 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   c->reject = reject_unauthorized;
   c->has_ca = ca != NULL;
   if (ca_len > 0) {
-    int r = scr_tls_parse_crt(&c->ca, ca, ca_len);
-    /* Node ignores a CA certificate OpenSSL cannot parse; the remaining
-     * anchors (none) decide verification. */
-    if (r != 0) {
+    int r = scr_tls_parse_ca_bundle(&c->ca, ca, ca_len);
+    /* Node ignores a CA certificate OpenSSL cannot parse; keep the
+     * certificates mbedTLS parsed (a positive count), clear only on a hard
+     * failure. */
+    if (r < 0) {
       mbedtls_x509_crt_free(&c->ca);
       mbedtls_x509_crt_init(&c->ca);
     }
@@ -3519,11 +3555,11 @@ ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/)
      * secureContext); an SNI answer's chain comes from the server's
      * context in OpenSSL, so the answer's ca is not used there */
     if (auth.ca->len > 0) {
-      int r = scr_tls_parse_crt(&c->ca, (const char *)auth.ca->data, auth.ca->len);
+      int r = scr_tls_parse_ca_bundle(&c->ca, (const char *)auth.ca->data, auth.ca->len);
       /* Node's secure-context CA store ignores a certificate OpenSSL cannot
-       * parse; verification then fails against the remaining anchors rather
-       * than terminating the program. Drop the partial chain. */
-      if (r != 0) {
+       * parse; mbedTLS keeps the ones it parsed and reports a positive
+       * count, so only a hard failure clears the store. */
+      if (r < 0) {
         mbedtls_x509_crt_free(&c->ca);
         mbedtls_x509_crt_init(&c->ca);
       }

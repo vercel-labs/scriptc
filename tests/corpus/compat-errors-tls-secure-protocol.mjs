@@ -114,3 +114,33 @@ try {
     client.on("close", () => server.close());
   });
 }
+
+{
+  // A bundle with a malformed block before or after a valid CA keeps the
+  // valid anchors, as Node's store does.
+  const caText = readFileSync(`${D}/ca.pem`, "utf8");
+  const bad = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+  for (const [label, ca] of [
+    ["bad-then-good", bad + caText],
+    ["good-then-bad", caText + bad],
+  ]) {
+    const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));
+    server.on("tlsClientError", () => {});
+    const port = await new Promise((resolve) =>
+      server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+    );
+    await new Promise((done) => {
+      const client = tls.connect({ port, host: "127.0.0.1", servername: "localhost", ca });
+      client.on("secureConnect", () => {
+        console.log(label, "secure", client.authorized);
+        client.end();
+        done(undefined);
+      });
+      client.on("error", (error) => {
+        console.log(label, error.code);
+        done(undefined);
+      });
+    });
+    server.close();
+  }
+}

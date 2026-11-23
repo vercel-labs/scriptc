@@ -145,14 +145,30 @@ test("caps codegen lanes by the memory available", () => {
   expect(nativeCodegenJobs(bytes, 1, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(1);
 });
 
-test("reuses an artifact for the same module from another source path", async () => {
+test("reuses an artifact for the same module name from another directory", async () => {
   const pkg = await fakePackage();
   await emitNativeArtifact(request(pkg.root, pkg.packageJson));
-  // A second app's copy of the same code has a different absolute path; the
-  // path names the module for diagnostics only and must not key the artifact.
+  // A second app's copy of the same code has a different absolute path but
+  // the same module source file name; only the directories differ, so the
+  // artifact is the same.
   await emitNativeArtifact({ ...request(pkg.root, pkg.packageJson), sourcePath: "/other/app.ts" });
   const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
   expect(calls).toHaveLength(1);
+});
+
+test("does not reuse an artifact for the same module under another source name", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson));
+  // The source file name is the module's source name and prefixes its
+  // local-function profile identities, so another name is another artifact.
+  const other = join(pkg.root, "other.o");
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, other),
+    sourcePath: "/other/main.ts",
+  });
+  expect(await readFile(other, "utf8")).toContain("define i32 @answer");
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
 });
 
 test("resolves the build host's platform helper", async () => {

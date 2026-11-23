@@ -1,0 +1,3 @@
+{
+    "node-builtin.string_decoder": ["tests/corpus/1662-string-decoder-encodings.ts", "tests/corpus/node24-string-decoder.ts", "tests/corpus/8428-string-decoder-dynamic-chunks.ts"]
+}

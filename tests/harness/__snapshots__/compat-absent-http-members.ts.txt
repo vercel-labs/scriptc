@@ -1,6 +1,0 @@
-compat-absent-http-members.ts:20:6 - error SC0001: Property 'setGlobalProxyFromEnv' does not exist on type 'typeof import("node:http")'.
-
-  19 | // The module: the proxy configuration read from the environment.
-  20 | http.setGlobalProxyFromEnv();
-     |      ^~~~~~~~~~~~~~~~~~~~~
-  21 | 

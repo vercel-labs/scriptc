@@ -7875,7 +7875,6 @@ static ScrDyn *sf_data_response(ScrStr *url) {
   return result;
 }
 
-#ifdef SCR_WEB_BODIES
 /* fetch() of an object URL (URL.createObjectURL's "blob:nodedata:<uuid>"):
  * the registered Blob or File answers 200 OK with its bytes, its size as
  * Content-Length and its type as Content-Type (an empty value when the
@@ -7911,7 +7910,6 @@ static ScrDyn *sf_object_url_response(ScrStr *url) {
   }
   return result;
 }
-#endif
 
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   if (init && init->kind == SCR_DYN_TYPED_REF) {
@@ -8269,16 +8267,12 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
    * registry is necessarily empty (createObjectURL accepts only a Blob),
    * so every lookup misses. */
   if (object_url) {
-#ifdef SCR_WEB_BODIES
     ScrDyn *response = NULL;
     if (method->len == 3 && memcmp(method->data, "GET", 3) == 0) {
       ScrStr *request_url = sf_url_serialize(u);
       response = sf_object_url_response(request_url);
       scr_str_release(request_url);
     }
-#else
-    ScrDyn *response = NULL;
-#endif
     scr_dyn_release(coerced_body); scr_arr_release(headers); scr_str_release(method); scr_url_release(u);
     if (response) { scr_promise_resolve_dyn(promise, response); }
     else return sf_reject_now(promise, "fetch failed");

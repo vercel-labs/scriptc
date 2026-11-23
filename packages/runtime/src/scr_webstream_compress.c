@@ -47,6 +47,7 @@ typedef struct WsCompState {
   size_t in_len, in_cap, in_off;
   bool finishing; /* flush began: drain the backlog, then finish the engine */
   bool drain;     /* the last step filled its output buffer: more is due */
+  bool pumping;   /* a pump is on the stack: enqueues may pull again */
   ScrDyn *controller; /* +1, the transform controller while a job runs */
   ScrPromise *pending_write; /* +1, a write waiting for the backlog to drain */
   ScrPromise *pending_flush; /* +1, close waiting for the output to drain */
@@ -131,7 +132,7 @@ static ScrDyn *ws_comp_construct(ScrDyn *const *args, size_t argc, bool decompre
 static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_t argc);
 static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t argc);
 static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t argc);
-static void ws_comp_resume_hook(void *state);
+static bool ws_comp_resume_hook(void *state);
 
 static ScrDyn *ws_compress_construct(ScrDyn *const *args, size_t argc) {
   return ws_comp_construct(args, argc, false);
@@ -372,8 +373,7 @@ static void ws_comp_abandon(WsCompState *s) {
  * of queued output (so a close before any read completes for a small
  * stream and waits for the reader for a bomb). Returns -1 with the
  * exception pending when enqueueing failed. */
-static int ws_comp_pump(WsCompState *s) {
-  if (!s->controller || !s->engine) return 0;
+static int ws_comp_pump_steps(WsCompState *s) {
   if (!s->out) {
     s->out = malloc(WS_COMP_OUT);
     if (!s->out) ws_comp_oom();
@@ -403,9 +403,15 @@ static int ws_comp_pump(WsCompState *s) {
     size_t made = WS_COMP_OUT - avail_out;
     s->in_off += took;
     s->drain = made == WS_COMP_OUT;
-    if (made && !ws_comp_enqueue(s->controller, s->out, made)) {
-      ws_comp_abandon(s);
-      return -1;
+    if (made) {
+      if (!ws_comp_enqueue(s->controller, s->out, made)) {
+        ws_comp_abandon(s);
+        return -1;
+      }
+      /* The chunk satisfied the read request that pulled for it: settle
+       * that pull so the reader's next read reaches the engine. */
+      if (!scr_webstream_controller_has_request(s->controller))
+        scr_webstream_controller_pull_done(s->controller);
     }
     ScrZlibError ze;
     if (scr_zlib_engine_error(s->engine, &ze)) {
@@ -426,6 +432,17 @@ static int ws_comp_pump(WsCompState *s) {
     ws_comp_release_write(s);
     if (took == 0 && made == 0 && !s->drain) return 0;
   }
+}
+
+/* Runs the pump unless it is already on the stack: enqueueing can call the
+ * readable's pull, whose resume hook pumps again, and a nested pump must not
+ * free the engine under the outer one's steps. */
+static int ws_comp_pump(WsCompState *s) {
+  if (!s->controller || !s->engine || s->pumping) return 0;
+  s->pumping = true;
+  int result = ws_comp_pump_steps(s);
+  s->pumping = false;
+  return result;
 }
 
 /* A write hands its chunk to the backlog and returns: output is produced on
@@ -498,11 +515,14 @@ static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t a
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
-/* The readable's pull: the moment the engine may produce its next chunk. */
-static void ws_comp_resume_hook(void *state) {
+/* The readable's pull: the moment the engine may produce its next chunk.
+ * The pull stays parked only while a read request still waits for output;
+ * the pump's next enqueue settles it. */
+static bool ws_comp_resume_hook(void *state) {
   WsCompState *s = state;
-  if (!s->controller || !s->engine) return;
+  if (!s->controller || !s->engine) return false;
   (void)ws_comp_pump(s);
+  return s->controller != NULL && scr_webstream_controller_has_request(s->controller);
 }
 
 static ScrDyn *ws_comp_get(void *ptr, const char *key, size_t len) {

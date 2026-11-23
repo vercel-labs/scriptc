@@ -3915,7 +3915,7 @@ struct WsTController {
    * the readable's pull calls it while the transformer has output it
    * produces only as the reader asks for it. `native_box` owns one
    * reference of the hook's state so the collector traces the edge. */
-  void (*native_resume)(void *);
+  bool (*native_resume)(void *);
   void *native_resume_state;
   ScrBox *native_box; /* +1, the state's reference for the collector */
 };
@@ -4278,9 +4278,22 @@ static ScrDyn *ws_transform_source_pull(void *ctx, WsRController *rc) {
   ws_transform_set_backpressure(t, false);
   t->pull_pending = true;
   /* A native transformer produces its output as the reader asks for it:
-   * the pull is the moment it may enqueue the next chunk. */
+   * the pull is the moment it may enqueue the next chunk. The hook says
+   * whether the pull must stay parked: only a request it could not satisfy
+   * waits, and the next write or pull settles that pull. */
   WsTController *c = t->controller;
-  if (c && c->native_resume) c->native_resume(c->native_resume_state);
+  if (c && c->native_resume) {
+    bool wait = c->native_resume(c->native_resume_state);
+    if (!wait) {
+      /* Answered: the machinery settles this pull the way it settles any
+       * synchronously answered algorithm result. An enqueue during the
+       * resume may already have settled it (backpressure crossed the
+       * high-water mark); then stay parked. */
+      if (!t->pull_pending) return WS_PARKED;
+      t->pull_pending = false;
+      return ws_undef();
+    }
+  }
   return WS_PARKED;
 }
 
@@ -5967,7 +5980,7 @@ static ScrDyn *ws_text_callback(WsTextStream *t, ScrDynThunk thunk, uint32_t ari
 ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, ScrDynThunk cancel,
                                        void *state, void *(*retain)(void *), void (*release)(void *),
                                        void (*trace)(void *, ScrTraceVisit, void *),
-                                       void (*resume)(void *)) {
+                                       bool (*resume)(void *)) {
   ws_install();
   ScrDyn *transformer = scr_dyn_new_obj();
   scr_dyn_obj_set(transformer, "transform", 9,
@@ -6011,6 +6024,21 @@ bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk) {
   if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
     return false;
   return ws_tcontroller_enqueue(controller->v.handle.ptr, chunk);
+}
+
+/* A native transformer's chunk went straight to a waiting reader, so the
+ * pull that asked for it is complete even though the readable queue never
+ * crossed its high-water mark (which is what normally settles the parked
+ * pull). Without this the first fulfilled pull stays parked and a second
+ * read never reaches the transformer. */
+void scr_webstream_controller_pull_done(ScrDyn *controller) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return;
+  WsTController *c = controller->v.handle.ptr;
+  WsTransform *t = c->stream;
+  if (!t->pull_pending) return;
+  t->pull_pending = false;
+  ws_queue_microtask(ws_pull_fulfilled, ws_retain(t->readable->controller));
 }
 
 /* Whether the stream has an outstanding read request, which a native

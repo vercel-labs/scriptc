@@ -310,7 +310,7 @@ ScrDyn *scr_webstream_from(ScrDyn *iterable);
 ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, ScrDynThunk cancel,
                                        void *state, void *(*retain)(void *), void (*release)(void *),
                                        void (*trace)(void *, ScrTraceVisit, void *),
-                                       void (*resume)(void *));
+                                       bool (*resume)(void *));
 /* The transform box's readable and writable streams (+1). */
 ScrDyn *scr_webstream_transform_readable(ScrDyn *transform);
 ScrDyn *scr_webstream_transform_writable(ScrDyn *transform);
@@ -321,6 +321,9 @@ bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk);
 /* Whether the transform's readable side has an outstanding read request,
  * which a native transformer's next chunk can satisfy. */
 bool scr_webstream_controller_has_request(ScrDyn *controller);
+/* Settles the pull a native transformer's enqueue satisfied directly (the
+ * chunk went to a waiting reader instead of the readable queue). */
+void scr_webstream_controller_pull_done(ScrDyn *controller);
 /* The transform's readable queue size in the strategy's units (the queued
  * chunk count for a strategy without a size function). */
 double scr_webstream_controller_queue_size(ScrDyn *controller);

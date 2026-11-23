@@ -809,10 +809,12 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
 const MIN_CLASS_CASE_KEYS = 6;
 
 /** A branch caseBranchRuns can move into a case: `if (dyn.typedRefIs(r,
- * "object:C")) { ... return }` on a receiver local `r`, whose statements
- * end by returning, never write `r`, and hold no `break` the switch would
- * bind. Its exact key test is the one the table's selector makes. */
-function caseBranch(stmt: IrStmt): { receiver: string; key: string } | null {
+ * "object:C")) ...` on a receiver local `r`, whose statements never write
+ * `r` and hold no `break` the switch would bind. Its exact key test is the
+ * one the table's selector makes. `returns` records that the branch's
+ * statements leave it (a return or a throw), so a later branch of the same
+ * key can never run. */
+function caseBranch(stmt: IrStmt): { receiver: string; key: string; returns: boolean } | null {
   if (stmt.kind !== "if" || stmt.else_ !== null) return null;
   const cond = stmt.cond;
   if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
@@ -821,9 +823,13 @@ function caseBranch(stmt: IrStmt): { receiver: string; key: string } | null {
   if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
   if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
   if (key.value.includes("\n") || classKeyHash(key.value) < 0) return null;
-  if (stmt.then[stmt.then.length - 1]?.kind !== "return") return null;
   if (assignsLocal(stmt.then, value.localId) || leavesSwitch(stmt.then)) return null;
-  return { receiver: value.localId, key: key.value };
+  const last = stmt.then[stmt.then.length - 1]?.kind;
+  return {
+    receiver: value.localId,
+    key: key.value,
+    returns: last === "return" || last === "throw",
+  };
 }
 
 /** A statement list's text without source positions, which decides when
@@ -834,20 +840,23 @@ function statementsText(statements: readonly IrStmt[]): string {
   );
 }
 
-/** Replace each run of consecutive returning capsule branches on one
- * receiver (caseBranch), after the run's first CLASS_DISPATCH_HEAD branches,
- * with a switch on `dyn.classCase(receiver, table)` when the rest tests at
- * least MIN_CLASS_CASE_KEYS distinct classes. The table names each class's
- * key once with the case that holds its branch's statements; the selector
+/** Replace each run of consecutive capsule branches on one receiver
+ * (caseBranch), after the run's first CLASS_DISPATCH_HEAD branches, with a
+ * switch on `dyn.classCase(receiver, table)` when the rest tests at least
+ * MIN_CLASS_CASE_KEYS distinct classes. The table names each class's key
+ * once with the case that holds its branch's statements; the selector
  * answers the case of the class whose exact key test passes (the backend
  * switches on the key's hash and compares the key pointer once,
  * backend/llvm/lib-dispatch.ts), so the cases need no guards of their own.
  * Classes of the same key never pass different tests, so a later branch of
- * a key already in the table is unreachable and leaves; branches whose
- * statements are the same share a case. Each case returns, as its branch
- * did, and any other value (0) takes the statements after the run, as the
- * chain's failing tests did. The head runs first, as before, so a class it
- * selects never computes the index. */
+ * a key whose earlier branch returns or throws is unreachable and leaves;
+ * branches whose statements are the same share a case. A case ends with a
+ * `break`, so a branch that can complete continues after the switch, as it
+ * continued after the run's tests; a run ends before a repeated key whose
+ * earlier branch can complete, which the chain would run a second time.
+ * Any other value (0) takes the statements after the run, as the chain's
+ * failing tests did. The head runs first, as before, so a class it selects
+ * never computes the index. */
 export function caseBranchRuns(body: IrStmt[]): IrStmt[] {
   let rebuilt: IrStmt[] | null = null;
   let i = 0;
@@ -859,10 +868,20 @@ export function caseBranchRuns(body: IrStmt[]): IrStmt[] {
       i++;
       continue;
     }
-    const run: { key: string; stmt: IrStmt & { kind: "if" } }[] = [];
+    const run: { key: string; stmt: IrStmt & { kind: "if" }; returns: boolean }[] = [];
+    const runReturns = new Map<string, boolean>();
     let branch: ReturnType<typeof caseBranch> = first;
     while (branch !== null && branch.receiver === first.receiver) {
-      run.push({ key: branch.key, stmt: body[i] as IrStmt & { kind: "if" } });
+      const earlier = runReturns.get(branch.key);
+      // The chain tries a repeated key a second time, after the earlier
+      // branch (and any branch between) has completed; the table cannot.
+      if (earlier === false) break;
+      if (earlier === undefined) runReturns.set(branch.key, branch.returns);
+      run.push({
+        key: branch.key,
+        stmt: body[i] as IrStmt & { kind: "if" },
+        returns: branch.returns,
+      });
       i++;
       branch = i < body.length ? caseBranch(body[i]!) : null;
     }
@@ -7858,13 +7877,12 @@ export class ClassDynamicDispatch {
    * keep the chain. */
   private indexClassBranches(lowerer: Lowerer): void {
     const seen = new Set<IrFunction>();
-    const propertyHelpers = new Set([...this.properties.values()].map((dispatch) => dispatch.fn));
     for (const fn of [...this.generated, ...lowerer.liftedFns]) {
       if (seen.has(fn)) continue;
       seen.add(fn);
-      // A property helper's runs of class branches select their class from
+      // Every class table's runs of capsule branches select their class from
       // a table (caseBranchRuns); the runs it leaves keep the indexing below.
-      if (propertyHelpers.has(fn)) fn.body = caseBranchRuns(fn.body);
+      fn.body = caseBranchRuns(fn.body);
       fn.body = indexBranchRuns(fn.body);
     }
   }

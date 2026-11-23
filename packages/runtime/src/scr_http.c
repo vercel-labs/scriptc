@@ -8661,8 +8661,9 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
       if (f != NULL) {
         e->queued = false;
         ag->nqueued--;
-        scr_http_client_rebind(e->client, f, false);
+        /* 'socket' precedes the 'finish' the rebind queues */
         scr_http_client_socket_assigned(e->client);
+        scr_http_client_rebind(e->client, f, false);
         started = true;
       } else if (scr_http_agent_active(ag, name) < ag->max_sockets &&
                  (double)ag->sock_count->n < ag->max_total) {
@@ -8931,8 +8932,9 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
     scr_net_sock_set_timeout(c->sock, ag->timeout_ms);
   }
   if (reuse != NULL) {
-    scr_http_client_rebind(c, reuse, true);
+    /* 'socket' precedes the 'finish' the rebind queues */
     scr_http_client_socket_assigned(c);
+    scr_http_client_rebind(c, reuse, true);
   } else if (!queue) {
     scr_http_conn_count(c->conn, ag->sock_count, ag); /* dialed now */
   }

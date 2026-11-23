@@ -43,3 +43,17 @@ const fileArgs = (): string[] => {
 };
 const ordered = execFileSync(file(), fileArgs(), { shell: true, encoding: "utf8" });
 console.log(JSON.stringify(ordered), order.join(","));
+
+// Node validates the FILE and each argument before it joins them: an empty
+// file and an argument with a NUL byte are ERR_INVALID_ARG_VALUE rather
+// than text the shell runs.
+try {
+  execFileSync("", ["echo", "ran"], { shell: true, encoding: "utf8" });
+} catch (error) {
+  console.log((error as NodeJS.ErrnoException).code);
+}
+try {
+  execFileSync("echo", ["a\0b"], { shell: true, encoding: "utf8" });
+} catch (error) {
+  console.log((error as NodeJS.ErrnoException).code);
+}

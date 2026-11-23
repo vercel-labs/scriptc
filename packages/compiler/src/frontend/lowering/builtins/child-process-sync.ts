@@ -462,9 +462,30 @@ export function lowerExecSyncCall(
       type: STRING,
       loc,
     };
+    // Node validates the FILE and the arguments before it joins them, so the
+    // user's file (held by the first launch slot) and args are checked here,
+    // not the /bin/sh launch's command. An empty file must be Node's
+    // ERR_INVALID_ARG_VALUE, not an argument run as the command.
+    const fileArgsCheck: IrStmt = {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "cp.checkArgs",
+        args: [
+          numLit(0, loc),
+          fileRef,
+          argsRef,
+          { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+          { kind: "strLit", value: "", type: STRING, loc },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
     const command: IrExpr = {
       kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: held.id, init: argvExpr, loc }],
+      stmts: [{ kind: "varDecl", localId: held.id, init: argvExpr, loc }, fileArgsCheck],
       result: joined,
       type: STRING,
       loc,

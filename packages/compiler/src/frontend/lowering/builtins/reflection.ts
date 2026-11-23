@@ -1,4 +1,4 @@
-import { boolLit, nodeThrowExpr, varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";

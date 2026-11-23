@@ -35,8 +35,8 @@ test("the build names each deferred site at its file and line", async () => {
     const part = join(dir, "part.js");
     writeFileSync(
       part,
-      "export function keep(found, el, channel, name) {\n" +
-        "  return void found.get(el)?.[channel]?.delete(name)\n" +
+      "export function keep() {\n" +
+        '  return new Intl.Segmenter("en", { granularity: "sentence" }).segment("hi")\n' +
         "}\n",
     );
     const entry = join(dir, "main.mjs");
@@ -54,7 +54,7 @@ test("the build names each deferred site at its file and line", async () => {
         line: text.slice(0, w.loc.start).split("\n").length,
       })),
     ).toEqual([{ file: part, line: 2 }]);
-    expect(deferred[0]!.message).toContain("SC1090");
+    expect(deferred[0]!.message).toContain("Intl.Segmenter");
     const run = await execFileAsync(outPath, [], { encoding: "utf8" });
     expect(run.stdout).toBe("function\n");
     expect(run.stderr).toBe("");
@@ -70,15 +70,15 @@ test("a guarded site does not hide the same refusal elsewhere", async () => {
     const part = join(dir, "part.js");
     writeFileSync(
       part,
-      "export function guarded(found, el, channel, name) {\n" +
+      "export function guarded(locale) {\n" +
         "  try {\n" +
-        "    return void found.get(el)?.[channel]?.delete(name)\n" +
+        "    return Intl.getCanonicalLocales(locale)\n" +
         "  } catch {\n" +
-        "    return undefined\n" +
+        "    return []\n" +
         "  }\n" +
         "}\n" +
-        "export function unguarded(found, el, channel, name) {\n" +
-        "  return void found.get(el)?.[channel]?.delete(name)\n" +
+        "export function unguarded(locale) {\n" +
+        "  return Intl.getCanonicalLocales(locale)\n" +
         "}\n",
     );
     const entry = join(dir, "main.mjs");

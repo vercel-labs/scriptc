@@ -241,6 +241,37 @@ static void check_outside_local(void) {
   puts("an outside reference keeps a region until it is dropped");
 }
 
+/* A number array carrying match metadata that references a region node:
+ * the walker visits metadata before the element-type guard, so the edge
+ * counts as internal and the region is collected. */
+static void check_metadata_reference(void) {
+  for (int kind = 0; kind < 2; kind++) {
+    double r = region();
+    scr_region_enter(r);
+    Node *held = node_new(5);
+    Node *root = node_new(0);
+    ScrArr *items = scr_arr_new(kind == 0 ? SCR_ELEM_F64 : SCR_ELEM_STR, 0);
+    if (kind == 0) {
+      scr_arr_push_f64(items, 1);
+    } else {
+      scr_arr_push_ref(items, scr_str_new("x", 1)); /* moves the reference */
+    }
+    scr_arr_ext(items)->metadata =
+        scr_dyn_new_typed_ref(held, node_retain, node_release, "Node", 4, NULL, NULL);
+    root->kids = items; /* the walker reaches the array through the node */
+    scr_region_leave();
+    node_release(held); /* the only outside reference */
+    node_release(root);
+    void (*hook)(void *) = scr_weak_dispose_hook;
+    scr_weak_dispose_hook = note_disposed;
+    scr_region_release(r);
+    scr_weak_dispose_hook = hook;
+    assert(was_disposed(held));
+    scr_region_release(region());
+  }
+  puts("array metadata references are walked with the region");
+}
+
 static void check_outside_container(void) {
   double r = region();
   scr_region_enter(r);
@@ -525,6 +556,8 @@ int main(int argc, char **argv) {
     check_retry_schedule();
     check_chunk_reuse();
     check_poison();
+  } else if (!strcmp(mode, "metadata")) {
+    check_metadata_reference();
   } else if (!strcmp(mode, "debug")) {
     check_debug_report();
   } else if (!strcmp(mode, "retained")) {

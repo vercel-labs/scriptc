@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-lookup-error-identity.ts"
+ ],
+ "diags": []
+}

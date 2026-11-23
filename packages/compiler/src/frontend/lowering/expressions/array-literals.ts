@@ -226,6 +226,20 @@ function mayHoldUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
   return parts.some((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
 }
 
+/** The contextual type an inferred destructuring pattern supplies to a
+ * literal under it: a positional tuple whose positions are `any` (the
+ * checker's placeholder for "the pattern binds this position"). */
+function patternTupleContext(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
+  const ctx = lowerer.checker.getContextualType(expr);
+  return (
+    ctx !== undefined &&
+    lowerer.checker.isTupleType(ctx) &&
+    lowerer.checker
+      .getTypeArguments(ctx as ts.TypeReference)
+      .some((type) => (type.flags & ts.TypeFlags.Any) !== 0)
+  );
+}
+
 export function lowerArrayLiteral(
   lowerer: Lowerer,
   expr: ts.ArrayLiteralExpression,
@@ -517,6 +531,64 @@ export function lowerArrayLiteral(
     if (shape?.tuple) {
       const spread = expr.elements.nodes.find(ts.isSpreadElement);
       if (spread) {
+        // A destructuring pattern supplies this positional context, and one
+        // of the positions can spread a VARIABLE-length array (`[...m, 0,
+        // 0, 1]` into nine targets): the value's length is the spread's, so
+        // no fixed shape holds it. The literal builds the array it is, and
+        // the pattern reads it by index — absent positions answer undefined
+        // and extra ones drop, exactly as Node's destructuring of it does.
+        if (
+          patternTupleContext(lowerer, expr) &&
+          expr.elements.nodes.some(
+            (el) =>
+              ts.isSpreadElement(el) && !lowerer.checker.isTupleType(lowerer.typeOf(el.expression)),
+          )
+        ) {
+          // The element type comes from the positions themselves, not from
+          // the pattern's contextual tuple (whose `any` positions map to the
+          // checked-dynamic tree): a dynamic element would turn a missing
+          // position into the checked read's TypeError instead of the
+          // undefined Node binds. A spread contributes its array's element
+          // type (a fixed tuple spread its positions); mixed positions keep
+          // a union, and an unreadable set stays dynamic.
+          const candidates: IrType[] = [];
+          const note = (t: IrType | null, arm = false): void => {
+            if (t === null) return;
+            if (t.kind === "union") {
+              for (const inner of lowerer.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+              return;
+            }
+            // A position that is itself the unit value adds no element type;
+            // a unit ARM of the source's element type is a real value.
+            if (isUnitType(t) && !arm) return;
+            if (!candidates.some((c) => typeEquals(c, t))) candidates.push(t);
+          };
+          for (const el of expr.elements.nodes) {
+            if (ts.isOmittedExpression(el)) continue;
+            const mappedEl = lowerer.mapTypeOf(
+              lowerer.typeOf(ts.isSpreadElement(el) ? el.expression : el),
+            );
+            if (mappedEl === null) continue;
+            if (!ts.isSpreadElement(el)) {
+              note(mappedEl);
+              continue;
+            }
+            if (mappedEl.kind === "array") {
+              note(mappedEl.elem);
+              continue;
+            }
+            const spreadShape =
+              mappedEl.kind === "record" ? lowerer.shapes.get(mappedEl.shapeId) : undefined;
+            if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
+          }
+          const elem: IrType =
+            candidates.length === 0
+              ? DYN
+              : candidates.length === 1
+                ? candidates[0]!
+                : { kind: "union", unionId: lowerer.unions.intern(candidates) };
+          return lowerArrayLiteral(lowerer, expr, arrayOf(elem) as IrType & { kind: "array" });
+        }
         return lowerTupleSpreadLiteral(lowerer, expr, mapped, shape);
       }
       if (expr.elements.nodes.length !== shape.fields.length) {

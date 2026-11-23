@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-exports-after-module-exports/function-module.cjs",
+  "<repo>/tests/corpus/cjs-exports-after-module-exports/table-module.cjs",
+  "<repo>/tests/corpus/cjs-exports-after-module-exports/main.cjs"
+ ],
+ "diags": []
+}

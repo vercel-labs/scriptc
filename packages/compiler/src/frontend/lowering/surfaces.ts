@@ -2520,7 +2520,16 @@ export const BUILTIN_MODULE_CONSTS: Record<
   // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
   // in the namespace inventory, and the worker lowering supplies the value.
   worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
-  cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // The boolean members are RUNTIME reads (a compiled program can be
+  // either a primary or a worker): their rows stay here for the namespace
+  // inventory, and lower-cluster.ts claims every read before this table.
+  cluster: {
+    isPrimary: true,
+    isMaster: true,
+    isWorker: false,
+    SCHED_NONE: 1,
+    SCHED_RR: 2,
+  },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
   // string length limit (code units), and the inspect preview width.
@@ -3302,6 +3311,11 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoPercentilesCount",
         "perf.histoPercentilesKey",
         "perf.histoPercentilesValue",
+        "perf.histoBucketArg",
+        "perf.histoLinearBucketsCount",
+        "perf.histoLogBucketsCount",
+        "perf.histoBucketsKey",
+        "perf.histoBucketsValue",
         "perf.histoPercentilesValueBig",
         "perf.histoLinearView",
         "perf.histoLogView",
@@ -3320,7 +3334,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoWelch",
         "perf.histoPercentileCI",
       ],
-      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
     },
     {
       id: "node-builtin.perf_hooks.createSlidingWindowHistogram",

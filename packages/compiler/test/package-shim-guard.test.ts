@@ -108,6 +108,7 @@ describe("package shims compile without refusals", () => {
       "hot-shots/v8.ts",
       "undici/v5.ts",
       "undici/v7.ts",
+      "undici/v8.ts",
     ]);
   });
   // The control for the configured world: a type only @types/node declares

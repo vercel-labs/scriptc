@@ -246,6 +246,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_cluster.c",
+  "function": "scr_cluster_fork",
+  "message": "cluster.fork with uid/gid is not supported: a worker's credentials cannot be dropped before exec on this runtime",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_console_native.c",
   "function": "scr_console_method_call",
   "message": "Calling %s through a stored value has no lowering; call it directly",
@@ -765,6 +771,12 @@
   "file": "scr_http.c",
   "function": "scr_http_res_on_prefinish",
   "message": "Http2ServerResponse.on('prefinish') is not supported by the static runtime yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
+  "function": "scr_http_proxy_configured",
+  "message": "environment proxy URLs other than http:// are not supported yet",
   "code": "SC2020"
  },
  {
@@ -1303,6 +1315,18 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct island newTarget is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_assign_prototype",
   "message": "Replacing compiled class prototype members has no native lowering [SC1090]",
   "code": "SC1090"
@@ -1807,7 +1831,7 @@
  },
  {
   "file": "scr_stream_to_web.c",
-  "function": "scr_stream_to_web_readable_dyn",
+  "function": "scr_stream_to_web_readable_dyn_opts",
   "message": "Readable.toWeb over a checked-dynamic value that is not a native readable stream is not supported yet",
   "code": "SC2020"
  },
@@ -1923,6 +1947,12 @@
   "file": "scr_tls.c",
   "function": "scr_tls_sock_get_cipher",
   "message": "tlsSocket.getCipher() for %s is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
+  "function": "scr_tls_dynh_invoke",
+  "message": "changing the SNI of a started client socket has no lowering",
   "code": "SC2020"
  },
  {
@@ -2317,8 +2347,14 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_apply_array_like",
+  "function": "scr_dyn_apply_args_limit",
   "message": "Function.prototype.apply exceeds the native argument limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_args_limit",
+  "message": "Reflect.construct exceeds the native argument limit",
   "code": "SC2020"
  },
  {

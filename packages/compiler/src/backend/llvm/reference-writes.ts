@@ -102,6 +102,7 @@ const INERT_LIB_CALLS = new Set<IrLibFn>([
   "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classCase",
   "dyn.classValueHash",
   "dyn.bagGet",
   "json.parse",

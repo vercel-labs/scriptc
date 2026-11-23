@@ -46,6 +46,9 @@ struct ScrDgramSocket {
   bool emit_listening;
   bool emit_connect;
   ScrStr *pending_err; /* deferred bind/connect/send failure */
+  /* the program's own error object for that failure, when the resolver
+   * handed one back (+1): it is delivered as-is, Node's identity */
+  ScrError *pending_err_obj;
   /* pending_err's code when its message does not name one (static
    * storage; NULL = the code the message maps to) */
   const char *pending_code;

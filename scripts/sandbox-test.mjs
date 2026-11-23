@@ -43,9 +43,11 @@ const laneCaseShardedFiles = [
   "tests/harness/three-library.test.ts",
 ];
 // Coverage analysis is frontend-only: SCRIPTC_SAN cannot change its result.
-// It still case-shards across the selected lane so every corpus entry is
-// checked, but running the same sweep in the second lane adds no coverage.
-const invariantCaseShardedFiles = ["tests/harness/coverage.test.ts"];
+// The corpus sweep still case-shards across the selected lane so every corpus
+// entry is checked, but running the same sweep in the second lane adds no
+// coverage. The coverage report snapshots and fixtures run once
+// (invariantRemoteFiles).
+const invariantCaseShardedFiles = ["tests/harness/coverage-corpus.test.ts"];
 // Native-cache invalidation cases mutate process-wide compiler inputs and
 // deliberately disable the immutable-toolchain memo used by the differential
 // corpus. Keep them in their own Vitest process, matching CI: co-scheduling
@@ -84,6 +86,7 @@ const invariantRemoteFiles = [
   "packages/compiler/test/ts7/parity.test.ts",
   "packages/compiler/test/ts7/program-adapter.test.ts",
   "packages/compiler/test/ts7/resolver-parity.test.ts",
+  "tests/harness/coverage.test.ts",
   // These C runtime units compile with ASan + SCR_RC_AUDIT themselves.
   "packages/runtime/test/array.test.ts",
   "packages/runtime/test/bytes.test.ts",

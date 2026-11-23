@@ -530,6 +530,13 @@ declare var process: {
     pause(): void;
     resume(): void;
     isPaused(): boolean;
+    /* Node's handle refcount: unref() lets the process exit with a
+     * consumer still registered, and ref() (the default) makes a consumer
+     * keep it alive again. Data still arrives while other work holds the
+     * loop, as in Node. Node returns `this` for chaining; this call is
+     * statement-position only. */
+    ref(): void;
+    unref(): void;
     read(size?: number): Buffer | null;
     readonly readableLength: number;
     destroy(): void;

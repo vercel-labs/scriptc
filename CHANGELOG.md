@@ -6,6 +6,14 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.16
+
+### Highlights
+
+- **Fixes:**
+  - The npm runtime and LLVM helper packages now match the CLI. In 0.4.15 they were stale: an earlier, failed release attempt had published them for an older runtime ABI, so every 0.4.15 install rejected its runtime pack with SC3003 ("installed runtime-pack.json is malformed or incompatible") on every platform (#4011). The release now publishes a version npm already has only when npm holds the same files.
+<!-- release:end -->
+
 ## 0.4.15
 
 ### Highlights
@@ -65,7 +73,6 @@ All notable changes to scriptc will be documented in this file.
 - Release stack frames record call and throw positions, and `Error.prepareStackTrace` compiles as program state.
 - A class value's statics table and prototype views answer accessors, descriptors and subclass `instanceof` as Node does.
 - `require(esm)` and partial CommonJS cycles follow Node's semantics.
-<!-- release:end -->
 
 ## 0.4.14
 

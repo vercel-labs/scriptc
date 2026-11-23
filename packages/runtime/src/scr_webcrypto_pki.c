@@ -84,7 +84,8 @@ static ScrDyn *sw_key_algorithm(SwKey *k) {
     if (k->kind == SW_ED25519 || k->kind == SW_X25519 || k->kind == SW_X448) {
       /* { name } only */
     } else if (k->kind == SW_ECDSA || k->kind == SW_ECDH) {
-      scr_dyn_obj_set(algorithm, "namedCurve", 10, scr_wc_cstr(scr_pki_key_curve(k->key)));
+      const char *curve = scr_pki_key_curve(k->key);
+      if (curve) scr_dyn_obj_set(algorithm, "namedCurve", 10, scr_wc_cstr(curve));
     } else {
       scr_dyn_obj_set(algorithm, "modulusLength", 13, scr_dyn_new_num((double)scr_pki_key_bits(k->key)));
       ScrBytes *exponent = scr_pki_key_exponent(k->key);
@@ -990,7 +991,9 @@ static ScrBytes *sw_derive_bits(ScrDyn *algorithm, ScrDyn *base_key, bool null_l
     scr_throw_domex("InvalidAccessError", "key algorithm mismatch");
     goto done;
   }
-  if (kind == SW_ECDH && strcmp(scr_pki_key_curve(base->key), scr_pki_key_curve(peer->key)) != 0) {
+  const char *base_curve = scr_pki_key_curve(base->key);
+  const char *peer_curve = scr_pki_key_curve(peer->key);
+  if (kind == SW_ECDH && (!base_curve || !peer_curve || strcmp(base_curve, peer_curve) != 0)) {
     scr_throw_domex("InvalidAccessError", "Named curve mismatch");
     goto done;
   }

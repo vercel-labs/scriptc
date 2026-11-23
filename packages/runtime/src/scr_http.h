@@ -365,6 +365,10 @@ void scr_http_client_end_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/);
 void scr_http_client_end_bytes(ScrHttpClientReq *c, ScrBytes *data /*borrowed*/);
 void scr_http_client_flush_headers(ScrHttpClientReq *c);
 void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/);
+/* Appends one request-header pair (name, element) per element of a string
+ * list, as Node writes an array header value; answers the pairs (+1). */
+ScrArr *scr_http_pairs_add_list(ScrArr *pairs /*borrowed*/, ScrStr *name /*borrowed*/,
+                                ScrArr *values /*borrowed*/);
 /* setHeader / appendHeader for a string, number, null or array value. */
 void scr_http_client_set_header_dyn(ScrHttpClientReq *c, ScrStr *name /*borrowed*/,
                                     ScrDyn *raw /*borrowed*/);

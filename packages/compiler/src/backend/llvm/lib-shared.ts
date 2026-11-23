@@ -2019,6 +2019,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "net.setAutoSelTimeout": "scr_net_set_autosel_timeout_dyn",
   "net.getDefaultAutoSel": "scr_net_get_default_autosel",
   "net.setDefaultAutoSel": "scr_net_set_default_autosel",
+  "http.pairsAddList": "scr_http_pairs_add_list",
   "http.reqUrl": "scr_http_req_url",
   "http.reqSignal": "scr_http_req_signal",
   "http.validateHeaderName": "scr_http_validate_header_name",

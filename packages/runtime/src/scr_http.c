@@ -6806,6 +6806,19 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value
   scr_dyn_release(wrapped);
 }
 
+/* One request-header pair per element of a string list: Node writes an array
+ * header value as one line per element. Borrows all three and answers the
+ * pair array (+1). */
+ScrArr *scr_http_pairs_add_list(ScrArr *pairs, ScrStr *name, ScrArr *values) {
+  double n = scr_arr_len(values);
+  for (double i = 0; i < n; i++) {
+    ScrStr *element = (ScrStr *)scr_arr_get_ref(values, i); /* +1 */
+    scr_arr_push_ref(pairs, scr_str_retain(name));
+    scr_arr_push_ref(pairs, element); /* ownership moves into the array */
+  }
+  return scr_arr_retain(pairs);
+}
+
 void scr_http_client_remove_header(ScrHttpClientReq *c, ScrStr *name) {
   if (!scr_http_client_header_mutable(c, "remove")) return;
   size_t w = 0;

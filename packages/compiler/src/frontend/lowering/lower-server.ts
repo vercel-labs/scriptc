@@ -5305,6 +5305,17 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqSocket", args: [receiver], type: NETSOCKET_T, loc };
     }
+    if (name === "authority" || name === "scheme") {
+      // The HTTP/2 request's pseudo-headers.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return {
+        kind: "libCall",
+        fn: name === "authority" ? "http2.reqAuthority" : "http2.reqScheme",
+        args: [receiver],
+        type: STRING,
+        loc,
+      };
+    }
     if (name === "httpVersion") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqHttpVersion", args: [receiver], type: STRING, loc };
@@ -5382,11 +5393,23 @@ export function lowerServerProperty(
           loc,
         };
       }
-      lowerer.noLowering(
-        "reading 'stream' from a request outside a method call",
-        expr,
-        "call req.stream methods directly; optional calls remain undefined on HTTP/1 and use the live stream on HTTP/2",
-      );
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      const unionType: IrType = {
+        kind: "union",
+        unionId: lowerer.unions.intern([HTTP2STREAM_T, UNDEFINED_T]),
+      };
+      const optional: IrExpr = {
+        kind: "libCall",
+        fn: "http.reqH2Stream",
+        args: [receiver],
+        type: unionType,
+        loc,
+      };
+      // A plain read keeps the HTTP/1 undefined arm: on an allowHTTP1
+      // server req.stream is Node's undefined there, so a presence test,
+      // a binding or a nullish default sees it (the direct-call forms
+      // above still throw JS's member TypeError for it).
+      return optional;
     }
     if (name === "session") {
       // Http2ServerRequest's h2-only members are not exposed through the
@@ -5903,6 +5926,22 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
+    if (m === "endAfterHeaders")
+      return {
+        kind: "libCall",
+        fn: "http2.streamEndAfterHeaders",
+        args: [recv()],
+        type: BOOL,
+        loc,
+      };
+    if (m === "bufferSize")
+      return {
+        kind: "libCall",
+        fn: "http2.streamBufferSize",
+        args: [recv()],
+        type: F64,
+        loc,
+      };
     if (m === "session")
       return {
         kind: "libCall",

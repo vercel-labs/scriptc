@@ -1206,6 +1206,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "child.killed": "scr_child_killed",
   "child.spawnfile": "scr_child_spawnfile",
   "child.spawnargs": "scr_child_spawnargs",
+  "child.shellCommand": "scr_child_shell_command",
   "child.offSpawn": "scr_child_off_spawn",
   "child.offExit": "scr_child_off_exit",
   "child.offClose": "scr_child_off_close",

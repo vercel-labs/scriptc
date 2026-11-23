@@ -6225,8 +6225,11 @@ static const ScrDynHandleName ws_text_decoder_attrs[] = {
     WS_ATTR("writable"), {NULL, 0}};
 static const ScrDynHandleName ws_strategy_attrs[] = {WS_ATTR("highWaterMark"), WS_ATTR("size"),
                                                      {NULL, 0}};
+/* Accessors that answer a rejected promise for an incompatible receiver. */
+static const ScrDynHandleName ws_reader_rejects[] = {WS_ATTR("closed"), {NULL, 0}};
+static const ScrDynHandleName ws_writer_rejects[] = {WS_ATTR("closed"), WS_ATTR("ready"), {NULL, 0}};
 
-#define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID, ATTR) \
+#define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID, ATTR, REJECTS) \
   static const ScrDynHandleOps NAME = {                                           \
       .cls = CLS,                                                                 \
       .retain = RETAIN,                                                           \
@@ -6238,6 +6241,7 @@ static const ScrDynHandleName ws_strategy_attrs[] = {WS_ATTR("highWaterMark"), W
       .to_string_tag = CLS,                                                       \
       .methods = METHODS,                                                         \
       .attributes = ATTR,                                                         \
+      .rejecting_names = REJECTS,                                                 \
       .invalid_this = INVALID,                                                    \
       .rejected = ws_rejected_value,                                              \
       .stream_predicate = ws_stream_predicate,                                    \
@@ -6261,23 +6265,23 @@ static const ScrDynHandleOps ws_readable_ops = {
 };
 
 WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_reader_invoke, ws_reader_get, ws_own_set, ws_reader_methods,
-       "Value of \"this\" must be of type ReadableStreamDefaultReader", ws_reader_attrs);
+       "Value of \"this\" must be of type ReadableStreamDefaultReader", ws_reader_attrs, ws_reader_rejects);
 WS_OPS(ws_rcontroller_ops, "ReadableStreamDefaultController", ws_retain, ws_release, ws_rcontroller_invoke, ws_rcontroller_get, ws_own_set, ws_rcontroller_methods,
-       "Value of \"this\" must be of type ReadableStreamDefaultController", ws_rcontroller_attrs);
+       "Value of \"this\" must be of type ReadableStreamDefaultController", ws_rcontroller_attrs, NULL);
 WS_OPS(ws_byob_controller_ops, "ReadableByteStreamController", ws_retain, ws_release, ws_rcontroller_invoke, ws_byob_controller_get, ws_own_set,
-       ws_byob_controller_methods, "Value of \"this\" must be of type ReadableByteStreamController", ws_byob_controller_attrs);
+       ws_byob_controller_methods, "Value of \"this\" must be of type ReadableByteStreamController", ws_byob_controller_attrs, NULL);
 WS_OPS(ws_byob_reader_ops, "ReadableStreamBYOBReader", ws_retain, ws_release, ws_byob_reader_invoke, ws_byob_reader_get, ws_own_set,
-       ws_byob_reader_methods, "Value of \"this\" must be of type ReadableStreamBYOBReader", ws_reader_attrs);
+       ws_byob_reader_methods, "Value of \"this\" must be of type ReadableStreamBYOBReader", ws_reader_attrs, ws_reader_rejects);
 WS_OPS(ws_byob_request_ops, "ReadableStreamBYOBRequest", ws_retain, ws_release, ws_byob_request_invoke, ws_byob_request_get, ws_own_set,
-       ws_byob_request_methods, "Value of \"this\" must be of type ReadableStreamBYOBRequest", ws_byob_request_attrs);
+       ws_byob_request_methods, "Value of \"this\" must be of type ReadableStreamBYOBRequest", ws_byob_request_attrs, NULL);
 WS_OPS(ws_writable_ops, "WritableStream", ws_retain, ws_release, ws_writable_invoke, ws_writable_get, ws_own_set,
-       ws_writable_methods, "Value of \"this\" must be of type WritableStream", ws_writable_attrs);
+       ws_writable_methods, "Value of \"this\" must be of type WritableStream", ws_writable_attrs, NULL);
 WS_OPS(ws_writer_ops, "WritableStreamDefaultWriter", ws_retain, ws_release, ws_writer_invoke, ws_writer_get, ws_own_set,
-       ws_writer_methods, "Value of \"this\" must be of type WritableStreamDefaultWriter", ws_writer_attrs);
-WS_OPS(ws_wcontroller_ops, "WritableStreamDefaultController", ws_retain, ws_release, ws_wcontroller_invoke, ws_wcontroller_get, ws_own_set, ws_wcontroller_methods, "Value of \"this\" must be of type WritableStreamDefaultController", ws_wcontroller_attrs);
+       ws_writer_methods, "Value of \"this\" must be of type WritableStreamDefaultWriter", ws_writer_attrs, ws_writer_rejects);
+WS_OPS(ws_wcontroller_ops, "WritableStreamDefaultController", ws_retain, ws_release, ws_wcontroller_invoke, ws_wcontroller_get, ws_own_set, ws_wcontroller_methods, "Value of \"this\" must be of type WritableStreamDefaultController", ws_wcontroller_attrs, NULL);
 WS_OPS(ws_transform_ops, "TransformStream", ws_retain, ws_release, ws_transform_invoke, ws_transform_get, ws_own_set, NULL,
-       "Value of \"this\" must be of type TransformStream", ws_transform_attrs);
-WS_OPS(ws_tcontroller_ops, "TransformStreamDefaultController", ws_retain, ws_release, ws_tcontroller_invoke, ws_tcontroller_get, ws_own_set, ws_tcontroller_methods, "Value of \"this\" must be of type TransformStreamDefaultController", ws_tcontroller_attrs);
+       "Value of \"this\" must be of type TransformStream", ws_transform_attrs, NULL);
+WS_OPS(ws_tcontroller_ops, "TransformStreamDefaultController", ws_retain, ws_release, ws_tcontroller_invoke, ws_tcontroller_get, ws_own_set, ws_tcontroller_methods, "Value of \"this\" must be of type TransformStreamDefaultController", ws_tcontroller_attrs, NULL);
 /* TextEncoderStream and TextDecoderStream have no @@toStringTag. */
 static const ScrDynHandleOps ws_text_encoder_ops = {
     .cls = "TextEncoderStream",
@@ -6305,9 +6309,9 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
 };
-WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy", ws_strategy_attrs);
+WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy", ws_strategy_attrs, NULL);
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,
-       "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs);
+       "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs, NULL);
 
 static SCR_TL bool ws_installed;
 

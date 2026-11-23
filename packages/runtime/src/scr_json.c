@@ -20487,6 +20487,72 @@ static bool scr_dyn_handle_member_is_accessor(const ScrDyn *handle, const char *
   return false;
 }
 
+/* Whether `key` names an accessor that answers a rejected promise, not a
+ * throw, for a receiver that is not an instance of the class (WebIDL's
+ * `rejects`). */
+static bool scr_dyn_handle_accessor_rejects(const ScrDyn *handle, const char *key, size_t key_len) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(handle);
+  for (const ScrDynHandleName *a = ops->rejecting_names; a && a->name; a++)
+    if (a->len == key_len && memcmp(a->name, key, key_len) == 0) return true;
+  if (scr_dyn_handle_class_ops != NULL) {
+    const ScrDynHandleAccessor *a = scr_dyn_handle_class_ops->accessors(handle);
+    for (; a && a->name; a++)
+      if (strlen(a->name) == key_len && memcmp(a->name, key, key_len) == 0) return a->rejects;
+  }
+  return false;
+}
+
+/* The TypeError a class accessor raises for a receiver that is not an
+ * instance of the class: the class's own text, or V8's. */
+static void scr_dyn_handle_accessor_brand_throw(const ScrDynHandleOps *ops, const char *key,
+                                                size_t key_len, const ScrDyn *receiver) {
+  if (ops->accessor_brand_error != NULL) {
+    ops->accessor_brand_error(key, key_len, receiver);
+  } else if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  } else if (ops->invalid_this != NULL) {
+    scr_throw_error_msg_code(SCR_ERR_TYPE, ops->invalid_this, strlen(ops->invalid_this),
+                             "ERR_INVALID_THIS");
+  } else {
+    static const char message[] = "Illegal invocation";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+}
+
+/* An own property of a handle (its property table), read without consulting
+ * the class: true when the table has `key`, `descriptor` set to its +1
+ * descriptor (or NULL with an exception pending). */
+static bool scr_dyn_handle_own_descriptor(const ScrDyn *handle, const ScrStr *key,
+                                          ScrDyn **descriptor) {
+  *descriptor = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+  if (scr_dyn_handle_props_hooks == NULL || scr_dyn_handle_props_hooks->own_descriptor == NULL)
+    return false;
+  ScrDyn *k = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *out = NULL;
+  bool found = scr_dyn_handle_props_hooks->own_descriptor((ScrDyn *)handle, k, &out);
+  scr_dyn_release(k);
+  if (found) *descriptor = out;
+  return found;
+#else
+  (void)handle;
+  (void)key;
+  return false;
+#endif
+}
+
+/* Whether `receiver` is an instance of the same JavaScript class as
+ * `target`: the same handle tag, or the same class name through an alias tag
+ * (a Response body is a ReadableStream). */
+static bool scr_dyn_handle_same_class(const ScrDyn *target, const ScrDyn *receiver) {
+  if (receiver->kind != SCR_DYN_HANDLE || scr_ni_dyn_handle(receiver)) return false;
+  if (receiver->v.handle.tag == target->v.handle.tag) return true;
+  const char *a = scr_dyn_handle_ops_of(target)->cls;
+  const char *b = scr_dyn_handle_ops_of(receiver)->cls;
+  return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
     if (current == scr_builtin_object_prototype) {
@@ -20499,32 +20565,68 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
        * its members in Node and takes the paths below. */
       if (scr_ni_dyn_handle(current)) break;
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(current);
-      /* A class accessor read with an explicit receiver runs on the receiver:
-       * a receiver of the same class answers its own state, and any other
-       * receiver raises the class's brand TypeError instead of reading the
-       * target's state. Data properties and method values ignore a
-       * receiver. */
+      /* A class accessor read with an explicit receiver follows OrdinaryGet:
+       * the target's own property answers first (its own accessor with the
+       * receiver as `this`); otherwise the class's inherited getter runs on
+       * the receiver, which must be an instance of the same class. The
+       * receiver's own properties never take part in the getter's answer.
+       * Data properties and method values ignore a receiver. */
       if (receiver != NULL && receiver != current &&
           scr_dyn_handle_member_is_accessor(current, key, key_len)) {
-        if (receiver->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(receiver) &&
-            receiver->v.handle.tag == current->v.handle.tag) {
-          ScrStr *name = scr_str_new(key, key_len);
-          ScrDyn *value = scr_dyn_handle_key_get(receiver, name);
+        ScrStr *name = scr_str_new(key, key_len);
+        ScrDyn *descriptor = NULL;
+        if (scr_dyn_handle_own_descriptor(current, name, &descriptor)) {
           scr_str_release(name);
+          if (descriptor == NULL) return NULL;
+          ScrDyn *value;
+          if (descriptor->kind == SCR_DYN_UNDEF) {
+            scr_dyn_release(descriptor);
+            return scr_dyn_retain(scr_dyn_undefined());
+          }
+          ScrDyn *getter = scr_dyn_obj_get(descriptor, "get", 3);
+          if (getter != NULL && getter->kind == SCR_DYN_FUNC) {
+            scr_dyn_this_push_dyn(receiver != NULL ? receiver : current);
+            value = scr_dyn_call(getter, NULL, 0, "get");
+            scr_dyn_this_pop();
+          } else if (getter == NULL) {
+            ScrDyn *data = scr_dyn_obj_get(descriptor, "value", 5);
+            value = data != NULL ? scr_dyn_retain(data) : scr_dyn_retain(scr_dyn_undefined());
+          } else {
+            value = scr_dyn_retain(scr_dyn_undefined());
+          }
+          scr_dyn_release(getter);
+          scr_dyn_release(descriptor);
           return value;
         }
-        if (ops->accessor_brand_error != NULL) {
-          ops->accessor_brand_error(key, key_len, receiver);
-        } else if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
-          static const char message[] = "Cannot convert undefined or null to object";
-          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-        } else if (ops->invalid_this != NULL) {
-          scr_throw_error_msg_code(SCR_ERR_TYPE, ops->invalid_this, strlen(ops->invalid_this),
-                                   "ERR_INVALID_THIS");
-        } else {
-          static const char message[] = "Illegal invocation";
-          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        scr_str_release(name);
+        if (scr_dyn_handle_same_class(current, receiver)) {
+          ScrDyn *value = NULL;
+#ifdef SCR_JS_OBJECT_MODEL
+          if (scr_dyn_handle_props_hooks != NULL && scr_dyn_handle_props_hooks->class_get != NULL)
+            value = scr_dyn_handle_props_hooks->class_get(receiver, key, key_len);
+          else
+#endif
+          if (scr_dyn_handle_ops_of(receiver)->get != NULL)
+            value = scr_dyn_handle_ops_of(receiver)->get(receiver->v.handle.ptr, key, key_len);
+          if (value == NULL && !scr_exc_pending()) value = scr_dyn_retain(scr_dyn_undefined());
+          return value;
         }
+        /* A rejecting accessor answers its brand error as a rejected
+         * promise instead of throwing it (WebIDL's `rejects`): the WebIDL
+         * message for every non-instance, nullish included. */
+        if (scr_dyn_handle_accessor_rejects(current, key, key_len) && ops->rejected != NULL) {
+          if (ops->accessor_brand_error != NULL) {
+            ops->accessor_brand_error(key, key_len, receiver);
+          } else if (ops->invalid_this != NULL) {
+            scr_throw_error_msg_code(SCR_ERR_TYPE, ops->invalid_this, strlen(ops->invalid_this),
+                                     "ERR_INVALID_THIS");
+          } else {
+            static const char message[] = "Illegal invocation";
+            scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+          }
+          return ops->rejected();
+        }
+        scr_dyn_handle_accessor_brand_throw(ops, key, key_len, receiver);
         return NULL;
       }
       ScrStr *name = scr_str_new(key, key_len);

@@ -583,6 +583,20 @@ function assignedAtConstructorTopLevel(decl: ts.PropertyDeclaration): boolean {
  * the same union (unnarrowed use), to a SUB-union (partial narrowing —
  * unrepresentable without a re-tag), or to nothing (`never` in an
  * exhaustive default) leaves the expression union-typed. */
+/** `req.stream` on an Http2ServerRequest: declared as the stream, absent on
+ * an allowHTTP1 server's HTTP/1 requests (Node answers undefined there). */
+export function isRuntimeOptionalHttp2StreamRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertion(expr))
+    expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "stream") return false;
+  const receiver = lowerer.typeOf(expr.expression);
+  return (
+    lowerer.mapTypeOf(receiver)?.kind === "httpReq" &&
+    ts.symbolNameOf(receiver.getSymbol()) === "Http2ServerRequest"
+  );
+}
+
 export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrExpr {
   if (
     (expr.type.kind === "union" || expr.type.kind === "dyn") &&
@@ -645,6 +659,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (narrowed !== null && typeEquals(narrowed, lowerer.stripUndefinedArm(expr.type)))
       return expr;
   }
+  // Http2ServerRequest.stream is declared as the stream, but an allowHTTP1
+  // server also serves HTTP/1 requests, where Node answers undefined: the
+  // read keeps its undefined arm instead of narrowing it away, so a
+  // presence test, binding or default observes the absence (the
+  // direct-call forms still throw JS's member TypeError for it). A
+  // logical expression over that read keeps the union for the same
+  // reason: its right operand (a default) joins the result.
+  if (
+    expr.type.kind === "union" &&
+    ((ts.isPropertyAccessExpression(node) && isRuntimeOptionalHttp2StreamRead(lowerer, node)) ||
+      (ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+          node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) &&
+        isRuntimeOptionalHttp2StreamRead(lowerer, node.left)))
+  )
+    return expr;
   // A dyn read tsc narrowed to a SCALAR (a typeof test proved the kind):
   // bridge with a VALIDATED extraction — dynCheck, the checked-cast
   // machinery — rather than a trusted one. After the guard the check

@@ -50,3 +50,47 @@ otherDb.close();
 const otherStream = new ReadableStream();
 console.log("stream-receiver", Reflect.get(stream as unknown as object, "locked", otherStream as unknown as object));
 failure("stream-bad-receiver", () => Reflect.get(stream as unknown as object, "locked", {}));
+
+// An own property of the target shadows its class getter; a receiver's own
+// shadow is not consulted when the target's inherited getter runs with it.
+const requestTarget = new Request("http://example.com/t");
+const requestReceiver = new Request("http://example.com/r");
+Object.defineProperty(requestTarget, "url", {
+  value: "own-shadow",
+  writable: true,
+  enumerable: true,
+  configurable: true,
+});
+Object.defineProperty(requestReceiver, "url", {
+  value: "receiver-shadow",
+  writable: true,
+  enumerable: true,
+  configurable: true,
+});
+console.log("own-target", Reflect.get(requestTarget as unknown as object, "url", {}));
+console.log("own-target-receiver", Reflect.get(requestTarget as unknown as object, "url", requestReceiver as unknown as object));
+const plainRequest = new Request("http://example.com/p");
+console.log("receiver-shadow-ignored", Reflect.get(plainRequest as unknown as object, "url", requestReceiver as unknown as object));
+
+// A Response body is a ReadableStream instance for the stream getters.
+const responseForBody = new Response("x");
+console.log("body-receiver", Reflect.get(new ReadableStream() as unknown as object, "locked", responseForBody.body as unknown as object));
+
+// An accessor that rejects answers a rejected promise, not a throw, for an
+// incompatible receiver.
+const closedReader = new ReadableStream().getReader();
+(Reflect.get(closedReader as unknown as object, "closed", {}) as Promise<unknown>).then(
+  () => console.log("reader-closed-bad resolved"),
+  (error) => {
+    const e = error as { name: string; code?: string; message: string };
+    console.log("reader-closed-bad", e.name, e.code, e.message);
+  },
+);
+const readyWriter = new WritableStream().getWriter();
+(Reflect.get(readyWriter as unknown as object, "ready", null) as Promise<unknown>).then(
+  () => console.log("writer-ready-bad resolved"),
+  (error) => {
+    const e = error as { name: string; code?: string; message: string };
+    console.log("writer-ready-bad", e.name, e.code, e.message);
+  },
+);

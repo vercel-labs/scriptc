@@ -7991,6 +7991,10 @@ static const ScrDynHandleOps sf_abort_controller_ops = {
  * explicit receiver (the handle-class unit may not be linked). */
 static const ScrDynHandleName sf_stream_attributes[] = {SCR_DYN_HANDLE_NAME("locked"),
                                                         {NULL, 0}};
+/* Accessors that answer a rejected promise for an incompatible receiver. */
+static const ScrDynHandleName sf_reader_rejects[] = {SCR_DYN_HANDLE_NAME("closed"), {NULL, 0}};
+static const ScrDynHandleName sf_writer_rejects[] = {SCR_DYN_HANDLE_NAME("closed"),
+                                                     SCR_DYN_HANDLE_NAME("ready"), {NULL, 0}};
 static const ScrDynHandleName sf_reader_attributes[] = {SCR_DYN_HANDLE_NAME("closed"),
                                                         {NULL, 0}};
 static const ScrDynHandleName sf_controller_attributes[] = {SCR_DYN_HANDLE_NAME("desiredSize"),
@@ -8020,6 +8024,7 @@ static const ScrDynHandleOps sf_reader_ops = {
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
     &sf_no_set, NULL, .methods = sf_reader_methods,
     .attributes = sf_reader_attributes,
+    .rejecting_names = sf_reader_rejects,
     .invalid_this =
         "Value of \"this\" must be of type ReadableStreamDefaultReader",
     .rejected = &sf_rejected,
@@ -8067,6 +8072,7 @@ static const ScrDynHandleOps sf_writer_ops = {
     &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
     &sf_no_set, NULL, .methods = sf_writer_methods,
     .attributes = sf_writer_attributes,
+    .rejecting_names = sf_writer_rejects,
     .invalid_this =
         "Value of \"this\" must be of type WritableStreamDefaultWriter",
     .rejected = &sf_rejected,

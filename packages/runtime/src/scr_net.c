@@ -1475,9 +1475,12 @@ static void scr_net_sock_close_fd(ScrNetSocket *s) {
 static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
   if (s->fd < 0 || !s->wr_ending || s->wr_done || s->wlen > s->whead || s->tunnel != NULL) return;
   /* the transport may still hold unsent bytes of its own (the TLS
-   * handshake hold): the FIN waits for them */
+   * handshake hold): push them now, so an end() that follows a write
+   * inside the hold window still flushes; if they cannot all go, the FIN
+   * waits and the readiness path retries */
   if (s->tops != NULL && s->tops->write_pending && s->tops->write_pending(s->tctx)) {
-    return;
+    if (s->tops->drain != NULL) s->tops->drain(s->tctx);
+    if (s->tops->write_pending(s->tctx)) return;
   }
   /* a transport says goodbye first (TLS close_notify), best-effort */
   if (s->tops && s->t_est) s->tops->shutdown_write(s->tctx);

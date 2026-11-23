@@ -2195,7 +2195,9 @@ static void scr_tls_free(void *tctx) {
 /* The fd is writable again: the rest of what was held goes out. */
 static void scr_tls_drain(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
-  if (!t->holding && t->held_len > t->held_off) (void)scr_tls_flush_held(t);
+  /* held records go to the socket now: readiness retries what EAGAIN
+   * leaves, and the write half's settlement waits on them (write_pending) */
+  if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
 }
 
 /* The 'secure' event: after a client's secureConnect listeners, as Node

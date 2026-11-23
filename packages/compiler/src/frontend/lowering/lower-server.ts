@@ -7085,6 +7085,7 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
   "keepAliveInitialDelay",
   "sessionTimeout",
   "ticketKeys",
+  "secureProtocol",
 ]);
 
 /** The http.Server options https.createServer also reads (Node's

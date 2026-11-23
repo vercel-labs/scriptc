@@ -399,6 +399,40 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max) {
       return false;
     }
   }
+  /* Node maps a string secureProtocol to an OpenSSL method before it reads
+   * the versions; an unknown name and the disabled SSLv2/SSLv3 families
+   * are ERR_TLS_INVALID_PROTOCOL_METHOD. Non-string values are ignored by
+   * that map (they only take part in the conflict check above). */
+  if (proto != NULL && proto->kind == SCR_DYN_STR) {
+    static const char *const known[] = {
+      "SSLv23_method", "SSLv23_server_method", "SSLv23_client_method",
+      "TLSv1_method", "TLSv1_server_method", "TLSv1_client_method",
+      "TLSv1_1_method", "TLSv1_1_server_method", "TLSv1_1_client_method",
+      "TLSv1_2_method", "TLSv1_2_server_method", "TLSv1_2_client_method", NULL,
+    };
+    const char *value = proto->v.str->data;
+    size_t len = proto->v.str->len;
+    bool matched = false;
+    for (size_t i = 0; known[i] != NULL; i++) {
+      if (strlen(known[i]) == len && memcmp(known[i], value, len) == 0) {
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      char msg[300];
+      int m;
+      if (len >= 6 && memcmp(value, "SSLv2_", 6) == 0)
+        m = snprintf(msg, sizeof msg, "SSLv2 methods disabled");
+      else if (len >= 6 && memcmp(value, "SSLv3_", 6) == 0)
+        m = snprintf(msg, sizeof msg, "SSLv3 methods disabled");
+      else
+        m = snprintf(msg, sizeof msg, "Unknown method: %.*s",
+                     (int)(len < 200 ? len : 200), value);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)m, "ERR_TLS_INVALID_PROTOCOL_METHOD");
+      return false;
+    }
+  }
   return scr_tls_version_dyn(vmin, "minimum", 12, min) && scr_tls_version_dyn(vmax, "maximum", 13, max);
 }
 
@@ -3217,6 +3251,9 @@ static bool scr_tls_srv_opt_member(const ScrDynProp *e, const ScrDyn *v, bool de
   if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
                     strcmp(e->key, "maxVersion") == 0))
     return true;
+  /* scr_tls_versions_dyn validates secureProtocol (and its conflict with a
+   * version) before the walk; the member itself adds nothing later. */
+  if (strcmp(e->key, "secureProtocol") == 0) return true;
   if (strcmp(e->key, "SNICallback") == 0) {
     scr_tls_opt_fence(api, "SNICallback",
                       "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
@@ -3377,7 +3414,8 @@ static bool scr_tls_srv_opts_walk_ex(const ScrDyn *opts, const char *api, ScrByt
   free(member_keys);
   free(member_lens);
   free(member_defined);
-  if (ok && (*cert_out == NULL || *key_out == NULL)) {
+  if (ok && strcmp(api, "tls.createSecureContext") != 0 &&
+      (*cert_out == NULL || *key_out == NULL)) {
     ScrJsonBuf b;
     scr_jb_init(&b);
     scr_jb_puts(&b, api);
@@ -3409,13 +3447,16 @@ bool scr_tls_srv_opts_walk(const ScrDyn *opts, const char *api, ScrBytes **cert_
  * everything else met its ladder error or the walk's per-key fence.
  * +1, or NULL with the exception pending. */
 ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/) {
+  int min_version = 12, max_version = 13;
+  if (!scr_tls_versions_dyn(opts, &min_version, &max_version)) return NULL;
   ScrBytes *cert, *key;
   /* requestCert and rejectUnauthorized are no context options: Node's
    * createSecureContext ignores them */
   ScrTlsClientAuth auth;
   if (!scr_tls_srv_opts_walk_ex(opts, "tls.createSecureContext", &cert, &key, false, &auth)) return NULL;
-  ScrSecureCtx *c = scr_tls_create_secure_context((const char *)cert->data, cert->len,
-                                                   (const char *)key->data, key->len);
+  ScrSecureCtx *c = scr_tls_create_secure_context(
+      cert != NULL ? (const char *)cert->data : NULL, cert != NULL ? cert->len : 0,
+      key != NULL ? (const char *)key->data : NULL, key != NULL ? key->len : 0);
   if (auth.ca != NULL) {
     /* kept for sockets created from the context (a TLSSocket's
      * secureContext); an SNI answer's chain comes from the server's

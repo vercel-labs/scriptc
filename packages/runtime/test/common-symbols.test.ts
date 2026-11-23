@@ -67,6 +67,8 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
         ...defines,
         `-I${join(vendorDir, "quickjs-ng")}`,
         `-I${join(vendorDir, "mbedtls", "include")}`,
+        // scr_tls.c reads the engine's private handshake params (ssl_misc.h)
+        `-I${join(vendorDir, "mbedtls", "library")}`,
         `-I${join(vendorDir, "brotli", "c", "include")}`,
         `-I${join(vendorDir, "zstd", "lib")}`,
         ...(name === "scr_intl.c" ? icu : []),

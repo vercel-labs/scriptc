@@ -1,8 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
 
 const runner = fileURLToPath(new URL("../../scripts/ci-vercel/run-lane.mjs", import.meta.url));
+const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
+  tasks: Record<string, { env?: string[]; inputs?: string[] }>;
+};
 
 function runLane(args: string[], env: Record<string, string>) {
   const result = spawnSync(process.execPath, [runner, ...args], {
@@ -23,4 +27,34 @@ test("a push to the default branch runs every effect shard, not the sample", () 
   expect(runLane(["effects-sample", "san"], { VERCEL_GIT_COMMIT_REF: "main" })).toContain(
     "Every effect shard runs outside a pull request",
   );
+});
+
+test("the effect tasks hash the branch and pull request they sample for", () => {
+  // These decide whether a task skips (pull request) or runs every shard (default branch), and which shard a pull
+  // request samples. Turbo's strict mode strips them unless the task names them, and the hash then does not tell a
+  // pull request's skip from a default-branch run.
+  const effects = Object.entries(turbo.tasks).filter(([name]) =>
+    name.startsWith("//#ci:lane:effects:"),
+  );
+  expect(effects.map(([name]) => name)).toHaveLength(34);
+  for (const [name, task] of effects)
+    expect(task.env, name).toEqual(
+      expect.arrayContaining([
+        "GITHUB_HEAD_REF",
+        "VERCEL_GIT_COMMIT_REF",
+        "VERCEL_GIT_PULL_REQUEST_ID",
+      ]),
+    );
+});
+
+test("the TS7 parity task hashes the fixtures whose baselines it checks", () => {
+  const inputs = turbo.tasks["//#ci:lane:ts7-parity"]!.inputs!;
+  for (const fixtures of [
+    "tests/corpus/**",
+    "tests/diagnostics/**",
+    "tests/fixtures/**",
+    "packages/compiler/test/ts7/**",
+    "scripts/ts7-order-fixtures.mjs",
+  ])
+    expect(inputs, fixtures).toContain(fixtures);
 });

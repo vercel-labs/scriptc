@@ -9943,20 +9943,32 @@ static void scr_ipc_service_one(ScrIpc *ipc) {
   if (!scr_exc_pending()) scr_ipc_fire_disconnect(ipc);
 }
 
+/* Unlink a channel by identity. A callback serviced in this pass can fork
+ * a replacement worker, whose channel is pushed at the head of scr_ipcs;
+ * writing the slot the iteration read would drop that new channel — its
+ * 'online', messages and close would never be serviced, and the
+ * registry's reference would leak. */
+static void scr_ipc_unregister(ScrIpc *ipc) {
+  for (ScrIpc **link = &scr_ipcs; *link != NULL; link = &(*link)->next) {
+    if (*link != ipc) continue;
+    *link = ipc->next;
+    ipc->next = NULL;
+    ipc->registered = false;
+    scr_ipc_release(ipc); /* service-registry reference */
+    return;
+  }
+}
+
 static void scr_ipc_service(void) {
-  ScrIpc **link = &scr_ipcs;
-  while (*link) {
-    ScrIpc *ipc = *link;
+  /* The callback may append at the head, so hold the next channel rather
+   * than a list slot across it. */
+  ScrIpc *ipc = scr_ipcs;
+  while (ipc != NULL) {
+    ScrIpc *next = ipc->next;
     scr_ipc_service_one(ipc);
-    if (ipc->disconnect_emitted && ipc->n_send == 0) {
-      *link = ipc->next;
-      ipc->next = NULL;
-      ipc->registered = false;
-      scr_ipc_release(ipc); /* service-registry reference */
-    } else {
-      link = &ipc->next;
-    }
+    if (ipc->disconnect_emitted && ipc->n_send == 0) scr_ipc_unregister(ipc);
     if (scr_exc_pending()) return;
+    ipc = next;
   }
 }
 

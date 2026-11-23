@@ -727,6 +727,10 @@ struct ScrH2Stream {
   /* send buffer for window-blocked bytes */
   ScrH2Buf wbuf;
   int64_t send_window;
+  /* the LOCAL receive window: the credit this side has advertised for the
+   * peer's DATA (state.localWindowSize). The eager replenish below keeps
+   * it at its initial value once each frame is answered. */
+  int64_t recv_window;
   /* respondWithFile/respondWithFD: the descriptor source, streamed as the
    * peer's windows open (never buffered whole). */
   int file_fd;             /* -1 when there is no source */
@@ -1193,6 +1197,9 @@ static ScrH2Stream *scr_h2_stream_new(ScrH2Session *sess, int32_t id) {
   st->sess = scr_http2_session_retain(sess);
   if (sess->client) st->als = scr_als_capture();
   st->send_window = sess->peer_init_window ? (int64_t)sess->peer_init_window : SCR_H2_DEFAULT_WINDOW;
+  st->recv_window = sess->local_settings.initial_window_size
+                        ? (int64_t)sess->local_settings.initial_window_size
+                        : SCR_H2_DEFAULT_WINDOW;
 #ifdef SCR_RC_AUDIT
   scr_h2_streams_live++;
 #endif
@@ -1243,14 +1250,9 @@ static void scr_h2_session_maybe_finish_close(ScrH2Session *s);
 /* Queue the stream's 'close' (idempotent) and forget it session-side. */
 static void scr_h2_stream_settle(ScrH2Stream *st) {
   if (st->close_queued || st->close_emitted) return;
-  /* The readback records belong to an open stream; a closed one drops
-   * them so the process teardown sees nothing live. */
-  scr_dyn_release(st->sent_headers_dom);
-  scr_dyn_release(st->sent_info_dom);
-  scr_dyn_release(st->sent_trailers_dom);
-  st->sent_headers_dom = NULL;
-  st->sent_info_dom = NULL;
-  st->sent_trailers_dom = NULL;
+  /* The sent-header readbacks stay readable through 'close' and after it
+   * (Node keeps them for the stream's lifetime); the final release drops
+   * them with the stream. */
   scr_h2_file_close(st);
   st->close_queued = true;
   st->api_closed = true;
@@ -1410,6 +1412,16 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
  * compatibility pair's close. */
 static void scr_h2_stream_fire_close(ScrH2Stream *st) {
   if (!scr_exc_pending()) scr_net_fire0_this(&st->close_ls, st, SCR_DYNH_H2_STREAM);
+  /* The sent-header readbacks were readable through 'close' (Node keeps
+   * them for the stream's lifetime); they go with the stream's settled
+   * listeners so a compat pair that outlives the stream cannot leave them
+   * live at teardown. */
+  scr_dyn_release(st->sent_headers_dom);
+  scr_dyn_release(st->sent_info_dom);
+  scr_dyn_release(st->sent_trailers_dom);
+  st->sent_headers_dom = NULL;
+  st->sent_info_dom = NULL;
+  st->sent_trailers_dom = NULL;
   scr_h2_stream_drop_lists(st);
 }
 
@@ -1851,6 +1863,13 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       ScrH2PendingSettings done = s->pending[0];
       memmove(s->pending, s->pending + 1, (s->npending - 1) * sizeof *s->pending);
       s->npending--;
+      /* A local INITIAL_WINDOW_SIZE this side advertised applies to the
+       * receive window of every open stream once the peer acknowledges it. */
+      if (done.after.initial_window_size != s->local_settings.initial_window_size) {
+        int64_t delta = (int64_t)done.after.initial_window_size -
+                        (int64_t)s->local_settings.initial_window_size;
+        for (size_t i = 0; i < s->nstreams; i++) s->streams[i]->recv_window += delta;
+      }
       s->local_settings = done.after;
       if (done.cb != NULL) {
         scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
@@ -3369,7 +3388,7 @@ ScrDyn *scr_http2_stream_state(ScrH2Stream *st) {
   scr_dyn_obj_set(obj, "sumDependencyWeight", 18, scr_dyn_new_num(0));
   scr_dyn_obj_set(obj, "localClose", 10, scr_dyn_new_num(local_close ? 1 : 0));
   scr_dyn_obj_set(obj, "remoteClose", 11, scr_dyn_new_num(remote_close ? 1 : 0));
-  scr_dyn_obj_set(obj, "localWindowSize", 15, scr_dyn_new_num((double)st->send_window));
+  scr_dyn_obj_set(obj, "localWindowSize", 15, scr_dyn_new_num((double)st->recv_window));
   return obj;
 }
 

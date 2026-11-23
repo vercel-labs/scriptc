@@ -101,7 +101,9 @@ test("the post-merge lanes only read: no job can open an issue or a pull request
   expect(postmerge.permissions).toEqual({ contents: "read" });
   for (const [name, job] of Object.entries(postmerge.jobs)) {
     for (const [scope, level] of Object.entries(job.permissions ?? {}))
-      expect(level, `${name} ${scope}`).toBe("read");
+      // The one write: the CI call must grant what CI's roll-up job asks for, a step it skips here.
+      if (!(name === "macos" && scope === "statuses"))
+        expect(level, `${name} ${scope}`).toBe("read");
     if (job.uses === undefined) expect(job["timeout-minutes"], name).toBeDefined();
   }
   const text = read(".github/workflows/postmerge.yml");
@@ -567,4 +569,36 @@ test("runs that found nothing new do not push the last tested commit out of the 
   ]);
   // pick asks for the newest state, however many runs skipped since.
   expect(read("scripts/postmerge.mjs")).toContain("loadStates(1)");
+});
+
+const LEVEL: Record<string, number> = { none: 0, read: 1, write: 2 };
+/** Every permission the jobs of a called workflow ask for, at its highest level, following nested calls. */
+function askedFor(path: string): Record<string, string> {
+  const wf = workflow(path);
+  const asked: Record<string, string> = {};
+  const add = (permissions: Record<string, string> | undefined) => {
+    for (const [scope, level] of Object.entries(permissions ?? {}))
+      if ((LEVEL[level] ?? 0) > (LEVEL[asked[scope] ?? "none"] ?? 0)) asked[scope] = level;
+  };
+  add(wf.permissions);
+  for (const job of Object.values(wf.jobs)) {
+    add(job.permissions);
+    if (job.uses?.startsWith("./.github/workflows/")) add(askedFor(job.uses.slice(2)));
+  }
+  return asked;
+}
+
+test("each post-merge call grants every permission the called workflow's jobs ask for", () => {
+  // GitHub rejects a call whose workflow asks for more than the calling job grants, even for jobs that do not run.
+  for (const name of ["macos", "rehearsal"]) {
+    const job = postmerge.jobs[name]!;
+    const granted = job.permissions ?? {};
+    for (const [scope, level] of Object.entries(askedFor(job.uses!.slice(2))))
+      expect(LEVEL[granted[scope] ?? "none"], `${name}: ${scope}: ${level}`).toBeGreaterThanOrEqual(
+        LEVEL[level]!,
+      );
+  }
+  // The post-merge call reports no ci/full status: it tests another commit, and one lane of it.
+  const report = ci.jobs.test!.steps!.find((step) => step.name === "Report ci/full")!;
+  expect(report.if).toContain("inputs.only_lane == ''");
 });

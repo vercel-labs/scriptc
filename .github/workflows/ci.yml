@@ -1798,9 +1798,10 @@ jobs:
       # fast tier, and the result of every lane once a run of the expensive tier ends. A fork's token cannot write
       # statuses, and a fork's run is not trusted to: a maintainer records ci/full for it (ci-review-gate.yml,
       # fork_attest). Pushes to main and the nightly sweep need none.
+      # A post-merge call (only_lane) tests another commit than the run's and one lane of it: it reports nothing.
       - name: Report ci/full
         if: >-
-          always() && needs.validation_scope.outputs.tier != 'superseded' &&
+          always() && inputs.only_lane == '' && needs.validation_scope.outputs.tier != 'superseded' &&
           github.event_name != 'push' && github.event_name != 'schedule' &&
           (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         env:

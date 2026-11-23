@@ -155,6 +155,8 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.reqComplete": "scr_http2_req_complete",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
+    "http2.statusMessageUnsupported": "scr_http2_status_message_unsupported",
+    "http2.statusMessageRead": "scr_http2_status_message_read",
     "http2.reqAuthority": "scr_http2_req_authority",
     "http2.reqScheme": "scr_http2_req_scheme",
     "http2.streamEndAfterHeaders": "scr_http2_stream_end_after_headers",

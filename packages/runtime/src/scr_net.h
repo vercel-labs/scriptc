@@ -364,6 +364,9 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);
+/* Whether the socket's dial is still waiting to be started: a request that
+ * queued for an agent slot holds its socket before it connects. */
+bool scr_net_sock_dial_pending(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
 ScrDyn *scr_net_sock_timeout_get(ScrNetSocket *s); /* +1 */
 bool scr_net_sock_allow_half_open(ScrNetSocket *s);

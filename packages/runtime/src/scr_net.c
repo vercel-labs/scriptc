@@ -5058,6 +5058,8 @@ void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to) {
   scr_net_sock_wq_clear(from);
 }
 
+bool scr_net_sock_dial_pending(ScrNetSocket *s) { return s->dial_deferred; }
+
 void scr_net_sock_dial_start(ScrNetSocket *s) {
   if (!s->dial_deferred || s->close_emitted || s->emit_close || s->fd >= 0) return;
   s->dial_deferred = false;

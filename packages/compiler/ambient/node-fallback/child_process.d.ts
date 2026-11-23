@@ -18,6 +18,8 @@ declare module "child_process" {
   /* T is the capture type the options select. The default keeps a bare
    * `SpawnSyncReturns` annotation meaning the string form, as before. */
   export interface SpawnSyncReturns<T = string> {
+    /* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+    readonly pid: number;
     readonly status: number | null;
     readonly stdout: T;
     readonly stderr: T;

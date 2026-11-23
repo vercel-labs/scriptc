@@ -3575,6 +3575,12 @@ export function lowerIntrinsicProperty(
     // {encoding: "utf8"} options argument the checker types them Buffer,
     // which is re-fenced here (the call site already said so).
     const loc = locOf(expr);
+    if (name === "pid") {
+      // Node's result.pid: the child's id, a plain number (0 when the
+      // spawn itself failed) — the declared @types/node member.
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "spawnRes.pid", args: [receiver], type: F64, loc };
+    }
     if (name === "status") {
       // Always the interned `number | null` union; a checker-NARROWED
       // read (`missing.status === null ? ... : ${missing.status}`)

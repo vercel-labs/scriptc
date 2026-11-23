@@ -12085,6 +12085,7 @@
           "tests/corpus/child-spawnfile-spawnargs.ts",
           "tests/corpus/child-stdin-pipe-interface.ts",
           "tests/corpus/child-stdio-array-general-streams.ts",
+          "tests/corpus/child-stdio-array.cjs",
           "tests/corpus/child-stdio-array/main.ts",
           "tests/corpus/child-stdio-options/main.ts",
           "tests/corpus/child-stdio-stream-types.ts",
@@ -13121,7 +13122,8 @@
         "evidence": "compiler-feature:child_process.stdio",
         "tests": [
           "tests/corpus/child-stdio-array/main.ts",
-          "tests/corpus/child-stdio-array-general-streams.ts"
+          "tests/corpus/child-stdio-array-general-streams.ts",
+          "tests/corpus/child-stdio-array.cjs"
         ]
       },
       "anchorSource": "ancestor"

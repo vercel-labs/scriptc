@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   buildCacheRoot,
@@ -368,9 +368,12 @@ function cacheKey(
       .update(options.sanitize === true ? "sanitize" : "plain")
       .update("\0")
       .update(options.outputKind)
-      // The source path names the module for diagnostics only. Artifacts of the
-      // same LLVM text, target and options are identical whichever app's copy
-      // of the code they came from, so the path is not part of the key.
+      // The module source file name is part of the output (the source name
+      // and the local-function profile identities), so it keys the artifact.
+      // The directories holding the file do not: the same LLVM text from
+      // another app's copy of the code is the same artifact.
+      .update("\0")
+      .update(basename(options.sourcePath))
       .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
       .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
       .digest("hex")

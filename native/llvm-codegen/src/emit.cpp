@@ -1426,14 +1426,17 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
                   ProfileMatch &Match) {
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
-  // helper build; source content and partition count arrive per module. The
-  // source path is not part of it: it only names the module for diagnostics,
-  // and partitions with the same bytes from another app's copy of the same
-  // code must reuse this build's artifacts.
+  // helper build; source content and partition count arrive per module. Of
+  // the source path only the module source file name is part of it: the name
+  // is the module's source file name and the prefix of its local-function
+  // profile identities, so two entries with different names must not share.
+  // The directories are not: partitions with the same bytes from another
+  // app's copy of the same code reuse this build's artifacts.
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
-                                Options.RelocationModel, "profile-generate",
-                                Options.ProfileGenerate});
+                                Options.RelocationModel,
+                                moduleSourceName(Options.SourcePath),
+                                "profile-generate", Options.ProfileGenerate});
   // A profile changes every partition it describes, so its bytes key them.
   if (!Options.ProfileUse.empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Profile =

@@ -30,11 +30,13 @@ export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
 /** The locale tags a formatter is built at. ICU carries data for many
  * more; which of them Node would pick for a requested tag is locale
  * negotiation, which is not modelled, so only tags that resolve to
- * themselves are taken. */
-const LOCALE_TAGS = new Set(["en-US", "en"]);
+ * themselves are taken. "en-GB" is one: Node's lookup keeps it as is
+ * (there is no shorter "en" tag it falls back to), and ECMA-402 gives it
+ * its own number and date patterns. */
+const LOCALE_TAGS = new Set(["en-US", "en", "en-GB"]);
 
 export const INTL_FORMATTER_HINT =
-  'what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US" or "en"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported';
+  'what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US", "en" or "en-GB"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported';
 
 /** The formatter interface of the standard library that `type` names, or
  * null. */
@@ -82,7 +84,7 @@ function intlLocale(
     lowerer.noLowering(
       `${what} at locale "${arg.text}"`,
       arg,
-      'which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile',
+      'which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile',
     );
   }
   lowerer.noLowering(

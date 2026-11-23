@@ -1835,6 +1835,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509ValidToStr",
   "crypto.createPrivateKey",
   "crypto.createPublicKey",
+  // Node's bundle, options and passphrase checks, then the decoder, MAC and
+  // decryption errors.
+  "crypto.parsePKCS12",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
   "crypto.encapsulate",

@@ -233,6 +233,7 @@ export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
   "JsonWebKeyInput",
   "JwkKeyExportOptions",
   "KeyExportOptions",
+  "ParsePKCS12Options",
   "PrivateKeyInput",
   "PublicKeyInput",
   "RSAKeyPairKeyObjectOptions",
@@ -7322,6 +7323,42 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         false,
         undefined,
         ["publicKey", "privateKey"],
+      ),
+    };
+  }
+  // crypto.parsePKCS12's ParsedPKCS12: { privateKey, certificate,
+  // additionalCertificates } over the mapped property types — the KeyObject
+  // handle (or null), the X509Certificate record (or null) and an array of
+  // them — in Node's field order.
+  if (
+    psym !== undefined &&
+    psymName === "ParsedPKCS12" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const field = (name: string): IrType | null => {
+      const prop = ctx.checker.getPropertyOfType(type, name);
+      return prop ? mapType(ctx.checker.getTypeOfSymbol(prop), ctx) : null;
+    };
+    const privateKey = field("privateKey");
+    const certificate = field("certificate");
+    const additionalCertificates = field("additionalCertificates");
+    if (!privateKey || !certificate || !additionalCertificates) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "additionalCertificates", type: additionalCertificates },
+          { name: "certificate", type: certificate },
+          { name: "privateKey", type: privateKey },
+        ],
+        false,
+        undefined,
+        ["privateKey", "certificate", "additionalCertificates"],
       ),
     };
   }

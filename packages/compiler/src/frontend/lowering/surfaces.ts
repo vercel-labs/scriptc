@@ -1752,6 +1752,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
+      // Special-cased (lowerParsePKCS12): the parsed bundle's parts compose
+      // the result record, whose X509Certificate members are records built
+      // from the certificates' DER.
+      parsePKCS12: { fn: "crypto.parsePKCS12", params: [], result: VOID },
       createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
       createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },

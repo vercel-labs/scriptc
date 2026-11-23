@@ -20723,6 +20723,9 @@
           "tests/corpus/crypto-ml-kem-runtime-input.ts",
           "tests/corpus/crypto-ml-kem.ts",
           "tests/corpus/crypto-module-catalogs.ts",
+          "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
+          "tests/corpus/crypto-parse-pkcs12-pbe.ts",
+          "tests/corpus/crypto-parse-pkcs12.ts",
           "tests/corpus/crypto-random-arguments.cjs",
           "tests/corpus/crypto-rsa-key-types.cjs",
           "tests/corpus/crypto-rsa-padding-errors.ts",
@@ -22264,8 +22267,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "supported",
+        "evidence": "compiler-feature:crypto.crypto.parsePKCS12",
+        "tests": [
+          "tests/corpus/crypto-parse-pkcs12.ts",
+          "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
+          "tests/corpus/crypto-parse-pkcs12-pbe.ts"
+        ]
       },
       "anchorSource": "exact"
     },

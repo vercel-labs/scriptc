@@ -66,5 +66,7 @@ export function mobileRuntimeConfig(name, env = process.env, platform = process.
       minimum_os: "Android 26",
     },
     targetArgs: ["--target=aarch64-linux-android26", "--sysroot", join(toolchain, "sysroot")],
+    // Android apps load native code as shared libraries; the pack's objects link into one.
+    compilerFlags: ["-fPIC"],
   };
 }

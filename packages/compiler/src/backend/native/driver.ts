@@ -274,6 +274,9 @@ export function resolveCc(
         "-target",
         zigTarget,
         "-D_GNU_SOURCE",
+        // Android apps load native code as shared libraries, so the archive
+        // has to be position-independent to link into one.
+        "-fPIC",
         "-isystem",
         join(sysroot, "usr", "include"),
         "-isystem",

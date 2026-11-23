@@ -2487,7 +2487,9 @@ function lowerResolvedImport(
     // call (lower-node-island.ts, lowerIslandLoadCall).
     const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
     if (npm !== null) {
-      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call), LAZY_PACKAGE_HINT));
+      lowerer.pushDiag(
+        unsupportedPackageImportDiag(npm.packageName, locOf(call), LAZY_PACKAGE_HINT),
+      );
       throw new PoisonError();
     }
     lowerer.refuseUnsupportedApi("'import()'", call);

@@ -155,6 +155,8 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.reqComplete": "scr_http2_req_complete",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
+    "http2.sessionAltsvc": "scr_http2_session_altsvc",
+    "http2.sessionOrigin": "scr_http2_session_origin",
     "http2.reqAuthority": "scr_http2_req_authority",
     "http2.reqScheme": "scr_http2_req_scheme",
     "http2.streamEndAfterHeaders": "scr_http2_stream_end_after_headers",
@@ -348,6 +350,16 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.sessionOnAltsvc":
+      runtime = "scr_http2_session_on_altsvc";
+      thunk = `scr_http2_altsvc_thunk${Math.min(arity, 3)}`;
+      params = ["ptr", "ptr", "ptr", "double"];
+      break;
+    case "http2.sessionOnOrigin":
+      runtime = "scr_http2_session_on_origin";
+      thunk = arity === 0 ? "scr_http2_origin_thunk0" : "scr_http2_origin_thunk";
+      params = ["ptr", "ptr"];
       break;
     case "http2.streamOnTrailers":
       // The header-record adapter is already the runtime ABI (pairs, flags).

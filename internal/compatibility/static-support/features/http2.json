@@ -38,6 +38,8 @@
     { "chapter": "http2", "parent": "Core API", "signatures": ["Supporting the `CONNECT` method", "The extended `CONNECT` protocol"], "status": "not-applicable" },
     { "chapter": "http2", "parent": "`http2.constants`", "signatures": ["Error codes for `RST_STREAM` and `GOAWAY`"], "status": "not-applicable" },
     { "chapter": "http2", "parent": "HTTP/2", "signatures": ["Note on `:authority` and `host`"], "status": "not-applicable" },
+    {"chapter": "http2", "parent": "Class: `ServerHttp2Session`", "signatures": ["`serverhttp2session.altsvc(alt, originOrStream)`", "`serverhttp2session.origin(...origins)`", "Event: `'altsvc'`", "Event: `'origin'`"], "status": "supported", "evidence": ["tests/corpus/http2-altsvc-origin.ts"]},
+    {"chapter": "http2", "parent": "Class: `ClientHttp2Session`", "signatures": ["Event: `'altsvc'`", "Event: `'origin'`"], "status": "supported", "evidence": ["tests/corpus/http2-altsvc-origin.ts"]},
     {"chapter": "http2", "parent": "Class: `http2.Http2ServerRequest`", "signatures": ["`authority` Type: {string}", "`scheme` Type: {string}", "`stream` Type: {Http2Stream}"], "status": "supported", "evidence": ["tests/corpus/http2-compat-request-state.ts"]},
     {"chapter": "http2", "parent": "Class: `Http2Stream`", "signatures": ["`id` Type: {number|undefined}", "`pending` Type: {boolean}", "`endAfterHeaders` Type: {boolean}", "`bufferSize` Type: {number}"], "status": "supported", "evidence": ["tests/corpus/http2-compat-request-state.ts"]}
 ]

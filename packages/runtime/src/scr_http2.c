@@ -630,6 +630,8 @@ enum {
   SCR_H2_F_GOAWAY = 0x7,
   SCR_H2_F_WINDOW_UPDATE = 0x8,
   SCR_H2_F_CONTINUATION = 0x9,
+  SCR_H2_F_ALTSVC = 0xa,
+  SCR_H2_F_ORIGIN = 0xc,
 };
 
 enum {
@@ -849,7 +851,7 @@ struct ScrH2Session {
   bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls, ping_ls;
+      remote_settings_ls, local_settings_ls, ping_ls, altsvc_ls, origin_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -966,6 +968,8 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
   scr_net_ls_drop(&s->ping_ls);
+  scr_net_ls_drop(&s->altsvc_ls);
+  scr_net_ls_drop(&s->origin_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -1682,6 +1686,9 @@ static void scr_h2_fire_settings(ScrNetLs *ls, ScrH2Session *s, const ScrH2Setti
   free(snap);
 }
 
+static void scr_h2_fire_altsvc(ScrH2Session *s, ScrStr *alt, ScrStr *origin, double stream_id);
+static void scr_h2_fire_origin(ScrH2Session *s, ScrArr *origins);
+
 /* One complete frame. Returns false when the session tore down. */
 static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int32_t stream_id,
                                 const uint8_t *p, size_t n);
@@ -2000,8 +2007,40 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     scr_h2_send_rst(s, promised, 7 /* NGHTTP2_REFUSED_STREAM */);
     break;
   }
+  case SCR_H2_F_ALTSVC: {
+    /* origin length (2), origin, then the alternative service. */
+    if (n < 2) break;
+    size_t olen = ((size_t)p[0] << 8) | p[1];
+    if (2 + olen > n) break;
+    ScrStr *origin = scr_str_new((const char *)p + 2, olen);
+    ScrStr *alt = scr_str_new((const char *)p + 2 + olen, n - 2 - olen);
+    scr_h2_fire_altsvc(s, alt, origin, (double)stream_id);
+    scr_str_release(alt);
+    scr_str_release(origin);
+    if (scr_exc_pending()) return false;
+    break;
+  }
+  case SCR_H2_F_ORIGIN: {
+    /* Node accepts ORIGIN only on TLS sessions: a cleartext peer's frame is
+     * read and discarded, with no 'origin' event. With no listener the
+     * entries are not materialized at all; the frame-size limit above
+     * bounds the rest. */
+    if (!scr_http2_session_encrypted(s) || s->origin_ls.n == 0) break;
+    ScrArr *origins = scr_arr_new(SCR_ELEM_STR, 4);
+    size_t off = 0;
+    while (off + 2 <= n) {
+      size_t len = ((size_t)p[off] << 8) | p[off + 1];
+      if (off + 2 + len > n) break;
+      scr_arr_push_ref(origins, scr_str_new((const char *)p + off + 2, len));
+      off += 2 + len;
+    }
+    scr_h2_fire_origin(s, origins);
+    scr_arr_release(origins);
+    if (scr_exc_pending()) return false;
+    break;
+  }
   default:
-    break; /* PRIORITY, ALTSVC, ORIGIN, unknown: ignored */
+    break; /* PRIORITY, unknown: ignored */
   }
   return true;
 proto_err:
@@ -2048,6 +2087,26 @@ static void scr_h2_on_data_in(void *ctx, const char *buf, size_t n) {
   while (!s->destroyed && s->rlen - off >= 9) {
     const uint8_t *h = (const uint8_t *)s->rbuf + off;
     size_t len = ((size_t)h[0] << 16) | ((size_t)h[1] << 8) | h[2];
+    /* A frame past the SETTINGS_MAX_FRAME_SIZE this side advertised is a
+     * connection error of type FRAME_SIZE_ERROR, decided on the eight-byte
+     * header: the payload is never buffered. */
+    /* A reduction of SETTINGS_MAX_FRAME_SIZE only applies once the peer
+     * acknowledges it (RFC 9113 6.5.3): until then the peer may keep
+     * sending frames the previous, larger limit allowed. The enforced
+     * limit is therefore the largest acknowledged-or-pending value this
+     * side has advertised. */
+    uint32_t recv_max = s->local_settings.max_frame_size;
+    for (size_t i = 0; i < s->npending; i++) {
+      if (s->pending[i].after.max_frame_size > recv_max)
+        recv_max = s->pending[i].after.max_frame_size;
+    }
+    if (recv_max == 0) recv_max = SCR_H2_DEFAULT_MAX_FRAME;
+    if (len > (size_t)recv_max) {
+      scr_h2_send_goaway(s, 6 /* NGHTTP2_FRAME_SIZE_ERROR */);
+      scr_h2_session_fail(s, "Protocol error");
+      scr_http2_session_destroy(s);
+      goto done;
+    }
     if (s->rlen - off < 9 + len) break;
     uint8_t type = h[3];
     uint8_t flags = h[4];
@@ -4942,6 +5001,40 @@ static void scr_h2_dyn_fire_settings_cb(ScrClosure *cb, ScrDyn *settings /*+1*/)
   scr_dyn_release(settings);
 }
 
+static void scr_h2_dyn_fire_altsvc(ScrClosure *cb, ScrStr *alt, ScrStr *origin,
+                                    double stream_id) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *dalt = scr_dyn_new_str(alt); /* boxing retains; the callback's ref drops below */
+  ScrDyn *dorigin = scr_dyn_new_str(origin);
+  ScrDyn *did = scr_dyn_new_num(stream_id);
+  ScrDyn *args[3] = { dalt, dorigin, did };
+  ScrDyn *r = scr_dyn_call(fn, args, 3, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(did);
+  scr_dyn_release(dorigin);
+  scr_dyn_release(dalt);
+  scr_dyn_release(fn);
+  scr_str_release(alt);
+  scr_str_release(origin);
+}
+
+static void scr_h2_dyn_fire_origin(ScrClosure *cb, ScrArr *origins) {
+  ScrDyn *fn = scr_dyn_listener_fn(cb);
+  ScrDyn *list = scr_dyn_new_arr();
+  size_t n = (size_t)scr_arr_len(origins);
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i); /* +1 */
+    scr_dyn_arr_push(list, scr_dyn_new_str(origin));      /* boxing retains it */
+    scr_str_release(origin);
+  }
+  ScrDyn *args[1] = { list };
+  ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
+  scr_dyn_release(r);
+  scr_dyn_release(list);
+  scr_dyn_release(fn);
+  scr_arr_release(origins);
+}
+
 static void scr_h2_dyn_fire_goaway(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
   ScrDyn *a0 = scr_dyn_new_num(code);
@@ -5165,6 +5258,11 @@ static bool scr_h2_dynh_stream_set(void *h, const char *key, size_t key_len, con
 
 /* ── session ops ─────────────────────────────────────────────────────── */
 
+/* altsvc()/origin() validate and send their frames (ALTSVC and ORIGIN
+ * below); the handle dispatcher takes the dynamic entry points. */
+static ScrDyn *scr_h2_session_altsvc_dyn(ScrH2Session *s, ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_h2_session_origin_dyn(ScrH2Session *s, ScrDyn *const *args, size_t argc);
+
 static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *method,
                                            ScrDyn *const *args, size_t argc, const char *what) {
   ScrH2Session *s = (ScrH2Session *)h;
@@ -5206,6 +5304,10 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_goaway(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_goaway), (ScrH2GoawayFn)&scr_h2_dyn_fire_goaway, once);
     } else if (strcmp(ev, "localSettings") == 0 || strcmp(ev, "remoteSettings") == 0) {
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
+    } else if (strcmp(ev, "altsvc") == 0) {
+      scr_http2_session_on_altsvc(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_altsvc), (ScrH2AltsvcFn)&scr_h2_dyn_fire_altsvc, once);
+    } else if (strcmp(ev, "origin") == 0) {
+      scr_http2_session_on_origin(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_origin), (ScrH2OriginFn)&scr_h2_dyn_fire_origin, once);
     } else if (strcmp(ev, "ping") == 0) {
       scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
     } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
@@ -5244,9 +5346,10 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
     if (answer == SCR_H2_PING_NOT_OPEN) return scr_dyn_undefined();
     return scr_dyn_new_bool(answer == SCR_H2_PING_SENT);
   }
+  if (strcmp(method, "altsvc") == 0) return scr_h2_session_altsvc_dyn(s, args, argc);
+  if (strcmp(method, "origin") == 0) return scr_h2_session_origin_dyn(s, args, argc);
   if (strcmp(method, "setTimeout") == 0 || strcmp(method, "unref") == 0 || strcmp(method, "goaway") == 0 ||
-      strcmp(method, "setLocalWindowSize") == 0 ||
-      strcmp(method, "altsvc") == 0 || strcmp(method, "origin") == 0) {
+      strcmp(method, "setLocalWindowSize") == 0) {
     scr_h2_dyn_refuse_call(method, "Http2Session");
     return NULL;
   }
@@ -5299,6 +5402,376 @@ static const ScrDynHandleOps scr_h2_dynh_session_ops = {
   "Http2Session", &scr_http2_session_retain_v, &scr_http2_session_release_v,
   &scr_h2_dynh_session_invoke, &scr_h2_dynh_session_get, &scr_h2_dynh_session_set, NULL,
 };
+
+/* ── ALTSVC and ORIGIN (RFC 7838, RFC 8336) ─────────────────────────── */
+
+/* Node's ALTSVC and ORIGIN frames cap at kMaxALTSVC = 2^14 - 2 bytes. */
+#define SCR_H2_MAX_ALTSVC (16382.0)
+
+/* Node's getURLOrigin: `new URL(value).origin`. Path, query, userinfo, a
+ * mixed-case host and default ports all canonicalize away; an unparsable
+ * string throws ERR_INVALID_URL and an opaque origin answers "null". +1,
+ * NULL with the exception pending. */
+static ScrStr *scr_h2_origin_canonical(ScrStr *origin /*borrowed*/) {
+  ScrDyn *parsed = scr_url_parse(origin); /* +1; the null kind for an invalid URL */
+  if (parsed->kind == SCR_DYN_NULL) {
+    scr_dyn_release(parsed);
+    static const char text[] = "Invalid URL";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_URL");
+    return NULL;
+  }
+  ScrStr *canonical = scr_url_origin((ScrUrl *)parsed->v.handle.ptr);
+  scr_dyn_release(parsed);
+  return canonical;
+}
+
+static bool scr_h2_origin_is_null(const ScrStr *origin) {
+  return origin->len == 4 && memcmp(origin->data, "null", 4) == 0;
+}
+
+/* The "origin" member of an object argument (a URL answers its origin
+ * getter); NULL when the value is not an object. +1; *temp carries the
+ * materialized value for a typed reference (+1, nullable). */
+static ScrDyn *scr_h2_origin_member(const ScrDyn *value, ScrDyn **temp) {
+  *temp = NULL;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    *temp = scr_dyn_typed_ref_materialize(value);
+    if (*temp == NULL) return NULL;
+    value = *temp;
+  }
+  switch (value->kind) {
+  case SCR_DYN_OBJ:
+  case SCR_DYN_ARR:
+  case SCR_DYN_HANDLE:
+  case SCR_DYN_PROXY:
+    return scr_dyn_obj_read(value, "origin", 6);
+  default:
+    return NULL;
+  }
+}
+
+/* The validated origin a session.origin() argument names: a string goes
+ * through the URL parser, an object (URL included) contributes its "origin"
+ * member verbatim. +1, NULL with the exception pending. */
+static ScrStr *scr_h2_origin_value(const ScrDyn *value /*borrowed*/) {
+  if (value->kind == SCR_DYN_STR) return scr_h2_origin_canonical(value->v.str);
+  if (value->kind == SCR_DYN_NULL) {
+    scr_dyn_arg_type_fail("origin", "of type string", value);
+    return NULL;
+  }
+  ScrDyn *temp = NULL;
+  ScrDyn *member = scr_h2_origin_member(value, &temp);
+  if (member == NULL) {
+    if (temp != NULL) scr_dyn_release(temp);
+    scr_dyn_arg_type_fail("origin", "of type string", value);
+    return NULL;
+  }
+  ScrStr *origin = NULL;
+  if (member->kind == SCR_DYN_STR) {
+    origin = scr_str_retain(member->v.str);
+  } else {
+    scr_dyn_arg_type_fail("origin", "of type string", member);
+  }
+  scr_dyn_release(member);
+  if (temp != NULL) scr_dyn_release(temp);
+  return origin;
+}
+
+static void scr_h2_throw_invalid_session(void) {
+  static const char text[] = "The session has been destroyed";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_INVALID_SESSION");
+}
+
+static void scr_h2_throw_altsvc_invalid_origin(void) {
+  static const char text[] = "HTTP/2 ALTSVC frames require a valid origin";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1,
+                           "ERR_HTTP2_ALTSVC_INVALID_ORIGIN");
+}
+
+static void scr_h2_throw_origin_invalid(void) {
+  static const char text[] = "HTTP/2 ORIGIN frames require a valid origin";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_HTTP2_INVALID_ORIGIN");
+}
+
+/* altsvc()'s originOrStream once validated: an origin string (+1) or a
+ * stream id. */
+typedef struct ScrH2AltSvcArg {
+  ScrStr *origin;
+  double stream_id;
+} ScrH2AltSvcArg;
+
+/* Node's altsvc() originOrStream rules: a string canonicalizes and needs a
+ * non-opaque origin, a number is a stream id in (0, 2^32), undefined sends
+ * no origin, and an object (URL included) contributes its "origin" member
+ * verbatim. false with the exception pending. */
+static bool scr_h2_altsvc_origin_arg(const ScrDyn *value /*borrowed*/, ScrH2AltSvcArg *out) {
+  out->origin = NULL;
+  out->stream_id = 0;
+  switch (value->kind) {
+  case SCR_DYN_STR: {
+    ScrStr *canonical = scr_h2_origin_canonical(value->v.str);
+    if (canonical == NULL) return false;
+    if (scr_h2_origin_is_null(canonical)) {
+      scr_str_release(canonical);
+      scr_h2_throw_altsvc_invalid_origin();
+      return false;
+    }
+    out->origin = canonical;
+    return true;
+  }
+  case SCR_DYN_NUM: {
+    double stream_id = value->v.num;
+    if (!(stream_id == stream_id && stream_id > 0 && stream_id < 4294967296.0 &&
+          stream_id == (double)(uint32_t)stream_id)) {
+      ScrStr *received = scr_num_to_string_radix_f64(stream_id, 10);
+      char msg[192];
+      int n = snprintf(msg, sizeof msg,
+                       "The value of \"originOrStream\" is out of range. It must be > 0 && < "
+                       "4294967296. Received %s",
+                       received->data);
+      scr_str_release(received);
+      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)n, "ERR_OUT_OF_RANGE");
+      return false;
+    }
+    out->stream_id = stream_id;
+    return true;
+  }
+  case SCR_DYN_UNDEF:
+    return true;
+  default: {
+    ScrDyn *temp = NULL;
+    ScrDyn *member = scr_h2_origin_member(value, &temp);
+    if (member == NULL || member->kind != SCR_DYN_STR) {
+      if (member != NULL) scr_dyn_release(member);
+      if (temp != NULL) scr_dyn_release(temp);
+      scr_dyn_arg_type_fail("originOrStream", "of type string, number, URL, or object", value);
+      return false;
+    }
+    if (scr_h2_origin_is_null(member->v.str) || member->v.str->len == 0) {
+      scr_dyn_release(member);
+      if (temp != NULL) scr_dyn_release(temp);
+      scr_h2_throw_altsvc_invalid_origin();
+      return false;
+    }
+    out->origin = scr_str_retain(member->v.str);
+    scr_dyn_release(member);
+    if (temp != NULL) scr_dyn_release(temp);
+    return true;
+  }
+  }
+}
+
+/* The ALTSVC payload once both arguments validate: the alt string is a
+ * quoted-string body and both fit the frame cap. `origin` moves. */
+static void scr_h2_altsvc_send(ScrH2Session *s, ScrStr *alt /*borrowed*/, double stream_id,
+                                ScrStr *origin /*+1, moved*/) {
+  for (size_t i = 0; i < alt->len; i++) {
+    unsigned char c = (unsigned char)alt->data[i];
+    if (c == 0x09 || (c >= 0x20 && c <= 0x5b) || (c >= 0x5d && c <= 0x7e) || c >= 0x80) continue;
+    if (origin != NULL) scr_str_release(origin);
+    static const char text[] = "Invalid character in alt";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_CHAR");
+    return;
+  }
+  size_t olen = origin != NULL ? origin->len : 0;
+  if ((double)(alt->len + olen) > SCR_H2_MAX_ALTSVC) {
+    if (origin != NULL) scr_str_release(origin);
+    static const char text[] = "HTTP/2 ALTSVC frames are limited to 16382 bytes";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_HTTP2_ALTSVC_LENGTH");
+    return;
+  }
+  ScrH2Buf payload = {0};
+  uint8_t head[2] = { (uint8_t)(olen >> 8), (uint8_t)olen };
+  scr_h2_buf_put(&payload, head, 2);
+  if (olen > 0) scr_h2_buf_put(&payload, origin->data, olen);
+  scr_h2_buf_put(&payload, alt->data, alt->len);
+  int32_t id = stream_id > 0 && stream_id <= 0x7fffffffu ? (int32_t)(uint32_t)stream_id : 0;
+  scr_h2_send_frame(s, SCR_H2_F_ALTSVC, 0, id, payload.data, payload.len);
+  free(payload.data);
+  if (origin != NULL) scr_str_release(origin);
+}
+
+void scr_http2_session_altsvc(ScrH2Session *s, ScrStr *alt /*borrowed*/,
+                               const ScrDyn *origin_or_stream /*borrowed*/) {
+  if (s->destroyed) {
+    scr_h2_throw_invalid_session();
+    return;
+  }
+  if (scr_exc_pending()) return;
+  ScrH2AltSvcArg arg;
+  const ScrDyn *value = origin_or_stream != NULL ? origin_or_stream : scr_dyn_undefined();
+  if (!scr_h2_altsvc_origin_arg(value, &arg)) return;
+  scr_h2_altsvc_send(s, alt, arg.stream_id, arg.origin);
+}
+
+/* Node's origin() validates every argument, then sends one ORIGIN frame. */
+static void scr_h2_session_origin_args(ScrH2Session *s, ScrDyn *const *args, size_t argc) {
+  if (s->destroyed) {
+    scr_h2_throw_invalid_session();
+    return;
+  }
+  if (scr_exc_pending() || argc == 0) return;
+  ScrStr **list = (ScrStr **)calloc(argc, sizeof *list);
+  size_t total = 0;
+  bool ok = true;
+  for (size_t i = 0; i < argc; i++) {
+    ScrStr *origin = scr_h2_origin_value(args[i]); /* +1, NULL keeps the error pending */
+    if (origin == NULL) {
+      ok = false;
+      break;
+    }
+    if (scr_h2_origin_is_null(origin)) {
+      scr_str_release(origin);
+      scr_h2_throw_origin_invalid();
+      ok = false;
+      break;
+    }
+    total += origin->len;
+    list[i] = origin;
+  }
+  if (ok && (double)total > SCR_H2_MAX_ALTSVC) {
+    static const char text[] = "HTTP/2 ORIGIN frames are limited to 16382 bytes";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_HTTP2_ORIGIN_LENGTH");
+    ok = false;
+  }
+  if (ok) {
+    ScrH2Buf payload = {0};
+    for (size_t i = 0; i < argc; i++) {
+      ScrStr *origin = list[i];
+      uint8_t head[2] = { (uint8_t)(origin->len >> 8), (uint8_t)origin->len };
+      scr_h2_buf_put(&payload, head, 2);
+      scr_h2_buf_put(&payload, origin->data, origin->len);
+    }
+    if (payload.len > 0) scr_h2_send_frame(s, SCR_H2_F_ORIGIN, 0, 0, payload.data, payload.len);
+    free(payload.data);
+  }
+  for (size_t i = 0; i < argc; i++) {
+    if (list[i] != NULL) scr_str_release(list[i]);
+  }
+  free(list);
+}
+
+/* The dynamic handle entries: the argument kinds and order are Node's. */
+static ScrDyn *scr_h2_session_altsvc_dyn(ScrH2Session *s, ScrDyn *const *args, size_t argc) {
+  if (s->destroyed) {
+    scr_h2_throw_invalid_session();
+    return NULL;
+  }
+  if (scr_exc_pending()) return NULL;
+  const ScrDyn *alt = argc > 0 ? args[0] : scr_dyn_undefined();
+  const ScrDyn *origin = argc > 1 ? args[1] : scr_dyn_undefined();
+  ScrH2AltSvcArg arg;
+  if (!scr_h2_altsvc_origin_arg(origin, &arg)) return NULL;
+  if (alt->kind != SCR_DYN_STR) {
+    if (arg.origin != NULL) scr_str_release(arg.origin);
+    scr_dyn_arg_type_fail("alt", "of type string", alt);
+    return NULL;
+  }
+  scr_h2_altsvc_send(s, alt->v.str, arg.stream_id, arg.origin);
+  return scr_exc_pending() ? NULL : scr_dyn_undefined();
+}
+
+static ScrDyn *scr_h2_session_origin_dyn(ScrH2Session *s, ScrDyn *const *args, size_t argc) {
+  scr_h2_session_origin_args(s, args, argc);
+  return scr_exc_pending() ? NULL : scr_dyn_undefined();
+}
+
+void scr_http2_session_origin(ScrH2Session *s, ScrArr *origins /*borrowed*/) {
+  size_t n = origins != NULL ? (size_t)scr_arr_len(origins) : 0;
+  ScrDyn **args = n > 0 ? (ScrDyn **)calloc(n, sizeof *args) : NULL;
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *origin = scr_arr_get_ref(origins, (double)i); /* +1 */
+    args[i] = scr_dyn_new_str(origin);                    /* boxing retains it */
+    scr_str_release(origin);
+  }
+  scr_h2_session_origin_args(s, args, n);
+  for (size_t i = 0; i < n; i++) scr_dyn_release(args[i]);
+  free(args);
+}
+
+/* Fire the ALTSVC list: (alt +1, origin +1, streamId). */
+static void scr_h2_fire_altsvc(ScrH2Session *s, ScrStr *alt, ScrStr *origin, double stream_id) {
+  if (s->altsvc_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->altsvc_ls, &snap);
+  scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrH2AltsvcFn)snap[i].fn)(snap[i].cb, scr_str_retain(alt), scr_str_retain(origin),
+                                   stream_id);
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+}
+
+static void scr_h2_fire_origin(ScrH2Session *s, ScrArr *origins) {
+  if (s->origin_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->origin_ls, &snap);
+  scr_dyn_this_push(s, SCR_DYNH_H2_SESSION);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) {
+      ((ScrH2OriginFn)snap[i].fn)(snap[i].cb, scr_arr_retain(origins));
+    }
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  free(snap);
+}
+
+void scr_http2_session_on_altsvc(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2AltsvcFn fn,
+                                  bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->altsvc_ls, cb, (void *)fn, once);
+}
+
+void scr_http2_session_on_origin(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrH2OriginFn fn,
+                                  bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->origin_ls, cb, (void *)fn, once);
+}
+
+/* The typed-listener thunks: Node passes (alt, origin, streamId) and an
+ * origins string[]; a shorter listener releases the values it does not
+ * take, a zero-argument one releases all of them. */
+void scr_http2_altsvc_thunk3(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  ((void (*)(ScrClosure *, ScrStr *, ScrStr *, double))cb->fn)(cb, alt, origin, stream_id);
+}
+
+void scr_http2_altsvc_thunk2(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  ((void (*)(ScrClosure *, ScrStr *, ScrStr *))cb->fn)(cb, alt, origin);
+}
+
+void scr_http2_altsvc_thunk1(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  scr_str_release(origin);
+  ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, alt);
+}
+
+void scr_http2_altsvc_thunk0(ScrClosure *cb, ScrStr *alt, ScrStr *origin, double stream_id) {
+  (void)stream_id;
+  scr_str_release(alt);
+  scr_str_release(origin);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http2_origin_thunk(ScrClosure *cb, ScrArr *origins) {
+  ((void (*)(ScrClosure *, ScrArr *))cb->fn)(cb, origins);
+}
+
+void scr_http2_origin_thunk0(ScrClosure *cb, ScrArr *origins) {
+  scr_arr_release(origins);
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
 
 void scr_http2_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_H2_STREAM, &scr_h2_dynh_stream_ops);

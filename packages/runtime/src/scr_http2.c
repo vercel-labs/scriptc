@@ -1412,16 +1412,8 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
  * compatibility pair's close. */
 static void scr_h2_stream_fire_close(ScrH2Stream *st) {
   if (!scr_exc_pending()) scr_net_fire0_this(&st->close_ls, st, SCR_DYNH_H2_STREAM);
-  /* The sent-header readbacks were readable through 'close' (Node keeps
-   * them for the stream's lifetime); they go with the stream's settled
-   * listeners so a compat pair that outlives the stream cannot leave them
-   * live at teardown. */
-  scr_dyn_release(st->sent_headers_dom);
-  scr_dyn_release(st->sent_info_dom);
-  scr_dyn_release(st->sent_trailers_dom);
-  st->sent_headers_dom = NULL;
-  st->sent_info_dom = NULL;
-  st->sent_trailers_dom = NULL;
+  /* The sent-header readbacks stay on the stream for its lifetime (Node
+   * keeps them after 'close' too); its final release frees them. */
   scr_h2_stream_drop_lists(st);
 }
 
@@ -2471,7 +2463,9 @@ void scr_http2_stream_respond_wait(ScrH2Stream *st, ScrArr *pairs /*borrowed, nu
     if (own_date == NULL) {
       char date[64];
       size_t date_len = scr_h2_date_text(date, sizeof date);
-      scr_dyn_obj_set(dom, "date", 4, scr_dyn_new_str(scr_str_new(date, date_len)));
+      ScrStr *date_str = scr_str_new(date, date_len);
+      scr_dyn_obj_set(dom, "date", 4, scr_dyn_new_str(date_str));
+      scr_str_release(date_str);
     } else {
       scr_str_release(own_date);
     }

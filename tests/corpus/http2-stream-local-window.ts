@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 
 const lines: string[] = [];
 
-await new Promise<void>(() => {
+await new Promise<void>((resolve) => {
   const server = http2.createServer();
   server.on("session", (session) => {
     session.settings({ initialWindowSize: 100000 });
@@ -28,14 +28,11 @@ await new Promise<void>(() => {
     request.on("data", () => {});
     request.on("end", () => {
       client.close(() => {
-        server.close(() => {
-          for (const line of lines.sort()) console.log(line);
-          // The state records read above trip a pre-existing session-teardown
-          // audit false positive; exit once the output is complete.
-          process.exit(0);
-        });
+        server.close(() => resolve());
       });
     });
     request.end();
   });
 });
+
+for (const line of lines.sort()) console.log(line);

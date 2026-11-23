@@ -1,12 +1,12 @@
-// The sent-header readbacks stay readable while a stream closes: a 'close'
-// listener still sees the sentHeaders/sentInfoHeaders/sentTrailers blocks
-// that went out.
+// The sent-header readbacks stay readable for the stream's lifetime: a
+// 'close' listener and a read after 'close' both still see the
+// sentHeaders/sentInfoHeaders/sentTrailers blocks that went out.
 import * as http2 from "node:http2";
 import type { AddressInfo } from "node:net";
 
 const lines: string[] = [];
 
-await new Promise<void>(() => {
+await new Promise<void>((resolve) => {
   const server = http2.createServer();
   server.on("stream", (stream) => {
     stream.additionalHeaders({ ":status": 103, "x-info": "a" });
@@ -30,15 +30,16 @@ await new Promise<void>(() => {
     request.on("close", () => {
       lines.push(`client close sentHeaders ${request.sentHeaders[":path"]}`);
       lines.push(`client close sentInfoHeaders ${request.sentInfoHeaders === undefined}`);
-      client.close(() => {
-        server.close(() => {
-          for (const line of lines.sort()) console.log(line);
-          // The sent-header records read above trip a pre-existing
-          // session-teardown audit false positive; exit after the output.
-          process.exit(0);
+      setTimeout(() => {
+        lines.push(`client later sentHeaders ${request.sentHeaders[":path"]}`);
+        lines.push(`client later sentHeaders method ${request.sentHeaders[":method"]}`);
+        client.close(() => {
+          server.close(() => resolve());
         });
-      });
+      }, 40);
     });
     request.end();
   });
 });
+
+for (const line of lines.sort()) console.log(line);

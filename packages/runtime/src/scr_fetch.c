@@ -94,9 +94,15 @@ struct SfCollector {
   size_t len;
   size_t cap;
   int mode;
-  /* The blob type of a blob() collection (+1, NULL stands for ""). */
-  ScrStr *blob_type;
+  /* A blob() collection's header list (+1, NULL when the response has
+   * none). The type is read from it when the read settles, as the body
+   * readers do: a Content-Type set after the call applies. */
+  SfHeaders *blob_headers;
 };
+
+static SfHeaders *sf_headers_retain(SfHeaders *h);
+static void sf_headers_release(SfHeaders *h);
+static ScrStr *sf_response_blob_type(SfHeaders *h);
 
 struct SfPullWait {
   SfStream *stream;
@@ -1194,10 +1200,7 @@ static void sf_collector_append(SfCollector *c, const ScrBytes *bytes) {
   c->len = need;
 }
 
-static void sf_collector_drop(SfStream *s) {
-  SfCollector *c = s->collector;
-  if (!c) return;
-  s->collector = NULL;
+static void sf_collector_free(SfCollector *c) {
   /*
    * Body-mixin consumption acquires a reader that is never exposed or
    * released. Keep that lock after text()/json()/bytes() settles: Node
@@ -1206,10 +1209,17 @@ static void sf_collector_drop(SfStream *s) {
    */
   scr_promise_release(c->promise);
   free(c->data);
-  scr_str_release(c->blob_type);
+  sf_headers_release(c->blob_headers);
   SfStream *held = c->held_stream;
   free(c);
   sf_stream_release(held);
+}
+
+static void sf_collector_drop(SfStream *s) {
+  SfCollector *c = s->collector;
+  if (!c) return;
+  s->collector = NULL;
+  sf_collector_free(c);
 }
 
 /*
@@ -1262,17 +1272,73 @@ typedef struct {
   size_t value_len;
 } SfMimeParam;
 
-static void sf_mime_params_free(SfMimeParam *params, size_t count) {
-  for (size_t i = 0; i < count; i++) {
-    free(params[i].name);
-    free(params[i].value);
+/* A parsed MIME type: the essence and its parameters, the record
+ * "parse a MIME type" answers. */
+typedef struct {
+  char *type;
+  size_t type_len;
+  char *subtype;
+  size_t subtype_len;
+  SfMimeParam *params;
+  size_t count;
+} SfMime;
+
+static void sf_mime_free(SfMime *m) {
+  free(m->type);
+  free(m->subtype);
+  for (size_t i = 0; i < m->count; i++) {
+    free(m->params[i].name);
+    free(m->params[i].value);
   }
-  free(params);
+  free(m->params);
+  memset(m, 0, sizeof *m);
 }
 
-/* "parse a MIME type" then "serialize a MIME type" (+1), NULL when the
- * value does not parse. */
-static ScrStr *sf_mime_serialize(const ScrStr *input) {
+/* A lowercased copy of the bytes (+1). */
+static char *sf_mime_lower(const char *s, size_t n) {
+  char *out = malloc(n > 0 ? n : 1);
+  if (!out) sf_oom();
+  for (size_t i = 0; i < n; i++) {
+    char c = s[i];
+    out[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+  }
+  return out;
+}
+
+static const SfMimeParam *sf_mime_param(const SfMime *m, const char *name,
+                                        size_t name_len) {
+  for (size_t i = 0; i < m->count; i++) {
+    if (m->params[i].name_len == name_len &&
+        memcmp(m->params[i].name, name, name_len) == 0)
+      return &m->params[i];
+  }
+  return NULL;
+}
+
+static bool sf_mime_same_essence(const SfMime *a, const SfMime *b) {
+  return a->type_len == b->type_len && a->subtype_len == b->subtype_len &&
+         memcmp(a->type, b->type, a->type_len) == 0 &&
+         memcmp(a->subtype, b->subtype, a->subtype_len) == 0;
+}
+
+/* Appends a parameter the value already borrowed (copied in). */
+static void sf_mime_set_param(SfMime *m, const char *name, size_t name_len,
+                              const char *value, size_t value_len) {
+  SfMimeParam *grown = realloc(m->params, (m->count + 1) * sizeof *grown);
+  if (!grown) sf_oom();
+  m->params = grown;
+  SfMimeParam *p = &m->params[m->count++];
+  p->name = sf_mime_lower(name, name_len);
+  p->name_len = name_len;
+  p->value = malloc(value_len > 0 ? value_len : 1);
+  if (!p->value) sf_oom();
+  if (value_len) memcpy(p->value, value, value_len);
+  p->value_len = value_len;
+}
+
+/* "parse a MIME type": false when the value does not parse. */
+static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
+  memset(out, 0, sizeof *out);
   const char *s = input->data;
   size_t n = input->len, pos = 0;
   while (pos < n && sf_mime_ws(s[pos])) pos++;
@@ -1281,15 +1347,15 @@ static ScrStr *sf_mime_serialize(const ScrStr *input) {
   size_t type_start = pos;
   while (pos < n && s[pos] != '/') pos++;
   size_t type_len = pos - type_start;
-  if (!sf_mime_token_run(s + type_start, type_len)) return NULL;
-  if (pos >= n) return NULL;
+  if (!sf_mime_token_run(s + type_start, type_len)) return false;
+  if (pos >= n) return false;
   pos++; /* '/' */
   size_t sub_start = pos;
   while (pos < n && s[pos] != ';') pos++;
   size_t sub_end = pos;
   while (sub_end > sub_start && sf_mime_ws(s[sub_end - 1])) sub_end--;
   size_t sub_len = sub_end - sub_start;
-  if (!sf_mime_token_run(s + sub_start, sub_len)) return NULL;
+  if (!sf_mime_token_run(s + sub_start, sub_len)) return false;
 
   SfMimeParam *params = NULL;
   size_t count = 0;
@@ -1374,39 +1440,47 @@ static ScrStr *sf_mime_serialize(const ScrStr *input) {
     }
   }
 
-  size_t out_len = type_len + 1 + sub_len;
-  for (size_t i = 0; i < count; i++) {
-    out_len += 1 + params[i].name_len + 1;
-    if (params[i].value_len > 0 && sf_mime_token_run(params[i].value, params[i].value_len))
-      out_len += params[i].value_len;
+  out->type = sf_mime_lower(s + type_start, type_len);
+  out->type_len = type_len;
+  out->subtype = sf_mime_lower(s + sub_start, sub_len);
+  out->subtype_len = sub_len;
+  out->params = params;
+  out->count = count;
+  return true;
+}
+
+/* "serialize a MIME type" (+1). */
+static ScrStr *sf_mime_serialize(const SfMime *m) {
+  size_t out_len = m->type_len + 1 + m->subtype_len;
+  for (size_t i = 0; i < m->count; i++) {
+    const SfMimeParam *p = &m->params[i];
+    out_len += 1 + p->name_len + 1;
+    if (p->value_len > 0 && sf_mime_token_run(p->value, p->value_len))
+      out_len += p->value_len;
     else
-      out_len += 2 + 2 * params[i].value_len;
+      out_len += 2 + 2 * p->value_len;
   }
   char *out = malloc(out_len > 0 ? out_len : 1);
   if (!out) sf_oom();
   size_t at = 0;
-  for (size_t i = 0; i < type_len; i++) {
-    char c = s[type_start + i];
-    out[at++] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
-  }
+  memcpy(out, m->type, m->type_len);
+  at += m->type_len;
   out[at++] = '/';
-  for (size_t i = 0; i < sub_len; i++) {
-    char c = s[sub_start + i];
-    out[at++] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
-  }
-  for (size_t i = 0; i < count; i++) {
+  memcpy(out + at, m->subtype, m->subtype_len);
+  at += m->subtype_len;
+  for (size_t i = 0; i < m->count; i++) {
+    const SfMimeParam *p = &m->params[i];
     out[at++] = ';';
-    memcpy(out + at, params[i].name, params[i].name_len);
-    at += params[i].name_len;
+    memcpy(out + at, p->name, p->name_len);
+    at += p->name_len;
     out[at++] = '=';
-    if (params[i].value_len > 0 &&
-        sf_mime_token_run(params[i].value, params[i].value_len)) {
-      memcpy(out + at, params[i].value, params[i].value_len);
-      at += params[i].value_len;
+    if (p->value_len > 0 && sf_mime_token_run(p->value, p->value_len)) {
+      memcpy(out + at, p->value, p->value_len);
+      at += p->value_len;
     } else {
       out[at++] = '"';
-      for (size_t j = 0; j < params[i].value_len; j++) {
-        char c = params[i].value[j];
+      for (size_t j = 0; j < p->value_len; j++) {
+        char c = p->value[j];
         if (c == '"' || c == '\\') out[at++] = '\\';
         out[at++] = c;
       }
@@ -1415,19 +1489,26 @@ static ScrStr *sf_mime_serialize(const ScrStr *input) {
   }
   ScrStr *serialized = scr_str_new(out, at);
   free(out);
-  sf_mime_params_free(params, count);
   return serialized;
 }
 
 /* The content-type header's values split on commas outside quoted strings
- * (+1 each into `last`), keeping the last that parses and is not the
- * wildcard type. */
+ * (+1 each into the answer), keeping the last that parses and is not the
+ * wildcard type. A value with the essence of the one before it that names
+ * no charset inherits that value's charset, as extractMimeType does. */
 static ScrStr *sf_mime_extract(const ScrStr *joined) {
   const char *s = joined->data;
   size_t n = joined->len, pos = 0, tlen = 0;
   char *tmp = malloc(n > 0 ? n : 1);
   if (!tmp) sf_oom();
-  ScrStr *last = NULL;
+  SfMime chosen;
+  memset(&chosen, 0, sizeof chosen);
+  bool have = false;
+  /* The essence's charset, kept from the value that last changed the
+   * essence (a same-essence value's own charset does not update it). */
+  char *essence_charset = NULL;
+  size_t essence_charset_len = 0;
+  bool essence_charset_present = false;
   for (;;) {
     while (pos < n && s[pos] != '"' && s[pos] != ',') tmp[tlen++] = s[pos++];
     bool at_end = pos >= n;
@@ -1450,24 +1531,47 @@ static ScrStr *sf_mime_extract(const ScrStr *joined) {
       }
     }
     ScrStr *value = scr_str_new(tmp, tlen);
-    ScrStr *serialized = sf_mime_serialize(value);
-    scr_str_release(value);
-    if (serialized) {
-      bool wildcard = serialized->len >= 3 &&
-                      memcmp(serialized->data, "*/*", 3) == 0 &&
-                      (serialized->len == 3 || serialized->data[3] == ';');
-      if (wildcard) {
-        scr_str_release(serialized);
+    SfMime parsed;
+    if (sf_mime_parse(value, &parsed)) {
+      bool wildcard = parsed.type_len == 1 && parsed.type[0] == '*' &&
+                      parsed.subtype_len == 1 && parsed.subtype[0] == '*';
+      if (!wildcard) {
+        if (!have || !sf_mime_same_essence(&parsed, &chosen)) {
+          free(essence_charset);
+          essence_charset = NULL;
+          essence_charset_len = 0;
+          essence_charset_present = false;
+          const SfMimeParam *charset = sf_mime_param(&parsed, "charset", 7);
+          if (charset) {
+            essence_charset = malloc(charset->value_len > 0 ? charset->value_len : 1);
+            if (!essence_charset) sf_oom();
+            if (charset->value_len)
+              memcpy(essence_charset, charset->value, charset->value_len);
+            essence_charset_len = charset->value_len;
+            essence_charset_present = true;
+          }
+        } else if (essence_charset_present &&
+                   !sf_mime_param(&parsed, "charset", 7)) {
+          sf_mime_set_param(&parsed, "charset", 7, essence_charset,
+                            essence_charset_len);
+        }
+        if (have) sf_mime_free(&chosen);
+        chosen = parsed;
+        have = true;
       } else {
-        scr_str_release(last);
-        last = serialized;
+        sf_mime_free(&parsed);
       }
     }
+    scr_str_release(value);
     if (at_end) break;
     tlen = 0;
   }
   free(tmp);
-  return last;
+  free(essence_charset);
+  if (!have) return NULL;
+  ScrStr *serialized = sf_mime_serialize(&chosen);
+  sf_mime_free(&chosen);
+  return serialized;
 }
 
 static ScrStr *sf_headers_get_value(SfHeaders *h, const ScrStr *name);
@@ -1512,9 +1616,9 @@ static ScrDyn *sf_blob_value(ScrBytes *bytes, ScrStr *type) {
   return blob;
 }
 
-static void sf_collector_finish(SfStream *s) {
-  SfCollector *c = s->collector;
-  if (!c) return;
+static void sf_collector_settle_react(void *ctx, ScrPromise *settled) {
+  (void)settled;
+  SfCollector *c = ctx;
   ScrDyn *value = NULL;
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)c->len);
   if (c->len) memcpy(bytes->data, c->data, c->len);
@@ -1529,7 +1633,11 @@ static void sf_collector_finish(SfStream *s) {
   } else if (c->mode == SF_COLLECT_ARRAY_BUFFER) {
     value = scr_array_buffer_from_bytes(bytes);
   } else if (c->mode == SF_COLLECT_BLOB) {
-    value = sf_blob_value(bytes, c->blob_type);
+    /* The type is the header's value at the settle: a Content-Type set
+     * after the call applies, as Node's reader re-reads the header. */
+    ScrStr *type = c->blob_headers ? sf_response_blob_type(c->blob_headers) : NULL;
+    value = sf_blob_value(bytes, type);
+    scr_str_release(type);
   } else {
     value = scr_dyn_new_bytes(bytes);
   }
@@ -1541,7 +1649,29 @@ static void sf_collector_finish(SfStream *s) {
     scr_promise_fulfill_ref(c->promise, value, &scr_dyn_retain_v,
                             &scr_dyn_release_v, NULL);
   }
-  sf_collector_drop(s);
+  /* The reaction's drop, which runs right after these steps, frees the
+   * collector. */
+}
+
+static void sf_collector_settle_drop(void *ctx) {
+  sf_collector_free((SfCollector *)ctx);
+}
+
+static const ScrPromiseReaction sf_collector_settle = {
+    sf_collector_settle_react, sf_collector_settle_drop};
+
+/* A body reader awaits the body's stream before it builds its value, so a
+ * read settles one microtask after the body's last chunk, and a blob()
+ * reads the Content-Type at that settle. The completion job runs there;
+ * the queue is FIFO, so reads keep the order their bodies completed in. */
+static void sf_collector_finish(SfStream *s) {
+  SfCollector *c = s->collector;
+  if (!c) return;
+  s->collector = NULL;
+  ScrPromise *hop = scr_promise_new();
+  scr_promise_fulfill_void(hop);
+  scr_promise_react(hop, &sf_collector_settle, c);
+  scr_promise_release(hop);
 }
 
 static void sf_collector_reject(SfStream *s, ScrDyn *reason) {
@@ -2556,7 +2686,7 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
   return p;
 }
 
-static ScrPromise *sf_stream_collect(SfStream *s, int mode, const ScrStr *blob_type) {
+static ScrPromise *sf_stream_collect(SfStream *s, int mode, SfHeaders *blob_headers) {
 #ifdef SCR_HANDLE_CLASSES
   if (s->web_view && !(s->disturbed || s->reader || s->internal_lock || sf_view_unusable(s))) {
     SfStream *source = sf_stream_body_source(s);
@@ -2565,7 +2695,7 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode, const ScrStr *blob_t
       scr_promise_reject_pending(p);
       return p;
     }
-    ScrPromise *p = sf_stream_collect(source, mode, blob_type);
+    ScrPromise *p = sf_stream_collect(source, mode, blob_headers);
     sf_stream_release(source);
     return p;
   }
@@ -2583,7 +2713,7 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode, const ScrStr *blob_t
   c->promise = scr_promise_retain(p);
   c->held_stream = sf_stream_retain(s);
   c->mode = mode;
-  c->blob_type = blob_type ? scr_str_retain(blob_type) : NULL; /* NULL = "" */
+  c->blob_headers = blob_headers ? sf_headers_retain(blob_headers) : NULL;
   s->collector = c;
   sf_stream_drain(s);
   /* The collector reads to the end: a queue it emptied asks the source
@@ -4732,14 +4862,20 @@ static void sf_response_materialize(SfResponse *r) {
 }
 
 static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
+  if (!r->null_body) {
+    /* The blob type is read when the read settles, so the header list
+     * travels with the collector. */
+    SfHeaders *blob_headers =
+        mode == SF_COLLECT_BLOB && r->headers ? sf_headers_retain(r->headers) : NULL;
+    ScrPromise *p = sf_stream_collect(r->body, mode, blob_headers);
+    sf_headers_release(blob_headers);
+    return p;
+  }
+  /* A null body settles its payload here, so its type is the header's
+   * value at the call. */
   ScrStr *blob_type = NULL;
   if (mode == SF_COLLECT_BLOB && r->headers)
     blob_type = sf_response_blob_type(r->headers);
-  if (!r->null_body) {
-    ScrPromise *p = sf_stream_collect(r->body, mode, blob_type);
-    scr_str_release(blob_type);
-    return p;
-  }
 
   /*
    * A null body is not a disturbed empty stream: body stays null,

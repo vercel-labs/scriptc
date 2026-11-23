@@ -113,6 +113,70 @@ log.push(`request ${JSON.stringify(requestBlob.type)} ${requestBlob.size} ${awai
 const arrayBuffer = await new Response(body()).blob().then((blob) => blob.arrayBuffer());
 log.push(`buffer ${new TextDecoder().decode(arrayBuffer)}`);
 
+// The type is the header's value when the read settles: a Content-Type set
+// after the call applies to a body still being read, while a null body
+// answers the value at the call.
+{
+  let controller;
+  const stream = new ReadableStream({
+    start(c) {
+      controller = c;
+    },
+  });
+  const response = new Response(stream, { headers: { "content-type": "text/plain" } });
+  const pending = response.blob();
+  response.headers.set("content-type", "text/html; charset=utf-8");
+  controller.enqueue(new TextEncoder().encode("hi"));
+  controller.close();
+  const late = await pending;
+  log.push(`late ${JSON.stringify(late.type)} ${late.size}`);
+}
+
+const nullTimed = new Response(null, { headers: { "content-type": "text/plain" } });
+const nullPending = nullTimed.blob();
+nullTimed.headers.set("content-type", "text/html");
+log.push(`null timing ${JSON.stringify((await nullPending).type)}`);
+
+// A repeated content-type value with the previous essence and no charset of
+// its own inherits that value's charset.
+{
+  const inherited = new Response(body());
+  inherited.headers.append("content-type", "text/plain; charset=utf-8");
+  inherited.headers.append("content-type", "text/plain");
+  log.push(`inherit appended ${JSON.stringify((await inherited.blob()).type)}`);
+
+  const sameHeader = new Response(body(), {
+    headers: { "content-type": "text/plain; charset=utf-8, text/plain; x=1" },
+  });
+  log.push(`inherit comma ${JSON.stringify((await sameHeader.blob()).type)}`);
+
+  const chain = new Response(body(), {
+    headers: { "content-type": "text/plain; charset=a, text/plain, text/plain; charset=b" },
+  });
+  log.push(`inherit chain ${JSON.stringify((await chain.blob()).type)}`);
+
+  const empty = new Response(body(), { headers: { "content-type": 'text/plain; charset="", text/plain' } });
+  log.push(`inherit empty ${JSON.stringify((await empty.blob()).type)}`);
+
+  const changed = new Response(body(), { headers: { "content-type": "text/plain; charset=utf-8, text/html" } });
+  log.push(`inherit changed ${JSON.stringify((await changed.blob()).type)}`);
+}
+
+// A Blob the read produced is a body itself: its bytes are sent, and its
+// type becomes the Content-Type when the headers do not set one.
+{
+  const produced = await new Response("hi", { headers: { "content-type": "Text/Plain" } }).blob();
+  const echoed = new Response(produced);
+  log.push(`body ${JSON.stringify(echoed.headers.get("content-type"))} ${await echoed.text()}`);
+  const sent = new Request("http://x/", { method: "POST", body: produced });
+  log.push(`request body ${JSON.stringify(sent.headers.get("content-type"))} ${await sent.text()}`);
+  const untyped = await new Response(body()).blob();
+  const plainBody = new Response(untyped);
+  log.push(`untyped body ${JSON.stringify(plainBody.headers.get("content-type"))} ${await plainBody.text()}`);
+  const withHeader = new Response(produced, { headers: { "content-type": "text/html" } });
+  log.push(`body header ${JSON.stringify(withHeader.headers.get("content-type"))} ${await withHeader.text()}`);
+}
+
 log.push(`then ${later.join(",")}`);
 
 for (const line of log) console.log(line);

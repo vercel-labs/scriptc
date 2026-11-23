@@ -1212,44 +1212,300 @@ static void sf_collector_drop(SfStream *s) {
   sf_stream_release(held);
 }
 
-/* Node's response blob takes the content type without its spaces
- * ("text/plain; charset=utf-8" reads "text/plain;charset=utf-8"), so the
- * type is rebuilt without ASCII whitespace before the Blob sees it. */
-static ScrStr *sf_blob_type_clean(const ScrStr *type) {
-  if (type == NULL) return NULL;
-  size_t n = 0;
-  for (size_t i = 0; i < type->len; i++) {
-    char c = type->data[i];
-    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') continue;
-    n++;
-  }
-  if (n == type->len) return scr_str_retain(type);
-  char *out = malloc(n > 0 ? n : 1);
-  if (!out) sf_oom();
-  size_t j = 0;
-  for (size_t i = 0; i < type->len; i++) {
-    char c = type->data[i];
-    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') continue;
-    out[j++] = c;
-  }
-  ScrStr *clean = scr_str_new(out, n);
-  free(out);
-  return clean;
+/*
+ * The type blob() gives its payload. undici re-reads the response's
+ * content-type header when the read settles: the header values are split on
+ * commas outside quoted strings, each is parsed as a MIME type, the last one
+ * that parses (and is not the wildcard type) wins, and the parsed type is
+ * serialized again. So the essence comes back lowercased, whitespace outside
+ * quoted values disappears, a quoted value keeps its bytes and is re-quoted
+ * when it is not an HTTP token, and a value that does not parse is ignored.
+ */
+static bool sf_mime_ws(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
+static bool sf_mime_token_char(unsigned char c) {
+  if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+      (c >= '0' && c <= '9'))
+    return true;
+  return c != 0 && strchr("!#$%&'*+-.^_|~", (int)c) != NULL;
+}
+
+static bool sf_mime_token_run(const char *s, size_t n) {
+  if (n == 0) return false;
+  for (size_t i = 0; i < n; i++)
+    if (!sf_mime_token_char((unsigned char)s[i])) return false;
+  return true;
+}
+
+/* HTTP quoted-string token code points: TAB, U+0020..U+007E, and
+ * U+0080..U+00FF, the latter two bytes in UTF-8. */
+static bool sf_mime_quoted_run(const char *s, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '\t' || (c >= 0x20 && c <= 0x7e)) continue;
+    if ((c == 0xc2 || c == 0xc3) && i + 1 < n &&
+        ((unsigned char)s[i + 1] & 0xc0) == 0x80) {
+      i++;
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+typedef struct {
+  char *name;
+  size_t name_len;
+  char *value;
+  size_t value_len;
+} SfMimeParam;
+
+static void sf_mime_params_free(SfMimeParam *params, size_t count) {
+  for (size_t i = 0; i < count; i++) {
+    free(params[i].name);
+    free(params[i].value);
+  }
+  free(params);
+}
+
+/* "parse a MIME type" then "serialize a MIME type" (+1), NULL when the
+ * value does not parse. */
+static ScrStr *sf_mime_serialize(const ScrStr *input) {
+  const char *s = input->data;
+  size_t n = input->len, pos = 0;
+  while (pos < n && sf_mime_ws(s[pos])) pos++;
+  while (n > pos && sf_mime_ws(s[n - 1])) n--;
+
+  size_t type_start = pos;
+  while (pos < n && s[pos] != '/') pos++;
+  size_t type_len = pos - type_start;
+  if (!sf_mime_token_run(s + type_start, type_len)) return NULL;
+  if (pos >= n) return NULL;
+  pos++; /* '/' */
+  size_t sub_start = pos;
+  while (pos < n && s[pos] != ';') pos++;
+  size_t sub_end = pos;
+  while (sub_end > sub_start && sf_mime_ws(s[sub_end - 1])) sub_end--;
+  size_t sub_len = sub_end - sub_start;
+  if (!sf_mime_token_run(s + sub_start, sub_len)) return NULL;
+
+  SfMimeParam *params = NULL;
+  size_t count = 0;
+
+  while (pos < n) {
+    pos++; /* ';' */
+    while (pos < n && sf_mime_ws(s[pos])) pos++;
+    size_t name_start = pos;
+    while (pos < n && s[pos] != ';' && s[pos] != '=') pos++;
+    size_t name_len = pos - name_start;
+    if (pos < n) {
+      if (s[pos] == ';') continue;
+      pos++; /* '=' */
+    }
+    if (pos >= n) break;
+    char *value = NULL;
+    size_t value_len = 0;
+    if (s[pos] == '"') {
+      char *buf = malloc(n - pos > 0 ? n - pos : 1);
+      if (!buf) sf_oom();
+      pos++; /* opening quote */
+      while (pos < n) {
+        char c = s[pos];
+        if (c == '"') {
+          pos++;
+          break;
+        }
+        if (c == '\\') {
+          pos++;
+          if (pos >= n) {
+            buf[value_len++] = '\\';
+            break;
+          }
+          buf[value_len++] = s[pos++];
+          continue;
+        }
+        buf[value_len++] = s[pos++];
+      }
+      value = buf;
+      while (pos < n && s[pos] != ';') pos++;
+    } else {
+      size_t start = pos;
+      while (pos < n && s[pos] != ';') pos++;
+      size_t end = pos;
+      while (end > start && sf_mime_ws(s[end - 1])) end--;
+      if (end == start) continue;
+      value = malloc(end - start);
+      if (!value) sf_oom();
+      memcpy(value, s + start, end - start);
+      value_len = end - start;
+    }
+    bool keep = name_len > 0 && sf_mime_token_run(s + name_start, name_len) &&
+                (value_len == 0 || sf_mime_quoted_run(value, value_len));
+    char *name = NULL;
+    if (keep) {
+      name = malloc(name_len);
+      if (!name) sf_oom();
+      for (size_t i = 0; i < name_len; i++) {
+        char c = s[name_start + i];
+        name[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+      }
+      for (size_t i = 0; i < count; i++) {
+        if (params[i].name_len == name_len &&
+            memcmp(params[i].name, name, name_len) == 0) {
+          keep = false;
+          break;
+        }
+      }
+    }
+    if (keep) {
+      SfMimeParam *grown = realloc(params, (count + 1) * sizeof *grown);
+      if (!grown) sf_oom();
+      params = grown;
+      params[count].name = name;
+      params[count].name_len = name_len;
+      params[count].value = value;
+      params[count].value_len = value_len;
+      count++;
+    } else {
+      free(value);
+      free(name);
+    }
+  }
+
+  size_t out_len = type_len + 1 + sub_len;
+  for (size_t i = 0; i < count; i++) {
+    out_len += 1 + params[i].name_len + 1;
+    if (params[i].value_len > 0 && sf_mime_token_run(params[i].value, params[i].value_len))
+      out_len += params[i].value_len;
+    else
+      out_len += 2 + 2 * params[i].value_len;
+  }
+  char *out = malloc(out_len > 0 ? out_len : 1);
+  if (!out) sf_oom();
+  size_t at = 0;
+  for (size_t i = 0; i < type_len; i++) {
+    char c = s[type_start + i];
+    out[at++] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+  }
+  out[at++] = '/';
+  for (size_t i = 0; i < sub_len; i++) {
+    char c = s[sub_start + i];
+    out[at++] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+  }
+  for (size_t i = 0; i < count; i++) {
+    out[at++] = ';';
+    memcpy(out + at, params[i].name, params[i].name_len);
+    at += params[i].name_len;
+    out[at++] = '=';
+    if (params[i].value_len > 0 &&
+        sf_mime_token_run(params[i].value, params[i].value_len)) {
+      memcpy(out + at, params[i].value, params[i].value_len);
+      at += params[i].value_len;
+    } else {
+      out[at++] = '"';
+      for (size_t j = 0; j < params[i].value_len; j++) {
+        char c = params[i].value[j];
+        if (c == '"' || c == '\\') out[at++] = '\\';
+        out[at++] = c;
+      }
+      out[at++] = '"';
+    }
+  }
+  ScrStr *serialized = scr_str_new(out, at);
+  free(out);
+  sf_mime_params_free(params, count);
+  return serialized;
+}
+
+/* The content-type header's values split on commas outside quoted strings
+ * (+1 each into `last`), keeping the last that parses and is not the
+ * wildcard type. */
+static ScrStr *sf_mime_extract(const ScrStr *joined) {
+  const char *s = joined->data;
+  size_t n = joined->len, pos = 0, tlen = 0;
+  char *tmp = malloc(n > 0 ? n : 1);
+  if (!tmp) sf_oom();
+  ScrStr *last = NULL;
+  for (;;) {
+    while (pos < n && s[pos] != '"' && s[pos] != ',') tmp[tlen++] = s[pos++];
+    bool at_end = pos >= n;
+    if (!at_end) {
+      if (s[pos] == '"') {
+        size_t quote = pos++;
+        while (pos < n) {
+          char c = s[pos++];
+          if (c == '\\') {
+            if (pos < n) pos++;
+          } else if (c == '"') {
+            break;
+          }
+        }
+        memcpy(tmp + tlen, s + quote, pos - quote);
+        tlen += pos - quote;
+        if (pos < n) continue;
+      } else {
+        pos++; /* ',' */
+      }
+    }
+    ScrStr *value = scr_str_new(tmp, tlen);
+    ScrStr *serialized = sf_mime_serialize(value);
+    scr_str_release(value);
+    if (serialized) {
+      bool wildcard = serialized->len >= 3 &&
+                      memcmp(serialized->data, "*/*", 3) == 0 &&
+                      (serialized->len == 3 || serialized->data[3] == ';');
+      if (wildcard) {
+        scr_str_release(serialized);
+      } else {
+        scr_str_release(last);
+        last = serialized;
+      }
+    }
+    if (at_end) break;
+    tlen = 0;
+  }
+  free(tmp);
+  return last;
+}
+
+static ScrStr *sf_headers_get_value(SfHeaders *h, const ScrStr *name);
+
+/* The type blob() answers with (+1), NULL when the response has none. */
+static ScrStr *sf_response_blob_type(SfHeaders *h) {
+  ScrStr *name = scr_str_new("content-type", 12);
+  ScrStr *joined = sf_headers_get_value(h, name);
+  scr_str_release(name);
+  if (!joined) return NULL;
+  ScrStr *type = sf_mime_extract(joined);
+  scr_str_release(joined);
+  return type;
+}
+
+/* blob() builds its Blob in the blob unit. The reference is weak so a
+ * fetch program that never reads a body as a Blob links no blob unit —
+ * the sanitized runtime has no section collection to drop an unused strong
+ * reference. */
+extern ScrDyn *scr_blob_new(ScrDyn *args) __attribute__((weak));
+
 /* new Blob([bytes], { type }) (+1): the Response.blob() payload, whose
- * type is the response's content type ("") when there is none. */
-static ScrDyn *sf_blob_value(ScrBytes *bytes, const ScrStr *type) {
+ * type is the serialized MIME type of the content type ("" when there is
+ * none, since Blob clears a non-ASCII type of its own). */
+static ScrDyn *sf_blob_value(ScrBytes *bytes, ScrStr *type) {
   ScrDyn *list = scr_dyn_new_arr();
   scr_dyn_arr_push(list, scr_dyn_new_bytes(bytes));
   ScrDyn *args = scr_dyn_new_arr();
   scr_dyn_arr_push(args, list);
   if (type != NULL) {
-    ScrStr *clean = sf_blob_type_clean(type);
     ScrDyn *options = scr_dyn_new_obj();
-    scr_dyn_obj_set(options, "type", 4, scr_dyn_new_str(clean));
+    scr_dyn_obj_set(options, "type", 4, scr_dyn_new_str(type));
     scr_dyn_arr_push(args, options);
-    scr_str_release(clean);
+  }
+  if (scr_blob_new == NULL) {
+    scr_dyn_release(args);
+    sf_type_error("Blob is not available in this build");
+    return NULL;
   }
   ScrDyn *blob = scr_blob_new(args);
   scr_dyn_release(args);
@@ -4477,17 +4733,13 @@ static void sf_response_materialize(SfResponse *r) {
 
 static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
   ScrStr *blob_type = NULL;
-  if (mode == SF_COLLECT_BLOB) {
-    ScrStr *name = scr_str_new("content-type", 12);
-    if (r->headers) blob_type = sf_headers_get_value(r->headers, name);
-    scr_str_release(name);
-  }
+  if (mode == SF_COLLECT_BLOB && r->headers)
+    blob_type = sf_response_blob_type(r->headers);
   if (!r->null_body) {
     ScrPromise *p = sf_stream_collect(r->body, mode, blob_type);
     scr_str_release(blob_type);
     return p;
   }
-  if (blob_type) scr_str_release(blob_type);
 
   /*
    * A null body is not a disturbed empty stream: body stays null,
@@ -4507,12 +4759,13 @@ static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
   } else {
     ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
     if (mode == SF_COLLECT_BLOB) {
-      value = sf_blob_value(empty, NULL);
+      value = sf_blob_value(empty, blob_type);
     } else {
       value = mode == SF_COLLECT_ARRAY_BUFFER ? scr_array_buffer_from_bytes(empty) : scr_dyn_new_bytes(empty);
     }
     scr_bytes_release(empty);
   }
+  scr_str_release(blob_type);
   if (scr_exc_pending()) {
     scr_dyn_release(value);
     scr_promise_reject_pending(p);
@@ -7958,7 +8211,8 @@ static const ScrDynHandleMethod sf_reader_methods[] = {
     {NULL, 0, false}};
 static const ScrDynHandleMethod sf_body_methods[] = {
     {"json", 0, true}, {"text", 0, true}, {"bytes", 0, true},
-    {"arrayBuffer", 0, true}, {"clone", 0, false}, {NULL, 0, false}};
+    {"arrayBuffer", 0, true}, {"blob", 0, true}, {"clone", 0, false},
+    {NULL, 0, false}};
 static const ScrDynHandleMethod sf_headers_methods[] = {
     {"append", 2, false}, {"delete", 1, false}, {"entries", 0, false},
     {"forEach", 1, false}, {"get", 1, false}, {"getSetCookie", 0, false},

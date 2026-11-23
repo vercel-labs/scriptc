@@ -5959,7 +5959,16 @@ ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush,
                   ws_native_callback(transform, 2, "transform", state, retain, release, trace));
   scr_dyn_obj_set(transformer, "flush", 5,
                   ws_native_callback(flush, 1, "flush", state, retain, release, trace));
-  ScrDyn *box = ws_transform_construct(&transformer, 1);
+  /* A readable high-water mark of one: the transformer's enqueue does not
+   * put the write under backpressure, so writing before anything reads
+   * completes as it does on Node's streams (the writable buffers). */
+  ScrDyn *rstrategy = scr_dyn_new_obj();
+  ScrDyn *hwm = scr_dyn_new_num(1);
+  scr_dyn_obj_set(rstrategy, "highWaterMark", 13, hwm);
+  scr_dyn_release(hwm);
+  ScrDyn *args[3] = {transformer, scr_dyn_undefined(), rstrategy};
+  ScrDyn *box = ws_transform_construct(args, 3);
+  scr_dyn_release(rstrategy);
   scr_dyn_release(transformer);
   return box;
 }

@@ -1655,7 +1655,7 @@ declare var TransformStream: {
 };
 /* The web compression streams: a TransformStream's readable and writable
  * over one of Node's zlib formats (scr_webstream_compress.c). */
-type CompressionFormat = "deflate" | "deflate-raw" | "gzip";
+type CompressionFormat = "deflate" | "deflate-raw" | "gzip" | "brotli";
 interface CompressionStream {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;

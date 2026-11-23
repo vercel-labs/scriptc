@@ -472,7 +472,10 @@ function lowerStreamCallback(
       // option-callback results either way.
       const bodyExpr = node.body as ts.Expression;
       if (funcType.ret.kind === "void") {
-        body = [{ kind: "exprStmt", expr: lowerer.lowerExpr(bodyExpr), loc: locOf(node.body) }];
+        // Lowered as an expression statement, so a ternary or logical body
+        // takes the discarded-result shape (`(err) => err ? fail() : pass()`
+        // in a completion callback) instead of a value of the void type.
+        body = [lowerer.lowerExprStatement(bodyExpr)];
       } else {
         const value = lowerer.lowerExpr(bodyExpr);
         body = [

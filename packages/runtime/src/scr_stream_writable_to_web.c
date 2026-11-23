@@ -1109,11 +1109,6 @@ ScrDyn *scr_stream_writable_to_web_dyn(const ScrDyn *value, double flags) {
   ScrDyn *object_mode = stw3d_member(value, "writableObjectMode", 18);
   c->object_mode = stw3d_truthy(object_mode);
   if (object_mode) scr_dyn_release(object_mode);
-  stw3d_live_add(c);
-  stw3d_register(c, STW3D_ERROR, (void *)&stw3d_on_error);
-  stw3d_register(c, STW3D_FINISH, (void *)&stw3d_on_finish);
-  stw3d_register(c, STW3D_CLOSE, (void *)&stw3d_on_close);
-  stw3d_register(c, STW3D_DRAIN, (void *)&stw3d_on_drain);
 
   ScrDyn *sink = scr_dyn_new_obj();
   scr_dyn_obj_set(sink, "start", 5,
@@ -1137,6 +1132,21 @@ ScrDyn *scr_stream_writable_to_web_dyn(const ScrDyn *value, double flags) {
   scr_str_release(what);
   scr_dyn_release(ctorArgs);
   scr_dyn_release(cls);
+  if (!out) {
+    /* The stream refused the strategy (a negative or NaN highWaterMark, or
+     * another invalid option): nothing has been linked or listened to yet,
+     * so dropping this context frees it and the value it holds, and the
+     * constructor's exception stays pending. */
+    stw3d_unref(c);
+    return NULL;
+  }
+  /* Linked and watched only once the stream exists, so a failed construction
+   * never leaves a context rooted on the live list. */
+  stw3d_live_add(c);
+  stw3d_register(c, STW3D_ERROR, (void *)&stw3d_on_error);
+  stw3d_register(c, STW3D_FINISH, (void *)&stw3d_on_finish);
+  stw3d_register(c, STW3D_CLOSE, (void *)&stw3d_on_close);
+  stw3d_register(c, STW3D_DRAIN, (void *)&stw3d_on_drain);
   stw3d_unref(c); /* the adapter's reference */
   return out;
 }

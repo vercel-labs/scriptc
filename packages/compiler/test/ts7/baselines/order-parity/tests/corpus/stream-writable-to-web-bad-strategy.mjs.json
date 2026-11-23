@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-writable-to-web-bad-strategy.mjs"
+ ],
+ "diags": []
+}

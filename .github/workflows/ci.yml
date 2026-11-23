@@ -82,6 +82,9 @@ jobs:
       # dispatched) and every other event run full. superseded: a dispatched expensive tier whose branch moved on
       # runs nothing; the new head has its own.
       tier: ${{ steps.scope.outputs.tier }}
+      # The commit a light merge queue group's combined diff is measured from: the tip of the group's base branch,
+      # so the diff covers the entries queued before the group as well as its own.
+      queue_base: ${{ steps.scope.outputs.queue_base }}
     steps:
       # ci-review-gate.yml and scripts/ci-review-gate.mjs land together, in the pull request that introduces the
       # gate. check_run events start only the default branch's workflows, so until both files are on the default
@@ -149,7 +152,7 @@ jobs:
             /^tests\/harness\/(shard\.ts|shard-balance\.mjs|suite-lock\.mjs)$/,
             /^packages\/[^/]+\/package\.json$/,
           ];
-          // A pull request this many commits behind the queue base was tested against a much older main.
+          // A pull request this many commits behind the base branch was tested against a much older main.
           const QUEUE_MAX_LAG = 100;
           const api = (path) =>
             JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
@@ -169,19 +172,36 @@ jobs:
             }
             return [...numbers].sort((a, b) => a - b);
           }
+          // The tip of a merge queue group's base branch now. A later group's merge_group.base_sha is where its own
+          // entries start, which leaves out the entries queued before it; measuring from the branch tip instead
+          // (the three-dot compare starts at the merge base of the tip and the group's head) covers every queued
+          // change in the combined tree.
+          function queueBaseTip(repo, mergeGroup) {
+            const baseRef = String(mergeGroup?.base_ref ?? '').replace(/^refs\/heads\//, '');
+            if (baseRef.length === 0) throw new Error('the group names no base branch');
+            const commit = api(`repos/${repo}/commits/${encodeURIComponent(baseRef)}`);
+            if (typeof commit?.sha !== 'string' || commit.sha.length === 0)
+              throw new Error(`the tip of ${baseRef} names no commit`);
+            return { baseRef, sha: commit.sha };
+          }
           // Whether a merge queue group runs only the fast tier and the lanes its combined diff touches: every pull
-          // request in it passed the expensive tier (ci/full) on its current head, no head is far behind the queue
-          // base, and the group leaves the build and CI configuration alone. Anything it cannot establish runs the
-          // whole expensive tier, as a push to main does.
+          // request in it passed the expensive tier (ci/full) on its current head, no head is far behind the base
+          // branch, and the group leaves the build and CI configuration alone. Anything it cannot establish runs
+          // the whole expensive tier, as a push to main does.
           function queueIsLight(repo, mergeGroup) {
             const skip = (reason) => ({ light: false, reason });
             if (typeof repo !== 'string' || repo.length === 0) return skip('the event names no repository');
-            if (typeof mergeGroup?.head_sha !== 'string' || typeof mergeGroup?.base_sha !== 'string')
-              return skip('the group names no head and base');
-            const baseRef = String(mergeGroup.base_ref ?? '').replace(/^refs\/heads\//, '');
+            if (typeof mergeGroup?.head_sha !== 'string' || mergeGroup.head_sha.length === 0)
+              return skip('the group names no head');
+            let base;
+            try {
+              base = queueBaseTip(repo, mergeGroup);
+            } catch (error) {
+              return skip(`cannot read the base branch tip (${error.message})`);
+            }
             let compare;
             try {
-              compare = api(`repos/${repo}/compare/${mergeGroup.base_sha}...${mergeGroup.head_sha}`);
+              compare = api(`repos/${repo}/compare/${base.sha}...${mergeGroup.head_sha}`);
             } catch (error) {
               return skip(`cannot read the group's diff (${error.message})`);
             }
@@ -204,7 +224,7 @@ jobs:
               }
               if (pull.state !== 'open') return skip(`#${number} is ${pull.state}`);
               if (pull.head?.repo?.full_name !== repo) return skip(`#${number} comes from another repository`);
-              if (pull.base?.ref !== baseRef) return skip(`#${number} targets ${pull.base?.ref}`);
+              if (pull.base?.ref !== base.baseRef) return skip(`#${number} targets ${pull.base?.ref}`);
               let statuses;
               try {
                 statuses = api(`repos/${repo}/commits/${pull.head.sha}/statuses?per_page=100`);
@@ -216,15 +236,16 @@ jobs:
                 return skip(`#${number} has no passing ci/full on ${pull.head.sha}`);
               let behind;
               try {
-                behind = api(`repos/${repo}/compare/${pull.head.sha}...${mergeGroup.base_sha}`).ahead_by;
+                behind = api(`repos/${repo}/compare/${pull.head.sha}...${base.sha}`).ahead_by;
               } catch (error) {
-                return skip(`cannot compare #${number} with the queue base (${error.message})`);
+                return skip(`cannot compare #${number} with the base branch (${error.message})`);
               }
               if (!Number.isInteger(behind) || behind > QUEUE_MAX_LAG)
-                return skip(`#${number} is ${behind} commits behind the queue base`);
+                return skip(`#${number} is ${behind} commits behind the base branch`);
             }
             return {
               light: true,
+              base: base.sha,
               reason: `${numbers.length} pull request(s) passed the expensive tier on their heads`,
             };
           }
@@ -242,7 +263,10 @@ jobs:
             : eventName === 'pull_request' && sameRepository && !fullLabel && !noGate
               ? 'fast'
               : 'full';
-          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `full=${full}\ntier=${tier}\n${queue?.light ? `queue_base=${queue.base}\n` : ''}`,
+          );
           if (queue !== undefined)
             console.log(queue.light
               ? `Run the fast tier and the lanes this merge queue group's diff touches: ${queue.reason}`
@@ -291,7 +315,7 @@ jobs:
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        # A light merge queue group reads the queue base and the group's combined diff from git.
+        # A light merge queue group reads the base branch tip and the group's combined diff from git.
         if: github.event_name == 'pull_request' || inputs.pr != '' || needs.validation_scope.outputs.tier == 'light'
         with:
           fetch-depth: 0
@@ -300,7 +324,9 @@ jobs:
         env:
           EVENT: ${{ inputs.pr != '' && 'pull_request' || github.event_name }}
           TIER: ${{ needs.validation_scope.outputs.tier }}
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # A light group measures from the base branch tip (validation_scope), so its diff covers the entries
+          # queued before it; every other event uses its own base.
+          BASE: ${{ needs.validation_scope.outputs.queue_base || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
           GROUP_REF: ${{ github.event.merge_group.head_ref }}
@@ -315,7 +341,7 @@ jobs:
             printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$TIER" = light ]; then
             # Every pull request in the group passed the expensive tier on its head: run the fast tier and the
-            # lanes the group's combined diff touches, chosen by the queue base's copy of the selector.
+            # lanes the group's combined diff touches, chosen by the base branch tip's copy of the selector.
             echo "The group's pull requests passed the expensive tier: run the fast tier and the lanes its diff touches"
             [ -n "$PR" ] || PR=$(printf '%s' "$GROUP_REF" | sed -n 's#.*/pr-\([0-9][0-9]*\)-.*#\1#p')
             if git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -327,7 +353,7 @@ jobs:
               # push to main when the diff turns any lane on. A documentation-only diff runs no lane and no fast tier.
               printf 'macos=false\nmacos_smoke=%s\nfast=%s\n' "$macos_smoke" "$linux" >> "$GITHUB_OUTPUT"
             else
-              echo "The queue base has no scripts/ci-lanes.mjs: what a push to main runs"
+              echo "The base branch tip has no scripts/ci-lanes.mjs: what a push to main runs"
               queued
             fi
           elif [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
@@ -410,8 +436,8 @@ jobs:
       - uses: ./.github/actions/libnode
       - name: Related tests
         env:
-          # A light merge queue group diffs the queue base against the group's head, as the lane selector does.
-          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          # A light merge queue group diffs the base branch tip against the group's head, as the lane selector does.
+          BASE: ${{ needs.validation_scope.outputs.queue_base || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD"
 

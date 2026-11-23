@@ -220,19 +220,21 @@ test("scope selection treats branch metadata as data, without executing it", () 
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
 });
 
-// A merge queue group: a synthetic commit (groupHead) built on the queue base (groupBase) from the squash commits of
-// the pull requests it holds. The ref names the last pull request in the group.
+// A merge queue group: a synthetic commit (groupHead) built from the squash commits of the pull requests it holds.
+// The branch tip is mainTip; a later group's base_sha is where its own entries start (groupBase), not the branch.
+// The ref names the last pull request in the group.
+const mainTip = "e".repeat(40);
 const groupBase = "b".repeat(40);
 const groupHead = "a".repeat(40);
 const firstHead = "c".repeat(40);
 const secondHead = "d".repeat(40);
-const queueEvent = (numbers: number[]) => ({
+const queueEvent = (numbers: number[], baseSha = mainTip) => ({
   repository: { full_name: repository, default_branch: "main" },
   merge_group: {
-    head_ref: `gh-readonly-queue/main/pr-${numbers[numbers.length - 1]}-${groupBase}`,
+    head_ref: `gh-readonly-queue/main/pr-${numbers[numbers.length - 1]}-${baseSha}`,
     head_sha: groupHead,
     base_ref: "main",
-    base_sha: groupBase,
+    base_sha: baseSha,
   },
 });
 const route = (path: string) => `repos/${repository}/${path}`;
@@ -262,7 +264,8 @@ function queueRoutes({
   pulls = [],
 }: { files?: string[]; commits?: string[]; pulls?: QueuePull[] } = {}) {
   const routes: Record<string, unknown> = {
-    [route(`compare/${groupBase}...${groupHead}`)]: {
+    [route("commits/main")]: { sha: mainTip },
+    [route(`compare/${mainTip}...${groupHead}`)]: {
       ahead_by: commits.length,
       commits: commits.map((message) => ({ commit: { message } })),
       files: files.map((filename) => ({ filename })),
@@ -271,7 +274,7 @@ function queueRoutes({
   for (const { pull, statuses, lag } of pulls) {
     routes[route(`pulls/${pull.number}`)] = pull;
     routes[route(`commits/${pull.head.sha}/statuses?per_page=100`)] = statuses;
-    routes[route(`compare/${pull.head.sha}...${groupBase}`)] = { ahead_by: lag };
+    routes[route(`compare/${pull.head.sha}...${mainTip}`)] = { ahead_by: lag };
   }
   return routes;
 }
@@ -285,7 +288,23 @@ test("a merge queue group whose pull requests passed the expensive tier runs the
       "true",
       queueRoutes({ pulls: [queuePull(4082, firstHead)] }),
     ),
-  ).toBe("full=true\ntier=light\n");
+  ).toBe(`full=true\ntier=light\nqueue_base=${mainTip}\n`);
+});
+
+// The review finding: a later group compares from where its own entries start, which leaves out the entries
+// queued before it. Measuring from the branch tip must find the earlier entry's runtime change and keep the
+// group light with the lanes that change needs.
+test("a later merge queue group selects against the base branch tip, covering the entries queued before it", () => {
+  const event = queueEvent([4081, 4082], groupBase);
+  const routes = queueRoutes({
+    files: ["packages/runtime/src/scr_alloc.c", "packages/compiler/src/backend/emit-call.ts"],
+    commits: ["First change (#4081)", "Second change (#4082)"],
+    pulls: [queuePull(4081, firstHead), queuePull(4082, secondHead)],
+  });
+  // No response exists for the group's own base...head compare: only the branch tip's compare is answered.
+  expect(runScopeOutputs("merge_group", event, groupHead, "true", routes)).toBe(
+    `full=true\ntier=light\nqueue_base=${mainTip}\n`,
+  );
 });
 
 test("a merge queue group with a pull request that has no passing expensive tier runs the full tier", () => {
@@ -326,10 +345,10 @@ test("a merge queue group that touches CI or build configuration runs the full t
     ).toBe("full=true\ntier=full\n");
 });
 
-test("a merge queue group with a head far behind the queue base runs the full tier", () => {
+test("a merge queue group with a head far behind the base branch runs the full tier", () => {
   const atLimit = queueRoutes({ pulls: [queuePull(4082, firstHead, 100)] });
   expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", atLimit)).toBe(
-    "full=true\ntier=light\n",
+    `full=true\ntier=light\nqueue_base=${mainTip}\n`,
   );
   const stale = queueRoutes({ pulls: [queuePull(4082, firstHead, 101)] });
   expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", stale)).toBe(
@@ -344,7 +363,7 @@ test("a merge queue group light tier checks every pull request in the group", ()
     pulls: [queuePull(4081, firstHead), queuePull(4082, secondHead)],
   });
   expect(runScopeOutputs("merge_group", event, groupHead, "true", routes)).toBe(
-    "full=true\ntier=light\n",
+    `full=true\ntier=light\nqueue_base=${mainTip}\n`,
   );
   // One pull request in the group without the expensive tier keeps the whole group on the full tier.
   delete routes[route(`commits/${secondHead}/statuses?per_page=100`)];

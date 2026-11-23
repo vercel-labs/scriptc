@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
@@ -314,8 +314,10 @@ test("pushes to main and merge queue groups run every lane except macos, and the
 
 test("a light merge queue group runs the lanes its combined diff touches, never the macOS lane", () => {
   const step = workflow.jobs["lanes"]!.steps.find((candidate) => candidate.id === "lanes")!;
+  // The scope step names the base branch tip for a light group, so the combined diff includes the entries queued
+  // before it; a pull request and every other event keep their own base.
   expect(step.env!["BASE"]).toBe(
-    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+    "${{ needs.validation_scope.outputs.queue_base || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
   );
   expect(step.env!["GROUP_REF"]).toBe("${{ github.event.merge_group.head_ref }}");
   expect(lanesScript).toContain('elif [ "$TIER" = light ]; then');
@@ -330,6 +332,82 @@ test("a light merge queue group runs the lanes its combined diff touches, never 
   )!;
   expect(checkout.if).toContain("needs.validation_scope.outputs.tier == 'light'");
   expect(checkout.with!["fetch-depth"]).toBe(0);
+});
+
+function git(cwd: string, ...args: string[]): string {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
+}
+
+test("a later merge queue group's light tier selects the lanes the entries queued before it need", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ci-lanes-queue-"));
+  try {
+    const repository = join(directory, "repository");
+    mkdirSync(join(repository, "scripts"), { recursive: true });
+    mkdirSync(join(repository, "packages/compiler/src/backend"), { recursive: true });
+    mkdirSync(join(repository, "docs"), { recursive: true });
+    writeFileSync(
+      join(repository, "scripts/ci-lanes.mjs"),
+      readFileSync(new URL("../../scripts/ci-lanes.mjs", import.meta.url)),
+    );
+    writeFileSync(
+      join(repository, "packages/compiler/src/backend/emit-call.ts"),
+      "export const a = 1;\n",
+    );
+    writeFileSync(join(repository, "docs/readme.md"), "base\n");
+    git(repository, "init", "-q");
+    git(repository, "config", "user.email", "ci@example.com");
+    git(repository, "config", "user.name", "CI");
+    git(repository, "add", "-A");
+    git(repository, "commit", "-q", "-m", "Base");
+    const base = git(repository, "rev-parse", "HEAD");
+    // The earlier entry in the queue changes a compiler source; this group changes only documentation.
+    writeFileSync(
+      join(repository, "packages/compiler/src/backend/emit-call.ts"),
+      "export const a = 2;\n",
+    );
+    git(repository, "commit", "-q", "-am", "First change (#4081)");
+    writeFileSync(join(repository, "docs/readme.md"), "this group\n");
+    git(repository, "commit", "-q", "-am", "Second change (#4082)");
+    const head = git(repository, "rev-parse", "HEAD");
+
+    const output = join(directory, "output");
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
+      cwd: repository,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        EVENT: "merge_group",
+        TIER: "light",
+        BASE: base,
+        HEAD: head,
+        PR: "4082",
+        GROUP_REF: "",
+        GITHUB_OUTPUT: output,
+        RUNNER_TEMP: directory,
+      },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const values = Object.fromEntries(
+      readFileSync(output, "utf8")
+        .split("\n")
+        .filter((line) => line.includes("="))
+        .map((line) => line.split("=") as [string, string]),
+    );
+    // This group alone touches documentation only; the earlier entry's compiler change is why the lanes run.
+    expect(values).toMatchObject({
+      linux: "true",
+      effects: "true",
+      profile: "true",
+      macos: "false",
+      macos_smoke: "true",
+      fast: "true",
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("a pull request's fast tier turns every lane off and runs the fast tests", () => {

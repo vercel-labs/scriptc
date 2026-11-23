@@ -78,6 +78,7 @@ enum {
   SF_COLLECT_TEXT,
   SF_COLLECT_BYTES,
   SF_COLLECT_ARRAY_BUFFER,
+  SF_COLLECT_BLOB,
 };
 
 enum {
@@ -93,6 +94,8 @@ struct SfCollector {
   size_t len;
   size_t cap;
   int mode;
+  /* The blob type of a blob() collection (+1, NULL stands for ""). */
+  ScrStr *blob_type;
 };
 
 struct SfPullWait {
@@ -1203,9 +1206,54 @@ static void sf_collector_drop(SfStream *s) {
    */
   scr_promise_release(c->promise);
   free(c->data);
+  scr_str_release(c->blob_type);
   SfStream *held = c->held_stream;
   free(c);
   sf_stream_release(held);
+}
+
+/* Node's response blob takes the content type without its spaces
+ * ("text/plain; charset=utf-8" reads "text/plain;charset=utf-8"), so the
+ * type is rebuilt without ASCII whitespace before the Blob sees it. */
+static ScrStr *sf_blob_type_clean(const ScrStr *type) {
+  if (type == NULL) return NULL;
+  size_t n = 0;
+  for (size_t i = 0; i < type->len; i++) {
+    char c = type->data[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') continue;
+    n++;
+  }
+  if (n == type->len) return scr_str_retain(type);
+  char *out = malloc(n > 0 ? n : 1);
+  if (!out) sf_oom();
+  size_t j = 0;
+  for (size_t i = 0; i < type->len; i++) {
+    char c = type->data[i];
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') continue;
+    out[j++] = c;
+  }
+  ScrStr *clean = scr_str_new(out, n);
+  free(out);
+  return clean;
+}
+
+/* new Blob([bytes], { type }) (+1): the Response.blob() payload, whose
+ * type is the response's content type ("") when there is none. */
+static ScrDyn *sf_blob_value(ScrBytes *bytes, const ScrStr *type) {
+  ScrDyn *list = scr_dyn_new_arr();
+  scr_dyn_arr_push(list, scr_dyn_new_bytes(bytes));
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, list);
+  if (type != NULL) {
+    ScrStr *clean = sf_blob_type_clean(type);
+    ScrDyn *options = scr_dyn_new_obj();
+    scr_dyn_obj_set(options, "type", 4, scr_dyn_new_str(clean));
+    scr_dyn_arr_push(args, options);
+    scr_str_release(clean);
+  }
+  ScrDyn *blob = scr_blob_new(args);
+  scr_dyn_release(args);
+  return blob;
 }
 
 static void sf_collector_finish(SfStream *s) {
@@ -1224,6 +1272,8 @@ static void sf_collector_finish(SfStream *s) {
     scr_str_release(text);
   } else if (c->mode == SF_COLLECT_ARRAY_BUFFER) {
     value = scr_array_buffer_from_bytes(bytes);
+  } else if (c->mode == SF_COLLECT_BLOB) {
+    value = sf_blob_value(bytes, c->blob_type);
   } else {
     value = scr_dyn_new_bytes(bytes);
   }
@@ -2250,7 +2300,7 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
   return p;
 }
 
-static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
+static ScrPromise *sf_stream_collect(SfStream *s, int mode, const ScrStr *blob_type) {
 #ifdef SCR_HANDLE_CLASSES
   if (s->web_view && !(s->disturbed || s->reader || s->internal_lock || sf_view_unusable(s))) {
     SfStream *source = sf_stream_body_source(s);
@@ -2259,7 +2309,7 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
       scr_promise_reject_pending(p);
       return p;
     }
-    ScrPromise *p = sf_stream_collect(source, mode);
+    ScrPromise *p = sf_stream_collect(source, mode, blob_type);
     sf_stream_release(source);
     return p;
   }
@@ -2277,6 +2327,7 @@ static ScrPromise *sf_stream_collect(SfStream *s, int mode) {
   c->promise = scr_promise_retain(p);
   c->held_stream = sf_stream_retain(s);
   c->mode = mode;
+  c->blob_type = blob_type ? scr_str_retain(blob_type) : NULL; /* NULL = "" */
   s->collector = c;
   sf_stream_drain(s);
   /* The collector reads to the end: a queue it emptied asks the source
@@ -4425,7 +4476,18 @@ static void sf_response_materialize(SfResponse *r) {
 }
 
 static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
-  if (!r->null_body) return sf_stream_collect(r->body, mode);
+  ScrStr *blob_type = NULL;
+  if (mode == SF_COLLECT_BLOB) {
+    ScrStr *name = scr_str_new("content-type", 12);
+    if (r->headers) blob_type = sf_headers_get_value(r->headers, name);
+    scr_str_release(name);
+  }
+  if (!r->null_body) {
+    ScrPromise *p = sf_stream_collect(r->body, mode, blob_type);
+    scr_str_release(blob_type);
+    return p;
+  }
+  if (blob_type) scr_str_release(blob_type);
 
   /*
    * A null body is not a disturbed empty stream: body stays null,
@@ -4444,7 +4506,11 @@ static ScrPromise *sf_response_collect(SfResponse *r, int mode) {
     scr_str_release(empty);
   } else {
     ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
-    value = mode == SF_COLLECT_ARRAY_BUFFER ? scr_array_buffer_from_bytes(empty) : scr_dyn_new_bytes(empty);
+    if (mode == SF_COLLECT_BLOB) {
+      value = sf_blob_value(empty, NULL);
+    } else {
+      value = mode == SF_COLLECT_ARRAY_BUFFER ? scr_array_buffer_from_bytes(empty) : scr_dyn_new_bytes(empty);
+    }
     scr_bytes_release(empty);
   }
   if (scr_exc_pending()) {
@@ -4538,6 +4604,7 @@ static ScrDyn *sf_response_invoke(void *ptr, ScrDyn *self,
   else if (strcmp(method, "text") == 0) mode = SF_COLLECT_TEXT;
   else if (strcmp(method, "bytes") == 0) mode = SF_COLLECT_BYTES;
   else if (strcmp(method, "arrayBuffer") == 0) mode = SF_COLLECT_ARRAY_BUFFER;
+  else if (strcmp(method, "blob") == 0) mode = SF_COLLECT_BLOB;
   if (mode >= 0) {
     ScrPromise *p = sf_response_collect(r, mode);
     ScrDyn *out = scr_dyn_new_promise(p);
@@ -4619,6 +4686,10 @@ ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response) {
 
 ScrPromise *scr_fetch_response_bytes(ScrDyn *response) {
   return sf_response_collect_dyn(response, SF_COLLECT_BYTES);
+}
+
+ScrPromise *scr_fetch_response_blob(ScrDyn *response) {
+  return sf_response_collect_dyn(response, SF_COLLECT_BLOB);
 }
 
 /* ── fetch transfer ──────────────────────────────────────────────── */

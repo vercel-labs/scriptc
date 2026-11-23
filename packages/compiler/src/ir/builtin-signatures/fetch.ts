@@ -16,6 +16,9 @@ export const fetchSignatures = defineLibFnSignatures({
   "fetch.requestNew": { argTypes: [DYN, DYN], result: DYN },
   "fetch.headersNew": { argTypes: [DYN], result: DYN },
   "fetch.responseArrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
+  /** Response.blob(): the body collected into a Blob whose type is the
+   * response's content type ("" when absent). */
+  "fetch.responseBlob": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseJson": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
   "fetch.responseText": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },
   "fetch.responseBytes": { argTypes: [DYN], result: { kind: "promise", inner: BYTES_U8 } },

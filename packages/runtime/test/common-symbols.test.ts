@@ -69,6 +69,9 @@ async function commonSymbols(label: string, compiler: string[]): Promise<string[
         `-I${join(vendorDir, "mbedtls", "include")}`,
         // scr_tls.c reads the engine's private handshake params (ssl_misc.h)
         `-I${join(vendorDir, "mbedtls", "library")}`,
+        // the vendored SQLite the pack builds against (a cross target has
+        // no host system headers to fall back to)
+        `-I${join(vendorDir, "sqlite")}`,
         `-I${join(vendorDir, "brotli", "c", "include")}`,
         `-I${join(vendorDir, "zstd", "lib")}`,
         ...(name === "scr_intl.c" ? icu : []),

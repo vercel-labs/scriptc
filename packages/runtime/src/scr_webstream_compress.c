@@ -22,6 +22,11 @@ enum { WS_COMPRESS_KIND = 15, WS_DECOMPRESS_KIND = 16 };
 
 /* One output buffer per engine step (zlib's own chunk-size default). */
 enum { WS_COMP_OUT = 16 * 1024 };
+/* Input the engine has accepted but not consumed yet (bytes), and output
+ * chunks a flush may queue before it waits for the reader (chunks: the
+ * readable strategy has no size function, so its queue counts chunks):
+ * both bound what a bomb-shaped stream can hold. */
+enum { WS_COMP_BACKLOG = 1024 * 1024, WS_COMP_QUEUED = 64 };
 
 static void ws_comp_oom(void) { scr_trap("scriptc: out of memory\n"); }
 
@@ -34,6 +39,18 @@ typedef struct WsCompState {
    * value (BROTLI_OPERATION_FINISH = 2, where Z_FINISH is 4). */
   int finish_op;
   ScrDyn *own; /* +1 expando properties, or NULL */
+  /* The bytes written and not yet consumed by the engine (in[in_off ..
+   * in_len)). Output is produced only as the readable side asks for it, so
+   * a chunk that expands to a bomb stays a bounded backlog instead of a
+   * queue of expanded chunks. */
+  unsigned char *in;
+  size_t in_len, in_cap, in_off;
+  bool finishing; /* flush began: drain the backlog, then finish the engine */
+  bool drain;     /* the last step filled its output buffer: more is due */
+  ScrDyn *controller; /* +1, the transform controller while a job runs */
+  ScrPromise *pending_write; /* +1, a write waiting for the backlog to drain */
+  ScrPromise *pending_flush; /* +1, close waiting for the output to drain */
+  unsigned char *out; /* the WS_COMP_OUT scratch, allocated on first use */
 } WsCompState;
 
 static void *ws_comp_retain(void *p) {
@@ -45,6 +62,9 @@ static void ws_comp_trace(void *p, ScrTraceVisit visit, void *ctx) {
   WsCompState *s = p;
   if (s->transform) visit(s->transform, ctx);
   if (s->own) visit(s->own, ctx);
+  if (s->controller) visit(s->controller, ctx);
+  if (s->pending_write) visit(s->pending_write, ctx);
+  if (s->pending_flush) visit(s->pending_flush, ctx);
 }
 
 /* The state owns its transform, the transform's native closures own their
@@ -56,9 +76,16 @@ static void ws_comp_drop(void *p, bool gc) {
   WsCompState *s = p;
   if (s->engine) scr_zlib_engine_free(s->engine);
   s->engine = NULL;
+  free(s->in);
+  s->in = NULL;
+  free(s->out);
+  s->out = NULL;
   if (gc) return;
   if (s->transform) scr_dyn_release(s->transform);
   if (s->own) scr_dyn_release(s->own);
+  if (s->controller) scr_dyn_release(s->controller);
+  if (s->pending_write) scr_promise_release(s->pending_write);
+  if (s->pending_flush) scr_promise_release(s->pending_flush);
 }
 
 static void ws_comp_gcfree(void *p) {
@@ -103,6 +130,8 @@ static ScrDynHandleTag ws_comp_tag_of(const WsCompState *s) {
 static ScrDyn *ws_comp_construct(ScrDyn *const *args, size_t argc, bool decompressing);
 static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_t argc);
 static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t argc);
+static void ws_comp_resume_hook(void *state);
 
 static ScrDyn *ws_compress_construct(ScrDyn *const *args, size_t argc) {
   return ws_comp_construct(args, argc, false);
@@ -115,8 +144,9 @@ static ScrDyn *ws_decompress_construct(ScrDyn *const *args, size_t argc) {
 /* Attaches the stream's native transformer; false with the exception
  * pending. */
 static bool ws_comp_attach(WsCompState *s, ScrDynThunk transform, ScrDynThunk flush) {
-  ScrDyn *box = scr_webstream_native_transform(transform, flush, s, ws_comp_retain, ws_comp_release,
-                                               ws_comp_trace);
+  ScrDyn *box =
+      scr_webstream_native_transform(transform, flush, ws_comp_cancel, s, ws_comp_retain,
+                                     ws_comp_release, ws_comp_trace, ws_comp_resume_hook);
   if (!box) return false;
   s->transform = scr_dyn_retain(box);
   scr_dyn_release(box);
@@ -207,9 +237,21 @@ static ScrBytes *ws_comp_input(ScrDyn *chunk) {
 
 /* The zlib error a web compression stream fails with: a TypeError carrying
  * the zlib code, with no message (Node's adapters rethrow the underlying
- * error's code this way). */
-static void ws_comp_throw(const ScrZlibError *ze) {
-  scr_throw_error_msg_code(SCR_ERR_TYPE, "", 0, ze->code);
+ * error's code this way). +1. */
+static ScrDyn *ws_comp_error_value(const ScrZlibError *ze) {
+  ScrStr *message = scr_str_new("", 0);
+  ScrError *err = scr_error_new(SCR_ERR_TYPE, message);
+  scr_str_release(message);
+  scr_error_set_code(err, ze->code);
+  ScrDyn *value = scr_dyn_from_error(err);
+  scr_error_release(err);
+  return value;
+}
+
+/* Rejects `p` with `reason` (borrowed). */
+static void ws_comp_reject(ScrPromise *p, ScrDyn *reason) {
+  scr_dyn_throw(scr_dyn_retain(reason));
+  scr_promise_reject_pending(p);
 }
 
 static bool ws_comp_enqueue(ScrDyn *controller, const unsigned char *data, size_t len) {
@@ -223,40 +265,173 @@ static bool ws_comp_enqueue(ScrDyn *controller, const unsigned char *data, size_
   return ok;
 }
 
-/* Runs the engine until it takes all of `in` (or, with `finish`, until the
- * stream ends), enqueueing each full output buffer. False with the
- * exception pending, or when the controller refused the chunk. */
-static bool ws_comp_run(WsCompState *s, ScrDyn *controller, const unsigned char *in, size_t in_len,
-                        bool finish) {
-  unsigned char *out = malloc(WS_COMP_OUT);
-  if (!out) ws_comp_oom();
-  size_t off = 0;
-  bool ok = true;
+/* Appends a written chunk to the backlog (compacting the consumed prefix
+ * first). The backlog is what the engine has accepted and not consumed. */
+static void ws_comp_backlog(WsCompState *s, const unsigned char *data, size_t len) {
+  if (s->in_off > 0) {
+    memmove(s->in, s->in + s->in_off, s->in_len - s->in_off);
+    s->in_len -= s->in_off;
+    s->in_off = 0;
+  }
+  if (s->in_len + len > s->in_cap) {
+    size_t cap = s->in_cap ? s->in_cap : 4096;
+    while (cap < s->in_len + len) cap *= 2;
+    unsigned char *grown = realloc(s->in, cap);
+    if (!grown) ws_comp_oom();
+    s->in = grown;
+    s->in_cap = cap;
+  }
+  if (len) memcpy(s->in + s->in_len, data, len);
+  s->in_len += len;
+}
+
+/* Keeps the transform's controller (+1) while the backlog or the finish
+ * flush is pending: the output is produced on its readable side's pulls. */
+static void ws_comp_bind(WsCompState *s, ScrDyn *controller) {
+  if (s->controller || controller->kind != SCR_DYN_HANDLE) return;
+  if (controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER) return;
+  s->controller = scr_dyn_retain(controller);
+}
+
+static void ws_comp_release_promises(WsCompState *s, ScrDyn *reason, bool reject) {
+  if (s->pending_write) {
+    ScrPromise *p = s->pending_write;
+    s->pending_write = NULL;
+    if (reject) ws_comp_reject(p, reason);
+    else scr_promise_resolve_dyn(p, scr_dyn_retain(scr_dyn_undefined()));
+    scr_promise_release(p);
+  }
+  if (s->pending_flush) {
+    ScrPromise *p = s->pending_flush;
+    s->pending_flush = NULL;
+    if (reject) ws_comp_reject(p, reason);
+    else scr_promise_resolve_dyn(p, scr_dyn_retain(scr_dyn_undefined()));
+    scr_promise_release(p);
+  }
+}
+
+/* Resolves a write that waited for the backlog to drain below its cap. */
+static void ws_comp_release_write(WsCompState *s) {
+  if (!s->pending_write || s->in_len - s->in_off > WS_COMP_BACKLOG) return;
+  ScrPromise *write = s->pending_write;
+  s->pending_write = NULL;
+  scr_promise_resolve_dyn(write, scr_dyn_retain(scr_dyn_undefined()));
+  scr_promise_release(write);
+}
+
+/* The job is done: the backlog is consumed, and after a flush the engine
+ * itself is released. */
+static void ws_comp_job_done(WsCompState *s) {
+  if (s->finishing && s->engine) {
+    scr_zlib_engine_free(s->engine);
+    s->engine = NULL;
+  }
+  s->in_len = 0;
+  s->in_off = 0;
+  s->drain = false;
+  ScrDyn *controller = s->controller;
+  s->controller = NULL;
+  ws_comp_release_promises(s, NULL, false);
+  if (controller) scr_dyn_release(controller);
+}
+
+/* The engine failed: the stream errors with Node's TypeError (the readable
+ * rejects; a write that already returned stays resolved, as on Node), and
+ * whatever waits on the stream settles with it. */
+static void ws_comp_fail(WsCompState *s, const ScrZlibError *ze) {
+  ScrDyn *error = ws_comp_error_value(ze);
+  ScrDyn *controller = s->controller;
+  s->controller = NULL;
+  if (s->engine) scr_zlib_engine_free(s->engine);
+  s->engine = NULL;
+  s->in_len = 0;
+  s->in_off = 0;
+  s->drain = false;
+  ws_comp_release_promises(s, error, true);
+  if (controller) {
+    scr_webstream_controller_fail(controller, error);
+    scr_dyn_release(controller);
+  }
+  scr_dyn_release(error);
+}
+
+/* The controller refused a chunk (the stream closed or errored under the
+ * job): drop the job; the stream already carries the error. */
+static void ws_comp_abandon(WsCompState *s) {
+  ScrDyn *controller = s->controller;
+  s->controller = NULL;
+  s->in_len = 0;
+  s->in_off = 0;
+  s->drain = false;
+  ws_comp_release_promises(s, NULL, false);
+  if (controller) scr_dyn_release(controller);
+}
+
+/* Runs the engine as far as the readable side allows: one step per
+ * outstanding read request, and during a flush up to WS_COMP_QUEUED bytes
+ * of queued output (so a close before any read completes for a small
+ * stream and waits for the reader for a bomb). Returns -1 with the
+ * exception pending when enqueueing failed. */
+static int ws_comp_pump(WsCompState *s) {
+  if (!s->controller || !s->engine) return 0;
+  if (!s->out) {
+    s->out = malloc(WS_COMP_OUT);
+    if (!s->out) ws_comp_oom();
+  }
   for (;;) {
-    scr_zlib_engine_work(s->engine, finish ? s->finish_op : Z_NO_FLUSH, in + off,
-                         (uint32_t)(in_len - off), out, WS_COMP_OUT);
+    bool input_left = s->in_off < s->in_len;
+    if (!input_left && !s->finishing && !s->drain) {
+      ws_comp_job_done(s);
+      return 0;
+    }
+    bool room = scr_webstream_controller_has_request(s->controller) ||
+                (s->finishing &&
+                 scr_webstream_controller_queue_size(s->controller) < WS_COMP_QUEUED);
+    if (!room) {
+      ws_comp_release_write(s);
+      return 0; /* wait for the reader's next pull */
+    }
+    /* A flush finishes the engine over whatever backlog remains: the last
+     * input and the end marker go in the same operation. */
+    int op = s->finishing ? s->finish_op : Z_NO_FLUSH;
+    size_t in_left = s->in_len - s->in_off;
+    scr_zlib_engine_work(s->engine, op, input_left ? s->in + s->in_off : NULL,
+                         (uint32_t)in_left, s->out, WS_COMP_OUT);
     uint32_t avail_in = 0, avail_out = 0;
     scr_zlib_engine_offsets(s->engine, &avail_in, &avail_out);
-    size_t took = in_len - off - avail_in;
+    size_t took = in_left - avail_in;
     size_t made = WS_COMP_OUT - avail_out;
-    off += took;
-    if (made && !ws_comp_enqueue(controller, out, made)) {
-      ok = false;
-      break;
+    s->in_off += took;
+    s->drain = made == WS_COMP_OUT;
+    if (made && !ws_comp_enqueue(s->controller, s->out, made)) {
+      ws_comp_abandon(s);
+      return -1;
     }
     ScrZlibError ze;
     if (scr_zlib_engine_error(s->engine, &ze)) {
-      ws_comp_throw(&ze);
-      ok = false;
-      break;
+      ws_comp_fail(s, &ze);
+      return 0;
     }
-    if (made < WS_COMP_OUT) break;
-    if (took == 0 && made == 0) break;
+    bool input_done = s->in_off >= s->in_len;
+    /* A step that left output space: with the finish operation the engine
+     * has ended (an incomplete stream is an error above), and without it
+     * the backlog is consumed and deflate has emitted everything it will
+     * until the next write or flush. */
+    bool done = s->finishing ? (made < WS_COMP_OUT && !s->drain)
+                             : (input_done && !s->drain);
+    if (done) {
+      ws_comp_job_done(s);
+      return 0;
+    }
+    ws_comp_release_write(s);
+    if (took == 0 && made == 0 && !s->drain) return 0;
   }
-  free(out);
-  return ok;
 }
 
+/* A write hands its chunk to the backlog and returns: output is produced on
+ * the reader's pulls, so writing never waits for the readable side (Node's
+ * writable and readable sides are independent). Only a write past the
+ * backlog's cap waits for the engine to catch up. */
 static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
   ScrDyn *chunk = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
@@ -264,21 +439,70 @@ static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_
   ScrDyn *result = NULL;
   ScrBytes *in = ws_comp_input(chunk);
   if (in) {
-    if (ws_comp_run(s, controller, in->data, in->len, false))
+    if (s->engine) {
+      ws_comp_backlog(s, in->data, in->len);
+      ws_comp_bind(s, controller);
+      s->drain = false;
+      if (s->in_len - s->in_off > WS_COMP_BACKLOG) {
+        s->pending_write = scr_promise_new();
+        result = scr_dyn_new_promise(s->pending_write);
+      } else if (ws_comp_pump(s) == 0) {
+        result = scr_dyn_retain(scr_dyn_undefined());
+      }
+    } else {
       result = scr_dyn_retain(scr_dyn_undefined());
+    }
     scr_bytes_release(in);
   }
   ws_comp_release(s);
   return result;
 }
 
+/* close(): the finish flush waits for the reader only when the output
+ * exceeds what a flush may queue without one. */
 static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
   ScrDyn *controller = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
   ScrDyn *result = NULL;
-  if (ws_comp_run(s, controller, NULL, 0, true)) result = scr_dyn_retain(scr_dyn_undefined());
+  if (s->engine) {
+    ws_comp_bind(s, controller);
+    s->finishing = true;
+    s->drain = false;
+    if (!s->pending_flush) s->pending_flush = scr_promise_new();
+    if (ws_comp_pump(s) == 0)
+      result = s->pending_flush ? scr_dyn_new_promise(s->pending_flush)
+                                : scr_dyn_retain(scr_dyn_undefined());
+  } else {
+    result = scr_dyn_retain(scr_dyn_undefined());
+  }
   ws_comp_release(s);
   return result;
+}
+
+/* cancel/abort: the engine and the backlog go now rather than with the
+ * stream's collection. */
+static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
+  ScrDyn *reason = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
+  ScrDyn *controller = s->controller;
+  s->controller = NULL;
+  if (s->engine) scr_zlib_engine_free(s->engine);
+  s->engine = NULL;
+  s->in_len = 0;
+  s->in_off = 0;
+  s->drain = false;
+  s->finishing = false;
+  ws_comp_release_promises(s, reason, true);
+  if (controller) scr_dyn_release(controller);
+  ws_comp_release(s);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* The readable's pull: the moment the engine may produce its next chunk. */
+static void ws_comp_resume_hook(void *state) {
+  WsCompState *s = state;
+  if (!s->controller || !s->engine) return;
+  (void)ws_comp_pump(s);
 }
 
 static ScrDyn *ws_comp_get(void *ptr, const char *key, size_t len) {

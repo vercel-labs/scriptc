@@ -1382,7 +1382,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -70408,7 +70408,7 @@
       },
       "static": {
         "status": "not-applicable",
-        "evidence": "derived:descendants"
+        "evidence": "compiler-chapter-policy:stream_iter"
       },
       "anchorSource": "chapter"
     },
@@ -89379,7 +89379,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
@@ -127237,7 +127237,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",

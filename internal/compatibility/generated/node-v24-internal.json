@@ -58970,8 +58970,10 @@
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
+          "tests/corpus/http-client-connect-agent.ts",
           "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/http-client-upgrade-agent.ts",
           "tests/corpus/http-global-proxy-auth-port.ts",
           "tests/corpus/http-global-proxy-bypass.ts",
           "tests/corpus/http-global-proxy-plain.ts",
@@ -60333,11 +60335,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'connect'",
         "tests": [
           "tests/corpus/compat-http-client-connect.ts",
-          "tests/corpus/compat-http-client-connect.mjs"
+          "tests/corpus/compat-http-client-connect.mjs",
+          "tests/corpus/http-client-connect-agent.ts",
+          "tests/corpus/http-client-upgrade-agent.ts"
         ]
       },
       "anchorSource": "exact"

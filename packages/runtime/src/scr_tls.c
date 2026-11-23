@@ -917,6 +917,10 @@ typedef struct ScrTlsSock {
    * records leave no larger than Node's maximum fragment; 0 leaves the
    * engine's own limit in place */
   size_t max_send_fragment;
+  /* the length of the record the engine buffered but has not finished
+   * writing: a retry must pass exactly that length, whatever the cap has
+   * become in between, or the socket's byte accounting desynchronizes */
+  size_t w_pending;
 } ScrTlsSock;
 
 static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
@@ -1351,6 +1355,9 @@ static int scr_tls_flush_held(ScrTlsSock *t) {
 static int scr_tls_bio_send(void *ctx, const unsigned char *buf, size_t len) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   if (t->quiet_failure) return (int)len;
+  /* Handshake flights (and app data written while the established events
+   * run) wait in the hold; the socket's write side stays "pending" until
+   * these bytes leave (the write_pending op), so no FIN overtakes them. */
   if (t->holding) {
     scr_tls_hold(t, buf, len);
     return (int)len;
@@ -1453,15 +1460,32 @@ static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
 
 static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
-  /* a set maximum fragment caps every engine write, so each record leaves
-   * at that size; the socket's send loop resumes with the rest */
-  if (t->max_send_fragment != 0 && n > t->max_send_fragment) n = t->max_send_fragment;
+  if (t->w_pending != 0) {
+    /* the engine buffered a record on the previous call and is still
+     * writing it: it answers with the length of the retry's argument, so
+     * the retry must carry exactly the buffered length. The cap may have
+     * changed since; passing a different length here would make the send
+     * loop advance by the wrong count (dropping or repeating bytes). */
+    if (n > t->w_pending) n = t->w_pending;
+  } else {
+    /* a set maximum fragment caps every engine write, so each record
+     * leaves at that size; the socket's send loop resumes with the rest */
+    int room = mbedtls_ssl_get_max_out_record_payload(&t->ssl);
+    size_t cap = room > 0 ? (size_t)room : n;
+    if (t->max_send_fragment != 0 && cap > t->max_send_fragment) cap = t->max_send_fragment;
+    if (n > cap) n = cap;
+  }
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
-  if (r >= 0) return r;
+  if (r >= 0) {
+    t->w_pending = 0;
+    return r;
+  }
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+    t->w_pending = n;
     errno = EAGAIN;
     return -1;
   }
+  t->w_pending = 0;
   errno = EPIPE;
   return -1;
 }
@@ -1961,6 +1985,10 @@ static void scr_tls_release_hold(ScrClosure *self) {
   if (t != NULL && t->holding) {
     t->holding = false;
     if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
+    /* an end() that ran while those bytes were held deferred its FIN: the
+     * settlement runs again now that they are out (a partial flush leaves
+     * the socket's write side pending; readiness retries it) */
+    scr_net_sock_finish_check(s);
   }
   scr_net_sock_release(s);
 }
@@ -2127,6 +2155,15 @@ static bool scr_tls_pending(void *tctx) {
          mbedtls_ssl_get_bytes_avail(&t->ssl) > 0;
 }
 
+/* The transport's own unsent ciphertext (the handshake hold): records the
+ * engine accepted while the established events were still running wait
+ * here, so the socket's write side is not done until they leave — and no
+ * FIN may go out ahead of them. */
+static bool scr_tls_write_pending(void *tctx) {
+  ScrTlsSock *t = (ScrTlsSock *)tctx;
+  return t->held_len > t->held_off;
+}
+
 static void scr_tls_shutdown_write(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   if (t->notify_sent) return;
@@ -2200,6 +2237,7 @@ static const ScrNetTransportOps SCR_TLS_OPS = {
   .handshake = scr_tls_handshake,
   .on_established = scr_tls_on_established,
   .pending = scr_tls_pending,
+  .write_pending = scr_tls_write_pending,
   .shutdown_write = scr_tls_shutdown_write,
   .free = scr_tls_free,
   .settle = scr_tls_settle,

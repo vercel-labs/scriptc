@@ -511,6 +511,10 @@ typedef struct ScrNetTransportOps {
   int (*handshake)(void *tctx);
   void (*on_established)(void *tctx);
   bool (*pending)(void *tctx);
+  /* nullable: the transport holds unsent bytes of its own (the handshake
+   * hold): the socket's write side is not done, and no FIN may go out,
+   * while this answers true */
+  bool (*write_pending)(void *tctx);
   void (*shutdown_write)(void *tctx);
   void (*free)(void *tctx);
   /* nullable: runs after the established socket's 'connect' listeners
@@ -560,6 +564,10 @@ void *scr_net_sock_transport_ctx_for(ScrNetSocket *s, const ScrNetTransportOps *
 /* Re-drive a parked handshake (the asynchronous SNI answer arrived —
  * no fd readiness is coming: the client is waiting for the ServerHello). */
 void scr_net_sock_transport_resume(ScrNetSocket *s);
+/* Re-evaluate the write half's settlement (the FIN): a transport that
+ * finished flushing its own held bytes calls this, so an end() that ran
+ * while those bytes were pending still completes. */
+void scr_net_sock_finish_check(ScrNetSocket *s);
 /* Replay raw bytes at the FRONT of the receive buffer — the SNI
  * pre-parse handing the consumed ClientHello back to the TLS bio. */
 void scr_net_sock_replay(ScrNetSocket *s, const char *data, size_t len);

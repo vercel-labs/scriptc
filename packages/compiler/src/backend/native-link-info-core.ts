@@ -149,6 +149,9 @@ export interface NativeLinkFeatures {
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
   childOptionExt?: boolean;
+  /** node:cluster's module surface links scr_cluster.c; absent (false)
+   * otherwise. */
+  cluster?: boolean;
   /** A spawnSync capture read as a Buffer links scr_child_capture.c;
    * absent (false) otherwise. */
   spawnCaptureBytes?: boolean;

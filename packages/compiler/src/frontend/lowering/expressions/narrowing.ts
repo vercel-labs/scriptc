@@ -85,6 +85,83 @@ import { DELETE_NULLISH_RECEIVER } from "./erased-delete.js";
 /** `c ? a : b`. An explicit destination constructs each branch at that
  * layout before joining it. Without one, retain the expression's inferred
  * type and the contextual/sibling rules below. */
+/** A pattern-supplied positional context above a conditional whose leaves
+ * are all array literals, at least one spreading a VARIABLE-length array:
+ * the ternary's value is the array its leaves build (its length is a
+ * run-time fact, which no fixed tuple holds), so the arms are lowered as
+ * that array and the pattern reads positions from it. Returns the array's
+ * element type, or null when the expression is anything else. */
+function patternSpreadArrayJoin(
+  lowerer: Lowerer,
+  expr: ts.ConditionalExpression,
+): (IrType & { kind: "array" }) | null {
+  const ctx = lowerer.checker.getContextualType(expr);
+  if (ctx === undefined || !lowerer.checker.isTupleType(ctx)) return null;
+  const anyPosition = lowerer.checker
+    .getTypeArguments(ctx as ts.TypeReference)
+    .some((t) => (t.flags & ts.TypeFlags.Any) !== 0);
+  if (!anyPosition) return null;
+  const leaves: ts.ArrayLiteralExpression[] = [];
+  let variableSpread = false;
+  const walk = (e: ts.Expression): boolean => {
+    let x = e;
+    while (ts.isParenthesizedExpression(x)) x = x.expression;
+    if (ts.isConditionalExpression(x)) return walk(x.whenTrue) && walk(x.whenFalse);
+    if (!ts.isArrayLiteralExpression(x)) return false;
+    leaves.push(x);
+    for (const el of x.elements.nodes)
+      if (ts.isSpreadElement(el) && !lowerer.checker.isTupleType(lowerer.typeOf(el.expression)))
+        variableSpread = true;
+    return true;
+  };
+  if (!walk(expr) || !variableSpread) return null;
+  const arms = new Map<string, IrType>();
+  const add = (t: IrType | null, arm = false): boolean => {
+    if (t === null) return false;
+    if (t.kind === "union") {
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every((inner) => add(inner, true));
+    }
+    const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+    // A position that is itself the unit value adds no element type; a unit
+    // ARM of the source's element type is a value the positions can hold.
+    if (isUnitType(part) && !arm) return true;
+    arms.set(typeKey(part), part);
+    return true;
+  };
+  for (const lit of leaves) {
+    for (const el of lit.elements.nodes) {
+      if (ts.isSpreadElement(el)) {
+        const spread = lowerer.mapTypeOf(lowerer.typeOf(el.expression));
+        if (spread === null) continue;
+        if (spread.kind === "array") {
+          if (!add(spread.elem)) return null;
+          continue;
+        }
+        if (spread.kind === "string") {
+          if (!add(STRING)) return null;
+          continue;
+        }
+        const spreadShape =
+          spread.kind === "record" ? lowerer.shapes.get(spread.shapeId) : undefined;
+        if (spreadShape?.tuple) {
+          if (!spreadShape.fields.every((field) => add(field.type))) return null;
+          continue;
+        }
+        return null;
+      }
+      if (ts.isOmittedExpression(el)) continue;
+      if (!add(lowerer.mapTypeOf(lowerer.typeOf(el)))) return null;
+    }
+  }
+  const parts = [...arms.values()];
+  if (parts.every(isUnitType)) return null;
+  if (parts.length > 1) sortArms(parts);
+  return {
+    kind: "array",
+    elem: parts.length === 1 ? parts[0]! : { kind: "union", unionId: lowerer.unions.intern(parts) },
+  };
+}
+
 export function lowerTernary(
   lowerer: Lowerer,
   expr: ts.ConditionalExpression,
@@ -159,7 +236,11 @@ export function lowerTernary(
     if (constant !== null && conditionRunsNothing(lowerer, expr.condition, cond)) {
       return lowerer.lowerExprExpecting(constant ? expr.whenTrue : expr.whenFalse, expected);
     }
-    if (expected) {
+    // A pattern-position ternary whose leaves spread a variable-length
+    // array is the array those leaves build: its length is a run-time
+    // fact, so neither arm is the pattern's fixed tuple.
+    const armExpected = patternSpreadArrayJoin(lowerer, expr) ?? expected;
+    if (armExpected) {
       // Construct fresh literals in their actual destination. Joining
       // inferred layouts first can erase the literal discriminator or
       // choose an empty array's uninhabited element representation.
@@ -167,10 +248,10 @@ export function lowerTernary(
       const then = withRuntimeOptionalNarrowed(
         lowerer,
         runtimeOptionalTrueIds(lowerer, expr.condition),
-        () => lowerer.lowerExprExpecting(expr.whenTrue, expected),
+        () => lowerer.lowerExprExpecting(expr.whenTrue, armExpected),
       );
-      const else_ = lowerer.lowerExprExpecting(expr.whenFalse, expected);
-      return { kind: "ternary", cond, then, else_, type: expected, loc };
+      const else_ = lowerer.lowerExprExpecting(expr.whenFalse, armExpected);
+      return { kind: "ternary", cond, then, else_, type: armExpected, loc };
     }
     const ctxTs = lowerer.checker.getContextualType(expr);
     const ctxMapped = ctxTs ? lowerer.mapTypeOf(ctxTs) : null;
@@ -583,6 +664,20 @@ function assignedAtConstructorTopLevel(decl: ts.PropertyDeclaration): boolean {
  * the same union (unnarrowed use), to a SUB-union (partial narrowing —
  * unrepresentable without a re-tag), or to nothing (`never` in an
  * exhaustive default) leaves the expression union-typed. */
+/** `req.stream` on an Http2ServerRequest: declared as the stream, absent on
+ * an allowHTTP1 server's HTTP/1 requests (Node answers undefined there). */
+export function isRuntimeOptionalHttp2StreamRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let expr = node;
+  while (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isTypeAssertion(expr))
+    expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "stream") return false;
+  const receiver = lowerer.typeOf(expr.expression);
+  return (
+    lowerer.mapTypeOf(receiver)?.kind === "httpReq" &&
+    ts.symbolNameOf(receiver.getSymbol()) === "Http2ServerRequest"
+  );
+}
+
 export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrExpr {
   if (
     (expr.type.kind === "union" || expr.type.kind === "dyn") &&
@@ -645,6 +740,23 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (narrowed !== null && typeEquals(narrowed, lowerer.stripUndefinedArm(expr.type)))
       return expr;
   }
+  // Http2ServerRequest.stream is declared as the stream, but an allowHTTP1
+  // server also serves HTTP/1 requests, where Node answers undefined: the
+  // read keeps its undefined arm instead of narrowing it away, so a
+  // presence test, binding or default observes the absence (the
+  // direct-call forms still throw JS's member TypeError for it). A
+  // logical expression over that read keeps the union for the same
+  // reason: its right operand (a default) joins the result.
+  if (
+    expr.type.kind === "union" &&
+    ((ts.isPropertyAccessExpression(node) && isRuntimeOptionalHttp2StreamRead(lowerer, node)) ||
+      (ts.isBinaryExpression(node) &&
+        (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+          node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+          node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) &&
+        isRuntimeOptionalHttp2StreamRead(lowerer, node.left)))
+  )
+    return expr;
   // A dyn read tsc narrowed to a SCALAR (a typeof test proved the kind):
   // bridge with a VALIDATED extraction — dynCheck, the checked-cast
   // machinery — rather than a trusted one. After the guard the check
@@ -2968,27 +3080,66 @@ function arrayBesideLiteralUnderTuple(
     return null;
   const thenLit = armLiteral(expr.whenTrue);
   const elseLit = armLiteral(expr.whenFalse);
-  if ((thenLit === null) === (elseLit === null)) return null;
+  const variableSpread = (lit: ts.ArrayLiteralExpression | null): boolean =>
+    lit !== null &&
+    lit.elements.nodes.some(
+      (el) => ts.isSpreadElement(el) && !lowerer.checker.isTupleType(lowerer.typeOf(el.expression)),
+    );
+  const bothLiterals =
+    thenLit !== null && elseLit !== null && (variableSpread(thenLit) || variableSpread(elseLit));
+  if ((thenLit === null) === (elseLit === null) && !bothLiterals) return null;
   const literal = (thenLit ?? elseLit)!;
-  if (literal.elements.nodes.length === 0 || literal.elements.nodes.some(ts.isSpreadElement))
-    return null;
-  const other = lowerer.mapTypeOf(lowerer.typeOf(thenLit ? expr.whenFalse : expr.whenTrue));
-  if (other?.kind !== "array") return null;
+  if (literal.elements.nodes.length === 0 && !bothLiterals) return null;
+  if (!bothLiterals && literal.elements.nodes.some(ts.isSpreadElement)) return null;
+  const other = bothLiterals
+    ? null
+    : lowerer.mapTypeOf(lowerer.typeOf(thenLit ? expr.whenFalse : expr.whenTrue));
+  if (!bothLiterals && other?.kind !== "array") return null;
   const arms = new Map<string, IrType>();
-  const add = (t: IrType | null): boolean => {
+  const add = (t: IrType | null, arm = false): boolean => {
     if (t === null) return false;
     if (t.kind === "union") {
-      return (lowerer.unions.get(t.unionId)?.arms ?? []).every(add);
+      return (lowerer.unions.get(t.unionId)?.arms ?? []).every((inner) => add(inner, true));
     }
     const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
-    if (part.kind !== "f64" && part.kind !== "string" && part.kind !== "bool" && !isUnitType(part))
-      return false;
+    // A position that is itself the unit value adds no element type; a unit
+    // ARM of the source's element type is a value the positions can hold.
+    if (isUnitType(part) && !arm) return true;
     arms.set(typeKey(part), part);
     return true;
   };
-  if (!add(other.elem)) return null;
-  for (const element of literal.elements.nodes) {
-    if (!add(lowerer.mapTypeOf(lowerer.typeOf(element)))) return null;
+  // The single-literal form pairs the literal with an ARRAY-typed sibling
+  // arm; the both-literals form is the whole pair.
+  if (!bothLiterals && other?.kind === "array" && !add(other.elem)) return null;
+  // A pattern-position literal that spreads a VARIABLE-length array has a
+  // run-time length, so neither arm is the pattern's fixed tuple: the
+  // ternary is the array both arms build, and the pattern reads positions
+  // from it (missing ones answer undefined, as Node's destructuring does).
+  for (const lit of bothLiterals ? [thenLit!, elseLit!] : [literal]) {
+    for (const element of lit.elements.nodes) {
+      if (ts.isSpreadElement(element)) {
+        if (!bothLiterals) return null;
+        const spread = lowerer.mapTypeOf(lowerer.typeOf(element.expression));
+        if (spread === null) continue;
+        if (spread.kind === "array") {
+          if (!add(spread.elem)) return null;
+          continue;
+        }
+        if (spread.kind === "string") {
+          if (!add(STRING)) return null;
+          continue;
+        }
+        const spreadShape =
+          spread.kind === "record" ? lowerer.shapes.get(spread.shapeId) : undefined;
+        if (spreadShape?.tuple) {
+          if (!spreadShape.fields.every((field) => add(field.type))) return null;
+          continue;
+        }
+        return null;
+      }
+      if (ts.isOmittedExpression(element)) continue;
+      if (!add(lowerer.mapTypeOf(lowerer.typeOf(element)))) return null;
+    }
   }
   const parts = [...arms.values()];
   if (parts.every(isUnitType)) return null;

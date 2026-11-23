@@ -14,4 +14,8 @@ export const tlsNeverThrow: readonly IrLibFn[] = [
   // for `instanceof tls.Server`; no program code runs.
   "tls.serverIs",
   "tls.serverIsDyn",
+  // 'keylog' registration only appends the listener to the socket's or the
+  // TLS server's list: no program code runs at the add.
+  "tls.sockOnKeylog",
+  "tls.serverOnKeylog",
 ];

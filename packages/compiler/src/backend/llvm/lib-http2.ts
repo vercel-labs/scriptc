@@ -157,6 +157,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.streamSession": "scr_http2_stream_session",
     "http2.sessionAltsvc": "scr_http2_session_altsvc",
     "http2.sessionOrigin": "scr_http2_session_origin",
+    "http2.reqAuthority": "scr_http2_req_authority",
+    "http2.reqScheme": "scr_http2_req_scheme",
+    "http2.streamEndAfterHeaders": "scr_http2_stream_end_after_headers",
+    "http2.streamBufferSize": "scr_http2_stream_buffer_size",
     "http2.streamUndefCall": "scr_http2_stream_undef_call",
   };
   const symbol = direct[e.fn];

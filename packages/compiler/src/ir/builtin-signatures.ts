@@ -15,6 +15,7 @@ import { bytesSignatures } from "./builtin-signatures/bytes.js";
 import { childSignatures } from "./builtin-signatures/child.js";
 import { classSignatures } from "./builtin-signatures/class.js";
 import { closureSignatures } from "./builtin-signatures/closure.js";
+import { clusterSignatures } from "./builtin-signatures/cluster.js";
 import { collectionSignatures } from "./builtin-signatures/collection.js";
 import { consoleSignatures } from "./builtin-signatures/console.js";
 import { constantsSignatures } from "./builtin-signatures/constants.js";
@@ -135,6 +136,7 @@ function buildLibFnSignatures() {
     ...childSignatures,
     ...classSignatures,
     ...closureSignatures,
+    ...clusterSignatures,
     ...collectionSignatures,
     ...consoleSignatures,
     ...constantsSignatures,

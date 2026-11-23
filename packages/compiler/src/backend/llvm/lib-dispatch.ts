@@ -6,6 +6,7 @@ import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifeti
 import { emitTlsLibCall } from "./lib-tls.js";
 import { emitHttp2LibCall } from "./lib-http2.js";
 import { emitDatagramLibCall } from "./lib-datagram.js";
+import { emitClusterLibCall } from "./lib-cluster.js";
 import { emitTestLibCall } from "./lib-test.js";
 import { FN_ATTRS, arrNewCall, releaseSym, traceArg, vAdapters } from "./shapes.js";
 /* Focused LLVM library-call emission extracted from emitter.ts. */
@@ -1811,6 +1812,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "dgram":
     case "dns":
       return emitDatagramLibCall(host, e);
+    case "cluster":
+      return emitClusterLibCall(host, e);
     case "net":
     case "http":
     case "https":

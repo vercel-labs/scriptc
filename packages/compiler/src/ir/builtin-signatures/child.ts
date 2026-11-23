@@ -13,6 +13,10 @@ export const childSignatures = defineLibFnSignatures({
   "child.stdioCached": { argTypes: [CHILD_T], result: BOOL },
   "child.stdioArray": { argTypes: [CHILD_T], result: VOID },
   "child.stdioStore": { argTypes: [CHILD_T, null], result: VOID },
+  /** Node's shell form command line, [file, ...args].join(' '): the string
+   * a shell runs with -c, reporting DEP0190 once when the list is not
+   * empty. +1 string. */
+  "child.shellCommand": { argTypes: [STRING, arrayOf(STRING)], result: STRING },
   "child.hasChannel": { argTypes: [CHILD_T], result: BOOL },
   "child.send": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.sendCb": { argTypes: [CHILD_T, STRING, null], result: BOOL },

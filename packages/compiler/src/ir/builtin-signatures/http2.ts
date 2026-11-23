@@ -201,4 +201,8 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.sessionOrigin": { argTypes: [HTTP2SESSION_T, arrayOf(STRING)], result: VOID },
   "http2.sessionOnAltsvc": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnOrigin": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
+  "http2.streamEndAfterHeaders": { argTypes: [HTTP2STREAM_T], result: BOOL },
+  "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
+  "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
+  "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
 });

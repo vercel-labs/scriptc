@@ -26,7 +26,10 @@ declare module "http2" {
     readonly statusCode: number | undefined;
     readonly socket: Socket;
     readonly headers: { [name: string]: string | undefined };
-    readonly stream: Http2Stream;
+    readonly stream: ServerHttp2Stream;
+    /* The request's :authority and :scheme pseudo-headers. */
+    readonly authority: string;
+    readonly scheme: string;
     /* The h2 compat request's version triple ("2.0" over real h2 streams;
      * the allowHTTP1 lowering's HTTP/1.1 connections answer 1.x). */
     readonly httpVersion: string;
@@ -585,6 +588,10 @@ declare module "http2" {
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly pending: boolean;
+    /* END_STREAM rode the initial HEADERS block; the writable side's
+     * buffered bytes (flow-control withheld). */
+    readonly endAfterHeaders: boolean;
+    readonly bufferSize: number;
     readonly aborted: boolean;
     readonly session: Http2Session;
     readonly sentHeaders: OutgoingHttpHeaders;

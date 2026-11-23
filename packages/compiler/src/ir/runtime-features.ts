@@ -2434,6 +2434,10 @@ const RUNTIME_FEATURE_RULES = {
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
       "webstream.from",
+      // The compression streams' class and brand test link the web stream
+      // unit too.
+      "webstream.compressClass",
+      "webstream.compressInstanceOf",
       // Readable.toWeb links the web stream unit, which renders a
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
@@ -2922,7 +2926,7 @@ const RUNTIME_FEATURE_RULES = {
   zlib: rule({ prefixes: ["zlib."] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
-  brotli: rule({ fns: ["zlib.brotliInstall"] }),
+  brotli: rule({ fns: ["zlib.brotliInstall", "zlib.compressionStream"] }),
   /** node:zlib's zstd forms: zlib.zstdInstall, which %main calls when the
    * program uses zstd (scr_zstd.c). */
   zstd: rule({ fns: ["zlib.zstdInstall"] }),

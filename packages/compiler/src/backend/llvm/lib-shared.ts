@@ -148,6 +148,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "webstream.from": "scr_webstream_from",
   "webstream.instanceOf": "scr_webstream_instanceof",
   "webstream.install": "scr_webstream_install",
+  "webstream.compressClass": "scr_webstream_compress_class",
+  "webstream.compressInstanceOf": "scr_webstream_compress_instanceof",
   "mime.typeNew": "scr_mime_type_new",
   "mime.typeParse": "scr_mime_type_parse",
   "mime.paramsNew": "scr_mime_params_new",
@@ -932,6 +934,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "zlib.crc32": "scr_zlib_crc32",
   "zlib.brotliInstall": "scr_brotli_install",
   "zlib.zstdInstall": "scr_zstd_install",
+  "zlib.compressionStream": "scr_zlib_compression_stream",
   // The CA-store unit. get/set throw (an unknown type name, a
   // certificate-free set) and take the generic path's pending check.
   "tlsca.root": "scr_tls_ca_root",

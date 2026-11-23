@@ -5930,11 +5930,52 @@ static ScrDyn *ws_text_decoder_flush(ScrClosure *closure, ScrDyn *const *args, s
   return result;
 }
 
-static ScrDyn *ws_text_callback(WsTextStream *t, ScrDynThunk thunk, uint32_t arity, const char *name) {
+/* One native transformer callback: a closure whose capture box owns one
+ * reference of `state` through the given entry points. */
+static ScrDyn *ws_native_callback(ScrDynThunk thunk, uint32_t arity, const char *name, void *state,
+                                  void *(*retain)(void *), void (*release)(void *),
+                                  void (*trace)(void *, ScrTraceVisit, void *)) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new_obj(ws_retain, ws_release, ws_obj_trace);
-  scr_box_set_ref(closure->caps[0], ws_retain(t));
+  closure->caps[0] = scr_box_new_obj(retain, release, trace);
+  scr_box_set_ref(closure->caps[0], retain(state));
   return scr_dyn_new_func(closure, thunk, arity, "", name);
+}
+
+static ScrDyn *ws_text_callback(WsTextStream *t, ScrDynThunk thunk, uint32_t arity, const char *name) {
+  return ws_native_callback(thunk, arity, name, t, ws_retain, ws_release, ws_obj_trace);
+}
+
+/* ── native-transform entry points (scr_generator.h) ──────────────────
+ * The web compression streams (scr_webstream_compress.c) build their
+ * transforms here: its callbacks are C functions, so the zlib work stays in
+ * that unit while the transform machinery stays in this one. */
+
+ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, void *state,
+                                       void *(*retain)(void *), void (*release)(void *),
+                                       void (*trace)(void *, ScrTraceVisit, void *)) {
+  ws_install();
+  ScrDyn *transformer = scr_dyn_new_obj();
+  scr_dyn_obj_set(transformer, "transform", 9,
+                  ws_native_callback(transform, 2, "transform", state, retain, release, trace));
+  scr_dyn_obj_set(transformer, "flush", 5,
+                  ws_native_callback(flush, 1, "flush", state, retain, release, trace));
+  ScrDyn *box = ws_transform_construct(&transformer, 1);
+  scr_dyn_release(transformer);
+  return box;
+}
+
+ScrDyn *scr_webstream_transform_readable(ScrDyn *transform) {
+  return ws_transform_readable_box(transform->v.handle.ptr);
+}
+
+ScrDyn *scr_webstream_transform_writable(ScrDyn *transform) {
+  return ws_transform_writable_box(transform->v.handle.ptr);
+}
+
+bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return false;
+  return ws_tcontroller_enqueue(controller->v.handle.ptr, chunk);
 }
 
 /* The transform with the stream's native transformer: false with the

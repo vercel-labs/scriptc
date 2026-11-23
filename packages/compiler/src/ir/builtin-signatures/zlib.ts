@@ -29,6 +29,10 @@ export const zlibSignatures = defineLibFnSignatures({
   "zlib.gunzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.unzipCb": { argTypes: [BYTES_U8, null], result: VOID },
   "zlib.crc32": { argTypes: [BYTES_U8, F64], result: F64 },
+  /** The compression streams' link marker: a program that names
+   * CompressionStream or DecompressionStream calls it at startup so the
+   * zlib unit and its engine link. */
+  "zlib.compressionStream": { argTypes: [], result: VOID },
   /** The one-shot forms with an options value: node_zlib_mode, the input,
    * the options (validated at runtime with Node's ladder). The Cb form
    * takes the program-shaped (Error | null, Buffer) callback, which moves. */

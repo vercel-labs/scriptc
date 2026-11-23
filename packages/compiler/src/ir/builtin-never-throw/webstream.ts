@@ -11,4 +11,8 @@ export const webstreamNeverThrow: readonly IrLibFn[] = [
   // Duplex.toWeb builds both adapters over the duplex; their functions run
   // later, on the web streams' calls.
   "webstream.toWebDuplex",
+  // The compression streams' class value (installing its class tables) and
+  // brand test: neither runs program code or raises an error.
+  "webstream.compressClass",
+  "webstream.compressInstanceOf",
 ];

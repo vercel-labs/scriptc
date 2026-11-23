@@ -301,5 +301,25 @@ bool scr_webstream_instanceof(ScrDyn *value, double kind);
  * among them; +1. The call also counts as a runtime iterator step, so a
  * program that passes a generator here registers its member getters. */
 ScrDyn *scr_webstream_from(ScrDyn *iterable);
+/* A TransformStream whose transformer callbacks are native: the web
+ * compression streams' zlib transform and flush (scr_webstreams.c). Each
+ * callback runs with `state` (a box made with retain/release/trace) as its
+ * capture; +1 box, or NULL with the exception pending. */
+ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, void *state,
+                                       void *(*retain)(void *), void (*release)(void *),
+                                       void (*trace)(void *, ScrTraceVisit, void *));
+/* The transform box's readable and writable streams (+1). */
+ScrDyn *scr_webstream_transform_readable(ScrDyn *transform);
+ScrDyn *scr_webstream_transform_writable(ScrDyn *transform);
+/* Enqueues `chunk` on the controller argument a transformer callback
+ * received. False with the exception pending when it is not a
+ * TransformStreamDefaultController. */
+bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk);
+/* CompressionStream and DecompressionStream (scr_webstream_compress.c):
+ * the class constructor webstream.compressClass reads, and the brand test
+ * webstream.compressInstanceOf runs. Their kinds are the last two in the
+ * frontend's WEB_STREAM_CLASSES order. */
+ScrDyn *scr_webstream_compress_class(double kind);
+bool scr_webstream_compress_instanceof(ScrDyn *value, double kind);
 
 #endif /* SCR_GENERATOR_H */

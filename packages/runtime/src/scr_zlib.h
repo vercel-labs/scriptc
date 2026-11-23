@@ -12,6 +12,10 @@
  * aborts); inflate of corrupt input THROWS Node's error catchably
  * ("incorrect header check", ...). Borrow their input; results +1. */
 ScrBytes *scr_zlib_deflate(const ScrBytes *data);
+/* The web compression streams' link marker (zlib.compressionStream): the
+ * classes live in scr_webstream_compress.c, and a program that names them
+ * calls this so the zlib unit and the engine they drive link. */
+void scr_zlib_compression_stream(void);
 ScrBytes *scr_zlib_inflate(const ScrBytes *data);
 
 ScrBytes *scr_zlib_deflate_mode(const ScrBytes *data, double mode, double level);
@@ -32,6 +36,9 @@ typedef struct {
   const char *code;
   int err;
 } ScrZlibError;
+/* The engine's modes: Node's node_zlib_mode numbers. */
+enum { SCR_Z_DEFLATE = 1, SCR_Z_INFLATE, SCR_Z_GZIP, SCR_Z_GUNZIP, SCR_Z_DEFLATERAW,
+       SCR_Z_INFLATERAW, SCR_Z_UNZIP };
 ScrZlibEngine *scr_zlib_engine_new(int mode, int level, int window_bits, int mem_level,
                                    int strategy, const unsigned char *dict, size_t dict_len,
                                    bool reject_garbage);
@@ -89,6 +96,9 @@ typedef struct {
 extern const ScrZlibCodecHooks *scr_zlib_brotli_hooks;
 extern const ScrZlibCodecHooks *scr_zlib_zstd_hooks;
 void scr_brotli_install(void);
+/* The web compression streams' brotli engine (CompressionStream's
+ * "brotli"): Node's web-stream defaults, no dictionary. Never NULL. */
+ScrZlibEngine *scr_brotli_web_engine(bool decompressing);
 void scr_zstd_install(void);
 bool scr_zlib_check_range(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
                           double def, double *out);

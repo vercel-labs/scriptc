@@ -2891,6 +2891,18 @@ function lowerNetServerMethodCall(
         const def = lowerer.unions.get(t.unionId);
         return !!def && def.arms.some((a) => a.kind === "netSocket");
       };
+      /* The h2 arm of the socket slot carries no head bytes, so a listener
+       * that serves that arm declares `head` as `Buffer | undefined`; the
+       * adapter builds the matching union arm. */
+      const headUnionOk = (t: IrType): boolean => {
+        if (t.kind !== "union") return false;
+        const def = lowerer.unions.get(t.unionId);
+        return (
+          !!def &&
+          def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
+          def.arms.some((a) => a.kind === "undefinedT")
+        );
+      };
       /* An untyped JavaScript listener (dyn parameters) crosses the
        * checked-dynamic boundary with the event's payload, like the request
        * handler does: the socket (or the h2 compatibility response, which
@@ -2906,13 +2918,28 @@ function lowerNetServerMethodCall(
             ? p.kind === "httpReq"
             : i === 1
               ? sockParamOk(p)
-              : p.kind === "bytes" && p.elem === "u8",
+              : (p.kind === "bytes" && p.elem === "u8") || headUnionOk(p),
         "use (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
         {
           dynTuple: [HTTPREQ_T, DYN, DYN],
           rejectValueReturn: true,
         },
       );
+      /* A listener that serves the h2 arm (the union socket slot) must not
+       * declare a bare Buffer head: the h2 arm has none, so the slot would
+       * be left without a value. */
+      if (
+        cb.type.kind === "func" &&
+        cb.type.params[1]?.kind === "union" &&
+        cb.type.params[2] !== undefined &&
+        cb.type.params[2]!.kind === "bytes"
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          args[1]!,
+          "connect listeners whose third parameter is a bare Buffer on the h2 arm (declare it as `Buffer | undefined`)",
+        );
+      }
       return {
         kind: "libCall",
         fn: "http.serverOnConnect",

@@ -5097,12 +5097,21 @@ function validateFunction(
             ok = false;
           }
         }
-        if (
-          p2 !== undefined &&
-          !(p2.kind === "bytes" && p2.elem === "u8") &&
-          !(e.fn === "http.serverOnConnect" && p2.kind === "dyn")
-        )
-          ok = false;
+        if (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8")) {
+          if (e.fn === "http.serverOnConnect" && p2.kind === "dyn") {
+            /* the adapted untyped listener's dynamic head slot */
+          } else if (e.fn === "http.serverOnConnect" && p2.kind === "union") {
+            const def = unions.get(p2.unionId);
+            if (
+              !def ||
+              !def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") ||
+              !def.arms.some((a) => a.kind === "undefinedT")
+            )
+              ok = false;
+          } else {
+            ok = false;
+          }
+        }
       }
       if (!ok) {
         err(`libCall ${e.fn} callback shape (frontend must fence)`, e.loc);

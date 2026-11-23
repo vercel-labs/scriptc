@@ -374,7 +374,7 @@ static bool scr_tls_conf_versions(mbedtls_ssl_config *conf, int min, int max) {
  * an explicit minVersion or maxVersion, then each version. The range lands
  * in *min / *max (Node's defaults TLSv1.2 and TLSv1.3). False with the
  * exception pending. */
-static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max) {
+static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const char *api) {
   const ScrDyn *vmin = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "minVersion", 10) : NULL;
   const ScrDyn *vmax = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "maxVersion", 10) : NULL;
   const ScrDyn *proto = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "secureProtocol", 14) : NULL;
@@ -406,6 +406,7 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max) {
   if (proto != NULL && proto->kind == SCR_DYN_STR) {
     static const char *const known[] = {
       "SSLv23_method", "SSLv23_server_method", "SSLv23_client_method",
+      "TLS_method", "TLS_server_method", "TLS_client_method",
       "TLSv1_method", "TLSv1_server_method", "TLSv1_client_method",
       "TLSv1_1_method", "TLSv1_1_server_method", "TLSv1_1_client_method",
       "TLSv1_2_method", "TLSv1_2_server_method", "TLSv1_2_client_method", NULL,
@@ -421,16 +422,45 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max) {
     }
     if (!matched) {
       char msg[300];
-      int m;
-      if (len >= 6 && memcmp(value, "SSLv2_", 6) == 0)
-        m = snprintf(msg, sizeof msg, "SSLv2 methods disabled");
-      else if (len >= 6 && memcmp(value, "SSLv3_", 6) == 0)
-        m = snprintf(msg, sizeof msg, "SSLv3 methods disabled");
-      else
-        m = snprintf(msg, sizeof msg, "Unknown method: %.*s",
-                     (int)(len < 200 ? len : 200), value);
-      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)m, "ERR_TLS_INVALID_PROTOCOL_METHOD");
+      size_t m;
+      if (len >= 6 && memcmp(value, "SSLv2_", 6) == 0) {
+        m = sizeof "SSLv2 methods disabled" - 1;
+        memcpy(msg, "SSLv2 methods disabled", m);
+      } else if (len >= 6 && memcmp(value, "SSLv3_", 6) == 0) {
+        m = sizeof "SSLv3 methods disabled" - 1;
+        memcpy(msg, "SSLv3 methods disabled", m);
+      } else {
+        /* copy the value by length: Node's message keeps a NUL byte the
+         * option string carries, which a %s conversion would stop at */
+        static const char prefix[] = "Unknown method: ";
+        size_t take = len < 200 ? len : 200;
+        m = sizeof prefix - 1 + take;
+        memcpy(msg, prefix, sizeof prefix - 1);
+        memcpy(msg + sizeof prefix - 1, value, take);
+      }
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, m, "ERR_TLS_INVALID_PROTOCOL_METHOD");
       return false;
+    }
+  }
+  /* A whitelisted method still fixes a version. The generic families keep
+   * Node's default 1.2-1.3 range; TLSv1_2_* fixes 1.2. TLS 1.0/1.1
+   * methods have no lowering here, so they keep the by-name refusal
+   * instead of silently negotiating a wider range. */
+  if (proto != NULL && proto->kind == SCR_DYN_STR) {
+    const char *value = proto->v.str->data;
+    size_t len = proto->v.str->len;
+    bool v12 = len >= 10 && memcmp(value, "TLSv1_2_", 8) == 0;
+    bool legacy = (len >= 9 && memcmp(value, "TLSv1_1_", 8) == 0) ||
+                  (len >= 9 && memcmp(value, "TLSv1_", 6) == 0 && !v12);
+    if (legacy) {
+      scr_tls_opt_fence(api, "secureProtocol",
+                        "TLS 1.0/1.1 methods have no lowering — configure TLSv1.2/TLSv1.3 instead");
+      return false;
+    }
+    if (v12) {
+      *min = 12;
+      *max = 12;
+      return true;
     }
   }
   return scr_tls_version_dyn(vmin, "minimum", 12, min) && scr_tls_version_dyn(vmax, "maximum", 13, max);
@@ -3448,7 +3478,7 @@ bool scr_tls_srv_opts_walk(const ScrDyn *opts, const char *api, ScrBytes **cert_
  * +1, or NULL with the exception pending. */
 ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/) {
   int min_version = 12, max_version = 13;
-  if (!scr_tls_versions_dyn(opts, &min_version, &max_version)) return NULL;
+  if (!scr_tls_versions_dyn(opts, &min_version, &max_version, "tls.createSecureContext")) return NULL;
   ScrBytes *cert, *key;
   /* requestCert and rejectUnauthorized are no context options: Node's
    * createSecureContext ignores them */
@@ -3501,7 +3531,7 @@ ScrNetServer *scr_tls_create_server_dyn(const ScrDyn *opts /*borrowed*/,
                                          ScrClosure *handler /*moves, nullable*/,
                                          ScrNetConnFn fn) {
   int min_version = 12, max_version = 13;
-  if (!scr_tls_versions_dyn(opts, &min_version, &max_version)) {
+  if (!scr_tls_versions_dyn(opts, &min_version, &max_version, "tls.createServer")) {
     scr_closure_release(handler);
     return NULL;
   }
@@ -3939,7 +3969,7 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   ScrBytes *cert = NULL, *key = NULL;
   ScrTlsClientAuth auth = {.request = false, .reject = false, .ca = NULL};
   if (ctx == NULL) {
-    if (!scr_tls_versions_dyn(record, &min_version, &max_version)) return NULL;
+    if (!scr_tls_versions_dyn(record, &min_version, &max_version, api)) return NULL;
     if (!scr_tls_srv_opts_walk_ex(record, api, &cert, &key, true, &auth)) return NULL;
     /* a standalone socket requires a certificate only for a truthy
      * rejectUnauthorized (null, 0, '' and false all allow); tls.Server's
@@ -4217,7 +4247,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     }
     /* createSecureContext's version checks come before its other options
      * (Node's SecureContext constructor). */
-    if (ok && !scr_tls_versions_dyn(opts, &min_version, &max_version)) ok = false;
+    if (ok && !scr_tls_versions_dyn(opts, &min_version, &max_version, "tls.connect")) ok = false;
     for (size_t i = 0; ok && i < scr_dyn_obj_count(opts); i++) {
       ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
       const ScrDyn *v = e.value;

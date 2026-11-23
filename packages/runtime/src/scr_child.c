@@ -9674,24 +9674,29 @@ typedef struct {
 static SCR_TL ScrIpcClosedSend *scr_ipc_closed_sends = NULL;
 static SCR_TL size_t scr_ipc_closed_n = 0;
 
+/* One tick delivers one send's completion: Node's send queues a
+ * process.nextTick per callback, so a user nextTick scheduled between two
+ * sends runs between those callbacks. Draining the whole queue in the
+ * first send's tick would put both callbacks ahead of that user tick. */
 static void scr_ipc_closed_send_tick(void) {
-  while (scr_ipc_closed_n > 0) {
-    ScrIpcClosedSend entry = scr_ipc_closed_sends[0];
-    memmove(scr_ipc_closed_sends, scr_ipc_closed_sends + 1,
-            (scr_ipc_closed_n - 1) * sizeof *scr_ipc_closed_sends);
-    scr_ipc_closed_n--;
-    if (!scr_exc_pending()) {
-      ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
-      entry.fn(entry.cb, entry.error); /* takes the error */
-      scr_als_dispatch_leave(prev);
-    } else {
-      scr_error_release(entry.error);
-    }
-    scr_closure_release(entry.cb);
-    scr_als_ctx_release(entry.ctx);
+  if (scr_ipc_closed_n == 0) return;
+  ScrIpcClosedSend entry = scr_ipc_closed_sends[0];
+  memmove(scr_ipc_closed_sends, scr_ipc_closed_sends + 1,
+          (scr_ipc_closed_n - 1) * sizeof *scr_ipc_closed_sends);
+  scr_ipc_closed_n--;
+  if (!scr_exc_pending()) {
+    ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
+    entry.fn(entry.cb, entry.error); /* takes the error */
+    scr_als_dispatch_leave(prev);
+  } else {
+    scr_error_release(entry.error);
   }
-  free(scr_ipc_closed_sends);
-  scr_ipc_closed_sends = NULL;
+  scr_closure_release(entry.cb);
+  scr_als_ctx_release(entry.ctx);
+  if (scr_ipc_closed_n == 0) {
+    free(scr_ipc_closed_sends);
+    scr_ipc_closed_sends = NULL;
+  }
 }
 
 static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
@@ -9707,8 +9712,8 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   scr_str_release(message);
   scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
   items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
-  /* One raw tick drains the queue: FIFO with the user ticks around it. */
-  if (scr_ipc_closed_n == 1) scr_next_tick_raw(&scr_ipc_closed_send_tick);
+  /* One tick per send, FIFO among the ticks the program queues itself. */
+  scr_next_tick_raw(&scr_ipc_closed_send_tick);
 }
 
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,

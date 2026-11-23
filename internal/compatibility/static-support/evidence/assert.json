@@ -1,0 +1,3 @@
+{
+    "node-builtin.assert": ["tests/corpus/1600-assert-passing.ts", "tests/corpus/1609-assert-async.ts"]
+}

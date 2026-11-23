@@ -1,4 +1,8 @@
 name: CI
+# A pull request's expensive tier names the commit its reviews passed on. The runs API reports no inputs, and a
+# dispatch that raced a push runs on the new head (and does nothing there), so ci-review-gate.yml tells the runs
+# of a commit's expensive tier apart by this title. Every other run keeps GitHub's default title.
+run-name: "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs.pr, inputs.sha) || '' }}"
 
 on:
   push:
@@ -14,9 +18,19 @@ on:
   schedule:
     - cron: "17 7 * * *"
   # A manual run, for example on a release candidate commit. It runs every lane; macos_suite selects the complete
-  # suite on macOS, as the nightly sweep runs it, or the darwin suite that pull requests run.
+  # suite on macOS, as the nightly sweep runs it, or the darwin suite that pull requests run. With pr and sha it is
+  # a pull request's expensive tier instead (ci-review-gate.yml dispatches it on the pull request's branch): the
+  # lanes that pull request selects, on that commit, in the pull request's concurrency group.
   workflow_dispatch:
     inputs:
+      pr:
+        description: The pull request whose expensive tier this run is (ci-review-gate.yml); empty for a manual run
+        type: string
+        default: ""
+      sha:
+        description: The pull request head commit the reviews passed on; the run does nothing when the branch moved on
+        type: string
+        default: ""
       macos_suite:
         description: The test suite to run on macOS
         type: choice
@@ -51,9 +65,12 @@ concurrency:
   # covers every commit merged before it. Releases still require a green run on their own commit: the release's
   # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
   # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
-  # main pushes. A post-merge call runs in a group of its own run: the caller holds one run at a time.
-  group: ci-${{ inputs.only_lane && format('postmerge-{0}', github.run_id) || github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # main pushes. A pull request's expensive tier (a dispatch with pr) runs in a group of its own beside the pull
+  # request's: it never cancels the pull request run, whose checks the merge gate requires. A second dispatch for
+  # the pull request replaces it, and a new push cancels it (ci-review-gate.yml on synchronize). A post-merge call
+  # runs in a group of its own run, and cancels nothing: the caller holds one run at a time.
+  group: ci-${{ inputs.only_lane && format('postmerge-{0}', github.run_id) || github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
 # writes to the repository, comments on a pull request or requests an OIDC token; caches and artifacts do not use
@@ -70,11 +87,32 @@ jobs:
     name: Select CI scope
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      # fast: a pull request from this repository runs the fast tier (code_quality, fast_tests) until both Vercel
+      # reviews pass on its head; ci-review-gate.yml then dispatches its expensive tier, which runs every lane the
+      # pull request selects. The label ci:full, a fork (whose branch cannot be dispatched) and every other event run
+      # full. superseded: a dispatched expensive tier whose branch moved on runs nothing; the new head has its own.
+      tier: ${{ steps.scope.outputs.tier }}
     steps:
+      # ci-review-gate.yml and scripts/ci-review-gate.mjs land together, in the pull request that introduces the
+      # gate. check_run events start only the default branch's workflows, so until both files are on the default
+      # branch nothing can start a pull request's expensive tier: the run keeps full CI, as it ran before the gate.
+      - id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          present=false
+          if gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/ci-review-gate.yml" --silent &&
+             gh api "repos/$GITHUB_REPOSITORY/contents/scripts/ci-review-gate.mjs" --silent; then
+            present=true
+          fi
+          echo "present=$present" >> "$GITHUB_OUTPUT"
       - id: scope
+        env:
+          GATE_PRESENT: ${{ steps.gate.outputs.present }}
         # Read GitHub's event directly; do not run scripts from a PR checkout.
         run: |
           node <<'NODE'
@@ -98,9 +136,26 @@ jobs:
           // A manual run of the shape overlay validation alone skips the other lanes.
           const shapeOnly = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
             event.inputs?.scope === 'shape_overlay';
-          const full = !upperLayer && !shapeOnly;
-          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\n`);
-          console.log(full ? 'Run full CI' : 'Defer full CI until this PR becomes the lowest unmerged layer');
+          // The expensive tier of a pull request (ci-review-gate.yml) names the commit its reviews passed on.
+          const gated = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && (event.inputs?.pr ?? '') !== '';
+          const superseded = gated && event.inputs?.sha !== process.env.GITHUB_SHA;
+          const full = !upperLayer && !shapeOnly && !superseded;
+          const fullLabel = (pr?.labels ?? []).some((label) => label?.name === 'ci:full');
+          // Without the gate on the default branch nothing starts a pull request's expensive tier; its run keeps
+          // full CI instead. The probe step reports the files; an absent report runs full CI too.
+          const gateInstalled = process.env.GATE_PRESENT === 'true';
+          const noGate = process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel &&
+            !gateInstalled;
+          const tier = superseded ? 'superseded'
+            : process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel && !noGate
+              ? 'fast'
+              : 'full';
+          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
+          console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
+            : !full ? 'Defer full CI until this PR becomes the lowest unmerged layer'
+            : noGate ? 'The gate is not on the default branch yet: run full CI'
+            : tier === 'fast' ? 'Run the fast tier; the expensive tier waits for the Vercel reviews (ci-review-gate.yml)'
+            : 'Run full CI');
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
@@ -108,6 +163,8 @@ jobs:
   # every lane except macos, whose jobs the post-merge lanes (postmerge.yml) run on the newest green main commit; they
   # run macos_smoke instead. The nightly sweep runs every lane but macos and macos_smoke, manual runs every lane but
   # macos_smoke, which the complete macOS lane covers, and a post-merge call only the lane it names.
+  # A pull request's fast tier turns every lane off; its expensive tier, dispatched on its branch, selects lanes the
+  # same way against the pull request's base.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -116,6 +173,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       # A pull request runs the base revision's lane selector, and one that
       # predates a lane emits nothing for it; that lane is off then, so its job
@@ -127,36 +185,44 @@ jobs:
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
       islands: ${{ steps.lanes.outputs.islands || 'false' }}
       macos_smoke: ${{ steps.lanes.outputs.macos_smoke || 'false' }}
+      # The fast tier's own tests (fast_tests): on in a pull request's fast tier, off where every lane runs.
+      fast: ${{ steps.lanes.outputs.fast || 'false' }}
       # The shards of the effects lane to run: all sixteen, or the one that a pull request changing compiler or
       # runtime sources samples (scripts/ci-lanes.mjs).
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.pr != ''
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - id: lanes
         env:
-          EVENT: ${{ github.event_name }}
+          EVENT: ${{ inputs.pr != '' && 'pull_request' || github.event_name }}
+          TIER: ${{ needs.validation_scope.outputs.tier }}
           ONLY_LANE: ${{ inputs.only_lane }}
           BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"; }
+          # The dispatched expensive tier reads the pull request's base from the API.
+          base() { [ -n "$BASE" ] || BASE=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .base.sha); }
           if [ "$ONLY_LANE" = macos ]; then
             printf 'linux=false\nmacos=true\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ -n "$ONLY_LANE" ]; then
             echo "::error::unknown lane $ONLY_LANE"
             exit 1
+          elif [ "$TIER" = fast ]; then
+            printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" = schedule ]; then
             printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
             printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
-          elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
+          elif base && git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
             node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --pr "$PR" --github-output
           else
             echo "The base commit has no scripts/ci-lanes.mjs: every lane"
@@ -196,6 +262,47 @@ jobs:
         run: pnpm generate:ir-fields --check
       - name: Verify the generated IR codec
         run: pnpm generate:ir-codec --check
+
+  # The fast tier of a pull request: the TypeScript build (the typecheck) and the tests related to its changes
+  # (scripts/ci-fast-tests.mjs), against freshly built or restored Linux native packages. code_quality runs lint
+  # and format beside it. Everything else waits for the Vercel reviews (ci-review-gate.yml).
+  fast_tests:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.fast == 'true' }}
+    name: test (Linux, fast tier)
+    runs-on: ubuntu-24.04
+    # A hang detector: native packages take 13 minutes at the 99th percentile
+    # and 21 at most (native_linux), the related tests about five.
+    timeout-minutes: 45
+    env:
+      SCRIPTC_TEST_WORKERS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - uses: ./.github/actions/icu-downloads
+      - name: Typecheck (TypeScript build)
+        run: pnpm build
+      - uses: ./.github/actions/libnode
+      - name: Related tests
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD"
 
   native_macos:
     needs: [validation_scope, lanes, code_quality]
@@ -678,7 +785,7 @@ jobs:
   # must build and run as in the default build. It builds its own native
   # packages, so it does not depend on the other lanes.
   shape_overlay_native:
-    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '') }}
     name: build (Linux x64 native packages, shape overlay)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -713,7 +820,7 @@ jobs:
 
   shape_overlay:
     needs: [shape_overlay_native]
-    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '') }}
     name: test (Linux, shape overlay, ${{ matrix.suite }} ${{ matrix.shard }}/8)
     runs-on: ubuntu-24.04
     # Longest green shard 2026-11-07..21: 59 minutes (effect).
@@ -1600,6 +1707,7 @@ jobs:
         validation_scope,
         lanes,
         code_quality,
+        fast_tests,
         native_macos,
         tests,
         tests_macos,
@@ -1631,8 +1739,12 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - name: All lanes green
+        id: lanes
         run: |
           test "${{ needs.validation_scope.result }}" = success
           test "${{ needs.code_quality.result }}" = success
@@ -1641,6 +1753,7 @@ jobs:
               test "${{ needs.lanes.result }}" = success
               # A lane job passes when it succeeded, or when it was skipped because its lane is off.
               lane() { [ "$2" = success ] || { [ "$3" = false ] && [ "$2" = skipped ]; } || { echo "$1: $2 (lane $3)"; exit 1; }; }
+              lane fast_tests "${{ needs.fast_tests.result }}" "${{ needs.lanes.outputs.fast }}"
               lane native_macos "${{ needs.native_macos.result }}" "${{ needs.lanes.outputs.macos }}"
               lane tests "${{ needs.tests.result }}" "${{ needs.lanes.outputs.linux }}"
               lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
@@ -1669,6 +1782,10 @@ jobs:
               lane mobile_runtime_packs_ios "${{ needs.mobile_runtime_packs_ios.result }}" "${{ needs.lanes.outputs.macos }}"
               ;;
             false)
+              if [ "${{ needs.validation_scope.outputs.tier }}" = superseded ]; then
+                echo "::notice::The branch moved on before this expensive tier started; its new head runs its own CI."
+                exit 0
+              fi
               echo "::notice::Full CI is deferred until this PR becomes the lowest unmerged layer. Merge the stack from the bottom up."
               exit 1
               ;;
@@ -1677,3 +1794,56 @@ jobs:
               exit 1
               ;;
           esac
+      # ci/full, the status the merge gate requires beside this check: pending while a pull request has only run its
+      # fast tier, and the result of every lane once a run of the expensive tier ends. A fork's token cannot write
+      # statuses, and a fork's run is not trusted to: a maintainer records ci/full for it (ci-review-gate.yml,
+      # fork_attest). Pushes to main and the nightly sweep need none.
+      - name: Report ci/full
+        if: >-
+          always() && needs.validation_scope.outputs.tier != 'superseded' &&
+          github.event_name != 'push' && github.event_name != 'schedule' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          TIER: ${{ needs.validation_scope.outputs.tier }}
+          FULL: ${{ needs.validation_scope.outputs.full }}
+          LANES: ${{ steps.lanes.outcome }}
+          URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$FULL" != true ]; then
+            state=pending description="Deferred until this pull request is the lowest unmerged stack layer"
+          elif [ "$TIER" = fast ]; then
+            state=pending description="Waiting for Vercel Agent Review and Vercel Security Review, or the ci:full label"
+          elif [ "$LANES" = success ]; then
+            state=success description="Every CI lane passed"
+          else
+            state=failure description="A CI lane failed or was cancelled"
+          fi
+          # A re-run of the fast tier leaves a result an expensive-tier run already reported on this commit.
+          if [ "$state" = pending ]; then
+            reported=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses?per_page=100" \
+              --jq '[.[] | select(.context == "ci/full")][0].state // ""')
+            if [ "$reported" = success ] || [ "$reported" = failure ]; then
+              echo "ci/full on $SHA is already $reported; leaving it"
+              exit 0
+            fi
+          fi
+          gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" -f state="$state" -f context=ci/full \
+            -f description="$description" -f target_url="$URL" --silent
+      # The required test check of a pull request's fast tier passes only once the expensive tier has passed on
+      # the commit: until then the fast tier alone cannot make it green. When a dispatched expensive tier passes,
+      # ci-review-gate.yml re-runs this job (workflow_run), which then finds ci/full green.
+      - name: Require the expensive tier (ci/full)
+        if: needs.validation_scope.outputs.tier == 'fast'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          reported=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses?per_page=100" \
+            --jq '[.[] | select(.context == "ci/full")][0].state // ""')
+          if [ "$reported" != success ]; then
+            echo "::error::The fast tier passed, but the expensive tier has not passed on $SHA (ci/full: ${reported:-none}). It starts once Vercel Agent Review and Vercel Security Review pass, or with the ci:full label; this check turns green when it passes."
+            exit 1
+          fi
+          echo "The expensive tier passed on $SHA"

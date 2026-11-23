@@ -1,0 +1,19 @@
+{
+    "node-builtin.util.parseArgs": ["tests/corpus/2678-util-parseargs.ts", "tests/corpus/node24-parseargs.js"],
+    "node-builtin.util.styleText": ["tests/corpus/node24-style-text.ts", "tests/corpus/node24-style-text-validation.js", "tests/corpus/node24-style-text-environment.js", "tests/corpus/node24-style-text.cjs", "tests/fixtures/node-types/style-text.ts"],
+    "node-builtin.util.isDeepStrictEqual": ["tests/corpus/node24-deep-equality.ts", "tests/corpus/node24-deep-equality.cjs", "tests/corpus/node24-deep-equality-properties.js", "tests/fixtures/node-types/deep-equality.ts", "packages/compiler/test/deep-equality.test.ts", "tests/corpus/util-deep-equal-builtins.ts", "tests/corpus/util-deep-equal-classes.ts", "tests/corpus/util-deep-equal-errors.ts", "tests/corpus/util-deep-equal-buffers.ts", "tests/corpus/util-deep-equal-accessors.ts", "tests/corpus/util-deep-equal-detached-buffers.cjs"],
+    "node-builtin.util.types": ["tests/corpus/node24-util-types.ts", "tests/corpus/node24-util-types.js", "tests/corpus/node24-util-types.cjs", "tests/corpus/util-types-arguments-object.ts", "tests/corpus/util-types-module-namespace/main.ts", "tests/fixtures/node-types/util-types.ts"],
+    "node-builtin.util.inherits": ["tests/corpus/5185-util-inherits.cjs", "tests/corpus/5186-util-inherits.ts", "tests/fixtures/node-types/util-callables.ts"],
+    "node-builtin.util.deprecate": ["tests/corpus/5187-util-deprecate.cjs", "tests/corpus/5188-util-deprecate-flags.cjs", "tests/corpus/5189-util-deprecate.ts", "tests/fixtures/node-types/util-callables.ts"],
+    "node-builtin.util.callbackify": ["tests/corpus/5190-util-callbackify.cjs", "tests/corpus/5191-util-callbackify.ts", "tests/fixtures/node-types/util-callables.ts"],
+    "node-builtin.util.debuglog": ["tests/corpus/5192-util-debuglog.cjs", "tests/corpus/5193-util-debuglog.ts", "tests/fixtures/node-types/util-callables.ts"],
+    "node-builtin.util.debug": ["tests/corpus/5192-util-debuglog.cjs", "tests/corpus/5193-util-debuglog.ts"],
+    "node-builtin.util.isArray": ["tests/corpus/7700-util-deprecated-helpers.cjs", "tests/corpus/7701-util-deprecated-helpers.ts"],
+    "node-builtin.util._extend": ["tests/corpus/7700-util-deprecated-helpers.cjs", "tests/corpus/7701-util-deprecated-helpers.ts"],
+    "node-builtin.util.convertProcessSignalToExitCode": ["tests/corpus/7702-util-signal-exit-code.cjs"],
+    "node-builtin.util.aborted": ["tests/corpus/7703-util-aborted.cjs", "tests/corpus/7704-util-aborted.ts"],
+    "node-builtin.util.diff": ["tests/corpus/7705-util-diff.cjs", "tests/corpus/7706-util-diff.ts"],
+    "node-builtin.util.debounce": ["tests/corpus/7710-util-debounce.cjs", "tests/corpus/7712-util-debounce-throttle.ts"],
+    "node-builtin.util.throttle": ["tests/corpus/7711-util-throttle.cjs", "tests/corpus/7712-util-debounce-throttle.ts"],
+    "node-builtin.util": ["tests/corpus/2440-console-inspect-args.ts", "tests/corpus/2912-promisify-fs-readfile.ts"]
+}

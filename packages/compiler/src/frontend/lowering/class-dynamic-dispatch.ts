@@ -3,6 +3,7 @@ import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js"
 import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
+import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
 import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
@@ -780,10 +781,11 @@ function assignsLocal(statements: readonly IrStmt[], localId: string): boolean {
  * branch by its class's key and the branch keeps its own key guard, so a
  * reader treats the branches as the chain they were lowered from. */
 function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
-  if (!body.some(isClassDispatch)) return body;
+  if (!body.some((stmt) => isClassDispatch(stmt) || isClassCaseDispatch(stmt))) return body;
   const branches: IrStmt[] = [];
   for (const stmt of body) {
-    if (isClassDispatch(stmt)) {
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassDispatch(stmt)) {
       // A case of branches that can complete ends with a `break`.
       for (const { body: caseBody } of stmt.cases)
         for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
@@ -799,6 +801,122 @@ function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
     stmt.disc.kind === "libCall" &&
     (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
   );
+}
+
+/** The fewest distinct classes a run of returning capsule branches selects
+ * among for caseBranchRuns to replace it with a table, after the run's head
+ * (CLASS_DISPATCH_HEAD), which stays in the chain. */
+const MIN_CLASS_CASE_KEYS = 6;
+
+/** A branch caseBranchRuns can move into a case: `if (dyn.typedRefIs(r,
+ * "object:C")) { ... return }` on a receiver local `r`, whose statements
+ * end by returning, never write `r`, and hold no `break` the switch would
+ * bind. Its exact key test is the one the table's selector makes. */
+function caseBranch(stmt: IrStmt): { receiver: string; key: string } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const cond = stmt.cond;
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
+  if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  if (key.value.includes("\n") || classKeyHash(key.value) < 0) return null;
+  if (stmt.then[stmt.then.length - 1]?.kind !== "return") return null;
+  if (assignsLocal(stmt.then, value.localId) || leavesSwitch(stmt.then)) return null;
+  return { receiver: value.localId, key: key.value };
+}
+
+/** A statement list's text without source positions, which decides when
+ * two classes' branches are the same statements. */
+function statementsText(statements: readonly IrStmt[]): string {
+  return JSON.stringify(statements, (field, value: unknown) =>
+    field === "loc" ? undefined : value,
+  );
+}
+
+/** Replace each run of consecutive returning capsule branches on one
+ * receiver (caseBranch), after the run's first CLASS_DISPATCH_HEAD branches,
+ * with a switch on `dyn.classCase(receiver, table)` when the rest tests at
+ * least MIN_CLASS_CASE_KEYS distinct classes. The table names each class's
+ * key once with the case that holds its branch's statements; the selector
+ * answers the case of the class whose exact key test passes (the backend
+ * switches on the key's hash and compares the key pointer once,
+ * backend/llvm/lib-dispatch.ts), so the cases need no guards of their own.
+ * Classes of the same key never pass different tests, so a later branch of
+ * a key already in the table is unreachable and leaves; branches whose
+ * statements are the same share a case. Each case returns, as its branch
+ * did, and any other value (0) takes the statements after the run, as the
+ * chain's failing tests did. The head runs first, as before, so a class it
+ * selects never computes the index. */
+export function caseBranchRuns(body: IrStmt[]): IrStmt[] {
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const start = i;
+    const first = caseBranch(body[i]!);
+    if (first === null) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    const run: { key: string; stmt: IrStmt & { kind: "if" } }[] = [];
+    let branch: ReturnType<typeof caseBranch> = first;
+    while (branch !== null && branch.receiver === first.receiver) {
+      run.push({ key: branch.key, stmt: body[i] as IrStmt & { kind: "if" } });
+      i++;
+      branch = i < body.length ? caseBranch(body[i]!) : null;
+    }
+    const head = Math.min(CLASS_DISPATCH_HEAD, run.length);
+    const rest = run.slice(head);
+    const keys = new Set(rest.map((entry) => entry.key));
+    if (keys.size < MIN_CLASS_CASE_KEYS) {
+      if (rebuilt) for (const entry of run) rebuilt.push(entry.stmt);
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    for (const entry of run.slice(0, head)) rebuilt.push(entry.stmt);
+    // A key the head tests never reaches the switch; a repeated key's later
+    // branch is unreachable in the chain too.
+    const seen = new Set(run.slice(0, head).map((entry) => entry.key));
+    const caseOf = new Map<string, number>();
+    const lines: string[] = [];
+    const cases: { test: IrExpr; body: IrStmt[] }[] = [];
+    const loc = rest[0]!.stmt.loc;
+    for (const entry of rest) {
+      if (seen.has(entry.key)) continue;
+      seen.add(entry.key);
+      const text = statementsText(entry.stmt.then);
+      let number = caseOf.get(text);
+      if (number === undefined) {
+        number = cases.length + 1;
+        caseOf.set(text, number);
+        // The block keeps the branch's locals its own, as its `if` did: a
+        // switch's cases share one scope.
+        cases.push({
+          test: numLit(number, entry.stmt.loc),
+          body: [
+            { kind: "block", body: entry.stmt.then, loc: entry.stmt.loc },
+            { kind: "break", loc: entry.stmt.loc },
+          ],
+        });
+      }
+      lines.push(`${number} ${entry.key}`);
+    }
+    const receiver = (rest[0]!.stmt.cond as IrExpr & { kind: "libCall" }).args[0]!;
+    rebuilt.push({
+      kind: "switch",
+      disc: {
+        kind: "libCall",
+        fn: "dyn.classCase",
+        args: [receiver, { kind: "strLit", value: lines.join("\n"), type: STRING, loc }],
+        type: F64,
+        loc,
+      },
+      cases,
+      loc,
+    });
+  }
+  return rebuilt ?? body;
 }
 
 /** One class branch of a run: the receiver local it tests, the key it tests
@@ -1796,8 +1914,189 @@ function classValueIdentity(value: IrExpr, keyClass: string, actual: string, loc
   };
 }
 
+/** A static-field branch of a generated helper, in the flat form its pass
+ * builds: `if (ready && classValueIdentity(value, keyClass, actual) && test)`
+ * for a refusal (fenceStaticFieldKeys), `if (test && classValueIdentity(...))`
+ * for a computed-key write (branchComputedStaticWrites). `ready` says which. */
+export interface StaticFieldBranch {
+  value: IrExpr;
+  keyClass: string;
+  actual: string;
+  ready: boolean;
+}
+
+/** Runs of static-field branches shorter than this keep their flat form. */
+const MIN_GROUPED_STATIC_FIELD_BRANCHES = 8;
+
+/** The parts of a listed static-field branch as it stands: its `test` and
+ * `ready` operands. Null when another pass reshaped it, which then keeps
+ * its flat form. */
+function staticFieldBranchParts(
+  stmt: IrStmt,
+  branch: StaticFieldBranch,
+): { test: IrExpr; ready: IrExpr | null; then: IrStmt[] } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const cond = stmt.cond;
+  if (cond.kind !== "logical" || cond.op !== "&&") return null;
+  const identity = (expr: IrExpr): boolean =>
+    expr.kind === "logical" &&
+    expr.op === "&&" &&
+    expr.left.kind === "libCall" &&
+    expr.left.fn === "dyn.classIs" &&
+    expr.left.args[0] === branch.value &&
+    expr.right.kind === "bin" &&
+    expr.right.op === "===" &&
+    expr.right.left.kind === "dynCheck" &&
+    expr.right.left.value === branch.value &&
+    expr.right.left.type.kind === "classval" &&
+    expr.right.left.type.className === branch.keyClass &&
+    expr.right.right.kind === "classRef" &&
+    expr.right.right.className === branch.actual;
+  if (!branch.ready)
+    return identity(cond.right) ? { test: cond.left, ready: null, then: stmt.then } : null;
+  const guard = cond.left;
+  if (guard.kind !== "logical" || guard.op !== "&&" || !identity(guard.right)) return null;
+  return { test: cond.right, ready: guard.left, then: stmt.then };
+}
+
+/** `body` with each run of consecutive static-field branches (`branches`
+ * lists them) regrouped by the class value they test:
+ *
+ *     if (classIs(value, K)) {
+ *       const held = value as K;            // one check per boxed class
+ *       if (held === A && ready) { if (test) ...; if (test) ...; }
+ *     }
+ *
+ * The flat run repeats the class test, the checked conversion and its
+ * reference counting in every branch: one per (boxed class, held class,
+ * field), which for a class family with inherited static fields is
+ * thousands of branches in one helper. Regrouping keeps every branch's
+ * `test` and body, in the same relative order within each held class. A
+ * class value has one boxed class (its exact type key) and holds one class,
+ * so branches of two groups never both match, and the class test, the
+ * checked conversion and `ready` have no observable effect: the first
+ * branch whose condition holds is the same one, reached after the same
+ * observable `test`s. `local` names a boxed class's checked value, which
+ * `declare` adds to the helper. */
+export function groupStaticFieldBranches(
+  body: IrStmt[],
+  branches: ReadonlyMap<IrStmt, StaticFieldBranch>,
+  local: () => string,
+  declare: (id: string, type: IrType) => void,
+): IrStmt[] {
+  const parts = (stmt: IrStmt) => {
+    const branch = branches.get(stmt);
+    const found = branch === undefined ? null : staticFieldBranchParts(stmt, branch);
+    return branch === undefined || found === null ? null : { branch, ...found };
+  };
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const run: NonNullable<ReturnType<typeof parts>>[] = [];
+    const start = i;
+    for (
+      let next = parts(body[i]!);
+      next !== null;
+      next = i < body.length ? parts(body[i]!) : null
+    ) {
+      run.push(next);
+      i++;
+    }
+    if (run.length === 0) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    if (run.length < MIN_GROUPED_STATIC_FIELD_BRANCHES) {
+      rebuilt?.push(...body.slice(start, i));
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    const groups = new Map<
+      string,
+      { value: IrExpr; loc: SrcLoc; held: Map<string, { ready: IrExpr | null; tests: IrStmt[] }> }
+    >();
+    for (const { branch, test, ready, then } of run) {
+      const loc = body[start]!.loc;
+      let group = groups.get(branch.keyClass);
+      if (!group)
+        groups.set(branch.keyClass, (group = { value: branch.value, loc, held: new Map() }));
+      let held = group.held.get(branch.actual);
+      if (!held) group.held.set(branch.actual, (held = { ready, tests: [] }));
+      held.tests.push({ kind: "if", cond: test, then, else_: null, loc: test.loc });
+    }
+    for (const [keyClass, { value, loc, held }] of groups) {
+      const keyType: IrType = { kind: "classval", className: keyClass };
+      const id = local();
+      declare(id, keyType);
+      rebuilt.push({
+        kind: "if",
+        // The inline kind test first: `dyn.classIs` is a runtime call, and
+        // the flat run only reached it after a branch's key test matched,
+        // so a value that is no function (most of what a computed-key
+        // helper sees) must not pay one call per boxed class.
+        cond: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "funcKind", value, type: BOOL, loc },
+          right: {
+            kind: "libCall",
+            fn: "dyn.classIs",
+            args: [value, { kind: "strLit", value: typeKey(keyType), type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "varDecl",
+            localId: id,
+            init: { kind: "dynCheck", value, type: keyType, loc },
+            loc,
+          },
+          ...[...held].map(([actual, { ready, tests }]): IrStmt => {
+            const identity: IrExpr = {
+              kind: "bin",
+              op: "===",
+              left: varRef(id, keyType, loc),
+              right: {
+                kind: "classRef",
+                className: actual,
+                type: { kind: "classval", className: actual },
+                loc,
+              },
+              type: BOOL,
+              loc,
+            };
+            return {
+              kind: "if",
+              cond:
+                ready === null
+                  ? identity
+                  : { kind: "logical", op: "&&", left: identity, right: ready, type: BOOL, loc },
+              then: tests,
+              else_: null,
+              loc,
+            };
+          }),
+        ],
+        else_: null,
+        loc,
+      });
+    }
+  }
+  return rebuilt ?? body;
+}
+
 export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
+
+  /** The static-field branches this pass put in its helpers' bodies, which
+   * finalize regroups (groupStaticFieldBranches) and then forgets. A branch
+   * another pass copied is no longer listed and keeps its flat form. */
+  private readonly staticFieldBranches = new Map<IrStmt, StaticFieldBranch>();
 
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
@@ -2090,6 +2389,12 @@ export class ClassDynamicDispatch {
               else_: null,
               loc,
             };
+            this.staticFieldBranches.set(branch, {
+              value,
+              keyClass,
+              actual: target.actual,
+              ready: false,
+            });
             // After the statement that computes the key's string, if any.
             const at = fn.body.findIndex(
               (statement) =>
@@ -2283,7 +2588,7 @@ export class ClassDynamicDispatch {
             this.computedStaticWrites.add(id);
             // After the key's conversion, which leads the helper's body.
             const at = isStaticKeyConversion(helper.body[0]) ? 1 : 0;
-            helper.body.splice(at, 0, {
+            const branch: IrStmt = {
               kind: "if",
               cond: {
                 kind: "logical",
@@ -2314,7 +2619,9 @@ export class ClassDynamicDispatch {
               ],
               else_: null,
               loc,
-            });
+            };
+            this.staticFieldBranches.set(branch, { value: target, keyClass, actual, ready: true });
+            helper.body.splice(at, 0, branch);
             changed = true;
           }
         }
@@ -4234,7 +4541,11 @@ export class ClassDynamicDispatch {
                   ]
                 : [{ kind: "return", value: fallbackOn(target), loc }];
             const helper: IrFunction = {
-              name: `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}.${this.computed.size}`,
+              name: keyedHelperName(
+                lowerer,
+                `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}`,
+                key,
+              ),
               params,
               returnType:
                 (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,
@@ -4614,7 +4925,7 @@ export class ClassDynamicDispatch {
                 }
               : { ...write!, args: [bag, write!.args[1]!, varRef("p.1", DYN, loc)] };
             const helper: IrFunction = {
-              name: `%dyn.class.property.${this.properties.size}`,
+              name: keyedHelperName(lowerer, "%dyn.class.property", key),
               params,
               returnType: write ? VOID : DYN,
               locals: [
@@ -4789,7 +5100,7 @@ export class ClassDynamicDispatch {
           );
           params.push({ localId: "p.calleeName", name: "calleeName", type: STRING });
           const callback: IrFunction = {
-            name: `%dyn.class.callback.${this.dispatches.size}`,
+            name: keyedHelperName(lowerer, "%dyn.class.callback", key),
             params: [params[0]!],
             returnType: DYN,
             locals: [{ id: "p.0", name: "receiver", type: DYN, mutable: false }],
@@ -4797,7 +5108,7 @@ export class ClassDynamicDispatch {
             loc: expr.loc,
           };
           const helper: IrFunction = {
-            name: `%dyn.class.call.${this.dispatches.size}`,
+            name: keyedHelperName(lowerer, "%dyn.class.call", key),
             params,
             returnType: DYN,
             locals: params.map((p) => ({
@@ -7454,6 +7765,7 @@ export class ClassDynamicDispatch {
     }
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
+    if (lowerer) this.groupStaticFieldBranchRuns(lowerer);
     if (lowerer) this.indexClassBranches(lowerer);
     if (lowerer) this.settleMethodsIntact(lowerer);
   }
@@ -7518,6 +7830,24 @@ export class ClassDynamicDispatch {
     }
   }
 
+  /** Regroups the static-field branches of each generated helper by the
+   * class value they test (groupStaticFieldBranches). */
+  private groupStaticFieldBranchRuns(lowerer: Lowerer): void {
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      const body = groupStaticFieldBranches(
+        fn.body,
+        this.staticFieldBranches,
+        () => `%staticFieldClass.${this.staticTableTemps++}`,
+        (id, type) => fn.locals.push({ id, name: id, type, mutable: false }),
+      );
+      if (body !== fn.body) fn.body = body;
+    }
+    this.staticFieldBranches.clear();
+  }
+
   /** Each generated class table tests its classes in order, one exact type
    * key test per class, so a receiver costs time linear in the program's
    * class count. Replace each run of such branches with a switch on the
@@ -7528,9 +7858,13 @@ export class ClassDynamicDispatch {
    * keep the chain. */
   private indexClassBranches(lowerer: Lowerer): void {
     const seen = new Set<IrFunction>();
+    const propertyHelpers = new Set([...this.properties.values()].map((dispatch) => dispatch.fn));
     for (const fn of [...this.generated, ...lowerer.liftedFns]) {
       if (seen.has(fn)) continue;
       seen.add(fn);
+      // A property helper's runs of class branches select their class from
+      // a table (caseBranchRuns); the runs it leaves keep the indexing below.
+      if (propertyHelpers.has(fn)) fn.body = caseBranchRuns(fn.body);
       fn.body = indexBranchRuns(fn.body);
     }
   }

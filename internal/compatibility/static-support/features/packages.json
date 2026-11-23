@@ -1,0 +1,4 @@
+[
+    { "chapter": "packages", "symbols": ["package.json", "\"name\"", "\"main\"", "\"type\"", "\"exports\"", "\"imports\""], "status": "partial", "evidence": ["tests/corpus/2092-package-imports/main.ts", "tests/corpus/2120-package-self-import/main.ts", "tests/corpus/2124-imports-field-wildcard/main.ts", "tests/corpus/2390-dot-requires/main.cjs", "tests/corpus/2830-cjs-require-self-name/main.cjs"] },
+    { "chapter": "packages", "symbols": ["--input-type"], "status": "not-applicable" }
+]

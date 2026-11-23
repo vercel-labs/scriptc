@@ -125,10 +125,13 @@ test("every workflow the post-merge lanes call takes a ref and checks it out", (
         expect(job.with?.ref, `${path} ${name}`).toBe("${{ inputs.ref }}");
         continue;
       }
+      // A pull request's fast tier checks out the pull request; a post-merge call turns that tier off.
+      if (job.if?.includes("needs.lanes.outputs.fast == 'true'")) continue;
       for (const step of job.steps ?? []) {
         if (!step.uses?.startsWith("actions/checkout@")) continue;
         // The lane selector's checkout runs on pull requests alone, at the pull request's head.
-        if (step.if === "github.event_name == 'pull_request'") continue;
+        // (and on a pull request's dispatched expensive tier, which a post-merge call never is).
+        if (step.if?.startsWith("github.event_name == 'pull_request'")) continue;
         expect(step.with?.ref, `${path} ${name}`).toBe("${{ inputs.ref }}");
       }
     }

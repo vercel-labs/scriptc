@@ -23,6 +23,13 @@ static uintptr_t chunk_of(const void *p) {
 }
 #endif
 
+#ifdef SCR_SA_TEST
+/* scr_alloc.c's test hook: the next run move fails the way a kernel before
+ * 6.17 fails a fixed move that spans mappings (the destination is
+ * unmapped). */
+extern bool scr_sa_test_fail_move;
+#endif
+
 /* The allocator unit needs only scr_trap from the rest of the runtime: the
  * program-lifetime region stops the program through it. */
 _Noreturn void scr_trap(const char *msg) {
@@ -1517,6 +1524,25 @@ static void check_large_blocks(void) {
     verify(g2, big_run, 0x5d);
     scr_mem_free(g2);
   }
+#ifdef SCR_SA_TEST
+  /* A failed fixed move leaves the destination unmapped (kernels before
+   * 6.17, when the old run spans mappings): the fallback maps it again and
+   * the copy keeps the run's contents. */
+  {
+    size_t small_run = (size_t)5 << 20, big_run = (size_t)21 << 20;
+    unsigned char *r = scr_mem_alloc_ref(small_run);
+    fill(r, small_run, 0x21);
+    scr_sa_test_fail_move = true;
+    unsigned char *g3 = scr_mem_realloc_ref(r, big_run);
+    assert(!scr_sa_test_fail_move);
+    assert(g3 && in_window(g3));
+    verify(g3, small_run, 0x21);
+    fill(g3, big_run, 0x42);
+    verify(g3, big_run, 0x42);
+    assert(scr_mem_block_size(g3) >= big_run);
+    scr_mem_free(g3);
+  }
+#endif
 #endif
   /* A class whose blocks are not whole pages: a trimmed block's last page
    * kept its bytes, and calloc clears them too. */

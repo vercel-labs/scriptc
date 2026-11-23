@@ -1,0 +1,3 @@
+{
+    "node-builtin.net": ["tests/corpus/2500-net-autosel-timeout.ts", "tests/corpus/2596-net-arg-ladders.cjs"]
+}

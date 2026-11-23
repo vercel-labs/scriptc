@@ -1,0 +1,4 @@
+{
+    "node-builtin.stream.web": ["tests/corpus/stream-web-readable.ts", "tests/corpus/stream-web-require.cjs"],
+    "node-builtin.stream": ["tests/corpus/1685-stream-readable-basics.ts", "tests/corpus/1746-stream-for-await.ts", "tests/corpus/1814-stream-pipeline.cjs", "tests/corpus/2629-stream-consumers.ts", "tests/corpus/2861-readable-iterator-close.ts"]
+}

@@ -61,6 +61,10 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
 `int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs. `ca.srl` is untouched (the databases live in copies).
 
+`expired.pem`/`expired-key.pem` is a self-signed localhost certificate whose validity window ended on 2021-01-01, for the CERT_HAS_EXPIRED shape: a client that trusts it through `ca` still fails verification because it has expired.
+
+    openssl ecparam -genkey -name prime256v1 -noout -out expired-key.pem
+    openssl req -new -x509 -key expired-key.pem -out expired.pem -subj "/CN=localhost" -config san.cnf -extensions ext -not_before 20200101000000Z -not_after 20210101000000Z
 `future.pem`/`future-key.pem` is a self-signed localhost certificate whose validity starts in 2027, for the CERT_NOT_YET_VALID shape: a client that trusts it through `ca` still fails verification because the window has not begun. The date is fixed, so the differential lane passes until 2037 and then starts failing like any expired fixture would:
 
     openssl ecparam -genkey -name prime256v1 -noout -out future-key.pem

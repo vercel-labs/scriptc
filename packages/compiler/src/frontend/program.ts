@@ -816,6 +816,12 @@ export interface LoadResult {
      * back to the declaration world (load.projectWorld()), as without it. */
     declWorldFallback?: true;
   };
+  /** With JSX sources: the program the tsc gate reads. It is the original
+   * text, and in a build that compiles packages from their JavaScript it is
+   * the AUTHORED world, where the packages' declarations are visible: the
+   * JSX type surface (`JSX.IntrinsicElements`) exists only in those
+   * declarations, which the lowering world hides. */
+  jsxGateWorld?: () => ts.Program;
   /** How scriptc's type world differs from the project's own tsc setup —
    * used only to label the TypeScript errors those differences cause. */
   typeWorld?: TypeWorldDifferences;
@@ -1355,6 +1361,7 @@ function entryPackageProgramRoots7(
   program: ts.Program,
   entryPath: string,
   packageRoots: PackageRoots | null,
+  jsxOptions: ts.Ts7CompilerOptions,
 ): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
@@ -1403,6 +1410,31 @@ function entryPackageProgramRoots7(
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
+      if (root !== null) roots.add(root);
+    }
+  }
+  // JSX with the automatic runtime imports `react/jsx-runtime` (or the
+  // project's jsxImportSource), an edge the file's own import list does not
+  // name: the rewrite that adds it runs after this discovery. Rooting the
+  // runtime module here is what lets the package compile statically instead
+  // of becoming a Node island.
+  const jsxMode = jsxEmitName(jsxOptions.jsx as string | number | undefined);
+  if (jsxMode !== undefined) {
+    for (const sf of program.getImplementationSourceFiles()) {
+      if (sf.isDeclarationFile || /\.[mc]?ts$/i.test(sf.fileName) || !containsJsx(sf)) continue;
+      const plan = jsxEmitPlan(
+        {
+          jsx: jsxMode,
+          jsxFactory: jsxOptions.jsxFactory as string | undefined,
+          jsxFragmentFactory: jsxOptions.jsxFragmentFactory as string | undefined,
+          jsxImportSource: jsxOptions.jsxImportSource as string | undefined,
+          reactNamespace: jsxOptions.reactNamespace as string | undefined,
+        },
+        jsxPragmas(sf.text),
+      );
+      if (plan.runtime !== "automatic") continue;
+      const spec = `${plan.importSource}/${plan.development ? "jsx-dev-runtime" : "jsx-runtime"}`;
+      const root = rootOf(sf.fileName, spec, "import");
       if (root !== null) roots.add(root);
     }
   }
@@ -1905,7 +1937,7 @@ function loadProgram7(
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
         ...declarationTwinRoots7(program),
-        ...entryPackageProgramRoots7(program, entryPath, packageRoots),
+        ...entryPackageProgramRoots7(program, entryPath, packageRoots, options),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -2272,6 +2304,9 @@ function loadProgram7(
       externalTypeSpecifiersByFile,
       ...(tscWorld === undefined ? {} : { jsxSources: jsx.sources }),
       ...(tscWorld === undefined ? {} : { tscWorld }),
+      ...(tscWorld === undefined || jsx.sources.size === 0
+        ? {}
+        : { jsxGateWorld: () => tscWorld.program }),
       projectWorld: () =>
         (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
           host.createProgram(programRoots, options, false, lineage),
@@ -2663,6 +2698,20 @@ export function loadProgram(
               // Runtime bodies still lower from JavaScript in the original world;
               // inference there must not manufacture errors in valid user code.
               authored().projectWorld(),
+      // A JSX file's types come from the packages' declarations, which the
+      // lowering world hides: the gate reads the authored world's copy of
+      // the file as written.
+      ...(load.jsxGateWorld === undefined
+        ? {}
+        : {
+            jsxGateWorld:
+              npmStaticPackages.length === 0
+                ? load.jsxGateWorld
+                : () => {
+                    const world = authored();
+                    return world.tscWorld?.program ?? world.program;
+                  },
+          }),
       dispose: () => {
         try {
           (authoredLoad as ReturnType<typeof loadProgram7> | null)?.disposeAll();
@@ -7886,19 +7935,10 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
             // sources every use passes here: member reads lower through the
             // names Node's lexer detects, and the other reads refuse at
             // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
-            if (
-              !isJsSourceFileName(sf.fileName) &&
-              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
-            ) {
-              diags.push(
-                unsupportedDiag(
-                  "SC1013",
-                  locOf7(clause.namedBindings),
-                  "namespace imports of CommonJS modules",
-                ),
-              );
-            }
+            // A member read lowers like the named import `import { name }`
+            // (nsMemberIdentOf), and a use the lexer does not serve - the
+            // namespace as a first-class value, `default`, a name Node's
+            // lexer does not detect - refuses at its own site.
           } else if (
             dep === null &&
             !(!isRelative && ambientModules.has(spec)) &&
@@ -8966,10 +9006,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
       ? errorsOf(program)
       : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
+    // A JSX file was checked in a world that hides an opted-in package's
+    // declarations: its JSX types (`JSX.IntrinsicElements` from
+    // @types/react) exist only there, so the second chance is the authored
+    // world, which types owned files against the published declarations.
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true
         ? load.projectWorld()
-        : (tscWorld.projectWorld ?? tscWorld.program);
+        : load.jsxGateWorld !== undefined
+          ? load.jsxGateWorld()
+          : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one
     // by one: a single SC0016 names the setting instead.
     const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;

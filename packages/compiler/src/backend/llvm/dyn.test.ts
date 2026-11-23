@@ -1,10 +1,12 @@
 import { expect, test } from "vitest";
 import {
   DYN,
+  JSVAL,
   NULL_T,
   STRING,
   VOID,
   typeKey,
+  type IrFunction,
   type IrModule,
   type IrStmt,
   type IrType,
@@ -12,10 +14,31 @@ import {
 import { emitLlvmModule } from "./emitter.js";
 
 /** `look(value, key)` boxed as a function value: the box's call thunk
- * converts the second argument to a string and calls the function. */
-function boxedFunction(): IrModule {
+ * converts the second argument to a string and calls the function. With
+ * `jsEntry`, the closure also carries its jsval twin body, so the box gets
+ * a jsval entry thunk and `convert` a typed callback adapter. */
+function boxedFunction(options: { jsEntry?: boolean; convert?: boolean } = {}): IrModule {
   const loc = { file: "boxed-function.ts", start: 0, end: 0 };
   const look: IrType = { kind: "func", params: [DYN, STRING], ret: DYN };
+  const twin: IrFunction | null =
+    options.jsEntry === true
+      ? {
+          name: "look%js",
+          params: [
+            { localId: "value", name: "value", type: JSVAL },
+            { localId: "key", name: "key", type: JSVAL },
+          ],
+          returnType: JSVAL,
+          locals: [
+            { id: "value", name: "value", type: JSVAL, mutable: false },
+            { id: "key", name: "key", type: JSVAL, mutable: false },
+          ],
+          loc,
+          body: [
+            { kind: "return", value: { kind: "varRef", localId: "value", type: JSVAL, loc }, loc },
+          ],
+        }
+      : null;
   return {
     irVersion: 17,
     sourceFile: loc.file,
@@ -30,16 +53,55 @@ function boxedFunction(): IrModule {
         body: [
           {
             kind: "exprStmt",
-            expr: {
-              kind: "dynFrom",
-              value: { kind: "closure", fnName: "look", captures: [], type: look, loc },
-              type: DYN,
-              loc,
-            },
+            expr:
+              options.convert === true
+                ? {
+                    kind: "call",
+                    callee: "convert",
+                    args: [
+                      {
+                        kind: "dynFrom",
+                        value: { kind: "closure", fnName: "look", captures: [], type: look, loc },
+                        type: DYN,
+                        loc,
+                      },
+                    ],
+                    type: VOID,
+                    loc,
+                  }
+                : {
+                    kind: "dynFrom",
+                    value: { kind: "closure", fnName: "look", captures: [], type: look, loc },
+                    type: DYN,
+                    loc,
+                  },
             loc,
           },
         ],
       },
+      ...(options.convert === true
+        ? [
+            {
+              name: "convert",
+              params: [{ localId: "value", name: "value", type: DYN }],
+              returnType: VOID,
+              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+              loc,
+              body: [
+                {
+                  kind: "exprStmt" as const,
+                  expr: {
+                    kind: "dynCheck" as const,
+                    value: { kind: "varRef" as const, localId: "value", type: DYN, loc },
+                    type: look,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+            },
+          ]
+        : []),
       {
         name: "look",
         params: [
@@ -52,12 +114,33 @@ function boxedFunction(): IrModule {
           { id: "key", name: "key", type: STRING, mutable: false },
         ],
         loc,
+        ...(twin === null ? {} : { jsEntry: "look%js" }),
         body: [
           { kind: "return", value: { kind: "varRef", localId: "value", type: DYN, loc }, loc },
         ],
       },
+      ...(twin === null ? [] : [twin]),
     ],
   };
+}
+
+/** The body of the emitted helper whose definition names `symbol`. */
+function helperBody(llvm: string, symbol: string): string {
+  const body = new RegExp(`^define internal [^\\n]*@${symbol}\\(.*?\\n}`, "ms").exec(llvm)?.[0];
+  if (body === undefined) throw new Error(`no helper: ${symbol}`);
+  return body;
+}
+
+/** A helper's blocks by label. */
+function blocksOf(body: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  let label = "";
+  for (const line of body.split("\n")) {
+    const start = /^([\w.]+):$/.exec(line);
+    if (start) label = start[1]!;
+    else blocks.set(label, `${blocks.get(label) ?? ""}${line}\n`);
+  }
+  return blocks;
 }
 
 /** The call thunk of `look`'s function type: the value its conversion made,
@@ -67,19 +150,11 @@ function callThunk(llvm: string): {
   returned: string;
   blocks: Map<string, string>;
 } {
-  const body = /^define internal ptr @sc_dfk_\d+\(.*?\n}/ms.exec(llvm)?.[0];
-  if (body === undefined) throw new Error("no call thunk");
+  const body = helperBody(llvm, "sc_dfk_\\d+");
   const converted = /^ {2}(%\w+) = call ptr @sc_dc_\d+\(/m.exec(body)?.[1];
   const returned = /^ {2}(%\w+) = call ptr %\w+\(ptr %c, /m.exec(body)?.[1];
   if (converted === undefined || returned === undefined) throw new Error(body);
-  const blocks = new Map<string, string>();
-  let label = "";
-  for (const line of body.split("\n")) {
-    const start = /^([\w.]+):$/.exec(line);
-    if (start) label = start[1]!;
-    else blocks.set(label, `${blocks.get(label) ?? ""}${line}\n`);
-  }
-  return { converted, returned, blocks };
+  return { converted, returned, blocks: blocksOf(body) };
 }
 
 /** The block a pending test branches to when it is true (`<hint>.u<n>`). */
@@ -89,23 +164,43 @@ function bail(blocks: Map<string, string>, hint: string): string {
   return found[0]![1];
 }
 
-test("a worker program's call thunk releases what it converted and what the call returned when it gives up", () => {
-  // The pending test of a worker program is also true once its thread must
-  // stop, after a conversion or a call that succeeded.
-  const workers = callThunk(emitLlvmModule({ ...boxedFunction(), workers: true }));
-  expect(bail(workers.blocks, "dfk")).toMatch(
-    new RegExp(
-      `call void @\\w*release\\w*\\(ptr ${workers.converted}\\)\\n(.*\\n)* {2}ret ptr null`,
-    ),
-  );
-  expect(bail(workers.blocks, "dfkr")).toMatch(
-    new RegExp(`call void @\\w*release\\w*\\(ptr ${workers.returned}\\)\\n {2}ret ptr null`),
-  );
-  // Elsewhere the test is exactly "an exception is pending": the conversion
-  // or the call threw and returned null, and the blocks stay as they were.
-  const plain = callThunk(emitLlvmModule(boxedFunction()));
-  expect(bail(plain.blocks, "dfk")).not.toContain(`(ptr ${plain.converted})`);
-  expect(bail(plain.blocks, "dfkr")).toBe("  ret ptr null\n");
+test("a call thunk releases what it converted and what the call returned when it gives up", () => {
+  // The pending test is also true once the running context must stop, after
+  // a conversion or a call that succeeded: a worker terminating, a shared
+  // island shutting down, a host stopping a library context. The values the
+  // thunk made are its own there, so both bails release them on every lane;
+  // a plain throw leaves NULL, which the release helpers accept.
+  for (const workers of [false, true]) {
+    const thunk = callThunk(emitLlvmModule({ ...boxedFunction(), workers }));
+    const release = `call void @\\w*release\\w*\\(ptr `;
+    expect(bail(thunk.blocks, "dfk")).toMatch(
+      new RegExp(`${release}${thunk.converted}\\)\\n(.*\\n)* {2}ret ptr null`),
+    );
+    expect(bail(thunk.blocks, "dfkr")).toMatch(
+      new RegExp(`^ {2}${release}${thunk.returned}\\)\\n {2}ret ptr null\\n$`),
+    );
+  }
+});
+
+test("a jsval entry thunk releases the result it converted when it gives up", () => {
+  const llvm = emitLlvmModule(boxedFunction({ jsEntry: true }));
+  const body = helperBody(llvm, "sc_jt_\\d+");
+  // The jsval body's result, the word the entry returns (jsval itself).
+  const returned = /^ {2}(%\w+) = call ptr \S+\(ptr %c, /m.exec(body)?.[1];
+  expect(returned).toBeDefined();
+  const bailBlock = bail(blocksOf(body), "jtr");
+  expect(bailBlock).toMatch(new RegExp(`^ {2}call void @\\w*release\\w*\\(ptr ${returned}\\)\\n`));
+  expect(bailBlock).toMatch(/ {2}ret ptr inttoptr \(i64 -?\d+ to ptr\)\n$/);
+});
+
+test("a typed callback adapter releases the result the call returned when it gives up", () => {
+  const llvm = emitLlvmModule(boxedFunction({ convert: true }));
+  const body = helperBody(llvm, "sc_dfa_\\d+");
+  const returned = /^ {2}(%\w+) = call ptr @scr_dyn_call\(/m.exec(body)?.[1];
+  expect(returned).toBeDefined();
+  const bailBlock = bail(blocksOf(body), "dfa");
+  expect(bailBlock).toMatch(new RegExp(`^ {2}call void @\\w*release\\w*\\(ptr ${returned}\\)\\n`));
+  expect(bailBlock).toMatch(/ {2}ret ptr null\n$/);
 });
 
 /** `Root` with the subclasses `Sub` (and `Tip` below it) and `Side`, and a

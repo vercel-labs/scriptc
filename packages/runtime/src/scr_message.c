@@ -24,6 +24,13 @@ typedef struct {
   ScrDyn *(*materialize)(void *);
   void (*commit)(void *, const ScrDyn *);
   bool traced;
+  /* The capsule's native operation table and which kind it is (a live
+   * array, a declared-field record, a class instance or a bag class). The
+   * tables are compiler-emitted process-lifetime statics, so the receiver
+   * binds the sender's table onto its own fresh capsule; the materialized
+   * views stay local to each receiver. */
+  const void *ops;
+  unsigned char ops_kind; /* 0 none, 1 array, 2 record, 3 class, 4 bag class */
 } ScrMessageTyped;
 
 typedef struct {
@@ -433,6 +440,12 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
       input->v.typed_ref.ptr, input->v.typed_ref.retain, input->v.typed_ref.release,
       input->v.typed_ref.type_key, input->v.typed_ref.type_key_len, input->v.typed_ref.materialize,
       input->v.typed_ref.commit, input->v.typed_ref.traced,
+      input->v.typed_ref.array,
+      (unsigned char)(input->v.typed_ref.record    ? 2
+                      : input->v.typed_ref.klass   ? 3
+                      : input->v.typed_ref.bag_class ? 4
+                      : input->v.typed_ref.array   ? 1
+                                                   : 0),
     };
     if (getenv("SCRIPTC_PUBLISH_TRACE"))
       fprintf(stderr, "scriptc: published %.*s shared by reference\n", (int)input->v.typed_ref.type_key_len,
@@ -1098,9 +1111,31 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
     case SCR_MESSAGE_PUBLISHED: values[i] = scr_dyn_retain(node->v.published); break;
     case SCR_MESSAGE_TYPED_REF: {
       const ScrMessageTyped *typed = node->v.typed;
-      values[i] = (typed->traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
+      ScrDyn *capsule = (typed->traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
           typed->ptr, typed->retain, typed->release, typed->type_key, typed->type_key_len,
           typed->materialize, typed->commit);
+      /* The sender's native operation table is process-lifetime: bind it to
+       * this receiver's capsule so member operations answer as they do on
+       * the sender (the materialized view is built here, fresh). */
+      if (capsule != NULL) {
+        switch (typed->ops_kind) {
+        case 1:
+          scr_dyn_typed_ref_bind_array(capsule, (const ScrDynTypedArrayOps *)typed->ops);
+          break;
+        case 2:
+          scr_dyn_typed_ref_bind_record(capsule, (const ScrDynTypedRecordOps *)typed->ops);
+          break;
+        case 3:
+          scr_dyn_typed_ref_bind_class(capsule, (const ScrDynTypedClassOps *)typed->ops);
+          break;
+        case 4:
+          scr_dyn_typed_ref_bind_bag_class(capsule, (const ScrDynTypedBagClassOps *)typed->ops);
+          break;
+        default:
+          break;
+        }
+      }
+      values[i] = capsule;
       break;
     }
     case SCR_MESSAGE_PORT:

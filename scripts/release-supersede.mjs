@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 export const PUBLISHING_JOBS = [
   "Publish to npm",
   "Wait for npm availability",
+  "Move latest to the release",
   "Create GitHub Release",
 ];
 

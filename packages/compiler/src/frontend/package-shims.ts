@@ -140,6 +140,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
+        [8, "undici/v8.ts"],
       ]),
     },
   ],

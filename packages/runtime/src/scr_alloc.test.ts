@@ -45,6 +45,9 @@ test.each([
       // Linux runtime packs compile with _GNU_SOURCE, which exposes the
       // madvise advice the page policy uses; build the checks the same way.
       ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
+      // The allocator's test hook: a run move that fails like a pre-6.17
+      // kernel's fixed move, so the fallback path runs on every kernel.
+      "-DSCR_SA_TEST",
       ...sanitize,
       join(import.meta.dirname, "scr_alloc.test.c"),
       join(import.meta.dirname, "scr_alloc.c"),

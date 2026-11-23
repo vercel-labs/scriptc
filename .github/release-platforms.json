@@ -1,0 +1,77 @@
+[
+  {
+    "platform": "darwin-arm64",
+    "runner": "macos-15",
+    "helper": "llvm-darwin-arm64",
+    "runtime": "runtime-darwin-arm64",
+    "cli": "cli-darwin-arm64"
+  },
+  {
+    "platform": "darwin-x64",
+    "runner": "macos-15-intel",
+    "helper": "llvm-darwin-x64",
+    "runtime": "runtime-darwin-x64",
+    "cli": "cli-darwin-x64"
+  },
+  {
+    "platform": "linux-x64",
+    "runner": "ubuntu-24.04",
+    "helper": "llvm-linux-x64-gnu",
+    "runtime": "runtime-linux-x64-gnu",
+    "cli": "cli-linux-x64-gnu",
+    "llvm_asset": "LLVM-22.1.8-Linux-X64",
+    "llvm_dist": "x64",
+    "use_zig": true
+  },
+  {
+    "platform": "linux-arm64",
+    "runner": "ubuntu-24.04-arm",
+    "helper": "llvm-linux-arm64-gnu",
+    "runtime": "runtime-linux-arm64-gnu",
+    "cli": "cli-linux-arm64-gnu",
+    "llvm_asset": "LLVM-22.1.8-Linux-ARM64",
+    "llvm_dist": "arm64",
+    "use_zig": true
+  },
+  {
+    "platform": "windows-x64",
+    "runner": "windows-2022",
+    "helper": "llvm-win32-x64-msvc",
+    "runtime": "runtime-win32-x64-msvc",
+    "cli": "cli-win32-x64-msvc",
+    "use_zig": true
+  },
+  {
+    "platform": "linux-x64-musl",
+    "runner": "ubuntu-24.04",
+    "helper": "llvm-linux-x64-musl",
+    "runtime": "runtime-linux-x64-musl",
+    "cli": "cli-linux-x64-musl",
+    "seed_helper": "llvm-linux-x64-gnu",
+    "cli_target": "x86_64-linux-musl",
+    "llvm_asset": "LLVM-22.1.8-Linux-X64",
+    "llvm_dist": "x64",
+    "use_zig": true
+  },
+  {
+    "platform": "linux-arm64-musl",
+    "runner": "ubuntu-24.04-arm",
+    "helper": "llvm-linux-arm64-musl",
+    "runtime": "runtime-linux-arm64-musl",
+    "cli": "cli-linux-arm64-musl",
+    "seed_helper": "llvm-linux-arm64-gnu",
+    "cli_target": "aarch64-linux-musl",
+    "llvm_asset": "LLVM-22.1.8-Linux-ARM64",
+    "llvm_dist": "arm64",
+    "use_zig": true
+  },
+  {
+    "platform": "wasm32-wasi",
+    "runner": "ubuntu-24.04",
+    "helper": "llvm-linux-x64-gnu",
+    "runtime": "runtime-wasm32-wasi",
+    "llvm_asset": "LLVM-22.1.8-Linux-X64",
+    "llvm_dist": "x64",
+    "use_zig": true
+  }
+]

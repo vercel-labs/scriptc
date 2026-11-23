@@ -261,6 +261,10 @@ struct ScrSecureCtx {
    * empty ca (an empty trust store) from none (the default store). */
   bool has_ca;
   mbedtls_x509_crt ca;
+  /* the secureProtocol/minVersion/maxVersion range the context was built
+   * with; a socket created from it uses the same range */
+  int min_version;
+  int max_version;
 };
 
 #ifdef SCR_RC_AUDIT
@@ -277,6 +281,8 @@ ScrSecureCtx *scr_tls_create_secure_context(const char *cert, size_t cert_len,
   mbedtls_x509_crt_init(&c->cert);
   mbedtls_x509_crt_init(&c->ca);
   mbedtls_pk_init(&c->pk);
+  c->min_version = 12;
+  c->max_version = 13;
   /* An absent cert or key (the empty context createSecureContext() makes)
    * is not parsed: the PEM parser rejects zero-length input. */
   int r = 0;
@@ -450,6 +456,7 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const c
     const char *value = proto->v.str->data;
     size_t len = proto->v.str->len;
     bool v12 = len >= 10 && memcmp(value, "TLSv1_2_", 8) == 0;
+    bool sslv23 = len >= 8 && memcmp(value, "SSLv23_", 7) == 0;
     bool legacy = (len >= 9 && memcmp(value, "TLSv1_1_", 8) == 0) ||
                   (len >= 9 && memcmp(value, "TLSv1_", 6) == 0 && !v12);
     if (legacy) {
@@ -457,7 +464,7 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const c
                         "TLS 1.0/1.1 methods have no lowering — configure TLSv1.2/TLSv1.3 instead");
       return false;
     }
-    if (v12) {
+    if (v12 || sslv23) {
       *min = 12;
       *max = 12;
       return true;
@@ -591,6 +598,8 @@ static ScrTlsSrv *scr_tls_srv_from_ctx(ScrSecureCtx *ctx /*borrowed*/) {
   }
   mbedtls_ssl_conf_rng(&s->conf, mbedtls_ctr_drbg_random, &scr_tls_drbg);
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_NONE);
+  (void)scr_tls_conf_versions(&s->conf, ctx->min_version, ctx->max_version);
+  s->max_tls12 = ctx->max_version == 12;
   s->ctx = scr_secure_ctx_retain(ctx);
   /* the context's ca completes the chain a socket created from it sends */
   const mbedtls_x509_crt *own = &ctx->cert;
@@ -3281,9 +3290,14 @@ static bool scr_tls_srv_opt_member(const ScrDynProp *e, const ScrDyn *v, bool de
   if (server_ok && (strcmp(e->key, "ALPNProtocols") == 0 || strcmp(e->key, "minVersion") == 0 ||
                     strcmp(e->key, "maxVersion") == 0))
     return true;
-  /* scr_tls_versions_dyn validates secureProtocol (and its conflict with a
-   * version) before the walk; the member itself adds nothing later. */
-  if (strcmp(e->key, "secureProtocol") == 0) return true;
+  /* scr_tls_versions_dyn validated secureProtocol (and its conflict with a
+   * version) for these APIs; other walks (http2.createSecureServer) do not
+   * read or apply the method, so they keep the by-name fence below. */
+  if (strcmp(e->key, "secureProtocol") == 0) {
+    if (strcmp(api, "tls.createServer") == 0 || strcmp(api, "https.createServer") == 0 ||
+        strcmp(api, "tls.createSecureContext") == 0 || strcmp(api, "new tls.TLSSocket") == 0)
+      return true;
+  }
   if (strcmp(e->key, "SNICallback") == 0) {
     scr_tls_opt_fence(api, "SNICallback",
                       "SNICallback lowers only on http2.createSecureServer({ allowHTTP1: true, ... }) with a literal options object");
@@ -3478,7 +3492,8 @@ bool scr_tls_srv_opts_walk(const ScrDyn *opts, const char *api, ScrBytes **cert_
  * +1, or NULL with the exception pending. */
 ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/) {
   int min_version = 12, max_version = 13;
-  if (!scr_tls_versions_dyn(opts, &min_version, &max_version, "tls.createSecureContext")) return NULL;
+  if (!scr_tls_versions_dyn(opts, &min_version, &max_version, "tls.createSecureContext"))
+    return NULL;
   ScrBytes *cert, *key;
   /* requestCert and rejectUnauthorized are no context options: Node's
    * createSecureContext ignores them */
@@ -3487,6 +3502,8 @@ ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/)
   ScrSecureCtx *c = scr_tls_create_secure_context(
       cert != NULL ? (const char *)cert->data : NULL, cert != NULL ? cert->len : 0,
       key != NULL ? (const char *)key->data : NULL, key != NULL ? key->len : 0);
+  c->min_version = min_version;
+  c->max_version = max_version;
   if (auth.ca != NULL) {
     /* kept for sockets created from the context (a TLSSocket's
      * secureContext); an SNI answer's chain comes from the server's
@@ -3997,6 +4014,11 @@ ScrNetSocket *scr_tls_wrap_socket(ScrNetSocket *raw, const ScrDyn *opts /*borrow
   scr_bytes_release(auth.ca);
   srv->alpn = alpn; /* moves */
   if (alpn != NULL) mbedtls_ssl_conf_alpn_protocols(&srv->conf, (const char **)srv->alpn);
+  /* a context carries its own version bounds */
+  if (ctx != NULL) {
+    min_version = ctx->min_version;
+    max_version = ctx->max_version;
+  }
   if (!scr_tls_conf_versions(&srv->conf, min_version, max_version)) {
     scr_tls_srv_release(srv);
     scr_tls_opt_fence(api, "maxVersion",

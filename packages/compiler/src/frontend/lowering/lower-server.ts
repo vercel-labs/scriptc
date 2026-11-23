@@ -7160,6 +7160,8 @@ function tlsLiteralNeedsRuntimeWalk(
  * tls.createServer and https.createServer, and the literal cert/key
  * lowering does not. */
 const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca"]);
+/** secureProtocol is validated and applied by the runtime version ladder. */
+const TLS_SECURE_PROTOCOL_OPTIONS: ReadonlySet<string> = new Set(["secureProtocol"]);
 
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
@@ -7169,6 +7171,7 @@ const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
   "minVersion",
   "maxVersion",
   ...TLS_CLIENT_AUTH_OPTIONS,
+  ...TLS_SECURE_PROTOCOL_OPTIONS,
 ]);
 
 function lowerTlsServerOptionsOrDyn(
@@ -7599,7 +7602,7 @@ function lowerTlsModuleCall(
       args[0]!,
       "tls.createSecureContext",
       false,
-      TLS_CLIENT_AUTH_OPTIONS,
+      new Set([...TLS_CLIENT_AUTH_OPTIONS, ...TLS_SECURE_PROTOCOL_OPTIONS]),
     );
     if (opts.dyn !== undefined) {
       return {

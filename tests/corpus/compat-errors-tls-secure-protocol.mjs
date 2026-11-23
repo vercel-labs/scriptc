@@ -2,6 +2,7 @@
 // disabled SSLv2/SSLv3 families raise ERR_TLS_INVALID_PROTOCOL_METHOD, and an
 // explicit version beside it raises ERR_TLS_PROTOCOL_VERSION_CONFLICT.
 import { readFileSync } from "node:fs";
+import net from "node:net";
 import tls from "node:tls";
 
 const attempt = (label, options) => {
@@ -41,3 +42,21 @@ await new Promise((done) => {
   client.on("close", () => done(undefined));
 });
 server.close();
+
+{
+  // SSLv23_method caps the range at TLS 1.2 in Node.
+  const server = tls.createServer({ cert, key, secureProtocol: "SSLv23_method" }, (socket) => {
+    console.log("sslv23-negotiated", socket.getProtocol());
+    socket.end();
+  });
+  server.on("tlsClientError", () => {});
+  const port = await new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+  );
+  await new Promise((done) => {
+    const client = tls.connect({ port, host: "127.0.0.1", servername: "localhost", ca });
+    client.on("secureConnect", () => client.end());
+    client.on("close", () => done(undefined));
+  });
+  server.close();
+}

@@ -1867,6 +1867,12 @@
  },
  {
   "file": "scr_tls.c",
+  "function": "scr_tls_versions_dyn",
+  "message": "TLS 1.0/1.1 methods have no lowering — configure TLSv1.2/TLSv1.3 instead",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
   "function": "scr_tls_server_reason",
   "message": "a TLS handshake failure (mbedTLS error -0x%04X) without the reason OpenSSL gives is not supported yet",
   "code": "SC2020"

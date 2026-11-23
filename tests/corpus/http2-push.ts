@@ -24,6 +24,19 @@ server.on("stream", (stream, headers) => {
     stream.end("disabled");
     return;
   }
+  if (path === "/wait") {
+    // A push whose promise ended the writable half cannot send trailers: the
+    // response closes at its HEADERS and 'wantTrailers' never fires.
+    stream.pushStream({ ":path": "/wp" }, { endStream: true }, (err, pushed) => {
+      lines.push(`wait cb ${err ? "err" : "ok"}`);
+      pushed.on("wantTrailers", () => lines.push("wait wantTrailers"));
+      pushed.respond({ ":status": 200 }, { waitForTrailers: true });
+      pushed.end();
+    });
+    stream.respond({ ":status": 200 });
+    stream.end("wait");
+    return;
+  }
   lines.push(`srv pushAllowed ${stream.pushAllowed}`);
   // The promise's header list follows Node's checks before anything is sent.
   try {
@@ -105,8 +118,18 @@ server.listen(0, "127.0.0.1", () => {
     ":scheme": "https",
   });
   request.resume();
-  request.on("end", () => client.close());
+  let ended = 0;
+  const closeWhenBothEnd = (): void => {
+    if (++ended === 2) client.close();
+  };
+  request.on("end", closeWhenBothEnd);
   request.end();
+  // The waitForTrailers push whose promise ended the writable half: its
+  // response must still end and close on the client.
+  const waitRequest = client.request({ ":path": "/wait" });
+  waitRequest.resume();
+  waitRequest.on("end", closeWhenBothEnd);
+  waitRequest.end();
   const blockedRequest = blocked.request({ ":path": "/disabled" });
   blockedRequest.resume();
   blockedRequest.on("end", () => blocked.close());

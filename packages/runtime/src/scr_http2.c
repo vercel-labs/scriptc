@@ -2464,7 +2464,12 @@ void scr_http2_stream_respond_wait(ScrH2Stream *st, ScrArr *pairs /*borrowed, nu
   if (st->destroyed || st->respond_sent || !scr_h2_sock_alive(s)) return;
   if (!scr_h2_regular_names_valid(pairs)) return; /* nothing sent: respond() may be called again */
   st->respond_sent = true;
-  st->want_trailers = wait_trailers;
+  /* A push whose promise ended the writable half (pushStream({ endStream:
+   * true }) or a HEAD push) can never send trailers: Node closes the
+   * response at its HEADERS and 'wantTrailers' does not fire, so end()
+   * afterwards is a no-op rather than a stream left open. */
+  bool writable_ended = st->write_ended;
+  st->want_trailers = wait_trailers && !writable_ended;
   ScrH2Buf block = {0};
   ScrStr *status = scr_h2_pairs_pseudo(pairs, ":status");
   scr_h2_hpack_encode(&block, ":status", 7, status ? status->data : "200", status ? status->len : 3);
@@ -2480,7 +2485,7 @@ void scr_http2_stream_respond_wait(ScrH2Stream *st, ScrArr *pairs /*borrowed, nu
   /* A response that waits for trailers sends its HEADERS without
    * END_STREAM even when the caller asked to end: the trailer block ends
    * it after 'wantTrailers'. */
-  bool close_here = (end_stream || st->write_ended) && !wait_trailers;
+  bool close_here = (end_stream || writable_ended) && (!wait_trailers || writable_ended);
   scr_h2_send_headers(s, st->id, &block, close_here);
   free(block.data);
   if (close_here) {
@@ -2727,7 +2732,12 @@ static void scr_h2_push_call_fire(ScrClosure *cb) {
   call->headers = NULL;
   call->err = NULL;
   call->cb = NULL;
-  if (user != NULL) call->fn(user, err, st, headers);
+  if (user != NULL) {
+    call->fn(user, err, st, headers);
+    /* the fire owns the callback it moved out of `call` (the thunks do not
+     * release it): drop it here or every push leaks its captures */
+    scr_closure_release(user);
+  }
   scr_h2_push_call_release(call);
 }
 
@@ -3918,6 +3928,26 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     if (s->closed || s->goaway_sent) {
       scr_h2_send_rst(s, stream_id, 7 /* NGHTTP2_REFUSED_STREAM */);
       return;
+    }
+    /* Node (nghttp2) rejects a header block that repeats a pseudo header:
+     * a stream error of type PROTOCOL_ERROR, with no stream born — so a
+     * malformed request cannot cache or replace a request string. */
+    {
+      static const char *const pseudo[] = {
+        ":method", ":scheme", ":authority", ":path", ":protocol", ":status", NULL,
+      };
+      for (size_t k = 0; pseudo[k] != NULL; k++) {
+        size_t want = strlen(pseudo[k]);
+        int seen = 0;
+        for (size_t i = 0; i < h->n; i++) {
+          ScrStr *name = h->names[i];
+          if (name->len != want || memcmp(name->data, pseudo[k], want) != 0) continue;
+          if (++seen > 1) {
+            scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+            return;
+          }
+        }
+      }
     }
     st = scr_h2_stream_new(s, stream_id);
     s->max_created_stream_id = stream_id;

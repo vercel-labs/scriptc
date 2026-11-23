@@ -113,6 +113,20 @@ function profileMatchCacheKey(key: string): string {
   return contentDigest(`${key}:profile-match`);
 }
 
+/** Remove a build's staging directory. A sync client (OneDrive and friends)
+ * can still hold a handle on a file the build just wrote, so `rmdir`
+ * answers EPERM/EBUSY on Windows; `rmSync` retries exactly those. A build
+ * whose artifact is already written must not fail because its scratch
+ * directory could not be removed, so a directory left behind is ignored. */
+function removeStagingDir(stage: string): void {
+  try {
+    rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    // Best effort: the artifact is written; a leftover .scriptc-* directory
+    // is a warning the caller has no channel for, not a build failure.
+  }
+}
+
 /** A program's native objects, and how a --profile-use build's profile
  * matched its functions. */
 interface NativeObjects {
@@ -939,7 +953,7 @@ export class NativeCompiler {
         };
       return failure(error, entry, sourceTexts);
     } finally {
-      if (stage !== null) rmSync(stage, { recursive: true, force: true });
+      if (stage !== null) removeStagingDir(stage);
       this.cache?.prune();
       timing("complete");
     }
@@ -1104,7 +1118,7 @@ export class NativeCompiler {
         };
       return failure(error, options.profilePath, sourceTexts);
     } finally {
-      if (stage !== null) rmSync(stage, { recursive: true, force: true });
+      if (stage !== null) removeStagingDir(stage);
       this.cache?.prune();
       timing("complete");
     }

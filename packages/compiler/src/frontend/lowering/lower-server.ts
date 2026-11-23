@@ -2885,39 +2885,32 @@ function lowerNetServerMethodCall(
       // CONNECT and an Http2ServerResponse for valid traditional/extended
       // HTTP/2 CONNECT, so portless's union-typed listener selects the
       // protocol arm with `instanceof net.Socket`.
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
       const sockParamOk = (t: IrType): boolean => {
         if (t.kind === "netSocket") return true;
         if (t.kind !== "union") return false;
         const def = lowerer.unions.get(t.unionId);
         return !!def && def.arms.some((a) => a.kind === "netSocket");
       };
-      if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && !sockParamOk(p1)) ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners whose parameters are not (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
-        );
-      }
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's (req, socket, head)
+       * payload, like the request handler does. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "connect listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? sockParamOk(p)
+              : p.kind === "bytes" && p.elem === "u8",
+        "use (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, NETSOCKET_T, BYTES_U8],
+          rejectValueReturn: true,
+        },
+      );
       return {
         kind: "libCall",
         fn: "http.serverOnConnect",
@@ -2932,33 +2925,26 @@ function lowerNetServerMethodCall(
       // socket over raw with the bytes read past the head, and destroys
       // the socket when no listener exists. Registration works on every
       // server kind (a parserless net server never fires it, like Node).
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
-      if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && p1.kind !== "netSocket") ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners whose parameters are not (req: IncomingMessage, socket: Socket, head: Buffer)",
-        );
-      }
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's (req, socket, head)
+       * payload, like the request handler does. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "upgrade listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? p.kind === "netSocket"
+              : p.kind === "bytes" && p.elem === "u8",
+        "use (req: IncomingMessage, socket: Socket, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, NETSOCKET_T, BYTES_U8],
+          rejectValueReturn: true,
+        },
+      );
       return {
         kind: "libCall",
         fn: "http.serverOnUpgrade",

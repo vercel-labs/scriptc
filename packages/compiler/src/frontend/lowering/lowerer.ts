@@ -840,6 +840,11 @@ import {
 } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
 import {
+  clusterMemberValue,
+  lowerClusterMethodCall,
+  lowerClusterModuleCall,
+} from "./lower-cluster.js";
+import {
   lowerNodeTestModuleCall,
   lowerTestDirectCall,
   lowerTestMethodCall,
@@ -930,6 +935,7 @@ import {
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
   isArrayIterationCallback,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -5731,6 +5737,10 @@ export class Lowerer {
    * function when a record replays the unit. */
   readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
+  /** Set when the program names node:cluster: %main then calls
+   * cluster.init and always uses the fork-target dispatch (target -1 is
+   * the entry, the module a worker restarts). */
+  clusterUsed = false;
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
    * parts (members resolve statically); "typeOnly" — a skipped
@@ -6988,6 +6998,13 @@ export class Lowerer {
         "writesOntoChildren",
         () => this.writesOntoChildren,
         () => (this.writesOntoChildren = true),
+      ),
+      // node:cluster: %main calls cluster.init and always uses the fork
+      // dispatch when the program names the module (buildMain).
+      flag(
+        "clusterUsed",
+        () => this.clusterUsed,
+        () => (this.clusterUsed = true),
       ),
       flag(
         "regexGroupResults",
@@ -12458,6 +12475,73 @@ export class Lowerer {
       }
       return out;
     };
+    /** The array a pattern-position literal builds when one of its
+     * positions spreads a VARIABLE-length array: its length is a run-time
+     * fact, so the pattern's contextual tuple cannot hold it and the literal
+     * is lowered as the array it is. The element type joins the literal's
+     * positions and its spread sources' elements; null when the initializer
+     * is not such a literal (or holds a position this analysis cannot
+     * describe). */
+    const spreadLiteralType = (init: ts.Expression): IrType | null => {
+      const leaves: ts.ArrayLiteralExpression[] = [];
+      let variableSpread = false;
+      const walk = (e: ts.Expression): boolean => {
+        let x = e;
+        while (ts.isParenthesizedExpression(x)) x = x.expression;
+        if (ts.isConditionalExpression(x)) return walk(x.whenTrue) && walk(x.whenFalse);
+        if (!ts.isArrayLiteralExpression(x)) return false;
+        leaves.push(x);
+        for (const el of x.elements.nodes)
+          if (ts.isSpreadElement(el) && !this.checker.isTupleType(this.typeOf(el.expression)))
+            variableSpread = true;
+        return true;
+      };
+      if (!walk(init) || !variableSpread) return null;
+      const arms: IrType[] = [];
+      const note = (t: IrType | null, arm = false): void => {
+        if (t === null) return;
+        if (t.kind === "union") {
+          for (const inner of this.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+          return;
+        }
+        const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+        // A position that is itself the unit value says nothing about the
+        // element type; a unit ARM of the source's element type is a value
+        // the positions can hold.
+        if (isUnitType(part) && !arm) return;
+        if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+      };
+      for (const lit of leaves) {
+        for (const el of lit.elements.nodes) {
+          if (ts.isOmittedExpression(el)) continue;
+          if (!ts.isSpreadElement(el)) {
+            note(this.mapTypeOf(this.typeOf(el)));
+            continue;
+          }
+          const spread = this.mapTypeOf(this.typeOf(el.expression));
+          if (spread === null) continue;
+          if (spread.kind === "array") {
+            note(spread.elem);
+            continue;
+          }
+          if (spread.kind === "string") {
+            note(STRING);
+            continue;
+          }
+          const spreadShape =
+            spread.kind === "record" ? this.shapes.get(spread.shapeId) : undefined;
+          if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
+        }
+      }
+      if (arms.every(isUnitType)) return null;
+      const elem: IrType =
+        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) };
+      // The widening this analysis records arms the element type; one it
+      // cannot arm has no missing position to describe.
+      const widened =
+        elem.kind === "union" ? this.withUndefinedArmOf(elem) : this.withUndefinedArm(elem);
+      return widened ? arrayOf(elem) : null;
+    };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (ts.isObjectBindingPattern(name)) {
         // `const { 0: a, 1: b, length } = parts` reads positions like the
@@ -12482,7 +12566,8 @@ export class Lowerer {
         return scanPositions(positions, init, arrayType);
       }
       if (!ts.isArrayBindingPattern(name)) return false;
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+      let sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "array") sourceType = spreadLiteralType(init);
       if (sourceType?.kind !== "array") return false;
       return scanPositions(
         name.elements.nodes.filter((el): el is ts.BindingElement => !ts.isOmittedExpression(el)),
@@ -19142,7 +19227,7 @@ export class Lowerer {
     // destination's representation (a bare unit literal has none).
     if (
       expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
+      isUnitType(expr.result.type) &&
       !typeEquals(expr.type, expected)
     ) {
       const result = this.coerceToExpected(expr.result, expected);
@@ -19832,6 +19917,32 @@ export class Lowerer {
         return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
       }
       return expr;
+    }
+    if (isUnitType(expr.type) && expr.kind === "seqExpr") {
+      // An undefined-typed sequence (an effectful `void` operand) flowing
+      // into an undefined-armed union: the wrap holds the unit literal, and
+      // the sequence's effects run before it.
+      const tag = this.armTag(expected.unionId, expr.type);
+      if (tag >= 0) {
+        const literal: IrExpr = {
+          kind: "unitLit",
+          unit: expr.type.kind === "nullT" ? "null" : "undefined",
+          type: expr.type,
+          loc: expr.loc,
+        };
+        const wrapped: IrExpr = {
+          kind: "unionWrap",
+          unionId: expected.unionId,
+          tag,
+          value: literal,
+          type: expected,
+          loc: expr.loc,
+        };
+        const effects = unitEffectStatements(expr);
+        return effects.length === 0
+          ? wrapped
+          : { kind: "seqExpr", stmts: effects, result: wrapped, type: expected, loc: expr.loc };
+      }
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -21835,6 +21946,15 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return void f()`: the sequence runs its effect and JS returns
+      // undefined, so its statements become the tail of the block (a
+      // nested sequence's result keeps its own effects too).
+      if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(e), { kind: "return", value: null, loc }],
+          loc,
+        };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {
@@ -25495,6 +25615,13 @@ export class Lowerer {
       const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
     }
+    // node:cluster's values are runtime reads (a compiled program can be
+    // a primary or a worker): isPrimary/isWorker/isMaster, the scheduling
+    // policy, settings, workers and the process's own worker handle.
+    if (bi.module === "cluster") {
+      const value = clusterMemberValue(this, bi.member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
     // module.builtinModules through a namespace binding — the baked Node v24
@@ -25885,6 +26012,10 @@ export class Lowerer {
    * answers JavaScript-only class/global spellings a box never needs). */
   lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
     const bi = { module, member };
+    if (module === "cluster") {
+      const value = clusterMemberValue(this, member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
@@ -26300,6 +26431,28 @@ export class Lowerer {
     loc: SrcLoc,
   ): IrExpr | null {
     return lowerDgramDnsModuleCall(this, expr, bi, loc);
+  }
+
+  // The cluster spoke (lower-cluster.ts): the module's value reads, its
+  // function calls, and the cluster object's event registration. Worker
+  // members are checked-dynamic calls onto the runtime handle.
+  lowerClusterModuleCall(
+    expr: ts.CallExpression,
+    bi: { module: string; member: string },
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return lowerClusterModuleCall(this, expr, bi, loc);
+  }
+
+  lowerClusterMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerClusterMethodCall(this, call, access);
+  }
+
+  clusterMemberValue(member: string, loc: SrcLoc): IrExpr | null {
+    return clusterMemberValue(this, member, loc);
   }
 
   lowerDgramMethodCall(

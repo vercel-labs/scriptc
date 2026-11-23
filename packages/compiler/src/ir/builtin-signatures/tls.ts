@@ -146,4 +146,8 @@ export const tlsSignatures = defineLibFnSignatures({
    * set, then the trailing compiler-rendered fence — ALWAYS THROWS (the
    * error.nodeThrow polymorphic-result carve-out). May-throw seed. */
   "tls.caCertsChk": { argTypes: [DYN, STRING], result: VOID },
+  /** TLSSocket.on('keylog') and tls.Server.on('keylog'): Node's NSS
+   * key-log lines, each a Buffer. */
+  "tls.sockOnKeylog": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
+  "tls.serverOnKeylog": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
 });

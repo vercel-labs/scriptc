@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-allow-http1-stream-reads.ts"
+ ],
+ "diags": []
+}

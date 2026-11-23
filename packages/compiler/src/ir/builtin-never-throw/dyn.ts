@@ -16,6 +16,10 @@ export const dynNeverThrow: readonly IrLibFn[] = [
   // Emitted inline: the value's tag, its signature literal's length and
   // the literal's last four bytes. No runtime call but strlen.
   "dyn.classValueHash",
+  // A search of a constant table by the capsule's key hash, then the key
+  // pointer or scr_dyn_typed_ref_is_key, which compares a capsule's type
+  // key with a string and allocates nothing.
+  "dyn.classCase",
   // Emitted inline but for scr_dyn_typed_ref_brand_is_key, which compares a
   // capsule's type key with a string and allocates nothing.
   "dyn.typedRefBrandIs",

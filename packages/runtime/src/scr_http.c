@@ -3077,7 +3077,23 @@ static bool scr_http_res_write_head_ready(ScrHttpRes *r, double status) {
 void scr_http_res_write_head(ScrHttpRes *r, double status) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   r->status = (int)status;
-  if (r->h2_stream != NULL || scr_http_res_has_header(r, "expect")) {
+  if (r->h2_stream != NULL) {
+    scr_http_res_send_head(r, -1);
+    /* Node's h2 compatibility writeHead stores the status in the readable
+     * header map as ":status" (a number); the wire takes it from the
+     * respond status instead, and this line is added after the head is out
+     * so it never reaches the encoder. */
+    if (scr_exc_pending()) return;
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "%d", (int)status);
+    ScrStr *name = scr_str_new(":status", 7);
+    ScrStr *value = scr_str_new(buf, (size_t)n);
+    scr_http_res_insert_header(r, r->nheaders, name, value, SCR_HTTP_HV_NUM);
+    scr_str_release(name);
+    scr_str_release(value);
+    return;
+  }
+  if (scr_http_res_has_header(r, "expect")) {
     scr_http_res_send_head(r, -1); /* Node: an explicit writeHead means chunked unless CL was set */
     return;
   }
@@ -3102,7 +3118,9 @@ void scr_http_res_write_head(ScrHttpRes *r, double status) {
  * undefined/null headers are the plain head; other kinds throw the
  * ERR_INVALID_ARG_TYPE-flavored fence. */
 /* Headers a bare writeHead writes are wire-only: Node keeps no readable map
- * for them unless a header was set beforehand. */
+ * for them unless a header was set beforehand. The h2 compatibility
+ * response has no such state (its writeHead sets each header), so only an
+ * HTTP/1 response marks them. */
 static void scr_http_res_mark_wire_only(ScrHttpRes *r) {
   for (size_t i = 0; i < r->nheaders; i++) r->hkinds[i] |= SCR_HTTP_HV_WIRE_ONLY;
 }
@@ -3131,6 +3149,7 @@ void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *hea
     return;
   }
   bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
   size_t before = r->nheaders;
   for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
@@ -3145,19 +3164,20 @@ void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *hea
     }
     scr_str_release(name);
     if (scr_exc_pending()) {
-      if (!merge_into_map) scr_http_res_rollback_headers(r, before, merge_into_map);
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
       return;
     }
   }
-  if (!merge_into_map) scr_http_res_mark_wire_only(r);
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
-  if (!merge_into_map && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names, ScrArr *values) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   size_t n = (size_t)scr_arr_len(names);
   bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
   size_t before = r->nheaders;
   for (size_t i = 0; i < n; i++) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(names, (double)i);
@@ -3166,13 +3186,13 @@ void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names, ScrA
     scr_str_release(name);
     scr_str_release(value);
     if (scr_exc_pending()) {
-      if (!merge_into_map) scr_http_res_rollback_headers(r, before, merge_into_map);
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
       return;
     }
   }
-  if (!merge_into_map) scr_http_res_mark_wire_only(r);
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
-  if (!merge_into_map && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* writeHead(status, record): the flat [k0, v0, k1, v1, ...] pairs the
@@ -3195,6 +3215,7 @@ void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /
     return;
   }
   bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
   size_t before = r->nheaders;
   for (size_t i = 0; i + 1 < n; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
@@ -3220,13 +3241,13 @@ void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /
     scr_str_release(name);
     scr_str_release(value);
     if (scr_exc_pending()) {
-      if (!merge_into_map) scr_http_res_rollback_headers(r, before, merge_into_map);
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
       return;
     }
   }
-  if (!merge_into_map) scr_http_res_mark_wire_only(r);
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
-  if (!merge_into_map && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* writeHead(status, object): Node's two paths. Without earlier headers the
@@ -3240,6 +3261,7 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
   if (!scr_http_res_write_head_ready(r, status)) return;
   size_t n = (size_t)scr_arr_len(names);
   bool progressive = r->header_map_created;
+  bool wire_only = !progressive && r->h2_stream == NULL;
   size_t before = r->nheaders;
   if (progressive) {
     for (size_t i = 0; i < n; i++) {
@@ -3287,13 +3309,13 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
     scr_str_release(name);
     scr_dyn_release(value);
     if (scr_exc_pending()) {
-      if (!progressive) scr_http_res_rollback_headers(r, before, progressive);
+      if (wire_only) scr_http_res_rollback_headers(r, before, progressive);
       return;
     }
   }
-  if (!progressive) scr_http_res_mark_wire_only(r);
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
-  if (!progressive && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* res.destroy(): tears the connection down NOW (mid-stream RST is the

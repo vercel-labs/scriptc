@@ -1,0 +1,13 @@
+{
+    "stdlib.webassembly": ["tests/corpus/webassembly-api.mjs", "tests/corpus/webassembly-typed.ts", "tests/corpus/webassembly-worker.ts", "tests/corpus/webassembly-spec-int/main.mjs", "tests/corpus/webassembly-spec-float/main.mjs", "tests/corpus/webassembly-spec-control/main.mjs", "tests/corpus/webassembly-spec-memory/main.mjs", "tests/corpus/webassembly-spec-table/main.mjs", "tests/corpus/webassembly-spec-imports/main.mjs", "tests/corpus/webassembly-jsapi.mjs", "tests/corpus/webassembly-wpt-jsapi.mjs", "tests/corpus/webassembly-dylink/main.mjs"],
+    "stdlib.fetch": ["tests/harness/fetch-conformance.test.ts"],
+    "stdlib.map": ["tests/corpus/typed-collection-iterators.ts", "tests/corpus/typed-collection-iterator-references.ts", "tests/corpus/537-map-iter-drains.ts"],
+    "stdlib.set": ["tests/corpus/typed-collection-iterators.ts", "tests/corpus/typed-collection-iterator-references.ts", "tests/corpus/checked-collection-iterators.ts"],
+    "stdlib.headers": ["tests/harness/fetch-conformance.test.ts"],
+    "stdlib.request": ["tests/harness/fetch-conformance.test.ts"],
+    "stdlib.webcrypto.subtle": ["tests/corpus/7130-webcrypto-wrap-key.ts", "tests/corpus/7131-webcrypto-wrap-key-errors.mjs", "tests/corpus/7132-jose-pbes2/main.mjs", "tests/corpus/7128-webcrypto-derive.ts", "tests/corpus/7129-webcrypto-derive-errors.mjs", "tests/corpus/7126-webcrypto-aes.ts", "tests/corpus/7127-webcrypto-aes-errors.mjs", "tests/corpus/7124-webcrypto-secret-keys.ts", "tests/corpus/7125-webcrypto-key-errors.mjs", "tests/corpus/6291-webcrypto-hmac-sign-verify.ts", "tests/corpus/6292-webcrypto-hmac-errors.ts", "tests/corpus/6293-webcrypto-digest.ts", "tests/corpus/6294-webcrypto-js-values.mjs", "tests/corpus/6295-jose-hs256/main.mjs"],
+    "stdlib.webcrypto.CryptoKey": ["tests/corpus/7124-webcrypto-secret-keys.ts", "tests/corpus/6291-webcrypto-hmac-sign-verify.ts", "tests/corpus/6294-webcrypto-js-values.mjs", "tests/corpus/6295-jose-hs256/main.mjs"],
+    "stdlib.response": ["tests/harness/fetch-conformance.test.ts"],
+    "stdlib.readable-stream": ["tests/harness/fetch-conformance.test.ts"],
+    "stdlib.abort": ["tests/harness/fetch-conformance.test.ts"]
+}

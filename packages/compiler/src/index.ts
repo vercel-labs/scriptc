@@ -888,6 +888,7 @@ async function compileExecutableNative(
     ...(features.processFeatures ? { processFeatures: true } : {}),
     ...(features.islandChild ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.cluster ? { cluster: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.childStreamFlow ? { childStreamFlow: true } : {}),

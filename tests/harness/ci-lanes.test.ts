@@ -226,8 +226,9 @@ test("the Effect job runs the shards the lane selection names", () => {
     "${{ fromJSON(needs.lanes.outputs.effect_shards) }}",
   );
   expect(effects.env!["SCRIPTC_TEST_SHARD"]).toBe(`\${{ matrix.shard }}/${effectShardCount}`);
+  // A pull request's expensive tier, dispatched on its branch (ci-review-gate.yml), samples as its pull request.
   expect(lanes.steps.find((step) => step.id === "lanes")!.env!["PR"]).toBe(
-    "${{ github.event.pull_request.number }}",
+    "${{ github.event.pull_request.number || inputs.pr }}",
   );
   expect(lanesScript).toContain('--pr "$PR" --github-output');
 });
@@ -269,14 +270,14 @@ test("CI runs the base commit's lane selection against the pull request's diff",
   expect(lanesScript.match(/every$/gm)).toHaveLength(2);
 });
 
-function runLanes(event: string) {
+function runLanes(event: string, tier = "full") {
   const directory = mkdtempSync(join(tmpdir(), "ci-lanes-"));
   try {
     const output = join(directory, "output");
     writeFileSync(output, "");
     const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
       encoding: "utf8",
-      env: { ...process.env, EVENT: event, GITHUB_OUTPUT: output },
+      env: { ...process.env, EVENT: event, TIER: tier, GITHUB_OUTPUT: output },
     });
     expect(result.status, result.stderr).toBe(0);
     return readFileSync(output, "utf8");
@@ -302,6 +303,16 @@ test("pushes to main and merge queue groups run every lane except macos, and the
     options: ["full", "darwin"],
     default: "full",
   });
+});
+
+test("a pull request's fast tier turns every lane off and runs the fast tests", () => {
+  expect(runLanes("pull_request", "fast")).toBe(
+    "linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n",
+  );
+  // Its expensive tier is a dispatch on the pull request's branch, which selects lanes as the pull request would.
+  const step = workflow.jobs["lanes"]!.steps.find((candidate) => candidate.id === "lanes")!;
+  expect(step.env!["EVENT"]).toBe("${{ inputs.pr != '' && 'pull_request' || github.event_name }}");
+  expect(step.env!["TIER"]).toBe("${{ needs.validation_scope.outputs.tier }}");
 });
 
 test("every job on a macOS runner is in the macos lane, but the main push smoke job", () => {

@@ -1,0 +1,4 @@
+{
+    "node-builtin.v8": ["tests/corpus/v8-require-optional.cjs"],
+    "node-builtin.v8.getHeapStatistics": ["tests/corpus/v8-heap-statistics.ts", "tests/corpus/v8-require-optional.cjs"]
+}

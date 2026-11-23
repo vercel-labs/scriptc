@@ -337,7 +337,8 @@ static ScrClosure *scr_dgram_ls_pop_last(ScrDgramLs *l) {
 
 /* 'error' with NO listener is fatal, like Node's unhandled EventEmitter
  * 'error' (the scr_net.c stance — _Exit skips atexit on purpose). */
-static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg, const char *code) {
+static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg, const char *code,
+                               ScrError *err_obj) {
   if (l->n == 0) {
     scr_stdout_settle();
     fflush(stdout);
@@ -348,9 +349,12 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg, const char *code) {
    * address and port (or hostname) the detail names; a message that names
    * no system error takes pending_code instead (ERR_IP_BLOCKED). Every
    * listener receives the same object. */
-  ScrError *system = code != NULL ? scr_error_new(SCR_ERR_ERROR, msg)
-                                  : scr_system_error_from_message(msg);
-  if (system != NULL && code != NULL) system->code = scr_str_new(code, strlen(code));
+  ScrError *system = err_obj != NULL
+                         ? scr_error_retain(err_obj)
+                         : (code != NULL ? scr_error_new(SCR_ERR_ERROR, msg)
+                                         : scr_system_error_from_message(msg));
+  if (system != NULL && err_obj == NULL && code != NULL)
+    system->code = scr_str_new(code, strlen(code));
   ScrError *saved = scr_event_error_payload;
   if (system != NULL) scr_event_error_payload = system;
   ScrDgramL *snap;
@@ -428,6 +432,7 @@ void scr_dgram_release(ScrDgramSocket *s) {
     scr_dgram_ls_drop(&s->close_ls);
     scr_dgram_ls_drop(&s->conn_ls);
     scr_str_release(s->pending_err);
+    scr_error_release(s->pending_err_obj);
     scr_dyn_release(s->send_block_list);
     scr_dyn_release(s->recv_block_list);
     scr_dyn_release(s->abort_dispose);
@@ -753,6 +758,17 @@ static void scr_dgram_defer_err(ScrDgramSocket *s, const char *msg) {
   scr_dgram_wake();
 }
 
+/* The same for a resolver failure: the program's own error object (`err`,
+ * nullable) is kept and delivered as the event payload, as Node hands the
+ * resolver's error through unchanged. */
+static void scr_dgram_defer_lk_err(ScrDgramSocket *s, const char *msg, const ScrDyn *err) {
+  if (!s->pending_err && s->pending_err_obj == NULL && err != NULL)
+    s->pending_err_obj = scr_dyn_error_value(err);
+  if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
+  scr_dgram_register(s);
+  scr_dgram_wake();
+}
+
 /* A settled socket drops the program's resolver, as Node's handle does when
  * it is destroyed: a resolver that captures the socket (or the transport
  * owning it) must not keep the closed socket and its captured data alive. */
@@ -914,7 +930,7 @@ static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc
         /* the implicit bind's own resolution failed: Node answers on the
          * socket's 'error' event and abandons the operation — the send or
          * connect completion never runs */
-        scr_dgram_defer_err(s, msg);
+        scr_dgram_defer_lk_err(s, msg, err);
       } else if (job->op == SCR_DGRAM_LK_SEND_DYN && job->send_cb != NULL) {
         ScrDyn *eargs[1] = { scr_dgram_send_error(msg) };
         scr_dns_call_later(job->send_cb, eargs, 1, false);
@@ -929,7 +945,7 @@ static ScrDyn *scr_dgram_lk_cb(ScrClosure *clo, ScrDyn *const *args, size_t argc
         scr_next_tick(job->cb);
         job->cb = NULL;
       } else {
-        scr_dgram_defer_err(s, msg);
+        scr_dgram_defer_lk_err(s, msg, err);
         scr_closure_release(job->cb);
         job->cb = NULL;
       }
@@ -3404,7 +3420,9 @@ static void scr_dgram_sweep(void) {
     if (s->pending_err) {
       ScrStr *msg = s->pending_err;
       s->pending_err = NULL;
-      scr_dgram_fire_err(&s->err_ls, msg, s->pending_code);
+      scr_dgram_fire_err(&s->err_ls, msg, s->pending_code, s->pending_err_obj);
+      scr_error_release(s->pending_err_obj);
+      s->pending_err_obj = NULL;
       s->pending_code = NULL;
       scr_str_release(msg);
       if (scr_exc_pending()) {

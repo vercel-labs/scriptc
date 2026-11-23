@@ -1,63 +1,910 @@
 [
-    { "chapter": "fs", "symbols": ["fs.readv", "fs.writev", "fs.fdatasync", "fs.fchmod", "fs.ftruncate"], "status": "supported", "evidence": ["tests/corpus/3137-fs-vector-callbacks.cjs", "tests/corpus/fs-descriptor-family.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.readFileSync(path[, options])`"], "status": "partial", "evidence": ["tests/corpus/5545-fs-options-encoding.cjs", "tests/corpus/fs-read-file-sync-option-errors.cjs", "tests/corpus/fs-read-file-sync-options-typed.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.mkdtemp(prefix[, options], callback)`", "`fs.readFile(path[, options], callback)`", "`fs.mkdtempSync(prefix[, options])`", "`fs.readFileSync(path[, options])`"], "status": "partial", "evidence": ["tests/corpus/5545-fs-options-encoding.cjs", "tests/corpus/fs-callback-readfile-forms.ts"] },
-    { "chapter": "fs", "signatures": ["`fsPromises.mkdtempDisposable(prefix[, options])`"], "status": "supported", "evidence": ["tests/corpus/fs-mkdtemp-disposable.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.mkdtempDisposableSync(prefix[, options])`"], "status": "supported", "evidence": ["tests/corpus/fs-mkdtemp-disposable.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.close(fd[, callback])`"], "status": "partial", "evidence": ["tests/corpus/fs-close-callback.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.realpath.native(path[, options], callback)`"], "status": "partial", "evidence": ["tests/corpus/fs-realpath-native-callback.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.stat(path[, options], callback)`", "`fs.lstat(path[, options], callback)`", "`fs.fstat(fd[, options], callback)`"], "status": "supported", "evidence": ["tests/corpus/5548-fs-callback-arguments.cjs", "tests/corpus/5549-fs-callback-option-checks.cjs", "tests/corpus/fs-stat-callback-options.cjs", "tests/corpus/fs-stat-callback-ladder.cjs"] },
-    { "chapter": "fs", "symbols": ["fs.statSync", "fs.lstatSync", "fs.fstatSync"], "status": "supported", "evidence": ["tests/corpus/fs-stat-sync-ladder.cjs", "tests/corpus/fs-stat-runtime-options.ts", "tests/corpus/5747-fs-stat-throw-if-no-entry.ts", "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs", "tests/corpus/2950-fs-descriptor-publication.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.writeFile(file, data[, options], callback)`", "`fs.appendFile(path, data[, options], callback)`"], "status": "supported", "evidence": ["tests/corpus/fs-write-callback-options.cjs", "tests/corpus/5548-fs-callback-arguments.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.appendFile(path, data[, options], callback)`", "`fs.chmod(path, mode, callback)`", "`fs.close(fd[, callback])`", "`fs.copyFile(src, dest[, mode], callback)`", "`fs.fstat(fd[, options], callback)`", "`fs.fsync(fd, callback)`", "`fs.lstat(path[, options], callback)`", "`fs.mkdir(path[, options], callback)`", "`fs.mkdtemp(prefix[, options], callback)`", "`fs.open(path[, flags[, mode]], callback)`", "`fs.read(fd, buffer, offset, length, position, callback)`", "`fs.read(fd[, options], callback)`", "`fs.read(fd, buffer[, options], callback)`", "`fs.readdir(path[, options], callback)`", "`fs.readFile(path[, options], callback)`", "`fs.realpath(path[, options], callback)`", "`fs.realpath.native(path[, options], callback)`", "`fs.rmdir(path[, options], callback)`", "`fs.stat(path[, options], callback)`", "`fs.unlink(path, callback)`", "`fs.write(fd, buffer, offset[, length[, position]], callback)`", "`fs.write(fd, buffer[, options], callback)`", "`fs.writeFile(file, data[, options], callback)`"], "status": "partial", "evidence": ["tests/corpus/5548-fs-callback-arguments.cjs", "tests/corpus/5549-fs-callback-option-checks.cjs", "tests/corpus/fs-readdir-callback-options.ts"] },
-    { "chapter": "fs", "parent": "Class: `FileHandle`", "symbols": ["fd"], "status": "supported", "evidence": ["tests/corpus/2686-fs-file-handle.ts", "tests/corpus/fs-filehandle-controls.ts"] },
-    { "chapter": "fs", "symbols": ["filehandle.chown"], "status": "supported", "evidence": ["tests/corpus/fs-filehandle-data-options.ts"] },
-    { "chapter": "fs", "symbols": ["FileHandle", "filehandle.fd", "filehandle.close", "filehandle.read", "filehandle.write", "filehandle.readFile", "filehandle.writeFile", "filehandle.appendFile", "filehandle.stat"], "status": "supported", "evidence": ["tests/corpus/2686-fs-file-handle.ts", "tests/corpus/3136-fs-file-handle-options.ts", "tests/corpus/fs-filehandle-data-options.ts"] },
-    { "chapter": "fs", "symbols": ["filehandle.sync", "filehandle.datasync", "filehandle.truncate", "filehandle.chmod", "filehandle.readv", "filehandle.writev"], "status": "supported", "evidence": ["tests/corpus/3135-fs-file-handle-controls.ts", "tests/corpus/fs-filehandle-controls.ts"] },
-    { "chapter": "fs", "symbols": ["filehandle.utimes"], "status": "supported", "evidence": ["tests/corpus/node24-fs-timestamps-promises.ts", "tests/fixtures/node-types/fs-timestamps.ts", "tests/corpus/fs-filehandle-controls.ts"] },
-    { "chapter": "fs", "symbols": ["fs.link", "fs.symlink", "fs.readlink", "fs.linkSync", "fs.symlinkSync", "fs.readlinkSync"], "status": "supported", "evidence": ["tests/corpus/node24-fs-links-callbacks.cjs", "tests/corpus/node24-fs-links-errors.cjs", "tests/corpus/node24-fs-links-options.cjs", "tests/corpus/fs-links-times.cjs", "tests/fixtures/node-types/fs-links.ts"] },
-    { "chapter": "fs", "symbols": ["fs.statfs", "fs.statfsSync"], "status": "supported", "evidence": ["tests/corpus/node24-fs-statfs-callbacks.cjs", "tests/corpus/node24-fs-statfs-options.cjs", "tests/corpus/node24-fs-statfs-errors.cjs", "tests/corpus/fs-statfs-family.ts", "tests/fixtures/node-types/fs-statfs.ts"] },
-    { "chapter": "fs", "symbols": ["fs.StatFs"], "status": "supported", "evidence": ["tests/corpus/node24-fs-statfs.ts", "tests/corpus/node24-fs-statfs-options.cjs", "tests/corpus/fs-statfs-family.ts", "tests/fixtures/node-types/fs-statfs.ts"] },
-    { "chapter": "fs", "parent": "Class: `fs.StatFs`", "symbols": ["type", "bsize", "blocks", "bfree", "bavail", "files", "ffree"], "status": "supported", "evidence": ["tests/corpus/node24-fs-statfs.ts", "tests/corpus/node24-fs-statfs-options.cjs", "tests/fixtures/node-types/fs-statfs.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.mkdir(path[, options], callback)`", "`fs.readFile(path[, options], callback)`", "`fs.write(fd, string[, position[, encoding]], callback)`"], "status": "partial", "evidence": ["tests/corpus/5540-fs-callback-forms.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.access(path[, mode], callback)`", "`fs.chown(path, uid, gid, callback)`", "`fs.lchown(path, uid, gid, callback)`", "`fs.fchown(fd, uid, gid, callback)`", "`fs.truncate(path[, len], callback)`", "`fs.accessSync(path[, mode])`", "`fs.chownSync(path, uid, gid)`", "`fs.lchownSync(path, uid, gid)`", "`fs.truncateSync(path[, len])`"], "status": "supported", "evidence": ["tests/corpus/5542-fs-promises-parity.cjs", "tests/corpus/fs-permissions-family.cjs", "tests/corpus/fs-access-truncate-optional.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.createReadStream(path[, options])`", "`fs.createWriteStream(path[, options])`", "Class: `fs.ReadStream`", "Class: `fs.WriteStream`", "`writeStream.close([callback])`", "`writeStream.bytesWritten`", "`writeStream.path`"], "status": "partial", "evidence": ["tests/corpus/5546-fs-read-stream.cjs", "tests/corpus/5547-fs-write-stream.cjs", "tests/corpus/5554-fs-streams-typed.ts", "tests/corpus/9751-fs-read-stream-signal.ts", "tests/corpus/9752-fs-write-stream-signal.ts", "tests/corpus/9754-fs-stream-signal-option-values.ts", "tests/corpus/9755-fs-stream-signal-untyped.cjs"] },
-    { "chapter": "fs", "parent": "Class: `fs.ReadStream`", "signatures": ["`bytesRead` Type: {number}", "`path` Type: {string|Buffer}", "`pending` Type: {boolean}", "Event: `'close'`", "Event: `'open'`", "Event: `'ready'`"], "status": "partial", "evidence": ["tests/corpus/5546-fs-read-stream.cjs", "tests/corpus/5547-fs-write-stream.cjs", "tests/corpus/5554-fs-streams-typed.ts"] },
-    { "chapter": "fs", "parent": "Class: `fs.WriteStream`", "signatures": ["`pending` Type: {boolean}", "Event: `'close'`", "Event: `'open'`", "Event: `'ready'`"], "status": "partial", "evidence": ["tests/corpus/5546-fs-read-stream.cjs", "tests/corpus/5547-fs-write-stream.cjs", "tests/corpus/5554-fs-streams-typed.ts"] },
-    { "chapter": "fs", "signatures": ["`filehandle.createReadStream([options])`", "`filehandle.createWriteStream([options])`", "`filehandle.readLines([options])`"], "status": "supported", "evidence": ["tests/corpus/5554-fs-streams-typed.ts", "tests/corpus/9753-file-handle-stream-signal.ts", "tests/corpus/fs-filehandle-lines.ts"] },
-    {"chapter": "fs", "symbols": ["filehandle.pull", "filehandle.pullSync", "filehandle.writer"], "status": "not-applicable", "reason": "Stability 1 and gated by V8's --experimental-stream-iter: in a default Node 24 process typeof fh.pull, typeof fh.pullSync and typeof fh.writer are all \"undefined\", and a compiled program cannot pass V8 flags."},
-    {"chapter": "fs", "signatures": ["`fs.lchmod(path, mode, callback)`", "`fs.lchmodSync(path, mode)`"], "status": "not-applicable", "reason": "Node exports these only where lchmod(2) exists (macOS): on Linux typeof fs.lchmod and typeof fs.lchmodSync are \"undefined\", and the runtime answers Node's not-a-function TypeError if a program reaches them dynamically. The promise form, which exists on every platform, is fsPromises.lchmod."},
-    { "chapter": "fs", "signatures": ["`fsPromises.lchmod(path, mode)`"], "status": "supported", "evidence": ["tests/corpus/fs-lchmod.cjs", "tests/corpus/fs-lchmod-typed.ts"] },
-    { "chapter": "fs", "symbols": ["watcher.close", "watcher.ref", "watcher.unref"], "status": "supported", "evidence": ["tests/corpus/1564-fs-watch.ts", "tests/corpus/fs-watch-file-names.ts", "tests/corpus/fs-watch-ref-unref.ts", "tests/corpus/fs-watch-file-statwatcher.ts"] },
-    { "chapter": "fs", "signatures": ["Class: `fs.Dir`", "`dir[Symbol.asyncIterator]()`"], "status": "supported", "evidence": ["tests/corpus/fs-dir-listing.ts", "tests/corpus/5544-fs-opendir.cjs"] },
-    { "chapter": "fs", "signatures": ["`dir.close()`", "`dir.closeSync()`", "`dir.read()`", "`dir.readSync()`"], "status": "supported", "evidence": ["tests/corpus/fs-dir-listing.ts", "tests/corpus/5544-fs-opendir.cjs"] },
-    { "chapter": "fs", "parent": "Class: `fs.Dir`", "signatures": ["`path` Type: {string}"], "status": "supported", "evidence": ["tests/corpus/fs-dir-listing.ts", "tests/corpus/5544-fs-opendir.cjs"] },
-    { "chapter": "fs", "parent": "Class: `fs.Dir`", "signatures": ["`dir.read(callback)`", "`dir.close(callback)`", "`dir[Symbol.dispose]()`", "`dir[Symbol.asyncDispose]()`"], "status": "supported", "evidence": ["tests/corpus/fs-dir-listing.ts", "tests/corpus/fs-opendir-callbacks.ts", "tests/corpus/fs-dir-dispose.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.opendir(path[, options], callback)`"], "status": "supported", "evidence": ["tests/corpus/fs-opendir-callbacks.ts", "tests/corpus/fs-opendir-buffer-size-uncaught.cjs", "tests/corpus/fs-dir-listing.ts"] },
-    { "chapter": "fs", "signatures": ["`dirent.isFile()`", "`dirent.isDirectory()`", "`dirent.isBlockDevice()`", "`dirent.isCharacterDevice()`", "`dirent.isSymbolicLink()`", "`dirent.isFIFO()`", "`dirent.isSocket()`"], "status": "supported", "evidence": ["tests/corpus/fs-dir-listing.ts", "tests/corpus/1541-fs-readdir-dirent.ts", "tests/corpus/5544-fs-opendir.cjs", "tests/corpus/fs-opendir-callbacks.ts"] },
-    { "chapter": "fs", "signatures": ["`constants` Type: {Object}"], "status": "supported", "evidence": ["tests/corpus/6207-fs-constants-object.ts", "tests/corpus/6208-fs-constants-require.cjs", "tests/corpus/fs-promises-constants.ts"] },
-    { "chapter": "fs", "symbols": ["fs.utimes", "fs.futimes", "fs.lutimes", "fs.utimesSync", "fs.lutimesSync"], "status": "supported", "evidence": ["tests/corpus/node24-fs-timestamps-callbacks.cjs", "tests/corpus/node24-fs-timestamps-symlinks.ts", "tests/corpus/node24-fs-timestamps-errors.cjs", "tests/corpus/fs-links-times.cjs"] },
-    { "chapter": "fs", "signatures": ["`fsPromises.lstat(path[, options])`"], "status": "partial", "evidence": ["tests/corpus/2941-fsp-lstat-identity.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.globSync(pattern[, options])`", "`fs.glob(pattern[, options], callback)`", "`fsPromises.glob(pattern[, options])`"], "status": "supported", "evidence": ["tests/corpus/5448-fs-glob-patterns.ts", "tests/corpus/5449-fs-glob-options.ts", "tests/corpus/5450-fs-glob-validation.js", "tests/corpus/5451-fs-promises-glob.ts", "tests/corpus/5452-fs-glob-callback.ts", "tests/fixtures/node-types/fs-glob.ts"] },
-    { "chapter": "fs", "signatures": ["`fs.cpSync(src, dest[, options])`", "`fs.cp(src, dest[, options], callback)`", "`fsPromises.cp(src, dest[, options])`"], "status": "supported", "evidence": ["tests/corpus/5567-fs-cpsync.ts", "tests/corpus/5568-fs-cp-errors.js", "tests/corpus/5569-fs-cp-symlinks.ts", "tests/corpus/5570-fs-cp-async.ts", "tests/corpus/5571-fs-cp-deep.ts"] },
-    { "chapter": "fs", "symbols": ["fs.Stats", "stats.isBlockDevice", "stats.isCharacterDevice", "stats.isDirectory", "stats.isFIFO", "stats.isFile", "stats.isSocket", "stats.isSymbolicLink"], "status": "supported", "evidence": ["tests/corpus/5541-fs-stats-fields.cjs", "tests/corpus/fs-stat-callback-options.cjs", "tests/corpus/fs-stat-sync-ladder.cjs", "tests/corpus/fs-stat-runtime-options.ts", "tests/corpus/fs-stat-callback-ladder.cjs"] },
-    { "chapter": "fs", "parent": "Class: `fs.Stats`", "signatures": ["`mode` Type: {number|bigint}", "`nlink` Type: {number|bigint}", "`uid` Type: {number|bigint}", "`gid` Type: {number|bigint}", "`rdev` Type: {number|bigint}", "`size` Type: {number|bigint}", "`blksize` Type: {number|bigint}", "`blocks` Type: {number|bigint}", "`atimeMs` Type: {number|bigint}", "`mtimeMs` Type: {number|bigint}", "`birthtimeMs` Type: {number|bigint}", "`atimeNs` Type: {bigint}", "`mtimeNs` Type: {bigint}", "`ctimeNs` Type: {bigint}", "`birthtimeNs` Type: {bigint}", "`atime` Type: {Date}", "`mtime` Type: {Date}", "`ctime` Type: {Date}", "`birthtime` Type: {Date}"], "status": "supported", "evidence": ["tests/corpus/fs-stats-fields.ts", "tests/corpus/fs-stats-bigint-fields.ts", "tests/corpus/fs-stats-member-tables.cjs", "tests/corpus/5541-fs-stats-fields.cjs", "tests/corpus/fs-stat-callback-options.cjs"] },
-    { "chapter": "fs", "signatures": ["`dev` Type: {number|bigint}", "`ino` Type: {number|bigint}", "`ctimeMs` Type: {number|bigint}"], "status": "supported", "evidence": ["tests/corpus/fs-stats-fields.ts", "tests/corpus/fs-stats-bigint-fields.ts", "tests/corpus/fs-stats-member-tables.cjs", "tests/corpus/2941-fsp-lstat-identity.ts"] },
-    { "chapter": "fs", "signatures": ["`filehandle.readableWebStream([options])`"], "status": "supported", "evidence": ["tests/corpus/fs-filehandle-web-stream.ts"] },
-    { "chapter": "fs", "signatures": ["`filehandle[Symbol.asyncDispose]()`"], "status": "supported", "evidence": ["tests/corpus/2844-node-disposable-resources.ts", "tests/corpus/fs-filehandle-lines.ts"] },
-    { "chapter": "fs", "signatures": ["`fsPromises.realpath(path[, options])`"], "status": "partial", "evidence": ["tests/corpus/2940-fsp-realpath.ts"] },
-    { "chapter": "fs", "signatures": ["`fsPromises.readdir(path[, options])`"], "status": "partial", "evidence": ["tests/corpus/2942-fsp-readdir-dirent.ts", "tests/corpus/fs-readdir-encodings.ts", "tests/corpus/fs-readdir-recursive-types.ts"] },
-    { "chapter": "fs", "signatures": ["`fsPromises.watch(filename[, options])`"], "status": "partial", "evidence": ["tests/corpus/fs-promises-watch.ts", "tests/corpus/fs-promises-watch-overflow.cjs"], "fences": ["recursive: true (Node's non-native recursive walker)", "options.signal (AbortSignal)", "options.ignore (a matcher over entry names)", "a non-utf8 encoding, and the iterator outside a `for await`"] },
-    { "chapter": "fs", "parent": "Common Objects", "signatures": ["Class: `fs.Dirent`"], "status": "partial", "evidence": ["tests/corpus/compat-fs-dirent-realpath.ts"] },
-    { "chapter": "fs", "parent": "Class: `fs.Dirent`", "signatures": ["`name` Type: {string|Buffer}", "`parentPath` Type: {string}"], "status": "partial", "evidence": ["tests/corpus/compat-fs-dirent-realpath.ts"] },
-    { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.openAsBlob(path[, options])`"], "status": "not-implemented", "evidence": ["tests/diagnostics/compat-absent-node-apis.ts"] },
-    { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.exists(path, callback)`"], "status": "supported", "evidence": ["tests/corpus/fs-exists-path-kinds.cjs", "tests/corpus/2595-fs-arg-ladders.cjs"] },
-    { "chapter": "fs", "signatures": ["`fs.existsSync(path)`"], "status": "supported", "evidence": ["tests/corpus/fs-exists-path-kinds.cjs", "tests/corpus/fs-exists-optional-path.ts"] },
-    { "chapter": "fs", "parent": "Callback API", "signatures": ["`fs.rm(path[, options], callback)`"], "status": "partial", "evidence": ["tests/corpus/compat-core-members.mjs", "tests/corpus/compat-core-members.ts"] },
-    { "chapter": "fs", "parent": "Class: `fs.StatFs`", "signatures": ["`frsize` Type: {number|bigint}"], "status": "supported", "evidence": ["tests/corpus/compat-core-members.mjs", "tests/corpus/fs-statfs-family.ts"] },
-    { "chapter": "fs", "parent": "`fs.writeFile(file, data[, options], callback)`", "signatures": ["Using `fs.writeFile()` with file descriptors"], "status": "not-applicable" },
-    { "chapter": "fs", "symbols": ["fs.closeSync", "fs.fsyncSync", "fs.fdatasyncSync"], "status": "supported", "evidence": ["tests/corpus/fs-sync-dynamic-control.cjs", "tests/corpus/2950-fs-descriptor-publication.ts", "tests/corpus/2938-fs-sync-overloads.cjs"] },
-    { "chapter": "fs", "symbols": ["fs.fchmodSync", "fs.fchownSync", "fs.ftruncateSync", "fs.futimesSync"], "status": "supported", "evidence": ["tests/corpus/fs-sync-dynamic-control.cjs", "tests/corpus/3137-fs-vector-callbacks.cjs", "tests/corpus/2950-fs-descriptor-publication.ts", "tests/corpus/node24-fs-timestamps.ts"] },
-    { "chapter": "fs", "symbols": ["fs.readSync", "fs.readvSync"], "status": "supported", "evidence": ["tests/corpus/fs-sync-dynamic-descriptors.cjs", "tests/corpus/fs-sync-dynamic-control.cjs", "tests/corpus/2595-fs-arg-ladders.cjs", "tests/corpus/3134-fs-vectors.ts"] },
-    { "chapter": "fs", "symbols": ["fs.writeSync", "fs.writevSync"], "status": "supported", "evidence": ["tests/corpus/fs-sync-dynamic-descriptors.cjs", "tests/corpus/fs-sync-dynamic-control.cjs", "tests/corpus/2595-fs-arg-ladders.cjs", "tests/corpus/3134-fs-vectors.ts", "tests/corpus/3137-fs-vector-callbacks.cjs"] }
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.readv",
+            "fs.writev",
+            "fs.fdatasync",
+            "fs.fchmod",
+            "fs.ftruncate"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/3137-fs-vector-callbacks.cjs",
+            "tests/corpus/fs-descriptor-family.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.readFileSync(path[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5545-fs-options-encoding.cjs",
+            "tests/corpus/fs-read-file-sync-option-errors.cjs",
+            "tests/corpus/fs-read-file-sync-options-typed.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.mkdtemp(prefix[, options], callback)`",
+            "`fs.readFile(path[, options], callback)`",
+            "`fs.mkdtempSync(prefix[, options])`",
+            "`fs.readFileSync(path[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5545-fs-options-encoding.cjs",
+            "tests/corpus/fs-callback-readfile-forms.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.mkdtempDisposable(prefix[, options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.mkdtempDisposableSync(prefix[, options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-mkdtemp-disposable.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.close(fd[, callback])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/fs-close-callback.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.realpath.native(path[, options], callback)`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/fs-realpath-native-callback.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.stat(path[, options], callback)`",
+            "`fs.lstat(path[, options], callback)`",
+            "`fs.fstat(fd[, options], callback)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs",
+            "tests/corpus/fs-stat-callback-options.cjs",
+            "tests/corpus/fs-stat-callback-ladder.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.statSync",
+            "fs.lstatSync",
+            "fs.fstatSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-stat-sync-ladder.cjs",
+            "tests/corpus/fs-stat-runtime-options.ts",
+            "tests/corpus/5747-fs-stat-throw-if-no-entry.ts",
+            "tests/corpus/5748-fs-stat-throw-if-no-entry-js.cjs",
+            "tests/corpus/2950-fs-descriptor-publication.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.writeFile(file, data[, options], callback)`",
+            "`fs.appendFile(path, data[, options], callback)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-write-callback-options.cjs",
+            "tests/corpus/5548-fs-callback-arguments.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.appendFile(path, data[, options], callback)`",
+            "`fs.chmod(path, mode, callback)`",
+            "`fs.close(fd[, callback])`",
+            "`fs.copyFile(src, dest[, mode], callback)`",
+            "`fs.fstat(fd[, options], callback)`",
+            "`fs.fsync(fd, callback)`",
+            "`fs.lstat(path[, options], callback)`",
+            "`fs.mkdir(path[, options], callback)`",
+            "`fs.mkdtemp(prefix[, options], callback)`",
+            "`fs.open(path[, flags[, mode]], callback)`",
+            "`fs.read(fd, buffer, offset, length, position, callback)`",
+            "`fs.read(fd[, options], callback)`",
+            "`fs.read(fd, buffer[, options], callback)`",
+            "`fs.readdir(path[, options], callback)`",
+            "`fs.readFile(path[, options], callback)`",
+            "`fs.realpath(path[, options], callback)`",
+            "`fs.realpath.native(path[, options], callback)`",
+            "`fs.rmdir(path[, options], callback)`",
+            "`fs.stat(path[, options], callback)`",
+            "`fs.unlink(path, callback)`",
+            "`fs.write(fd, buffer, offset[, length[, position]], callback)`",
+            "`fs.write(fd, buffer[, options], callback)`",
+            "`fs.writeFile(file, data[, options], callback)`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5548-fs-callback-arguments.cjs",
+            "tests/corpus/5549-fs-callback-option-checks.cjs",
+            "tests/corpus/fs-readdir-callback-options.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `FileHandle`",
+        "symbols": [
+            "fd"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/2686-fs-file-handle.ts",
+            "tests/corpus/fs-filehandle-controls.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "filehandle.chown"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-filehandle-data-options.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "FileHandle",
+            "filehandle.fd",
+            "filehandle.close",
+            "filehandle.read",
+            "filehandle.write",
+            "filehandle.readFile",
+            "filehandle.writeFile",
+            "filehandle.appendFile",
+            "filehandle.stat"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/2686-fs-file-handle.ts",
+            "tests/corpus/3136-fs-file-handle-options.ts",
+            "tests/corpus/fs-filehandle-data-options.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "filehandle.sync",
+            "filehandle.datasync",
+            "filehandle.truncate",
+            "filehandle.chmod",
+            "filehandle.readv",
+            "filehandle.writev"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/3135-fs-file-handle-controls.ts",
+            "tests/corpus/fs-filehandle-controls.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "filehandle.utimes"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-timestamps-promises.ts",
+            "tests/fixtures/node-types/fs-timestamps.ts",
+            "tests/corpus/fs-filehandle-controls.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.link",
+            "fs.symlink",
+            "fs.readlink",
+            "fs.linkSync",
+            "fs.symlinkSync",
+            "fs.readlinkSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-links-callbacks.cjs",
+            "tests/corpus/node24-fs-links-errors.cjs",
+            "tests/corpus/node24-fs-links-options.cjs",
+            "tests/corpus/fs-links-times.cjs",
+            "tests/fixtures/node-types/fs-links.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.statfs",
+            "fs.statfsSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-statfs-callbacks.cjs",
+            "tests/corpus/node24-fs-statfs-options.cjs",
+            "tests/corpus/node24-fs-statfs-errors.cjs",
+            "tests/corpus/fs-statfs-family.ts",
+            "tests/fixtures/node-types/fs-statfs.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.StatFs"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-statfs.ts",
+            "tests/corpus/node24-fs-statfs-options.cjs",
+            "tests/corpus/fs-statfs-family.ts",
+            "tests/fixtures/node-types/fs-statfs.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.StatFs`",
+        "symbols": [
+            "type",
+            "bsize",
+            "blocks",
+            "bfree",
+            "bavail",
+            "files",
+            "ffree"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-statfs.ts",
+            "tests/corpus/node24-fs-statfs-options.cjs",
+            "tests/fixtures/node-types/fs-statfs.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.mkdir(path[, options], callback)`",
+            "`fs.readFile(path[, options], callback)`",
+            "`fs.write(fd, string[, position[, encoding]], callback)`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5540-fs-callback-forms.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.access(path[, mode], callback)`",
+            "`fs.chown(path, uid, gid, callback)`",
+            "`fs.lchown(path, uid, gid, callback)`",
+            "`fs.fchown(fd, uid, gid, callback)`",
+            "`fs.truncate(path[, len], callback)`",
+            "`fs.accessSync(path[, mode])`",
+            "`fs.chownSync(path, uid, gid)`",
+            "`fs.lchownSync(path, uid, gid)`",
+            "`fs.truncateSync(path[, len])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5542-fs-promises-parity.cjs",
+            "tests/corpus/fs-permissions-family.cjs",
+            "tests/corpus/fs-access-truncate-optional.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.createReadStream(path[, options])`",
+            "`fs.createWriteStream(path[, options])`",
+            "Class: `fs.ReadStream`",
+            "Class: `fs.WriteStream`",
+            "`writeStream.close([callback])`",
+            "`writeStream.bytesWritten`",
+            "`writeStream.path`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts",
+            "tests/corpus/9751-fs-read-stream-signal.ts",
+            "tests/corpus/9752-fs-write-stream-signal.ts",
+            "tests/corpus/9754-fs-stream-signal-option-values.ts",
+            "tests/corpus/9755-fs-stream-signal-untyped.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.ReadStream`",
+        "signatures": [
+            "`bytesRead` Type: {number}",
+            "`path` Type: {string|Buffer}",
+            "`pending` Type: {boolean}",
+            "Event: `'close'`",
+            "Event: `'open'`",
+            "Event: `'ready'`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.WriteStream`",
+        "signatures": [
+            "`pending` Type: {boolean}",
+            "Event: `'close'`",
+            "Event: `'open'`",
+            "Event: `'ready'`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/5546-fs-read-stream.cjs",
+            "tests/corpus/5547-fs-write-stream.cjs",
+            "tests/corpus/5554-fs-streams-typed.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`filehandle.createReadStream([options])`",
+            "`filehandle.createWriteStream([options])`",
+            "`filehandle.readLines([options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5554-fs-streams-typed.ts",
+            "tests/corpus/9753-file-handle-stream-signal.ts",
+            "tests/corpus/fs-filehandle-lines.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "filehandle.pull",
+            "filehandle.pullSync",
+            "filehandle.writer"
+        ],
+        "status": "not-applicable",
+        "reason": "Stability 1 and gated by V8's --experimental-stream-iter: in a default Node 24 process typeof fh.pull, typeof fh.pullSync and typeof fh.writer are all \"undefined\", and a compiled program cannot pass V8 flags."
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.lchmod(path, mode, callback)`",
+            "`fs.lchmodSync(path, mode)`"
+        ],
+        "status": "not-applicable",
+        "reason": "Node exports these only where lchmod(2) exists (macOS): on Linux typeof fs.lchmod and typeof fs.lchmodSync are \"undefined\", and the runtime answers Node's not-a-function TypeError if a program reaches them dynamically. The promise form, which exists on every platform, is fsPromises.lchmod."
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.lchmod(path, mode)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-lchmod.cjs",
+            "tests/corpus/fs-lchmod-typed.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "watcher.close",
+            "watcher.ref",
+            "watcher.unref"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/1564-fs-watch.ts",
+            "tests/corpus/fs-watch-file-names.ts",
+            "tests/corpus/fs-watch-ref-unref.ts",
+            "tests/corpus/fs-watch-file-statwatcher.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "Class: `fs.Dir`",
+            "`dir[Symbol.asyncIterator]()`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-dir-listing.ts",
+            "tests/corpus/5544-fs-opendir.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`dir.close()`",
+            "`dir.closeSync()`",
+            "`dir.read()`",
+            "`dir.readSync()`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-dir-listing.ts",
+            "tests/corpus/5544-fs-opendir.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.Dir`",
+        "signatures": [
+            "`path` Type: {string}"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-dir-listing.ts",
+            "tests/corpus/5544-fs-opendir.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.Dir`",
+        "signatures": [
+            "`dir.read(callback)`",
+            "`dir.close(callback)`",
+            "`dir[Symbol.dispose]()`",
+            "`dir[Symbol.asyncDispose]()`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-dir-listing.ts",
+            "tests/corpus/fs-opendir-callbacks.ts",
+            "tests/corpus/fs-dir-dispose.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.opendir(path[, options], callback)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-opendir-callbacks.ts",
+            "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
+            "tests/corpus/fs-dir-listing.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`dirent.isFile()`",
+            "`dirent.isDirectory()`",
+            "`dirent.isBlockDevice()`",
+            "`dirent.isCharacterDevice()`",
+            "`dirent.isSymbolicLink()`",
+            "`dirent.isFIFO()`",
+            "`dirent.isSocket()`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-dir-listing.ts",
+            "tests/corpus/1541-fs-readdir-dirent.ts",
+            "tests/corpus/5544-fs-opendir.cjs",
+            "tests/corpus/fs-opendir-callbacks.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`constants` Type: {Object}"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/6207-fs-constants-object.ts",
+            "tests/corpus/6208-fs-constants-require.cjs",
+            "tests/corpus/fs-promises-constants.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.utimes",
+            "fs.futimes",
+            "fs.lutimes",
+            "fs.utimesSync",
+            "fs.lutimesSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/node24-fs-timestamps-callbacks.cjs",
+            "tests/corpus/node24-fs-timestamps-symlinks.ts",
+            "tests/corpus/node24-fs-timestamps-errors.cjs",
+            "tests/corpus/fs-links-times.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.lstat(path[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/2941-fsp-lstat-identity.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.globSync(pattern[, options])`",
+            "`fs.glob(pattern[, options], callback)`",
+            "`fsPromises.glob(pattern[, options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5448-fs-glob-patterns.ts",
+            "tests/corpus/5449-fs-glob-options.ts",
+            "tests/corpus/5450-fs-glob-validation.js",
+            "tests/corpus/5451-fs-promises-glob.ts",
+            "tests/corpus/5452-fs-glob-callback.ts",
+            "tests/fixtures/node-types/fs-glob.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.cpSync(src, dest[, options])`",
+            "`fs.cp(src, dest[, options], callback)`",
+            "`fsPromises.cp(src, dest[, options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5567-fs-cpsync.ts",
+            "tests/corpus/5568-fs-cp-errors.js",
+            "tests/corpus/5569-fs-cp-symlinks.ts",
+            "tests/corpus/5570-fs-cp-async.ts",
+            "tests/corpus/5571-fs-cp-deep.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.Stats",
+            "stats.isBlockDevice",
+            "stats.isCharacterDevice",
+            "stats.isDirectory",
+            "stats.isFIFO",
+            "stats.isFile",
+            "stats.isSocket",
+            "stats.isSymbolicLink"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/5541-fs-stats-fields.cjs",
+            "tests/corpus/fs-stat-callback-options.cjs",
+            "tests/corpus/fs-stat-sync-ladder.cjs",
+            "tests/corpus/fs-stat-runtime-options.ts",
+            "tests/corpus/fs-stat-callback-ladder.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.Stats`",
+        "signatures": [
+            "`mode` Type: {number|bigint}",
+            "`nlink` Type: {number|bigint}",
+            "`uid` Type: {number|bigint}",
+            "`gid` Type: {number|bigint}",
+            "`rdev` Type: {number|bigint}",
+            "`size` Type: {number|bigint}",
+            "`blksize` Type: {number|bigint}",
+            "`blocks` Type: {number|bigint}",
+            "`atimeMs` Type: {number|bigint}",
+            "`mtimeMs` Type: {number|bigint}",
+            "`birthtimeMs` Type: {number|bigint}",
+            "`atimeNs` Type: {bigint}",
+            "`mtimeNs` Type: {bigint}",
+            "`ctimeNs` Type: {bigint}",
+            "`birthtimeNs` Type: {bigint}",
+            "`atime` Type: {Date}",
+            "`mtime` Type: {Date}",
+            "`ctime` Type: {Date}",
+            "`birthtime` Type: {Date}"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-stats-fields.ts",
+            "tests/corpus/fs-stats-bigint-fields.ts",
+            "tests/corpus/fs-stats-member-tables.cjs",
+            "tests/corpus/5541-fs-stats-fields.cjs",
+            "tests/corpus/fs-stat-callback-options.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`dev` Type: {number|bigint}",
+            "`ino` Type: {number|bigint}",
+            "`ctimeMs` Type: {number|bigint}"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-stats-fields.ts",
+            "tests/corpus/fs-stats-bigint-fields.ts",
+            "tests/corpus/fs-stats-member-tables.cjs",
+            "tests/corpus/2941-fsp-lstat-identity.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`filehandle.readableWebStream([options])`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-filehandle-web-stream.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`filehandle[Symbol.asyncDispose]()`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/2844-node-disposable-resources.ts",
+            "tests/corpus/fs-filehandle-lines.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.realpath(path[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/2940-fsp-realpath.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.readdir(path[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/2942-fsp-readdir-dirent.ts",
+            "tests/corpus/fs-readdir-encodings.ts",
+            "tests/corpus/fs-readdir-recursive-types.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fsPromises.watch(filename[, options])`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/fs-promises-watch.ts",
+            "tests/corpus/fs-promises-watch-overflow.cjs"
+        ],
+        "fences": [
+            "recursive: true (Node's non-native recursive walker)",
+            "options.signal (AbortSignal)",
+            "options.ignore (a matcher over entry names)",
+            "a non-utf8 encoding, and the iterator outside a `for await`"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Common Objects",
+        "signatures": [
+            "Class: `fs.Dirent`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/compat-fs-dirent-realpath.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.Dirent`",
+        "signatures": [
+            "`name` Type: {string|Buffer}",
+            "`parentPath` Type: {string}"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/compat-fs-dirent-realpath.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Callback API",
+        "signatures": [
+            "`fs.openAsBlob(path[, options])`"
+        ],
+        "status": "not-implemented",
+        "evidence": [
+            "tests/diagnostics/compat-absent-node-apis.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Callback API",
+        "signatures": [
+            "`fs.exists(path, callback)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-exists-path-kinds.cjs",
+            "tests/corpus/2595-fs-arg-ladders.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "signatures": [
+            "`fs.existsSync(path)`"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-exists-path-kinds.cjs",
+            "tests/corpus/fs-exists-optional-path.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Callback API",
+        "signatures": [
+            "`fs.rm(path[, options], callback)`"
+        ],
+        "status": "partial",
+        "evidence": [
+            "tests/corpus/compat-core-members.mjs",
+            "tests/corpus/compat-core-members.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.StatFs`",
+        "signatures": [
+            "`frsize` Type: {number|bigint}"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/compat-core-members.mjs",
+            "tests/corpus/fs-statfs-family.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "`fs.writeFile(file, data[, options], callback)`",
+        "signatures": [
+            "Using `fs.writeFile()` with file descriptors"
+        ],
+        "status": "not-applicable"
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.closeSync",
+            "fs.fsyncSync",
+            "fs.fdatasyncSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-sync-dynamic-control.cjs",
+            "tests/corpus/2950-fs-descriptor-publication.ts",
+            "tests/corpus/2938-fs-sync-overloads.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.fchmodSync",
+            "fs.fchownSync",
+            "fs.ftruncateSync",
+            "fs.futimesSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-sync-dynamic-control.cjs",
+            "tests/corpus/3137-fs-vector-callbacks.cjs",
+            "tests/corpus/2950-fs-descriptor-publication.ts",
+            "tests/corpus/node24-fs-timestamps.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.readSync",
+            "fs.readvSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+            "tests/corpus/fs-sync-dynamic-control.cjs",
+            "tests/corpus/2595-fs-arg-ladders.cjs",
+            "tests/corpus/3134-fs-vectors.ts"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.writeSync",
+            "fs.writevSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-sync-dynamic-descriptors.cjs",
+            "tests/corpus/fs-sync-dynamic-control.cjs",
+            "tests/corpus/2595-fs-arg-ladders.cjs",
+            "tests/corpus/3134-fs-vectors.ts",
+            "tests/corpus/3137-fs-vector-callbacks.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "symbols": [
+            "fs.Utf8Stream",
+            "utf8Stream.write",
+            "utf8Stream.end",
+            "utf8Stream.flushSync"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-utf8-stream.cjs"
+        ]
+    },
+    {
+        "chapter": "fs",
+        "parent": "Class: `fs.Utf8Stream`",
+        "symbols": [
+            "append",
+            "contentMode",
+            "file",
+            "fsync",
+            "minLength",
+            "writing",
+            "'close'",
+            "'finish'",
+            "'ready'",
+            "'write'"
+        ],
+        "status": "supported",
+        "evidence": [
+            "tests/corpus/fs-utf8-stream.cjs"
+        ]
+    }
 ]

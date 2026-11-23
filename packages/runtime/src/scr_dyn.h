@@ -122,7 +122,7 @@ typedef enum {
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. */
-#define SCR_DYNH_CAPACITY 128
+#define SCR_DYNH_CAPACITY 256
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static
@@ -285,6 +285,7 @@ typedef enum {
   Y(SQLITE_STATEMENT) /* node:sqlite StatementSync (scr_sqlite.c) */ \
   Y(SQLITE_TAG_STORE) /* node:sqlite SQLTagStore (scr_sqlite.c) */ \
   Y(TRACING) /* trace_events.Tracing (scr_async_dyn.c) */ \
+  Y(UTF8_STREAM) /* fs.Utf8Stream (scr_fs_utf8_stream.c) */ \
   Y(WEAK_REF) /* WeakRef (scr_json.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the

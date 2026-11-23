@@ -732,6 +732,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_fs_utf8_stream.c",
+  "function": "scr_u8_invoke",
+  "message": "fs.Utf8Stream member is not supported yet [SC2020]",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_glob.c",
   "function": "scr_fs_glob",
   "message": "fs.glob exclude functions with withFileTypes have no native lowering",

@@ -59,9 +59,10 @@ const curried = <T>(x: T) => <U>(y: U): string => `${x}|${y}`;
 console.log(curried(1)("a"));
 
 // Ambient `declare class` generic methods are signature-only. Through an
-// AMBIENT-ROOTED receiver the call now compiles to Node's ReferenceError
-// at the root (the declare-const chain stance — no diagnostic here); a
-// receiver that exists at runtime keeps the fence.
+// AMBIENT-ROOTED receiver the call compiles to Node's ReferenceError at the
+// root (the declare-const chain stance); through a receiver that exists at
+// run time the member is read from the value and called dynamically (no
+// diagnostic here).
 declare class Amb {
   m<T>(x: T): T;
 }

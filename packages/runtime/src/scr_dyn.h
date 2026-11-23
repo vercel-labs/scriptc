@@ -121,8 +121,11 @@ typedef enum {
  * always-linked storage or code: a program that never boxes the new handle
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
- * only when the tags outgrow it. */
-#define SCR_DYNH_CAPACITY 128
+ * only when the tags outgrow it. 160: the tags added since the last pin
+ * (the URLPattern class's among them) took the list past 128. The tables
+ * are thread-local pointer rows, so the capacity changes no per-value
+ * representation. */
+#define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static
@@ -265,6 +268,7 @@ typedef enum {
   Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
   Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
+  Y(CLUSTER_WORKER) /* node:cluster worker handle (scr_cluster.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
@@ -276,6 +280,7 @@ typedef enum {
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
+  Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -1552,6 +1557,12 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* A Node module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`,
+ * …): one ordinary function with a prototype object per (module, name) per
+ * program, so `instanceof` and `constructor` identity compare one value.
+ * Answers +1; NULL with the exception pending when the allocation failed.
+ * scr_json.c. */
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity);
 /* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
  * (scr_dyn_global_constructor): false when `callee` is not one of them;
  * otherwise true with `new callee(...args)` in *result (+1, or NULL with
@@ -2176,6 +2187,11 @@ bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list);
+/* Reflect.construct(target, argumentsList, newTarget): Node's construction
+ * with an explicit newTarget's prototype on the receiver. +1 or NULL with
+ * the exception pending. */
+ScrDyn *scr_dyn_reflect_construct(const ScrDyn *target, const ScrDyn *arguments,
+                                  const ScrDyn *new_target, bool explicit_new_target);
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
@@ -2277,6 +2293,8 @@ extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);
+/* The Error a dynamic error box was built from (+1), or NULL. */
+ScrError *scr_dyn_error_value(const ScrDyn *d);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 /* The `stack` member an error view reads as a non-empty string, for
@@ -2323,6 +2341,17 @@ void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
 void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *value);
+/* The next error view built on this thread takes this own property before
+ * its class name. AssertionError's constructor assigns generatedMessage
+ * before name, and the view's shape is still being laid out when the first
+ * extra property is attached. Moves value; a pending seed is dropped when
+ * replaced. */
+void scr_error_seed_own_prop(const char *key, size_t key_len, ScrDyn *value);
+/* The seed if no view consumed it (+1), else NULL. */
+ScrDyn *scr_error_take_seed(void);
+/* Exit-cleanup registrations the seed made on this thread: one, however
+ * many assertions seed (the runtime tests pin it). */
+size_t scr_error_seed_registration_count(void);
 /* scr_throw_node_coded with an own `url` property (error.nodeThrow's
  * fourth argument). Borrows the strings; always throws. */
 SCR_COLD void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg,
@@ -2493,6 +2522,12 @@ ScrDyn *scr_dyn_call(const ScrDyn *d, ScrDyn *const *args, size_t argc, const ch
  * `f(...args)` after the emitted argument array is built): argv IS the
  * array's items. Borrows both; result owned (+1), or NULL pending. */
 ScrDyn *scr_dyn_apply(const ScrDyn *d, const ScrDyn *args, const char *what);
+/* The timerified wrapper's construct form (scr_perf.c installs it): answers
+ * true when `callee` is such a wrapper and stores the construction in
+ * *result. NULL until a wrapper exists, so a program without timerify never
+ * reaches the perf unit. */
+extern SCR_TL bool (*scr_dyn_timerified_construct_fn)(const ScrDyn *callee,
+                                                      const ScrDyn *args, ScrDyn **result);
 /* Function.bind borrows its target and arguments, returns a fresh callable. */
 ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc);
 

@@ -86,8 +86,16 @@ void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
  * (each +1, as above). */
 ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which);
+/* tlsSocket.exportKeyingMaterial(length, label[, context]): Node's
+ * validation ladder, then the provider's TLS exporter (+1 Buffer). */
+ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const struct ScrDyn *length,
+                                              const struct ScrDyn *label,
+                                              const struct ScrDyn *context, bool has_context);
 bool scr_tls_server_is_dyn(const struct ScrDyn *v);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* TLSSocket / tls.Server 'keylog': Node's NSS key-log lines as Buffers. */
+void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
  * secureConnect listeners on a client); released unread on a plain socket
  * or after the handshake. */
@@ -99,6 +107,11 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
  * switch), so no registration indirection is needed. */
 void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *), ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn);
 void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/, size_t ca_len);
+/* tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+ * verification over a legacy certificate object — undefined when it
+ * matches, the ERR_TLS_CERT_ALTNAME_INVALID error otherwise (+1 dyn).
+ * Throws ERR_TLS_CERT_ALTNAME_FORMAT for a malformed alt-name string. */
+ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDyn *cert /*borrowed*/);
 
 /* ── tls.SecureContext + the SNI callback (scr_tls.c) ─────────────────
  * A SecureContext is an opaque refcounted parsed cert/key pair

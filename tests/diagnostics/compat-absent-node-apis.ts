@@ -4,16 +4,15 @@
 // registry gap.
 import { EventEmitterAsyncResource } from "node:events";
 import { openAsBlob } from "node:fs";
-import { findPackageJSON, register } from "node:module";
+import { register } from "node:module";
 
 // timers: closing a Timeout.
 const timer = setTimeout(() => {}, 1);
 timer.close();
 
 
-// module: loader hooks and package lookup.
+// module: loader hooks.
 register("./hooks.mjs", import.meta.url);
-console.log(findPackageJSON("..", import.meta.url));
 
 // events: the EventEmitter that carries an AsyncResource.
 const emitter = new EventEmitterAsyncResource({ name: "Probe" });

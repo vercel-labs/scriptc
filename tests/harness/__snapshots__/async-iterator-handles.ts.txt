@@ -1,12 +1,3 @@
-async-iterator-handles.ts:6:21 - error SC2020: 'ReadableStream.values' is part of the standard library types but has no scriptc lowering yet
-
-  5 | const nodeIterator = Readable.from(["a"]).iterator();
-  6 | const webIterator = ReadableStream.from([1]).values();
-    |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  7 | console.log(nodeIterator, webIterator);
-
-  hint: direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported
-
 async-iterator-handles.ts:13:67 - error SC1090: readable.iterator with a runtime 'destroyOnReturn' value (use a boolean literal) is not supported yet
 
   12 |   for await (

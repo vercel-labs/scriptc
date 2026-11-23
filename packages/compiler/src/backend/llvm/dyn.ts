@@ -1029,7 +1029,7 @@ export class LlDyn {
     const key = typeKey(t);
     const prior = this.mapDynOps.get(key);
     if (prior) return prior;
-    const name = `sc_map_dyn_${this.mapDynOps.size}`;
+    const name = this.host.contentSymbol("sc_map_dyn_", key);
     this.mapDynOps.set(key, name);
     this.host.journalAllocated?.(name, "dyn.collectionDynOps", [t]);
     const keyType = t.kind === "map" ? t.key : t.elem;
@@ -2060,9 +2060,15 @@ export class LlDyn {
   }
 
   /** Tests the pending flag after a call and, when it is set, runs `cleanup`
-   * and returns `dummy`. `made`, of type `madeType`, is the value that call
+   * and returns `dummy`. `made`, of type `madeType`, is the value the call
    * returned, when nothing else owns it yet: the bail releases it where the
-   * flag can be set although the call succeeded (pendingBailReleaseLines). */
+   * flag can be set although the call succeeded (pendingBailReleaseLines).
+   * `held` marks a wrapper's own value instead, one it acquired by
+   * converting an argument or by calling through and still owns here: the
+   * bail always releases it, because a context that is stopping sets the
+   * flag without failing that acquisition (a worker terminating, a shared
+   * island shutting down, a host stopping a library context), and the
+   * release of the null a real throw leaves behind is harmless. */
   private pendingBail(
     B: BlockBuilder,
     hint: string,
@@ -2070,6 +2076,7 @@ export class LlDyn {
     dummy: string,
     madeType?: IrType,
     made?: string,
+    held = false,
   ): void {
     const p = B.tmp();
     for (const line of this.host.pendingTestLines(p)) B.line(line.trimStart());
@@ -2077,9 +2084,14 @@ export class LlDyn {
     const lk = B.newLabel(`${hint}.k`);
     B.condBr(p, lu, lk);
     B.startBlock(lu);
-    if (madeType !== undefined && made !== undefined)
-      for (const line of this.host.pendingBailReleaseLines(madeType, made))
-        B.line(line.trimStart());
+    if (madeType !== undefined && made !== undefined) {
+      if (held) {
+        if (madeType.kind !== "void" && isRefCounted(madeType))
+          B.line(`call void ${releaseSym(this.host, madeType)}(ptr ${made})`);
+      } else
+        for (const line of this.host.pendingBailReleaseLines(madeType, made))
+          B.line(line.trimStart());
+    }
     cleanup();
     B.terminate(`ret ${dummy}`);
     B.startBlock(lk);
@@ -2291,7 +2303,7 @@ export class LlDyn {
     const matcherKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynMatchers.get(matcherKey);
     if (existing) return existing;
-    const name = `sc_dm_${this.dynMatchers.size}`;
+    const name = this.host.contentSymbol("sc_dm_", matcherKey);
     this.dynMatchers.set(matcherKey, name);
     this.host.journalAllocated?.(name, "dyn.dynMatchHelper", [t, preserveRefs]);
     const codec = textCodecRecordClass(t, (id) => this.host.recordsById.get(id));
@@ -2900,7 +2912,7 @@ export class LlDyn {
     if (existing) return existing;
     const host = this.host;
     const S = host.sizeType;
-    const name = `sc_jsch_${this.jsonSchemas.size}`;
+    const name = this.host.contentSymbol("sc_jsch_", key);
     this.jsonSchemas.set(key, name);
     this.host.journalAllocated?.(name, "dyn.jsonSchema", [t]);
     let body: string;
@@ -3126,7 +3138,7 @@ export class LlDyn {
     if (existing) return existing;
     const host = this.host;
     const S = host.sizeType;
-    const base = `sc_rnames_${this.recordNameTables.size}`;
+    const base = this.host.contentSymbol("sc_rnames_", shapeId);
     const table = { names: `@${base}`, lens: `@${base}_lens` };
     this.recordNameTables.set(shapeId, table);
     this.host.journalAllocated?.(base, "dyn.recordNameTable", [shapeId]);
@@ -3159,7 +3171,7 @@ export class LlDyn {
     if (existing) return existing;
     if (!this.jsonSchemaSupported(t, new Set())) return null;
     const host = this.host;
-    const name = `sc_jp_${this.jsonParsers.size}`;
+    const name = this.host.contentSymbol("sc_jp_", key);
     this.jsonParsers.set(key, name);
     this.host.journalAllocated?.(name, "dyn.jsonParseHelper", [t]);
     const schema = this.jsonSchema(t);
@@ -3207,7 +3219,7 @@ export class LlDyn {
     const builderKey = `view:${typeKey(t)}`;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
-    const name = `sc_dva_${this.dynBuilders.size}`;
+    const name = this.host.contentSymbol("sc_dva_", builderKey);
     this.dynBuilders.set(builderKey, name);
     const host = this.host;
     const elem = t.elem;
@@ -3442,7 +3454,7 @@ export class LlDyn {
     const builderKey = sole ? `sole:${key}` : preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
-    const name = `sc_dc_${this.dynBuilders.size}`;
+    const name = this.host.contentSymbol("sc_dc_", builderKey);
     this.dynBuilders.set(builderKey, name);
     this.host.journalAllocated?.(
       name,
@@ -4966,7 +4978,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.toDynFns.get(key);
     if (existing) return existing;
-    const name = `sc_td_${this.toDynFns.size}`;
+    const name = this.host.contentSymbol("sc_td_", key);
     this.toDynFns.set(key, name);
     this.host.journalAllocated?.(name, "dyn.toDynHelper", [t]);
     const host = this.host;
@@ -5663,7 +5675,7 @@ export class LlDyn {
     const key = typeKey(inner);
     const existing = this.promiseDynAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_pda_${this.promiseDynAdapters.size}`;
+    const name = this.host.contentSymbol("sc_pda_", key);
     this.promiseDynAdapters.set(key, name);
     this.host.journalAllocated?.(name, "dyn.promiseDynAdapterHelper", [inner]);
     const host = this.host;
@@ -7060,7 +7072,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncThunks.get(key);
     if (existing) return existing;
-    const name = `sc_dfk_${this.dynFuncThunks.size}`;
+    const name = this.host.contentSymbol("sc_dfk_", key);
     this.dynFuncThunks.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncThunkHelper", [t]);
     const host = this.host;
@@ -7117,6 +7129,7 @@ export class LlDyn {
           "ptr null",
           p,
           a,
+          true,
         );
         argNames.push(a);
         return;
@@ -7178,6 +7191,7 @@ export class LlDyn {
           "ptr null",
           p,
           a,
+          true,
         );
         // Declaration-typed boundary programs: an argument package code
         // passes keeps its identity (scr_dyn_decl_adopt).
@@ -7234,12 +7248,12 @@ export class LlDyn {
     } else if (t.ret.kind === "dyn") {
       const r = B.tmp();
       B.line(`${r} = call ptr ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r, true);
       B.terminate(`ret ptr ${r}`);
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${retTy} ${fn}(${callArgs})`);
-      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r);
+      this.pendingBail(B, "dfkr", () => {}, "ptr null", t.ret, r, true);
       // A record or array result crosses the way `dynFrom liveRef` boxes
       // one — a LIVE capsule of the closure's own object — so the caller's
       // `() => shared` through an untyped slot still answers `shared`
@@ -7269,7 +7283,7 @@ export class LlDyn {
   jsEntryThunk(target: string, params: readonly IrType[], ret: IrType): string {
     const existing = this.jsEntryThunks.get(target);
     if (existing) return existing;
-    const name = `sc_jt_${this.jsEntryThunks.size}`;
+    const name = this.host.contentSymbol("sc_jt_", target);
     this.jsEntryThunks.set(target, name);
     this.host.journalAllocated?.(name, "dyn.jsEntryThunk", [target, params, ret]);
     const host = this.host;
@@ -7314,7 +7328,7 @@ export class LlDyn {
     } else {
       const r = B.tmp();
       B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
-      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`, ret, r, true);
       if (ret.kind === "jsval") {
         B.terminate(`ret ptr ${r}`);
       } else if (ret.kind === "f64") {
@@ -7513,7 +7527,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.unnamedFuncBoxes.get(key);
     if (existing) return existing;
-    const name = `sc_dfu_${this.unnamedFuncBoxes.size}`;
+    const name = this.host.contentSymbol("sc_dfu_", key);
     this.unnamedFuncBoxes.set(key, name);
     this.host.journalAllocated?.(name, "dyn.unnamedFuncBoxHelper", [t]);
     // The first box defines the table and its lookup.
@@ -7545,7 +7559,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncBoxes.get(key);
     if (existing) return existing;
-    const name = `sc_dfb_${this.dynFuncBoxes.size}`;
+    const name = this.host.contentSymbol("sc_dfb_", key);
     this.dynFuncBoxes.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncBoxHelper", [t]);
     const host = this.host;
@@ -7658,7 +7672,7 @@ export class LlDyn {
       this.host.journalBuilt?.();
       return null;
     }
-    const name = `sc_dml_${this.messageListeners.size}`;
+    const name = this.host.contentSymbol("sc_dml_", key);
     this.messageListeners.set(key, name);
     this.host.journalAllocated?.(name, "dyn.messageListenerHelper", [t]);
     const B = new BlockBuilder();
@@ -7752,7 +7766,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.messageReaders.get(key);
     if (existing) return existing;
-    const name = `sc_dmr_${this.messageReaders.size}`;
+    const name = this.host.contentSymbol("sc_dmr_", key);
     this.messageReaders.set(key, name);
     this.host.journalAllocated?.(name, "dyn.messageReaderHelper", [t]);
     const host = this.host;
@@ -7937,7 +7951,7 @@ export class LlDyn {
     const key = typeKey(t);
     const existing = this.dynFuncAdapters.get(key);
     if (existing) return existing;
-    const name = `sc_dfa_${this.dynFuncAdapters.size}`;
+    const name = this.host.contentSymbol("sc_dfa_", key);
     this.dynFuncAdapters.set(key, name);
     this.host.journalAllocated?.(name, "dyn.dynFuncAdapterHelper", [t]);
     const host = this.host;
@@ -8040,7 +8054,7 @@ export class LlDyn {
       );
     B.line(`call void @scr_dyn_release(ptr ${fnv})`);
     for (const v of argVals) B.line(`call void @scr_dyn_release(ptr ${v})`);
-    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r);
+    this.pendingBail(B, "dfa", () => {}, dummy === "void" ? "void" : dummy, DYN, r, true);
     if (t.ret.kind === "void") {
       B.line(`call void @scr_dyn_release(ptr ${r})`);
       B.terminate(`ret void`);

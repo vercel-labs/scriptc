@@ -368,8 +368,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // getColorDepth and hasColors of the process stream object, for a program
-  // that holds a process stream as a value and names one of them.
-  unit((u) => u.opts.events && u.opts.ttyColors === true, "scr_tty_colors.c"),
+  // that holds a process stream as a value and names one of them; and a
+  // Console built with inspectOptions or colorMode, whose 'auto' mode reads
+  // the same tables.
+  unit(
+    (u) =>
+      (u.opts.events && u.opts.ttyColors === true) ||
+      u.opts.consoleOptions === true ||
+      u.opts.inspect === true,
+    "scr_tty_colors.c",
+  ),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
@@ -467,6 +475,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
   // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // node:cluster's process management and worker handle (scr_cluster.c).
+  unit((u) => u.opts.cluster === true, "scr_cluster.c"),
   // process.features as a value: the stable flags object.
   unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.

@@ -202,6 +202,53 @@ void scr_stack_limit_set(double limit) {
   scr_stack_limit = limit;
 }
 
+/* Error.prepareStackTrace is program state, as in Node: a program may save
+ * the value, replace it (`Error.prepareStackTrace = void 0`) and restore it.
+ * Node's default is V8's formatter; native code has no call-site formatter,
+ * so the default here is a function that throws the named refusal if a
+ * program calls it. The runtime formats its own stacks, so a program's own
+ * formatter is stored and read back but is not called when a stack is
+ * formatted. */
+static SCR_TL ScrDyn *scr_prepare_stack_trace;
+static SCR_TL bool scr_prepare_stack_trace_reset_registered;
+static ScrDyn *scr_prepare_stack_trace_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char msg[] =
+      "Error.prepareStackTrace is a Node value that native code does not provide as a value";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  return NULL;
+}
+static void scr_prepare_stack_trace_reset(void) {
+  if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
+  scr_prepare_stack_trace = NULL;
+  scr_prepare_stack_trace_reset_registered = false;
+}
+/* The stored value is released at exit like every other runtime cache, so a
+ * program that only READS the member releases the default function it created
+ * before the reference-count audit runs. */
+static void scr_prepare_stack_trace_own_cleanup(void) {
+  if (scr_prepare_stack_trace_reset_registered) return;
+  scr_atexit(scr_prepare_stack_trace_reset);
+  scr_prepare_stack_trace_reset_registered = true;
+}
+ScrDyn *scr_error_prepare_stack_trace_get(void) {
+  scr_prepare_stack_trace_own_cleanup();
+  if (scr_prepare_stack_trace == NULL) {
+    ScrClosure *clo = scr_closure_new((void *)scr_prepare_stack_trace_thunk, 0);
+    scr_prepare_stack_trace = scr_dyn_new_func(clo, scr_prepare_stack_trace_thunk, 0, "",
+                                               "prepareStackTrace");
+  }
+  return scr_dyn_retain(scr_prepare_stack_trace);
+}
+void scr_error_prepare_stack_trace_set(ScrDyn *value) {
+  scr_prepare_stack_trace_own_cleanup();
+  ScrDyn *retained = value == NULL ? scr_dyn_undefined() : scr_dyn_retain(value);
+  if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
+  scr_prepare_stack_trace = retained;
+}
+
 /* One frame's line: its positioned call/throw site when it holds one, and
  * its constant line otherwise. dst may be NULL when only the length is
  * wanted (cap 0). */
@@ -453,6 +500,27 @@ ScrStr *scr_stack_capture_after(const char *through) {
   for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous)
     if (frame->text == through || strcmp(frame->text, through) == 0)
       return scr_stack_capture_from(frame->previous);
+  return NULL;
+}
+
+/* The same trim for a function the runtime holds as a value: the topmost
+ * frame its name heads ("    at name (file)"), not an identity comparison.
+ * A frame of a class constructor ("    at new C (...)") or a member
+ * ("    at C.m (...)") keeps V8's spelling, which the name alone cannot
+ * match; those leave every frame in place. */
+ScrStr *scr_stack_capture_after_name(const char *name) {
+  static const char prefix[] = "    at ";
+  const size_t plen = sizeof prefix - 1;
+  const size_t nlen = strlen(name);
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous) {
+    const char *text = frame->text;
+    if (strncmp(text, prefix, plen) != 0) continue;
+    const char *at = text + plen;
+    size_t rest = strlen(at);
+    if (rest < nlen || memcmp(at, name, nlen) != 0) continue;
+    if (rest == nlen || at[nlen] == ' ' || at[nlen] == '(')
+      return scr_stack_capture_from(frame->previous);
+  }
   return NULL;
 }
 

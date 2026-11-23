@@ -729,6 +729,22 @@ export function completeFuncValueArgs(
       type,
       mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
     }));
+    // The value reads the arguments its caller actually passed from its
+    // hidden trailing array (argumentsAll), so the slot must be filled.
+    if (funcType.argumentsAll === true) shapes.push({ type: DYN, mode: "arguments" });
+    return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
+  }
+  // A value whose signature can take a different number of arguments than
+  // it names (an optional, defaulted or rest parameter) reads the actual
+  // argument list from its hidden trailing array (argumentsAll). For a dyn
+  // rest that same array is the rest slot, so it carries every supplied
+  // value and is completed once, in source order.
+  if (funcType.argumentsAll === true) {
+    const shapes: ParamShape[] = funcType.params.map((type) => ({
+      type,
+      mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
+    }));
+    shapes.push({ type: DYN, mode: "arguments" });
     return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
   }
   const args = call.arguments.nodes.map((arg, index) =>

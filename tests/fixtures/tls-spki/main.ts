@@ -58,7 +58,7 @@ function clientCase(
   ca: Buffer,
   reject: boolean,
   cert: Buffer,
-  maxVersion?: string,
+  maxVersion?: tls.SecureVersion,
   servername = "localhost",
   key: Buffer = leafKey,
 ): Promise<void> {

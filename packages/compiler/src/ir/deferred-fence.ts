@@ -78,6 +78,14 @@ export interface GuardedDeferredFence {
   loc: SrcLoc;
 }
 
+/** The refusal text of a fence message: the diagnostic's own message with
+ * the trailing `[CODE at file:line]` tag removed. A bare fence message has
+ * no tag and stands as it is. */
+function refusalOf(code: string, message: string): string {
+  const tag = message.lastIndexOf(`[${code}`);
+  return (tag < 0 ? message : message.slice(0, tag)).trimEnd();
+}
+
 /** The guarded deferred-diagnostic fences of `mod`, one per site (a site is
  * its message, as in the runtime's report), in the order the module holds
  * them. A library reports nothing at run time for any fence, so it has
@@ -89,10 +97,9 @@ export function guardedDeferredFences(mod: IrModule): GuardedDeferredFence[] {
     expr: () => true,
     stmt: (node) => {
       if (node.kind === "runtimeFence" && node.guarded === true && !sites.has(node.message)) {
-        const tag = node.message.lastIndexOf(`[${node.code}`);
         sites.set(node.message, {
           code: node.code,
-          refusal: (tag < 0 ? node.message : node.message.slice(0, tag)).trimEnd(),
+          refusal: refusalOf(node.code, node.message),
           loc: node.loc,
         });
       }

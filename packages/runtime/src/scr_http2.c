@@ -53,11 +53,30 @@
 #include "scr_platform.h"
 #include "scr_runtime.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifndef _WIN32
+#include <unistd.h>
+#else
+#include <io.h>
+#include <process.h> /* _getpid */
+#endif
+
+#ifdef _WIN32
+#define SCR_H2_LSEEK _lseeki64
+#define SCR_H2_READ _read
+typedef __int64 scr_h2_file_off;
+#else
+#define SCR_H2_LSEEK lseek
+#define SCR_H2_READ read
+typedef off_t scr_h2_file_off;
+#endif
 
 static void scr_h2_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -674,9 +693,11 @@ struct ScrH2Stream {
   bool respond_sent;    /* server: respond() ran */
   bool want_end;        /* end() called; END_STREAM rides the last flush */
   bool end_recv;        /* END_STREAM arrived */
+  bool end_after_headers; /* END_STREAM rode the initial HEADERS block */
   bool end_emitted;
   bool close_queued, close_emitted;
   bool err_code_queued; /* a nonzero-code 'error' rides the close sweep */
+  bool suppress_rst_error; /* the stream's error was already reported */
   bool flowing;         /* a 'data' listener or resume(); pause() clears */
   bool user_paused;     /* the program called pause() */
   bool had_data;        /* a nonempty DATA frame arrived (the empty-body
@@ -694,6 +715,14 @@ struct ScrH2Stream {
   /* send buffer for window-blocked bytes */
   ScrH2Buf wbuf;
   int64_t send_window;
+  /* respondWithFile/respondWithFD: the descriptor source, streamed as the
+   * peer's windows open (never buffered whole). */
+  int file_fd;             /* -1 when there is no source */
+  bool file_owns_fd;       /* the unit opened it and closes it */
+  bool file_done;          /* drained, gone, or replaced */
+  scr_h2_file_off file_off;
+  scr_h2_file_off file_remaining;
+  double file_retry_handle; /* a pending backpressure retry timer (0 none) */
   /* respond(..., { waitForTrailers: true }), sendTrailers and the
    * 'wantTrailers'/'trailers' pair of events. */
   bool want_trailers;   /* the response waits for a trailer block */
@@ -860,6 +889,10 @@ ScrH2Stream *scr_http2_stream_retain(ScrH2Stream *st) {
 }
 
 static void scr_h2_stream_free(ScrH2Stream *st);
+static bool scr_h2_file_pump(ScrH2Stream *st);
+static void scr_h2_file_close(ScrH2Stream *st);
+static ScrDyn *scr_h2_pairs_to_dom(ScrArr *pairs /*borrowed, nullable*/, double status);
+static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers);
 
 void scr_http2_stream_release(ScrH2Stream *st) {
   if (!st || st->rc == SIZE_MAX) return;
@@ -911,6 +944,7 @@ static void scr_h2_stream_free(ScrH2Stream *st) {
     c = next;
   }
   free(st->wbuf.data);
+  scr_h2_file_close(st);
   scr_http2_session_release(st->sess);
   scr_als_ctx_release(st->als);
   free(st);
@@ -1134,6 +1168,7 @@ static ScrH2Stream *scr_h2_stream_new(ScrH2Session *sess, int32_t id) {
   if (!st) scr_h2_oom();
   st->rc = 1;
   st->id = id;
+  st->file_fd = -1;
   st->sess = scr_http2_session_retain(sess);
   if (sess->client) st->als = scr_als_capture();
   st->send_window = sess->peer_init_window ? (int64_t)sess->peer_init_window : SCR_H2_DEFAULT_WINDOW;
@@ -1187,6 +1222,7 @@ static void scr_h2_session_maybe_finish_close(ScrH2Session *s);
 /* Queue the stream's 'close' (idempotent) and forget it session-side. */
 static void scr_h2_stream_settle(ScrH2Stream *st) {
   if (st->close_queued || st->close_emitted) return;
+  scr_h2_file_close(st);
   st->close_queued = true;
   st->api_closed = true;
   st->state = SCR_H2_S_CLOSED;
@@ -1322,8 +1358,14 @@ static void scr_h2_session_cancel_pings(ScrH2Session *s) {
 /* A stream that closed with a nonzero code errors before anything hears
  * of the close — except NO_ERROR and CANCEL (Node's rule on both the
  * closing and the receiving side). */
+static SCR_TL ScrError *scr_h2_err_override = NULL;
+
 static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   uint32_t code = st->rst_code;
+  if (st->suppress_rst_error) {
+    st->suppress_rst_error = false;
+    return;
+  }
   if (code == 0 || code == 8 || scr_exc_pending()) return;
   const char *name = scr_h2_code_name(code);
   char msg[80];
@@ -1343,6 +1385,40 @@ static void scr_h2_stream_fire_close(ScrH2Stream *st) {
 }
 
 static void scr_h2_stream_want_trailers(ScrH2Stream *st);
+
+/* The peer's HTTP/2 window is not the only bound on a file response: the
+ * socket's own write backlog is. A pump that would push the transport
+ * past this cap stops and arms a short timer; the retry runs through the
+ * loop's ordinary timer dispatch, which still polls the sockets. A
+ * blocked response must never report itself as immediately runnable work:
+ * the dispatch loop would then spin without polling, so the socket could
+ * never drain, timers could not run, and one slow reader would freeze
+ * every connection. */
+#define SCR_H2_FILE_BACKLOG_BYTES (64.0 * 1024.0)
+#define SCR_H2_FILE_RETRY_MS 1.0
+
+static void scr_h2_stream_flush(ScrH2Stream *st);
+
+static void scr_h2_file_retry_tick(ScrClosure *cb) {
+  ScrH2Stream *st = (ScrH2Stream *)scr_box_get_ref(cb->caps[0]); /* +1 */
+  st->file_retry_handle = 0;
+  if (!st->destroyed && !st->close_queued && st->file_fd >= 0 && st->file_remaining > 0) {
+    scr_h2_stream_flush(st);
+  }
+  scr_http2_stream_release(st);
+}
+
+static void scr_h2_file_schedule_retry(ScrH2Stream *st) {
+  if (st->file_retry_handle > 0) return;
+  ScrClosure *tick = scr_closure_new((void *)&scr_h2_file_retry_tick, 1);
+  tick->caps[0] = scr_box_new_obj(scr_http2_stream_retain_v, scr_http2_stream_release_v, NULL);
+  scr_box_set_ref(tick->caps[0], scr_http2_stream_retain(st));
+  double handle = scr_set_timeout_handle(tick, SCR_H2_FILE_RETRY_MS);
+  if (handle > 0) {
+    scr_timer_unref(handle);
+    st->file_retry_handle = handle;
+  }
+}
 
 static bool scr_h2_proto_pending(void) { return scr_h2_emits_head < scr_h2_emits_len; }
 
@@ -1568,6 +1644,7 @@ void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
                                      ScrH2Headers *h);
 static void scr_h2_stream_flush(ScrH2Stream *st);
+
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
                                     bool end_stream, ScrNetLs *listeners);
 
@@ -2155,6 +2232,9 @@ static void scr_h2_stream_want_trailers(ScrH2Stream *st) {
 static void scr_h2_stream_flush(ScrH2Stream *st) {
   ScrH2Session *s = st->sess;
   if (st->destroyed || scr_h2_stream_local_closed(st) || !scr_h2_sock_alive(s)) return;
+  /* A file source feeds the peer's windows before the buffer does; a
+   * blocked window stops this pass until WINDOW_UPDATE calls back in. */
+  if (!scr_h2_file_pump(st)) return;
   /* A response waiting for trailers (or a compat response, which always
    * does in Node) holds END_STREAM off the body: the trailer block ends
    * the stream. */
@@ -2269,6 +2349,21 @@ static bool scr_h2_regular_names_valid(ScrArr *pairs /*borrowed, nullable*/) {
     if (!valid) return false;
   }
   return true;
+}
+
+/* The implicit date header's text, +1 (the statCheck header record carries
+ * the same auto date Node puts there before the check runs). */
+static ScrStr *scr_h2_date_str(void) {
+  char date[40];
+  time_t now = time(NULL);
+  struct tm g;
+#ifdef _WIN32
+  gmtime_s(&g, &now);
+#else
+  gmtime_r(&now, &g);
+#endif
+  size_t n = strftime(date, sizeof date, "%a, %d %b %Y %H:%M:%S GMT", &g);
+  return scr_str_new(date, n);
 }
 
 /* The implicit date header (Node's auto date on respond). */
@@ -2504,6 +2599,521 @@ void scr_http2_stream_end_bytes(ScrH2Stream *st, ScrBytes *data /*borrowed*/) {
   scr_h2_stream_flush(st);
 }
 
+
+/* A positioned read that leaves the descriptor's position alone, as Node's
+ * fs.read with an explicit position does. */
+static int scr_h2_pread_at(int fd, char *buf, size_t n, scr_h2_file_off off) {
+#ifdef _WIN32
+  scr_h2_file_off save = _lseeki64(fd, 0, SEEK_CUR);
+  if (save < 0) return -1;
+  if (_lseeki64(fd, off, SEEK_SET) < 0) {
+    int e = errno;
+    _lseeki64(fd, save, SEEK_SET);
+    errno = e;
+    return -1;
+  }
+  int r = _read(fd, buf, (unsigned)n);
+  int e = errno;
+  _lseeki64(fd, save, SEEK_SET);
+  errno = e;
+  return r;
+#else
+  return (int)pread(fd, buf, n, (off_t)off);
+#endif
+}
+
+static const char *scr_h2_errno_name(int e) {
+  switch (e) {
+  case ENOENT: return "ENOENT";
+  case EACCES: return "EACCES";
+  case EISDIR: return "EISDIR";
+  case EBADF: return "EBADF";
+  case EMFILE: return "EMFILE";
+  case ENFILE: return "ENFILE";
+  case ENOMEM: return "ENOMEM";
+  case ELOOP: return "ELOOP";
+  case ENAMETOOLONG: return "ENAMETOOLONG";
+  default: return "EIO";
+  }
+}
+
+/* Node reports a failed respondWithFile/respondWithFD open/read as the raw
+ * fs error on the stream, then resets it with NGHTTP2_INTERNAL_ERROR. */
+/* Node's ErrnoException message for a failed file open/stat ("ENOENT: no
+ * such file or directory, open '<path>'"), +1; `code` comes back borrowed. */
+static ScrStr *scr_h2_file_error_message(int err, const char *action, const char *path,
+                                          size_t pathlen, const char **code) {
+  const char *name = scr_h2_errno_name(err);
+  const char *text = strerror(err);
+  char lower[160];
+  size_t i = 0;
+  for (; text != NULL && text[i] != '\0' && i + 1 < sizeof lower; i++)
+    lower[i] = i == 0 ? (char)(text[0] >= 'A' && text[0] <= 'Z' ? text[0] + 32 : text[0]) : text[i];
+  lower[i] = '\0';
+  ScrH2Buf msg = {0};
+  scr_h2_buf_put(&msg, name, strlen(name));
+  scr_h2_buf_put(&msg, ": ", 2);
+  scr_h2_buf_put(&msg, lower, i);
+  scr_h2_buf_put(&msg, ", ", 2);
+  scr_h2_buf_put(&msg, action, strlen(action));
+  if (path != NULL) {
+    scr_h2_buf_put(&msg, " '", 2);
+    scr_h2_buf_put(&msg, path, pathlen);
+    scr_h2_buf_put(&msg, "'", 1);
+  }
+  ScrStr *m = scr_str_new(msg.data, msg.len);
+  free(msg.data);
+  *code = name;
+  return m;
+}
+
+static void scr_h2_stream_fail_file(ScrH2Stream *st, int err, const char *action,
+                                    const char *path, size_t pathlen) {
+  const char *name = NULL;
+  ScrStr *m = scr_h2_file_error_message(err, action, path, pathlen, &name);
+  ScrError *e = scr_error_from_event_message(m);
+  scr_error_set_code(e, name);
+  scr_h2_err_override = e;
+  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+  scr_h2_err_override = NULL;
+  scr_error_release(e);
+  scr_str_release(m);
+  st->suppress_rst_error = true;
+  scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+}
+
+static void scr_h2_respond_with_content(ScrH2Stream *st, ScrArr *pairs, const char *data,
+                                         size_t len, bool wait_trailers) {
+  if (wait_trailers) {
+    scr_http2_stream_respond_wait(st, pairs, false, true);
+    if (len > 0) scr_h2_stream_send(st, data, len);
+    scr_http2_stream_end(st);
+    return;
+  }
+  if (len == 0) {
+    scr_http2_stream_respond_wait(st, pairs, true, false);
+    return;
+  }
+  scr_http2_stream_respond_wait(st, pairs, false, false);
+  scr_h2_stream_send(st, data, len);
+  scr_http2_stream_end(st);
+}
+
+static void scr_h2_file_close(ScrH2Stream *st) {
+  if (st->file_retry_handle > 0) {
+    scr_clear_interval(st->file_retry_handle);
+    st->file_retry_handle = 0;
+  }
+  if (st->file_fd >= 0) {
+    if (st->file_owns_fd) {
+#ifdef _WIN32
+      _close(st->file_fd);
+#else
+      close(st->file_fd);
+#endif
+    }
+    st->file_fd = -1;
+  }
+  st->file_done = true;
+  st->file_remaining = 0;
+}
+
+/* Feed the peer's windows from the descriptor source. False when this pass
+ * stopped (window exhausted, or the stream reset); true when there is
+ * nothing more to do now. */
+static bool scr_h2_file_pump(ScrH2Stream *st) {
+  if (st->file_fd < 0 || st->file_done) return true;
+  ScrH2Session *s = st->sess;
+  size_t max_frame = s->peer_max_frame ? s->peer_max_frame : SCR_H2_DEFAULT_MAX_FRAME;
+  while (st->file_remaining > 0 && !st->destroyed) {
+    if (s->sock != NULL && scr_net_sock_writable_length(s->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
+      scr_h2_file_schedule_retry(st);
+      return false;
+    }
+    int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
+    if (window <= 0) return false;
+    size_t chunk = (size_t)window;
+    if (chunk > max_frame) chunk = max_frame;
+    if ((scr_h2_file_off)chunk > st->file_remaining) chunk = (size_t)st->file_remaining;
+    char *buf = malloc(chunk);
+    if (!buf) scr_h2_oom();
+    int n = scr_h2_pread_at(st->file_fd, buf, chunk, st->file_off);
+    if (n < 0) {
+      free(buf);
+      /* A descriptor read failure resets the stream mid-body, Node's
+       * stream.close(NGHTTP2_INTERNAL_ERROR) after the headers. */
+      scr_h2_file_close(st);
+      scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+      return false;
+    }
+    if (n == 0) {
+      /* The file shrank under the stat: EOF ends the body, as Node's file
+       * pipe ends the stream at EOF rather than waiting for the stat's
+       * length. */
+      free(buf);
+      st->file_remaining = 0;
+      break;
+    }
+    scr_h2_send_frame(s, SCR_H2_F_DATA, 0, st->id, buf, (size_t)n);
+    free(buf);
+    st->file_off += n;
+    st->file_remaining -= n;
+    st->send_window -= n;
+    s->send_window -= n;
+  }
+  if (st->file_remaining <= 0) {
+    scr_h2_file_close(st);
+    /* the body is complete: END_STREAM rides an empty DATA frame, or the
+     * trailer block when the response waits for one */
+    st->want_end = true;
+  }
+  return true;
+}
+
+/* respondWithFile/respondWithFD open, stat and read on a turn of their
+ * own (Node's fs callbacks), so a stream 'error' listener registered right
+ * after the call hears a missing file instead of the process exiting. */
+typedef struct ScrH2FileCall {
+  size_t rc;
+  ScrH2Stream *st;    /* +1 */
+  ScrStr *path;       /* +1; NULL for the descriptor form */
+  ScrArr *pairs;      /* +1 */
+  int fd;             /* the descriptor form's fd */
+  double offset, length;
+  bool wait_trailers;
+  ScrDyn *check;      /* +1; the statCheck callable, nullable */
+  ScrDyn *on_error;   /* +1; the onError callback, nullable */
+} ScrH2FileCall;
+
+static void *scr_h2_file_call_retain(void *p) {
+  ScrH2FileCall *c = p;
+  c->rc++;
+  return c;
+}
+
+static void scr_h2_file_call_release(void *p) {
+  ScrH2FileCall *c = p;
+  if (--c->rc > 0) return;
+  scr_http2_stream_release(c->st);
+  scr_str_release(c->path);
+  scr_arr_release(c->pairs);
+  scr_dyn_release(c->check);
+  scr_dyn_release(c->on_error);
+  free(c);
+}
+
+static int scr_h2_open_read(const char *path) {
+#ifdef _WIN32
+  return _open(path, _O_RDONLY | _O_BINARY);
+#else
+  return open(path, O_RDONLY);
+#endif
+}
+
+static void scr_h2_close_fd(int fd) {
+#ifdef _WIN32
+  _close(fd);
+#else
+  close(fd);
+#endif
+}
+
+/* Node's validatePath: a NUL byte in the path is a catchable TypeError
+ * with this message (control bytes echoed as \xNN). */
+static void scr_h2_path_nul_error(ScrStr *path) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b,
+              "The argument 'path' must be a string, Uint8Array, or URL without null bytes. "
+              "Received '");
+  for (size_t i = 0; i < path->len; i++) {
+    unsigned char ch = (unsigned char)path->data[i];
+    if (ch >= 0x20 && ch < 0x7f) {
+      scr_jb_putc(&b, (char)ch);
+    } else {
+      char esc[8];
+      int n = snprintf(esc, sizeof esc, "\\x%02x", (unsigned)ch);
+      scr_jb_puts(&b, esc);
+    }
+  }
+  scr_jb_puts(&b, "'");
+  ScrStr *msg = scr_jb_finish(&b);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_ARG_VALUE");
+  scr_str_release(msg);
+}
+
+static ScrDyn *scr_h2_stat_record(const struct stat *info) {
+  ScrDyn *obj = scr_dyn_new_obj();
+  scr_dyn_obj_set(obj, "size", 4, scr_dyn_new_num((double)info->st_size));
+  scr_dyn_obj_set(obj, "mode", 4, scr_dyn_new_num((double)info->st_mode));
+  scr_dyn_obj_set(obj, "dev", 3, scr_dyn_new_num((double)info->st_dev));
+  scr_dyn_obj_set(obj, "ino", 3, scr_dyn_new_num((double)info->st_ino));
+  scr_dyn_obj_set(obj, "nlink", 5, scr_dyn_new_num((double)info->st_nlink));
+  scr_dyn_obj_set(obj, "uid", 3, scr_dyn_new_num((double)info->st_uid));
+  scr_dyn_obj_set(obj, "gid", 3, scr_dyn_new_num((double)info->st_gid));
+  return obj;
+}
+
+/* Whether the pairs array names `name` (ASCII-case-insensitive). */
+static bool scr_h2_pairs_has(ScrArr *pairs, const char *name) {
+  size_t cl = strlen(name);
+  size_t n = pairs != NULL ? (size_t)scr_arr_len(pairs) : 0;
+  for (size_t i = 0; i + 1 < n; i += 2) {
+    ScrStr *nm = scr_arr_get_ref(pairs, (double)i);
+    bool eq = nm->len == cl;
+    for (size_t k = 0; eq && k < cl; k++) {
+      char ch = nm->data[k];
+      if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+      eq = ch == name[k];
+    }
+    scr_str_release(nm);
+    if (eq) return true;
+  }
+  return false;
+}
+
+/* Node's onError: the program's callback answers a failed open/stat
+ * instead of a stream 'error'. False when none is set. */
+static bool scr_h2_file_on_error(ScrH2FileCall *c, int err, const char *action, const char *path,
+                                  size_t pathlen) {
+  if (c->on_error == NULL || c->on_error->kind == SCR_DYN_NULL ||
+      c->on_error->kind == SCR_DYN_UNDEF) {
+    return false;
+  }
+  const char *code = NULL;
+  ScrStr *m = scr_h2_file_error_message(err, action, path, pathlen, &code);
+  ScrError *e = scr_error_from_event_message(m);
+  scr_error_set_code(e, code);
+  scr_str_release(m);
+  ScrDyn *arg = scr_dyn_from_error(e);
+  scr_error_release(e);
+  ScrDyn *args[1] = { arg };
+  ScrDyn *result = scr_dyn_call(c->on_error, args, 1, "onError");
+  scr_dyn_release(result);
+  scr_dyn_release(arg);
+  scr_dyn_release(c->on_error);
+  c->on_error = NULL;
+  return true;
+}
+
+static void scr_h2_file_call_cleanup(ScrH2FileCall *c) {
+  scr_h2_file_call_release(c);
+}
+
+static void scr_h2_file_call_fire(ScrClosure *cb) {
+  ScrH2FileCall *c = scr_box_get_ref(cb->caps[0]); /* +1 */
+  ScrH2Stream *st = c->st;
+  if (st == NULL || st->destroyed || st->respond_sent || st->close_queued) {
+    scr_h2_file_call_cleanup(c);
+    return;
+  }
+  char *owned = NULL;
+  const char *cpath = c->path != NULL ? scr_str_utf8(c->path, &owned) : NULL;
+  int fd = c->fd;
+  bool owns = c->path != NULL;
+  if (owns) {
+    fd = scr_h2_open_read(cpath);
+    if (fd < 0) {
+      int err = errno;
+      if (!scr_h2_file_on_error(c, err, "open", cpath, strlen(cpath))) {
+        scr_h2_stream_fail_file(st, err, "open", cpath, strlen(cpath));
+      }
+      scr_str_utf8_end(owned);
+      scr_h2_file_call_cleanup(c);
+      return;
+    }
+  }
+  struct stat info;
+  bool stat_ok;
+#ifdef _WIN32
+  struct _stat64 win_info;
+  stat_ok = _fstat64(fd, &win_info) == 0;
+  if (stat_ok) {
+    memset(&info, 0, sizeof info);
+    info.st_size = (long long)win_info.st_size;
+    info.st_mode = win_info.st_mode;
+    info.st_dev = win_info.st_dev;
+    info.st_ino = win_info.st_ino;
+  }
+#else
+  stat_ok = fstat(fd, &info) == 0;
+#endif
+  if (!stat_ok) {
+    int err = errno;
+    if (owns) scr_h2_close_fd(fd);
+    if (!scr_h2_file_on_error(c, err, "fstat", cpath, cpath != NULL ? strlen(cpath) : 0)) {
+      scr_h2_stream_fail_file(st, err, "fstat", cpath, cpath != NULL ? strlen(cpath) : 0);
+    }
+    scr_str_utf8_end(owned);
+    scr_h2_file_call_cleanup(c);
+    return;
+  }
+  bool is_file = S_ISREG(info.st_mode);
+  scr_h2_file_off size = (scr_h2_file_off)info.st_size;
+  scr_h2_file_off start = c->offset > 0 ? (scr_h2_file_off)c->offset : 0;
+  scr_h2_file_off want = c->length >= 0 ? (scr_h2_file_off)c->length : size - start;
+  if (start > size) { start = size; want = 0; }
+  if (want < 0) want = 0;
+  if (start + want > size) want = size - start;
+  /* Node's statCheck: (stat, headers); an explicit false cancels the
+   * response, leaving the stream for the program to answer itself. The
+   * record it receives is the one that answers, so a callback that edits
+   * it changes the response (Node passes the caller's live headers
+   * object). */
+  bool has_check = c->check != NULL && c->check->kind != SCR_DYN_NULL &&
+                   c->check->kind != SCR_DYN_UNDEF;
+  ScrArr *pairs = c->pairs;
+  ScrArr *owned_pairs = NULL;
+  if (has_check) {
+    ScrDyn *stat_obj = scr_h2_stat_record(&info);
+    ScrDyn *hdrs = scr_h2_pairs_to_dom(c->pairs, -1);
+    {
+      ScrStr *date = scr_h2_date_str();
+      scr_dyn_obj_set(hdrs, "date", 4, scr_dyn_new_str(date));
+      scr_str_release(date);
+    }
+    ScrDyn *check_args[2] = { stat_obj, hdrs };
+    ScrDyn *answer = scr_dyn_call(c->check, check_args, 2, "statCheck");
+    /* Only an explicit false cancels the response (Node's === false). */
+    bool proceed = !(answer != NULL && answer->kind == SCR_DYN_BOOL && !answer->v.b);
+    scr_dyn_release(answer);
+    scr_dyn_release(stat_obj);
+    scr_dyn_release(c->check);
+    c->check = NULL;
+    if (scr_exc_pending()) {
+      scr_dyn_release(hdrs);
+      if (owns) scr_h2_close_fd(fd);
+      scr_str_utf8_end(owned);
+      scr_h2_file_call_cleanup(c);
+      return;
+    }
+    if (!proceed || st->respond_sent || st->destroyed) {
+      scr_dyn_release(hdrs);
+      if (owns) scr_h2_close_fd(fd);
+      scr_str_utf8_end(owned);
+      scr_h2_file_call_cleanup(c);
+      return;
+    }
+    /* respondWithFile's response carries the regular file's exact length,
+     * overriding whatever the check left there (Node assigns it after the
+     * callback, and leaves the descriptor form's headers alone). */
+    if (owns && is_file) {
+      char lenbuf[32];
+      int lenlen = snprintf(lenbuf, sizeof lenbuf, "%lld", (long long)want);
+      ScrStr *clen = scr_str_new(lenbuf, (size_t)lenlen);
+      scr_dyn_obj_set(hdrs, "content-length", 14, scr_dyn_new_str(clen));
+      scr_str_release(clen);
+    }
+    owned_pairs = scr_h2_dom_to_pairs(hdrs);
+    pairs = owned_pairs;
+    scr_dyn_release(hdrs);
+  } else if (owns && is_file) {
+    /* Node replaces the caller's content-length with the range's actual
+     * byte count for a regular file (a range response with the full
+     * length would be rejected by the peer), so the old field goes and the
+     * computed one takes its place. */
+    size_t n = (size_t)scr_arr_len(pairs);
+    owned_pairs = scr_arr_new(SCR_ELEM_STR, (double)n + 2);
+    for (size_t i = 0; i + 1 < n; i += 2) {
+      ScrStr *name = scr_arr_get_ref(pairs, (double)i);
+      ScrStr *value = scr_arr_get_ref(pairs, (double)(i + 1));
+      bool clen = name->len == 14;
+      for (size_t k = 0; clen && k < 14; k++) {
+        char ch = name->data[k];
+        if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+        clen = ch == "content-length"[k];
+      }
+      if (clen) {
+        scr_str_release(name);
+        scr_str_release(value);
+      } else {
+        scr_arr_push_ref(owned_pairs, name);  /* moves the refs */
+        scr_arr_push_ref(owned_pairs, value);
+      }
+    }
+    char lenbuf[32];
+    int lenlen = snprintf(lenbuf, sizeof lenbuf, "%lld", (long long)want);
+    scr_arr_push_ref(owned_pairs, scr_str_new("content-length", 14));
+    scr_arr_push_ref(owned_pairs, scr_str_new(lenbuf, (size_t)lenlen));
+    pairs = owned_pairs;
+  }
+  scr_http2_stream_respond_wait(st, pairs, false, c->wait_trailers);
+  if (owned_pairs != NULL) scr_arr_release(owned_pairs);
+  scr_str_utf8_end(owned);
+  if (st->respond_sent && !st->destroyed && !st->close_queued) {
+    st->file_fd = fd;
+    st->file_owns_fd = owns;
+    st->file_done = false;
+    st->file_off = start;
+    st->file_remaining = want;
+    scr_h2_stream_flush(st);
+  } else if (owns) {
+    scr_h2_close_fd(fd);
+  }
+  scr_h2_file_call_cleanup(c);
+}
+
+static void scr_h2_file_call_defer(ScrH2FileCall *c) {
+  /* A zero-delay timer, not scr_next_tick: the open/stat error delivery is
+   * an ordinary IO callback turn in Node, and the timer runner is the
+   * runtime's deferral path for it. */
+  ScrClosure *tick = scr_closure_new((void *)&scr_h2_file_call_fire, 1);
+  tick->caps[0] = scr_box_new_obj(scr_h2_file_call_retain, scr_h2_file_call_release, NULL);
+  scr_box_set_ref(tick->caps[0], c);
+  double handle = scr_set_timeout_handle(tick, 0);
+  if (handle > 0) scr_timer_unref(handle);
+}
+
+void scr_http2_stream_respond_with_file(ScrH2Stream *st, ScrStr *path /*borrowed*/,
+                                       ScrArr *pairs /*borrowed, nullable*/, double offset,
+                                       double length, bool wait_trailers,
+                                       ScrDyn *check /*borrowed, nullable*/,
+                                       ScrDyn *on_error /*borrowed, nullable*/) {
+  if (st->destroyed || st->respond_sent) {
+    return;
+  }
+  /* Node validates the path synchronously, before any fs work. */
+  if (memchr(path->data, '\0', path->len) != NULL) {
+    scr_h2_path_nul_error(path);
+    return;
+  }
+  ScrH2FileCall *c = calloc(1, sizeof *c);
+  if (!c) scr_h2_oom();
+  c->rc = 1;
+  c->st = scr_http2_stream_retain(st);
+  c->path = scr_str_retain(path);
+  c->pairs = pairs != NULL ? scr_arr_retain(pairs) : scr_arr_new(SCR_ELEM_STR, 2);
+  c->fd = -1;
+  c->offset = offset;
+  c->length = length;
+  c->wait_trailers = wait_trailers;
+  c->check = check != NULL ? scr_dyn_retain(check) : NULL;
+  c->on_error = on_error != NULL ? scr_dyn_retain(on_error) : NULL;
+  scr_h2_file_call_defer(c);
+}
+
+void scr_http2_stream_respond_with_fd(ScrH2Stream *st, double fd, ScrArr *pairs /*borrowed, nullable*/,
+                                      double offset, double length, bool wait_trailers,
+                                      ScrDyn *check /*borrowed, nullable*/,
+                                      ScrDyn *on_error /*borrowed, nullable*/) {
+  if (st->destroyed || st->respond_sent) {
+    return;
+  }
+  ScrH2FileCall *c = calloc(1, sizeof *c);
+  if (!c) scr_h2_oom();
+  c->rc = 1;
+  c->st = scr_http2_stream_retain(st);
+  c->path = NULL;
+  c->pairs = pairs != NULL ? scr_arr_retain(pairs) : scr_arr_new(SCR_ELEM_STR, 2);
+  c->fd = (int)fd;
+  c->offset = offset;
+  c->length = length;
+  c->wait_trailers = wait_trailers;
+  c->check = check != NULL ? scr_dyn_retain(check) : NULL;
+  c->on_error = on_error != NULL ? scr_dyn_retain(on_error) : NULL;
+  scr_h2_file_call_defer(c);
+}
+
 void scr_http2_stream_close(ScrH2Stream *st, double code, ScrClosure *cb /*moves, nullable*/) {
   if (cb) scr_net_ls_add(&st->close_ls, cb, NULL, true);
   if (st->destroyed || st->close_queued || st->close_emitted) return;
@@ -2667,6 +3277,31 @@ bool scr_http2_stream_headers_sent(ScrH2Stream *st) {
 }
 bool scr_http2_stream_aborted(ScrH2Stream *st) { return st->aborted; }
 bool scr_http2_stream_pending(ScrH2Stream *st) { return false; /* streams send at request() */ }
+bool scr_http2_stream_end_after_headers(ScrH2Stream *st) { return st->end_after_headers; }
+
+/* Http2Stream.bufferSize: the bytes buffered for the writable side (the
+ * send buffer withheld by flow control). */
+double scr_http2_stream_buffer_size(ScrH2Stream *st) { return (double)st->wbuf.len; }
+
+/* Http2ServerRequest.authority/scheme: the request's pseudo-headers
+ * (+1), NULL when the peer sent none. */
+static ScrStr *scr_h2_req_pseudo(ScrHttpReq *r, const char *name, size_t len) {
+  ScrStr *key = scr_str_new(name, len);
+  ScrStr *value = scr_http_req_header(r, key);
+  scr_str_release(key);
+  /* Http2ServerRequest.authority/scheme are strings: a block without the
+   * pseudo-header (CONNECT shapes) answers "". */
+  return value != NULL ? value : scr_str_new("", 0);
+}
+
+ScrStr *scr_http2_req_authority(ScrHttpReq *r) {
+  /* Node's getAuthority: :authority, else the host field. */
+  ScrStr *authority = scr_h2_req_pseudo(r, ":authority", 10);
+  if (authority->len > 0) return authority;
+  scr_str_release(authority);
+  return scr_h2_req_pseudo(r, "host", 4);
+}
+ScrStr *scr_http2_req_scheme(ScrHttpReq *r) { return scr_h2_req_pseudo(r, ":scheme", 7); }
 
 ScrH2Session *scr_http2_stream_session(ScrH2Stream *st) {
   return scr_http2_session_retain(st->sess);
@@ -2923,6 +3558,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     s->max_created_stream_id = stream_id;
     if (end_stream) {
       st->end_recv = true;
+      st->end_after_headers = true;
       st->state = SCR_H2_S_CLOSED_REMOTE;
     }
     bool connect_request = false;
@@ -3652,7 +4288,11 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (authority) scr_str_release(authority);
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
-  if (end) scr_h2_stream_mark_local_closed(st);
+  if (end) {
+    /* Node reports endAfterHeaders only on a server stream whose request
+     * ended at its HEADERS block; a client stream always answers false. */
+    scr_h2_stream_mark_local_closed(st);
+  }
   return st; /* the create ref moves out; the session's vector holds its own */
 }
 
@@ -4118,8 +4758,13 @@ void scr_http2_resp_thunk(ScrClosure *cb, ScrArr *pairs, double status, double f
  * code is ERR_HTTP2_STREAM_ERROR and whose message carries the code name
  * ("Stream closed with error code NGHTTP2_PROTOCOL_ERROR"). */
 void scr_http2_stream_err_thunk(ScrClosure *cb, ScrStr *msg) {
-  ScrError *error = scr_error_new(0 /* Error */, msg);
-  scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  ScrError *error;
+  if (scr_h2_err_override != NULL) {
+    error = scr_error_retain(scr_h2_err_override);
+  } else {
+    error = scr_error_new(0 /* Error */, msg);
+    scr_error_set_code(error, "ERR_HTTP2_STREAM_ERROR");
+  }
   ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, error);
 }
 
@@ -4225,8 +4870,13 @@ static void scr_h2_dyn_fire_stream(ScrClosure *cb, ScrH2Stream *st, ScrArr *pair
 /* A stream error for a dyn listener: Node's ERR_HTTP2_STREAM_ERROR. */
 static void scr_h2_dyn_fire_stream_err(ScrClosure *cb, ScrStr *msg) {
   ScrDyn *fn = scr_dyn_listener_fn(cb);
-  ScrError *e = scr_error_new(0 /* Error */, msg);
-  scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
+  ScrError *e;
+  if (scr_h2_err_override != NULL) {
+    e = scr_error_retain(scr_h2_err_override);
+  } else {
+    e = scr_error_new(0 /* Error */, msg);
+    scr_error_set_code(e, "ERR_HTTP2_STREAM_ERROR");
+  }
   ScrDyn *arg = scr_dyn_from_error(e);
   ScrDyn *args[1] = { arg };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
@@ -4314,11 +4964,29 @@ static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
     const ScrDyn *v = e.value;
     ScrStr *vs;
-    if (v->kind == SCR_DYN_STR) vs = scr_str_retain(v->v.str);
-    else if (v->kind == SCR_DYN_NUM) vs = scr_f64_to_scrstr(v->v.num);
-    else continue; /* undefined/null header: dropped, Node's stance */
-    scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
-    scr_arr_push_ref(pairs, vs);
+    if (v->kind == SCR_DYN_STR || v->kind == SCR_DYN_NUM) {
+      vs = v->kind == SCR_DYN_STR ? scr_str_retain(v->v.str) : scr_f64_to_scrstr(v->v.num);
+      scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
+      scr_arr_push_ref(pairs, vs);
+    } else if (v->kind == SCR_DYN_ARR || v->kind == SCR_DYN_TYPED_REF) {
+      /* An array-valued header is one field per element (Node's header
+       * lists repeat the name; 'set-cookie' relies on it). A compiled
+       * array literal arrives as a typed capsule; materializing it gives
+       * the element list. */
+      ScrDyn *view = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v)
+                                                  : scr_dyn_retain((ScrDyn *)v);
+      if (view != NULL && view->kind == SCR_DYN_ARR) {
+        for (size_t k = 0; k < view->v.arr.len; k++) {
+          const ScrDyn *item = view->v.arr.items[k];
+          if (item->kind == SCR_DYN_STR) vs = scr_str_retain(item->v.str);
+          else if (item->kind == SCR_DYN_NUM) vs = scr_f64_to_scrstr(item->v.num);
+          else continue;
+          scr_arr_push_ref(pairs, scr_str_new(e.key, e.key_len));
+          scr_arr_push_ref(pairs, vs);
+        }
+      }
+      if (view != NULL) scr_dyn_release(view);
+    } /* undefined/null header: dropped, Node's stance */
   }
   return pairs;
 }

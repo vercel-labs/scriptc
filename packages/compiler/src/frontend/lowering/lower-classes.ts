@@ -238,6 +238,7 @@ import {
 import {
   lowerHttpAgentNew,
   lowerHttpServerNew,
+  lowerNetSocketNew,
   lowerTlsServerNew,
   lowerTlsSocketNew,
 } from "./lower-server.js";
@@ -4828,7 +4829,10 @@ export function collectClassShapeInner(
           if (!refuseAccessor(propertyType())) throw e;
           continue;
         }
-        if (lowerer.checkedVirtualJsAccessors.has(member)) {
+        if (
+          lowerer.checkedVirtualJsAccessors.has(member) ||
+          lowerer.jsWidenedAccessors.has(member)
+        ) {
           if (isGet) sig.ret = DYN;
           else for (const parameter of sig.params) parameter.type = DYN;
         }
@@ -13361,6 +13365,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   {
     const httpServer = lowerHttpServerNew(lowerer, expr);
     if (httpServer) return httpServer;
+  }
+  // `new net.Socket([options])` — an unconnected socket (lower-server).
+  {
+    const netSocket = lowerNetSocketNew(lowerer, expr);
+    if (netSocket) return netSocket;
   }
   // `new tls.TLSSocket(socket, options)` — the server-mode wrap of an open
   // socket (lower-server).

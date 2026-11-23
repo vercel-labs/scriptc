@@ -51,6 +51,7 @@
 #include "scr_bigint.h"
 #include "scr_os.h"
 #include "scr_dyn.h"
+#include "scr_cluster.h"
 #include "scr_fs_exists_dyn.h"
 #include "scr_module_cache.h"
 #include "scr_json.h"

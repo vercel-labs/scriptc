@@ -82,6 +82,23 @@ static ScrStr *scr_ee_sym_text(ScrSym *sym) {
   return scr_sym_event_ops->to_string(sym);
 }
 
+/* A name key's symbol, retained (+1); NULL for a string key. A bucket is
+ * the symbol's owner for as long as it keys one, so a removal that drops
+ * the last listener of the name can release the symbol whose removal the
+ * meta event is about to announce; callers hold it across the
+ * announcement. */
+static ScrSym *scr_ee_sym_hold(ScrStr *name) {
+  return scr_str_is_symbol_key(name) ? scr_ee_sym_retain(scr_str_symbol_key_sym(name)) : NULL;
+}
+
+/* The symbol itself as a checked-dynamic value (+1): the meta events pass
+ * the affected event's name VALUE, and a symbol key names itself, not
+ * "Symbol(desc)". */
+static ScrDyn *scr_ee_sym_box(ScrSym *sym) {
+  if (!scr_sym_event_ops) scr_trap("scriptc: symbol event names need the symbol runtime unit\n");
+  return scr_sym_event_ops->box(sym);
+}
+
 /* One registered listener. Shared between the live list and emit
  * snapshots via `refs` (never the closure's own rc: the node owns ONE cb
  * reference, released when the last holder lets go). */
@@ -471,6 +488,17 @@ static bool scr_ee_bucket_has_flex(const ScrEeBucket *b) {
   return false;
 }
 
+/* Whether every entry of the bucket can take the untyped argument vector:
+ * a name with no single typed representation (a symbol) reaches listeners
+ * only through that form. */
+static bool scr_ee_bucket_all_flex(const ScrEeBucket *b) {
+  if (!b || b->n == 0) return false;
+  for (size_t i = 0; i < b->n; i++) {
+    if (!b->ls[i]->flex_invoke) return false;
+  }
+  return true;
+}
+
 /* The checked-dynamic function value of a dynamically registered entry
  * (+1), or NULL for a typed listener. Identity lives in the closure, so the
  * rebuilt box compares equal to the value that was registered. */
@@ -485,11 +513,14 @@ static ScrDyn *scr_ee_entry_dyn(const ScrEeEntry *e) {
  * registered dynamically, the listener (`fn`, borrowed, may be NULL) —
  * beside the typed one-name tuple. False when no such listener exists (the
  * caller emits the typed tuple alone). */
-static bool scr_ee_dyn_emit_meta(ScrEmitter *em, ScrStr *meta, ScrStr *name, const ScrDyn *fn) {
+static bool scr_ee_dyn_emit_meta(ScrEmitter *em, ScrStr *meta, ScrStr *name, ScrDyn *name_value,
+                                 const ScrDyn *fn) {
   if (!scr_ee_bucket_has_flex(scr_ee_bucket_of(em->reg, meta))) return false;
-  ScrDyn *args[2] = { scr_dyn_new_str(name), (ScrDyn *)fn };
-  scr_ee_emit_mixed_va(em, meta, args, fn ? 2 : 1, 1, name);
-  scr_dyn_release(args[0]);
+  ScrDyn *args[2] = { name_value, (ScrDyn *)fn };
+  /* `name` is the typed one-string tuple's argument; a symbol name has
+   * none, and then only the checked-dynamic vector is emitted. */
+  if (name) scr_ee_emit_mixed_va(em, meta, args, fn ? 2 : 1, 1, name);
+  else scr_ee_emit_mixed_va(em, meta, args, fn ? 2 : 1, 0);
   return true;
 }
 
@@ -505,7 +536,8 @@ static ScrDyn *scr_ee_dyn_removed(ScrEmitter *em, const ScrEeEntry *e) {
  * listeners take the meta events' untyped argument vector, so programs
  * without untyped emitter calls never reach, or link, this half. */
 struct ScrEeDynOps {
-  bool (*emit_meta)(ScrEmitter *em, ScrStr *meta, ScrStr *name, const ScrDyn *fn);
+  bool (*emit_meta)(ScrEmitter *em, ScrStr *meta, ScrStr *name, ScrDyn *name_value,
+                    const ScrDyn *fn);
   ScrDyn *(*removed)(ScrEmitter *em, const struct ScrEeEntry *e);
 };
 static const ScrEeDynOps scr_ee_dyn_ops = { &scr_ee_dyn_emit_meta, &scr_ee_dyn_removed };
@@ -521,13 +553,32 @@ static void scr_ee_emit_meta(ScrEmitter *em, const char *meta, ScrStr *name, con
   if (!em->reg || em->reg->plain) return;
   if (!scr_ee_has(em->reg, meta)) return;
   /* Node passes the affected event's name VALUE, and a symbol-keyed event's
-   * name is a symbol — which the typed one-string tuple cannot carry. */
-  if (scr_ee_is_error_monitor(name) || scr_str_is_symbol_key(name)) {
+   * name is a symbol — which the typed one-string tuple cannot carry, so
+   * such a name is delivered only through the checked-dynamic vector, and
+   * only when every listener of the meta event takes that form (a listener
+   * registered from JavaScript registers through the adapter, which does). */
+  if (scr_ee_is_error_monitor(name)) {
     scr_ee_symbol_name_fence(meta);
     return;
   }
   ScrStr *m = scr_str_new(meta, strlen(meta));
-  if (!scr_ee_dyn || !scr_ee_dyn->emit_meta(em, m, name, fn)) scr_ee_emit_va(em, m, name);
+  ScrStr *typed_name = name;
+  ScrDyn *name_value;
+  if (scr_str_is_symbol_key(name)) {
+    ScrEeBucket *b = scr_ee_bucket_of(em->reg, m);
+    if (!scr_ee_dyn || !scr_ee_bucket_all_flex(b)) {
+      scr_str_release(m);
+      scr_ee_symbol_name_fence(meta);
+      return;
+    }
+    name_value = scr_ee_sym_box(scr_str_symbol_key_sym(name));
+    typed_name = NULL;
+  } else {
+    name_value = scr_dyn_new_str(name);
+  }
+  if (!scr_ee_dyn || !scr_ee_dyn->emit_meta(em, m, typed_name, name_value, fn))
+    scr_ee_emit_va(em, m, name);
+  scr_dyn_release(name_value);
   scr_str_release(m);
 }
 
@@ -1194,12 +1245,16 @@ static void scr_ee_remove_at_quiet(ScrEmitter *em, ScrEeBucket *b, size_t i) {
 
 static void scr_ee_remove_at(ScrEmitter *em, ScrEeBucket *b, size_t i) {
   ScrStr *name = scr_str_retain(b->name);
+  /* The removal may drop the name's last bucket and with it the symbol
+   * the announcement passes on. */
+  ScrSym *sym = scr_ee_sym_hold(name);
   /* The removed listener as a function value, for checked-dynamic
    * 'removeListener' listeners (Node's second argument). */
   ScrDyn *fn = scr_ee_dyn ? scr_ee_dyn->removed(em, b->ls[i]) : NULL;
   scr_ee_remove_at_quiet(em, b, i);
   scr_ee_emit_meta(em, "removeListener", name, fn);
   if (fn) scr_dyn_release(fn);
+  scr_ee_sym_release(sym);
   scr_str_release(name);
 }
 
@@ -1290,6 +1345,9 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
    * survives. The bucket can drop (and even be recreated) under the
    * pass, so every step re-finds it and matches entries by identity. */
   ScrStr *name = scr_str_retain(b->name);
+  /* The removals below drop the name's bucket, and the symbol it owns
+   * with it, while the pass still matches entries by that name. */
+  ScrSym *sym = scr_ee_sym_hold(name);
   size_t n = b->n;
   ScrEeEntry **snap = malloc(n * sizeof *snap);
   if (!snap) scr_ee_oom();
@@ -1311,6 +1369,7 @@ static void scr_ee_remove_all_named(ScrEmitter *em, ScrEeBucket *b, bool meta) {
     scr_ee_entry_unref(e);
   }
   free(snap);
+  scr_ee_sym_release(sym);
   scr_str_release(name);
 }
 

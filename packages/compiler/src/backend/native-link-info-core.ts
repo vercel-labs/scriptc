@@ -90,6 +90,9 @@ export interface NativeLinkFeatures {
    * or hasColors: links scr_tty_colors.c and the SCR_TTY_COLORS build of
    * the events unit, whose stream object has the two methods. */
   ttyColors?: boolean;
+  /** A Console built with inspectOptions or colorMode: its option-aware
+   * methods read the environment's color depth (scr_tty_colors.c). */
+  consoleOptions?: boolean;
   /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
    * which installs Node's pipe lifecycle into the stream unit. */
   streamPipeEvents?: boolean;
@@ -148,6 +151,9 @@ export interface NativeLinkFeatures {
    * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
    * Absent (false) otherwise. */
   childOptionExt?: boolean;
+  /** node:cluster's module surface links scr_cluster.c; absent (false)
+   * otherwise. */
+  cluster?: boolean;
   /** A spawnSync capture read as a Buffer links scr_child_capture.c;
    * absent (false) otherwise. */
   spawnCaptureBytes?: boolean;
@@ -466,6 +472,10 @@ interface LinkFeatureRequirement {
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "http2", requires: ["http", "net"] },
+  // scr_dgram.c reads the options' net.BlockList members through scr_net.c's
+  // matcher (createSocket's checks and the send/connect filters), so the
+  // block-list unit comes with the dgram unit.
+  { feature: "dgram", requires: ["net"] },
   // scr_dns_resolve.c encodes query names with scr_idna.c's ToASCII (the
   // unit that rides the regex engine), and its queries ride the dgram
   // unit's poller.
@@ -508,6 +518,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
   { feature: "streamDyn", requires: ["dynInvoke"] },
+  // A Console built with inspectOptions or colorMode formats through the
+  // inspect unit's console entries, and colorMode 'auto' reads the
+  // environment's color depth (scr_tty_colors.c).
+  { feature: "consoleOptions", requires: ["inspect"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

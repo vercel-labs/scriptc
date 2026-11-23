@@ -1,3 +1,4 @@
+import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -11,6 +12,7 @@ import {
 } from "./member-call-receivers.js";
 import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
+  arrayClassDeclaresMember,
   arrayClassMemberOwner,
   applyDeferredArrayClassCheck,
   arrayClassReceiver,
@@ -248,6 +250,7 @@ import {
   lowerPerfHooksCall,
   perfEntryTag,
 } from "./builtins/performance.js";
+import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
 import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
@@ -297,6 +300,7 @@ import {
   lowerCompatReqStreamOptionalCall,
   lowerHttpClientFnCall,
   lowerHttpClientFnRefCall,
+  lowerNetConnectCall,
   lowerNetServerAsyncDisposeCall,
 } from "./lower-server.js";
 import {
@@ -350,6 +354,7 @@ import {
   ambientUndefVarRootOf,
   ambientUndefinedFnSymbolOf,
   contextualUndefReadType,
+  cjsNamespaceMemberSnapshotOf,
   fenceEarlyAliasUse,
   fenceEarlyNsMemberRef,
   nsMemberIdentOf,
@@ -711,6 +716,14 @@ function lowerVoidTruthinessCall(
 
 function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   refuseOwnCallPrototype(lowerer, expr);
+  // node:cluster's own event registration (`cluster.on('exit', ...)`) is a
+  // method of the exports object, not one of the module's named exports, so
+  // it is claimed before the checked-dynamic member path can read the
+  // namespace object's inherited EventEmitter method and fence it.
+  if (ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken) {
+    const clusterEvent = lowerer.lowerClusterMethodCall(expr, expr.expression);
+    if (clusterEvent) return clusterEvent;
+  }
   // `c.toString()` of a builtin constructor value is the constructor's text,
   // whatever tier holds the value (held-constructors.ts).
   if (
@@ -1173,6 +1186,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
             consoleMember === "log" || consoleMember === "info" || consoleMember === "debug",
             `console.${consoleMember}`,
             loc,
+            undefined,
+            lowerer.usesDiagnosticsChannel() ? consoleMember : undefined,
           )
         : lowerConsoleMethodCall(lowerer, expr, consoleMethod!, loc);
     return receiver === null
@@ -2183,8 +2198,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // .bind(performance) function value over the runtime's
       // process-start-anchored monotonic clock.
       lowerPerfHooksCall(lowerer, expr, expr.expression) ??
+      lowerHistogramStatsMethodCall(lowerer, expr, expr.expression) ??
       lowerHistogramMethodCall(lowerer, expr, expr.expression) ??
       lowerRecordableHistogramMethodCall(lowerer, expr, expr.expression) ??
+      lowerSlidingWindowMethodCall(lowerer, expr, expr.expression) ??
       // The composed crypto pattern (randomBytes(n).toString(enc))
       // — its receiver is a Buffer-typed CALL no other lowering claims.
       lowerer.lowerCryptoComposedCall(expr, expr.expression) ??
@@ -2258,6 +2275,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       // traceCallback over the f64 tracing handle.
       lowerer.lowerTracingChannelMethodCall(expr, expr.expression) ??
       lowerer.lowerServerMethodCall(expr, expr.expression) ??
+      lowerer.lowerClusterMethodCall(expr, expr.expression) ??
       lowerer.lowerDgramMethodCall(expr, expr.expression) ??
       // node:test — skip/todo/only twins on named import bindings, the
       // TestContext surface (t.test/t.skip/t.diagnostic), t.assert.*.
@@ -2440,6 +2458,32 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       const tableCall = lowerCallableMemberCall(lowerer, expr);
       if (tableCall) return tableCall;
     }
+    // `Error.prepareStackTrace(...)`: the member is program state (a
+    // checked-dynamic value, see fieldTarget), and a call is the call of
+    // whatever the program stored there — the default value's call throws
+    // its named refusal.
+    {
+      const target =
+        ts.isPropertyAccessExpression(expr.expression) && !expr.expression.questionDotToken
+          ? lowerer.fieldTarget(expr.expression)
+          : null;
+      if (
+        target !== null &&
+        target.container === "errorPrepareStackTrace" &&
+        !expr.arguments.nodes.some((arg) => ts.isSpreadElement(arg))
+      ) {
+        const callee = lowerer.fieldGetExpr(target, locOf(expr.expression), expr.expression);
+        const args = expr.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+        return {
+          kind: "dynCall",
+          callee,
+          calleeName: v8CalleeText(expr.expression),
+          args,
+          type: DYN,
+          loc: locOf(expr),
+        };
+      }
+    }
     // The lib fence's METHOD-CALL chokepoint: a stdlib-declared member
     // that every lowering above declined — an unlowered member
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
@@ -2478,6 +2522,15 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
         propSym &&
         isGenericCallableMemberType(lowerer.checker.getTypeOfSymbol(propSym), lowerer.checker)
       ) {
+        {
+          const dynamic = lowerDynamicGenericMemberCall(
+            lowerer,
+            expr,
+            expr.expression,
+            expr.expression.name.text,
+          );
+          if (dynamic !== null) return dynamic;
+        }
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -3023,6 +3076,19 @@ function lowerNsMemberCall(
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
   if (memberSym && !receiverEvaluated) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   refuseModuleMemberThis(lowerer, expr, nsMember);
+  // A CommonJS namespace member its module's functions reassign: the call
+  // runs the value Node's namespace snapshot holds (the module's
+  // end-of-evaluation value), through the ordinary function-value path.
+  const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, access);
+  if (snapshot) {
+    const callee: IrExpr = { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    const checked = lowerCheckedCallableValue(lowerer, expr, callee, loc);
+    if (checked) return checked;
+    // The slot holds the namespace's value, which may be an optional union
+    // (a module that may finish without assigning the member): the ordinary
+    // call-through-value path answers Node's TypeError for undefined.
+    return lowerCallThroughValue(lowerer, expr, callee, loc);
+  }
   // A member of a function+namespace merge is an own property of the
   // function object (lower-fundule.ts), and the qualified call reads
   // that property as Node does: after `Object.assign(fmt, { helper })`
@@ -5247,6 +5313,25 @@ function unionArmsDispatchMember(
  * the dyn array and validated-extracts the survivors into the element type
  * the checker committed the result to. Null when the receiver isn't a dyn
  * value or the method isn't claimable (the method-call fence stays). */
+/** A receiver whose checker type is the `Agent` class declared by node:http
+ * (the fallback ambient or the real @types/node both name the file
+ * http.d.ts). An `https.Agent` is deliberately NOT matched: its default
+ * dialer is tls.connect, and the rewritten net dial builds a plaintext
+ * socket, so a secure agent keeps the dyn dispatch, whose dialer refuses.
+ * `any` receivers keep the dyn dispatch too. */
+function isHttpAgentReceiver(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const t = lowerer.typeOf(expr);
+  if ((t.flags & ts.TypeFlags.Any) !== 0) return false;
+  const sym = t.getSymbol();
+  if (!sym || ts.symbolName(sym) !== "Agent") return false;
+  return (
+    sym.declarations?.some((d) => {
+      const file = ts.getSourceFileOfNode(d).fileName.replace(/\\/g, "/");
+      return file.endsWith("/http.d.ts");
+    }) ?? false
+  );
+}
+
 function lowerDynReceiverMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -5254,6 +5339,48 @@ function lowerDynReceiverMethodCall(
   boxTypedTemporary = false,
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
+  // agent.createConnection(...) is Node's default dialer, which IS
+  // net.createConnection — and a compiled program cannot install an Agent
+  // override (subclassing is refused; an instance assignment hits the
+  // Agent setter's fence), so the two calls lower identically. The receiver
+  // is evaluated first, as Node evaluates it before the arguments.
+  // lowerNetConnectCall carries the note about switching to the
+  // instance-dispatching form if hook overrides ever become reachable.
+  if (access.name.text === "createConnection" && isHttpAgentReceiver(lowerer, access.expression)) {
+    const callsLoc = locOf(call);
+    const recvLoc = locOf(access.expression);
+    const receiver = lowerer.lowerExpr(access.expression);
+    const recvDyn: IrExpr =
+      receiver.type.kind === "dyn"
+        ? receiver
+        : { kind: "dynFrom", value: receiver, type: DYN, loc: recvLoc };
+    const local = lowerer.declareHiddenLocal("%connAgent", DYN);
+    const agentRef: IrExpr = { kind: "varRef", localId: local.id, type: DYN, loc: recvLoc };
+    const net = lowerNetConnectCall(lowerer, call, "createConnection", callsLoc);
+    // An https.Agent can flow here typed as http.Agent: its default dialer
+    // needs TLS, which the net lowering does not build, so the runtime
+    // refuses the plaintext dial for a secure agent instead.
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: local.id, init: recvDyn, loc: recvLoc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "http.agentCreateConnectionCheck",
+            args: [agentRef],
+            type: VOID,
+            loc: recvLoc,
+          },
+          loc: recvLoc,
+        },
+      ],
+      result: net,
+      type: net.type,
+      loc: callsLoc,
+    };
+  }
   if (stdlibGlobalNameOf(lowerer, access.expression) !== null) {
     // A named builtin import can resolve to its ambient declaration, too.
     // parentPort is an instance value whose methods use the native handle;
@@ -5494,6 +5621,21 @@ function lowerDynReceiverMethodCall(
     lowerer.dynConvertible(recv.type)
   )
     recv = lowerer.coerceToExpected(recv, DYN);
+  // An untyped receiver that lowered to a native array can be an instance
+  // of a class declared `extends Array` over its elements: a member such a
+  // class declares answers through the dynamic dispatch, which tests the
+  // array's class (a live reference keeps the instance).
+  {
+    // An element read holds the array with the hole's unit arm.
+    const present = recv.type.kind === "union" ? lowerer.stripUndefinedArm(recv.type) : recv.type;
+    if (
+      checkerUntyped &&
+      present.kind === "array" &&
+      arrayClassDeclaresMember(lowerer, present, access.name.text) &&
+      lowerer.dynConvertible(recv.type)
+    )
+      recv = lowerer.coerceToExpected(recv, DYN);
+  }
   if (recv.type.kind !== "dyn") return null;
   // `Number.prototype.m(...)` reads the prototype OBJECT, whose `m` is its
   // own member, so every primitive specialization below — which assumes a
@@ -6249,6 +6391,7 @@ const DYN_DISPATCH_METHODS = new Set([
   "values",
   "entries",
   "next",
+  "return",
   "writeContinue",
   "writeEarlyHints",
   "cork",
@@ -11574,7 +11717,16 @@ function lowerObjectStaticCall(
         loc: locOf(call),
       };
     }
-    return null;
+    // A union of this record and a unit is the indexed read's lowering under
+    // noUncheckedIndexedAccess (the checker's own type drops the undefined
+    // the storage holds). objectEnumerationReceiver throws for the unit arm
+    // and enumerates the record arm, so keep the lowering this call had.
+    const arms =
+      represented.type.kind === "union"
+        ? lowerer.unions.get(represented.type.unionId)?.arms
+        : undefined;
+    if (arms === undefined || !arms.every((arm) => isUnitType(arm) || typeEquals(arm, argIr)))
+      return null;
   }
   const shape = lowerer.shapes.get(argIr.shapeId);
   if (!shape || shape.tuple) return null; // tuple → the fence
@@ -13083,6 +13235,44 @@ function lowerDynMemberChainCall(
  *     before the arguments.
  *
  * Null keeps the caller's refusal. */
+/** A generic member whose declaration has no compiled body in the program
+ * (an interface-only member of a class-backed value, a native runtime
+ * class's member): the receiver's value still carries the member at run
+ * time, so read it and call it dynamically — the dispatch an untyped
+ * receiver takes — and convert the checked-dynamic result to this call's
+ * instantiated type. Null when the receiver cannot cross the checked-value
+ * boundary or the call spreads its arguments. */
+function lowerDynamicGenericMemberCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  name: string,
+): IrExpr | null {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const recvValue = tryLowerExpression(lowerer, access.expression);
+  if (recvValue === null || recvValue.type.kind === "void") return null;
+  let receiver: IrExpr;
+  if (recvValue.type.kind === "dyn") receiver = recvValue;
+  else if (lowerer.dynConvertible(recvValue.type))
+    receiver = lowerer.coerceToExpected(recvValue, DYN);
+  else return null;
+  const loc = locOf(call);
+  const invoked: IrExpr = {
+    kind: "dynInvoke",
+    recv: receiver,
+    method: name,
+    calleeName: v8CalleeText(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
+  const resultType = lowerer.irTypeOf(call);
+  // A void method's result stays the runtime's untyped value (a class may
+  // implement it with a method that returns one, which JavaScript passes on).
+  if (resultType.kind === "void") return invoked;
+  return lowerer.coerceInto(call, invoked, resultType);
+}
+
 function lowerSignatureOnlyGenericMemberCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -13401,29 +13591,9 @@ function lowerObjLitGenericMethodCall(
     // dispatches by name to the runtime object's member, which a generic
     // method answers with its erased instance; the result converts to this
     // call's instantiated return type.
-    if (onInterface && !call.arguments.nodes.some(ts.isSpreadElement)) {
-      const receiver = lowerer.lowerExpr(access.expression);
-      if (receiver.type.kind === "dyn") {
-        const loc = locOf(call);
-        const invoked: IrExpr = {
-          kind: "dynInvoke",
-          recv: receiver,
-          method: name,
-          calleeName: v8CalleeText(access),
-          args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
-          type: DYN,
-          loc,
-        };
-        const resultType = lowerer.irTypeOf(call);
-        // A void method's result stays the runtime's untyped value, as a
-        // call through a non-generic void member's dispatch keeps it: a class
-        // may implement the member with a method that returns a value, which
-        // JavaScript passes on (`console.log(c.publish(m))`).
-        if (resultType.kind === "void") return invoked;
-        return lowerer.coerceInto(call, invoked, resultType);
-      }
-    }
     if (onInterface) {
+      const dynamic = lowerDynamicGenericMemberCall(lowerer, call, access, name);
+      if (dynamic !== null) return dynamic;
       lowerer.unsupported(
         "SC1090",
         call,

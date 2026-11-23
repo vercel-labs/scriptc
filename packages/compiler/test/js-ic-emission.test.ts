@@ -61,7 +61,7 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     expect(body(llvm, "bump")).toMatch(/store double %t\d+, ptr %t\d+/);
     // The helper stays the out-of-line slow path of every site.
     expect(body(llvm, "read")).toMatch(
-      /@sc_bf__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/,
+      /@sc_bf__x25_dyn_class_property_[0-9a-f]+\(ptr %t\d+\) noinline cold/,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -223,8 +223,39 @@ console.log(read(p), read(t), read(dyn(new Gauge())), read({ x: 1 }), tag(t));
     // the helper.
     expect(read.match(/^icc\.m\d+:/gm)).toHaveLength(2);
     expect(read).toContain("@scr_js_get_probe(");
-    expect(read).toMatch(/@sc_b?f__x25_dyn_class_property_\d+\(ptr %t\d+\) noinline cold/);
+    expect(read).toMatch(/@sc_b?f__x25_dyn_class_property_[0-9a-f]+\(ptr %t\d+\) noinline cold/);
     expect(body(llvm, "tag").match(/^icc\.m\d+:/gm)).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("property reads answer the fields of a class-case table's classes inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-case-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    const classes = Array.from({ length: 12 }, (_, i) => `C${i}`);
+    await writeFile(
+      entry,
+      [
+        ...classes.map((name) => `class ${name} {\n  constructor(x) { this.x = x; }\n}`),
+        "function dyn(v) { return v; }",
+        "function read(o) { return o.x; }",
+        ...classes.map((name, i) => `var p${i} = dyn(new ${name}(${i}));`),
+        `console.log(${classes.map((_, i) => `read(p${i})`).join(", ")}, read({ x: 1 }));`,
+      ].join("\n"),
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // The helper selects most of the classes from a table; the site still
+    // loads each class's field after its own key compare.
+    expect(llvm).toMatch(/^class\.case\.hashed\d*:/m);
+    expect(body(llvm, "read").match(/^icc\.m\d+:/gm)).toHaveLength(classes.length);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -279,8 +310,8 @@ console.log(list[2].sum(5));
     const move = body(llvm, "move");
     expect(inline(move)).toBe(1);
     expect(move).toContain("@sc_bf__x25_dyn_class_receiver_x3a_Fast_step(");
-    expect(move).toMatch(/@sc_b?f__x25_dyn_class_callback_\d+\([^)]*\) noinline cold/);
-    expect(move).toMatch(/@sc_b?f__x25_dyn_class_call_\d+\([^)]*\) noinline cold/);
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_callback_[0-9a-f]+\([^)]*\) noinline cold/);
+    expect(move).toMatch(/@sc_b?f__x25_dyn_class_call_[0-9a-f]+\([^)]*\) noinline cold/);
     const total = body(llvm, "total");
     expect(inline(total)).toBe(3);
     expect(total).toMatch(/switch i32 %t\d+, label %iccall\.slow\d+ \[/);
@@ -369,7 +400,7 @@ console.log(bytes[0], list[0], text[0]);
       expect(at).toContain("@scr_dyn_string_index_get(");
       expect(at).toContain("@scr_js_keyed_probe(");
       expect(at).toMatch(
-        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+\) noinline cold/,
+        /@sc_b?f__x25_dyn_class_computed_[0-9a-f]+\(ptr %t\d+, ptr %t\d+\) noinline cold/,
       );
       // A computed write stores a number key's element through the runtime
       // and keeps its helper for every other receiver, key and rejected
@@ -377,7 +408,7 @@ console.log(bytes[0], list[0], text[0]);
       const put = body(arms, "put");
       expect(put).toContain("@scr_dyn_index_set(");
       expect(put).toMatch(
-        /@sc_b?f__x25_dyn_class_computed_\d+\(ptr %t\d+, ptr %t\d+, ptr %t\d+\) noinline cold/,
+        /@sc_b?f__x25_dyn_class_computed_[0-9a-f]+\(ptr %t\d+, ptr %t\d+, ptr %t\d+\) noinline cold/,
       );
     }
   } finally {
@@ -452,7 +483,7 @@ console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c
     expect(llvm).toMatch(
       /@sc_js_group_0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
     );
-    expect(llvm).toMatch(/@sc_gkeys_0 = internal constant \[3 x ptr\]/);
+    expect(llvm).toMatch(/@sc_gkeys_\d+ = internal constant \[3 x ptr\]/);
     const sum = body(llvm, "sum");
     // One layout probe answers all three members, so none of them keeps
     // its own read site.

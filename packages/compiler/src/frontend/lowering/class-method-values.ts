@@ -1,6 +1,7 @@
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
+  arrayOf,
   DYN,
   STRING,
   RUNTIME_ERROR_CLASSES,
@@ -31,6 +32,7 @@ import { methodJsName } from "./function-names.js";
 import { noteFunctionSourceNode } from "./function-source-text.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
+import { arrayClassView } from "./builtins/array-classes.js";
 
 /** The name prefix of the helper that checks the receiver a class's method
  * value was called with into the class (`%method.receiver:C`). */
@@ -320,18 +322,32 @@ export function classMethodValue(
     const receiverType: IrType = { kind: "object", className: owner.def.name };
     const receiverName = `${METHOD_RECEIVER_PREFIX}${owner.def.name}`;
     if (!lowerer.classMethodValueHelpers.has(receiverName)) {
+      const arrayElem = owner.extendsArray?.elem;
       lowerer.liftedFns.push({
         name: receiverName,
         params: [{ localId: "this.0", name: "this", type: DYN }],
         returnType: receiverType,
-        locals: [{ id: "this.0", name: "this", type: DYN, mutable: false }],
-        body: [
-          {
-            kind: "return",
-            value: { kind: "dynCheck", value: varRef("this.0", DYN, loc), type: receiverType, loc },
-            loc,
-          },
+        locals: [
+          { id: "this.0", name: "this", type: DYN, mutable: false },
+          ...(arrayElem !== undefined
+            ? [{ id: "array.0", name: "array", type: arrayOf(arrayElem), mutable: false }]
+            : []),
         ],
+        body:
+          arrayElem !== undefined
+            ? arrayClassMethodReceiver(owner, arrayElem, loc)
+            : [
+                {
+                  kind: "return",
+                  value: {
+                    kind: "dynCheck",
+                    value: varRef("this.0", DYN, loc),
+                    type: receiverType,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
         loc,
       });
       lowerer.classMethodValueHelpers.add(receiverName);
@@ -715,11 +731,59 @@ function isSuperMethodCallee(node: ts.Node): boolean {
   );
 }
 
+/** The receiver of a method value of a class declared `extends Array`: the
+ * array it was called with, when that array is an instance (only an
+ * instance has the class's fields after its header), viewed as the class
+ * object. Any other value throws the TypeError of a failed conversion. */
+function arrayClassMethodReceiver(owner: ClassInfo, elem: IrType, loc: SrcLoc): IrStmt[] {
+  const arrayType = arrayOf(elem);
+  const array = varRef("array.0", arrayType, loc);
+  const className = owner.def.jsName ?? owner.def.name;
+  return [
+    {
+      kind: "varDecl",
+      localId: "array.0",
+      init: { kind: "dynCheck", value: varRef("this.0", DYN, loc), type: arrayType, loc },
+      loc,
+    },
+    {
+      kind: "if",
+      cond: {
+        kind: "unary",
+        op: "!",
+        operand: { kind: "instanceOf", value: array, className: owner.def.name, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [
+        {
+          kind: "exprStmt",
+          expr: nodeThrowExpr(
+            1,
+            "",
+            `expected ${className} at $, got array`,
+            { kind: "void" },
+            loc,
+          ),
+          loc,
+        },
+      ],
+      else_: null,
+      loc,
+    },
+    { kind: "return", value: arrayClassView(owner, array, loc), loc },
+  ];
+}
+
 /** Complete adapters after all native class bodies and instantiations exist. */
 export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunction[]): void {
   const byName = new Map(functions.map((fn) => [fn.name, fn]));
   for (const fn of [...functions]) {
-    if (fn.name.startsWith(METHOD_RECEIVER_PREFIX) && fn.returnType.kind === "object") {
+    if (
+      fn.name.startsWith(METHOD_RECEIVER_PREFIX) &&
+      fn.returnType.kind === "object" &&
+      lowerer.classes.get(fn.returnType.className)?.extendsArray === undefined
+    ) {
       const owner = fn.returnType.className;
       const loc = fn.loc;
       const receiver = varRef("this.0", DYN, loc);

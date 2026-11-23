@@ -1539,7 +1539,7 @@ export function fenceStaticReadableStreamMember(
   lowerer.noLowering(
     `ReadableStream.${member} in a static build`,
     access,
-    "ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported",
+    "ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo(), pipeThrough() and values() as direct calls; [Symbol.asyncIterator]() compiles when consumed directly by for await, while explicit symbol access remains unsupported",
     sym,
   );
 }

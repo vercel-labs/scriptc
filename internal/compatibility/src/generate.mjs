@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildRefusals, renderRefusals } from "./refusals.mjs";
+import { loadStaticSupport } from "./static-support.mjs";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
@@ -46,7 +47,6 @@ const retiredOutputPaths = [
   `${packageRoot}generated/node-v24-backlog.json`,
 ];
 const compilerManifestPath = `${root}packages/compiler/surface-manifest.json`;
-const compilerCompatPath = `${packageRoot}static-support.json`;
 const pinPath = `${packageRoot}node-v24.json`;
 const pin = JSON.parse(readFileSync(pinPath, "utf8"));
 const NODE_BASE = pin.markdownBaseUrl;
@@ -341,7 +341,7 @@ function scopeOf(row) {
 }
 
 function classificationContext() {
-  const compilerCompat = JSON.parse(readFileSync(compilerCompatPath, "utf8"));
+  const compilerCompat = loadStaticSupport();
   for (const [chapter, status] of Object.entries(compilerCompat.chapterPolicies)) {
     validateStatus(status, `static chapter policy '${chapter}'`);
   }
@@ -469,7 +469,13 @@ function summarizeTier(rows, key, chapterPolicy) {
     .slice(1)
     .filter((row) => row.scope === "api")
     .map((row) => row[key]);
-  const statuses = new Set(descendants.map((tier) => tier.status));
+  /* A descendant that does not apply cannot make its chapter partial: the
+   * public matrix drops those rows before it derives the chapter status,
+   * so counting them here would report a chapter the public artifact calls
+   * supported as partial. */
+  const statuses = new Set(
+    descendants.map((tier) => tier.status).filter((status) => status !== "not-applicable"),
+  );
   const tests = [...new Set(descendants.flatMap((tier) => tier.tests ?? []))].sort();
   if (statuses.size === 0 && chapterPolicy) {
     return tier(chapterPolicy, "", {
@@ -569,7 +575,7 @@ function assertGlobalTwinsAgree(snapshot) {
   }
   if (disagreements.length > 0) {
     throw new Error(
-      `a global and the chapter that owns it disagree; map both rows in static-support.json, or classify the difference explicitly:\n  ${disagreements.join("\n  ")}`,
+      `a global and the chapter that owns it disagree; map both rows in the chapter's static-support/features file, or classify the difference explicitly:\n  ${disagreements.join("\n  ")}`,
     );
   }
 }

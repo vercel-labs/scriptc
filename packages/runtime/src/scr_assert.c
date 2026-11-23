@@ -170,13 +170,22 @@ static ScrDyn *scr_assert_dyn_text(const char *text) {
 /* Sets the error's own properties in Node's order. The values move in. */
 static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
                                      ScrDyn *op, ScrDyn *diff) {
-  scr_error_set_prop(e, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  /* Node assigns generatedMessage, then name, then the rest; the view is
+   * laid out when the first property is attached, so the seed places
+   * generatedMessage before the class name. */
+  scr_error_seed_own_prop("generatedMessage", 16, scr_dyn_new_bool(generated));
+  ScrDyn *view = scr_dyn_from_error(e); /* generatedMessage, then name */
+  scr_dyn_release(view);
   scr_error_set_code(e, "ERR_ASSERTION");
   scr_error_set_prop(e, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
   scr_error_set_prop(e, "actual", 6, actual);
   scr_error_set_prop(e, "expected", 8, expected);
   scr_error_set_prop(e, "operator", 8, op);
   scr_error_set_prop(e, "diff", 4, diff);
+  /* A view that already existed does not consume the seed; keep the value,
+   * at the end of the order. */
+  ScrDyn *leftover = scr_error_take_seed();
+  if (leftover) scr_error_set_prop(e, "generatedMessage", 16, leftover);
 }
 
 static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {
@@ -234,7 +243,7 @@ void scr_assert_message_clear(void) {
   g_message_value = NULL;
 }
 
-void scr_assert_fail(ScrStr *message, bool generated) {
+static void scr_assert_fail_with(ScrStr *message, bool generated, bool generated_from_truthiness) {
   static const char sentinel[] = SCR_ASSERT_VALUE_MESSAGE;
   const size_t n = sizeof sentinel - 1;
   if (g_message_value && message->len >= n && memcmp(message->data, sentinel, n) == 0) {
@@ -248,7 +257,10 @@ void scr_assert_fail(ScrStr *message, bool generated) {
       return;
     }
     ScrStr *text = scr_dyn_string_coerce_js(value);
-    generated = !scr_dyn_truthy(value);
+    /* AssertionError sets generatedMessage to !message; assert.ok overrides
+     * it with its own message == null test, so only the former derives the
+     * flag from the value's truthiness. */
+    if (generated_from_truthiness) generated = !scr_dyn_truthy(value);
     scr_dyn_release(value);
     if (!text) {
       scr_str_release(message);
@@ -265,6 +277,10 @@ void scr_assert_fail(ScrStr *message, bool generated) {
   ScrError *e = scr_assert_error(message, generated, scr_assert_diff_full() ? "full" : "simple");
   g_instance_options = 0;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+void scr_assert_fail(ScrStr *message, bool generated) {
+  scr_assert_fail_with(message, generated, true);
 }
 
 /* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
@@ -340,9 +356,9 @@ void scr_assert_fail_msg(ScrStr *message) { scr_assert_fail(message, true); }
  * string, or the compile-time "The expression evaluated to a falsy
  * value:\n\n  <source text>\n" — the source is a compile-time constant
  * where Node re-reads the file). */
-void scr_assert_ok(bool pass, ScrStr *message, bool generated) {
+void scr_assert_ok(bool pass, ScrStr *message, bool generated, bool generated_from_truthiness) {
   if (pass) return;
-  scr_assert_fail(scr_str_retain(message), generated);
+  scr_assert_fail_with(scr_str_retain(message), generated, generated_from_truthiness);
 }
 
 /* SameValue over doubles — Object.is, the comparison of strictEqual AND
@@ -3396,6 +3412,22 @@ ScrError *scr_assert_error_new(ScrDyn *options) {
   scr_str_release(text);
   e->name_present = true;
   scr_assert_attach_values(e, generated, actual, expected, op, diff);
+  /* options.stackStartFn: Node's constructor passes it to
+   * Error.captureStackTrace, so the frames above that function — including
+   * its own — are left out, and a function that is not on the stack leaves
+   * none. The runtime knows the function value by name. */
+  ScrDyn *start_fn = scr_dyn_obj_read(options, "stackStartFn", 12);
+  if (start_fn) {
+    if (start_fn->kind == SCR_DYN_FUNC && start_fn->v.fn.name != NULL &&
+        start_fn->v.fn.name[0] != '\0') {
+      ScrStr *frames = scr_stack_capture_after_name(start_fn->v.fn.name);
+      scr_str_release(e->stack_frames);
+      e->stack_frames = frames;
+      scr_str_release(e->stack);
+      e->stack = NULL;
+    }
+    scr_dyn_release(start_fn);
+  }
   return e;
 }
 

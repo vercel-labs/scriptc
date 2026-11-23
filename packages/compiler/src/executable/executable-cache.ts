@@ -90,6 +90,8 @@ export interface EarlyExecutableNativeFeatures {
   /** The process stream object's color methods: SCR_TTY_COLORS and
    * scr_tty_colors.c. */
   ttyColors?: boolean;
+  /** A Console built with inspectOptions or colorMode. */
+  consoleOptions?: boolean;
   /** pipe()'s listeners and Node's unpipe: scr_stream_pipe_events.c. */
   streamPipeEvents?: boolean;
   /** fs stream options that can hold a signal: SCR_FS_STREAM_SIGNAL. */
@@ -119,6 +121,8 @@ export interface EarlyExecutableNativeFeatures {
   processFeatures?: boolean;
   islandChild?: boolean;
   childOptionExt?: boolean;
+  /** node:cluster's module surface links scr_cluster.c. */
+  cluster?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;

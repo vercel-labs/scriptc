@@ -1,0 +1,4 @@
+{
+    "node-builtin.dns": ["tests/corpus/2597-dgram-send-ladders.cjs"],
+    "node-builtin.dns.promises": ["tests/corpus/dns-promises-lookup.ts", "tests/corpus/dns-promises-untyped.cjs"]
+}

@@ -1017,6 +1017,33 @@ export function lowerDgramMethodCall(
       const fn: IrLibFn = name === "bind" ? "dgram.bind" : "dgram.connect";
       return { kind: "libCall", fn, args: [receiver, port, host], type: VOID, loc };
     }
+    if (name === "connect") {
+      // An untyped JavaScript completion callback: Node calls it with the
+      // error when the connection is refused (process.nextTick(callback,
+      // ex)), which a checked zero-argument closure would drop.
+      const cbType = lowerer.mapTypeOf(lowerer.typeOf(cbNode));
+      const flags = lowerer.typeOf(cbNode).flags;
+      // Dynamic: no IR type at all (an untyped JavaScript value), a checked
+      // -dynamic value, or a function whose parameter is typed that way —
+      // all of them read Node's error argument at run time.
+      const dynamic =
+        !cbType ||
+        cbType.kind === "dyn" ||
+        (cbType.kind === "func" &&
+          (cbType.rest === true || cbType.params.some((p) => p.kind === "dyn"))) ||
+        (flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+      if (dynamic) {
+        // The arguments stay in the call, so they run in source order; the
+        // runtime takes the callback's owned reference.
+        return {
+          kind: "libCall",
+          fn: "dgram.connectDyn",
+          args: [receiver, port, host, lowerer.lowerExprExpecting(cbNode, DYN)],
+          type: VOID,
+          loc,
+        };
+      }
+    }
     const { cb } = lowerCallbackArg(lowerer, cbNode, `${name} callbacks`, 0, () => false, "use ()");
     const fn: IrLibFn = name === "bind" ? "dgram.bindCb" : "dgram.connectCb";
     return { kind: "libCall", fn, args: [receiver, port, host, cb], type: VOID, loc };

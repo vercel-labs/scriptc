@@ -1,0 +1,3 @@
+{
+    "node-builtin.test": ["tests/harness/node-test.test.ts"]
+}

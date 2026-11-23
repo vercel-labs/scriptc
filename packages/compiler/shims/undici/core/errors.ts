@@ -191,6 +191,42 @@ export class ResponseExceededMaxSizeError extends UndiciError {
   }
 }
 
+/** 8.x: fetch's redirect budget ran out. */
+export class MaxRedirectsError extends UndiciError {
+  constructor(message?: string) {
+    super(message);
+    this.name = "MaxRedirectsError";
+    this.message = message || "max redirects";
+    this.code = "UND_ERR_REDIRECT_MAX";
+  }
+}
+
+/** 8.x: a proxy connection failed (the proxy agents island, but the class
+ * is exported by the package). */
+export class ProxyConnectionError extends UndiciError {
+  constructor(cause?: Error, message?: string) {
+    super(message);
+    this.name = "ProxyConnectionError";
+    this.message = message || "Proxy Connection failed";
+    this.code = "UND_ERR_PRX_CONN";
+    if (cause !== undefined) (this as { cause?: Error }).cause = cause;
+  }
+}
+
+/** 8.x: the HTTP/1 parser needs WebAssembly (this runtime's parser does
+ * not, so the class is exported but never thrown). */
+export class WebAssemblyNotSupportedError extends Error {
+  code: string;
+  constructor(message?: string) {
+    super(message);
+    this.name = "Error";
+    this.message =
+      message ||
+      "WebAssembly is not supported in this environment, but is required for HTTP/1 parsing";
+    this.code = "ERR_WEBASSEMBLY_NOT_SUPPORTED";
+  }
+}
+
 /** 5.x only (throwOnError). */
 export class ResponseStatusCodeError extends UndiciError {
   body: unknown;

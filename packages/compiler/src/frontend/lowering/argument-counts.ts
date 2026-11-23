@@ -17,6 +17,7 @@ import type { Lowerer } from "./lowerer.js";
 import { isThisParameter } from "./call-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { keyedHelperName } from "./stable-names.js";
+import { newFnCtx } from "./function-context.js";
 
 /** `arguments.length` in a top-level function declaration that the program
  * also uses as a value. A direct call passes the declared parameters (tsc
@@ -55,7 +56,9 @@ export function argumentCountSlot(lowerer: Lowerer, decl: ts.FunctionDeclaration
 }
 
 /** Reads `decl`'s count slot into a hidden local on entry and clears it; the
- * local holds the declared count when the slot was clear. */
+ * local holds the declared count when the slot was clear. An adapter stores
+ * the count of the call it makes plus one, so a call that passes no
+ * arguments (stored 1) is told apart from a direct call (stored 0). */
 export function declareArgumentCount(
   lowerer: Lowerer,
   decl: ts.FunctionDeclaration,
@@ -81,7 +84,14 @@ export function declareArgumentCount(
           loc,
         },
         then: { kind: "numLit", value: declaredCount(decl), type: F64, loc },
-        else_: stored,
+        else_: {
+          kind: "bin",
+          op: "-",
+          left: stored,
+          right: { kind: "numLit", value: 1, type: F64, loc },
+          type: F64,
+          loc,
+        },
         type: F64,
         loc,
       },
@@ -141,7 +151,7 @@ export function argumentCountValue(
           {
             kind: "assign",
             localId: slot,
-            value: { kind: "numLit", value: count, type: F64, loc },
+            value: { kind: "numLit", value: count + 1, type: F64, loc },
             loc,
           },
           {
@@ -238,34 +248,74 @@ function variadicCountAdapter(
             type: F64,
             loc,
           };
-    const args = fromT.params.map((want, i): IrExpr => {
-      const source: IrExpr =
-        i < target.params.length
-          ? { kind: "varRef", localId: `p${i}.0`, type: target.params[i]!, loc }
-          : {
-              kind: "dynKeyGet",
-              value: rest,
-              key: { kind: "strLit", value: String(i - target.params.length), type: STRING, loc },
-              type: DYN,
-              loc,
-            };
-      return lowerer.coerceToExpected(source, want);
-    });
-    const call: IrExpr = {
-      kind: "callValue",
-      callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
-      receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-      args,
-      type: fromT.ret,
-      loc,
-    };
-    const body: IrStmt[] = [{ kind: "assign", localId: slot, value: counted, loc }];
-    if (target.ret.kind === "void") {
-      body.push({ kind: "exprStmt", expr: call, loc }, { kind: "return", value: null, loc });
-    } else {
-      body.push({ kind: "return", value: lowerer.coerceToExpected(call, target.ret), loc });
+    // The count and every argument are evaluated before the slot is
+    // written: a conversion that throws must not leave this call's count in
+    // the slot for a later direct call to read.
+    const context = newFnCtx(false, null, null, target.ret);
+    lowerer.fnStack.push(context);
+    try {
+      const countLocal = lowerer.declareHiddenLocal("%argc.count", F64);
+      const args = fromT.params.map((want, i) => {
+        const source: IrExpr =
+          i < target.params.length
+            ? { kind: "varRef", localId: `p${i}.0`, type: target.params[i]!, loc }
+            : {
+                kind: "dynKeyGet",
+                value: rest,
+                key: {
+                  kind: "strLit",
+                  value: String(i - target.params.length),
+                  type: STRING,
+                  loc,
+                },
+                type: DYN,
+                loc,
+              };
+        const value = lowerer.coerceToExpected(source, want);
+        const local = lowerer.declareHiddenLocal("%argc.arg", value.type);
+        return { local, value };
+      });
+      const call: IrExpr = {
+        kind: "callValue",
+        callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+        receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+        args: args.map((arg) => varRef(arg.local.id, arg.local.type, loc)),
+        type: fromT.ret,
+        loc,
+      };
+      const body: IrStmt[] = [
+        { kind: "varDecl", localId: countLocal.id, init: counted, loc },
+        ...args.map((arg): IrStmt => ({
+          kind: "varDecl",
+          localId: arg.local.id,
+          init: arg.value,
+          loc,
+        })),
+        {
+          kind: "assign",
+          localId: slot,
+          value: {
+            kind: "bin",
+            op: "+",
+            left: varRef(countLocal.id, F64, loc),
+            right: { kind: "numLit", value: 1, type: F64, loc },
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+      ];
+      if (target.ret.kind === "void") {
+        body.push({ kind: "exprStmt", expr: call, loc }, { kind: "return", value: null, loc });
+      } else {
+        body.push({ kind: "return", value: lowerer.coerceToExpected(call, target.ret), loc });
+      }
+      lowerer.liftedFns.push(
+        ...buildFunctionAdapter(name, fromT, target, params, context.locals, body, loc),
+      );
+    } finally {
+      lowerer.fnStack.pop();
     }
-    lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, target, params, [], body, loc));
   }
   return { kind: "call", callee: name, args: [closure], type: target, loc };
 }

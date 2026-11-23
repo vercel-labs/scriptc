@@ -20472,6 +20472,21 @@ bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
   return scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post;
 }
 
+/* Whether `key` names one of a handle class's accessors (a getter): its
+ * declared interface accessors, or the class's getter table. A read with an
+ * explicit receiver answers these from the receiver and brand-checks it. */
+static bool scr_dyn_handle_member_is_accessor(const ScrDyn *handle, const char *key, size_t key_len) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(handle);
+  for (const ScrDynHandleName *a = ops->attributes; a && a->name; a++)
+    if (a->len == key_len && memcmp(a->name, key, key_len) == 0) return true;
+  if (scr_dyn_handle_class_ops != NULL) {
+    const ScrDynHandleAccessor *a = scr_dyn_handle_class_ops->accessors(handle);
+    for (; a && a->name; a++)
+      if (strlen(a->name) == key_len && memcmp(a->name, key, key_len) == 0) return true;
+  }
+  return false;
+}
+
 static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_t key_len, const ScrDyn *receiver) {
   for (const ScrDyn *current = d; current; current = scr_dyn_proto_next(current)) {
     if (current == scr_builtin_object_prototype) {
@@ -20483,6 +20498,35 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
        * methods as values and its prototype members). An island object keeps
        * its members in Node and takes the paths below. */
       if (scr_ni_dyn_handle(current)) break;
+      const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(current);
+      /* A class accessor read with an explicit receiver runs on the receiver:
+       * a receiver of the same class answers its own state, and any other
+       * receiver raises the class's brand TypeError instead of reading the
+       * target's state. Data properties and method values ignore a
+       * receiver. */
+      if (receiver != NULL && receiver != current &&
+          scr_dyn_handle_member_is_accessor(current, key, key_len)) {
+        if (receiver->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(receiver) &&
+            receiver->v.handle.tag == current->v.handle.tag) {
+          ScrStr *name = scr_str_new(key, key_len);
+          ScrDyn *value = scr_dyn_handle_key_get(receiver, name);
+          scr_str_release(name);
+          return value;
+        }
+        if (ops->accessor_brand_error != NULL) {
+          ops->accessor_brand_error(key, key_len, receiver);
+        } else if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
+          static const char message[] = "Cannot convert undefined or null to object";
+          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        } else if (ops->invalid_this != NULL) {
+          scr_throw_error_msg_code(SCR_ERR_TYPE, ops->invalid_this, strlen(ops->invalid_this),
+                                   "ERR_INVALID_THIS");
+        } else {
+          static const char message[] = "Illegal invocation";
+          scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        }
+        return NULL;
+      }
       ScrStr *name = scr_str_new(key, key_len);
       ScrDyn *value = scr_dyn_handle_key_get(current, name);
       scr_str_release(name);
@@ -25354,6 +25398,71 @@ static ScrDyn *scr_native_set_pack(void *ptr) {
   return values;
 }
 
+/* V8's description of a Reflect.get receiver in a class accessor's brand
+ * TypeError: `#<Object>`, `[object Array]`, a primitive's text, a symbol's
+ * rendering. */
+static void scr_dyn_v8_receiver(ScrJsonBuf *b, const ScrDyn *v) {
+  switch (v->kind) {
+  case SCR_DYN_OBJ: scr_jb_puts(b, "#<Object>"); return;
+  case SCR_DYN_ARR: scr_jb_puts(b, "[object Array]"); return;
+  case SCR_DYN_NULL: scr_jb_puts(b, "null"); return;
+  case SCR_DYN_UNDEF: scr_jb_puts(b, "undefined"); return;
+  case SCR_DYN_BOOL: scr_jb_puts(b, v->v.b ? "true" : "false"); return;
+  case SCR_DYN_NUM: {
+    ScrStr *n = scr_f64_to_scrstr(v->v.num);
+    scr_jb_write(b, n->data, n->len);
+    scr_str_release(n);
+    return;
+  }
+  case SCR_DYN_STR: scr_jb_write(b, v->v.str->data, v->v.str->len); return;
+  case SCR_DYN_SYMBOL: {
+    ScrStr *s = v->v.symbol.render(v->v.symbol.value);
+    if (s) {
+      scr_jb_write(b, s->data, s->len);
+      scr_str_release(s);
+    }
+    return;
+  }
+  case SCR_DYN_HANDLE: {
+    scr_jb_puts(b, "#<");
+    scr_jb_puts(b, scr_dyn_handle_cls(v));
+    scr_jb_puts(b, ">");
+    return;
+  }
+  default: {
+    char text[64];
+    scr_jb_puts(b, scr_dyn_inspect_lite(v, text, sizeof text));
+    return;
+  }
+  }
+}
+
+static void scr_dyn_collection_size_brand_error(const char *klass, const char *key,
+                                               size_t key_len, const ScrDyn *receiver) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Method get ");
+  scr_jb_puts(&b, klass);
+  scr_jb_puts(&b, ".prototype.");
+  scr_jb_write(&b, key, key_len);
+  scr_jb_puts(&b, " called on incompatible receiver ");
+  scr_dyn_v8_receiver(&b, receiver);
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+static void scr_dyn_map_size_brand_error(const char *key, size_t key_len, const ScrDyn *receiver) {
+  scr_dyn_collection_size_brand_error("Map", key, key_len, receiver);
+}
+
+static void scr_dyn_set_size_brand_error(const char *key, size_t key_len, const ScrDyn *receiver) {
+  scr_dyn_collection_size_brand_error("Set", key, key_len, receiver);
+}
+
+static const ScrDynHandleName scr_dyn_map_attributes[] = {SCR_DYN_HANDLE_NAME("size"),
+                                                          {NULL, 0}};
+static const ScrDynHandleName scr_dyn_set_attributes[] = {SCR_DYN_HANDLE_NAME("size"),
+                                                          {NULL, 0}};
+
 ScrDyn *scr_dyn_native_set(ScrMap *value) {
   static const ScrDynHandleOps ops = {
       .cls = "Set",
@@ -25366,6 +25475,8 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
       .clone = &scr_native_set_clone,
+      .attributes = scr_dyn_set_attributes,
+      .accessor_brand_error = scr_dyn_set_size_brand_error,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -25535,6 +25646,8 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
       .clone = &scr_native_map_clone,
+      .attributes = scr_dyn_map_attributes,
+      .accessor_brand_error = scr_dyn_map_size_brand_error,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);

@@ -2735,6 +2735,11 @@ typedef struct ScrDynHandleOps {
    * (a definition still shadows it), and it is the set the fetch classes
    * answer from their interfaces. NULL = the class declares no accessors. */
   const ScrDynHandleName *attributes;
+  /* Reflect.get on a class accessor with an explicit receiver that is not
+   * an instance of the class raises this TypeError (`key` is the accessor's
+   * name). NULL = V8's text: "Illegal invocation", or "Cannot convert
+   * undefined or null to object" for a nullish receiver. */
+  void (*accessor_brand_error)(const char *key, size_t key_len, const ScrDyn *receiver);
   /* The class name V8's property TypeErrors print when it differs from
    * cls: undici's constructors are `_Request` and `_Response`, which V8
    * shows as `#<_Request>`. NULL = cls. */

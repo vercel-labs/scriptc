@@ -26,3 +26,27 @@ console.log("stmt", Reflect.get(stmt as unknown as object, "sourceSQL"));
 console.log("limits-length", Reflect.get(limits as unknown as object, "length"));
 console.log("has", Reflect.has(db as unknown as object, "isOpen"), Reflect.has(db as unknown as object, "nope"));
 db.close();
+
+// An explicit receiver: a class accessor reads the receiver's state, and a
+// receiver that is not an instance of the class is its TypeError.
+const failure = (label: string, run: () => unknown): void => {
+  try {
+    console.log(label, "ok", String(run()));
+  } catch (error) {
+    const e = error as { name: string; code?: string; message: string };
+    console.log(label, "ERR", e.name, e.code, e.message);
+  }
+};
+const bigMap = new Map<string, number>([["a", 1], ["b", 2], ["c", 3]]);
+console.log("map-receiver", Reflect.get(map as unknown as object, "size", bigMap as unknown as object));
+failure("map-bad-receiver", () => Reflect.get(map as unknown as object, "size", {}));
+const otherUrl = new URL("http://b/");
+console.log("url-receiver", Reflect.get(url as unknown as object, "href", otherUrl));
+failure("url-bad-receiver", () => Reflect.get(url as unknown as object, "href", {}));
+const otherDb = new DatabaseSync(":memory:");
+console.log("db-receiver", Reflect.get(db as unknown as object, "isOpen", otherDb as unknown as object));
+failure("db-bad-receiver", () => Reflect.get(db as unknown as object, "isOpen", {}));
+otherDb.close();
+const otherStream = new ReadableStream();
+console.log("stream-receiver", Reflect.get(stream as unknown as object, "locked", otherStream as unknown as object));
+failure("stream-bad-receiver", () => Reflect.get(stream as unknown as object, "locked", {}));

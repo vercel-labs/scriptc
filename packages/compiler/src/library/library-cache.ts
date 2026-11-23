@@ -95,6 +95,12 @@ export interface EarlyLibraryNativeFeatures {
    * inside the archive, so the library selects the same build the
    * executable lane does. */
   fnMemberProps: boolean;
+  /** A checked cast of a dynamic value adopts the object it converts instead
+   * of copying it (scr_decl_adopt.c). Absent (false) otherwise. */
+  declAdopt?: boolean;
+  /** An instanceof on an untyped value reads the class's prototype
+   * (scr_dyn_class_test.c). Absent (false) otherwise. */
+  classTestPrototype?: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
 }

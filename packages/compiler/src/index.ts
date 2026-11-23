@@ -2657,6 +2657,11 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
+    // A checked cast of a dynamic value calls the adoption unit, and an
+    // instanceof on one reads the prototype unit. The archive must carry
+    // both or the embedder's link fails on the symbols.
+    ...(features.declAdopt ? { declAdopt: true } : {}),
+    ...(features.classTestPrototype ? { classTestPrototype: true } : {}),
     mutableBuffers: features.mutableBuffers,
     fnMemberProps: features.fnMemberProps,
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),

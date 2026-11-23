@@ -37,6 +37,10 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["process.stderrWriteBytesCb", "process.stderr.write completion callbacks"],
   ["timers.", "the timers surface (setTimeout family)"],
   ["tp.", "the timers/promises surface"],
+  // AbortController and AbortSignal dispatch through the event-target unit
+  // and AbortSignal.timeout runs a timer; a library archive links neither, so
+  // the surface refuses here instead of crashing at first use.
+  ["abort.", "the AbortController/AbortSignal surface (its event-target unit and timers are not linked in a library)"],
   ["cp.", "the child_process surface"],
   ["child.", "the child_process surface"],
   ["spawnRes.", "the child_process surface"],

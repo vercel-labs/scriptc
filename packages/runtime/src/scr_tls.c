@@ -669,8 +669,13 @@ static void scr_tls_srv_client_auth(ScrTlsSrv *s, const ScrTlsClientAuth *auth) 
   if (auth->ca != NULL) {
     if (auth->ca->len > 0) {
       int r = scr_tls_parse_crt(&s->ca, (const char *)auth->ca->data, auth->ca->len);
-      if (r != 0) scr_tls_bad_material("ca certificate", r);
-      if (s->ctx == NULL) scr_tls_auto_chain(&s->cert, &s->ca);
+      /* Node ignores a CA certificate OpenSSL cannot parse. */
+      if (r != 0) {
+        mbedtls_x509_crt_free(&s->ca);
+        mbedtls_x509_crt_init(&s->ca);
+      } else if (s->ctx == NULL) {
+        scr_tls_auto_chain(&s->cert, &s->ca);
+      }
     }
     s->has_ca = true;
   }
@@ -821,7 +826,12 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   c->has_ca = ca != NULL;
   if (ca_len > 0) {
     int r = scr_tls_parse_crt(&c->ca, ca, ca_len);
-    if (r != 0) scr_tls_bad_material("ca certificate", r);
+    /* Node ignores a CA certificate OpenSSL cannot parse; the remaining
+     * anchors (none) decide verification. */
+    if (r != 0) {
+      mbedtls_x509_crt_free(&c->ca);
+      mbedtls_x509_crt_init(&c->ca);
+    }
   }
   if (!reject_unauthorized && !verify_optional) {
     mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
@@ -3510,7 +3520,13 @@ ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts /*borrowed*/)
      * context in OpenSSL, so the answer's ca is not used there */
     if (auth.ca->len > 0) {
       int r = scr_tls_parse_crt(&c->ca, (const char *)auth.ca->data, auth.ca->len);
-      if (r != 0) scr_tls_bad_material("ca certificate", r);
+      /* Node's secure-context CA store ignores a certificate OpenSSL cannot
+       * parse; verification then fails against the remaining anchors rather
+       * than terminating the program. Drop the partial chain. */
+      if (r != 0) {
+        mbedtls_x509_crt_free(&c->ca);
+        mbedtls_x509_crt_init(&c->ca);
+      }
     }
     c->has_ca = true;
     scr_bytes_release(auth.ca);
@@ -3904,6 +3920,8 @@ void scr_tls_server_set_secure_context(ScrNetServer *server, const ScrDyn *optio
   if (c == NULL) return;
   scr_secure_ctx_release(s->default_ctx);
   s->default_ctx = c;
+  /* New connections use the replacement context's version bounds. */
+  (void)scr_tls_conf_versions(&s->conf, c->min_version, c->max_version);
   mbedtls_ssl_conf_cert_cb(&s->conf, &scr_tls_f_cert);
 }
 

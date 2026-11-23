@@ -60,3 +60,57 @@ server.close();
   });
   server.close();
 }
+
+{
+  // server.setSecureContext applies the replacement context's bounds to
+  // subsequent connections.
+  const server = tls.createServer({ cert, key }, (socket) => {
+    console.log("set-context-negotiated", socket.getProtocol());
+    socket.end();
+  });
+  server.setSecureContext({ cert, key, secureProtocol: "TLSv1_2_method" });
+  server.on("tlsClientError", () => {});
+  const port = await new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+  );
+  await new Promise((done) => {
+    const client = tls.connect({ port, host: "127.0.0.1", servername: "localhost", ca });
+    client.on("secureConnect", () => client.end());
+    client.on("close", () => done(undefined));
+  });
+  server.close();
+}
+
+try {
+  tls.createSecureContext({ ca: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----" });
+  console.log("bad-ca-context ok");
+} catch (error) {
+  console.log("bad-ca-context", error.name, error.code, JSON.stringify(error.message));
+}
+
+{
+  // A malformed CA is ignored at construction; verification fails catchably
+  // at the handshake instead of ending the program.
+  const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));
+  server.on("tlsClientError", () => {});
+  const port = await new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+  );
+  await new Promise((done) => {
+    const client = tls.connect({
+      port,
+      host: "127.0.0.1",
+      servername: "localhost",
+      ca: "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----",
+    });
+    client.on("secureConnect", () => {
+      console.log("bad-ca-connect secure");
+      client.end();
+    });
+    client.on("error", (error) => {
+      console.log("bad-ca-connect", error.name, error.code, JSON.stringify(error.message));
+      done(undefined);
+    });
+    client.on("close", () => server.close());
+  });
+}

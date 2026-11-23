@@ -76,7 +76,7 @@
  *                           non-function value as what it is)
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compileLibrary } from "@scriptc/compiler";
@@ -381,6 +381,46 @@ version: sdk-1.0
   test("a dev library carries its .ts lines, as a dev executable does", async () => {
     const { outDir } = await buildLibrary("dev-lines", emission);
     expect(readFileSync(join(outDir, "lib.lib.ll"), "utf8")).toContain('DIFile(filename: "lib.ts"');
+  });
+
+  test("a comment that moves a dev library's lines rebuilds its debug info", async () => {
+    const root = join(cacheDir, `dev-lines-moved-${emission}`);
+    const dir = join(root, "lib");
+    rmSync(root, { recursive: true, force: true });
+    cpSync(join(fixtureRoot, "dev-lines"), dir, { recursive: true });
+    const source = join(dir, "math.ts");
+    const outDir = join(root, "out");
+    const sumLine = () =>
+      Number(
+        /DISubprogram\(name: "[^"]*sum[^"]*",.*? line: (\d+)/.exec(
+          readFileSync(join(outDir, "lib.lib.ll"), "utf8"),
+        )?.[1],
+      );
+    const build = async () =>
+      expect(
+        (await compileLibrary({ profilePath: join(dir, "profile.json"), outDir, sanitize: false }))
+          .ok,
+      ).toBe(true);
+    // A comment-only edit of an imported module is a semantic cache hit.
+    const saved = {
+      SCRIPTC_CACHE_DIR: process.env["SCRIPTC_CACHE_DIR"],
+      SCRIPTC_NO_CACHE: process.env["SCRIPTC_NO_CACHE"],
+    };
+    process.env["SCRIPTC_CACHE_DIR"] = join(root, "cache");
+    delete process.env["SCRIPTC_NO_CACHE"];
+    try {
+      await build();
+      const before = sumLine();
+      expect(before).toBeGreaterThan(0);
+      writeFileSync(source, `// moved\n${readFileSync(source, "utf8")}`);
+      await build();
+      expect(sumLine()).toBe(before + 1);
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */

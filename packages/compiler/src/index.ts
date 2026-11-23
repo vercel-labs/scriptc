@@ -3034,11 +3034,16 @@ async function compileLibraryTracked(
     };
   }
   timing("early-cache-miss");
-  const semanticHit = await readSemanticLibraryCache(
-    cacheRoot,
-    earlyCacheOptions,
-    profile.sidecar === null ? undefined : profile.sidecar.path,
-  );
+  // A dev library's LLVM names source lines and columns, which a comment edit
+  // moves, so it is reused only for the same text.
+  const debugSources = carriesDebugSources(profile.optimization, false);
+  const semanticHit = debugSources
+    ? null
+    : await readSemanticLibraryCache(
+        cacheRoot,
+        earlyCacheOptions,
+        profile.sidecar === null ? undefined : profile.sidecar.path,
+      );
   if (semanticHit !== null) {
     timing("semantic-cache-hit", { changed_sources: semanticHit.changedSources.length });
     return emitSemanticLibraryHit(
@@ -3081,7 +3086,7 @@ async function compileLibraryTracked(
       sanitizeAttributes: opts.sanitize === true,
       timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
-      ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
+      ...(debugSources ? { debugSources: sourceTexts } : {}),
     });
     timing("llvm-emit", {
       output_bytes:
@@ -3127,7 +3132,7 @@ async function compileLibraryTracked(
     llvmPath,
     native: nativeFeatures,
     frontend: frontendInputs.snapshot(),
-    semantic: { mod, sources: sourceTexts },
+    ...(debugSources ? {} : { semantic: { mod, sources: sourceTexts } }),
     ...(irPath !== undefined ? { irPath } : {}),
     ...(sidecarPath !== undefined ? { sidecarPath } : {}),
   };

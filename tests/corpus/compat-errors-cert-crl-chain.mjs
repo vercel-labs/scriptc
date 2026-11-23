@@ -13,6 +13,7 @@ const intClean = readFileSync(`${D}/int-crl-clean.pem`);
 const intRevoked = readFileSync(`${D}/int-crl-revoked.pem`);
 // Entries without a trailing newline force a separator after every entry,
 // the worst case the bundle builder's allocation budgets for.
+const rootOnly = readFileSync(`${D}/ca.pem`);
 const caTrimmed = [readFileSync(`${D}/ca.pem`, "utf8").trimEnd(), readFileSync(`${D}/int-ca.pem`, "utf8").trimEnd()];
 const crlTrimmed = [leafCrl.toString().trimEnd(), intClean.toString().trimEnd()];
 
@@ -20,6 +21,7 @@ for (const [label, trust, crl] of [
   ["chain-revoked-intermediate", ca, [leafCrl, intRevoked]],
   ["chain-clean", ca, [leafCrl, intClean]],
   ["chain-missing-leaf-crl", ca, [intClean]],
+  ["chain-revoked-intermediate-root-only", rootOnly, [intRevoked]],
   ["chain-clean-trimmed", caTrimmed, crlTrimmed],
 ]) {
   const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));

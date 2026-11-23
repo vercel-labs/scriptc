@@ -103708,6 +103708,7 @@
           "tests/corpus/tls-check-server-identity-malformed.ts",
           "tests/corpus/tls-check-server-identity.ts",
           "tests/corpus/tls-connect-forms.ts",
+          "tests/corpus/tls-ephemeral-key-info-dyn.mjs",
           "tests/corpus/tls-ephemeral-key-info.ts",
           "tests/corpus/tls-export-keying-material-context-types.ts",
           "tests/corpus/tls-export-keying-material-context.ts",
@@ -104872,7 +104873,8 @@
         "status": "partial",
         "evidence": "compiler-feature:tls.tlsSocket.getEphemeralKeyInfo",
         "tests": [
-          "tests/corpus/tls-ephemeral-key-info.ts"
+          "tests/corpus/tls-ephemeral-key-info.ts",
+          "tests/corpus/tls-ephemeral-key-info-dyn.mjs"
         ]
       },
       "anchorSource": "exact"

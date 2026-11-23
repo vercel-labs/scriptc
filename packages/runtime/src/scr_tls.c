@@ -4957,9 +4957,11 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
   return (ScrTlsSock *)scr_net_sock_transport_ctx_for(s, &SCR_TLS_OPS);
 }
 /* TLSSocket.getEphemeralKeyInfo(): the key-exchange group Node reports —
- * { type: 'ECDH', name, size } for TLS 1.2, { type: 'TLSGroup', name } for
- * TLS 1.3 — or null for a server socket, before the handshake and after
- * close. +1. */
+ * { type: 'ECDH', name, size } whenever the exchanged ephemeral key is an
+ * elliptic-curve key, on either TLS version (every group this engine
+ * negotiates is one; Node spells a TLS 1.3 result TLSGroup only for a
+ * non-EC hybrid group) — or null for a server socket, before the handshake
+ * and after close. +1. */
 ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
   ScrTlsSock *t = scr_tls_sock_of(s);
   if (t == NULL || t->cli == NULL || !t->established || scr_net_sock_destroyed(s))
@@ -4995,16 +4997,14 @@ ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
       break;
   }
   if (name == NULL) return scr_dyn_new_null();
-  const char *ver = mbedtls_ssl_get_version(&t->ssl);
-  bool tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
   ScrDyn *out = scr_dyn_new_obj();
-  ScrStr *kind = scr_str_new(tls13 ? "TLSGroup" : "ECDH", tls13 ? 8 : 4);
+  ScrStr *kind = scr_str_new("ECDH", 4);
   scr_dyn_obj_set(out, "type", 4, scr_dyn_new_str(kind));
   scr_str_release(kind);
   ScrStr *nm = scr_str_new(name, strlen(name));
   scr_dyn_obj_set(out, "name", 4, scr_dyn_new_str(nm));
   scr_str_release(nm);
-  if (!tls13) scr_dyn_obj_set(out, "size", 4, scr_dyn_new_num(size));
+  scr_dyn_obj_set(out, "size", 4, scr_dyn_new_num(size));
   return out;
 }
 

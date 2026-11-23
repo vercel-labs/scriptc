@@ -6403,6 +6403,22 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return DYN;
   }
+  // cluster.Worker: the runtime's worker handle (scr_cluster.c), a
+  // checked-dynamic value whose members dispatch there. @types/node
+  // declares it inside `namespace cluster`, so the enclosing ambient
+  // module names it.
+  if (
+    psym !== undefined &&
+    psymName === "Worker" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "cluster"),
+    )
+  ) {
+    return DYN;
+  }
   // node:test's TestContext — the test-body parameter (`test('x', (t) =>
   // ...)`) — and SuiteContext, the describe-body and suite-hook parameter:
   // both are the runner's node for the test or suite. @types/node's

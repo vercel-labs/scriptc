@@ -1,7 +1,7 @@
   dynamic tier   (tier assignment, report-only; --tier=auto)
     4 functions already operate on dynamic values (1 statement)
       readName  tests/coverage-fixtures/tier-demotions.ts:17:1: %dyn.error.stringConstructor at tests/coverage-fixtures/tier-demotions.ts:19:10
-      %dyn.class.property.0  tests/coverage-fixtures/tier-demotions.ts:19:17: %dyn.class.readPropertiesOrEmpty at tests/coverage-fixtures/tier-demotions.ts:19:17
+      %dyn.class.property.0931498a3236  tests/coverage-fixtures/tier-demotions.ts:19:17: %dyn.class.readPropertiesOrEmpty at tests/coverage-fixtures/tier-demotions.ts:19:17
       %dyn.error.stringConstructor.0  tests/coverage-fixtures/tier-demotions.ts:19:10: dynCall at tests/coverage-fixtures/tier-demotions.ts:19:10
       %method.value:%%Error.toString  tests/coverage-fixtures/tier-demotions.ts:19:10: dyn.this at tests/coverage-fixtures/tier-demotions.ts:19:10
 

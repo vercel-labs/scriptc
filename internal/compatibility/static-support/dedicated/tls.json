@@ -1,0 +1,5 @@
+[
+    { "chapter": "tls", "symbols": ["server.addContext", "server.setSecureContext", "'tlsClientError'"], "status": "partial", "evidence": ["tests/corpus/7440-tls-server-add-context.ts", "tests/corpus/7441-tls-client-error.ts", "tests/corpus/7442-tls-server-contexts.mjs", "tests/fixtures/node-types/tls-server-contexts.ts"] },
+    { "chapter": "tls", "symbols": ["tlsSocket.authorizationError"], "status": "partial", "evidence": ["tests/corpus/7097-tls-client-certificates.ts", "tests/corpus/7098-tls-client-certificates-paths.ts", "tests/corpus/7099-tls-client-certificates.mjs", "tests/fixtures/node-types/tls-client-certificates.ts"] },
+    { "chapter": "tls", "symbols": ["tlsSocket.getPeerCertificate", "tlsSocket.getCertificate", "tlsSocket.getPeerX509Certificate", "tlsSocket.getX509Certificate"], "status": "partial", "evidence": ["tests/corpus/7095-tls-peer-certificates.ts", "tests/corpus/7096-tls-peer-certificates.mjs", "tests/fixtures/node-types/tls-peer-certificates.ts"] }
+]

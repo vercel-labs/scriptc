@@ -121,6 +121,8 @@ export interface EarlyExecutableNativeFeatures {
   processFeatures?: boolean;
   islandChild?: boolean;
   childOptionExt?: boolean;
+  /** node:cluster's module surface links scr_cluster.c. */
+  cluster?: boolean;
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-namespace-conditional-snapshot/main.ts"
+ ],
+ "diags": []
+}

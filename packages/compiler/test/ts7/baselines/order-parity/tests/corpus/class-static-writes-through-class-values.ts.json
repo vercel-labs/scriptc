@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/class-static-writes-through-class-values.ts"],
+  "diags": []
+}

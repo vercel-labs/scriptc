@@ -480,6 +480,11 @@ static SCR_TL ScrPromise *scr_stdin_waiter = NULL; /* parked for-await next() */
 static SCR_TL bool scr_stdin_eof = false;
 static SCR_TL bool scr_stdin_destroyed = false;
 static SCR_TL bool scr_stdin_paused = false;
+/* Node's handle refcount for stdin: unref() lets the process exit with a
+ * consumer still registered; a consumer still polls while the loop is
+ * awake for other work, exactly Node's unref'd socket. ref() restores the
+ * default. */
+static SCR_TL bool scr_stdin_refed = true;
 static SCR_TL bool scr_stdin_resumed = false;
 static SCR_TL bool scr_stdin_read_eof = false;
 /* Input held for read() and later consumers, as Node's BufferList: the
@@ -750,7 +755,11 @@ static bool scr_stdin_watching(void) {
          (!scr_stdin_read_eof && scr_stdin_read_demand > scr_stdin_buffered);
 }
 
-bool scr_stdin_pending(void) { return scr_stdin_watching(); }
+/* The loop's keep-alive test: a consumer keeps the process alive only
+ * while the stream is ref'd (Node's handle refcount). The poll/watch test
+ * stays scr_stdin_watching, so an unref'd stream still reads while other
+ * work keeps the loop awake. */
+bool scr_stdin_pending(void) { return scr_stdin_refed && scr_stdin_watching(); }
 
 static void scr_stdin_drop_listeners(void) {
   for (size_t i = 0; i < scr_stdin_ndata; i++) scr_closure_release(scr_stdin_data[i].cb);
@@ -832,6 +841,12 @@ void scr_stdin_resume(void) {
   scr_stdin_paused = false;
   scr_stdin_resumed = true;
 }
+
+/* process.stdin.ref()/unref(): Node's handle refcount. unref() means a
+ * registered consumer no longer keeps the process alive (data still
+ * arrives while other work holds the loop); ref() is the default. */
+void scr_stdin_ref(void) { scr_stdin_refed = true; }
+void scr_stdin_unref(void) { scr_stdin_refed = false; }
 
 /* process.stdin.isPaused(): Node's Readable#isPaused answers true in
  * paused mode, which a 'readable' listener pins — resume() does not take
@@ -1064,10 +1079,10 @@ typedef struct {
 static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
 enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
        STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE,
-       STDIO_SET_ENCODING, STDIO_METHOD_COUNT };
+       STDIO_SET_ENCODING, STDIO_REF, STDIO_UNREF, STDIO_METHOD_COUNT };
 static const char *const scr_stdio_names[] = {
   "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize",
-  "setEncoding"
+  "setEncoding", "ref", "unref"
 };
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
@@ -1561,6 +1576,11 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     if (method == STDIO_PAUSE) scr_stdin_pause();
     else scr_stdin_resume();
     result = scr_dyn_retain(self);
+  } else if (stream->fd == 0 && (method == STDIO_REF || method == STDIO_UNREF)) {
+    /* Node answers `this`; the dynamic call hands the receiver back. */
+    if (method == STDIO_REF) scr_stdin_ref();
+    else scr_stdin_unref();
+    result = scr_dyn_retain(self);
   } else if (stream->fd == 0 && method == STDIO_IS_PAUSED) {
     result = scr_dyn_new_bool(scr_stdin_is_paused());
   } else if (stream->fd == 0 && method == STDIO_READ) {
@@ -1738,7 +1758,9 @@ ScrDyn *scr_process_stdio(double fd) {
       // Node's process.stdout.write is an anonymous (bound) function:
       // .name is "" there, while the other stream methods carry their names.
       scr_stdio_methods[i] = scr_dyn_new_func(
-          cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", i == STDIO_WRITE ? "" : scr_stdio_names[i]);
+          cb, scr_stdio_method,
+          i == STDIO_WRITE ? 3 : (i == STDIO_REF || i == STDIO_UNREF) ? 0 : 1, "",
+          i == STDIO_WRITE ? "" : scr_stdio_names[i]);
     }
     scr_stdio_console_handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_stdio_console_error_handler, 1, "", "");
     scr_stdio_write_hook = scr_stdio_intercept;
@@ -2401,7 +2423,10 @@ static bool scr_events_pending(void) { return scr_stdin_pending(); }
  * the worker's mailbox, which the worker unit waits on while
  * scr_stdin_fed_waiting answers true. */
 static bool scr_events_watching(void) {
-  return (scr_context_is_main() && scr_sig_watched > 0) || (!scr_stdin_fed && scr_stdin_pending());
+  /* scr_stdin_watching, not pending: an unref'd stream still wants the
+   * poll sleep while other work keeps the loop alive. */
+  return (scr_context_is_main() && scr_sig_watched > 0) ||
+         (!scr_stdin_fed && scr_stdin_watching());
 }
 
 /* One dispatch pass at a loop turn: wake-pipe bytes are consumed (safe
@@ -2420,7 +2445,7 @@ static void scr_events_dispatch(void) {
 static int scr_events_pollfds(int out[2]) {
   int n = 0;
   if (scr_context_is_main() && scr_sig_watched > 0 && scr_wake_pipe[0] >= 0) out[n++] = scr_wake_pipe[0];
-  if (scr_context_is_main() && scr_stdin_pending()) out[n++] = 0;
+  if (scr_context_is_main() && scr_stdin_watching()) out[n++] = 0;
   return n;
 }
 

@@ -109,7 +109,7 @@ import {
   tryLowerIndexTruthiness,
   tryLowerNumericIndexRead,
 } from "./array-values.js";
-import { nsMemberIdentOf } from "./lower-namespaces.js";
+import { cjsNamespaceImportDep, nsMemberIdentOf } from "./lower-namespaces.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitMonoFile } from "./generic-functions.js";
 import { lowerPrimitiveUnionNumber, lowerTaggedTemplate } from "./lower-calls.js";
@@ -722,11 +722,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     if (sideEffectFreeOptionValue(expr.expression)) {
       return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) };
     }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "'void' with an effectful operand in value position (hoist the operand to its own statement — statement-position 'void e' and void-returning arrow bodies compile)",
-    );
+    // An effectful operand runs for its effects and the expression answers
+    // the undefined value: a sequence carries the statement before the
+    // result, exactly like statement-position `void e`.
+    const effect = lowerer.lowerExpr(expr.expression);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: effect, loc: locOf(expr) }],
+      result: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(expr) },
+      type: UNDEFINED_T,
+      loc: locOf(expr),
+    };
   }
   if (ts.isTypeOfExpression(expr)) return lowerTypeofExpr(lowerer, expr, loc);
   if (ts.isIdentifier(expr)) {
@@ -2435,6 +2441,16 @@ export function runtimeOptionalLocalOf(lowerer: Lowerer, node: ts.Expression): I
  * value; ref arms always truthy). A `void`-typed operand reaches here
  * only where it is `undefined` at run time, so ToBoolean of it is false:
  * the operand evaluates once for its effects, as Node evaluates it. */
+/** The statements that run `e` for its effects, for a unit-typed expression
+ * whose answer a surrounding lowering keeps without evaluating it: a
+ * sequence's own statements and, recursively, the effects of its result (a
+ * nested `void` sequence is a sequence whose result is one). */
+export function unitEffectStatements(e: IrExpr): IrStmt[] {
+  if (e.kind === "seqExpr") return [...e.stmts, ...unitEffectStatements(e.result)];
+  if (e.kind === "unitLit") return [];
+  return [{ kind: "exprStmt", expr: e, loc: e.loc }];
+}
+
 export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): IrExpr {
   if (e.type.kind === "bool") return e;
   if (e.type.kind === "f64" || e.type.kind === "string") {
@@ -2460,10 +2476,14 @@ export function ensureBool(lowerer: Lowerer, e: IrExpr, node: ts.Expression): Ir
     return { kind: "toBool", operand: e, type: BOOL, loc: e.loc };
   }
   // Bare unit values (undefined/null literals, the capability-probe
-  // reads that answer them): ToBoolean is constantly false. Units have
-  // no effectful producers, so folding the read away loses nothing.
+  // reads that answer them): ToBoolean is constantly false. A sequence
+  // still runs its effects (`Boolean(void f())` calls f), so only its
+  // result folds.
   if (isUnitType(e.type)) {
-    return { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const folded: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc: e.loc };
+    const effects = unitEffectStatements(e);
+    if (effects.length === 0) return folded;
+    return { kind: "seqExpr", stmts: effects, result: folded, type: BOOL, loc: e.loc };
   }
   // A `void`-typed operand (ADMITTED `if (fn())` / `!fn()` in an unchecked
   // JavaScript source, tsc-codes.ts TS1345): the row admits only operands
@@ -2858,6 +2878,16 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
     // Namespace members are bindings, not fields of a runtime namespace
     // object. Their ordinary read already preserves optional storage.
     if (!expr.questionDotToken && nsMemberIdentOf(lowerer, expr)) return null;
+    // `ns.default` through a CommonJS namespace import is module.exports,
+    // not a field of a runtime namespace object: its ordinary read (the
+    // module's default-import value) already preserves optional storage.
+    if (
+      !expr.questionDotToken &&
+      ts.isIdentifier(expr.name) &&
+      expr.name.text === "default" &&
+      cjsNamespaceImportDep(lowerer, expr.expression) !== null
+    )
+      return null;
     // The tail of an optional chain (`a?.b.c`) is absent when the chain
     // short-circuits: the chain's own lowering answers that undefined and
     // reads the field, with its absence, off a present receiver. A field

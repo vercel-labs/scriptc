@@ -164,6 +164,8 @@ export interface CcOptions {
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** node:cluster's module surface: compiles scr_cluster.c. */
+  cluster?: boolean;
   /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
   spawnCaptureBytes?: boolean;
   declAdopt?: boolean;

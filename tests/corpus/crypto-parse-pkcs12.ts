@@ -43,3 +43,10 @@ const backing = view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLe
 console.log(parsePKCS12(chain, { passphrase: backing }).certificate?.serialNumber.length);
 // No options at all is the empty passphrase.
 console.log(parsePKCS12(emptyPass).certificate?.subject.replace(/\n/g, "|"));
+
+// OpenSSL accepts a PFX version other than 3 and bytes after the structure.
+const versionOne = Buffer.from(chain);
+versionOne[6] = 1;
+console.log(parsePKCS12(versionOne, { passphrase: "secret" }).additionalCertificates.length);
+const trailing = Buffer.concat([chain, Buffer.from([0, 1, 2])]);
+console.log(parsePKCS12(trailing, { passphrase: "secret" }).additionalCertificates.length);

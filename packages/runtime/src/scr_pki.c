@@ -8661,8 +8661,10 @@ static int sp_p12_parse(SpP12Contents *c, const unsigned char *der, size_t len,
   size_t n;
   if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
   end = p + n;
+  /* OpenSSL's d2i_PKCS12 accepts any version; PKCS12_parse never checks it. */
   int version;
-  if (mbedtls_asn1_get_int(&p, end, &version) != 0 || version != 3) return SP_P12_NOT_RECOGNIZED;
+  if (mbedtls_asn1_get_int(&p, end, &version) != 0) return SP_P12_NOT_RECOGNIZED;
+  (void)version;
   if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
   unsigned char *ci_end = p + n;
   size_t oid_len, value_len;

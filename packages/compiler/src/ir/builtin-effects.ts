@@ -556,6 +556,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // getCipher throws the "not supported yet" error for a suite without a
   // known OpenSSL name.
   "tls.sockGetCipher",
+  // setMaxSendFragment throws Node's integer validation ladder: a non-number
+  // is ERR_INVALID_ARG_TYPE, a non-integer (or infinite) is ERR_OUT_OF_RANGE.
+  "tls.sockSetMaxSendFragment",
   // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
   // ERR_INVALID_ARG_TYPE) and the TLS state error.
   "tls.sockExportKeyingMaterial",

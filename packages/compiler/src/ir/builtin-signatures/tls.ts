@@ -89,6 +89,9 @@ export const tlsSignatures = defineLibFnSignatures({
   /** disableRenegotiation(): a no-op call, so the receiver is still
    * evaluated (and its exceptions still surface). */
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
+  /** setMaxSendFragment(size): Node's validation ladder, then the
+   * engine's 512..16384 fragment range; true when the cap was set. */
+  "tls.sockSetMaxSendFragment": { argTypes: [NETSOCKET_T, DYN], result: BOOL },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },

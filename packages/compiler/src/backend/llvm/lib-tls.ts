@@ -172,6 +172,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_server_is_dyn", a);
     case "tls.sockDisableRenegotiation":
       return finishRuntimeCall(host, e, "scr_tls_sock_disable_renegotiation", a);
+    case "tls.sockSetMaxSendFragment":
+      return finishRuntimeCall(host, e, "scr_tls_sock_set_max_send_fragment", a);
     case "tls.sockOnSecure":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure", a);

@@ -913,6 +913,10 @@ typedef struct ScrTlsSock {
   bool holding;
   unsigned char *held;
   size_t held_len, held_off, held_cap;
+  /* setMaxSendFragment(size): the plaintext cap for each engine write, so
+   * records leave no larger than Node's maximum fragment; 0 leaves the
+   * engine's own limit in place */
+  size_t max_send_fragment;
 } ScrTlsSock;
 
 static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
@@ -1449,6 +1453,9 @@ static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
 
 static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* a set maximum fragment caps every engine write, so each record leaves
+   * at that size; the socket's send loop resumes with the rest */
+  if (t->max_send_fragment != 0 && n > t->max_send_fragment) n = t->max_send_fragment;
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
   if (r >= 0) return r;
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -5245,6 +5252,48 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
 
+/* A JS number as V8 prints it in an error's Received tail ("70000",
+ * "1.5", "NaN", "Infinity"). Integer-valued doubles print without a
+ * fraction. */
+static void scr_tls_number_text(double v, char *buf, size_t cap) {
+  if (v != v) {
+    snprintf(buf, cap, "NaN");
+  } else if (isinf(v)) {
+    snprintf(buf, cap, v < 0 ? "-Infinity" : "Infinity");
+  } else if (trunc(v) == v && v >= -9007199254740992.0 && v <= 9007199254740992.0) {
+    snprintf(buf, cap, "%.0f", v);
+  } else {
+    snprintf(buf, cap, "%.17g", v);
+  }
+}
+
+/* TLSSocket.setMaxSendFragment(size): Node's validateInteger gate first
+ * (ERR_INVALID_ARG_TYPE for a non-number, ERR_OUT_OF_RANGE for a
+ * non-integer), then OpenSSL's range — 512..16384 answers true and caps
+ * each outgoing record's plaintext, anything else answers false. A plain
+ * or closed socket answers false (Node's closed handle throws instead). */
+bool scr_tls_sock_set_max_send_fragment(ScrNetSocket *s, const ScrDyn *size) {
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return false;
+  }
+  double v = size->v.num;
+  if (!(trunc(v) == v) || isinf(v)) {
+    char shown[64], text[224];
+    scr_tls_number_text(v, shown, sizeof shown);
+    int n = snprintf(text, sizeof text,
+                     "The value of \"size\" is out of range. It must be an integer. Received %s",
+                     shown);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) return false;
+  if (v < 512 || v > 16384) return false;
+  t->max_send_fragment = (size_t)v;
+  return true;
+}
+
 /* `x instanceof tls.Server` over a checked-dynamic value: false for every
  * non-server value (a null, another handle, a plain object). */
 bool scr_tls_server_is_dyn(const ScrDyn *v) {
@@ -5563,8 +5612,6 @@ static bool scr_tls_dynh_on(ScrNetSocket *s, const char *event, const ScrDyn *cb
 
 static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *const *args,
                                  size_t argc, ScrDyn **out) {
-  (void)args;
-  (void)argc;
   if (scr_tls_sock_of(s) == NULL) return false;
   if (strcmp(method, "getProtocol") == 0) {
     *out = scr_tls_sock_get_protocol(s);
@@ -5572,6 +5619,11 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
   }
   if (strcmp(method, "getCipher") == 0) {
     *out = scr_tls_sock_get_cipher(s);
+    return true;
+  }
+  if (strcmp(method, "setMaxSendFragment") == 0) {
+    bool ok = scr_tls_sock_set_max_send_fragment(s, argc >= 1 ? args[0] : scr_dyn_undefined());
+    *out = scr_dyn_new_bool(ok);
     return true;
   }
   if (strcmp(method, "setServername") == 0) {
@@ -5598,7 +5650,7 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
-    "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
+    "exportKeyingMaterial", "isSessionReused", "renegotiate",
     "enableTrace", "disableRenegotiation", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {

@@ -3560,6 +3560,20 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
+  if (name === "setMaxSendFragment" && args.length === 1) {
+    // TLSSocket.setMaxSendFragment(size): Node's integer validation, then
+    // the engine's 512..16384 fragment range — true when the cap was set,
+    // false outside the range.
+    const capped = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const size = lowerer.lowerExprExpecting(args[0]!, DYN);
+    return {
+      kind: "libCall",
+      fn: "tls.sockSetMaxSendFragment",
+      args: [capped, size],
+      type: BOOL,
+      loc,
+    };
+  }
   if (name === "write" || name === "end") {
     // write() answers Node's backpressure boolean; end() answers the
     // socket (Node's chaining).

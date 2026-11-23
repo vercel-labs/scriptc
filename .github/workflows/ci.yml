@@ -272,7 +272,13 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD"
+        # A branch from before the fast tier has no selector; its full tier still runs after the reviews pass.
+        run: |
+          if [ ! -f scripts/ci-fast-tests.mjs ]; then
+            echo "This branch predates scripts/ci-fast-tests.mjs; the full test tier covers it."
+            exit 0
+          fi
+          node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD"
 
   native_macos:
     needs: [validation_scope, lanes, code_quality]

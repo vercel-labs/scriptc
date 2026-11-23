@@ -992,12 +992,22 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
-    // A module that assigns module.exports inside a function or under a
-    // condition (a UMD wrapper) exports whatever that statement chose when
-    // it ran: the binding is that value under Node, and the static export
-    // table this build reads does not hold it. The refusal names that
-    // cause; "access its members" would not help.
     const dep = lowerer.cjsModuleBindingDepOf(expr);
+    // A require binding used as a value IS its exports object: the
+    // runtime's per-module view over the module's export globals, which is
+    // what Node's require answers, so enumeration and member calls through
+    // the value match the module. A module whose whole export is chosen at
+    // run time between statically known tables (React's index.js) has one
+    // slot per table member, so the view answers the branch that ran — the
+    // same object a UMD-style module does not have. A namespace import
+    // keeps its own member fences.
+    const exportsObject = dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
+    if (exportsObject !== null) return exportsObject;
+    // A module that assigns module.exports inside a function (a UMD
+    // wrapper) exports whatever that statement chose when it ran: the
+    // binding is that value under Node, and the static export table this
+    // build reads does not hold it. The refusal names that cause; "access
+    // its members" would not help.
     const nested = dep === null ? null : cjsNestedExportReplacementOf(dep);
     if (dep !== null && nested !== null) {
       const pkg = packageDirOf(dep.fileName);
@@ -1015,13 +1025,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
       );
     }
-    // A require binding used as a value IS its exports object: the
-    // runtime's per-module view over the module's export globals, which is
-    // what Node's require answers, so enumeration and member calls through
-    // the value match the module. A namespace import keeps its own member
-    // fences.
-    const exportsObject = dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
-    if (exportsObject !== null) return exportsObject;
     lowerer.unsupported(
       "SC1090",
       expr,

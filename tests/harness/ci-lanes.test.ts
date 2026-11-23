@@ -13,7 +13,14 @@ type Job = {
   outputs?: Record<string, string>;
   env?: Record<string, string>;
   strategy?: { matrix?: { shard?: unknown; include?: { runner?: string }[] } };
-  steps: { id?: string; run?: string; env?: Record<string, string> }[];
+  steps: {
+    id?: string;
+    run?: string;
+    env?: Record<string, string>;
+    uses?: string;
+    if?: string;
+    with?: Record<string, unknown>;
+  }[];
 };
 const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -303,6 +310,26 @@ test("pushes to main and merge queue groups run every lane except macos, and the
     options: ["full", "darwin"],
     default: "full",
   });
+});
+
+test("a light merge queue group runs the lanes its combined diff touches, never the macOS lane", () => {
+  const step = workflow.jobs["lanes"]!.steps.find((candidate) => candidate.id === "lanes")!;
+  expect(step.env!["BASE"]).toBe(
+    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
+  );
+  expect(step.env!["GROUP_REF"]).toBe("${{ github.event.merge_group.head_ref }}");
+  expect(lanesScript).toContain('elif [ "$TIER" = light ]; then');
+  // The queue base's copy of the selector, against the group's combined diff, not the group's own copy.
+  expect(lanesScript).toContain('git show "$BASE:scripts/ci-lanes.mjs"');
+  expect(lanesScript).toContain('--base "$BASE" --head "$HEAD" --pr "$PR" --github-output');
+  // The queue stands the macOS smoke job in for the macOS lane, and runs the fast tier beside the lanes.
+  expect(lanesScript).toContain("macos_smoke=%s\\nfast=%s");
+  // A light group needs the queue base and its combined diff, so it checks out the group's head with full history.
+  const checkout = workflow.jobs["lanes"]!.steps.find((candidate) =>
+    candidate.uses?.startsWith("actions/checkout"),
+  )!;
+  expect(checkout.if).toContain("needs.validation_scope.outputs.tier == 'light'");
+  expect(checkout.with!["fetch-depth"]).toBe(0);
 });
 
 test("a pull request's fast tier turns every lane off and runs the fast tests", () => {

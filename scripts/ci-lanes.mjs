@@ -31,9 +31,10 @@
 //   libnode bridge, or the lane itself and the programs and packages it runs (the npm suite's fixtures, the pinned
 //   packages, and a corpus program's own node_modules).
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
-// configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
-// merge queue groups, the nightly sweep and manual runs do not use this script: pushes to main and merge queue groups
-// run every lane except macos, and the others run every lane.
+// configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pull requests
+// and a light merge queue group (one whose pull requests each passed the expensive tier on their heads) use this
+// script; pushes to main, the other merge queue groups, the nightly sweep and manual runs do not: pushes and those
+// groups run every lane except macos, and the others run every lane.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 

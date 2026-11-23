@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
@@ -41,24 +41,53 @@ function runScope(eventName: string, event: unknown) {
   return runScopeOutputs(eventName, event).replace(/^tier=.*\n/m, "");
 }
 
-function runScopeOutputs(eventName: string, event: unknown, sha = "", gatePresent = "true") {
+// A stand-in for `gh api` that answers from a route table, so the scope step's merge queue probes run without a
+// network. A path absent from the table fails like an API error does, and the step falls back to the full tier.
+const fakeGh = `#!/usr/bin/env node
+const { readFileSync } = require("node:fs");
+const routes = JSON.parse(readFileSync(process.env.FAKE_GH_ROUTES, "utf8"));
+const path = process.argv[process.argv.indexOf("api") + 1];
+if (!(path in routes)) {
+  console.error("no fake response for " + path);
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify(routes[path]));
+`;
+
+function runScopeOutputs(
+  eventName: string,
+  event: unknown,
+  sha = "",
+  gatePresent = "true",
+  routes?: Record<string, unknown>,
+) {
   const directory = mkdtempSync(join(tmpdir(), "ci-stack-scope-"));
   try {
     const eventPath = join(directory, "event.json");
     const outputPath = join(directory, "output");
     writeFileSync(eventPath, JSON.stringify(event));
     writeFileSync(outputPath, "");
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      GITHUB_EVENT_NAME: eventName,
+      GITHUB_EVENT_PATH: eventPath,
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_SHA: sha,
+      GATE_PRESENT: gatePresent,
+    };
+    if (routes !== undefined) {
+      const bin = join(directory, "bin");
+      mkdirSync(bin);
+      const routesPath = join(directory, "gh-routes.json");
+      writeFileSync(routesPath, JSON.stringify(routes));
+      writeFileSync(join(bin, "gh"), fakeGh, { mode: 0o755 });
+      env.PATH = `${bin}:${process.env.PATH}`;
+      env.FAKE_GH_ROUTES = routesPath;
+    }
     // Execute the actual workflow step, rather than a second copy of its policy.
     const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", scopeScript], {
       encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_EVENT_NAME: eventName,
-        GITHUB_EVENT_PATH: eventPath,
-        GITHUB_OUTPUT: outputPath,
-        GITHUB_SHA: sha,
-        GATE_PRESENT: gatePresent,
-      },
+      env,
     });
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
@@ -177,13 +206,186 @@ test.each(["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "unkn
 test("scope selection treats branch metadata as data, without executing it", () => {
   expect(runScope("pull_request", stacked("feature/$(exit 1)\n'\"; exit 1"))).toBe("full=false\n");
   expect(scopeScript).not.toContain("${{");
-  expect(scopeJob.permissions).toEqual({ contents: "read" });
+  // The merge queue probes read the group's diff, its pull requests and their statuses.
+  expect(scopeJob.permissions).toEqual({
+    contents: "read",
+    "pull-requests": "read",
+    statuses: "read",
+  });
   expect(scopeJob.steps).toHaveLength(2);
   expect(gateStep.uses).toBeUndefined();
   // The probe reads both files the gate needs; only their presence on the default branch counts.
   expect(gateStep.run).toContain(".github/workflows/ci-review-gate.yml");
   expect(gateStep.run).toContain("scripts/ci-review-gate.mjs");
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
+});
+
+// A merge queue group: a synthetic commit (groupHead) built on the queue base (groupBase) from the squash commits of
+// the pull requests it holds. The ref names the last pull request in the group.
+const groupBase = "b".repeat(40);
+const groupHead = "a".repeat(40);
+const firstHead = "c".repeat(40);
+const secondHead = "d".repeat(40);
+const queueEvent = (numbers: number[]) => ({
+  repository: { full_name: repository, default_branch: "main" },
+  merge_group: {
+    head_ref: `gh-readonly-queue/main/pr-${numbers[numbers.length - 1]}-${groupBase}`,
+    head_sha: groupHead,
+    base_ref: "main",
+    base_sha: groupBase,
+  },
+});
+const route = (path: string) => `repos/${repository}/${path}`;
+type QueuePull = {
+  pull: {
+    number: number;
+    state: string;
+    head: { sha: string; repo: { full_name: string } };
+    base: { ref: string };
+  };
+  statuses: { context: string; state: string }[];
+  lag: number;
+};
+const queuePull = (number: number, head: string, lag = 3): QueuePull => ({
+  pull: {
+    number,
+    state: "open",
+    head: { sha: head, repo: { full_name: repository } },
+    base: { ref: "main" },
+  },
+  statuses: [{ context: "ci/full", state: "success" }],
+  lag,
+});
+function queueRoutes({
+  files = ["packages/compiler/src/backend/emit-call.ts"],
+  commits = ["Emit calls (#4082)"],
+  pulls = [],
+}: { files?: string[]; commits?: string[]; pulls?: QueuePull[] } = {}) {
+  const routes: Record<string, unknown> = {
+    [route(`compare/${groupBase}...${groupHead}`)]: {
+      ahead_by: commits.length,
+      commits: commits.map((message) => ({ commit: { message } })),
+      files: files.map((filename) => ({ filename })),
+    },
+  };
+  for (const { pull, statuses, lag } of pulls) {
+    routes[route(`pulls/${pull.number}`)] = pull;
+    routes[route(`commits/${pull.head.sha}/statuses?per_page=100`)] = statuses;
+    routes[route(`compare/${pull.head.sha}...${groupBase}`)] = { ahead_by: lag };
+  }
+  return routes;
+}
+
+test("a merge queue group whose pull requests passed the expensive tier runs the light tier", () => {
+  expect(
+    runScopeOutputs(
+      "merge_group",
+      queueEvent([4082]),
+      groupHead,
+      "true",
+      queueRoutes({ pulls: [queuePull(4082, firstHead)] }),
+    ),
+  ).toBe("full=true\ntier=light\n");
+});
+
+test("a merge queue group with a pull request that has no passing expensive tier runs the full tier", () => {
+  const routes = queueRoutes({ pulls: [queuePull(4082, firstHead)] });
+  routes[route(`commits/${firstHead}/statuses?per_page=100`)] = [
+    { context: "ci/full", state: "pending" },
+  ];
+  expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", routes)).toBe(
+    "full=true\ntier=full\n",
+  );
+  // No expensive tier on the head at all is the same.
+  routes[route(`commits/${firstHead}/statuses?per_page=100`)] = [];
+  expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", routes)).toBe(
+    "full=true\ntier=full\n",
+  );
+});
+
+test("a merge queue group that touches CI or build configuration runs the full tier", () => {
+  for (const file of [
+    ".github/workflows/ci.yml",
+    "scripts/ci-lanes.mjs",
+    "package.json",
+    "pnpm-lock.yaml",
+    "packages/compiler/package.json",
+  ])
+    expect(
+      runScopeOutputs(
+        "merge_group",
+        queueEvent([4082]),
+        groupHead,
+        "true",
+        queueRoutes({
+          files: [file, "packages/compiler/src/backend/emit-call.ts"],
+          pulls: [queuePull(4082, firstHead)],
+        }),
+      ),
+      file,
+    ).toBe("full=true\ntier=full\n");
+});
+
+test("a merge queue group with a head far behind the queue base runs the full tier", () => {
+  const atLimit = queueRoutes({ pulls: [queuePull(4082, firstHead, 100)] });
+  expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", atLimit)).toBe(
+    "full=true\ntier=light\n",
+  );
+  const stale = queueRoutes({ pulls: [queuePull(4082, firstHead, 101)] });
+  expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", stale)).toBe(
+    "full=true\ntier=full\n",
+  );
+});
+
+test("a merge queue group light tier checks every pull request in the group", () => {
+  const event = queueEvent([4081, 4082]);
+  const routes = queueRoutes({
+    commits: ["First change (#4081)", "Second change (#4082)"],
+    pulls: [queuePull(4081, firstHead), queuePull(4082, secondHead)],
+  });
+  expect(runScopeOutputs("merge_group", event, groupHead, "true", routes)).toBe(
+    "full=true\ntier=light\n",
+  );
+  // One pull request in the group without the expensive tier keeps the whole group on the full tier.
+  delete routes[route(`commits/${secondHead}/statuses?per_page=100`)];
+  expect(runScopeOutputs("merge_group", event, groupHead, "true", routes)).toBe(
+    "full=true\ntier=full\n",
+  );
+});
+
+test("a merge queue group it cannot judge runs the full tier", () => {
+  // No compare response for the group's diff.
+  expect(runScopeOutputs("merge_group", queueEvent([4082]), groupHead, "true", {})).toBe(
+    "full=true\ntier=full\n",
+  );
+  // A pull request that is no longer open.
+  const closed = queuePull(4082, firstHead);
+  closed.pull.state = "closed";
+  expect(
+    runScopeOutputs(
+      "merge_group",
+      queueEvent([4082]),
+      groupHead,
+      "true",
+      queueRoutes({ pulls: [closed] }),
+    ),
+  ).toBe("full=true\ntier=full\n");
+  // A group whose ref and commits name no pull request at all.
+  const unnamed = queueEvent([4082]);
+  unnamed.merge_group.head_ref = "gh-readonly-queue/main/pr-unnamed";
+  expect(
+    runScopeOutputs("merge_group", unnamed, groupHead, "true", queueRoutes({ commits: [] })),
+  ).toBe("full=true\ntier=full\n");
+  // A compare response the API truncated cannot be judged.
+  expect(
+    runScopeOutputs(
+      "merge_group",
+      queueEvent([4082]),
+      groupHead,
+      "true",
+      queueRoutes({ files: Array.from({ length: 300 }, (_, index) => `docs/${index}.md`) }),
+    ),
+  ).toBe("full=true\ntier=full\n");
 });
 
 const full = "needs.validation_scope.outputs.full == 'true'";

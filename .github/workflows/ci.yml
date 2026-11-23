@@ -8,8 +8,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
-  # it does. It runs what a push to main runs. Nothing starts such a run until then.
+  # A merge queue group: the tree that would become main, tested before it does. When every pull request in the
+  # group passed the expensive tier on its head, it runs the fast tier and the lanes the group's combined diff
+  # touches; otherwise it runs what a push to main runs.
   merge_group:
   # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
   # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
@@ -70,12 +71,16 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
+      statuses: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
       # fast: a pull request from this repository runs the fast tier (code_quality, fast_tests) until both Vercel
       # reviews pass on its head; ci-review-gate.yml then dispatches its expensive tier, which runs every lane the
-      # pull request selects. The label ci:full, a fork (whose branch cannot be dispatched) and every other event run
-      # full. superseded: a dispatched expensive tier whose branch moved on runs nothing; the new head has its own.
+      # pull request selects. light: a merge queue group whose pull requests each passed the expensive tier runs the
+      # fast tier and the lanes its combined diff touches. The label ci:full, a fork (whose branch cannot be
+      # dispatched) and every other event run full. superseded: a dispatched expensive tier whose branch moved on
+      # runs nothing; the new head has its own.
       tier: ${{ steps.scope.outputs.tier }}
     steps:
       # ci-review-gate.yml and scripts/ci-review-gate.mjs land together, in the pull request that introduces the
@@ -94,11 +99,14 @@ jobs:
       - id: scope
         env:
           GATE_PRESENT: ${{ steps.gate.outputs.present }}
+          GH_TOKEN: ${{ github.token }}
         # Read GitHub's event directly; do not run scripts from a PR checkout.
         run: |
           node <<'NODE'
+          const { execFileSync } = require('node:child_process');
           const { appendFileSync, readFileSync } = require('node:fs');
           const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          const eventName = process.env.GITHUB_EVENT_NAME;
           const pr = event.pull_request;
           const repository = event.repository?.full_name;
           const sameRepository = typeof repository === 'string' && repository.length > 0 &&
@@ -110,39 +118,150 @@ jobs:
           // A PR into the default branch is the lowest unmerged layer of any
           // stack, whatever the stack metadata names as its base.
           const defaultBranch = event.repository?.default_branch;
-          const upperLayer = process.env.GITHUB_EVENT_NAME === 'pull_request' &&
+          const upperLayer = eventName === 'pull_request' &&
             sameRepository && trustedAuthor && typeof stackBase === 'string' && stackBase.length > 0 &&
             typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase &&
             prBase !== defaultBranch;
           // A manual run of the shape overlay validation alone skips the other lanes.
-          const shapeOnly = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
-            event.inputs?.scope === 'shape_overlay';
+          const shapeOnly = eventName === 'workflow_dispatch' && event.inputs?.scope === 'shape_overlay';
           // The expensive tier of a pull request (ci-review-gate.yml) names the commit its reviews passed on.
-          const gated = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && (event.inputs?.pr ?? '') !== '';
+          const gated = eventName === 'workflow_dispatch' && (event.inputs?.pr ?? '') !== '';
           const superseded = gated && event.inputs?.sha !== process.env.GITHUB_SHA;
           const full = !upperLayer && !shapeOnly && !superseded;
           const fullLabel = (pr?.labels ?? []).some((label) => label?.name === 'ci:full');
           // Without the gate on the default branch nothing starts a pull request's expensive tier; its run keeps
           // full CI instead. The probe step reports the files; an absent report runs full CI too.
           const gateInstalled = process.env.GATE_PRESENT === 'true';
-          const noGate = process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel &&
-            !gateInstalled;
-          const tier = superseded ? 'superseded'
-            : process.env.GITHUB_EVENT_NAME === 'pull_request' && sameRepository && !fullLabel && !noGate
+          const noGate = eventName === 'pull_request' && sameRepository && !fullLabel && !gateInstalled;
+
+          // Build and CI configuration: a merge queue group that changes one runs the whole expensive tier, as a
+          // push to main does. These are the files scripts/ci-lanes.mjs turns every lane on for.
+          const queueInfrastructure = [
+            /^\.github\//,
+            /^scripts\/ci-/,
+            /^scripts\/bootstrap-seed\.mjs$/,
+            /^package\.json$/,
+            /^pnpm-lock\.yaml$/,
+            /^pnpm-workspace\.yaml$/,
+            /^\.node-version$/,
+            /^patches\//,
+            /^vitest\.config\.ts$/,
+            /^tests\/harness\/(shard\.ts|shard-balance\.mjs|suite-lock\.mjs)$/,
+            /^packages\/[^/]+\/package\.json$/,
+          ];
+          // A pull request this many commits behind the queue base was tested against a much older main.
+          const QUEUE_MAX_LAG = 100;
+          const api = (path) =>
+            JSON.parse(execFileSync('gh', ['api', path], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
+          // The pull requests of a merge queue group: its ref names the last one, and each commit the queue built
+          // for the group carries the number of the pull request it applies (a squash merge names it in the
+          // subject; a merge commit's subject names it too).
+          function queuePullRequests(mergeGroup, compare) {
+            const numbers = new Set();
+            const named = /\/pr-(\d+)-[0-9a-f]+$/.exec(mergeGroup.head_ref ?? '');
+            if (named !== null) numbers.add(Number(named[1]));
+            for (const commit of compare.commits ?? []) {
+              const subject = String(commit.commit?.message ?? '').split('\n')[0];
+              const squash = /\(#(\d+)\)$/.exec(subject);
+              const merge = /^Merge pull request #(\d+) /.exec(subject);
+              if (squash !== null) numbers.add(Number(squash[1]));
+              else if (merge !== null) numbers.add(Number(merge[1]));
+            }
+            return [...numbers].sort((a, b) => a - b);
+          }
+          // Whether a merge queue group runs only the fast tier and the lanes its combined diff touches: every pull
+          // request in it passed the expensive tier (ci/full) on its current head, no head is far behind the queue
+          // base, and the group leaves the build and CI configuration alone. Anything it cannot establish runs the
+          // whole expensive tier, as a push to main does.
+          function queueIsLight(repo, mergeGroup) {
+            const skip = (reason) => ({ light: false, reason });
+            if (typeof repo !== 'string' || repo.length === 0) return skip('the event names no repository');
+            if (typeof mergeGroup?.head_sha !== 'string' || typeof mergeGroup?.base_sha !== 'string')
+              return skip('the group names no head and base');
+            const baseRef = String(mergeGroup.base_ref ?? '').replace(/^refs\/heads\//, '');
+            let compare;
+            try {
+              compare = api(`repos/${repo}/compare/${mergeGroup.base_sha}...${mergeGroup.head_sha}`);
+            } catch (error) {
+              return skip(`cannot read the group's diff (${error.message})`);
+            }
+            const files = (compare.files ?? []).map((file) => file.filename);
+            // The API lists at most 300 changed files and 250 commits; a larger group cannot be judged from them.
+            if (files.length >= 300 || (compare.commits ?? []).length >= 250)
+              return skip('the group is too large to judge from one compare response');
+            if (files.length === 0) return skip('the group changes no files');
+            const configuration = files.find((file) => queueInfrastructure.some((re) => re.test(file)));
+            if (configuration !== undefined)
+              return skip(`${configuration}: build or CI configuration`);
+            const numbers = queuePullRequests(mergeGroup, compare);
+            if (numbers.length === 0) return skip('the group names no pull requests');
+            for (const number of numbers) {
+              let pull;
+              try {
+                pull = api(`repos/${repo}/pulls/${number}`);
+              } catch (error) {
+                return skip(`cannot read #${number} (${error.message})`);
+              }
+              if (pull.state !== 'open') return skip(`#${number} is ${pull.state}`);
+              if (pull.head?.repo?.full_name !== repo) return skip(`#${number} comes from another repository`);
+              if (pull.base?.ref !== baseRef) return skip(`#${number} targets ${pull.base?.ref}`);
+              let statuses;
+              try {
+                statuses = api(`repos/${repo}/commits/${pull.head.sha}/statuses?per_page=100`);
+              } catch (error) {
+                return skip(`cannot read the statuses of #${number} (${error.message})`);
+              }
+              const expensive = statuses.find((status) => status.context === 'ci/full');
+              if (expensive?.state !== 'success')
+                return skip(`#${number} has no passing ci/full on ${pull.head.sha}`);
+              let behind;
+              try {
+                behind = api(`repos/${repo}/compare/${pull.head.sha}...${mergeGroup.base_sha}`).ahead_by;
+              } catch (error) {
+                return skip(`cannot compare #${number} with the queue base (${error.message})`);
+              }
+              if (!Number.isInteger(behind) || behind > QUEUE_MAX_LAG)
+                return skip(`#${number} is ${behind} commits behind the queue base`);
+            }
+            return {
+              light: true,
+              reason: `${numbers.length} pull request(s) passed the expensive tier on their heads`,
+            };
+          }
+
+          let queue;
+          if (eventName === 'merge_group') {
+            try {
+              queue = queueIsLight(repository, event.merge_group);
+            } catch (error) {
+              queue = { light: false, reason: `cannot judge the group (${error.message})` };
+            }
+          }
+          const tier = queue?.light ? 'light'
+            : superseded ? 'superseded'
+            : eventName === 'pull_request' && sameRepository && !fullLabel && !noGate
               ? 'fast'
               : 'full';
           appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
-          console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
-            : !full ? 'Defer full CI until this PR becomes the lowest unmerged layer'
-            : noGate ? 'The gate is not on the default branch yet: run full CI'
-            : tier === 'fast' ? 'Run the fast tier; the expensive tier waits for the Vercel reviews (ci-review-gate.yml)'
-            : 'Run full CI');
+          if (queue !== undefined)
+            console.log(queue.light
+              ? `Run the fast tier and the lanes this merge queue group's diff touches: ${queue.reason}`
+              : `Run the whole expensive tier for this merge queue group: ${queue.reason}`);
+          else
+            console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
+              : !full ? 'Defer full CI until this PR becomes the lowest unmerged layer'
+              : noGate ? 'The gate is not on the default branch yet: run full CI'
+              : tier === 'fast'
+                ? 'Run the fast tier; the expensive tier waits for the Vercel reviews (ci-review-gate.yml)'
+              : 'Run full CI');
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
-  # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos, whose jobs the nightly sweep runs on main; they run macos_smoke instead. The nightly
-  # sweep and manual runs run every lane but macos_smoke, which the complete macOS lane covers.
+  # request's diff, so a pull request cannot change its own selection). Pushes to main run every lane except macos,
+  # whose jobs the nightly sweep runs on main; they run macos_smoke instead. A merge queue group whose pull requests
+  # each passed the expensive tier runs this selector against the group's combined diff (validation_scope); every
+  # other group runs what a push to main runs. The nightly sweep and manual runs run every lane but macos_smoke,
+  # which the complete macOS lane covers.
   # A pull request's fast tier turns every lane off; its expensive tier, dispatched on its branch, selects lanes the
   # same way against the pull request's base.
   lanes:
@@ -172,7 +291,8 @@ jobs:
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: github.event_name == 'pull_request' || inputs.pr != ''
+        # A light merge queue group reads the queue base and the group's combined diff from git.
+        if: github.event_name == 'pull_request' || inputs.pr != '' || needs.validation_scope.outputs.tier == 'light'
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -180,18 +300,38 @@ jobs:
         env:
           EVENT: ${{ inputs.pr != '' && 'pull_request' || github.event_name }}
           TIER: ${{ needs.validation_scope.outputs.tier }}
-          BASE: ${{ github.event.pull_request.base.sha }}
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
+          GROUP_REF: ${{ github.event.merge_group.head_ref }}
           GH_TOKEN: ${{ github.token }}
         run: |
           every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n' | tee -a "$GITHUB_OUTPUT"; }
+          # What a push to main runs, and what a merge queue group runs when it does not qualify for the light tier.
+          queued() { printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"; }
           # The dispatched expensive tier reads the pull request's base from the API.
           base() { [ -n "$BASE" ] || BASE=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .base.sha); }
           if [ "$TIER" = fast ]; then
             printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ "$TIER" = light ]; then
+            # Every pull request in the group passed the expensive tier on its head: run the fast tier and the
+            # lanes the group's combined diff touches, chosen by the queue base's copy of the selector.
+            echo "The group's pull requests passed the expensive tier: run the fast tier and the lanes its diff touches"
+            [ -n "$PR" ] || PR=$(printf '%s' "$GROUP_REF" | sed -n 's#.*/pr-\([0-9][0-9]*\)-.*#\1#p')
+            if git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
+              selection=$(node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --pr "$PR" --github-output)
+              printf '%s\n' "$selection"
+              linux=false macos_smoke=false
+              case "$selection" in *"linux=true"*) linux=true macos_smoke=true ;; esac
+              # The queue never runs the macOS lane, which the nightly sweep covers; the smoke job stands in for a
+              # push to main when the diff turns any lane on. A documentation-only diff runs no lane and no fast tier.
+              printf 'macos=false\nmacos_smoke=%s\nfast=%s\n' "$macos_smoke" "$linux" >> "$GITHUB_OUTPUT"
+            else
+              echo "The queue base has no scripts/ci-lanes.mjs: what a push to main runs"
+              queued
+            fi
           elif [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' | tee -a "$GITHUB_OUTPUT"
+            queued
           elif [ "$EVENT" != pull_request ]; then
             every
           elif base && git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
@@ -250,7 +390,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -270,8 +410,9 @@ jobs:
       - uses: ./.github/actions/libnode
       - name: Related tests
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+          # A light merge queue group diffs the queue base against the group's head, as the lane selector does.
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD"
 
   native_macos:
@@ -1702,9 +1843,10 @@ jobs:
               ;;
           esac
       # ci/full, the status the merge gate requires beside this check: pending while a pull request has only run its
-      # fast tier, and the result of every lane once a run of the expensive tier ends. A fork's token cannot write
-      # statuses, and a fork's run is not trusted to: a maintainer records ci/full for it (ci-review-gate.yml,
-      # fork_attest). Pushes to main and the nightly sweep need none.
+      # fast tier, the result of every lane once a run of the expensive tier ends, and for a light merge queue group
+      # the result of the lanes its diff touches. A fork's token cannot write statuses, and a fork's run is not
+      # trusted to: a maintainer records ci/full for it (ci-review-gate.yml, fork_attest). Pushes to main and the
+      # nightly sweep need none.
       - name: Report ci/full
         if: >-
           always() && needs.validation_scope.outputs.tier != 'superseded' &&
@@ -1722,6 +1864,10 @@ jobs:
             state=pending description="Deferred until this pull request is the lowest unmerged stack layer"
           elif [ "$TIER" = fast ]; then
             state=pending description="Waiting for Vercel Agent Review and Vercel Security Review, or the ci:full label"
+          elif [ "$TIER" = light ] && [ "$LANES" = success ]; then
+            state=success description="The lanes this queue group's diff touches passed"
+          elif [ "$TIER" = light ]; then
+            state=failure description="A lane this queue group's diff touches failed or was cancelled"
           elif [ "$LANES" = success ]; then
             state=success description="Every CI lane passed"
           else

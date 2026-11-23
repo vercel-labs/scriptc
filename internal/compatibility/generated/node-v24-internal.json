@@ -35034,6 +35034,7 @@
           "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-options.mjs",
           "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
@@ -41727,8 +41728,11 @@
       "anchor": "err_tls_alpn_callback_with_protocols",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS",
+        "tests": [
+          "tests/corpus/compat-errors-tls-options.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41820,8 +41824,11 @@
       "anchor": "err_tls_invalid_context",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_CONTEXT"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_CONTEXT",
+        "tests": [
+          "tests/corpus/compat-errors-tls-options.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

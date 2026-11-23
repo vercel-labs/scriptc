@@ -9874,7 +9874,8 @@ ScrStream *scr_stream_unbox_dyn_stage(const ScrDyn *value, const ScrStr *message
   if (stream) return stream;
   if (scr_exc_pending()) return NULL;
   if (value->kind == SCR_DYN_OBJ && scr_stream_dyn_transform_like(value)) {
-    ScrStream *paired = sf_duplex_from_dyn_flags((ScrDyn *)value, 2 /* object mode */);
+    ScrStream *paired = sf_duplex_from_dyn_flags(
+        (ScrDyn *)value, 2 /* object mode */ | 8 /* web chunks */);
     if (paired || scr_exc_pending()) return paired;
     /* Not a web pair: the not-supported fence below answers it. */
   }
@@ -9884,7 +9885,8 @@ ScrStream *scr_stream_unbox_dyn_stage(const ScrDyn *value, const ScrStr *message
     return NULL;
   }
   if (scr_exc_pending()) return NULL;
-  ScrStream *d = sf_duplex_from_dyn_flags((ScrDyn *)value, 2 /* object mode */);
+  ScrStream *d = sf_duplex_from_dyn_flags(
+      (ScrDyn *)value, 2 /* object mode */ | 8 /* web chunks */);
   if (d && !d->st->web_pair_body) d->st->pipeline_body = true;
   return d;
 }

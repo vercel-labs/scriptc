@@ -860,6 +860,11 @@ typedef struct ScrTlsSock {
   /* the topmost certificate the verification walked — the callback runs
    * depth-descending, the leaf last, so the leaf's turn closes the walk */
   mbedtls_x509_crt *vrfy_top;
+  /* the pointer is scoped to ONE walk: the leaf's turn clears it and marks
+   * the walk done, so the next handshake's walk — a renegotiation's,
+   * driven by the pump or by a read — starts from a cleared pointer and a
+   * fresh verdict (the engine frees the previous chain when it begins) */
+  bool vrfy_walk_done;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -888,7 +893,8 @@ typedef struct ScrTlsSock {
   /* asked for before the first handshake finished: started at 'secure' */
   bool renego_requested;
   /* disableRenegotiation(): a peer-initiated renegotiation is reported
-   * (once per attempt) and never re-fires 'secure' */
+   * (once per attempt); the handshake still completes and re-fires
+   * 'secure', as Node's socket does */
   bool no_renego;
   bool renego_denied;
   /* the negotiated version is TLS 1.3: no renegotiation exists on it */
@@ -1087,9 +1093,11 @@ static bool scr_tls_leaf_has_ip(const mbedtls_x509_crt *crt, const char *ip) {
  * a mismatch. */
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
-  if (depth == 0 && t->vrfy_top == NULL) {
-    /* a new handshake's leaf — the initial one, or a renegotiation whose
-     * previous verdict and borrowed leaf were cleared: start fresh */
+  if (t->vrfy_walk_done) {
+    /* the walk that just closed belongs to the previous handshake: this
+     * call opens a new one (the initial handshake or a renegotiation,
+     * driven by the pump or by a read), whose verdict starts fresh and
+     * whose borrowed chain pointer starts empty */
     t->vrfy_seen = false;
     t->vrfy_blocked = false;
     t->vrfy_leaf_self = false;
@@ -1097,6 +1105,8 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     t->vrfy_expired = false;
     t->vrfy_cn_mismatch = false;
     t->vrfy_flags = 0;
+    t->vrfy_top = NULL;
+    t->vrfy_walk_done = false;
   }
   t->vrfy_seen = true;
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
@@ -1160,6 +1170,13 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
   if (*flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
     if (depth == 0 && self) t->vrfy_leaf_self = true;
     if (depth > 0 && self) t->vrfy_chain_self = true;
+  }
+  if (depth == 0) {
+    /* the leaf closes the walk: the chain it borrowed is freed when the
+     * handshake's session is wrapped up, so the pointer must not outlive
+     * this call */
+    t->vrfy_top = NULL;
+    t->vrfy_walk_done = true;
   }
   return 0;
 }
@@ -1301,7 +1318,9 @@ static void scr_tls_renego_settle(ScrTlsSock *t) {
   if (!t->renegotiating || !t->renego_progress) return; /* requested but unanswered */
   t->renegotiating = false;
   t->renego_progress = false;
-  bool denied = t->renego_denied;
+  /* a refusal was reported when the attempt began; the handshake itself
+   * still completes and re-fires 'secure', which is what Node's socket
+   * does with OpenSSL's NO_RENEGOTIATION in place */
   t->renego_denied = false;
   if (t->srv != NULL && t->srv->request_cert && t->srv->reject_unauthorized &&
       !t->srv->standalone && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
@@ -1312,7 +1331,6 @@ static void scr_tls_renego_settle(ScrTlsSock *t) {
     t->hang_up_pending = true;
     return;
   }
-  if (denied) return; /* the renegotiation was refused: no 'secure' */
   if (!scr_exc_pending()) scr_net_fire0_this(&t->secure_ls, t->sock, SCR_DYNH_NET_SOCKET);
 }
 
@@ -1828,6 +1846,10 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
 
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  /* no verification walk is in flight between pump steps, and the chain
+   * the previous handshake walked is freed when the next one begins: the
+   * borrowed top pointer must not survive into the next walk */
+  t->vrfy_top = NULL;
   if (t->cli != NULL && t->cli->no_protocols) {
     /* OpenSSL's reason without its per-process prefix (SEMANTICS.md
      * divergence 55); scr_error_message_code gives Node's code. */
@@ -1935,9 +1957,9 @@ static void scr_tls_on_established(void *tctx) {
     const char *ver = mbedtls_ssl_get_version(&t->ssl);
     t->is_tls13 = ver != NULL && strcmp(ver, "TLSv1.3") == 0;
   }
-  /* the verified leaf is borrowed from the handshake's chain, which the
-   * engine frees: clearing it leaves no dangling pointer across a later
-   * renegotiation (the next handshake's verdict starts from it) */
+  /* the walk already released its borrowed top pointer when the leaf's
+   * turn closed it; this clear covers a walk that never reached the leaf
+   * (the chain the callback borrowed is freed with the session) */
   t->vrfy_top = NULL;
   if (t->srv != NULL) {
     /* Node emits a server socket's 'secure' as its handshake completes —

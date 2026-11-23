@@ -1,7 +1,8 @@
 // disableRenegotiation(): a server socket that called it reports Node's
-// ERR_TLS_RENEGOTIATION_DISABLED for a peer-started renegotiation and keeps
-// the connection; the initiating client still completes and sees a second
-// 'secure', as OpenSSL's NO_RENEGOTIATION behaves.
+// ERR_TLS_RENEGOTIATION_DISABLED for each peer-started renegotiation and
+// keeps the connection; the handshake itself still completes, so the
+// server re-fires 'secure' after the report and the initiating client sees
+// its second 'secure', as OpenSSL's NO_RENEGOTIATION behaves.
 import * as tls from "node:tls";
 import { readFileSync } from "node:fs";
 
@@ -10,6 +11,7 @@ const key = readFileSync("tests/fixtures/server/certs/localhost-key.pem");
 const ca = readFileSync("tests/fixtures/server/certs/ca.pem");
 
 let serverError = "none";
+let serverSecures = 0;
 let clientSecures = 0;
 const completed: string[] = [];
 
@@ -18,6 +20,9 @@ const server = tls.createServer(
   (sock) => {
     sock.disableRenegotiation();
     sock.on("data", () => {});
+    sock.on("secure", () => {
+      serverSecures += 1;
+    });
     sock.on("error", (error: Error & { code?: string }) => {
       if (serverError === "none") serverError = `${error.code} ${error.message}`;
     });
@@ -46,6 +51,7 @@ await new Promise<void>((resolve) => {
     });
     setTimeout(() => {
       console.log("server", serverError);
+      console.log("server secures", serverSecures);
       console.log("client", clientSecures);
       console.log(completed.join(","));
       client.end();

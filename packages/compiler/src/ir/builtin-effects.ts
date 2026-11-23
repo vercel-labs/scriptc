@@ -337,6 +337,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
 ];
 
 const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
+  // node:cluster validates its env argument and refuses setupPrimary in a
+  // worker process (ERR_WORKER_INIT_FAILED).
+  "cluster.fork",
+  "cluster.setup",
+  "cluster.on",
+  "cluster.off",
+  "cluster.disconnect",
   "icu.dateTimeFormatFormatDyn",
   "icu.numToLocaleString",
   "icu.dateTimeFormatNew",
@@ -455,6 +462,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
+  "http.setGlobalProxyFromEnv",
   "http.agentCreateConnectionCheck",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
@@ -942,9 +950,6 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "cp.execCapture",
   // validateMaxBuffer's ERR_OUT_OF_RANGE, before the capturing call.
   "cp.maxBuffer",
-  // DEP0190 reaches the program's 'warning' listeners, whose replacements
-  // may throw.
-  "cp.shellDeprecation",
   // exec/execFile's option checks: validateTimeout's ERR_OUT_OF_RANGE and
   // sanitizeKillSignal's ERR_UNKNOWN_SIGNAL, before the child starts.
   "cp.execFileOpts",

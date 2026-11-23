@@ -14224,6 +14224,19 @@ void scr_error_dyn_follow_bag(ScrDyn *view, const ScrDyn *bag, const ScrError *e
   }
 }
 
+/* The Error a dynamic value was built from, when the value is one of the
+ * identity-cached error boxes (a program's Error crossing into a callback):
+ * +1, or NULL when the value is not an error object this runtime produced
+ * (a carried non-Error reason included). */
+ScrError *scr_dyn_error_value(const ScrDyn *d) {
+  if (d == NULL) return NULL;
+  size_t hit = scr_errdyn_find(d, false);
+  if (hit == SIZE_MAX) return NULL;
+  const ScrErrDynEnt *ent = &scr_errdyn_cache[hit];
+  if (ent->carried || ent->err == NULL) return NULL;
+  return scr_error_retain(ent->err);
+}
+
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);

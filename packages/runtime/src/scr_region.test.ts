@@ -184,6 +184,28 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
     }
   });
 
+  // A number or string array whose metadata references a region object: the
+  // walk visits that metadata like release does, so the region is freed
+  // (without the walk the outside-looking reference keeps it, and the
+  // disposal assertion fails).
+  test("array metadata references are walked with the region", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-region-"));
+    try {
+      const bin = await build(dir, "region", ["-fsanitize=undefined"]);
+      const result = await run(bin, "metadata");
+      expect(result.stdout.trim()).toBe("array metadata references are walked with the region");
+      const parsed = attempts(result.stderr);
+      expect(parsed.attempts).toEqual(["1 freed", "2 freed", "3 freed", "4 freed"]);
+      expect(parsed.summaries).toEqual([
+        "scriptc regions: 4 created, 4 released, 4 freed, 0 pinned, 0 kept",
+      ]);
+      expect(parsed.heapPasses).toEqual([0]);
+      expect(parsed.other).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("worker threads free their own regions under ThreadSanitizer", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-region-"));
     try {

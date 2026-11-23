@@ -521,4 +521,7 @@ export const httpSignatures = defineLibFnSignatures({
    * 101. The listener is void with no parameter or one checked-dynamic
    * parameter, Node's event object. */
   "http.clientOnInformation": { argTypes: [HTTPCLIENTREQ_T, null, BOOL], result: VOID },
+  /** http.setGlobalProxyFromEnv(proxyEnv?): Node 24 configures the module's
+   * environment proxy; the default agent resolves it per target. */
+  "http.setGlobalProxyFromEnv": { argTypes: [DYN], result: VOID },
 });

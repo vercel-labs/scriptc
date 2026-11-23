@@ -21,10 +21,11 @@ import { frameText } from "./frame-positions.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  // execFileSync's shell form reports DEP0190 on a next tick, so the loop
-  // runs even when nothing else in the program is asynchronous (the
-  // fs.existsSyncValue precedent for DEP0187).
-  if (e.fn === "cp.shellDeprecation") host.usesTimers = true;
+  // The shell command line reports DEP0190 on a next tick, so the loop runs
+  // even when nothing else in the program is asynchronous (the
+  // fs.existsSyncValue precedent for DEP0187). execFileSync's shell form is
+  // the case that reaches it without other asynchronous work.
+  if (e.fn === "child.shellCommand") host.usesTimers = true;
   if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
     const callbackArg = e.args[2];
     if (!callbackArg)

@@ -444,9 +444,9 @@ export function lowerExecSyncCall(
 
   // execFileSync(file, args, { shell: true }): Node's normalizeSpawnArguments
   // joins file and args with single spaces (unescaped) and runs the string
-  // through /bin/sh -c, which is exactly execSync's launch. DEP0190 reports
-  // the unescaped concatenation once when args is non-empty. The args
-  // expression evaluates once into a hidden local so both reads see it.
+  // through /bin/sh -c, which is exactly execSync's launch. The runtime's
+  // shell-command helper reports DEP0190 once when args is non-empty. The
+  // args expression evaluates once into a hidden local so both reads see it.
   if (shellEnabled) {
     // JavaScript evaluates file(), then args(), then the options. The
     // launch's first argument evaluates the file into a local (and answers
@@ -455,26 +455,16 @@ export function lowerExecSyncCall(
     const fileRef = varRef(heldFile.id, cmd.type, loc);
     const held = lowerer.declareHiddenLocal("%cpShellArgs", argvExpr.type);
     const argsRef = varRef(held.id, argvExpr.type, loc);
-    const deprecation: IrExpr = {
-      kind: "libCall",
-      fn: "cp.shellDeprecation",
-      args: [argsRef],
-      type: VOID,
-      loc,
-    };
     const joined: IrExpr = {
       kind: "libCall",
-      fn: "cp.shellCommand",
+      fn: "child.shellCommand",
       args: [fileRef, argsRef],
       type: STRING,
       loc,
     };
     const command: IrExpr = {
       kind: "seqExpr",
-      stmts: [
-        { kind: "varDecl", localId: held.id, init: argvExpr, loc },
-        { kind: "exprStmt", expr: deprecation, loc },
-      ],
+      stmts: [{ kind: "varDecl", localId: held.id, init: argvExpr, loc }],
       result: joined,
       type: STRING,
       loc,

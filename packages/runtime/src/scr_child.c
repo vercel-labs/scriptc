@@ -43,6 +43,64 @@
   } while (0)
 #endif
 
+static void scr_child_oom(void);
+static void scr_child_warn_shell_args(void);
+
+/* Node's shell form: the command line [file, ...args].join(' '), the string
+ * a shell runs with -c. The compiled argv holds strings. +1. */
+ScrStr *scr_child_shell_command(ScrStr *cmd, ScrArr *args) {
+  size_t n = (size_t)scr_arr_len(args);
+  if (n == 0) return scr_str_retain(cmd);
+  scr_child_warn_shell_args();
+  ScrStr **parts = malloc((1 + 2 * n) * sizeof *parts);
+  if (!parts) scr_child_oom();
+  ScrStr *space = scr_str_new(" ", 1);
+  parts[0] = cmd;
+  for (size_t i = 0; i < n; i++) {
+    parts[1 + 2 * i] = space;
+    parts[2 + 2 * i] = scr_arr_get_ref(args, (double)i);
+  }
+  ScrStr *command = scr_str_concat_parts(parts, 1 + 2 * n);
+  for (size_t i = 0; i < n; i++) scr_str_release(parts[2 + 2 * i]);
+  scr_str_release(space);
+  free(parts);
+  return command;
+}
+
+/* DEP0190, which Node's deprecate() wrapper reports once per process on the
+ * next tick when a shell form carries separate arguments: the arguments are
+ * concatenated, never escaped. */
+static SCR_TL bool scr_child_shell_args_warned = false;
+
+static void scr_child_warn_shell_args_report(void) {
+  static const char text[] =
+      "Passing args to a child process with shell option true can lead to security "
+      "vulnerabilities, as the arguments are not escaped, only concatenated.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  if (scr_warning_emit_hook) {
+    scr_stdout_settle();
+    fflush(stdout);
+    scr_warning_emit_hook("DeprecationWarning", "DEP0190", message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+    fprintf(stderr, "(node:%ld) [DEP0190] DeprecationWarning: %.*s\n", (long)scr_process_pid(),
+            (int)message->len, message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-deprecation ...` to show where the warning was created)\n",
+            stderr);
+    }
+  }
+  scr_str_release(message);
+}
+
+static void scr_child_warn_shell_args(void) {
+  if (scr_child_shell_args_warned) return;
+  scr_child_shell_args_warned = true;
+  scr_next_tick_raw(&scr_child_warn_shell_args_report);
+}
+
 typedef struct ScrIpc ScrIpc;
 static ScrIpc *scr_ipc_new(ScrChildStream *reader, ScrChildWriter *writer);
 static ScrIpc *scr_ipc_retain(ScrIpc *ipc);
@@ -962,11 +1020,22 @@ static void scr_win_create_process(ScrStr *cmd, ScrArr *args, ScrWinSpawn *sp,
     free(cwd_w);
     return;
   }
-  WCHAR *command_w = shell ? scr_child_wide(cmd->data, cmd->len) : NULL;
+  /* Node's shell form joins the file and its arguments with single spaces;
+   * separate arguments report DEP0190 once. */
+  ScrStr *shell_line = NULL;
+  if (shell && scr_arr_len(args) > 0) {
+    shell_line = scr_child_shell_command(cmd, args);
+    scr_child_warn_shell_args();
+  }
+  WCHAR *command_w =
+      shell ? scr_child_wide(shell_line != NULL ? shell_line->data : cmd->data,
+                             shell_line != NULL ? shell_line->len : cmd->len)
+            : NULL;
   WCHAR *cmdline = shell
       ? scr_child_shell_cmdline(file_w, command_w)
       : scr_child_cmdline(cmd, args);
   free(command_w);
+  scr_str_release(shell_line);
 
   STARTUPINFOW si;
   memset(&si, 0, sizeof si);
@@ -1601,33 +1670,6 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
   return out;
 }
 
-/* execFileSync's shell form: Node joins the file and its arguments with
- * single spaces (no quoting — the shell splits them) and passes the
- * string to `/bin/sh -c`. */
-ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args) {
-  size_t n = (size_t)scr_arr_len(args);
-  size_t total = file->len;
-  for (size_t i = 0; i < n; i++) {
-    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
-    total += 1 + s->len;
-    scr_str_release(s);
-  }
-  char *out = malloc(total ? total : 1);
-  if (!out) scr_child_oom();
-  memcpy(out, file->data, file->len);
-  size_t at = file->len;
-  for (size_t i = 0; i < n; i++) {
-    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
-    out[at++] = ' ';
-    memcpy(out + at, s->data, s->len);
-    at += s->len;
-    scr_str_release(s);
-  }
-  ScrStr *command = scr_str_new(out, at);
-  free(out);
-  return command;
-}
-
 static ScrError *scr_exec_failed_error(const char *display, const ScrCapBuf *err_cap,
                                        bool with_stderr, bool always_nl,
                                        const ScrStr *encoding) {
@@ -2027,6 +2069,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -2106,6 +2151,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -3305,6 +3351,7 @@ bool scr_child_has_exit_code(ScrChild *c) {
   if (c->state == SCR_CHILD_EXITED) return c->has_code;
   return c->state == SCR_CHILD_SPAWN_FAILED && c->settled;
 }
+
 double scr_child_exit_code(ScrChild *c) {
   if (c->state == SCR_CHILD_SPAWN_FAILED) return (double)c->spawn_uv_errno;
   return c->code;
@@ -3911,7 +3958,14 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     scr_arr_push_ref(shell_args, scr_str_new("/d", 2));
     scr_arr_push_ref(shell_args, scr_str_new("/s", 2));
     scr_arr_push_ref(shell_args, scr_str_new("/c", 2));
-    scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    if (scr_arr_len(args) > 0) {
+      /* The command line joins the file and its arguments; separate
+       * arguments report DEP0190 once. */
+      scr_arr_push_ref(shell_args, scr_child_shell_command(cmd, args));
+      scr_child_warn_shell_args();
+    } else {
+      scr_arr_push_ref(shell_args, scr_str_retain(cmd));
+    }
     run_args = shell_args;
   }
   scr_win_run_sync(run_cmd, run_args, has_input ? input : NULL, encoding, in_mode, out_mode,
@@ -4719,33 +4773,6 @@ static char *scr_exec_display(ScrStr *cmd, ScrArr *args, bool shell) {
   return out;
 }
 
-/* execFileSync's shell form: Node joins the file and its arguments with
- * single spaces (no quoting — the shell splits them) and passes the
- * string to `/bin/sh -c`. */
-ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args) {
-  size_t n = (size_t)scr_arr_len(args);
-  size_t total = file->len;
-  for (size_t i = 0; i < n; i++) {
-    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
-    total += 1 + s->len;
-    scr_str_release(s);
-  }
-  char *out = malloc(total ? total : 1);
-  if (!out) scr_child_oom();
-  memcpy(out, file->data, file->len);
-  size_t at = file->len;
-  for (size_t i = 0; i < n; i++) {
-    ScrStr *s = (ScrStr *)scr_arr_get_ref(args, (double)i);
-    out[at++] = ' ';
-    memcpy(out + at, s->data, s->len);
-    at += s->len;
-    scr_str_release(s);
-  }
-  ScrStr *command = scr_str_new(out, at);
-  free(out);
-  return command;
-}
-
 /* Builds a NULL-terminated envp from [k,v,...] pairs ("k=v" strings, each
  * malloc'd). Free with scr_exec_envp_free. */
 static char **scr_exec_envp(ScrArr *pairs) {
@@ -5487,6 +5514,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -5749,6 +5779,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -7221,7 +7252,15 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
 #else
   (void)detached; /* hosts without the flag: the child stays attached */
 #endif
-  char *shell_argv[] = {(char *)"/bin/sh", (char *)"-c", cmd->data, NULL};
+  /* Node's shell form: the shell runs the command line [file, ...args]
+   * joined with single spaces; separate arguments report DEP0190 once. */
+  ScrStr *shell_line = NULL;
+  if (shell && scr_arr_len(args) > 0) {
+    shell_line = scr_child_shell_command(cmd, args);
+    scr_child_warn_shell_args();
+  }
+  char *shell_argv[] = {(char *)"/bin/sh", (char *)"-c",
+                        shell_line != NULL ? shell_line->data : cmd->data, NULL};
   char **argv = shell ? shell_argv : scr_child_argv(cmd, args);
   char **envp = has_env && env_pairs != NULL ? scr_exec_envp(env_pairs) : NULL;
   pid_t pid = -1;
@@ -7231,6 +7270,7 @@ ScrChild *scr_spawn_opts(ScrStr *cmd, ScrArr *args, double in_mode,
   posix_spawnattr_destroy(&at);
   posix_spawn_file_actions_destroy(&fa);
   if (!shell) free(argv);
+  scr_str_release(shell_line);
   scr_exec_envp_free(envp);
 
   /* Parent keeps only its side of each pipe. A failed spawn still exposes
@@ -8182,18 +8222,22 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
 
   char **argv = scr_child_argv(cmd, args);
   /* `shell`: the command line through /bin/sh -c (the async spawn's exact
-   * shape), so the command's quoting and operators apply. The form is
-   * emitted with an EMPTY args list only (Node's DEP0190 warns otherwise,
-   * and a native build has no warning channel), so the command string IS
-   * the command line. */
+   * shape), so the command's quoting and operators apply. The command line
+   * joins the file and its arguments with single spaces; separate arguments
+   * report DEP0190 once. */
+  ScrStr *shell_line = NULL;
   const char *file = cmd->data;
   if (shell) {
     free(argv);
     argv = malloc(4 * sizeof(char *));
     if (!argv) scr_child_oom();
+    if (scr_arr_len(args) > 0) {
+      shell_line = scr_child_shell_command(cmd, args);
+      scr_child_warn_shell_args();
+    }
     argv[0] = (char *)"/bin/sh";
     argv[1] = (char *)"-c";
-    argv[2] = cmd->data;
+    argv[2] = shell_line != NULL ? shell_line->data : cmd->data;
     argv[3] = NULL;
     file = "/bin/sh";
   }
@@ -8203,6 +8247,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
                                     use_cwd ? cwd->data : NULL);
   posix_spawn_file_actions_destroy(&fa);
   free(argv);
+  scr_str_release(shell_line);
   scr_exec_envp_free(envp);
   if (cap_out) close(outfd[1]);
   if (cap_err) close(errfd[1]);
@@ -9665,12 +9710,40 @@ static void scr_ipc_fire_messages(ScrIpc *ipc) {
   scr_als_dispatch_leave(prev);
 }
 
+/* node:cluster's protocol messages: installed by scr_cluster_init, absent
+ * from every other program (see scr_child.h). */
+static SCR_TL ScrClusterIsInternalFn scr_cluster_is_internal_hook = NULL;
+static SCR_TL ScrClusterDispatchFn scr_cluster_dispatch_hook = NULL;
+
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch) {
+  scr_cluster_is_internal_hook = is_internal;
+  scr_cluster_dispatch_hook = dispatch;
+}
+
+static ScrChild *scr_child_owner_of_ipc(ScrIpc *ipc) {
+  if (ipc == scr_process_ipc) return NULL;
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc == ipc) return c;
+  }
+  return NULL;
+}
+
 static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
   while (ipc->n_pending > 0 && ipc->n_message > 0 && !scr_exc_pending()) {
     ScrDyn *message = ipc->pending[0];
     memmove(ipc->pending, ipc->pending + 1,
             (ipc->n_pending - 1) * sizeof(*ipc->pending));
     ipc->n_pending--;
+    if (scr_cluster_is_internal_hook != NULL && scr_cluster_is_internal_hook(message)) {
+      /* A cluster protocol message: the cluster unit handles it and no
+       * user listener observes it, as Node's internal-message channel
+       * does. */
+      if (scr_cluster_dispatch_hook != NULL)
+        scr_cluster_dispatch_hook(scr_child_owner_of_ipc(ipc), message);
+      scr_dyn_release(message);
+      continue;
+    }
     size_t count = ipc->n_message;
     ScrIpcMessageEntry *snapshot = malloc(count * sizeof(*snapshot));
     if (!snapshot) scr_trap("out of memory");
@@ -9891,7 +9964,9 @@ double scr_process_fork_target(double target_count) {
     scr_process_fork_id = -1;
     return -1;
   }
-  if (!isfinite(target) || target < 0 || trunc(target) != target ||
+  /* -1 is the program's own entry: cluster.fork() restarts the artifact
+   * as a worker with the entry selected (scr_cluster.c). */
+  if (!isfinite(target) || trunc(target) != target || target < -1 ||
       target >= target_count) {
     scr_trap("invalid fork target");
   }
@@ -9974,14 +10049,34 @@ bool scr_process_ipc_connected(void) {
   return scr_process_ipc != NULL && scr_process_ipc->connected;
 }
 bool scr_process_ipc_open(void) { return scr_process_ipc != NULL; }
+/* A process without a channel (a cluster primary, or a program that never
+ * forked) answers Node's undefined member: process.send/disconnect throw
+ * their TypeError. The compiler's own presence test covers every other
+ * path, so these guards only run for node:cluster's runtime-shaped
+ * channel. */
+static bool scr_process_ipc_absent(const char *member) {
+  char msg[64];
+  int n = snprintf(msg, sizeof msg, "process.%s is not a function", member);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+  return false;
+}
+
 bool scr_process_ipc_send(ScrStr *json) {
+  if (scr_process_ipc == NULL) return scr_process_ipc_absent("send");
   return scr_ipc_send(scr_process_ipc, json, NULL, NULL);
 }
 bool scr_process_ipc_send_cb(ScrStr *json, ScrClosure *cb,
                              ScrIpcSendFn fn) {
+  if (scr_process_ipc == NULL) return scr_process_ipc_absent("send");
   return scr_ipc_send(scr_process_ipc, json, cb, fn);
 }
-void scr_process_ipc_disconnect(void) { scr_ipc_disconnect(scr_process_ipc); }
+void scr_process_ipc_disconnect(void) {
+  if (scr_process_ipc == NULL) {
+    scr_process_ipc_absent("disconnect");
+    return;
+  }
+  scr_ipc_disconnect(scr_process_ipc);
+}
 void scr_process_ipc_on_message(ScrClosure *cb, ScrIpcMessageFn fn,
                                 bool once) {
   scr_ipc_add_message(scr_process_ipc, cb, fn, once);
@@ -10446,12 +10541,44 @@ static ScrDyn *scr_child_dyn_invoke(
   return NULL;
 }
 
+/* ChildProcess.stdio in the checked-dynamic lane: Node's one array per
+ * child — the piped handles at their slots (the same checked-dynamic views
+ * child.stdin/stdout/stderr answer, so identity holds), null for every slot
+ * that is not a pipe, and null in a fork's fourth (IPC) slot — built once
+ * and answered by every later read (+1). */
+static ScrDyn *scr_child_stdio_dyn(ScrChild *child) {
+  if (child->stdio_dyn) return scr_dyn_retain(child->stdio_dyn);
+  ScrDyn *array = scr_dyn_new_arr();
+  ScrDyn *slot = scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->out_stream, &child->out_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->err_stream, &child->err_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  if (child->ipc_slot) scr_dyn_arr_push(array, scr_dyn_new_null());
+  child->stdio_dyn = scr_dyn_retain(array);
+  return array;
+}
+
 static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
   ScrChild *child = (ScrChild *)h;
   SCR_IF_ISLAND(child, scr_child_island_ops->stdio(child));
   if (key_len == 6 && !memcmp(key, "stdout", 6)) return scr_child_bridge_readable(child->out_stream, &child->out_dyn);
   if (key_len == 6 && !memcmp(key, "stderr", 6)) return scr_child_bridge_readable(child->err_stream, &child->err_dyn);
   if (key_len == 5 && !memcmp(key, "stdin", 5)) return scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (key_len == 5 && !memcmp(key, "stdio", 5)) return scr_child_stdio_dyn(child);
   if (key_len == 6 && memcmp(key, "killed", 6) == 0) {
     return scr_dyn_new_bool(scr_child_killed(child));
   }

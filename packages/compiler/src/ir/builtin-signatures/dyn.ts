@@ -63,6 +63,15 @@ export const dynSignatures = defineLibFnSignatures({
    * or whose key is shorter than four bytes. The table switches on it and
    * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
   "dyn.classHash": { argTypes: [DYN], result: F64 },
+  /** A generated class table's case selector: the case number of the
+   * class key the receiver's capsule matches under the exact test
+   * `dyn.typedRefIs` applies, or 0 when it matches none. The second
+   * argument is a string literal listing the table, one `<case> <key>`
+   * line per class; classes whose branches are the same statements share
+   * a case number (frontend/lowering/class-dynamic-dispatch.ts). The
+   * backend switches on the key's dyn.classHash and confirms the one class
+   * of that hash with a key-pointer compare (backend/llvm/lib-dispatch.ts). */
+  "dyn.classCase": { argTypes: [DYN, STRING], result: F64 },
   /** The index of a table of class values (`dyn.classIs` branches: `x
    * instanceof C`, `new C()` and static members of an untyped
    * constructor): a function value's signature key folded to one of

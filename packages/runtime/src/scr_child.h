@@ -80,10 +80,6 @@ ScrSpawnRes *scr_spawn_sync_stdio_str(ScrStr *cmd, ScrArr *args, double timeout_
  * result and those error outputs decode the captured bytes through it (the
  * compiler validates the name; an unknown one reads as utf8). All args
  * borrowed. */
-/* `execFileSync(file, args, { shell: true })`'s command line: the file
- * and every argument joined with single spaces, unquoted — what Node
- * hands `/bin/sh -c`. Result +1. Both args borrowed. Never throws. */
-ScrStr *scr_child_shell_command(ScrStr *file, ScrArr *args);
 ScrStr *scr_exec_sync(ScrStr *cmd, ScrArr *args, bool shell, ScrStr *input,
                        bool has_input, ScrStr *cwd, bool has_env, ScrArr *env_pairs,
                        double timeout_ms, double stdout_mode, double stderr_mode,
@@ -150,6 +146,10 @@ ScrDyn *scr_spawn_res_to_dyn(ScrSpawnRes *r);
  * vector borrowing the strings (alive while cmd/args are); free() the
  * vector only. */
 char **scr_child_argv(ScrStr *cmd, ScrArr *args);
+/* Node's shell form command line: [file, ...args].join(' '), the string a
+ * shell runs with -c. Reports DEP0190 once when the argument list is not
+ * empty. +1. */
+ScrStr *scr_child_shell_command(ScrStr *cmd, ScrArr *args);
 
 /* The asynchronous child: spawn starts it immediately (stdio all on
  * /dev/null — the compiler fences everything but { stdio: "ignore" })
@@ -289,6 +289,16 @@ void scr_child_off_close(ScrChild *c, ScrClosure *cb);
 void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
+/* node:cluster's internal protocol messages ({ cmd: "NODE_CLUSTER" })
+ * travel on the same channel as user messages but are delivered to the
+ * cluster unit instead of the program's 'message' listeners. The hooks are
+ * installed once by scr_cluster_init; without them every message is a user
+ * message, so a program that never names cluster keeps this unit's default
+ * path. */
+typedef bool (*ScrClusterIsInternalFn)(const ScrDyn *message);
+typedef void (*ScrClusterDispatchFn)(ScrChild *child, ScrDyn *message);
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch);
 /* ChildProcess.stdio's length: 3 slots, plus the IPC slot of a forked
  * child (whose entry is null), as Node's own stdio array reports. */
 double scr_child_stdio_len(ScrChild *c);

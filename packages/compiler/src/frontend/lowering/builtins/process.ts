@@ -164,7 +164,10 @@ export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     type: BOOL,
     loc,
   };
-  if (lowerer.forkTargets.length === 0) return fromNode;
+  // A cluster worker's channel is the re-exec marker's, so it is a runtime
+  // question whether this process has one (the primary does not). The
+  // marker channel answers process.ipcOpen, which the child unit owns.
+  if (lowerer.forkTargets.length === 0 && !lowerer.clusterUsed) return fromNode;
   return {
     kind: "logical",
     op: "||",

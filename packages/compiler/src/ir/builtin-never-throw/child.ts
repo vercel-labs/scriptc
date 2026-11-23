@@ -16,8 +16,7 @@ export const childNeverThrow: readonly IrLibFn[] = [
   "child.stdioCached",
   "child.stdioArray",
   "child.stdioStore",
-  // cp.shellCommand joins the file and its arguments into one command
-  // string: reads the strings the caller already validated and allocates
-  // the result, with no coercion, accessor or program code.
-  "cp.shellCommand",
+  // Node's shell form command line: a string join; the DEP0190 report is
+  // deferred to its own tick, so the call itself raises nothing.
+  "child.shellCommand",
 ];

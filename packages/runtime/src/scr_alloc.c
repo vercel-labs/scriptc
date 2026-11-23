@@ -2825,6 +2825,13 @@ __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
   return p;
 }
 
+#ifdef SCR_SA_TEST
+/* Set by the allocator checks: the next run move fails the way a kernel
+ * before 6.17 fails a fixed move that spans mappings (the destination is
+ * unmapped). Consumed once. */
+bool scr_sa_test_fail_move;
+#endif
+
 #if defined(__linux__) && defined(MREMAP_FIXED)
 /* Grows the run p of `have` bytes to a run of n bytes (n > SCR_SA_LARGE_MAX)
  * by moving its pages to a new run, as the system allocator grows a mapped
@@ -2839,7 +2846,26 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     return NULL;
   char *q = scr_sa_run_take((n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT, n, false);
   if (!q) return NULL;
-  if (mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+#ifdef SCR_SA_TEST
+  bool move_failed = scr_sa_test_fail_move;
+  scr_sa_test_fail_move = false;
+  if (move_failed) {
+    /* The test hook stands in for a kernel before 6.17, whose failed fixed
+     * move has already unmapped the destination range. */
+    (void)munmap(q, have);
+  }
+#endif
+  if (
+#ifdef SCR_SA_TEST
+      move_failed ||
+#endif
+      mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+    /* A failed fixed move has unmapped the destination already (the kernel
+     * unmaps it before doing the move; before 6.17 a move that spans
+     * mappings fails there), so map the new run again before copying into
+     * it. */
+    if (mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q)
+      scr_trap("scriptc: out of memory\n");
     memcpy(q, p, have);
     scr_sa_run_free(p);
     return q;

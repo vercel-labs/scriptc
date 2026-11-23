@@ -154,8 +154,6 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
-  // DEP0190 for execFileSync's unescaped args under shell: true.
-  "cp.shellDeprecation",
   // DEP0094 for assert.fail's deprecated multi-argument form.
   "assert.failDeprecation",
   // util.aborted answers a checked-dynamic promise, and so do the
@@ -1825,6 +1823,25 @@ const RUNTIME_FEATURE_RULES = {
       "cp.spawnArmed",
     ],
   }),
+  /** node:cluster's module surface: scr_cluster.c, a unit of its own so a
+   * program that never names cluster links nothing of it. The unit also
+   * carries the %main cluster.init call and the worker-mode dispatch. */
+  cluster: rule({
+    fns: [
+      "cluster.init",
+      "cluster.isPrimary",
+      "cluster.isWorker",
+      "cluster.schedulingPolicy",
+      "cluster.fork",
+      "cluster.setup",
+      "cluster.disconnect",
+      "cluster.settings",
+      "cluster.workers",
+      "cluster.worker",
+      "cluster.on",
+      "cluster.off",
+    ],
+  }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
    * option): scr_child_capture.c, a unit of its own so a program that never
    * reads a capture keeps scr_child.c's layout — the memo's thread-local
@@ -3020,6 +3037,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childLifecycle: false,
     processFeatures: false,
     childOptionExt: false,
+    cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
     childStreamFlow: false,

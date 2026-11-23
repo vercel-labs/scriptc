@@ -118,17 +118,6 @@ export const cpSignatures = defineLibFnSignatures({
     ],
     result: STRING,
   },
-  /** `execFileSync(file, args, { shell: true })`'s command line: Node
-   * joins the file and every argument with single spaces and hands the
-   * string to the shell (no quoting), exactly the command it would give
-   * `/bin/sh -c`. Result is the joined command string (+1). Never throws
-   * (it only reads the arguments' strings). */
-  "cp.shellCommand": { argTypes: [STRING, arrayOf(STRING)], result: STRING },
-  /** Node's DEP0190 report (once per process) when an execFileSync call
-   * with `shell: true` has a non-empty args array: the arguments are
-   * concatenated unescaped. A no-op for an empty array. May throw through
-   * a 'warning' listener's replacement. */
-  "cp.shellDeprecation": { argTypes: [arrayOf(STRING)], result: VOID },
   /** The unencoded execFileSync/execSync form (cp.execSyncBytes): the
    * same call with Node's Buffer result and Buffer error outputs. Args:
    * cmd, argv, shell, input, hasInput, cwd, hasEnv, envPairs, timeoutMs,

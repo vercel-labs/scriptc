@@ -2765,6 +2765,11 @@ async function compileLibraryNative(
     ...(features.dynTier === true ? { dynTier: true } : {}),
     ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
     ...(features.fnMemberProps === true ? { fnMemberProps: true } : {}),
+    // The program object calls the adoption and class-test units for its
+    // checked conversions; the archive has to select them or the embedder's
+    // link stops at an undefined scr_dyn_adopt_whole (or the class test).
+    ...(features.declAdopt === true ? { declAdopt: true } : {}),
+    ...(features.classTestPrototype === true ? { classTestPrototype: true } : {}),
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

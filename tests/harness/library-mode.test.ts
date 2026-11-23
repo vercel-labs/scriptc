@@ -311,6 +311,17 @@ wrap empty: len 2 bytes 60 62
     expect(run.stdout).toBe(BUFFERS_EXPECTED);
   });
 
+  /* ── dynamic values into declared types: the units they name link ────── */
+
+  test("casts, typed slots and instanceof over dynamic values link and answer as Node", async () => {
+    const { archive, outDir } = await buildLibrary("dynamic-units", emission);
+    const probe = buildProbe("dynamic-units", archive, outDir);
+    const run = runProbe(probe);
+    expect(run.signal).toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe(`cast shares: true\nslot shares: true\nclass test: true\n`);
+  });
+
   /* ── K15: export facades — a re-exported function is an export ───────── */
 
   test("K15: re-export facades supply the entry's exports (Node order and state)", async () => {

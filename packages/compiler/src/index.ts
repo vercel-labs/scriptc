@@ -183,7 +183,7 @@ import {
   updateSidecarIdentity,
 } from "./library/sidecar.js";
 import { type IrModule, type SrcLoc } from "./ir/ir.js";
-import { jsObjectModelFact, moduleRuntimeFeatures } from "./ir/runtime-features.js";
+import { jsObjectModelFact } from "./ir/runtime-features.js";
 import { serializeModuleParts } from "./ir/serialize.js";
 import { readTextParts, writeTextParts } from "./text-parts.js";
 import { validateModule } from "./ir/validate.js";
@@ -2636,28 +2636,9 @@ async function compileTracked(
  * program under emission "llvm" reports SC3001). */
 
 function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNativeFeatures {
-  const features = moduleRuntimeFeatures(mod);
   return {
     backend,
-    regex: features.regex,
-    assert: features.assert,
-    inspect: features.inspect,
-    symbol: features.symbol,
-    bigint: features.bigint,
-    searchParams: features.searchParams,
-    emitter: features.emitter,
-    zlib: features.zlib,
-    x509: features.x509,
-    copying: features.copying,
-    textDecoderLegacy: features.legacyTextDecoder,
-    bigintBytes: features.bigintBytes,
-    dynInvoke: features.dynInvoke,
-    ...(features.recordSourceGet ? { recordSourceGet: true } : {}),
-    ...(features.arrJoinStr ? { arrJoinStr: true } : {}),
-    ...(features.dynBuffer ? { dynBuffer: true } : {}),
-    ...(features.dynTier ? { dynTier: true } : {}),
-    mutableBuffers: features.mutableBuffers,
-    fnMemberProps: features.fnMemberProps,
+    ...executableLinkFeatures(mod),
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),
   };
 }
@@ -2724,6 +2705,7 @@ async function compileLibraryNative(
       "SC3002",
       nativeCodegenTargetRefusal() ?? "unsupported library target",
     );
+  const { backend: _, buildId: __, ...linkFeatures } = features;
   const archiveOptions: Parameters<typeof compileExternalCLibrary>[0] = {
     cPath: llvmPath,
     ...(programSource !== undefined ? { programSource } : {}),
@@ -2740,25 +2722,7 @@ async function compileLibraryNative(
     optimization: profile.optimization,
     ...(localizeSymbols !== undefined ? { localizeSymbols } : {}),
     ...(profile.instancePerThread ? { threadInstances: true } : {}),
-    regex: features.regex,
-    assert: features.assert,
-    inspect: features.inspect,
-    symbol: features.symbol,
-    bigint: features.bigint,
-    searchParams: features.searchParams,
-    emitter: features.emitter,
-    zlib: features.zlib,
-    x509: features.x509,
-    copying: features.copying,
-    textDecoderLegacy: features.textDecoderLegacy,
-    bigintBytes: features.bigintBytes,
-    dynInvoke: features.dynInvoke,
-    ...(features.recordSourceGet === true ? { recordSourceGet: true } : {}),
-    ...(features.arrJoinStr === true ? { arrJoinStr: true } : {}),
-    ...(features.dynBuffer === true ? { dynBuffer: true } : {}),
-    ...(features.dynTier === true ? { dynTier: true } : {}),
-    ...(features.mutableBuffers === true ? { mutableBuffers: true } : {}),
-    ...(features.fnMemberProps === true ? { fnMemberProps: true } : {}),
+    ...linkFeatures,
   };
   if (packTarget !== null) await compilePackedLibrary(archiveOptions, packTarget);
   else await compileExternalCLibrary(archiveOptions);

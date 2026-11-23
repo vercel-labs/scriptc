@@ -73,6 +73,16 @@ describe("async_free detection over the IR", () => {
     );
   });
 
+  // AbortSignal's listeners and timeout ride the EventTarget unit and the
+  // timers, which an async_free archive does not link.
+  test("AbortController refuses with EventTarget", async () => {
+    expect(
+      await surfaceOf(
+        "abort",
+        `const c = new AbortController();\nc.abort();\nconsole.log(c.signal.aborted);\n`,
+      ),
+    ).toContain("AbortController");
+  });
   test("the event-loop metrics refuse", async () => {
     expect(
       await surfaceOf(

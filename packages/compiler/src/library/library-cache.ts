@@ -6,6 +6,10 @@ import { gzip, gunzip } from "node:zlib";
 import type { IrModule } from "../ir/ir.js";
 import { IR_VERSION } from "../ir/serialize.js";
 import {
+  REQUIRED_LINK_FEATURES,
+  type NativeLinkFeatures,
+} from "../backend/native-link-info-core.js";
+import {
   frontendInputsSemanticallyMatch,
   frontendInputsStillMatch,
   validFrontendInputSnapshot,
@@ -62,42 +66,14 @@ interface EarlyLibraryCacheStamp {
   integrity: string;
 }
 
-export interface EarlyLibraryNativeFeatures {
+/** The link features of the library's program (executableLinkFeatures, as the
+ * native lane builds them); libraryArchiveFeatures keeps the ones a library
+ * archive carries. */
+export type EarlyLibraryNativeFeatures = NativeLinkFeatures & {
   backend: "llvm";
-  dynInvoke: boolean;
-  /** Buffer.prototype methods on checked-dynamic values (scr_bytes_dyn.c). */
-  dynBuffer?: boolean;
-  dynTier?: boolean;
-  regex: boolean;
-  assert: boolean;
-  inspect: boolean;
-  symbol: boolean;
-  bigint: boolean;
-  searchParams: boolean;
-  emitter: boolean;
-  zlib: boolean;
-  x509: boolean;
-  copying: boolean;
-  textDecoderLegacy: boolean;
-  bigintBytes: boolean;
-  /** The kept-source read of a record-to-record conversion
-   * (scr_record_source_get.c). Absent (false) otherwise. */
-  recordSourceGet?: boolean;
-  /** A join of an array of strings (scr_arr_join_str.c). Absent (false)
-   * otherwise. */
-  arrJoinStr?: boolean;
-  /** The buffer views registry (scr_js_buffers.c) and the archive's
-   * JavaScript object model build of its bytes and json units. */
-  mutableBuffers: boolean;
-  /** A function's own call/apply/bind and the other inherited members a
-   * data property shadows (SCR_FN_MEMBER_PROPS, the scr_json.c and
-   * scr_dyn_invoke.c builds). An exported function that defines one runs it
-   * inside the archive, so the library selects the same build the
-   * executable lane does. */
-  fnMemberProps: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
   buildId?: string;
-}
+};
 
 export interface EarlyLibraryCacheOptions {
   profilePath: string;
@@ -141,23 +117,7 @@ export interface SemanticLibraryCacheHit {
   changedSources: string[];
 }
 
-const BOOLEAN_NATIVE_KEYS = [
-  "dynInvoke",
-  "regex",
-  "assert",
-  "inspect",
-  "symbol",
-  "bigint",
-  "searchParams",
-  "emitter",
-  "zlib",
-  "x509",
-  "copying",
-  "textDecoderLegacy",
-  "bigintBytes",
-  "mutableBuffers",
-  "fnMemberProps",
-] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];
+const BOOLEAN_NATIVE_KEYS: readonly (keyof EarlyLibraryNativeFeatures)[] = REQUIRED_LINK_FEATURES;
 
 function validNativeFeatures(value: unknown): value is EarlyLibraryNativeFeatures {
   return validSharedNativeFeatures<EarlyLibraryNativeFeatures>(

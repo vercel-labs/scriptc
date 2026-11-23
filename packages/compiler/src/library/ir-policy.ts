@@ -217,6 +217,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [features.pki, "asymmetric KeyObjects, generateKeyPair, sign and verify"],
     [features.fetch, "fetch"],
     [features.eventTarget, "the EventTarget surface"],
+    [features.abortSignal, "AbortController and AbortSignal"],
     [features.nodeTest, "the node:test surface"],
     [features.dynAsync, "the checked-dynamic async surface"],
     [features.dc, "the diagnostics_channel surface"],

@@ -20724,6 +20724,7 @@
           "tests/corpus/crypto-ml-kem.ts",
           "tests/corpus/crypto-module-catalogs.ts",
           "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
+          "tests/corpus/crypto-parse-pkcs12-digests-and-points.ts",
           "tests/corpus/crypto-parse-pkcs12-pbe.ts",
           "tests/corpus/crypto-parse-pkcs12.ts",
           "tests/corpus/crypto-random-arguments.cjs",
@@ -22272,7 +22273,8 @@
         "tests": [
           "tests/corpus/crypto-parse-pkcs12.ts",
           "tests/corpus/crypto-parse-pkcs12-arguments.mjs",
-          "tests/corpus/crypto-parse-pkcs12-pbe.ts"
+          "tests/corpus/crypto-parse-pkcs12-pbe.ts",
+          "tests/corpus/crypto-parse-pkcs12-digests-and-points.ts"
         ]
       },
       "anchorSource": "exact"

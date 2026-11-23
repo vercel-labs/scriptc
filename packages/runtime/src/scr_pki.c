@@ -1518,22 +1518,44 @@ static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t 
   return b;
 }
 
-/* RFC 7292 Appendix B.2 with `info`'s digest (u = its size, v = 64). The
+/* The digest's block size, the PKCS#12 KDF's v. mbedTLS exposes only the
+ * digest size, so the widths follow the type: the SHA-512 family hashes in
+ * 128-byte blocks and SHA-3 in its rate. */
+static size_t sp_md_block_size(mbedtls_md_type_t type) {
+  switch (type) {
+    case MBEDTLS_MD_SHA384:
+    case MBEDTLS_MD_SHA512:
+      return 128;
+    case MBEDTLS_MD_SHA3_224:
+      return 144;
+    case MBEDTLS_MD_SHA3_256:
+      return 136;
+    case MBEDTLS_MD_SHA3_384:
+      return 104;
+    case MBEDTLS_MD_SHA3_512:
+      return 72;
+    default:
+      return 64;
+  }
+}
+
+/* RFC 7292 Appendix B.2 with `info`'s digest (u = its size, v = `block`). The
  * passphrase is its UTF-8 form as a BMPString, and the string carries the
  * KDF's trailing zero unit. The PKCS#12 password schemes use SHA-1; a
  * bundle's MAC key uses the MacData digest. */
-static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, const unsigned char *pass,
-                                 size_t pass_len, const unsigned char *salt, size_t salt_len,
-                                 unsigned id, unsigned iterations, unsigned char *out,
-                                 size_t out_len) {
-  enum { V = 64 };
-  if (info == NULL) return false;
+static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, size_t block,
+                                 const unsigned char *pass, size_t pass_len,
+                                 const unsigned char *salt, size_t salt_len, unsigned id,
+                                 unsigned iterations, unsigned char *out, size_t out_len) {
+  enum { V_MAX = 144 };
+  size_t v = block;
+  if (info == NULL || v == 0 || v > V_MAX) return false;
   size_t u = (size_t)mbedtls_md_get_size(info);
   if (u == 0 || u > 64) return false;
   size_t pass16_len = 0;
   unsigned char *pass16 = sp_utf8_to_bmp(pass, pass_len, &pass16_len);
-  size_t p_pad = (pass16_len + V - 1) / V * V;
-  size_t s_pad = salt_len == 0 ? 0 : (salt_len + V - 1) / V * V;
+  size_t p_pad = (pass16_len + v - 1) / v * v;
+  size_t s_pad = salt_len == 0 ? 0 : (salt_len + v - 1) / v * v;
   size_t i_len = p_pad + s_pad;
   unsigned char *I = malloc(i_len ? i_len : 1);
   if (!I) scr_trap("scriptc: out of memory\n");
@@ -1543,8 +1565,8 @@ static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, const unsigned c
   for (size_t i = 0; i < p_pad; i++) I[s_pad + i] = pass16[i % pass16_len];
   mbedtls_platform_zeroize(pass16, pass16_len);
   free(pass16);
-  unsigned char D[V], A[64], B[V];
-  memset(D, (int)id, sizeof D);
+  unsigned char D[V_MAX], A[64], B[V_MAX];
+  memset(D, (int)id, v);
   size_t produced = 0;
   bool ok = true;
   while (ok && produced < out_len) {
@@ -1552,7 +1574,7 @@ static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, const unsigned c
     mbedtls_md_init(&ctx);
     int r = mbedtls_md_setup(&ctx, info, 0);
     if (r == 0) r = mbedtls_md_starts(&ctx);
-    if (r == 0) r = mbedtls_md_update(&ctx, D, sizeof D);
+    if (r == 0) r = mbedtls_md_update(&ctx, D, v);
     if (r == 0) r = mbedtls_md_update(&ctx, I, i_len);
     if (r == 0) r = mbedtls_md_finish(&ctx, A);
     mbedtls_md_free(&ctx);
@@ -1571,12 +1593,13 @@ static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, const unsigned c
     size_t n = out_len - produced < u ? out_len - produced : u;
     memcpy(out + produced, A, n);
     produced += n;
-    for (size_t j = 0; j < V; j++) B[j] = A[j % u];
-    for (size_t block = 0; block < i_len; block += V) {
+    for (size_t j = 0; j < v; j++) B[j] = A[j % u];
+    for (size_t at = 0; at < i_len; at += v) {
       unsigned carry = 1;
-      for (int j = V - 1; j >= 0; j--) {
-        unsigned sum = (unsigned)I[block + j] + B[j] + carry;
-        I[block + j] = (unsigned char)sum;
+      for (size_t j = v; j > 0;) {
+        j--;
+        unsigned sum = (unsigned)I[at + j] + B[j] + carry;
+        I[at + j] = (unsigned char)sum;
         carry = sum >> 8;
       }
     }
@@ -1593,8 +1616,8 @@ static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, const unsigned c
 static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsigned char *salt,
                           size_t salt_len, unsigned id, unsigned iterations, unsigned char *out,
                           size_t out_len) {
-  return sp_pkcs12_kdf_digest(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), pass, pass_len, salt,
-                              salt_len, id, iterations, out, out_len);
+  return sp_pkcs12_kdf_digest(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 64, pass, pass_len,
+                              salt, salt_len, id, iterations, out, out_len);
 }
 
 /* A PBES1 EncryptedPrivateKeyInfo's plaintext: 1 decrypted, 0 an unusable
@@ -8617,7 +8640,8 @@ static int sp_p12_verify_mac(const unsigned char *authsafe, size_t authsafe_len,
   size_t md_len = (size_t)mbedtls_md_get_size(info);
   if (digest_len != md_len) return SP_P12_MAC_FAILURE;
   unsigned char key[64], mac[64];
-  if (!sp_pkcs12_kdf_digest(info, pass, pass_len, salt, salt_len, 3, (unsigned)iterations, key, md_len))
+  if (!sp_pkcs12_kdf_digest(info, sp_md_block_size(md_type), pass, pass_len, salt, salt_len, 3,
+                            (unsigned)iterations, key, md_len))
     return SP_P12_NOT_RECOGNIZED;
   int r = mbedtls_md_hmac(info, key, md_len, authsafe, authsafe_len, mac);
   mbedtls_platform_zeroize(key, sizeof key);
@@ -8666,15 +8690,38 @@ static int sp_p12_parse(SpP12Contents *c, const unsigned char *der, size_t len,
 }
 
 /* Whether `cert_der` carries the public half of `key`, as OpenSSL's
- * X509_check_private_key decides a bundle's matching certificate. */
+ * X509_check_private_key decides a bundle's matching certificate: the
+ * parsed public keys compare, so a compressed EC point in the certificate
+ * matches the same point written uncompressed by the key. NULL keeps
+ * Node's answer for a certificate whose key this build cannot parse: it
+ * is not the matching one. */
 static bool sp_p12_cert_matches(SpKey *key, const unsigned char *cert_der, size_t cert_len) {
   const unsigned char *spki;
   size_t spki_len;
   if (!sp_cert_spki(cert_der, cert_len, &spki, &spki_len)) return false;
-  unsigned char key_spki[SP_DER_MAX];
-  int n = sp_write_spki_der(key, key_spki, sizeof key_spki);
-  if (n <= 0 || (size_t)n != spki_len) return false;
-  return memcmp(key_spki + sizeof key_spki - n, spki, spki_len) == 0;
+  SpKey *cert = sp_parse(spki, spki_len, false);
+  if (!cert) {
+    if (scr_exc_pending()) scr_caught_release(scr_exc_take());
+    return false;
+  }
+  bool same = false;
+  if (sp_is_ed(key) || sp_is_ed(cert)) {
+    same = sp_is_ed(key) && sp_is_ed(cert) && memcmp(key->ed_pub, cert->ed_pub, 32) == 0;
+  } else if (mbedtls_pk_get_type(&key->pk) == mbedtls_pk_get_type(&cert->pk)) {
+    SpKey *pub = key->private_key ? sp_public_of(key) : key;
+    if (pub) {
+      unsigned char *a = malloc(SP_DER_MAX), *b = malloc(SP_DER_MAX);
+      if (!a || !b) scr_trap("scriptc: out of memory\n");
+      int na = sp_write_spki_der(pub, a, SP_DER_MAX);
+      int nb = sp_write_spki_der(cert, b, SP_DER_MAX);
+      same = na > 0 && na == nb && memcmp(a + SP_DER_MAX - na, b + SP_DER_MAX - nb, (size_t)na) == 0;
+      free(a);
+      free(b);
+      if (pub != key) sp_key_release(pub);
+    }
+  }
+  sp_key_release(cert);
+  return same;
 }
 
 /* The passphrase of a parsePKCS12 options bag: NULL when absent, with the

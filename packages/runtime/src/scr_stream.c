@@ -2155,9 +2155,18 @@ static ScrStream *scr_dupx_from_boxed(ScrDyn *boxed);
 
 /* The web stream unit's pair adaptation, installed at its first use. NULL
  * when that unit is not linked. */
-ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value) = NULL;
+ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) = NULL;
+
+static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags);
 
 ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
+  return sf_duplex_from_dyn_flags(body, 0);
+}
+
+/* `pair_flags` reaches the web pair adaptation: the pipeline runs a pair
+ * stage with its web chunks untouched (object mode), where Duplex.from and
+ * compose adapt it byte for byte. */
+static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   ScrStream *native = scr_stream_of_handle(body); /* +1 */
   if (!native) native = scr_stream_boxed(body);   /* +1 */
   if (native) {
@@ -2170,7 +2179,7 @@ ScrStream *scr_stream_duplex_from_dyn(ScrDyn *body) {
   }
   if (body->kind == SCR_DYN_PROMISE) return scr_dupx_from_boxed(scr_dyn_retain(body));
   if (scr_stream_web_pair_hook != NULL) {
-    ScrStream *paired = scr_stream_web_pair_hook(body);
+    ScrStream *paired = scr_stream_web_pair_hook(body, pair_flags);
     if (paired) {
       paired->st->web_pair_body = true;
       return paired;
@@ -9838,23 +9847,32 @@ static bool scr_stream_dyn_stream_like(const ScrDyn *value) {
 
 /* A checked-dynamic pipeline() stage that the pipeline takes as a stream
  * (the stream.unboxDynStage libCall): a boxed native stream or a stream
- * handle answers its stream (+1). Any other value that is not stream-like
- * or a function takes pipelineImpl's last branch, Duplex.from(stream):
- * an iterable answers a readable Duplex the pipeline uses without piping
- * the previous stage into it, and values Duplex.from rejects throw its
- * ERR_INVALID_ARG_TYPE. Stream-like objects, web streams and functions
- * throw `message` as the not-supported Error. */
+ * handle answers its stream (+1). A { readable, writable } pair of web
+ * streams is the stage the pipeline pumps through, its web chunks
+ * untouched (object mode), so it adapts before the stream-like fence
+ * below. Any other value that is not stream-like or a function takes
+ * pipelineImpl's last branch, Duplex.from(stream): an iterable answers a
+ * readable Duplex the pipeline uses without piping the previous stage into
+ * it, and values Duplex.from rejects throw its ERR_INVALID_ARG_TYPE.
+ * Stream-like objects, web streams and functions throw `message` as the
+ * not-supported Error. */
 ScrStream *scr_stream_unbox_dyn_stage(const ScrDyn *value, const ScrStr *message) {
   ScrStream *stream = scr_stream_of_handle(value);
   if (!stream) stream = scr_stream_boxed(value);
   if (stream) return stream;
+  if (scr_exc_pending()) return NULL;
+  if (value->kind == SCR_DYN_OBJ && scr_stream_dyn_transform_like(value)) {
+    ScrStream *paired = sf_duplex_from_dyn_flags((ScrDyn *)value, 2 /* object mode */);
+    if (paired || scr_exc_pending()) return paired;
+    /* Not a web pair: the not-supported fence below answers it. */
+  }
   if (value->kind == SCR_DYN_FUNC || scr_stream_dyn_stream_like(value)) {
     if (!scr_exc_pending())
       scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
     return NULL;
   }
   if (scr_exc_pending()) return NULL;
-  ScrStream *d = scr_stream_duplex_from_dyn((ScrDyn *)value);
+  ScrStream *d = sf_duplex_from_dyn_flags((ScrDyn *)value, 2 /* object mode */);
   if (d && !d->st->web_pair_body) d->st->pipeline_body = true;
   return d;
 }

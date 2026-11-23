@@ -251,9 +251,11 @@ ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
 /* The web stream unit's pair adaptation (set by its install): a value with
  * web ReadableStream and WritableStream members answers a Duplex over the
  * pair (+1) — a web { readable, writable } pair, or a TransformStream whose
- * members are the same — and any other value answers NULL with nothing
+ * members are the same — in the mode `flags` names (scr_stream_duplex_from_web's
+ * flags: bit 2 object mode, which a pipeline stage takes, leaves the web
+ * chunks untouched), and any other value answers NULL with nothing
  * pending. */
-extern ScrStream *(*scr_stream_web_pair_hook)(struct ScrDyn *value);
+extern ScrStream *(*scr_stream_web_pair_hook)(struct ScrDyn *value, double flags);
 /* The same with the options: flags bit 1 allowHalfOpen, bit 2 objectMode,
  * bit 4 decodeStrings: false; hwm < 0 takes the default; encoding is NULL
  * when absent; signal may be NULL. */

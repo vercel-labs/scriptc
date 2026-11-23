@@ -25,6 +25,20 @@ function collect() {
   return { out, writable };
 }
 
+/** The chunk's type with its value: a web stage's chunks reach the next
+ * stage untouched, numbers and objects included. */
+function collectTyped() {
+  const out = [];
+  const writable = new Writable({
+    objectMode: true,
+    write(chunk, _enc, cb) {
+      out.push(`${typeof chunk}:${JSON.stringify(chunk)}`);
+      cb();
+    },
+  });
+  return { out, writable };
+}
+
 {
   const { out, writable } = collect();
   await pipeline(Readable.from(["ab"]), upper(), writable);
@@ -39,6 +53,72 @@ function collect() {
   composed.end();
   await done;
   console.log("compose", out.join(","));
+}
+
+// A plain { readable, writable } pair of web streams is a stage too, and
+// the pipeline pumps its web sides with the chunks untouched: numbers and
+// objects reach the transform and the next stage as the values they are.
+{
+  const { out, writable } = collectTyped();
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(String(chunk).toUpperCase());
+    },
+  });
+  await pipeline(Readable.from(["ab"]), { readable: transform.readable, writable: transform.writable }, writable);
+  console.log("pair pipeline", out.join(","));
+}
+
+{
+  const { out, writable } = collectTyped();
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk * 2);
+    },
+  });
+  await pipeline(Readable.from([1, 2, 3]), { readable: transform.readable, writable: transform.writable }, writable);
+  console.log("pair numbers", out.join(","));
+}
+
+{
+  const { out, writable } = collectTyped();
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue({ v: chunk.a + 1 });
+    },
+  });
+  await pipeline(Readable.from([{ a: 1 }]), transform, writable);
+  console.log("transform objects", out.join(","));
+}
+
+{
+  const { out, writable } = collectTyped();
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue({ v: chunk.a + 1 });
+    },
+  });
+  await pipeline(Readable.from([{ a: 1 }]), { readable: transform.readable, writable: transform.writable }, writable);
+  console.log("pair objects", out.join(","));
+}
+
+{
+  const { out, writable } = collectTyped();
+  const transform = new TransformStream({
+    transform(chunk, controller) {
+      controller.enqueue(chunk);
+    },
+  });
+  const composed = compose(
+    new PassThrough(),
+    { readable: transform.readable, writable: transform.writable },
+    writable,
+  );
+  const done = new Promise((resolve, reject) => composed.on("finish", resolve).on("error", reject));
+  composed.write("cd");
+  composed.end();
+  await done;
+  console.log("compose pair", out.join(","));
 }
 
 {

@@ -1717,7 +1717,7 @@
  },
  {
   "file": "scr_stream.c",
-  "function": "scr_stream_duplex_from_dyn",
+  "function": "sf_duplex_from_dyn_flags",
   "message": "Duplex.from over this body is not supported yet",
   "code": "SC2020"
  },

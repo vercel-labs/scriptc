@@ -1388,13 +1388,12 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
     break;
   }
   case WF_PORT: {
-    /* A port component is a number: the leading decimal digits are the
-     * port and text after them is not part of it (so "80@host" is port 80,
-     * never a hidden authority). A value that does not start with a digit,
-     * carries the URL's port terminators ('?', ':', '\\', '+'), or exceeds
-     * 65535 is the standard's TypeError. */
+    /* A port component is the URL parser's port: the leading decimal
+     * digits are the port and the first other character ends it, the rest
+     * not being part of the port (so "80@host" and "80?x" are port 80, and
+     * "0x50" is port 0, never a hidden authority). A value without a
+     * leading digit, or a port past 65535, is not a port at all. */
     if (value->len == 0) return scr_str_new("", 0);
-    if (value->len == 1 && value->data[0] == '*') return scr_str_new("*", 1);
     size_t digits = 0;
     uint64_t number = 0;
     while (digits < value->len && value->data[digits] >= '0' && value->data[digits] <= '9') {
@@ -1403,14 +1402,6 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
       digits++;
     }
     if (digits == 0 || number > 65535) break;
-    for (size_t i = digits; i < value->len; i++) {
-      char c = value->data[i];
-      if (c == '?' || c == ':' || c == '\\' || c == '+') {
-        digits = 0;
-        break;
-      }
-    }
-    if (digits == 0) break;
     /* A special scheme's default port is the empty port, as a parsed URL
      * answers it (the record's other components see the stripped value). */
     if (protocol != NULL && protocol->len > 0) {

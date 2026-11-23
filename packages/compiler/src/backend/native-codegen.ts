@@ -50,6 +50,7 @@ import { ensureExecutable } from "../executable-mode.js";
 
 import {
   NativeCodegenError,
+  nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
   parseJsonObject,
@@ -355,22 +356,25 @@ function cacheKey(
   else
     for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
       hash.update(part);
-  return hash
-    .update("\0")
-    .update(JSON.stringify(target))
-    .update("\0")
-    .update(JSON.stringify(helper))
-    .update("\0")
-    .update(options.optimization ?? "2")
-    .update("\0")
-    .update(options.sanitize === true ? "sanitize" : "plain")
-    .update("\0")
-    .update(options.outputKind)
-    .update("\0")
-    .update(options.sourcePath)
-    .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
-    .digest("hex");
+  return (
+    hash
+      .update("\0")
+      .update(JSON.stringify(target))
+      .update("\0")
+      .update(JSON.stringify(helper))
+      .update("\0")
+      .update(options.optimization ?? "2")
+      .update("\0")
+      .update(options.sanitize === true ? "sanitize" : "plain")
+      .update("\0")
+      .update(options.outputKind)
+      // The source path names the module for diagnostics only. Artifacts of the
+      // same LLVM text, target and options are identical whichever app's copy
+      // of the code they came from, so the path is not part of the key.
+      .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
+      .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
+      .digest("hex")
+  );
 }
 
 function artifactMode(): number {
@@ -539,6 +543,18 @@ export async function emitNativeArtifact(
       "json",
       "--source-path",
       options.sourcePath,
+      // A divided module compiles its partitions concurrently; the helper
+      // runs as many lanes as the memory this build can give each one.
+      ...(outputs.length < 2
+        ? []
+        : [
+            "--jobs",
+            String(
+              nativeCodegenJobs(llvmInputBytes(options.llvm), outputs.length, {
+                unoptimized: options.optimization === "0",
+              }),
+            ),
+          ]),
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
     ]);

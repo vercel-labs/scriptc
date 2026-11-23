@@ -1563,6 +1563,15 @@ static ScrStr *scr_http_header_value_text(const ScrStr *name, const ScrDyn *v) {
   return NULL;
 }
 
+/* One element of an array header value: Node's serializer writes a hole or
+ * a present undefined as the string "undefined" (only a scalar undefined
+ * throws), and null as "null". +1. */
+static ScrStr *scr_http_header_item_text(const ScrStr *name, const ScrDyn *v) {
+  if (v == NULL || v->kind == SCR_DYN_UNDEF) return scr_str_new("undefined", 9);
+  if (v->kind == SCR_DYN_NULL) return scr_str_new("null", 4);
+  return scr_http_header_value_text(name, v);
+}
+
 /* Inserts `value` (a string, a number or an array of either) at `pos`;
  * array elements become LIST lines. Answers the line count, or SIZE_MAX
  * with the exception pending. */
@@ -6702,8 +6711,9 @@ static bool scr_http_client_header_mutable(ScrHttpClientReq *c, const char *op) 
 static bool scr_http_client_value_valid(ScrStr *name, const ScrDyn *value) {
   size_t n = value->kind == SCR_DYN_ARR ? value->v.arr.len : 1;
   for (size_t i = 0; i < n; i++) {
-    ScrStr *text = scr_http_header_value_text(
-        name, value->kind == SCR_DYN_ARR ? value->v.arr.items[i] : value);
+    ScrStr *text = value->kind == SCR_DYN_ARR
+                       ? scr_http_header_item_text(name, value->v.arr.items[i])
+                       : scr_http_header_value_text(name, value);
     if (text == NULL) return false;
     bool valid = scr_http_header_text_valid(text);
     scr_str_release(text);
@@ -6722,19 +6732,42 @@ static void scr_http_client_store_header(ScrHttpClientReq *c, ScrStr *name, ScrD
                       : value;
   ScrStr *text = NULL;
   if (first != NULL) {
-    text = scr_http_header_value_text(name, first);
+    text = value->kind == SCR_DYN_ARR ? scr_http_header_item_text(name, first)
+                                      : scr_http_header_value_text(name, first);
     if (text == NULL) return;
   }
-  if (pos == SIZE_MAX) {
+  /* A set replaces every value the name holds (Node keeps one entry per
+   * name): an array value from the options expanded to several lines, and
+   * the old lines must not reach the wire. The first match keeps its place
+   * (the new value is written there); the repeats are dropped. */
+  if (pos != SIZE_MAX) {
+    size_t w = 0, out_pos = SIZE_MAX;
+    for (size_t i = 0; i < c->nheaders; i++) {
+      if (scr_http_name_eq(c->hnames[i], name)) {
+        scr_str_release(c->hnames[i]);
+        scr_str_release(c->hvalues[i]);
+        if (c->hraw[i] != NULL) scr_dyn_release(c->hraw[i]);
+        if (out_pos == SIZE_MAX) {
+          out_pos = w++;
+          continue;
+        }
+        continue;
+      }
+      if (w != i) {
+        c->hnames[w] = c->hnames[i];
+        c->hvalues[w] = c->hvalues[i];
+        c->hraw[w] = c->hraw[i];
+      }
+      w++;
+    }
+    c->nheaders = w;
+    pos = out_pos;
+  } else {
     c->hnames = realloc(c->hnames, (c->nheaders + 1) * sizeof *c->hnames);
     c->hvalues = realloc(c->hvalues, (c->nheaders + 1) * sizeof *c->hvalues);
     c->hraw = realloc(c->hraw, (c->nheaders + 1) * sizeof *c->hraw);
     if (!c->hnames || !c->hvalues || !c->hraw) scr_http_oom();
     pos = c->nheaders++;
-  } else {
-    scr_str_release(c->hnames[pos]);
-    scr_str_release(c->hvalues[pos]);
-    if (c->hraw[pos] != NULL) scr_dyn_release(c->hraw[pos]);
   }
   c->hnames[pos] = scr_str_retain(name);
   c->hvalues[pos] = text != NULL ? text : scr_str_new("", 0);
@@ -6812,7 +6845,10 @@ void scr_http_client_set_header(ScrHttpClientReq *c, ScrStr *name, ScrStr *value
 ScrArr *scr_http_pairs_add_list(ScrArr *pairs, ScrStr *name, ScrArr *values) {
   double n = scr_arr_len(values);
   for (double i = 0; i < n; i++) {
-    ScrStr *element = (ScrStr *)scr_arr_get_ref(values, i); /* +1 */
+    /* A hole reads as Node writes it, the string "undefined" — never a
+     * trapping element read. */
+    ScrStr *element = scr_arr_has(values, i) ? (ScrStr *)scr_arr_get_ref(values, i)
+                                             : scr_str_new("undefined", 9); /* +1 */
     scr_arr_push_ref(pairs, scr_str_retain(name));
     scr_arr_push_ref(pairs, element); /* ownership moves into the array */
   }
@@ -6886,7 +6922,7 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
         scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
         scr_http_buf_str(&b, ": ");
         for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
-          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          ScrStr *text = scr_http_header_item_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
           if (text == NULL) continue;
           if (k > 0) scr_http_buf_str(&b, "; ");
           scr_http_buf_append(&b, text->data, text->len);
@@ -6900,7 +6936,7 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
         if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) te = false;
       bool chunked_item = false;
       for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
-        ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+        ScrStr *text = scr_http_header_item_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
         if (text == NULL) continue;
         if (te && scr_http_header_has_token(text, "chunked")) chunked_item = true;
         scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
@@ -6927,7 +6963,7 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
                          : scr_http_header_has_token(c->hvalues[i], "chunked");
       if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
         for (size_t k = 0; k < c->hraw[i]->v.arr.len && !chunked; k++) {
-          ScrStr *text = scr_http_header_value_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
+          ScrStr *text = scr_http_header_item_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
           if (text == NULL) continue;
           chunked = scr_http_header_has_token(text, "chunked");
           scr_str_release(text);

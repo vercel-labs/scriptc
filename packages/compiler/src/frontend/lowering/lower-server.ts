@@ -9707,19 +9707,63 @@ function lowerClientHeadersOption(lowerer: Lowerer, node: ts.Expression): IrExpr
       return { kind: "arrayLit", elems, type: arrayOf(STRING), loc };
     }
     const arrT = arrayOf(STRING);
-    let pairs: IrExpr = { kind: "arrayLit", elems: [], type: arrT, loc };
-    for (const entry of entries) {
-      const values: IrExpr =
-        entry.list ?? { kind: "arrayLit", elems: entry.values!, type: arrT, loc };
-      pairs = {
-        kind: "libCall",
-        fn: "http.pairsAddList",
-        args: [pairs, { kind: "strLit", value: entry.key, type: STRING, loc }, values],
-        type: arrT,
+    /* Every entry's value is evaluated before any array is copied (Node
+     * serializes the headers after the whole record was built), so the
+     * expansion runs inside a lifted helper whose parameters are the value
+     * expressions in source order. */
+    const key = `http.headPairs:${entries
+      .map((entry) => `${entry.key}:${entry.list === null ? "string" : "list"}`)
+      .join(",")}`;
+    let helper = lowerer.valueHelpers.get(key);
+    if (helper === undefined) {
+      helper = keyedHelperName(lowerer, "%http.headPairs", key);
+      lowerer.valueHelpers.set(key, helper);
+      const params = entries.map((entry, index) => ({
+        localId: `h${index}.0`,
+        name: `h${index}`,
+        type: entry.list === null ? STRING : arrT,
+      }));
+      let pairs: IrExpr = { kind: "arrayLit", elems: [], type: arrT, loc };
+      entries.forEach((entry, index) => {
+        const param = params[index]!;
+        const values: IrExpr =
+          entry.list === null
+            ? {
+                kind: "arrayLit",
+                elems: [varRef(param.localId, STRING, loc)],
+                type: arrT,
+                loc,
+              }
+            : varRef(param.localId, arrT, loc);
+        pairs = {
+          kind: "libCall",
+          fn: "http.pairsAddList",
+          args: [pairs, { kind: "strLit", value: entry.key, type: STRING, loc }, values],
+          type: arrT,
+          loc,
+        };
+      });
+      lowerer.liftedFns.push({
+        name: helper,
+        params,
+        returnType: arrT,
+        locals: params.map((param) => ({
+          id: param.localId,
+          name: param.name,
+          type: param.type,
+          mutable: false,
+        })),
+        body: [{ kind: "return", value: pairs, loc }],
         loc,
-      };
+      });
     }
-    return pairs;
+    return {
+      kind: "call",
+      callee: helper,
+      args: entries.map((entry) => entry.list ?? entry.values![0]!),
+      type: arrT,
+      loc,
+    };
   }
   return lowerClientHeadersValue(lowerer, lowerer.lowerExpr(node), node);
 }

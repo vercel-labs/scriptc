@@ -48,6 +48,7 @@ typedef struct WsCompState {
   bool finishing; /* flush began: drain the backlog, then finish the engine */
   bool drain;     /* the last step filled its output buffer: more is due */
   bool pumping;   /* a pump is on the stack: enqueues may pull again */
+  bool junk;      /* the decoder ended before its input: trailing junk */
   ScrDyn *controller; /* +1, the transform controller while a job runs */
   ScrPromise *pending_write; /* +1, a write waiting for the backlog to drain */
   ScrPromise *pending_flush; /* +1, close waiting for the output to drain */
@@ -215,7 +216,7 @@ static ScrDyn *ws_comp_construct(ScrDyn *const *args, size_t argc, bool decompre
   s->engine = mode == WS_COMP_BROTLI
                   ? scr_brotli_web_engine(decompressing)
                   : scr_zlib_engine_new(mode, Z_DEFAULT_COMPRESSION, 15, 8, Z_DEFAULT_STRATEGY,
-                                        NULL, 0, false);
+                                        NULL, 0, decompressing);
   ScrDyn *result = NULL;
   if (ws_comp_attach(s, ws_comp_transform, ws_comp_flush)) {
     result = scr_dyn_new_handle(s, ws_comp_tag_of(s));
@@ -249,10 +250,14 @@ static ScrDyn *ws_comp_error_value(const ScrZlibError *ze) {
   return value;
 }
 
-/* Rejects `p` with `reason` (borrowed). */
+/* Rejects `p` with `reason` (borrowed). The promise is the stream's own
+ * (the machinery derives the promises the program sees from it), so its
+ * rejection counts as handled here, like the runtime's other internal
+ * promises: the close and read promise the program holds still reject. */
 static void ws_comp_reject(ScrPromise *p, ScrDyn *reason) {
   scr_dyn_throw(scr_dyn_retain(reason));
   scr_promise_reject_pending(p);
+  scr_promise_mark_handled(p);
 }
 
 static bool ws_comp_enqueue(ScrDyn *controller, const unsigned char *data, size_t len) {
@@ -356,6 +361,34 @@ static void ws_comp_fail(WsCompState *s, const ScrZlibError *ze) {
   scr_dyn_release(error);
 }
 
+/* A decompression stream's input continues past the end of the compressed
+ * stream: Node rejects it with the trailing-junk TypeError (a codec's own
+ * data error, such as deflate-raw parsing the extra bytes as another block,
+ * arrives through the engine's error instead). */
+static void ws_comp_junk(WsCompState *s) {
+  static const char message[] = "Trailing junk found after the end of the compressed stream";
+  ScrStr *text = scr_str_new(message, sizeof message - 1);
+  ScrError *err = scr_error_new(SCR_ERR_TYPE, text);
+  scr_str_release(text);
+  scr_error_set_code(err, "ERR_TRAILING_JUNK_AFTER_STREAM_END");
+  ScrDyn *error = scr_dyn_from_error(err);
+  scr_error_release(err);
+  ScrDyn *controller = s->controller;
+  s->controller = NULL;
+  if (s->engine) scr_zlib_engine_free(s->engine);
+  s->engine = NULL;
+  s->in_len = 0;
+  s->in_off = 0;
+  s->drain = false;
+  s->junk = false;
+  ws_comp_release_promises(s, error, true);
+  if (controller) {
+    scr_webstream_controller_fail(controller, error);
+    scr_dyn_release(controller);
+  }
+  scr_dyn_release(error);
+}
+
 /* The controller refused a chunk (the stream closed or errored under the
  * job): drop the job; the stream already carries the error. */
 static void ws_comp_abandon(WsCompState *s) {
@@ -374,6 +407,10 @@ static void ws_comp_abandon(WsCompState *s) {
  * stream and waits for the reader for a bomb). Returns -1 with the
  * exception pending when enqueueing failed. */
 static int ws_comp_pump_steps(WsCompState *s) {
+  if (s->junk) {
+    ws_comp_junk(s);
+    return 0;
+  }
   if (!s->out) {
     s->out = malloc(WS_COMP_OUT);
     if (!s->out) ws_comp_oom();
@@ -416,6 +453,19 @@ static int ws_comp_pump_steps(WsCompState *s) {
     ScrZlibError ze;
     if (scr_zlib_engine_error(s->engine, &ze)) {
       ws_comp_fail(s, &ze);
+      return 0;
+    }
+    /* The decoder stopped with output space left and input unread: the
+     * compressed stream ended and bytes follow it. A chunk this step made
+     * is delivered first (a reader sees the stream's bytes before the
+     * error); the error follows on the next step. */
+    if (s->decompressing && took < in_left && made < WS_COMP_OUT) {
+      if (made && !s->finishing) {
+        s->junk = true;
+        return 0;
+      }
+      /* A flush fails now, as Node's close does; its queued output is moot. */
+      ws_comp_junk(s);
       return 0;
     }
     bool input_done = s->in_off >= s->in_len;

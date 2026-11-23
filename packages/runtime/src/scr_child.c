@@ -3754,6 +3754,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -3890,6 +3894,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       scr_children_unwatched--;
@@ -7940,6 +7949,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -8126,6 +8139,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       settle = true;
@@ -9639,16 +9657,66 @@ static void scr_ipc_add_send(ScrIpc *ipc, ScrClosure *cb, ScrIpcSendFn fn) {
   ipc->send_cbs[ipc->n_send++] = (ScrIpcSendEntry){cb, fn, scr_als_capture()};
 }
 
+/* A send on a channel that is already closed. Node's send checks
+ * `connected` before touching the channel and, when it is false, answers
+ * false and calls the callback on the NEXT TICK with
+ * ERR_IPC_CHANNEL_CLOSED — the write queue never sees it. Queuing the
+ * completion behind a channel-service pass instead (the open channel's
+ * path) delays it past the disconnect handler's checkpoint, so a child's
+ * 'exit' can overtake it (cluster-primary-worker-messages.cjs). */
+typedef struct {
+  ScrClosure *cb;
+  ScrIpcSendFn fn;
+  ScrError *error; /* +1, the callback takes it */
+  ScrAlsCtx *ctx;
+} ScrIpcClosedSend;
+
+static SCR_TL ScrIpcClosedSend *scr_ipc_closed_sends = NULL;
+static SCR_TL size_t scr_ipc_closed_n = 0;
+
+static void scr_ipc_closed_send_tick(void) {
+  while (scr_ipc_closed_n > 0) {
+    ScrIpcClosedSend entry = scr_ipc_closed_sends[0];
+    memmove(scr_ipc_closed_sends, scr_ipc_closed_sends + 1,
+            (scr_ipc_closed_n - 1) * sizeof *scr_ipc_closed_sends);
+    scr_ipc_closed_n--;
+    if (!scr_exc_pending()) {
+      ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
+      entry.fn(entry.cb, entry.error); /* takes the error */
+      scr_als_dispatch_leave(prev);
+    } else {
+      scr_error_release(entry.error);
+    }
+    scr_closure_release(entry.cb);
+    scr_als_ctx_release(entry.ctx);
+  }
+  free(scr_ipc_closed_sends);
+  scr_ipc_closed_sends = NULL;
+}
+
+static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
+                                      ScrIpcSendFn fn) {
+  ScrIpcClosedSend *items =
+      realloc(scr_ipc_closed_sends, (scr_ipc_closed_n + 1) * sizeof *items);
+  if (!items) scr_trap("out of memory");
+  scr_ipc_closed_sends = items;
+  ScrStr *message = send_error != NULL
+                        ? scr_str_retain(send_error)
+                        : scr_str_new("Channel closed", sizeof("Channel closed") - 1);
+  ScrError *error = scr_error_new(0, message);
+  scr_str_release(message);
+  scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
+  items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* One raw tick drains the queue: FIFO with the user ticks around it. */
+  if (scr_ipc_closed_n == 1) scr_next_tick_raw(&scr_ipc_closed_send_tick);
+}
+
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
                          ScrIpcSendFn fn) {
   if (!ipc || !ipc->connected) {
     if (cb) {
       if (ipc) {
-        scr_ipc_add_send(ipc, cb, fn);
-        if (ipc->send_error == NULL) {
-          ipc->send_error = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
-        }
-        scr_ipc_register(ipc);
+        scr_ipc_queue_closed_send(ipc->send_error, cb, fn);
       } else {
         ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
         ScrError *error = scr_error_new(0, message);

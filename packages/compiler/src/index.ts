@@ -3082,6 +3082,11 @@ async function compileLibraryTracked(
       sanitizeAttributes: opts.sanitize === true,
       timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
+      // A dev library carries the sources a dev executable does, so native
+      // debuggers and stack frames name the TypeScript lines.
+      ...(carriesDebugSources(profile.optimization, false)
+        ? { debugSources: sourceTexts }
+        : {}),
     });
     timing("llvm-emit", {
       output_bytes:

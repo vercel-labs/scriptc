@@ -781,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_proxy_configured",
+  "message": "environment proxy URLs other than http:// are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"

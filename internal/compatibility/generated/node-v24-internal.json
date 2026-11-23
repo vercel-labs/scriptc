@@ -58960,6 +58960,9 @@
           "tests/corpus/http-agent-max-total-sockets.ts",
           "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/http-global-proxy-auth-port.ts",
+          "tests/corpus/http-global-proxy-bypass.ts",
+          "tests/corpus/http-global-proxy-plain.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-response-cork.ts",
@@ -58984,7 +58987,6 @@
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
           "tests/corpus/net-server-dispose-http.ts",
-          "tests/diagnostics/compat-absent-http-members.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/server/cases/http-trailers/main.ts",
           "tests/fixtures/server/cases/http2-connect/main.ts",
@@ -63850,10 +63852,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.http.setGlobalProxyFromEnv",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-global-proxy-plain.ts",
+          "tests/corpus/http-global-proxy-auth-port.ts",
+          "tests/corpus/http-global-proxy-bypass.ts"
         ]
       },
       "anchorSource": "exact"

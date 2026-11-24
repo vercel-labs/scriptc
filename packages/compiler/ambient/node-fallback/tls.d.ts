@@ -77,6 +77,9 @@ declare module "tls" {
     readonly servername: string | false;
     /* The session a resumption would use; null before one exists. */
     getSession(): Buffer | null;
+    /* The session ticket a client received (TLS 1.2 carries it in the
+     * handshake, TLS 1.3 once a ticket arrives); undefined without one. */
+    getTLSTicket(): Buffer | undefined;
     /* Renegotiation is off by default: the call is a no-op. */
     disableRenegotiation(): void;
   }

@@ -37,6 +37,12 @@ export interface NodeOracleCacheOptions {
   comptimeShim: string;
   /** Every byte a program run depends on: the entry plus its siblings. */
   programInputs: (file: string) => string[];
+  /** The Node the suite spawns for the oracle. The key records what THAT
+   * executable reports as `process.execPath` and `process.version`, not what
+   * `node` on PATH would: the two suites spawn different commands (`node`
+   * vs `process.execPath`), and when PATH's Node differs from Vitest's they
+   * must not share verdicts. Defaults to `node`. */
+  nodeCommand?: string;
 }
 
 /** Real-time programs are EXCLUDED from the oracle cache: a timer-interleave
@@ -64,7 +70,7 @@ export function usesVolatileHostState(inputs: string[]): boolean {
  * recorded verdict when there is one, and otherwise awaits `spawn()` (the
  * suite's own live Node invocation) and records the result. */
 export function createNodeOracleCache(options: NodeOracleCacheOptions) {
-  const { repoRoot, comptimeShim, programInputs } = options;
+  const { repoRoot, comptimeShim, programInputs, nodeCommand = "node" } = options;
   const oracleDir =
     process.env["SCRIPTC_NO_CACHE"] !== "1" && process.env["SCRIPTC_CACHE_DIR"]
       ? join(process.env["SCRIPTC_CACHE_DIR"], "oracle")
@@ -73,12 +79,17 @@ export function createNodeOracleCache(options: NodeOracleCacheOptions) {
 
   let oracleKeyBaseMemo: Promise<string> | null = null;
   function oracleKeyBase(): Promise<string> {
-    // The spawned `node` comes from PATH, so ask IT for its version rather than
-    // trusting process.version (vitest's own node could differ).
-    oracleKeyBaseMemo ??= execFileAsync("node", ["--version"]).then(({ stdout }) =>
+    // Ask the EXECUTABLE THE SUITE SPAWNS for its path and version rather than
+    // trusting process.version (Vitest's own node could differ) or PATH's
+    // `node` (the LLVM suite spawns process.execPath). Two different Node
+    // builds then key different cache entries and never share a verdict.
+    oracleKeyBaseMemo ??= execFileAsync(nodeCommand, [
+      "-p",
+      "JSON.stringify([process.execPath, process.version])",
+    ]).then(({ stdout }) =>
       createHash("sha256")
-        .update("oracle-v1\0")
-        .update(stdout.trim())
+        .update("oracle-v2\0")
+        .update(stdout)
         .update("\0")
         // Decorator programs run tsc's downlevel on the Node side — its
         // emitter version is part of the verdict.

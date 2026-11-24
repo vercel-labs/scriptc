@@ -178,7 +178,15 @@ const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs"
 // oracle-cache.ts). The suites split the corpus identically, so a shard's
 // recorded Node verdicts serve both lanes; only the SPAWN is skipped, the
 // native side always runs live.
-const spawnCachedNode = createNodeOracleCache({ repoRoot, comptimeShim, programInputs });
+const spawnCachedNode = createNodeOracleCache({
+  repoRoot,
+  comptimeShim,
+  programInputs,
+  // This suite spawns process.execPath, not PATH's `node`; the cache key
+  // follows the spawned executable so the two suites share only when they
+  // really run the same Node build.
+  nodeCommand: process.execPath,
+});
 
 /** differential.test.ts's twin: the Node oracle runs with
  * --experimental-transform-types for corpus programs using non-erasable

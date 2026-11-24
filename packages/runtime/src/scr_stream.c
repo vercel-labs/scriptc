@@ -9774,7 +9774,8 @@ static void scr_sc_failure_read(ScrClosure *cb, ScrStream *s, double size) {
   (void)size;
   ScrError *err = scr_box_get_ref(cb->caps[0]); /* +1 */
   if (!err) return;
-  scr_stream_release(scr_stream_destroy(s, err)); /* destroy takes the error */
+  scr_stream_release(scr_stream_destroy(s, err)); /* borrows the error */
+  scr_error_release(err);
 }
 
 /* The failed source: the pending exception as the stream's error (an

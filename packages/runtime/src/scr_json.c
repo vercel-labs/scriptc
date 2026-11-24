@@ -24,6 +24,7 @@
 #include "scr_runtime.h"
 #include "scr_message.h" /* the message format's wrapper hook */
 #include "scr_key.h"
+#include "scr_jsval_bits.h" /* layout slots hold jsval words */
 #include "scr_record_source_private.h"
 
 /* The JavaScript object model build asks scr_dyn_handle_props.c about a
@@ -1181,6 +1182,124 @@ const ScrLayout *scr_layout_add(const ScrLayout *layout, const char *key, size_t
   return child;
 }
 
+/* ── layout slots ──────────────────────────────────────────────────────
+ *
+ * A layout-mode object's slots hold jsval words (scr_jsval_bits.h): a
+ * number, boolean, null or undefined is its immediate, and any other value
+ * is the cell tag over a dynamic value the object owns. So a number
+ * property allocates no box and its reads and writes are the compiler's
+ * inline 8-byte slot accesses; every other consumer of the object keeps
+ * working with scr_dyn values through the conversions below.
+ *
+ * The immediate spellings are canonical (a NaN is the canonical NaN), and a
+ * stored scr_dyn value that is a plain NUM, BOOL, NULL or UNDEF node is
+ * unboxed to its immediate. A read that boxes an immediate into the object
+ * (scr_dyn_slot_borrow) leaves a cell behind, so a slot's cell is not
+ * guaranteed to be a non-primitive; every path here accepts either. */
+/* `value` (owned, +1) as the word a slot holds. */
+void *scr_dyn_slot_from_value(ScrDyn *value) {
+#if SCR_JSVAL_WORDS
+  if (!value->prototype && !value->symbol_properties && !value->symbol_keys) {
+    switch (value->kind) {
+    case SCR_DYN_NUM: {
+      double number = value->v.num;
+      uint64_t bits;
+      memcpy(&bits, &number, sizeof bits);
+      scr_dyn_release(value);
+      return scr_jsval_of_bits(number != number ? SCR_JSVAL_CANONICAL_NAN : bits);
+    }
+    case SCR_DYN_BOOL: {
+      bool b = value->v.b;
+      scr_dyn_release(value);
+      return scr_jsval_of_bits(SCR_JSVAL_DOUBLE_LIMIT | (b ? 3 : 2));
+    }
+    case SCR_DYN_NULL:
+      scr_dyn_release(value);
+      return scr_jsval_of_bits(SCR_JSVAL_DOUBLE_LIMIT | 1);
+    case SCR_DYN_UNDEF:
+      scr_dyn_release(value);
+      return scr_jsval_of_bits(SCR_JSVAL_DOUBLE_LIMIT);
+    default:
+      break;
+    }
+  }
+  return scr_jsval_of_cell(value);
+#else
+  /* A 32-bit jsval is the cell pointer itself; nothing is unboxable. */
+  return value;
+#endif
+}
+
+/* The word a slot holds for `value` without unboxing it: the object's stored
+ * cell (used when a read leaves a box behind). */
+static void *scr_dyn_slot_cell_word(ScrDyn *value) {
+#if SCR_JSVAL_WORDS
+  return scr_jsval_of_cell(value);
+#else
+  return value;
+#endif
+}
+
+/* The slot's value, owned (+1). */
+ScrDyn *scr_dyn_slot_take(void *word) {
+#if SCR_JSVAL_WORDS
+  if (scr_jsval_is_double(word)) return scr_dyn_new_num(scr_jsval_double(word));
+  if (scr_jsval_is_cell(word)) return scr_dyn_retain((ScrDyn *)scr_jsval_cell(word));
+  switch (scr_jsval_bits(word)) {
+  case SCR_JSVAL_DOUBLE_LIMIT | 0: return scr_dyn_undefined();
+  case SCR_JSVAL_DOUBLE_LIMIT | 1: return scr_dyn_new_null();
+  case SCR_JSVAL_DOUBLE_LIMIT | 2: return scr_dyn_new_bool(false);
+  case SCR_JSVAL_DOUBLE_LIMIT | 3: return scr_dyn_new_bool(true);
+  default: break;
+  }
+  /* Only reachable for a string or bigint word, which no store writes:
+   * answer them the way the generic boxing path would. */
+  if (scr_jsval_tag(word) == SCR_JSVAL_TAG_STR)
+    return scr_dyn_new_str((ScrStr *)scr_jsval_cell(word));
+  if (scr_jsval_tag(word) == SCR_JSVAL_TAG_BIGINT)
+    return scr_dyn_new_bigint((ScrBigInt *)scr_jsval_cell(word));
+  return scr_dyn_undefined();
+#else
+  return word ? scr_dyn_retain((ScrDyn *)word) : scr_dyn_undefined();
+#endif
+}
+
+/* Releases a slot word the caller no longer stores. */
+void scr_dyn_slot_release(void *word) {
+  if (scr_jsval_is_cell(word)) scr_dyn_release((ScrDyn *)scr_jsval_cell(word));
+}
+
+/* The slot's value moved out of it (owned +1): a cell carries the slot's
+ * reference with it, and an immediate is boxed. */
+static ScrDyn *scr_dyn_slot_move(void *word) {
+  if (scr_jsval_is_cell(word)) return (ScrDyn *)scr_jsval_cell(word);
+  return scr_dyn_slot_take(word);
+}
+
+/* The slot's value, borrowed. An immediate is boxed; a shared primitive
+ * box (the small integers and the null, undefined and boolean singletons,
+ * all immortal) is borrowed as is, and any other box is stored into the
+ * object, which then owns it: the borrowed value stays valid as long as the
+ * object lives, and the write changes only the representation, never the
+ * value the object reports. */
+ScrDyn *scr_dyn_slot_borrow(ScrDyn *object, size_t i) {
+  void *word = object->v.obj.slots[i];
+  if (scr_jsval_is_cell(word)) return (ScrDyn *)scr_jsval_cell(word);
+  ScrDyn *box = scr_dyn_slot_take(word);
+  if (box->rc == SIZE_MAX) return box;
+  object->v.obj.slots[i] = scr_dyn_slot_cell_word(box);
+  return box;
+}
+
+/* Stores `value` (moved, +1) in the slot and returns the previous value
+ * (owned +1). */
+ScrDyn *scr_dyn_slot_exchange(ScrDyn *object, size_t i, ScrDyn *value) {
+  void *next = scr_dyn_slot_from_value(value);
+  void *old = object->v.obj.slots[i];
+  object->v.obj.slots[i] = next;
+  return scr_dyn_slot_move(old);
+}
+
 #define SCR_DYN_OBJECT_INDEX_MIN 32
 
 /* Layout mode → dictionary mode: the same properties in the same order,
@@ -1189,7 +1308,7 @@ void scr_dyn_to_dictionary(ScrDyn *object) {
   const ScrLayout *layout = object->v.obj.layout;
   if (!layout) return;
   size_t len = object->v.obj.len;
-  ScrDyn **slots = object->v.obj.slots;
+  void **slots = object->v.obj.slots;
   size_t cap = len < 4 ? 4 : len;
   ScrDynEntry *entries = scr_mem_realloc(NULL, cap * sizeof *entries);
   if (!entries) scr_json_oom();
@@ -1201,7 +1320,7 @@ void scr_dyn_to_dictionary(ScrDyn *object) {
     ScrDynEntry *e = &entries[i];
     e->key = k->key;
     e->key_len = k->len;
-    e->value = slots[i];
+    e->value = scr_dyn_slot_move(slots[i]);
     e->value_traced = (traced >> i) & 1;
     e->writable = e->enumerable = e->configurable = true;
   }
@@ -1225,12 +1344,12 @@ static inline void scr_dyn_obj_layout_push(ScrDyn *obj, const ScrLayout *next, S
   if (len == obj->v.obj.cap) {
     size_t cap = obj->v.obj.cap ? obj->v.obj.cap * 2 : 4;
     if (cap > SCR_LAYOUT_MAX_KEYS) cap = SCR_LAYOUT_MAX_KEYS;
-    ScrDyn **slots = scr_mem_realloc(obj->v.obj.slots, cap * sizeof *slots);
+    void **slots = scr_mem_realloc(obj->v.obj.slots, cap * sizeof *slots);
     if (!slots) scr_json_oom();
     obj->v.obj.slots = slots;
     obj->v.obj.cap = cap;
   }
-  obj->v.obj.slots[len] = value;
+  obj->v.obj.slots[len] = scr_dyn_slot_from_value(value);
   obj->v.obj.len = len + 1;
   obj->v.obj.layout = next;
 }
@@ -1302,7 +1421,9 @@ void scr_dyn_trace_v(void *ptr, ScrTraceVisit visit, void *ctx) {
     if (d->v.obj.layout) {
       size_t traced = 0;
       for (size_t i = 0; i < d->v.obj.len; i++) {
-        ScrDyn *value = d->v.obj.slots[i];
+        void *word = d->v.obj.slots[i];
+        if (!scr_jsval_is_cell(word)) continue;
+        ScrDyn *value = (ScrDyn *)scr_jsval_cell(word);
         if (!scr_dyn_member_is_traced(value)) continue;
         traced |= (size_t)1 << i;
         visit(value, ctx);
@@ -1943,8 +2064,11 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
   case SCR_DYN_OBJ:
     if (d->v.obj.layout) {
       size_t traced = collected ? d->v.obj.slots_traced : 0;
-      for (size_t i = 0; i < d->v.obj.len; i++)
-        if (!((traced >> i) & 1)) scr_dyn_release_child(d->v.obj.slots[i]);
+      for (size_t i = 0; i < d->v.obj.len; i++) {
+        if ((traced >> i) & 1) continue;
+        void *word = d->v.obj.slots[i];
+        if (scr_jsval_is_cell(word)) scr_dyn_release_child((ScrDyn *)scr_jsval_cell(word));
+      }
       d->v.obj.len = 0;
     } else for (size_t i = 0; i < d->v.obj.len; i++) {
       ScrDyn *value = d->v.obj.entries[i].value;
@@ -2198,7 +2322,7 @@ ScrDyn *scr_dyn_member_value(const ScrDyn *object, size_t i) {
 }
 
 /* The slot of own property `key` of a layout-mode object, or NULL. */
-static inline ScrDyn **scr_dyn_layout_slot(const ScrDyn *object, const char *key, size_t length) {
+static inline void **scr_dyn_layout_slot(const ScrDyn *object, const char *key, size_t length) {
   uint32_t i = scr_layout_find(object->v.obj.layout, key, length);
   return i == UINT32_MAX ? NULL : &object->v.obj.slots[i];
 }
@@ -2214,8 +2338,8 @@ ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len) {
     return NULL;
   }
   if (scr_dyn_is_layout(d)) {
-    ScrDyn **slot = scr_dyn_layout_slot(d, key, key_len);
-    return slot ? *slot : NULL;
+    uint32_t i = scr_layout_find(d->v.obj.layout, key, key_len);
+    return i == UINT32_MAX ? NULL : scr_dyn_slot_borrow((ScrDyn *)d, i);
   }
   ScrDynEntry *entry = scr_dyn_find_entry(d, key, key_len);
   /* A class member the view answers with its getter is not an own data
@@ -2291,10 +2415,11 @@ int32_t scr_dyn_discriminant_case(const ScrDyn *d, const ScrStr *key, ScrStr *co
   if (scr_ni_dyn_handle(d)) return -2;
   if (d->kind != SCR_DYN_OBJ) return -1;
   if (d->v.obj.layout) {
-    ScrDyn **slot = scr_dyn_layout_slot(d, key->data, key->len);
+    void **slot = scr_dyn_layout_slot(d, key->data, key->len);
     if (!slot) return -2;
-    const ScrDyn *member = *slot;
-    if (!member || member->kind != SCR_DYN_STR) return -1;
+    if (!scr_jsval_is_cell(*slot)) return -1;
+    const ScrDyn *member = (const ScrDyn *)scr_jsval_cell(*slot);
+    if (member->kind != SCR_DYN_STR) return -1;
     for (size_t k = 0; k < count; k++)
       if (scr_str_eq(member->v.str, values[k])) return (int32_t)k;
     return -1;
@@ -2983,11 +3108,12 @@ ScrDyn *scr_dyn_arr_named_get(const ScrDyn *d, const ScrStr *key) {
 static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
   scr_dyn_region_store(obj, value);
   if (obj->v.obj.layout) {
-    ScrDyn **slot = scr_dyn_layout_slot(obj, key, key_len);
+    void **slot = scr_dyn_layout_slot(obj, key, key_len);
     if (slot) {
-      ScrDyn *old = *slot;
-      *slot = value;
-      scr_dyn_release(old);
+      void *next = scr_dyn_slot_from_value(value);
+      void *old = *slot;
+      *slot = next;
+      scr_dyn_slot_release(old);
       return;
     }
     if (!obj->non_extensible && scr_dyn_obj_layout_append(obj, key, key_len, value)) return;
@@ -4897,10 +5023,10 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     return scr_dyn_retain(scr_dyn_undefined());
   }
   if (value->kind == SCR_DYN_OBJ && value->v.obj.layout) {
-    ScrDyn **slot = scr_dyn_layout_slot(value, key->data, key->len);
+    void **slot = scr_dyn_layout_slot(value, key->data, key->len);
     if (!slot) return scr_dyn_retain(scr_dyn_undefined());
     ScrDyn *out = scr_dyn_new_obj();
-    scr_dyn_obj_set(out, "value", 5, scr_dyn_retain(*slot));
+    scr_dyn_obj_set(out, "value", 5, scr_dyn_slot_take(*slot));
     scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(true));
@@ -6527,8 +6653,8 @@ ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t ke
     ScrDyn *found = NULL;
     if (view && view->kind == SCR_DYN_OBJ) {
       if (scr_dyn_is_layout(view)) {
-        ScrDyn **slot = scr_dyn_layout_slot(view, key, key_len);
-        if (slot) found = scr_dyn_retain(*slot);
+        void **slot = scr_dyn_layout_slot(view, key, key_len);
+        if (slot) found = scr_dyn_slot_take(*slot);
       } else {
         const ScrDynEntry *own = scr_dyn_find_entry(view, key, key_len);
         if (own && !own->accessor) found = scr_dyn_retain(own->value);
@@ -10150,12 +10276,13 @@ void scr_dyn_class_view_accessors(ScrDyn *view, const ScrDynTypedClassOps *ops, 
  * as any other). Consumes value. */
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value) {
   if (obj->v.obj.layout) {
-    ScrDyn **slot = scr_dyn_layout_slot(obj, key, key_len);
+    void **slot = scr_dyn_layout_slot(obj, key, key_len);
     if (slot) {
       scr_dyn_region_store(obj, value);
-      ScrDyn *old = *slot;
-      *slot = value;
-      scr_dyn_release(old);
+      void *next = scr_dyn_slot_from_value(value);
+      void *old = *slot;
+      *slot = next;
+      scr_dyn_slot_release(old);
       return;
     }
     bool non_extensible = obj->non_extensible;
@@ -15985,12 +16112,13 @@ static void scr_dyn_proto_accessor_set(ScrDyn *receiver, ScrDyn *value) {
  * consults the prototype chain and is then added. */
 static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, const ScrDyn *receiver) {
   if (recv->v.obj.layout) {
-    ScrDyn **slot = scr_dyn_layout_slot(recv, key->data, key->len);
+    void **slot = scr_dyn_layout_slot(recv, key->data, key->len);
     if (slot) {
       scr_dyn_region_store(recv, value);
-      ScrDyn *old = *slot;
-      *slot = scr_dyn_retain(value);
-      scr_dyn_release(old);
+      void *next = scr_dyn_slot_from_value(scr_dyn_retain(value));
+      void *old = *slot;
+      *slot = next;
+      scr_dyn_slot_release(old);
       scr_error_sync_cause(recv, key);
       return;
     }
@@ -16156,9 +16284,10 @@ static inline __attribute__((always_inline)) bool scr_dyn_plain_record_assign(
     uint32_t slot = scr_layout_find(layout, key->data, length);
     if (slot != UINT32_MAX) {
       scr_dyn_region_store(recv, value);
-      ScrDyn *old = recv->v.obj.slots[slot];
-      recv->v.obj.slots[slot] = scr_dyn_retain(value);
-      scr_dyn_release(old);
+      void *next = scr_dyn_slot_from_value(scr_dyn_retain(value));
+      void *old = recv->v.obj.slots[slot];
+      recv->v.obj.slots[slot] = next;
+      scr_dyn_slot_release(old);
       return true;
     }
     next = scr_layout_add(layout, key->data, length);
@@ -17486,7 +17615,7 @@ static void scr_json_fit_object(ScrDyn *obj) {
   size_t len = obj->v.obj.len, cap = obj->v.obj.cap;
   if (len == 0 || len == cap) return;
   if (obj->v.obj.layout) {
-    ScrDyn **slots = scr_json_fit_block(obj->v.obj.slots, len * sizeof *slots);
+    void **slots = scr_json_fit_block(obj->v.obj.slots, len * sizeof *slots);
     if (!slots) return; /* keep the larger block */
     obj->v.obj.slots = slots;
     obj->v.obj.cap = len;
@@ -20517,8 +20646,8 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
     }
     if (current->kind != SCR_DYN_OBJ) continue;
     if (current->v.obj.layout) {
-      ScrDyn **slot = scr_dyn_layout_slot(current, key, key_len);
-      if (slot) return scr_dyn_retain(*slot);
+      void **slot = scr_dyn_layout_slot(current, key, key_len);
+      if (slot) return scr_dyn_slot_take(*slot);
       continue;
     }
     ScrDynEntry *entry = scr_dyn_find_entry(current, key, key_len);
@@ -20793,7 +20922,7 @@ static __attribute__((noinline)) ScrDyn *scr_dyn_obj_read_ic_miss(const ScrDyn *
     const ScrLayoutKey *k = &d->v.obj.layout->keys[i];
     scr_dyn_read_ic_key(ic, k->key, k->len);
     ic->index = i;
-    return scr_dyn_retain(d->v.obj.slots[i]);
+    return scr_dyn_slot_take(d->v.obj.slots[i]);
   }
   ScrDynEntry *entry = d != scr_builtin_object_prototype ? scr_dyn_find_entry(d, key->data, key->len) : NULL;
   if (entry && !entry->accessor) {
@@ -20831,7 +20960,7 @@ ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic
       const ScrLayoutKey *k = &layout->keys[index];
       if ((k->key == ic->key || (k->len == key->len && scr_key_equal(k->key, key->data, key->len))) &&
           d != scr_builtin_object_prototype)
-        return scr_dyn_retain(d->v.obj.slots[index]);
+        return scr_dyn_slot_take(d->v.obj.slots[index]);
     }
     return scr_dyn_obj_read_ic_miss(d, key, ic);
   }

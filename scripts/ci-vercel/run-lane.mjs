@@ -19,6 +19,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -109,10 +110,15 @@ function firstCpus(count) {
   return cpus.slice(0, count);
 }
 
-/** Removes a setup output before rebuilding it. A checkout may carry files under .ci/ (an ignored path can still be
- * force-added), so a setup build starts from an empty directory and trusts nothing it finds there. */
+/** Removes setup outputs before rebuilding them. A checkout may carry files under an ignored path (git does not
+ * refuse a forced add), so a build starts from empty outputs and caches only what this run creates. */
+function clearOutputs(...paths) {
+  for (const path of paths) rmSync(path, { recursive: true, force: true });
+}
+
+/** Removes one setup output before rebuilding it and returns it. */
 function fresh(directory) {
-  rmSync(directory, { recursive: true, force: true });
+  clearOutputs(directory);
   return directory;
 }
 
@@ -162,22 +168,42 @@ switch (lane) {
   // Shared builds. Their outputs are what the Actions jobs download as
   // artifacts, restored here from turbo's cache.
   case "build": {
+    clearOutputs(join(root, "node_modules/.cache/scriptc-tsc"));
+    for (const entry of readdirSync(join(root, "packages"), { withFileTypes: true }))
+      if (entry.isDirectory()) clearOutputs(join(root, "packages", entry.name, "dist"));
     pnpm(["build"]);
     break;
   }
   case "native": {
+    clearOutputs(
+      join(root, "packages/llvm-linux-x64-gnu/bin"),
+      join(root, "packages/runtime-linux-x64-gnu/artifacts"),
+      join(root, "packages/runtime-linux-x64-gnu/runtime-pack.json"),
+      join(root, "packages/runtime-linux-x64-gnu/runtime-pack.verified.json"),
+    );
     pnpm(["--filter", "@scriptc/llvm-linux-x64-gnu", "build:native"]);
     pnpm(["--filter", "@scriptc/runtime-linux-x64-gnu", "build:native"], { CC: "zig", AR: "zig" });
     run(process.execPath, ["packages/runtime-linux-x64-gnu/scripts/verify.mjs"]);
     break;
   }
   case "native:musl": {
+    clearOutputs(
+      join(root, "packages/llvm-linux-x64-musl/bin"),
+      join(root, "packages/runtime-linux-x64-musl/artifacts"),
+      join(root, "packages/runtime-linux-x64-musl/runtime-pack.json"),
+      join(root, "packages/runtime-linux-x64-musl/runtime-pack.verified.json"),
+    );
     pnpm(["--filter", "@scriptc/llvm-linux-x64-musl", "build:native"]);
     pnpm(["--filter", "@scriptc/runtime-linux-x64-musl", "build:native"], { CC: "zig", AR: "zig" });
     run(process.execPath, ["packages/runtime-linux-x64-musl/scripts/verify.mjs"]);
     break;
   }
   case "native:wasi": {
+    clearOutputs(
+      join(root, "packages/runtime-wasm32-wasi/artifacts"),
+      join(root, "packages/runtime-wasm32-wasi/runtime-pack.json"),
+      join(root, "packages/runtime-wasm32-wasi/runtime-pack.verified.json"),
+    );
     pnpm(["--filter", "@scriptc/runtime-wasm32-wasi", "build:native"], { CC: "zig", AR: "zig" });
     run(process.execPath, ["packages/runtime-wasm32-wasi/scripts/verify.mjs"]);
     break;

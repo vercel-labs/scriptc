@@ -20,10 +20,12 @@
         "packages/*/package.json",
         "internal/*/src/**",
         "internal/*/package.json",
-        "tsconfig.base.json"
+        "tsconfig.base.json",
+        "scripts/**"
       ],
       "outputs": [
-        "packages/*/dist/**"
+        "packages/*/dist/**",
+        "!packages/*/dist/node_modules/**"
       ],
       "tags": [
         "ci",
@@ -58,7 +60,8 @@
         "packages/runtime/LICENSE",
         "packages/runtime-pack-common/**",
         "packages/runtime-linux-x64-gnu/**",
-        "packages/llvm-linux-x64-gnu/**"
+        "packages/llvm-linux-x64-gnu/**",
+        "scripts/**"
       ],
       "outputs": [
         "packages/llvm-linux-x64-gnu/bin/**",
@@ -83,7 +86,8 @@
         "packages/runtime/LICENSE",
         "packages/runtime-pack-common/**",
         "packages/runtime-linux-x64-musl/**",
-        "packages/llvm-linux-x64-musl/**"
+        "packages/llvm-linux-x64-musl/**",
+        "scripts/**"
       ],
       "outputs": [
         "packages/llvm-linux-x64-musl/bin/**",
@@ -106,7 +110,8 @@
         "packages/runtime/package.json",
         "packages/runtime/LICENSE",
         "packages/runtime-pack-common/**",
-        "packages/runtime-wasm32-wasi/**"
+        "packages/runtime-wasm32-wasi/**",
+        "scripts/**"
       ],
       "outputs": [
         "packages/runtime-wasm32-wasi/artifacts/**",
@@ -2514,7 +2519,8 @@
         "native/**",
         "tests/harness/self-hosting*",
         "vitest.config.ts",
-        "tsconfig.base.json"
+        "tsconfig.base.json",
+        "scripts/**"
       ],
       "outputs": [
         ".ci/bootstrap-seed/plain/**"
@@ -2538,7 +2544,8 @@
         "native/**",
         "tests/harness/self-hosting*",
         "vitest.config.ts",
-        "tsconfig.base.json"
+        "tsconfig.base.json",
+        "scripts/**"
       ],
       "outputs": [
         ".ci/bootstrap-seed/san/**"

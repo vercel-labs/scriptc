@@ -13,7 +13,7 @@ const toolchainSource = readFileSync(
   "utf8",
 );
 const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
-  tasks: Record<string, { env?: string[]; inputs?: string[] }>;
+  tasks: Record<string, { env?: string[]; inputs?: string[]; outputs?: string[] }>;
 };
 
 function runLane(args: string[], env: Record<string, string>) {
@@ -92,4 +92,28 @@ test("the toolchain provides the static zlib and zstd the helper links", () => {
   expect(toolchainSource).toContain("sysroot/lib/libzstd.a");
   expect(runnerSource).toContain("LIBRARY_PATH");
   expect(runnerSource).toContain("CPATH");
+});
+
+test("the build and native setups clear their outputs before they run", () => {
+  // A checkout can force-add an ignored output tree; without clearing it first, a build would cache the planted
+  // files alongside what it generated, and a later clean run would restore and execute them.
+  expect(runnerSource).toContain("clearOutputs(");
+  expect(runnerSource).toContain('readdirSync(join(root, "packages")');
+  expect((runnerSource.match(/clearOutputs\(/g) ?? []).length).toBeGreaterThanOrEqual(5);
+  // The declared cache tree cannot carry a planted node_modules beside the build output.
+  expect(turbo.tasks["//#ci:setup:build"]!.outputs).toContain("!packages/*/dist/node_modules/**");
+});
+
+test("the seed and build tasks hash every script", () => {
+  // Imported staging helpers decide executable outputs; the task key names the whole scripts tree rather than a
+  // hand list, so a newly imported helper invalidates the cached build or seed.
+  for (const name of [
+    "//#ci:setup:build",
+    "//#ci:setup:native",
+    "//#ci:setup:native:musl",
+    "//#ci:setup:native:wasi",
+    "//#ci:setup:seed:plain",
+    "//#ci:setup:seed:san",
+  ])
+    expect(turbo.tasks[name]!.inputs, name).toContain("scripts/**");
 });

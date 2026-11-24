@@ -2,27 +2,41 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { seedInputHashes } from "./seed-inputs.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const metadataName = "bootstrap-seed.json";
 
-/** A seed's identity: its instrumentation lane and the directory it was built in, relative to the checkout. The
- * directory is relative rather than absolute so the seed can be restored by another task that puts it in the same
- * place; the FFI manifests and IR inside still name absolute paths, so the two tasks must run at the same path. */
+/** A seed's identity: its instrumentation lane, the directory it was built in relative to the checkout, and the
+ * build and staging scripts whose import graph produced its executable outputs. The directory is relative rather
+ * than absolute so the seed can be restored by another task that puts it in the same place; the FFI manifests and
+ * IR inside still name absolute paths, so the two tasks must run at the same path. */
 function seedMetadata(directory, sanitize) {
   return {
-    schema: 2,
+    schema: 3,
     sanitize,
     directory: relative(root, resolve(directory)).split(sep).join("/"),
+    inputs: seedInputHashes(root),
   };
 }
 
-/** Artifacts are scoped to one instrumentation lane and one relative directory. */
+/** Artifacts are scoped to one instrumentation lane, one relative directory, and the recorded build inputs. */
 export function verifyBootstrapSeed(directory, sanitize) {
   const expected = seedMetadata(directory, sanitize);
   const metadata = JSON.parse(readFileSync(join(directory, metadataName), "utf8"));
-  if (Object.entries(expected).some(([key, value]) => metadata[key] !== value)) {
-    throw new Error("bootstrap seed identity does not match this lane or directory");
+  const recorded = metadata.inputs;
+  const inputsMatch =
+    recorded !== null &&
+    typeof recorded === "object" &&
+    Object.keys(recorded).length === Object.keys(expected.inputs).length &&
+    Object.entries(expected.inputs).every(([path, hash]) => recorded[path] === hash);
+  if (
+    metadata.schema !== expected.schema ||
+    metadata.sanitize !== expected.sanitize ||
+    metadata.directory !== expected.directory ||
+    !inputsMatch
+  ) {
+    throw new Error("bootstrap seed identity does not match this lane, directory, or build inputs");
   }
   for (const path of [
     "distribution/bin/scriptc",

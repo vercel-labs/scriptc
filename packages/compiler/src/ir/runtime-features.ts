@@ -977,6 +977,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",

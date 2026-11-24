@@ -1321,6 +1321,18 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct island newTarget is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_assign_prototype",
   "message": "Replacing compiled class prototype members has no native lowering [SC1090]",
   "code": "SC1090"
@@ -2341,8 +2353,14 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_apply_array_like",
+  "function": "scr_dyn_apply_args_limit",
   "message": "Function.prototype.apply exceeds the native argument limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_args_limit",
+  "message": "Reflect.construct exceeds the native argument limit",
   "code": "SC2020"
  },
  {

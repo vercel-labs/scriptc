@@ -151,6 +151,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "strdec.nextDyn",
   "dyn.construct",
   "dyn.reflectApply",
+  "dyn.reflectConstruct",
   "dyn.reflectGet",
   "dyn.usingMethod",
   "dyn.usingDispose",

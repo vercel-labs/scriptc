@@ -27,6 +27,12 @@ export const stdinSignatures = defineLibFnSignatures({
    * on resume. */
   "stdin.pause": { argTypes: [], result: VOID },
   "stdin.resume": { argTypes: [], result: VOID },
+  /** process.stdin.ref()/unref(): Node's handle refcount. unref() lets the
+   * process exit with a consumer still registered (data keeps arriving
+   * while other work holds the loop); ref() restores the default where a
+   * consumer keeps it alive. Both are statement-position only. */
+  "stdin.ref": { argTypes: [], result: VOID },
+  "stdin.unref": { argTypes: [], result: VOID },
   /** process.stdin.isPaused() — true in paused mode, which a 'readable'
    * listener pins. */
   "stdin.isPaused": { argTypes: [], result: BOOL },

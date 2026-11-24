@@ -21,6 +21,11 @@ import { frameText } from "./frame-positions.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The shell command line reports DEP0190 on a next tick, so the loop runs
+  // even when nothing else in the program is asynchronous (the
+  // fs.existsSyncValue precedent for DEP0187). execFileSync's shell form is
+  // the case that reaches it without other asynchronous work.
+  if (e.fn === "child.shellCommand") host.usesTimers = true;
   if (e.fn === "cp.execFile" || e.fn === "cp.execFileCwd") {
     const callbackArg = e.args[2];
     if (!callbackArg)
@@ -298,6 +303,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
       );
     }
     return { name: "", type: e.type };
+  }
+  if (e.fn === "spawnRes.pid") {
+    // Node's spawnSync-result pid: the child's id, 0 when the spawn
+    // itself failed — a plain number, no union.
+    const recv = host.emitExpr(e.args[0]!);
+    host.declare(`declare double @scr_spawn_res_pid(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call double @scr_spawn_res_pid(ptr ${recv.name})`);
+    return { name: out, type: e.type };
   }
   if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
     // `number | null` / `number | undefined`, constructed type-

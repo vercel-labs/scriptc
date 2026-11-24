@@ -319,6 +319,31 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
     loc,
   });
   switch (member) {
+    case "construct":
+      // The member as a value (`const construct = Reflect.construct`, React's
+      // feature test — where `newTarget` is the third argument's PRESENCE):
+      // the same checked-dynamic construction the direct call lowers to.
+      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals) => {
+        const target = memberLocal(locals, "t.0", "target");
+        const list = memberLocal(locals, "l.0", "list");
+        const newTarget = memberLocal(locals, "n.0", "newTarget");
+        return [
+          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
+          { kind: "varDecl", localId: "l.0", init: actualArgument(args, 1, loc), loc },
+          { kind: "varDecl", localId: "n.0", init: actualArgument(args, 2, loc), loc },
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "dyn.reflectConstruct",
+              args: [target, list, newTarget, arityAtLeast(args, 3, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
+      });
     case "isExtensible":
       // The handle-aware query: the target arrives untyped, so it may be a
       // native handle whose integrity the handle property table tracks (a
@@ -729,111 +754,6 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
             ],
             SET_PROTOTYPE_REJECTIONS,
           ),
-        ];
-      });
-    case "construct":
-      // Reflect.construct(target, argsList): Node builds the list from any
-      // object and constructs the target through its [[Construct]]. The
-      // compiled construction entry takes an Array, and the three-argument
-      // form's new.target is not modeled, so those two shapes throw a named
-      // fence instead of constructing wrongly.
-      return reflectMemberFunction(lowerer, member, DYN, 2, loc, (args, locals): IrStmt[] => {
-        const target = memberLocal(locals, "t.0", "target");
-        const list = memberLocal(locals, "l.0", "list");
-        const packed = memberLocal(locals, "a.0", "arguments");
-        const throwError = (message: IrExpr): IrStmt => ({
-          kind: "exprStmt",
-          expr: {
-            kind: "libCall",
-            fn: "error.nodeThrow",
-            args: [{ kind: "numLit", value: 1, type: F64, loc }, str("", loc), message],
-            type: VOID,
-            loc,
-          },
-          loc,
-        });
-        return [
-          { kind: "varDecl", localId: "t.0", init: actualArgument(args, 0, loc), loc },
-          { kind: "varDecl", localId: "l.0", init: actualArgument(args, 1, loc), loc },
-          {
-            kind: "if",
-            cond: arityAtLeast(args, 3, loc),
-            then: [
-              {
-                kind: "runtimeFence",
-                code: "SC1090",
-                message: "Reflect.construct with an explicit newTarget [SC1090]",
-                loc,
-              },
-            ],
-            else_: null,
-            loc,
-          },
-          {
-            kind: "if",
-            cond: {
-              kind: "unary",
-              op: "!",
-              operand: { kind: "dynTest", test: "array", value: list, type: BOOL, loc },
-              type: BOOL,
-              loc,
-            },
-            then: [
-              {
-                kind: "if",
-                cond: {
-                  kind: "unary",
-                  op: "!",
-                  operand: isObjectTarget(list, loc),
-                  type: BOOL,
-                  loc,
-                },
-                then: [throwError(str("CreateListFromArrayLike called on non-object", loc))],
-                else_: [
-                  {
-                    kind: "runtimeFence",
-                    code: "SC1090",
-                    message:
-                      "Reflect.construct with an argument list that is not an Array [SC1090]",
-                    loc,
-                  },
-                ],
-                loc,
-              },
-            ],
-            else_: null,
-            loc,
-          },
-          // The accepted list may be a native array capsule (a typed
-          // `number[]`) or an island array, not the checked-dynamic ARR
-          // layout the construction entry reads. Packing its elements into
-          // a genuine dyn array gives the constructor thunks the argument
-          // storage they expect; every value the array test accepts is one
-          // the pack reads (arrays and typed-array capsules pack, island
-          // arrays through their own iter_pack).
-          {
-            kind: "varDecl",
-            localId: "a.0",
-            init: {
-              kind: "libCall",
-              fn: "dyn.iterPack",
-              args: [list, str("", loc)],
-              type: DYN,
-              loc,
-            },
-            loc,
-          },
-          {
-            kind: "return",
-            value: {
-              kind: "libCall",
-              fn: "dyn.construct",
-              args: [target, packed, str("Reflect.construct", loc)],
-              type: DYN,
-              loc,
-            },
-            loc,
-          },
         ];
       });
     case "getPrototypeOf":

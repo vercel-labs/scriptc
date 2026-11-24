@@ -20,5 +20,12 @@ export const processNeverThrow: readonly IrLibFn[] = [
   // lookup and a retain, with no allocation, coercion or program code. The
   // cursor methods use it to reach the same object process.stdio answers.
   "process.stdioOf",
+  // process.stdin.ref()/unref(): plain thread-local flag writes that keep
+  // the loop's stdin keep-alive in step with Node's handle refcount. No
+  // allocation, coercion or program code runs.
+  "stdin.ref",
+  "stdin.unref",
+  // The retained frozen config object (built once in scr_process_config);
+  // a plain read that cannot raise.
   "process.configValue",
 ];

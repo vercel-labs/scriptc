@@ -7,7 +7,7 @@ scriptc coverage tests/coverage-fixtures/island-copies/main.ts
   npm package compilation:
     copy-kit  static
 
-  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+  Node islands   (would-be, report-only: the build is unchanged; a build needs the libnode pack for its target; --node-islands=auto)
     marked  copy-kit@1.0.0 (marked by scriptc.packages)
     hint: scriptc coverage --explain-island=<package> lists every reason
 

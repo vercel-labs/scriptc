@@ -10,6 +10,7 @@
  * of a dynamic value, which is emitted as an already fulfilled promise. */
 import { DYN, type IrExpr, type IrFunction, type IrLibFn } from "../../ir/ir.js";
 import { everyStmt, transformStmtList } from "../../ir/traverse.js";
+import type { FunctionCensus } from "./function-census.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** The library calls that take the operand of a dynamic `await` or
@@ -36,7 +37,11 @@ function resolvesDynamicValue(e: IrExpr): boolean {
 /** Routes the operands through `nodeIsland.adoptThenable` and a fulfilled
  * promise of a dynamic value through `nodeIsland.promiseResolve`, over the
  * final functions. Programs without islands are left as they are. */
-export function adoptIslandThenables(lowerer: Lowerer, functions: IrFunction[]): void {
+export function adoptIslandThenables(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (!lowerer.usesNodeIsland) return;
   // The fulfilled promises first: a function that has one gets a rewritten
   // body (the typed rewrite never changes a node in place), every other
@@ -68,14 +73,23 @@ export function adoptIslandThenables(lowerer: Lowerer, functions: IrFunction[]):
   }
   // A node the IR shares at several places is wrapped once.
   const calls = new Set<IrExpr & { kind: "libCall" }>();
-  const visitor = {
-    expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall" && DYN_AWAIT_OPERANDS.has(e.fn)) calls.add(e);
-      return true;
-    },
-    stmt: (): boolean => true,
-  };
-  for (const fn of functions) for (const s of fn.body) everyStmt(s, visitor);
+  for (const fn of functions) {
+    let wrapped = false;
+    const visitor = {
+      expr: (e: IrExpr): boolean => {
+        if (e.kind === "libCall" && DYN_AWAIT_OPERANDS.has(e.fn)) {
+          calls.add(e);
+          wrapped = true;
+        }
+        return true;
+      },
+      stmt: (): boolean => true,
+    };
+    for (const s of fn.body) everyStmt(s, visitor);
+    // The wrap below changes a call's arguments inside a statement list
+    // that stays the same array.
+    if (wrapped) census.forget(fn);
+  }
   for (const call of calls) {
     const operand = call.args[0]!;
     call.args[0] = {

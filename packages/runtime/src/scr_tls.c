@@ -976,7 +976,7 @@ static int scr_tls_hex_value(char c) {
 static void scr_tls_spki_extra_load(void) {
   if (scr_tls_spki_extra_loaded) return;
   scr_tls_spki_extra_loaded = true;
-  const char *env = getenv("SCRIPTC_TLS_BLOCKED_SPKI");
+  const char *env = scr_getenv("SCRIPTC_TLS_BLOCKED_SPKI");
   while (env != NULL && *env != '\0' && scr_tls_spki_extra_n < SCR_TLS_SPKI_EXTRA_MAX) {
     const char *comma = strchr(env, ',');
     size_t len = comma != NULL ? (size_t)(comma - env) : strlen(env);

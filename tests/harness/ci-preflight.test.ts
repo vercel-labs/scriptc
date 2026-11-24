@@ -29,6 +29,7 @@ function ancestors(name: string, seen = new Set<string>()): Set<string> {
 const ungated = [
   "validation_scope",
   "lanes",
+  "queue_plan",
   "code_quality",
   "test",
   "shape_overlay_native",
@@ -76,7 +77,7 @@ test("pnpm preflight runs the code_quality job's checks", () => {
 test("the coverage report runs once per run, its corpus sweep across the plain shards", () => {
   const job = jobs.coverage!;
   expect(job.if).toBe(
-    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}",
+    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}",
   );
   expect(needsOf("coverage")).toEqual(
     expect.arrayContaining(["validation_scope", "lanes", "code_quality"]),

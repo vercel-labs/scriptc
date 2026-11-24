@@ -1961,18 +1961,25 @@ static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
    * the DataCloneError out of its microtask instead, an uncaught exception
    * that ends the process (Node 24.22.1 and later). */
   ScrDyn *second = value;
-  if (t->clone2) {
+  /* A canceled second branch needs no copy: the first branch reads the
+   * chunk itself, as it does without cloneForBranch2. */
+  if (t->clone2 && !t->canceled2) {
     second = scr_structured_clone(value, NULL);
     if (second == NULL) {
       ScrCaught *caught = scr_exc_take();
       ScrDyn *error = caught != NULL ? scr_caught_to_dyn(caught) : NULL;
       scr_caught_release(caught);
       if (error != NULL) {
-        ws_rcontroller_error(t->branch1->controller, error);
-        if (scr_exc_pending()) scr_exc_clear();
+        if (!t->canceled1) {
+          ws_rcontroller_error(t->branch1->controller, error);
+          if (scr_exc_pending()) scr_exc_clear();
+        }
         ws_rcontroller_error(t->branch2->controller, error);
         if (scr_exc_pending()) scr_exc_clear();
         scr_promise_release(ws_readable_cancel(t->reader->stream, error));
+        /* Both branches are done here: a branch that asked to cancel
+         * before this chunk settles now instead of staying pending. */
+        ws_deferred_resolve_undefined(&t->cancel_promise);
         scr_dyn_release(error);
       }
       if (scr_exc_pending()) scr_exc_clear();

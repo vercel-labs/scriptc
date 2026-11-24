@@ -38,6 +38,8 @@ test(
       "second err DataCloneError",
       "canceled true",
       'cloned false {"n":1}',
+      "cancel-left err DataCloneError resolved",
+      "cancel-right true function",
     ]);
   },
 );

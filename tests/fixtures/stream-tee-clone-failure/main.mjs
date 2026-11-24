@@ -40,3 +40,49 @@ const [left, right] = ReadableStreamTee(good, true);
 const producer = (await left.getReader().read()).value;
 const copy = (await right.getReader().read()).value;
 console.log("cloned", producer === copy, JSON.stringify(copy));
+
+// A branch canceled before the failing chunk: the clone failure errors the
+// other branch and the canceled branch's cancellation promise settles
+// instead of staying pending.
+{
+  const source = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ fn: () => 1 });
+    },
+    cancel() {},
+  });
+  const [left, right] = ReadableStreamTee(source, true);
+  const cancellation = left.getReader().cancel("stop");
+  let settled = "pending";
+  cancellation.then(() => {
+    settled = "resolved";
+  }, () => {
+    settled = "rejected";
+  });
+  const other = await right.getReader().read().then(
+    () => "value",
+    (error) => `err ${error.name}`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  console.log("cancel-left", other, settled);
+}
+
+// A canceled second branch needs no copy: the first branch reads the
+// producer's own chunk.
+{
+  const chunk = { fn: () => 1 };
+  const source = new ReadableStream({
+    start(controller) {
+      controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  const [left, right] = ReadableStreamTee(source, true);
+  void right.getReader().cancel("stop");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const first = await left.getReader().read().then(
+    ({ value }) => value,
+    (error) => `err ${error.name}`,
+  );
+  console.log("cancel-right", first === chunk, typeof first.fn);
+}

@@ -155,6 +155,8 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.reqComplete": "scr_http2_req_complete",
     "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
+    "http2.statusMessageUnsupported": "scr_http2_status_message_unsupported",
+    "http2.statusMessageRead": "scr_http2_status_message_read",
     "http2.streamSentHeaders": "scr_http2_stream_sent_headers",
     "http2.streamSentInfoHeaders": "scr_http2_stream_sent_info_headers",
     "http2.streamSentTrailers": "scr_http2_stream_sent_trailers",
@@ -338,7 +340,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             : type.params[0]!.kind === "string"
               ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-      params = ["ptr", "ptr", "ptr"];
+      params = ["ptr", "ptr"];
       break;
     case "http2.sessionOnPing":
       runtime = "scr_http2_session_on_ping";
@@ -348,7 +350,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
           : type.params[0]!.kind === "dyn"
             ? "scr_net_data_thunk_dyn"
             : "scr_net_data_thunk_bytes";
-      params = ["ptr", "ptr", "ptr"];
+      params = ["ptr", "ptr"];
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";

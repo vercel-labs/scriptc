@@ -3889,13 +3889,22 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
-  if ((name === "getProtocol" || name === "getCipher") && args.length === 0) {
+  if (
+    (name === "getProtocol" || name === "getCipher" || name === "getTLSTicket") &&
+    args.length === 0
+  ) {
     // TLSSocket.getProtocol(): "TLSv1.2"/"TLSv1.3" or null;
-    // getCipher(): { name, standardName, version }.
+    // getCipher(): { name, standardName, version }; getTLSTicket(): the
+    // received session ticket as a Buffer, or undefined.
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     const value: IrExpr = {
       kind: "libCall",
-      fn: name === "getProtocol" ? "tls.sockGetProtocol" : "tls.sockGetCipher",
+      fn:
+        name === "getProtocol"
+          ? "tls.sockGetProtocol"
+          : name === "getCipher"
+            ? "tls.sockGetCipher"
+            : "tls.sockGetTlsTicket",
       args: [receiver],
       type: DYN,
       loc,

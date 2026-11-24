@@ -9444,6 +9444,8 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
   if (hint == -2 || !c->ended || conn->len != 0 || scr_http_client_has_header_value(c, "connection", "close"))
     return false;
   if (c->agent_ent == NULL) return false;
+  /* a socket whose peer already closed is not kept for the next request */
+  if (scr_net_sock_peer_closed(conn->sock)) return false;
   ScrStr *name = scr_str_retain(c->agent_ent->name);
   if ((double)scr_http_agent_free_count(ag, name) >= ag->max_free) {
     scr_str_release(name);
@@ -9559,6 +9561,16 @@ static void scr_http_agent_pump_pass(struct ScrHttpAgent *ag, const ScrStr *name
       ScrHttpAgentFree *f = e->client->proxied
                                 ? NULL
                                 : scr_http_agent_free_take(ag, name, e->client->pool_key);
+      if (f != NULL && scr_net_sock_peer_closed(f->sock)) {
+        /* the peer closed while the socket sat in the free list (its own
+         * I/O may not have run yet): the queued request must dial fresh */
+        scr_str_release(f->name);
+        scr_str_release(f->pool_key);
+        scr_net_sock_destroy(f->sock);
+        scr_net_sock_release(f->sock);
+        free(f);
+        f = NULL;
+      }
       if (f != NULL) {
         e->queued = false;
         ag->nqueued--;

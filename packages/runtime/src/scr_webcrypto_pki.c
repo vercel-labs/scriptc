@@ -931,6 +931,58 @@ static ScrPromise *sw_encrypt(const ScrDyn *args) { return sw_oaep(args, false);
 
 static ScrPromise *sw_decrypt(const ScrDyn *args) { return sw_oaep(args, true); }
 
+/* wrapKey and unwrapKey with RSA-OAEP: Node takes the wrapping key's
+ * wrapKey usage and its public half, the unwrapping key's unwrapKey usage
+ * and its private half, and reports an operation's failure (a wrong label,
+ * data longer than the modulus allows) as OperationError. */
+static bool sw_oaep_wrap_usable(const ScrDyn *key, bool decrypt) {
+  const char *method = decrypt ? "unwrapKey" : "wrapKey";
+  SwKey *k = sw_key_of(key);
+  char message[64];
+  if (!k || k->kind != SW_OAEP) {
+    scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+    return false;
+  }
+  if (!(k->usages & (decrypt ? SCR_WC_USAGE_UNWRAP_KEY : SCR_WC_USAGE_WRAP_KEY))) {
+    snprintf(message, sizeof message, "Unable to use this key to %s", method);
+    scr_throw_domex("InvalidAccessError", message);
+    return false;
+  }
+  if (decrypt != scr_pki_key_is_private(k->key)) {
+    snprintf(message, sizeof message, "Unable to use this key to %s", method);
+    scr_throw_domex("InvalidAccessError", message);
+    return false;
+  }
+  return true;
+}
+
+static ScrBytes *sw_oaep_wrap(const ScrDyn *algorithm, const ScrDyn *key, ScrBytes *data,
+                              bool decrypt) {
+  ScrDyn *plain = scr_wc_plain((ScrDyn *)algorithm);
+  ScrBytes *label = NULL;
+  if (!plain) return NULL;
+  if (scr_wc_is_object(plain) &&
+      !scr_wc_dictionary_buffer(plain, "RsaOaepParams", "label", false, &label)) {
+    scr_dyn_release(plain);
+    return NULL;
+  }
+  SwKey *k = sw_key_of(key);
+  if (!k || k->kind != SW_OAEP) {
+    scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+    scr_dyn_release(plain);
+    if (label) scr_bytes_release(label);
+    return NULL;
+  }
+  ScrBytes *view = data;
+  SCR_BYTES_SNAPSHOT(view);
+  ScrBytes *out = scr_pki_rsa_oaep(k->key, k->hash, label, view, decrypt);
+  if (!out)
+    scr_throw_domex("OperationError", "The operation failed for an operation-specific reason");
+  if (label) scr_bytes_release(label);
+  scr_dyn_release(plain);
+  return out;
+}
+
 /* ── ECDH and X25519 deriveBits ───────────────────────────────────────── */
 
 /* The shared secret's size in bits: the field's byte width times eight,
@@ -1291,6 +1343,8 @@ static const ScrWcAsymmetric sw_table = {
     .verify = sw_verify,
     .encrypt = sw_encrypt,
     .decrypt = sw_decrypt,
+    .oaep_wrap_usable = sw_oaep_wrap_usable,
+    .oaep_wrap = sw_oaep_wrap,
     .derive_bits = sw_derive_bits,
     .get_public_key = sw_get_public_key,
     .to_crypto_key = sw_to_crypto_key,

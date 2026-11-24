@@ -1,5 +1,6 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { writeFileSync } from "node:fs";
+import { unshareAcrossFunctions } from "../../ir/unshare.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -6172,6 +6173,10 @@ export class Lowerer {
    * lowered in. A helper used only by other shared helpers takes their
    * location; one with no use takes the entry file's start. */
   private settleSharedHelperLocations(functions: readonly IrFunction[]): void {
+    // A node one function shares with another would carry this rewrite into the
+    // other; give each function its own nodes first, so a record-decoded copy
+    // (whose nodes are already its own) settles the same way.
+    unshareAcrossFunctions(functions);
     const interned = new Set<string>([...this.sharedHelperNames, ...this.classMethodValueHelpers]);
     for (const table of [
       this.equalityHelpers,
@@ -6193,7 +6198,12 @@ export class Lowerer {
       this.coercions.widthNarrows,
     ])
       for (const name of table.values()) interned.add(name);
-    for (const fn of [...this.liftedFns, ...this.implicitFns])
+    // A unit's own function can be a shared helper too: a class method value
+    // is interned by name and held in loweredUnits, and a record-decoded copy
+    // is a different object from the one shareHelper saw. Add the objects the
+    // caller keeps, not only the lifted ones, so the location rewrite lands on
+    // the functions this build emits.
+    for (const fn of [...functions, ...this.liftedFns, ...this.implicitFns])
       if (interned.has(fn.name)) this.sharedHelpers.add(fn);
     if (this.sharedHelpers.size === 0) return;
     const shared = new Map([...this.sharedHelpers].map((fn) => [fn.name, fn]));

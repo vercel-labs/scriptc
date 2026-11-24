@@ -4233,7 +4233,7 @@ bool scr_test_ctx_passed(ScrTestCtx *t) { return t->passed; }
 /* t.workerId: Number(process.env.NODE_TEST_WORKER_ID) || undefined, with 0
  * standing for undefined. */
 double scr_test_worker_id(void) {
-  const char *env = getenv("NODE_TEST_WORKER_ID");
+  const char *env = scr_getenv("NODE_TEST_WORKER_ID");
   if (!env) return 0;
   ScrStr *s = scr_str_new(env, strlen(env));
   double n = scr_string_to_number(s);

@@ -658,9 +658,9 @@ ScrStr *scr_navigator_language(void) {
   if (!scr_navigator_lang) {
     /* ICU reads LC_ALL, then LC_MESSAGES, then LANG; a variable that is
      * set, even to the empty string, decides. */
-    const char *id = getenv("LC_ALL");
-    if (!id) id = getenv("LC_MESSAGES");
-    if (!id) id = getenv("LANG");
+    const char *id = scr_getenv("LC_ALL");
+    if (!id) id = scr_getenv("LC_MESSAGES");
+    if (!id) id = scr_getenv("LANG");
     ScrStr *tag = scr_navigator_tag(id);
     if (!tag) {
       scr_navigator_refuse("navigator.language for this locale");

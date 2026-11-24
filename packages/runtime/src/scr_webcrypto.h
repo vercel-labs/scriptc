@@ -66,6 +66,18 @@ typedef struct {
   ScrPromise *(*generate_key)(const ScrDyn *args);
   ScrPromise *(*import_key)(const ScrDyn *args);
   ScrPromise *(*export_key)(const ScrDyn *args);
+  /* The synchronous halves wrapKey and unwrapKey use: exportKey(format, key)
+   * and importKey(format, keyData, algorithm, extractable, keyUsages), both
+   * +1 or NULL with the DOMException pending. */
+  ScrDyn *(*export_sync)(ScrDyn *format, ScrDyn *key);
+  ScrDyn *(*import_sync)(const ScrDyn *args);
+  /* RSA-OAEP as wrapKey/unwrapKey's algorithm: the wrapping key must be an
+   * RSA-OAEP key with the wrapKey usage (its public half) or the unwrapKey
+   * usage (its private half), then the exported payload is encrypted or the
+   * wrapped bytes decrypted. usable answers true or false with the
+   * DOMException pending; wrap answers +1 bytes or NULL likewise. */
+  bool (*oaep_wrap_usable)(const ScrDyn *key, bool decrypt);
+  ScrBytes *(*oaep_wrap)(const ScrDyn *algorithm, const ScrDyn *key, ScrBytes *data, bool decrypt);
   ScrPromise *(*sign)(const ScrDyn *args);
   ScrPromise *(*verify)(const ScrDyn *args);
   ScrPromise *(*encrypt)(const ScrDyn *args);

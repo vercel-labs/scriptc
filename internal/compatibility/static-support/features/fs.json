@@ -880,6 +880,8 @@
             "fs.Utf8Stream",
             "utf8Stream.write",
             "utf8Stream.end",
+            "utf8Stream.destroy",
+            "utf8Stream.flush",
             "utf8Stream.flushSync"
         ],
         "status": "supported",
@@ -900,7 +902,9 @@
             "'close'",
             "'finish'",
             "'ready'",
-            "'write'"
+            "'write'",
+            "'drain'",
+            "'drop'"
         ],
         "status": "supported",
         "evidence": [

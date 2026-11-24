@@ -54959,8 +54959,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.destroy",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55008,8 +55011,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.utf8Stream.flush",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55449,8 +55455,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'drain'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -55472,8 +55481,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "supported",
+        "evidence": "compiler-feature:fs.'drop'",
+        "tests": [
+          "tests/corpus/fs-utf8-stream.cjs"
+        ]
       },
       "anchorSource": "exact"
     },

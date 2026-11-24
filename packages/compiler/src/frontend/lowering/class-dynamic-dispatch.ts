@@ -1353,7 +1353,11 @@ export function classForInHasKey(
  * normalization of the resulting capsule falls through. Only JavaScript
  * class hierarchies, whose instances live in untyped code, take the exact
  * box. */
-export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction[]): void {
+export function boxClassInstancesExactly(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const normalize = lowerer.liftedFnNamed("%dyn.class.normalize");
   if (!normalize) return;
   // Static class → its constructible descendants in normalization order.
@@ -1439,6 +1443,8 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
   };
   for (const fn of [...functions]) {
     if (fn === normalize || fn.name.startsWith("%dyn.class.boxExact:")) continue;
+    // The rewrite only replaces `dynFrom` expressions.
+    if (!census.hasExpr(fn, "dynFrom")) continue;
     rewrite(fn);
   }
 }

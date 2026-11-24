@@ -2591,6 +2591,35 @@ static ScrBytes *scr_wc_wrap_payload(const char *format, const ScrCryptoKey *key
   return out;
 }
 
+/* The bytes wrapKey encrypts for an asymmetric CryptoKey: the exported key
+ * in its format, or a JWK's JSON text padded with spaces to a multiple of 8
+ * for AES-KW (Node pads the string before UTF-8 encoding). */
+static ScrBytes *scr_wc_wrap_asymmetric(ScrDyn *format_value, ScrDyn *key_value, const char *format,
+                                        bool kw) {
+  ScrDyn *exported = scr_wc_asymmetric->export_sync(format_value, key_value);
+  if (!exported) return NULL;
+  ScrBytes *payload = NULL;
+  if (strcmp(format, "jwk") == 0) {
+    ScrDyn *text = scr_json_stringify_value(exported, scr_dyn_undefined(), scr_dyn_undefined());
+    if (!text || text->kind != SCR_DYN_STR) {
+      if (text) scr_dyn_release(text);
+      if (scr_exc_pending()) scr_caught_release(scr_exc_take());
+      scr_throw_domex("OperationError", "Failed to export key");
+    } else {
+      size_t len = text->v.str->len;
+      size_t padded = kw && len % 8 != 0 ? len + 8 - len % 8 : len;
+      payload = scr_bytes_new(SCR_BYTES_U8, (double)padded);
+      if (len) memcpy(payload->data, text->v.str->data, len);
+      if (padded > len) memset(payload->data + len, ' ', padded - len);
+      scr_dyn_release(text);
+    }
+  } else {
+    payload = scr_bytes_buffer_source(exported);
+  }
+  scr_dyn_release(exported);
+  return payload;
+}
+
 /* wrapKey(format, key, wrappingKey, wrapAlgorithm). */
 ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
   static const char prefix[] = "Failed to execute 'wrapKey' on 'SubtleCrypto'";
@@ -2625,12 +2654,18 @@ ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
     scr_throw_domex("InvalidAccessError", "Unable to use this key to wrapKey");
     goto done;
   }
-  if (!key) {
+  bool kw = strcmp(name, "AES-KW") == 0;
+  if (key) {
+    if (!scr_wc_exportable(format, key)) goto done;
+    payload = scr_wc_wrap_payload(format, key, kw);
+  } else if (scr_wc_asymmetric && scr_wc_asymmetric->export_sync) {
+    /* An asymmetric CryptoKey: wrap its exported encoding, as Node does. */
+    payload = scr_wc_wrap_asymmetric(a.v[0], a.v[1], format, kw);
+    if (!payload) goto done;
+  } else {
     scr_wc_unsupported("wrapKey", "an ECDSA, Ed25519 or RSA key");
     goto done;
   }
-  if (!scr_wc_exportable(format, key)) goto done;
-  payload = scr_wc_wrap_payload(format, key, strcmp(name, "AES-KW") == 0);
   result = scr_wc_run_cipher(aes, name, false, wrapping, &params, payload);
 done:
   if (payload) scr_bytes_release(payload);
@@ -2654,6 +2689,40 @@ static bool scr_wc_parse_wrapped_jwk(ScrBytes *bytes, ScrWcJwk *jwk) {
     scr_throw_domex("DataError", "Invalid wrapped JWK key");
   }
   return ok;
+}
+
+/* The import unwrapKey hands an asymmetric algorithm after the cipher:
+ * [format, keyData, algorithm, extractable, keyUsages] over the decrypted
+ * bytes (or the parsed JWK), settled on a later loop turn like Node's job. */
+static ScrPromise *scr_wc_unwrap_asymmetric(const char *format, ScrBytes *bytes, ScrDyn *algorithm,
+                                            bool extractable, ScrDyn *usages) {
+  ScrDyn *forward = scr_dyn_new_arr();
+  scr_dyn_arr_push(forward, scr_wc_cstr(format));
+  if (strcmp(format, "jwk") == 0) {
+    ScrStr *text = scr_text_decode_options(bytes, true, false);
+    ScrDyn *parsed = text ? scr_json_parse(text) : NULL;
+    if (text) scr_str_release(text);
+    if (!parsed || !scr_wc_is_object(parsed) || scr_dyn_obj_get(parsed, "kty", 3) == NULL) {
+      if (parsed) scr_dyn_release(parsed);
+      scr_dyn_release(forward);
+      if (scr_exc_pending()) scr_caught_release(scr_exc_take());
+      scr_throw_domex("DataError", "Invalid wrapped JWK key");
+      return scr_wc_rejected();
+    }
+    scr_dyn_arr_push(forward, parsed);
+  } else {
+    size_t len = (size_t)scr_bytes_byte_len(bytes);
+    ScrBytes *copy = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(copy->data, bytes->data, len);
+    scr_dyn_arr_push(forward, scr_array_buffer_from_bytes(copy));
+    scr_bytes_release(copy);
+  }
+  scr_dyn_arr_push(forward, scr_dyn_retain(algorithm));
+  scr_dyn_arr_push(forward, scr_dyn_new_bool(extractable));
+  scr_dyn_arr_push(forward, scr_dyn_retain(usages));
+  ScrDyn *key = scr_wc_asymmetric->import_sync(forward);
+  scr_dyn_release(forward);
+  return key ? scr_wc_deferred(key) : scr_wc_deferred_rejection();
 }
 
 /* unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm,
@@ -2696,14 +2765,23 @@ ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
     scr_throw_domex("InvalidAccessError", "Unable to use this key to unwrapKey");
     goto done;
   }
-  if (scr_wc_is_asymmetric_algorithm(imported.name)) {
-    scr_wc_unsupported_algorithm("unwrapKey", imported.name);
-    goto done;
-  }
   if (!scr_wc_max_length(wrapped, "data")) goto done;
   ScrBytes *bytes = scr_wc_cipher_bytes(aes, name, true, unwrapping, &params, wrapped);
   if (!bytes) {
     result = scr_wc_deferred_rejection();
+    goto done;
+  }
+  /* An asymmetric algorithm imports the decrypted encoding with the same
+   * rules subtle.importKey applies. */
+  if (scr_wc_is_asymmetric_algorithm(imported.name)) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->import_sync) {
+      scr_bytes_release(bytes);
+      scr_wc_unsupported_algorithm("unwrapKey", imported.name);
+      result = scr_wc_rejected();
+      goto done;
+    }
+    result = scr_wc_unwrap_asymmetric(format, bytes, v[4], extractable, v[6]);
+    scr_bytes_release(bytes);
     goto done;
   }
   ScrWcJwk jwk;

@@ -58,6 +58,15 @@ const facts = {
   files: [],
 };
 
+test("a body with no virtual call is left in place, not copied", () => {
+  const statement = nested(read(FIXED));
+  const body = [statement];
+  const functions = [fn("main", body)];
+  devirtualizeVirtualCalls(lowerer, functions, facts);
+  expect(functions[0]!.body).toBe(body);
+  expect(functions[0]!.body[0]).toBe(statement);
+});
+
 test("the pass says whether a body it leaves holds a variadic function", () => {
   const typed = [fn("main", [nested(read(FIXED))]), fn("rest", [nested(read(TYPED_REST))])];
   expect(devirtualizeVirtualCalls(lowerer, typed, facts)).toEqual({ variadicFunctions: false });

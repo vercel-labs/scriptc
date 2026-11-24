@@ -51,6 +51,12 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       return finishRuntimeCall(host, e, "scr_test_accessor_descriptor", a);
     case "test.accessorRequire":
       return finishRuntimeCall(host, e, "scr_test_accessor_require", a);
+    case "test.assertRegister":
+      return finishRuntimeCall(host, e, "scr_test_assert_register", a);
+    case "test.ctxCustomAssert":
+      return finishRuntimeCall(host, e, "scr_test_ctx_custom_assert", a);
+    case "test.ctxTags":
+      return finishRuntimeCall(host, e, "scr_test_ctx_tags", a);
     case "test.ctxName":
       return finishRuntimeCall(host, e, "scr_test_ctx_name", a);
     case "test.ctxFullName":
@@ -79,6 +85,8 @@ export function emitTestLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVal
       host.emitPendingCheck(out);
       return out;
     }
+    case "test.ctxAssertTouch":
+      return finishRuntimeCall(host, e, "scr_test_ctx_assert_touch", a);
     case "test.ctxCount":
       return finishRuntimeCall(host, e, "scr_test_ctx_count", a);
     case "test.mockTimes":

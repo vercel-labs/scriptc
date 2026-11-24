@@ -21,6 +21,7 @@ import { hostGlobalValue } from "../host-global-values.js";
 import { fenceConsoleMemberValue } from "../coercions/console-records.js";
 import { globalFunctionValue } from "../global-function-values.js";
 import {
+  arrayClassDeclaresMember,
   arrayClassMemberOwner,
   arrayClassReceiver,
   lowerArrayClassConstructorRead,
@@ -130,6 +131,8 @@ import {
   cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   cjsModuleLacksExport,
+  cjsWholeExportValueOf,
+  hasWholeExportValue,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
@@ -151,6 +154,7 @@ import {
 } from "../lower-exprs.js";
 import {
   cjsInFileExportGlobalOf,
+  cjsPartialExportRead,
   isCjsExportsIdentifier,
   lowerCjsExportsObjectValue,
 } from "../cjs-exports-object.js";
@@ -231,6 +235,7 @@ import {
   ambientUndefVarRootOf,
   cjsNamespaceImportDep,
   contextualUndefReadType,
+  cjsNamespaceMemberSnapshotOf,
   fenceEarlyNsMemberRef,
   nodeUndefinedGlobalName,
   nsMemberIdentOf,
@@ -241,7 +246,7 @@ import { fenceExpandoRead } from "../lower-expando.js";
 import { lowerProtocolPropertyRead } from "../class-protocol-dispatch.js";
 import { lowerReadlineProperty } from "../builtins/readline.js";
 import { lowerAsyncLocalStorageProperty } from "../builtins/async-context.js";
-import { lowerEventStaticProperty } from "../builtins/numbers.js";
+import { lowerDOMExceptionStaticProperty, lowerEventStaticProperty } from "../builtins/numbers.js";
 import { lowerStreamProperty, lowerStreamStateProperty, streamSidesOf } from "../lower-stream.js";
 import { lowerValueStreamProperty } from "../builtins/hash-stream.js";
 import { lowerEventObjectProperty } from "../lower-event-target.js";
@@ -303,6 +308,25 @@ import { lowerModuleNamespaceMember } from "../module-namespace-elements.js";
 /** True when a property access names an ABSTRACT property declaration
  * (`abstract p: number` — a PropertyDeclaration, not an accessor).
  * These uses need concrete property dispatch because the base has no slot. */
+/** `ns.default` through a namespace import of a CommonJS module: Node's
+ * namespace answers module.exports as the first import saw it, the value a
+ * default import of the same module binds. Null for a static export table
+ * (its exports object has no represented value) and for any other read. */
+function cjsNamespaceDefaultValueOf(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken !== undefined || !ts.isIdentifier(access.name)) return null;
+  if (access.name.text !== "default") return null;
+  const dep = cjsNamespaceImportDep(lowerer, access.expression);
+  if (dep === null) return null;
+  const loc = locOf(access);
+  const snapshot = lowerer.cjsRuntimeExportSnapshotOf(dep);
+  if (snapshot !== null) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+  if (!hasWholeExportValue(lowerer, dep)) return null;
+  return wholeExportValue(lowerer, dep, access, 0);
+}
+
 export function abstractPropertyDeclOf(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -379,6 +403,21 @@ function isCompileCacheDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpr
           return node.name.text === "module" || node.name.text === "node:module";
       }
       return false;
+    })
+  );
+}
+
+/** A member of an `import.meta` value held in a variable: the metadata object
+ * importMetaValue builds reads through the checked-dynamic tier. */
+function isImportMetaDynProperty(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  if (!["url", "dirname", "filename", "main", "resolve"].includes(expr.name.text)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(expr.name);
+  return (
+    !!symbol &&
+    symbol.declarations.some((declaration) => {
+      if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration))) return false;
+      const parent = declaration.parent;
+      return ts.isInterfaceDeclaration(parent) && parent.name.text === "ImportMeta";
     })
   );
 }
@@ -1275,6 +1314,21 @@ export function lowerPropertyAccessExpr(
       (ts.isIdentifier(expr.name) &&
         lowerer.cjsWholeExportMemberOf(expr.expression, expr.name.text)))
   ) {
+    // A module of a require() cycle whose exports are still being
+    // assigned: the read is the live exports object's member, so a
+    // member not yet assigned reads undefined while the cycle
+    // initializes (and reports Node's warning), exactly as Node's
+    // partial exports answer.
+    if (ts.isIdentifier(expr.name)) {
+      const partialDep = ts.isIdentifier(expr.expression)
+        ? lowerer.cjsModuleBindingDepOf(expr.expression)
+        : lowerer.cjsModuleRefDepOf(expr.expression);
+      const partial =
+        partialDep === null
+          ? null
+          : cjsPartialExportRead(lowerer, partialDep, expr.name.text, expr);
+      if (partial !== null) return partial;
+    }
     // A binding whose dep is a class-expression WHOLE export
     // (`module.exports = class {…}`): the member surface is the
     // CLASS's — `C.name` folds to NamedEvaluation's answer and own
@@ -1346,6 +1400,23 @@ export function lowerPropertyAccessExpr(
       }
     }
   }
+  // `module.exports` READ in a CommonJS file whose whole export is a single
+  // value (`module.exports = function …`): after the assignment the read
+  // answers that value, exactly what `module.exports.default =
+  // module.exports` stores on the function. Reads above the assignment
+  // keep their fences (Node still has the original exports object there).
+  if (
+    !expr.questionDotToken &&
+    isModuleExportsAccess(expr) &&
+    isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)
+  ) {
+    const sf = ts.getSourceFileOfNode(expr);
+    const whole = cjsWholeExportValueOf(sf);
+    if (whole !== null && ts.tokenStartOfNode(expr) > whole.assign.end) {
+      const value = wholeExportValue(lowerer, sf, expr);
+      if (value !== null) return value;
+    }
+  }
   // Replacing `module.exports` leaves `exports` on its original object.
   // Check before export-global lookup: the checker may give this read the
   // replacement's member symbol, despite the objects being different.
@@ -1374,10 +1445,17 @@ export function lowerPropertyAccessExpr(
   // identifier reference (globals, function values, classes), guarded
   // by the namespace source-order fences (lower-namespaces.ts).
   if (!expr.questionDotToken) {
+    const cjsDefault = cjsNamespaceDefaultValueOf(lowerer, expr);
+    if (cjsDefault) return cjsDefault;
     const nsMember = nsMemberIdentOf(lowerer, expr);
     if (nsMember) {
       const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
       if (memberSym) fenceEarlyNsMemberRef(lowerer, expr, memberSym);
+      // A member the module's functions reassign: Node's namespace kept the
+      // value the module finished evaluating with (lower-modules.ts,
+      // registerCjsNamespaceSnapshotGlobals).
+      const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, expr);
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
       return lowerExpr(lowerer, nsMember);
     }
     // The same read through a receiver that evaluates
@@ -1492,6 +1570,7 @@ export function lowerPropertyAccessExpr(
     lowerer.lowerErrorCodeProperty(expr) ??
     lowerer.lowerNumberStaticProperty(expr) ??
     lowerEventStaticProperty(lowerer, expr) ??
+    lowerDOMExceptionStaticProperty(lowerer, expr) ??
     lowerer.lowerMathProperty(expr) ??
     lowerer.lowerIntrinsicProperty(expr) ??
     // The _readableState/_writableState scalar READS (the suite's
@@ -2009,6 +2088,7 @@ export function lowerPropertyAccessExpr(
     isParseArgsDynProperty(lowerer, expr) ||
     isStatFsDynProperty(lowerer, expr) ||
     isCompileCacheDynProperty(lowerer, expr) ||
+    isImportMetaDynProperty(lowerer, expr) ||
     segmentDataProperty ||
     osConstants ||
     moduleConstants ||
@@ -2524,6 +2604,33 @@ export function lowerPropertyAccessExpr(
       },
       expr,
     );
+  }
+  // An untyped receiver that lowered to a native array can be an instance
+  // of a class declared `extends Array` over its elements: a member that
+  // class declares is read on the array as a dynamic value, where the
+  // dispatch tests the array's class.
+  {
+    const present =
+      recvLowered.type.kind === "union"
+        ? lowerer.stripUndefinedArm(recvLowered.type)
+        : recvLowered.type;
+    if (
+      !ts.isPrivateIdentifier(expr.name) &&
+      (lowerer.typeOf(expr.expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 &&
+      present.kind === "array" &&
+      arrayClassDeclaresMember(lowerer, present, expr.name.text) &&
+      lowerer.dynConvertible(recvLowered.type)
+    )
+      return lowerer.maybeNarrow(
+        {
+          kind: "dynKeyGet",
+          value: lowerer.coerceToExpected(recvLowered, DYN),
+          key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        expr,
+      );
   }
   if (!ts.isPrivateIdentifier(expr.name)) {
     const built = packageBuiltWithoutMember(lowerer, expr.expression, expr.name.text, "reading");
@@ -3468,6 +3575,12 @@ export function lowerIntrinsicProperty(
     // {encoding: "utf8"} options argument the checker types them Buffer,
     // which is re-fenced here (the call site already said so).
     const loc = locOf(expr);
+    if (name === "pid") {
+      // Node's result.pid: the child's id, a plain number (0 when the
+      // spawn itself failed) — the declared @types/node member.
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "spawnRes.pid", args: [receiver], type: F64, loc };
+    }
     if (name === "status") {
       // Always the interned `number | null` union; a checker-NARROWED
       // read (`missing.status === null ? ... : ${missing.status}`)
@@ -6147,6 +6260,21 @@ export function fieldTarget(
       fieldType: F64,
     };
   }
+  // `Error.prepareStackTrace`: program state, as in Node — a program may
+  // save it, replace it (typically with `void 0`) and restore it. The
+  // runtime holds the value and its default function, which throws the
+  // named refusal if called (native code has no V8 call-site formatter).
+  if (
+    access.name.text === "prepareStackTrace" &&
+    lowerer.isStdlibGlobal(access.expression, "Error")
+  ) {
+    return {
+      container: "errorPrepareStackTrace",
+      obj: { kind: "numLit", value: 0, type: F64, loc: locOf(access) },
+      field: "prepareStackTrace",
+      fieldType: DYN,
+    };
+  }
   // `this.#x` in a function-local class's prototype method: the field of
   // the brand-checked receiver (checkedPrivateReceiver).
   if (
@@ -6605,6 +6733,9 @@ export function fieldGetExpr(
     return errorPropertyRead(lowerer, target.obj, target.field);
   if (target.container === "errorStackLimit") {
     return { kind: "libCall", fn: "error.stackLimitGet", args: [], type: F64, loc };
+  }
+  if (target.container === "errorPrepareStackTrace") {
+    return { kind: "libCall", fn: "error.prepareStackTraceGet", args: [], type: DYN, loc };
   }
   if (target.container === "errorCause") {
     return { kind: "libCall", fn: "error.cause", args: [target.obj], type: DYN, loc };

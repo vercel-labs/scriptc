@@ -1050,6 +1050,15 @@ static bool ws_rcontroller_can_close_or_enqueue(WsRController *c) {
   return !c->close_requested && c->stream->state == WS_STATE_READABLE;
 }
 
+/* The "already closed" TypeError a controller's close()/enqueue() raises:
+ * a default controller always names itself, while a byte controller names
+ * itself once its close was requested and names the stream once the stream
+ * itself closed or errored (Node's ReadableByteStreamController order). */
+static void ws_rcontroller_closed_error(WsRController *c) {
+  ws_state_error(!c->bytes || c->close_requested ? "Controller is already closed"
+                                                 : "ReadableStream is already closed");
+}
+
 static void ws_rcontroller_pull(WsRController *c);
 
 static bool ws_rcontroller_should_call_pull(WsRController *c) {
@@ -1082,21 +1091,39 @@ static void ws_rcontroller_close(WsRController *c) {
 }
 
 /* ReadableByteStreamControllerClose: a read that already holds bytes answers
- * with them before the stream ends (a partial destination errors the stream
- * instead, since a BYOB read cannot return half an element). */
-static void ws_bytes_close(WsRController *c) {
-  if (!ws_rcontroller_can_close_or_enqueue(c)) return;
+ * with them before the stream ends. A BYOB read cannot return half an element,
+ * so a partially filled destination errors the stream and close() re-throws
+ * that error, as Node's "Partial read" does. Byte queued data defers the close
+ * (closeRequested names the controller afterwards); with the queue empty the
+ * stream closes without that flag, so a later close() names the stream. A read
+ * still waiting for its first byte is answered as an end here; Node leaves it
+ * unsettled forever.
+ *
+ * Only the close() a program calls itself re-throws. The internal closers (a
+ * teed branch's EOF, a source adapter's sink) run inside a reaction, where
+ * Node's throw becomes that reaction's rejection while the stream stays
+ * errored, so `surface = false` leaves the pending read the error and raises
+ * nothing. Answers true when a partially filled BYOB read was errored. */
+static bool ws_bytes_close(WsRController *c, bool surface) {
+  if (!ws_rcontroller_can_close_or_enqueue(c)) return false;
   WsPullInto *d = c->into_head;
   if (d && d->filled) {
     size_t width = scr_bytes_elem_size(d->view->elem);
     if (d->byob && width && d->filled % width) {
-      ScrDyn *error = ws_state_error_value("Insufficient bytes to fill elements in the given buffer");
+      ScrDyn *error = ws_state_error_value("Partial read");
       ws_rcontroller_error(c, error);
+      if (surface && !scr_exc_pending()) scr_dyn_throw(scr_dyn_retain(error));
       scr_dyn_release(error);
-      return;
+      return true;
     }
   }
-  ws_rcontroller_close(c);
+  if (c->queue.length) {
+    c->close_requested = true;
+    return false;
+  }
+  ws_rcontroller_clear_algorithms(c);
+  ws_readable_close(c->stream);
+  return false;
 }
 
 /* readableStreamDefaultControllerEnqueue: false with the exception pending
@@ -1143,13 +1170,32 @@ static ScrDyn *ws_rcontroller_desired_size(WsRController *c) {
   }
 }
 
+/* A pull the source answered while another pull was in flight waits here:
+ * a native source can answer inside the pull (the web adapters deliver a
+ * buffered remainder synchronously), and pulling again in that same stack
+ * would recurse once per queued read. The spec's pull loop spends a promise
+ * settlement between pulls; this does the same. */
+static void ws_pull_again_step(void *ctx, ScrDyn *value) {
+  (void)value;
+  WsRController *c = ctx;
+  ws_rcontroller_call_pull_if_needed(c);
+}
+
 static void ws_pull_fulfilled(void *ctx, ScrDyn *value) {
   (void)value;
   WsRController *c = ctx;
   c->pulling = false;
   if (c->pull_again) {
     c->pull_again = false;
-    ws_rcontroller_call_pull_if_needed(c);
+    if (c->native) {
+      /* A native source answers inside the pull; pulling again in this stack
+       * would recurse once per queued read. */
+      ws_queue_microtask(ws_pull_again_step, ws_rcontroller_retain(c));
+    } else {
+      /* A program's pull algorithm settles through its promise reaction, as
+       * the specification's ordering has it. */
+      ws_rcontroller_call_pull_if_needed(c);
+    }
   }
 }
 
@@ -1468,12 +1514,10 @@ static void ws_bytes_settle(WsRController *c, ScrDyn *error, bool done) {
   }
 }
 
-/* ReadableByteStreamControllerEnqueue: false with the exception pending. */
+/* ReadableByteStreamControllerEnqueue: false with the exception pending. The
+ * chunk's own validation comes first, as in Node, so a closed controller
+ * still names a bad chunk before it names its state. */
 static bool ws_bytes_enqueue(WsRController *c, ScrDyn *chunk) {
-  if (!ws_rcontroller_can_close_or_enqueue(c)) {
-    ws_state_error("Controller is already closed");
-    return false;
-  }
   if (chunk->kind != SCR_DYN_BYTES) {
     scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", chunk);
     return false;
@@ -1484,6 +1528,11 @@ static bool ws_bytes_enqueue(WsRController *c, ScrDyn *chunk) {
   if (!total) {
     scr_bytes_release(source);
     ws_state_error("chunk ArrayBuffer is zero-length or detached");
+    return false;
+  }
+  if (!ws_rcontroller_can_close_or_enqueue(c)) {
+    scr_bytes_release(source);
+    ws_rcontroller_closed_error(c);
     return false;
   }
   /* The controller's copy: a later write through the enqueued view is not
@@ -1545,6 +1594,16 @@ static ScrDyn *ws_bytes_read(WsReader *r) {
     ScrBytes *view = scr_bytes_new(SCR_BYTES_U8, c->auto_allocate);
     if (!view) return NULL;
     ScrPromise *p = scr_promise_new();
+    if (r->stream == NULL) {
+      /* The init hook released the lock while the promise was built. The
+       * auto-allocated destination is no longer handed to a request, so its
+       * reference is released here. */
+      ws_reject(p, ws_reader_releasing_error());
+      ScrPromise *result = scr_promise_retain(p);
+      scr_promise_release(p);
+      scr_bytes_release(view);
+      return ws_promise_box(result);
+    }
     WsPullInto *d = ws_pull_into_new(view, 1, false, p);
     scr_bytes_release(view);
     ws_pull_into_enqueue(c, d);
@@ -1614,6 +1673,13 @@ static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
     return ws_promise_box(rejected);
   }
   ScrPromise *p = scr_promise_new();
+  if (r->stream == NULL) {
+    /* The init hook released the lock while the promise was built. */
+    ws_reject(p, ws_reader_releasing_error());
+    ScrPromise *result = scr_promise_retain(p);
+    scr_promise_release(p);
+    return ws_promise_box(result);
+  }
   /* `min` counts elements of the destination's type (bytes for a DataView),
    * as Node's read does: minimumFill = min * elementSize. */
   size_t min_elements = min > 0 ? (size_t)min : 1;
@@ -1640,6 +1706,13 @@ static ScrDyn *ws_byob_read(WsReader *r, ScrDyn *view_arg, ScrDyn *options) {
 /* readableStreamDefaultReaderRead. */
 static void ws_reader_read_request(WsReader *r, WsReadRequest *q) {
   WsReadable *s = r->stream;
+  if (!s) {
+    /* The PROMISE init hook runs inside the promise a read just built and can
+     * release the reader's lock; the request answers the releasing error
+     * instead of following the cleared stream. */
+    q->ops->error(q, ws_reader_releasing_error());
+    return;
+  }
   s->disturbed = true;
   switch (s->state) {
   case WS_STATE_CLOSED: q->ops->close(q); break;
@@ -1865,9 +1938,11 @@ static void ws_rcontroller_deliver(WsRController *c, ScrDyn *chunk) {
   else ws_rcontroller_enqueue(c, chunk);
 }
 
-static void ws_rcontroller_deliver_end(WsRController *c) {
-  if (c->bytes) ws_bytes_close(c);
-  else ws_rcontroller_close(c);
+/* A teed branch's end: the internal close form (no exception surfaces). */
+static bool ws_rcontroller_deliver_end(WsRController *c) {
+  if (c->bytes) return ws_bytes_close(c, false);
+  ws_rcontroller_close(c);
+  return false;
 }
 
 static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
@@ -1895,9 +1970,15 @@ static void ws_tee_close_tick(void *ctx, ScrDyn *unused) {
   (void)unused;
   WsTee *t = ctx;
   t->reading = false;
-  if (!t->canceled1) ws_rcontroller_deliver_end(t->branch1->controller);
-  if (!t->canceled2) ws_rcontroller_deliver_end(t->branch2->controller);
-  if (!t->canceled1 || !t->canceled2) ws_deferred_resolve_undefined(&t->cancel_promise);
+  /* Node's byte-tee close callback closes the branches in turn; a partial
+   * BYOB read makes the first close throw, which drops the rest of the
+   * callback (the second branch's close and the cancel promise). Mirror
+   * that order without surfacing the throw. */
+  bool stopped = false;
+  if (!t->canceled1) stopped = ws_rcontroller_deliver_end(t->branch1->controller);
+  if (!stopped && !t->canceled2) stopped = ws_rcontroller_deliver_end(t->branch2->controller);
+  if (!stopped && (!t->canceled1 || !t->canceled2))
+    ws_deferred_resolve_undefined(&t->cancel_promise);
 }
 
 static void ws_tee_request_close(WsReadRequest *q) {
@@ -2394,6 +2475,56 @@ ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx)
   o->source = source;
   o->ctx = ctx;
   WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0, false);
+  o->stream = ws_readable_retain(s);
+  ScrDyn *box = ws_stream_box(s);
+  ws_readable_release(s);
+  return box;
+}
+
+/* The over-source with an explicit queuing strategy, validated exactly as
+ * `new ReadableStream(source, strategy)` validates one: the strategy's
+ * highWaterMark and size drive the controller's pulls and desiredSize. NULL
+ * (or undefined) keeps the zero high-water mark the over-source always had;
+ * the error the check raises leaves the context's reference with the
+ * caller. */
+ScrDyn *scr_webstream_readable_over_opts(const ScrWebStreamSource *source, void *ctx,
+                                         ScrDyn *strategy) {
+  ws_install();
+  double high_water_mark = 0;
+  ScrDyn *size = NULL;
+  ScrDyn *value = NULL;
+  if (strategy != NULL && strategy->kind != SCR_DYN_UNDEF && strategy->kind != SCR_DYN_NULL) {
+    if (!ws_validate_object(strategy, "strategy", true)) return NULL;
+    ScrDyn *size_arg = ws_get(strategy, "size");
+    /* NULL: reading the member threw (a getter), and the exception is
+     * pending. */
+    if (!size_arg) return NULL;
+    if (size_arg->kind != SCR_DYN_UNDEF) {
+      if (!ws_validate_function(size_arg, "strategy.size")) {
+        scr_dyn_release(size_arg);
+        return NULL;
+      }
+      size = size_arg; /* +1, moved to the controller below */
+    } else {
+      scr_dyn_release(size_arg);
+    }
+    value = ws_get(strategy, "highWaterMark");
+    if (!value) {
+      if (size) scr_dyn_release(size);
+      return NULL;
+    }
+    if (!ws_extract_high_water_mark(value, 1, &high_water_mark)) {
+      if (size) scr_dyn_release(size);
+      scr_dyn_release(value);
+      return NULL;
+    }
+  }
+  if (value) scr_dyn_release(value);
+  WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
+  o->source = source;
+  o->ctx = ctx;
+  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, high_water_mark, false);
+  if (size) s->controller->size_fn = size;
   o->stream = ws_readable_retain(s);
   ScrDyn *box = ws_stream_box(s);
   ws_readable_release(s);
@@ -5220,21 +5351,21 @@ static ScrDyn *ws_rcontroller_method(void *ptr, ScrDyn *self, const char *method
   size_t len = strlen(method);
   if (ws_name(method, len, "close")) {
     if (!ws_rcontroller_can_close_or_enqueue(c)) {
-      ws_state_error("Controller is already closed");
+      ws_rcontroller_closed_error(c);
       return NULL;
     }
-    if (c->bytes) ws_bytes_close(c);
+    if (c->bytes) ws_bytes_close(c, true);
     else ws_rcontroller_close(c);
     return ws_undef();
   }
   if (ws_name(method, len, "enqueue")) {
-    if (!ws_rcontroller_can_close_or_enqueue(c)) {
-      ws_state_error("Controller is already closed");
-      return NULL;
-    }
     if (c->bytes) {
       if (!ws_bytes_enqueue(c, ws_arg(args, argc, 0))) return NULL;
       return ws_undef();
+    }
+    if (!ws_rcontroller_can_close_or_enqueue(c)) {
+      ws_rcontroller_closed_error(c);
+      return NULL;
     }
     if (!ws_rcontroller_enqueue(c, ws_arg(args, argc, 0))) return NULL;
     return ws_undef();
@@ -6303,7 +6434,7 @@ static void ws_bytes_over_close(void *ctx) {
   WsOver *o = ctx;
   WsRController *c = ws_over_controller(o);
   if (c) {
-    ws_bytes_close(c);
+    ws_bytes_close(c, false); /* a source's EOF inside a reaction */
     ws_pull_fulfilled(c, NULL);
   }
   ws_release(o);

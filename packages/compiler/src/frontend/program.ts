@@ -816,6 +816,12 @@ export interface LoadResult {
      * back to the declaration world (load.projectWorld()), as without it. */
     declWorldFallback?: true;
   };
+  /** With JSX sources: the program the tsc gate reads. It is the original
+   * text, and in a build that compiles packages from their JavaScript it is
+   * the AUTHORED world, where the packages' declarations are visible: the
+   * JSX type surface (`JSX.IntrinsicElements`) exists only in those
+   * declarations, which the lowering world hides. */
+  jsxGateWorld?: () => ts.Program;
   /** How scriptc's type world differs from the project's own tsc setup —
    * used only to label the TypeScript errors those differences cause. */
   typeWorld?: TypeWorldDifferences;
@@ -1355,6 +1361,7 @@ function entryPackageProgramRoots7(
   program: ts.Program,
   entryPath: string,
   packageRoots: PackageRoots | null,
+  jsxOptions: ts.Ts7CompilerOptions,
 ): string[] {
   const belongsToEntry = entryPackageFilePredicate(entryPath);
   const roots = new Set<string>();
@@ -1403,6 +1410,31 @@ function entryPackageProgramRoots7(
     for (const specifier of sf.imports) {
       if (!ts.isStringLiteralLike(specifier)) continue;
       const root = rootOf(sf.fileName, specifier.text, moduleSpecifierKind7(specifier));
+      if (root !== null) roots.add(root);
+    }
+  }
+  // JSX with the automatic runtime imports `react/jsx-runtime` (or the
+  // project's jsxImportSource), an edge the file's own import list does not
+  // name: the rewrite that adds it runs after this discovery. Rooting the
+  // runtime module here is what lets the package compile statically instead
+  // of becoming a Node island.
+  const jsxMode = jsxEmitName(jsxOptions.jsx as string | number | undefined);
+  if (jsxMode !== undefined) {
+    for (const sf of program.getImplementationSourceFiles()) {
+      if (sf.isDeclarationFile || /\.[mc]?ts$/i.test(sf.fileName) || !containsJsx(sf)) continue;
+      const plan = jsxEmitPlan(
+        {
+          jsx: jsxMode,
+          jsxFactory: jsxOptions.jsxFactory as string | undefined,
+          jsxFragmentFactory: jsxOptions.jsxFragmentFactory as string | undefined,
+          jsxImportSource: jsxOptions.jsxImportSource as string | undefined,
+          reactNamespace: jsxOptions.reactNamespace as string | undefined,
+        },
+        jsxPragmas(sf.text),
+      );
+      if (plan.runtime !== "automatic") continue;
+      const spec = `${plan.importSource}/${plan.development ? "jsx-dev-runtime" : "jsx-runtime"}`;
+      const root = rootOf(sf.fileName, spec, "import");
       if (root !== null) roots.add(root);
     }
   }
@@ -1905,7 +1937,7 @@ function loadProgram7(
           ? fallbackModuleRoots7(program, host)
           : nodeTypesSupplementRoots7(program, host)),
         ...declarationTwinRoots7(program),
-        ...entryPackageProgramRoots7(program, entryPath, packageRoots),
+        ...entryPackageProgramRoots7(program, entryPath, packageRoots, options),
         ...createRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
@@ -2272,6 +2304,9 @@ function loadProgram7(
       externalTypeSpecifiersByFile,
       ...(tscWorld === undefined ? {} : { jsxSources: jsx.sources }),
       ...(tscWorld === undefined ? {} : { tscWorld }),
+      ...(tscWorld === undefined || jsx.sources.size === 0
+        ? {}
+        : { jsxGateWorld: () => tscWorld.program }),
       projectWorld: () =>
         (projectWorld ??= withFilesAsWritten(host, overlayOriginals, () =>
           host.createProgram(programRoots, options, false, lineage),
@@ -2663,6 +2698,20 @@ export function loadProgram(
               // Runtime bodies still lower from JavaScript in the original world;
               // inference there must not manufacture errors in valid user code.
               authored().projectWorld(),
+      // A JSX file's types come from the packages' declarations, which the
+      // lowering world hides: the gate reads the authored world's copy of
+      // the file as written.
+      ...(load.jsxGateWorld === undefined
+        ? {}
+        : {
+            jsxGateWorld:
+              npmStaticPackages.length === 0
+                ? load.jsxGateWorld
+                : () => {
+                    const world = authored();
+                    return world.tscWorld?.program ?? world.program;
+                  },
+          }),
       dispose: () => {
         try {
           (authoredLoad as ReturnType<typeof loadProgram7> | null)?.disposeAll();
@@ -5237,7 +5286,7 @@ export function makeCycleAdmission(
     bindingUses.set(sf, uses);
     return uses;
   };
-  // The CommonJS cluster verdict, same keying (cjsCycleRefusal7).
+  // The CommonJS cluster verdict, same keying (cjsCycleAdmission7).
   const cjsVerdict = new Map<ts.SourceFile[], string | null>();
   return (importer: ts.SourceFile, e: CycleEdge): string | null => {
     if (e.stmt === undefined) {
@@ -5246,7 +5295,23 @@ export function makeCycleAdmission(
       if (comp === undefined || comp.length < 2 || !comp.includes(importer)) {
         return "the cycle closes through a require() edge";
       }
-      if (!cjsVerdict.has(comp)) cjsVerdict.set(comp, cjsCycleRefusal7(program, comp, lineOf));
+      // A cluster with an ES module: a require() of the ES module itself is
+      // Node 24's require(esm), and reaching one mid-evaluation throws
+      // ERR_REQUIRE_CYCLE_MODULE at the call (the require site tests the
+      // target's %evaluating flag). Node never evaluates that module to
+      // completion on this path, so nothing observes a partial export
+      // object: admit the cycle.
+      if (comp.some((m) => isNodeEsmFile7(m, program))) {
+        if (isNodeEsmFile7(e.dep, program)) return null;
+        return "the cycle closes through a require() edge: the cluster mixes ES modules and CommonJS";
+      }
+      if (!cjsVerdict.has(comp))
+        cjsVerdict.set(
+          comp,
+          cjsCycleAdmission7(program, comp, lineOf, (m) =>
+            program.analysis.partialCjsCycleMembers.add(m),
+          ),
+        );
       const reason = cjsVerdict.get(comp) ?? null;
       return reason === null ? null : `the cycle closes through a require() edge: ${reason}`;
     }
@@ -5313,12 +5378,21 @@ export function makeCycleAdmission(
  *    outside the cycle, and its own require bindings keep the acyclic
  *    analysis (requireEarlyReference).
  * Other cycles keep the SC1016 fence. */
-function cjsCycleRefusal7(
+function cjsCycleAdmission7(
   program: ts.Program,
   comp: readonly ts.SourceFile[],
   lineOf: (node: ts.Node) => string,
+  markPartial: (sf: ts.SourceFile) => void,
 ): string | null {
   const members = new Set(comp);
+  // Set once a member assigns an export after the module entered the cycle:
+  // the cluster is a PARTIAL-exports cycle, and its live exports object
+  // models what a member reads mid-cycle.
+  let partial = false;
+  let earlyUseReason: string | null = null;
+  const mark = (): void => {
+    partial = true;
+  };
   const builtinRoot = (e: ts.Expression): boolean => {
     while (ts.isPropertyAccessExpression(e)) e = e.expression;
     return ts.isIdentifier(e) && !sourceBinding7(program, e);
@@ -5483,6 +5557,7 @@ function cjsCycleRefusal7(
       }
       if (use === null) return undefined;
       const parent = use.parent;
+      if (parent === undefined) return undefined;
       const read =
         ts.isPropertyAccessExpression(parent) &&
         parent.expression === use &&
@@ -5494,23 +5569,72 @@ function cjsCycleRefusal7(
         ) &&
         !(ts.isCallExpression(parent.parent) && parent.parent.expression === parent) &&
         !ts.isDeleteExpression(parent.parent);
+      const assignment = (expr: ts.Node | undefined): boolean =>
+        expr !== undefined &&
+        ts.isBinaryExpression(expr) &&
+        expr.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        expr.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+      // A WRITE through the export object (`exports.x = v`,
+      // `module.exports.x = v`, `this.x = v`, `module.exports = v`) after
+      // the module entered the cycle is the shape Node answers with partial
+      // exports: the module's exports object is a live checked-dynamic
+      // object, and members still missing at a read are undefined (with
+      // Node's circular-dependency warning). Admit it.
+      const grand = parent.parent;
+      const write =
+        (ts.isPropertyAccessExpression(parent) &&
+          parent.expression === use &&
+          assignment(grand) &&
+          (grand as ts.BinaryExpression).left === parent) ||
+        (assignment(parent) && (parent as ts.BinaryExpression).left === use);
+      if (write) {
+        mark();
+        return undefined;
+      }
       if (!read) stray = use;
       return undefined;
     });
     if (stray !== null) {
       return `${m.fileName} uses its exports at ${lineOf(stray)} outside the export statements that precede its first require, so a module of the cycle can observe them before they settle`;
     }
-    // Bindings of other members must stay unreachable from top-level code.
-    for (const st of stmts) {
-      for (const req of requiresOf7(st, program)) {
-        if (req.decl === null) continue;
-        const dep = resolveImport7(program, m, req.spec, "require");
-        if (dep === null || !members.has(dep)) continue;
-        const reached = requireBindingEarlyUse7(program, m, stmts.length, req.decl, [], (id) =>
-          functionExportRead7(id, dep),
-        );
-        if (reached !== null) {
-          return `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
+    // Top-level code that can reach another member's binding must do so in
+    // a way the lowering answers exactly: an observable read (a value Node
+    // shows as it stands, the live exports object's member) passes, while a
+    // call or an escape keeps the fence.
+    {
+      for (const st of stmts) {
+        for (const req of requiresOf7(st, program)) {
+          if (req.decl === null) continue;
+          const dep = resolveImport7(program, m, req.spec, "require");
+          if (dep === null || !members.has(dep)) continue;
+          const reached = requireBindingEarlyUse7(
+            program,
+            m,
+            stmts.length,
+            req.decl,
+            [],
+            (id) => functionExportRead7(id, dep) || observableExportRead7(program, id),
+          );
+          if (reached !== null && earlyUseReason === null) {
+            earlyUseReason = `the top-level code of ${m.fileName} can use its binding '${reached.text}' of a module of the cycle (${lineOf(reached)}) while the cycle initializes`;
+          }
+        }
+      }
+    }
+  }
+  if (earlyUseReason !== null) return earlyUseReason;
+  if (partial) {
+    // Every member can be observed mid-evaluation, so every member keeps
+    // the live exports object.
+    for (const m of comp) markPartial(m);
+    // A partial cycle's exports object stays the CommonJS object Node
+    // hands out; replacing it with one value would need that value's own
+    // identity per require, which the live table does not model.
+    for (const m of comp) {
+      for (const stmt of m.statements.nodes) {
+        const cjs = cjsExportAssignmentOf(stmt);
+        if (cjs?.kind === "table" && cjs.obj === null) {
+          return `${m.fileName} replaces module.exports with a single value at ${lineOf(stmt)} inside a require cycle whose exports are observable before they settle`;
         }
       }
     }
@@ -5570,6 +5694,57 @@ function publishedAlias7(use: ts.Node, decl: ts.Node | undefined): boolean {
     return undefined;
   });
   return !kept;
+}
+
+/** True for a plain read `binding.name` of the cycle member `dep` used only
+ * where its VALUE is observed (an expression statement, `typeof`, `void`,
+ * a comparison, a condition, a further member read, or an argument to a
+ * `console` call): a live checked-dynamic read that shows exactly what Node
+ * shows, whether or not the export is a function. A call, a store, or any
+ * other escape stays the strict rule's business. */
+function observableExportRead7(program: ts.Program, id: ts.Identifier): boolean {
+  const access = id.parent;
+  if (!ts.isPropertyAccessExpression(access) || access.expression !== id) return false;
+  let use: ts.Node = access;
+  for (;;) {
+    const p = use.parent;
+    if (ts.isParenthesizedExpression(p)) use = p;
+    else break;
+  }
+  const parent = use.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === use) return true;
+  // Producing the value for an export assignment reads it exactly once, at
+  // this statement, from the live object.
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+    parent.right === use
+  )
+    return true;
+  if (ts.isCallExpression(parent) && parent.arguments.nodes.includes(use as never)) {
+    const callee = parent.expression;
+    return (
+      ts.isPropertyAccessExpression(callee) &&
+      ts.isIdentifier(callee.expression) &&
+      callee.expression.text === "console" &&
+      !sourceBinding7(program, callee.expression)
+    );
+  }
+  return (
+    ts.isExpressionStatement(parent) ||
+    ts.isTypeOfExpression(parent) ||
+    ts.isVoidExpression(parent) ||
+    (ts.isPrefixUnaryExpression(parent) && parent.operator === ts.SyntaxKind.ExclamationToken) ||
+    (ts.isBinaryExpression(parent) &&
+      (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)) ||
+    ((ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent)) &&
+      parent.expression === use) ||
+    (ts.isConditionalExpression(parent) && parent.condition === use)
+  );
 }
 
 /** True for a plain read `binding.name` (not a call, not a write, not a
@@ -7760,19 +7935,10 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
             // sources every use passes here: member reads lower through the
             // names Node's lexer detects, and the other reads refuse at
             // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
-            if (
-              !isJsSourceFileName(sf.fileName) &&
-              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
-            ) {
-              diags.push(
-                unsupportedDiag(
-                  "SC1013",
-                  locOf7(clause.namedBindings),
-                  "namespace imports of CommonJS modules",
-                ),
-              );
-            }
+            // A member read lowers like the named import `import { name }`
+            // (nsMemberIdentOf), and a use the lexer does not serve - the
+            // namespace as a first-class value, `default`, a name Node's
+            // lexer does not detect - refuses at its own site.
           } else if (
             dep === null &&
             !(!isRelative && ambientModules.has(spec)) &&
@@ -8103,6 +8269,16 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
   //    reads are all let/const bindings with module storage, or classes —
   //    the lowering checks each one (cycleEarlyBindings) and throws
   //    Node's ReferenceError on a read before the declaration ran.
+  // require() of an ES module is Node 24's synchronous require(esm) — unless
+  // the target is still evaluating, which Node refuses with
+  // ERR_REQUIRE_CYCLE_MODULE. Every such target carries a %evaluating flag
+  // the require site tests at run time.
+  for (const list of edges.values()) {
+    for (const e of list) {
+      if (e.stmt === undefined && isNodeEsmFile7(e.dep, program))
+        program.analysis.requireEsmTargets.add(e.dep);
+    }
+  }
   const cycleAdmissionReason = makeCycleAdmission(program, (sf) => {
     const all = edges.get(sf) ?? [];
     return all.some((e) => e.call !== undefined) ? all.filter((e) => e.call === undefined) : all;
@@ -8830,10 +9006,16 @@ function preflightGate7(load: LoadResult): PreflightGate {
       ? errorsOf(program)
       : keptErrors(tscWorld.program, tscWorld.diagnostics());
   if (tscErrors.length > 0) {
+    // A JSX file was checked in a world that hides an opted-in package's
+    // declarations: its JSX types (`JSX.IntrinsicElements` from
+    // @types/react) exist only there, so the second chance is the authored
+    // world, which types owned files against the published declarations.
     const world =
       tscWorld === undefined || tscWorld.declWorldFallback === true
         ? load.projectWorld()
-        : (tscWorld.projectWorld ?? tscWorld.program);
+        : load.jsxGateWorld !== undefined
+          ? load.jsxGateWorld()
+          : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one
     // by one: a single SC0016 names the setting instead.
     const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;

@@ -521,6 +521,41 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "net.sockConnect" || e.fn === "net.sockConnectCb") {
+    // socket.connect(port[, host][, cb]): the idle socket dials; the
+    // connect listener hoists like net.connect's.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.sockConnectCb") {
+      host.toHeap(args[3]!);
+      cb = args[3]!.name;
+    }
+    host.declare(`declare void @scr_net_sock_connect_port(ptr, double, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_sock_connect_port(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.socketNew") {
+    // new net.Socket([options]): the unconnected socket handle; a signal
+    // attaches through events.addAbortListener (event-target unit) only when
+    // the options can carry one, and the modelled-gap fence is the
+    // lowering's.
+    const args = e.args.map((a) => host.emitExpr(a));
+    const signalArg = e.args[2];
+    const hasSignal =
+      signalArg === undefined || !(signalArg.kind === "boolLit" && signalArg.value === false);
+    host.declare(`declare ptr @scr_net_sock_construct(ptr, ptr, ptr)`);
+    if (hasSignal) host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_sock_construct(ptr ${args[0]!.name}, ptr ${hasSignal ? "@scr_events_add_abort_listener" : "null"}, ptr ${args[1]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
   if (e.fn === "net.connectDyn" || e.fn === "net.connectDynCb") {
     // connect over dynamic arguments: the runtime runs Node's normalizeArgs
     // and lookupAndConnect ladder, dials with the options it models, and
@@ -906,11 +941,19 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "http.resOnFinish" || e.fn === "http.resOnEndCallback") {
+  if (
+    e.fn === "http.resOnFinish" ||
+    e.fn === "http.resOnEndCallback" ||
+    e.fn === "http.resOnWriteFlush"
+  ) {
     const args = e.args.map((a) => host.emitExpr(a));
     host.toHeap(args[1]!);
     const entry =
-      e.fn === "http.resOnFinish" ? "scr_http_res_on_finish" : "scr_http_res_on_end_callback";
+      e.fn === "http.resOnFinish"
+        ? "scr_http_res_on_finish"
+        : e.fn === "http.resOnEndCallback"
+          ? "scr_http_res_on_end_callback"
+          : "scr_http_res_on_write_flush";
     host.declare(`declare void @${entry}(ptr, ptr)`);
     B.line(`call void @${entry}(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return { name: "", type: e.type };

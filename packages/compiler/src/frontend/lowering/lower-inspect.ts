@@ -3,6 +3,7 @@ import { perKeyOrder } from "./key-order-witness.js";
 import { elementMayBeForeign } from "./array-values.js";
 import { classPrototypeView } from "./class-prototypes.js";
 import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
@@ -5698,6 +5699,9 @@ export function lowerRuntimeFormat(
   loc: SrcLoc,
   options?: ts.Expression | null,
   literalPrefix = "",
+  /** The console output member whose diagnostics channel receives the
+   * argument pack before the line is formatted (console.<member>). */
+  channelMember?: number,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   let optionsRef: IrExpr | null = null;
@@ -5723,9 +5727,27 @@ export function lowerRuntimeFormat(
     blame: argNodes[0] ?? options ?? undefined,
   });
   stmts.push(...pack.stmts);
+  if (channelMember !== undefined)
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "console.publishArgs",
+        args: [numLit(channelMember, loc), pack.pack()],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
   const result: IrExpr =
     optionsRef === null
-      ? { kind: "libCall", fn: "insp.format", args: [pack.pack()], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: channelMember === undefined ? "insp.format" : "insp.formatSnapshot",
+          args: [pack.pack()],
+          type: STRING,
+          loc,
+        }
       : {
           kind: "libCall",
           fn: "insp.formatWithOptions",
@@ -6327,44 +6349,43 @@ function lowerParseArgsCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
   return parsed;
 }
 
-/** util.getCallSites() in a JS source: compiled binaries keep no runtime
- * call stacks, so the honest STATIC answer is a fixed-shape placeholder —
- * a fresh dyn array of three call-site records whose scriptName is the
- * CALL SITE's own file (compile-time-knowable) and whose line/column are
- * 0 (SEMANTICS.md; the fields exist so consumers like test/common's
- * mustNotCall — `callSite.scriptName`:`callSite.lineNumber` in the
- * failure text — read a printable value instead of throwing). Argument
- * forms and TypeScript keep the SC2020 fence: a typed consumer asserting
- * real frames must fail at compile time instead of reading placeholders. */
-function lowerGetCallSitesCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr | null {
-  if (expr.arguments.nodes.length !== 0) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
-  const frame = (): IrExpr => {
-    const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({
-      key: { kind: "strLit", value: name, type: STRING, loc },
-      value: { kind: "dynFrom", value, type: DYN, loc },
-    });
-    return {
-      kind: "dynObjLit",
-      fields: [
-        field("functionName", { kind: "strLit", value: "", type: STRING, loc }),
-        field("scriptName", {
-          kind: "strLit",
-          value: ts.getSourceFileOfNode(expr).fileName,
-          type: STRING,
-          loc,
-        }),
-        field("scriptId", { kind: "strLit", value: "0", type: STRING, loc }),
-        field("lineNumber", { kind: "numLit", value: 0, type: F64, loc }),
-        field("column", { kind: "numLit", value: 0, type: F64, loc }),
-      ],
-      type: DYN,
-      loc,
-    };
+/** util.getCallSites([frameCount][, options]): the running source frames,
+ * read from the positions the frames record (frame-positions.ts). The
+ * runtime validates both arguments and answers the array; typed callers get
+ * it through the checked extraction. */
+function lowerGetCallSitesCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering("util.getCallSites with spread arguments", expr);
+  if (expr.arguments.nodes.length > 2)
+    lowerer.noLowering(`util.getCallSites with ${expr.arguments.nodes.length} arguments`, expr);
+  // The options bag is an ordinary object literal in the common call
+  // shape: build it as a checked-dynamic object so the runtime can read
+  // `sourceMap` from it like Node validates it.
+  const dynArg = (node: ts.Expression): IrExpr =>
+    ts.isObjectLiteralExpression(node)
+      ? lowerDynObjectLiteral(lowerer, node)
+      : lowerer.lowerExprExpecting(node, DYN);
+  const first = expr.arguments.nodes[0] ? dynArg(expr.arguments.nodes[0]) : dynUndefinedExpr(loc);
+  const second = expr.arguments.nodes[1] ? dynArg(expr.arguments.nodes[1]) : dynUndefinedExpr(loc);
+  const sites: IrExpr = {
+    kind: "libCall",
+    fn: "util.getCallSites",
+    args: [first, second],
+    type: DYN,
+    loc,
   };
-  return { kind: "dynArrLit", elems: [frame(), frame(), frame()], type: DYN, loc };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    result !== null &&
+    result.kind !== "dyn" &&
+    result.kind !== "void" &&
+    canDynCheckTo(
+      result,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynCheck", value: sites, type: result, loc };
+  }
+  return sites;
 }

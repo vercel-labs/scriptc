@@ -16,6 +16,7 @@ import * as ts from "../ts7/adapter.js";
 import { resultIsDiscarded } from "./call-position.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
+import { BUILTIN_MODULE_MEMBERS } from "./builtin-module-members.generated.js";
 import {
   type IrExpr,
   type IrStmt,
@@ -40,6 +41,13 @@ import {
   lowerMockTrackerCall,
   type MockTracker,
 } from "./lower-mock.js";
+
+/** The assert module's members: an unknown name on a TestContext's
+ * `assert` is a custom assertion registered through node:test's
+ * `assert.register`. */
+const ASSERT_MODULE_MEMBERS: ReadonlySet<string> = new Set(
+  BUILTIN_MODULE_MEMBERS["assert"]?.keys ?? [],
+);
 
 const MOCK_HINT =
   "mock.fn, mock.method, mock.restoreAll, mock.reset and mock.timers are the supported mock members";
@@ -125,6 +133,9 @@ interface TestOptions {
   concurrency: IrExpr | null;
   /** The { signal } an AbortSignal value, null without one. */
   signal: IrExpr | null;
+  /** The { tags } list as a checked-dynamic array of strings, null without
+   * one. */
+  tags: IrExpr | null;
   /** The non-literal option values, evaluated in source order before the
    * registration call reads them. */
   pre: IrStmt[];
@@ -142,6 +153,7 @@ const noOptions = (): TestOptions => ({
   timeout: null,
   concurrency: null,
   signal: null,
+  tags: null,
   pre: [],
 });
 
@@ -198,8 +210,8 @@ function lowerTestOptions(
       `${what} with a non-literal options argument`,
       node,
       suite
-        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout?, signal? }"
-        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout?, signal? }",
+        ? "pass the options as an object literal: { skip?, todo?, only?, concurrency?, timeout?, signal?, tags? }"
+        : "pass the options as an object literal: { skip?, todo?, only?, concurrency?, plan?, timeout?, signal?, tags? }",
     );
   }
   const out = noOptions();
@@ -265,11 +277,11 @@ function lowerTestOptions(
       }
     } else if (name === "plan" && !suite) {
       const value = ts.isNumericLiteral(init) ? Number(init.text) : NaN;
-      if (!Number.isInteger(value) || value > 2147483647) {
+      if (!Number.isInteger(value) || value > 4294967295) {
         lowerer.noLowering(
-          `${what} with a non-literal plan value`,
+          `${what} with this plan value`,
           init,
-          "plan takes a non-negative integer literal here",
+          "plan takes a literal integer in 0..4294967295 here (Node validates the same range at registration)",
         );
       }
       out.plan = value;
@@ -296,6 +308,43 @@ function lowerTestOptions(
         lowerer.coerceToExpected(lowerer.lowerExpr(init), DYN),
         loc,
       );
+    } else if (name === "tags") {
+      /* The tag list: an array literal of string expressions, each lowered
+       * through String.prototype.toLowerCase as Node's canonicalization
+       * does. The runtime validates each value (a non-empty string),
+       * de-duplicates the list and unions it onto the parent's. */
+      if (!ts.isArrayLiteralExpression(init)) {
+        lowerer.noLowering(
+          `${what} with a non-literal tags value`,
+          init,
+          "tags takes an array literal of strings: { tags: ['db', 'slow'] }",
+        );
+      }
+      const elems = (init as ts.ArrayLiteralExpression).elements.nodes.map((element) => {
+        if (ts.isSpreadElement(element)) {
+          lowerer.noLowering(
+            `${what} with a spread tags list`,
+            element,
+            "list each tag explicitly",
+          );
+        }
+        const loc = locOf(element);
+        // Node canonicalizes each value with String.prototype.toLowerCase;
+        // the intrinsic links the regex unit's libunicode tables.
+        return lowerer.coerceToExpected(
+          {
+            kind: "strIntrinsic",
+            method: "toLowerCase",
+            receiver: lowerer.lowerExprExpecting(element, STRING),
+            args: [],
+            type: STRING,
+            loc,
+          },
+          DYN,
+        );
+      });
+      const loc = locOf(init);
+      out.tags = optionValue(lowerer, out, { kind: "dynArrLit", elems, type: DYN, loc }, loc);
     } else if (name === "timeout") {
       out.timeout = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, F64), locOf(init));
     } else if (name === "expectFailure") {
@@ -329,8 +378,8 @@ function lowerTestOptions(
         `${what} option '${name}'`,
         prop,
         suite
-          ? "skip, todo, only, concurrency, timeout and signal are the supported suite options"
-          : "skip, todo, only, concurrency, plan, timeout and signal are the supported options",
+          ? "skip, todo, only, concurrency, timeout, signal and tags are the supported suite options"
+          : "skip, todo, only, concurrency, plan, timeout, signal and tags are the supported options",
       );
     }
   }
@@ -564,6 +613,7 @@ function lowerRegistration(
               at,
               ...planTimeout,
               opts.signal ?? dynUndefinedExpr(loc),
+              opts.tags ?? dynUndefinedExpr(loc),
             ],
             type: VOID,
             loc,
@@ -579,6 +629,7 @@ function lowerRegistration(
               at,
               ...planTimeout,
               opts.signal ?? dynUndefinedExpr(loc),
+              opts.tags ?? dynUndefinedExpr(loc),
             ],
             type: VOID,
             loc,
@@ -605,6 +656,7 @@ function lowerRegistration(
           at,
           ...planTimeout,
           opts.signal ?? dynUndefinedExpr(loc),
+          opts.tags ?? dynUndefinedExpr(loc),
         ],
         type: promiseVoid,
         loc,
@@ -626,6 +678,7 @@ function lowerRegistration(
         at,
         ...planTimeout,
         opts.signal ?? dynUndefinedExpr(loc),
+        opts.tags ?? dynUndefinedExpr(loc),
       ],
       type: VOID,
       loc,
@@ -704,6 +757,7 @@ function lowerSuite(
         opts.concurrency ?? numLit(0, loc),
         opts.timeout ?? numLit(0, loc),
         opts.signal ?? dynUndefinedExpr(loc),
+        opts.tags ?? dynUndefinedExpr(loc),
       ],
       type: VOID,
       loc,
@@ -749,6 +803,48 @@ const HOOK_WHICH: Record<string, number | undefined> = {
   beforeEach: 2,
   afterEach: 3,
 };
+
+/** node:test's assert.register(name, fn): adds the assertion to every
+ * TestContext (the runtime registry), so a use in any module of the program
+ * resolves. The name is a string literal; the function crosses as a
+ * checked-dynamic function value. */
+function lowerAssertRegister(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  requireStatementPosition(lowerer, expr, "assert.register(...)");
+  const args = expr.arguments.nodes;
+  if (args.length !== 2) {
+    lowerer.noLowering(
+      `assert.register with ${args.length} arguments`,
+      expr,
+      "the supported form is assert.register(name, fn)",
+    );
+  }
+  const nameNode = args[0]!;
+  if (!ts.isStringLiteralLike(nameNode)) {
+    lowerer.noLowering(
+      "assert.register with a computed name",
+      nameNode,
+      "pass the assertion's name as a string literal",
+    );
+  }
+  const fnNode = args[1]!;
+  if (lowerer.checker.getCallSignatures(lowerer.typeOf(fnNode)).length === 0) {
+    lowerer.noLowering(
+      "assert.register with a non-function",
+      fnNode,
+      "pass the assertion function as the second argument",
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: "test.assertRegister",
+    args: [
+      strLit((nameNode as ts.StringLiteralLike).text, loc),
+      lowerer.coerceToExpected(lowerer.lowerExpr(fnNode), DYN),
+    ],
+    type: VOID,
+    loc,
+  };
+}
 
 /** Module-function calls on node:test import bindings (named imports AND
  * namespace/default-import members — both funnel here). Null for other
@@ -800,35 +896,29 @@ export function lowerNodeTestModuleCall(
     case "snapshot.setDefaultSnapshotSerializers": {
       requireStatementPosition(lowerer, expr, "snapshot.setDefaultSnapshotSerializers(...)");
       const first = expr.arguments.nodes[0];
-      if (
-        expr.arguments.nodes.length !== 1 ||
-        first === undefined ||
-        !ts.isArrayLiteralExpression(first)
-      ) {
+      if (expr.arguments.nodes.length !== 1 || first === undefined) {
         lowerer.noLowering(
           "snapshot.setDefaultSnapshotSerializers with these arguments",
           expr,
           "the supported form is snapshot.setDefaultSnapshotSerializers([(value) => ...])",
         );
       }
-      const list = first as ts.ArrayLiteralExpression;
-      const fns = list.elements.nodes.map((element) => {
-        if (ts.isSpreadElement(element))
-          lowerer.noLowering(
-            "snapshot.setDefaultSnapshotSerializers with a spread serializer",
-            element,
-            "list each serializer explicitly",
-          );
-        return lowerer.lowerExprExpecting(element, DYN);
-      });
       return {
         kind: "libCall",
         fn: "test.snapshotSetDefaultSerializers",
-        args: [{ kind: "dynArrLit", elems: fns, type: DYN, loc }],
+        args: [
+          lowerSerializerList(
+            lowerer,
+            first as ts.Expression,
+            "snapshot.setDefaultSnapshotSerializers",
+          ),
+        ],
         type: VOID,
         loc,
       };
     }
+    case "assert.register":
+      return lowerAssertRegister(lowerer, expr, loc);
     case "snapshot.setResolveSnapshotPath": {
       requireStatementPosition(lowerer, expr, "snapshot.setResolveSnapshotPath(...)");
       const fn = expr.arguments.nodes[0];
@@ -980,10 +1070,12 @@ function lowerSnapshotAssert(
       pathNode ? lowerer.lowerExprExpecting(pathNode, STRING) : strLit("", loc),
     );
   }
-  const serializers =
-    snapshotSerializers(lowerer, call.arguments.nodes[member === "snapshot" ? 1 : 2], what)?.map(
-      (fn) => slot("%snapshotSerializer", DYN, fn),
-    ) ?? null;
+  const serializerList = snapshotSerializers(
+    lowerer,
+    call.arguments.nodes[member === "snapshot" ? 1 : 2],
+    what,
+  );
+  const serializers = serializerList ? slot("%snapshotSerializers", DYN, serializerList) : null;
   if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
     lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
@@ -1005,12 +1097,7 @@ function lowerSnapshotAssert(
     operand: {
       kind: "libCall",
       fn: "test.snapshotSerialize",
-      args: [
-        input,
-        serializers === null
-          ? dynUndefinedExpr(loc)
-          : { kind: "dynArrLit", elems: serializers, type: DYN, loc },
-      ],
+      args: [input, serializers ?? dynUndefinedExpr(loc)],
       type: DYN,
       loc,
     },
@@ -1050,21 +1137,20 @@ function lowerSnapshotAssert(
   };
 }
 
-/** The serializer functions of a snapshot options object literal, as
- * checked-dynamic values in order; null without a serializers option.
- * Options that are not an object literal, a serializers list that is not
- * an array literal, and other options fence. */
+/** The serializers of a snapshot options object literal as one
+ * checked-dynamic array; null without a serializers option. Options that
+ * are not an object literal and options other than serializers fence. */
 function snapshotSerializers(
   lowerer: Lowerer,
   options: ts.Expression | undefined,
   what: string,
-): IrExpr[] | null {
+): IrExpr | null {
   if (options === undefined) return null;
   const hint = "pass the options as an object literal: { serializers: [(value) => ...] }";
   if (!ts.isObjectLiteralExpression(options)) {
     lowerer.noLowering(`${what} options that are not an object literal`, options, hint);
   }
-  let fns: IrExpr[] | null = null;
+  let list: IrExpr | null = null;
   for (const prop of options.properties.nodes) {
     const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
     if (
@@ -1073,16 +1159,40 @@ function snapshotSerializers(
     ) {
       lowerer.noLowering(`${what} options other than serializers`, prop, hint);
     }
-    const list = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name;
-    if (!ts.isArrayLiteralExpression(list)) {
-      lowerer.noLowering(`${what} with a non-literal serializers list`, list, hint);
-    }
-    fns = list.elements.nodes.map((el) => {
-      if (ts.isSpreadElement(el)) lowerer.noLowering(`${what} with a spread serializer`, el, hint);
-      return lowerer.lowerExprExpecting(el, DYN);
-    });
+    const value = ts.isPropertyAssignment(prop) ? prop.initializer : (prop.name as ts.Expression);
+    list = lowerSerializerList(lowerer, value, what);
   }
-  return fns;
+  return list;
+}
+
+/** A serializers list: an array literal of functions, or any expression of
+ * an array-of-functions type (a variable, an imported list), converted to
+ * the checked-dynamic array the runtime calls each entry through. */
+function lowerSerializerList(lowerer: Lowerer, node: ts.Expression, what: string): IrExpr {
+  const hint =
+    "pass the serializers as an array literal of functions, or an array-typed serializers value";
+  const loc = locOf(node);
+  if (ts.isArrayLiteralExpression(node)) {
+    const elems = node.elements.nodes.map((element) => {
+      if (ts.isSpreadElement(element)) {
+        lowerer.noLowering(`${what} with a spread serializer`, element, hint);
+      }
+      return lowerer.lowerExprExpecting(element, DYN);
+    });
+    return { kind: "dynArrLit", elems, type: DYN, loc };
+  }
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(node));
+  /* The element type is a function, or a union whose arms are functions
+   * (an array literal mixing two serializer signatures). */
+  const callable = (element: IrType): boolean =>
+    element.kind === "func" ||
+    (element.kind === "union" &&
+      (lowerer.unions.get(element.unionId)?.arms ?? []).length > 0 &&
+      (lowerer.unions.get(element.unionId)?.arms ?? []).every((arm) => arm.kind === "func"));
+  if (mapped?.kind !== "array" || !callable(mapped.elem) || !lowerer.dynConvertible(mapped)) {
+    lowerer.noLowering(`${what} with this serializers value`, node, hint);
+  }
+  return lowerer.coerceToExpected(lowerer.lowerExprExpecting(node, mapped), DYN);
 }
 
 /** `mock.timers` (tracker null) or `t.mock.timers` on a TestContext;
@@ -1201,6 +1311,9 @@ export function lowerTestMethodCall(
           lowerer.checker.getSymbolAtLocation(access.name),
         );
       }
+      if (bi.member === "assert" && member === "register") {
+        return lowerAssertRegister(lowerer, call, loc);
+      }
       lowerer.noLowering(
         `test.${bi.member}.${member}`,
         call,
@@ -1245,17 +1358,34 @@ export function lowerTestMethodCall(
       member === "snapshot" || member === "fileSnapshot"
         ? lowerSnapshotAssert(lowerer, call, member, access.expression.expression)
         : lowerer.lowerAssertModuleCall(call, { module: "assert", member }, loc);
-    // Each t.assert call counts against the test's plan (t.plan).
-    if (served)
+    // Reading t.assert fixes this context's assertion set (Node builds the
+    // test's assertion object from the registry on that read), and each
+    // t.assert call counts against the test's plan (t.plan).
+    if (served) {
+      const receiver = lowerer.lowerExpr(access.expression.expression);
+      const ctxLocal = lowerer.declareHiddenLocal("%assertCtx", receiver.type);
+      const ctxRef = varRef(ctxLocal.id, receiver.type, loc);
       return {
         kind: "seqExpr",
         stmts: [
+          { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "test.ctxAssertTouch",
+              args: [ctxRef],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
           {
             kind: "exprStmt",
             expr: {
               kind: "libCall",
               fn: "test.ctxCount",
-              args: [lowerer.lowerExpr(access.expression.expression)],
+              args: [ctxRef],
               type: VOID,
               loc,
             },
@@ -1266,6 +1396,73 @@ export function lowerTestMethodCall(
         type: served.type,
         loc,
       };
+    }
+    if (!ASSERT_MODULE_MEMBERS.has(member)) {
+      /* Not an assert-module member: a custom assertion registered through
+       * node:test's assert.register(name, fn). The lookup is the runtime
+       * registry, so a registration in another module of the program
+       * applies; an unregistered name throws Node's TypeError at the
+       * call, like a missing method on Node's assertion object. */
+      if (call.arguments.nodes.some(ts.isSpreadElement)) {
+        lowerer.noLowering(
+          `t.assert.${member} with spread arguments`,
+          call,
+          "pass the assertion's arguments explicitly",
+        );
+      }
+      const receiver = lowerer.lowerExpr(access.expression.expression);
+      const ctxLocal = lowerer.declareHiddenLocal("%assertCtx", receiver.type);
+      const ctxRef = varRef(ctxLocal.id, receiver.type, loc);
+      const elems = call.arguments.nodes.map((arg) =>
+        lowerer.coerceToExpected(lowerer.lowerExpr(arg), DYN),
+      );
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: ctxLocal.id, init: receiver, loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "test.ctxAssertTouch",
+            args: [ctxRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "test.ctxCount",
+            args: [ctxRef],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ];
+      const assertion: IrExpr = {
+        kind: "libCall",
+        fn: "test.ctxCustomAssert",
+        args: [ctxRef, strLit(member, loc), { kind: "dynArrLit", elems, type: DYN, loc }],
+        type: DYN,
+        loc,
+      };
+      /* Node's assertion object returns the registered function's result,
+       * so an async assertion's promise reaches the call site: `await
+       * t.assert.custom()` waits for it and a rejection fails the test. A
+       * declaration that types the assertion `void` (a project using
+       * @types/node augments the interface, usually from the registered
+       * function's own `void` return) does not change what the call
+       * carries, so the value stays checked-dynamic there rather than
+       * being dropped before an `await` could adopt it. */
+      const resultType = lowerer.irTypeOf(call);
+      const result =
+        resultType.kind === "void" || resultType.kind === "undefinedT"
+          ? assertion
+          : lowerer.coerceToExpected(assertion, resultType);
+      return { kind: "seqExpr", stmts, result, type: result.type, loc };
+    }
     lowerer.noLowering(
       `t.assert.${member}`,
       call,
@@ -1334,6 +1531,9 @@ export function lowerTestMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const count = lowerer.lowerExprExpecting(args[0]!, F64);
     let wait: IrExpr | null = null;
+    /* `{ wait: true }` waits indefinitely; `{ wait: false }` (the default)
+     * checks as soon as the body finishes; a number is the maximum wait. */
+    let indefinite = false;
     const optionsNode = args[1];
     if (optionsNode !== undefined) {
       if (!ts.isObjectLiteralExpression(optionsNode)) {
@@ -1355,15 +1555,41 @@ export function lowerTestMethodCall(
         if (name !== "wait") {
           lowerer.noLowering(`t.plan option '${name}'`, prop, "wait is the supported plan option");
         }
+        const init = prop.initializer;
         // An explicit undefined takes Node's default (no wait).
-        if (ts.isIdentifier(prop.initializer) && prop.initializer.text === "undefined") continue;
-        wait = lowerer.lowerExprExpecting(prop.initializer, F64);
+        if (ts.isIdentifier(init) && init.text === "undefined") continue;
+        // A repeated key behaves as the last one wins.
+        if (init.kind === ts.SyntaxKind.TrueKeyword) {
+          indefinite = true;
+          wait = null;
+          continue;
+        }
+        if (init.kind === ts.SyntaxKind.FalseKeyword) {
+          indefinite = false;
+          wait = null;
+          continue;
+        }
+        if (lowerer.mapTypeOf(lowerer.typeOf(init))?.kind === "bool") {
+          lowerer.noLowering(
+            "t.plan with a computed wait value",
+            init,
+            "wait takes the literal true/false or a number here",
+          );
+        }
+        indefinite = false;
+        wait = lowerer.lowerExprExpecting(init, F64);
       }
     }
     return {
       kind: "libCall",
       fn: "test.ctxPlan",
-      args: [receiver, count, boolLit(wait !== null, loc), wait ?? numLit(0, loc)],
+      args: [
+        receiver,
+        count,
+        boolLit(wait !== null, loc),
+        wait ?? numLit(0, loc),
+        boolLit(indefinite, loc),
+      ],
       type: VOID,
       loc,
     };
@@ -1544,8 +1770,25 @@ function lowerTestCtxValue(
       return after(strLit(lowerer.entry.fileName, loc));
     case "attempt":
       return after(numLit(0, loc));
-    case "tags":
-      return after({ kind: "arrayLit", elems: [], type: declared, loc });
+    case "tags": {
+      /* The flattened tag set, inherited from ancestor suites, lowercased
+       * and de-duplicated at registration. Node caches the frozen array on
+       * the test, so every read answers the same array. */
+      const ctxLocal = lowerer.declareHiddenLocal("%testCtx", receiver.type);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: ctxLocal.id, init: receiver, loc }],
+        result: {
+          kind: "libCall",
+          fn: "test.ctxTags",
+          args: [varRef(ctxLocal.id, receiver.type, loc)],
+          type: declared,
+          loc,
+        },
+        type: declared,
+        loc,
+      };
+    }
     case "signal":
     case "error": {
       /* t.signal is the test's AbortSignal (a checked-dynamic handle the

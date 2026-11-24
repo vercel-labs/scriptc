@@ -76,9 +76,22 @@ typedef struct ScrStackFrame {
 void scr_stack_enter(ScrStackFrame *frame, const char *text);
 void scr_stack_leave(ScrStackFrame *frame);
 ScrStr *scr_stack_capture(void); /* +1, NULL when no source frames exist */
+/* util.getCallSites([frameCount][, options]): the running source frames as
+ * { functionName, scriptId, scriptName, lineNumber, columnNumber, column },
+ * top first; scriptId is "0" (compiled programs have no V8 script ids).
+ * Validates its arguments like Node and THROWS otherwise; +1 array. */
+ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options);
 ScrStr *scr_stack_capture_after(const char *through); /* +1, NULL when none remain */
+/* The frames below the topmost frame of the function named `name` —
+ * AssertionError's stackStartFn, whose function value the runtime knows by
+ * name rather than by identity; NULL when no such frame is on the stack. */
+ScrStr *scr_stack_capture_after_name(const char *name);
 double scr_stack_limit_get(void);
 void scr_stack_limit_set(double limit);
+/* Error.prepareStackTrace: program state (a checked-dynamic value). Get
+ * returns +1; set takes its own +1 (a NULL value stores undefined). */
+ScrDyn *scr_error_prepare_stack_trace_get(void);
+void scr_error_prepare_stack_trace_set(ScrDyn *value);
 
 typedef struct ScrExcCell {
   ScrExcKind kind;

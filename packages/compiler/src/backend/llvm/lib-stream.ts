@@ -552,10 +552,13 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
-  if (e.fn === "writable.end") {
+  if (e.fn === "writable.end" || e.fn === "writable.endEcb") {
     // (recv, flags[, chunk][, encoding][, cb]) — flags: 1 bytes chunk, 2
     // string chunk, 8 dyn chunk (write first, Node's end(chunk)
     // decomposition), 16 an encoding after the dyn chunk, 4 callback.
+    // endEcb's callback MOVES into an error-first wrapper
+    // (scr_stream_ecb_wrap), whose adapter turns the runtime's ScrError
+    // (NULL = success) into the callback's Error | null argument.
     const flagsArg = e.args[1]!;
     if (flagsArg.kind !== "numLit")
       throw new InternalCompilerError("llvm emitter bug: writable.end flags not a literal");
@@ -575,6 +578,16 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     if (flags & 4) {
       host.toHeap(args[at]!);
       cbName = args[at]!.name;
+      if (e.fn === "writable.endEcb") {
+        const cbT = e.args[at]!.type;
+        if (cbT.kind !== "func")
+          throw new InternalCompilerError("llvm emitter bug: writable.endEcb callback not a func");
+        const adapter = host.fsRenameThunkFor(cbT);
+        host.declare(`declare ptr @scr_stream_ecb_wrap(ptr, ptr)`);
+        const wrapped = B.tmp();
+        B.line(`${wrapped} = call ptr @scr_stream_ecb_wrap(ptr ${cbName}, ptr @${adapter})`);
+        cbName = wrapped;
+      }
     }
     if (chunkD !== null) {
       // end(chunk, cb) writes with a null encoding argument (Node's end

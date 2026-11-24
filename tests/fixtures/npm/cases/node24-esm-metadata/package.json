@@ -1,1 +1,9 @@
-{"private":true,"type":"module"}
+{
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "node24-esm-metadata-fixture": "node"
+    }
+  }
+}

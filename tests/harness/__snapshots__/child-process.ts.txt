@@ -1,21 +1,3 @@
-child-process.ts:29:17 - error SC2020: 'spawn with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
-
-  28 | const shellArgs = ["unsafe"];
-  29 | spawn("printf", shellArgs, { stdio: "ignore", shell: true });
-     |                 ^~~~~~~~~
-  30 | spawnSync("printf", ["%s", "unsafe"], { shell: true });
-
-  hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
-
-child-process.ts:30:21 - error SC2020: 'spawnSync with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
-
-  29 | spawn("printf", shellArgs, { stdio: "ignore", shell: true });
-  30 | spawnSync("printf", ["%s", "unsafe"], { shell: true });
-     |                     ^~~~~~~~~~~~~~~~
-  31 | const c = spawn("true", [], { stdio: "ignore" });
-
-  hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
-
 child-process.ts:37:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: ...): ChildProcess; (event: "error", listener: ...): ChildProcess; (event: "message", listener: ...): ChildProcess; (event: "disconnect", l...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
   36 | // Methods have no bound-value form — call on directly.
@@ -76,15 +58,6 @@ child-process.ts:55:24 - error SC2020: 'execFile option 'input'' is part of the 
   56 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
   hint: encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
-
-child-process.ts:56:20 - error SC2020: 'execFile with shell enabled and separate arguments' is part of the standard library types but has no scriptc lowering yet
-
-  55 | execFile("true", [], { input: "x" }, () => {});
-  56 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
-     |                    ^~~~~~~~~~~~~~~~
-  57 | const bufferLimit = 1024;
-
-  hint: put the complete shell command in the first argument and pass [] (Node warns DEP0190 for unescaped shell arguments, and a native build cannot report that warning)
 
 child-process.ts:60:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 

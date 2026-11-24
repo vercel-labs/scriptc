@@ -11,4 +11,6 @@
   An `http2` server's `'session'` and `'stream'` events and the compatibility API's request handler see the context of its `listen()` call; a server stream's own events, and its compatibility request's and response's, run with no store, as in Node.
   `AsyncResource` and its `runInAsyncScope`, `bind`, `emitDestroy`, `asyncId` and `triggerAsyncId` members run natively, and `asyncLocalStorage.withScope` answers a `RunScope` whose `dispose()` (or `[Symbol.dispose]`, for a `using` declaration) restores the store.
   The store context an `AsyncResource` captures lives exactly as long as the resource value does: a resource the program drops releases it, and one still held at exit is released there.
-  `async_hooks.createHook` instrumentation has no lowering yet.
+  `async_hooks.createHook` reports init, before, after, destroy and promiseResolve for timers, immediates, next ticks, promises and `AsyncResource` scopes, and `executionAsyncId`/`triggerAsyncId` answer those executions' ids, including a resource's own ids inside `runInAsyncScope`.
+  `executionAsyncResource` answers the `AsyncResource` whose scope is executing and a shared plain object everywhere else: timer, immediate, tick and promise executions do not answer each execution's own resource object.
+  A hook's `resource` is a plain object for the timer, immediate, tick and promise kinds, and an await of a non-promise value still reports the enclosing execution's ids.

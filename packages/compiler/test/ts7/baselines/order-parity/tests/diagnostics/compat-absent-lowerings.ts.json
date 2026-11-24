@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/compat-absent-lowerings.ts"
- ],
- "diags": []
-}

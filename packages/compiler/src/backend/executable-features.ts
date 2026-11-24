@@ -62,6 +62,7 @@ export function executableLinkFeatures(
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.ttyColors ? { ttyColors: true } : {}),
+    ...(features.consoleOptions ? { consoleOptions: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.fsStreamSignal ? { fsStreamSignal: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
@@ -87,6 +88,7 @@ export function executableLinkFeatures(
     // (scr_node_island_child.c): a program with both islands and child_process.
     ...(features.nodeIsland && features.childProcess ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.cluster ? { cluster: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.childStreamFlow ? { childStreamFlow: true } : {}),

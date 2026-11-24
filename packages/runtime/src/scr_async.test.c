@@ -143,6 +143,73 @@ static void due_timers_run_by_deadline_before_immediates(void) {
   puts("due timers run by deadline, then by creation, before the turn's immediates");
 }
 
+/* A timer armed during a turn runs in the NEXT turn's timers phase, so the
+ * immediate the same callback arms runs first ("tic"). Its deadline is
+ * already passed: without the turn cutoff the deadline alone let it run in
+ * this turn's timers phase, before the check phase ("tci") — the ordering
+ * 5615-next-tick-callback-phases.ts lost under ASan when the clock crossed a
+ * millisecond between arming the timer and reaching the timers phase. */
+static void timer_arms_immediate_and_due_timer(ScrClosure *self) {
+  (void)self;
+  turn_note('t');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void timer_armed_during_turn_waits_for_next_timers_phase(void) {
+  turn_count = 0;
+  push_due_timer(timer_arms_immediate_and_due_timer, scr_now_ms() - 1000);
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "tic", 3) == 0);
+  puts("a timer armed during a turn runs after that turn's immediates");
+}
+
+/* The 5615 shape: an I/O callback arms an immediate and a zero-delay timer.
+ * Node's check phase runs the immediate first ("oic"); the timer is due by
+ * the time the loop reaches its timers phase, so only a snapshot taken
+ * BEFORE the I/O dispatch keeps it out of that phase ("oci" without it). */
+static bool io_armed_once;
+static bool io_pending(void) { return !io_armed_once; }
+static void io_arms_immediate_and_due_timer(void) {
+  if (io_armed_once) return;
+  io_armed_once = true;
+  turn_note('o');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void timer_armed_by_io_callback_waits_for_next_timers_phase(void) {
+  turn_count = 0;
+  io_armed_once = false;
+  scr_loop_set_net(io_pending, io_arms_immediate_and_due_timer, NULL);
+  assert(!scr_loop_run(NULL));
+  scr_loop_set_net(NULL, NULL, NULL);
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "oic", 3) == 0);
+  puts("a timer armed by an I/O callback runs after that turn's immediates");
+}
+
+/* The startup checkpoint's ticks and microtasks are queued work when the
+ * timers phase begins: a due timer a process.nextTick callback arms runs
+ * before that turn's immediates ("nci"). Capturing the cutoff before the
+ * checkpoint would push it behind them ("nic") — Node runs the timer in the
+ * timers phase that follows the startup checkpoint. */
+static void tick_arms_immediate_and_due_timer(void) {
+  turn_note('n');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void tick_armed_timer_runs_before_turn_immediates(void) {
+  turn_count = 0;
+  scr_next_tick(scr_closure_new((void *)tick_arms_immediate_and_due_timer, 0));
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "nci", 3) == 0);
+  puts("a timer armed by a startup tick runs before that turn's immediates");
+}
+
 /* The immediate queue's storage. Whatever a program does with its immediates,
  * the queue holds a slot for each one that is waiting and reuses the slots of
  * those that ran or were cleared: its capacity follows the largest number
@@ -243,6 +310,27 @@ static void clearing_the_newest_immediate_does_not_walk_the_cleared_ones(void) {
   puts("clearing the newest immediate does not walk the cleared ones");
 }
 
+/* Dropping entries leaves tombstones that keep occupying buckets while the
+ * live count stays low, and ordinary churn can reach a table with every
+ * bucket taken (a direct-awaited promise is not registered, so an absent key
+ * is ordinary). An absent key must answer, and an insert must still land,
+ * instead of a probe wrapping forever on the event-loop thread. */
+static void promise_table_survives_tombstone_churn(void) {
+  scr_async_proms_cap = 64;
+  scr_async_proms = calloc(scr_async_proms_cap, sizeof *scr_async_proms);
+  assert(scr_async_proms != NULL);
+  for (size_t i = 0; i < scr_async_proms_cap; i++) scr_async_proms[i].key = SCR_PROM_TOMBSTONE;
+  scr_async_proms_len = 0;
+  scr_async_proms_used = scr_async_proms_cap;
+  ScrPromise missing;
+  assert(scr_async_prom_find(&missing) == NULL);
+  ScrPromise fresh;
+  scr_async_prom_insert(&fresh, 7, 0);
+  assert(scr_async_prom_find(&fresh) != NULL);
+  scr_async_prom_teardown();
+  printf("promise table survives tombstone churn\n");
+}
+
 /* A handle the program drops frees the resource it named: the live count
  * returns to what it was, and (under the sanitized build's leak check) the
  * type string and captured context are released too. */
@@ -260,6 +348,95 @@ static void async_resource_handles_own_their_payload(void) {
   scr_dyn_release(type);
   assert(scr_ar_live_resources() == before);
   printf("async resource handles own their payload\n");
+}
+
+/* executionAsyncResource() answers a handle box for a resource the scope
+ * borrows; the box owns its own reference, so dropping it leaves the
+ * original handle's payload alive (the regression was one shared reference,
+ * which freed the payload and double-released it). */
+static ScrDyn *ar_test_execution_resource(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  return scr_ar_execution_resource();
+}
+
+static void async_resource_execution_resource_owns_its_reference(void) {
+  const size_t before = scr_ar_live_resources();
+  ScrStr *name = scr_str_new("SCOPED", 6);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  scr_dyn_release(type);
+  assert(resource != NULL);
+  ScrDyn *target =
+      scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_execution_resource, 0, "()", "target");
+  ScrDyn *args = scr_dyn_new_arr();
+  ScrDyn *boxed = scr_ar_run_in_scope(resource, target, scr_dyn_undefined(), args);
+  scr_dyn_release(args);
+  assert(boxed != NULL);
+  assert(scr_dyn_strict_eq(boxed, resource));
+  scr_dyn_release(boxed);
+  assert(scr_ar_async_id(resource) >= 1.0);
+  assert(scr_ar_live_resources() == before + 1);
+  scr_dyn_release(target);
+  scr_dyn_release(resource);
+  assert(scr_ar_live_resources() == before);
+  printf("async resource execution resource owns its reference\n");
+}
+
+static int test_destroy_calls;
+
+static ScrDyn *ar_test_destroy(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  test_destroy_calls++;
+  return scr_dyn_undefined();
+}
+
+/* Node registers a GC destroy hook for a resource built while destroy hooks
+ * exist unless requireManualDestroy asked otherwise; dropping the last
+ * reference is the runtime's disposal point, so the destroy is emitted from
+ * there. An explicit emitDestroy queues its destroy once, and the release
+ * that follows does not queue a second. */
+static void async_resource_disposal_queues_its_destroy(void) {
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+
+  ScrStr *name = scr_str_new("AUTO", 4);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  assert(resource != NULL);
+  assert(test_destroy_calls == 0);
+  scr_dyn_release(resource);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 1);
+
+  ScrDyn *options = scr_dyn_new_obj();
+  scr_dyn_obj_set(options, "requireManualDestroy", 20, scr_dyn_new_bool(true));
+  ScrDyn *manual = scr_ar_new(type, options);
+  scr_dyn_release(options);
+  assert(manual != NULL);
+  scr_dyn_release(manual);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 1);
+
+  ScrDyn *destroyed = scr_ar_new(type, NULL);
+  assert(destroyed != NULL);
+  scr_dyn_release(scr_ar_emit_destroy(destroyed));
+  scr_dyn_release(destroyed);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == 2);
+
+  scr_dyn_release(type);
+  scr_ah_disable(hook);
+  printf("async resource disposal queues its destroy\n");
 }
 
 static ScrDyn *ar_test_target(ScrClosure *self, ScrDyn *const *args, size_t argc) {
@@ -301,6 +478,82 @@ static void async_resource_bindings_own_and_release_their_payload(void) {
   assert(scr_ar_live_resources() == before);
   printf("async resource bindings own and release their payload\n");
 }
+
+/* A resource a bound function keeps alive is disposed with the bound
+ * function's last reference: the instance form and the static form both
+ * queue the registered destroy. */
+static void async_resource_binding_disposal_queues_its_destroy(void) {
+  const int before = test_destroy_calls;
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+  ScrStr *name = scr_str_new("BINDAUTO", 8);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *fn = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_target, 0, "()", "fn");
+
+  ScrDyn *resource = scr_ar_new(type, NULL);
+  assert(resource != NULL);
+  ScrDyn *bound = scr_ar_bind(resource, fn, scr_dyn_undefined());
+  assert(bound != NULL);
+  scr_dyn_release(resource);
+  assert(test_destroy_calls == before);
+  scr_dyn_release(bound); /* the payload's last reference */
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + 1);
+
+  ScrDyn *static_bound = scr_ar_bind_static(fn, scr_dyn_undefined(), scr_dyn_undefined());
+  assert(static_bound != NULL);
+  scr_dyn_release(static_bound);
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + 2);
+
+  scr_dyn_release(fn);
+  scr_dyn_release(type);
+  scr_ah_disable(hook);
+  printf("async resource bindings queue their destroy\n");
+}
+
+/* A cycle the collector reclaims disposes its resources like refcounted
+ * ones: each registered destroy is queued from the pass. */
+static void async_resource_collected_cycle_queues_its_destroy(void) {
+  enum { CYCLES = 32 };
+  const int before = test_destroy_calls;
+  ScrDyn *destroy = scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_destroy, 1, "(asyncId)",
+                                     "destroy");
+  double hook = scr_ah_parts(NULL, NULL, NULL, destroy, NULL);
+  scr_dyn_release(destroy);
+  scr_ah_enable(hook);
+  const double store_id = scr_als_new();
+  ScrStr *name = scr_str_new("CYCLEDESTROY", 12);
+  ScrDyn *type = scr_dyn_new_str(name);
+  scr_str_release(name);
+  for (int i = 0; i < CYCLES; i++) {
+    ScrDyn *store_value = scr_dyn_new_obj();
+    ScrAlsCtx *prev = scr_als_enter(store_id, store_value);
+    ScrDyn *resource = scr_ar_new(type, NULL);
+    assert(resource != NULL);
+    ScrDyn *target =
+        scr_dyn_new_func(scr_closure_new(NULL, 0), ar_test_target, 0, "()", "target");
+    ScrDyn *bound = scr_ar_bind(resource, target, scr_dyn_undefined());
+    assert(bound != NULL);
+    scr_dyn_obj_set(store_value, "cb", 2, scr_dyn_retain(bound));
+    scr_als_restore(prev);
+    scr_dyn_release(resource);
+    scr_dyn_release(bound);
+    scr_dyn_release(target);
+    scr_dyn_release(store_value);
+  }
+  scr_dyn_release(type);
+  scr_collect_cycles();
+  assert(!scr_loop_run(NULL));
+  assert(test_destroy_calls == before + CYCLES);
+  scr_ah_disable(hook);
+  printf("collected async resources queue their destroy\n");
+}
+
 
 /* Node keeps a resource's captured store context after emitDestroy — a later
  * runInAsyncScope call or bound callback still runs inside that store — so the
@@ -419,10 +672,50 @@ static void async_resource_teardown_releases_cyclic_stores(void) {
   printf("teardown releases cyclic stores without walking a disposed snapshot\n");
 }
 
+/* A promiseResolve hook runs inside the settlement and may drop the last
+ * reference the program held to the settling promise; the settlement must
+ * finish on a promise it still holds. */
+static ScrPromise *settle_hook_promise;
+static ScrDyn *settle_hook_release(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  (void)self;
+  (void)args;
+  (void)argc;
+  if (settle_hook_promise != NULL) {
+    scr_promise_release(settle_hook_promise); /* the program's only reference */
+    settle_hook_promise = NULL;
+  }
+  return scr_dyn_undefined();
+}
+
+static void promise_resolve_hook_can_drop_the_settling_promise(void) {
+  scr_async_hooks_install();
+  ScrClosure *closure = scr_closure_new(NULL, 0);
+  ScrDyn *release = scr_dyn_new_func(closure, settle_hook_release, 1, "(id)", "release");
+  double handle = scr_ah_parts(NULL, NULL, NULL, NULL, release); /* promiseResolve slot */
+  assert(handle >= 1);
+  scr_ah_enable(handle);
+  scr_dyn_release(release);
+  ScrPromise *p = scr_promise_new();
+  settle_hook_promise = p; /* the program keeps exactly this one reference */
+  scr_promise_fulfill_void(p); /* the hook releases it mid-settlement */
+  assert(settle_hook_promise == NULL);
+  printf("a promiseResolve hook may drop the settling promise's owner\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
+  if (argc > 1 && strcmp(argv[1], "promises") == 0) {
+    promise_table_survives_tombstone_churn();
+    return 0;
+  }
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "turnorder") == 0) {
+    timer_armed_during_turn_waits_for_next_timers_phase();
+    timer_armed_by_io_callback_waits_for_next_timers_phase();
+    tick_armed_timer_runs_before_turn_immediates();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
@@ -437,12 +730,32 @@ int main(int argc, char **argv) {
     async_resource_teardown_releases_cyclic_stores();
     return 0;
   }
+  if (argc > 1 && strcmp(argv[1], "settlehook") == 0) {
+    promise_resolve_hook_can_drop_the_settling_promise();
+    return 0;
+  }
   if (argc > 1 && strcmp(argv[1], "bindings") == 0) {
     async_resource_bindings_own_and_release_their_payload();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "resources") == 0) {
     async_resource_handles_own_their_payload();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "execres") == 0) {
+    async_resource_execution_resource_owns_its_reference();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "autodestroy") == 0) {
+    async_resource_disposal_queues_its_destroy();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "binddestroy") == 0) {
+    async_resource_binding_disposal_queues_its_destroy();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "cycledestroy") == 0) {
+    async_resource_collected_cycle_queues_its_destroy();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "immediates") == 0) {

@@ -1,0 +1,66 @@
+{
+  "note": "Flaky tests: each failed and then passed on a rerun of the same tree. A quarantined test still runs in CI; a CI test task whose only failures are quarantined tests passes with a warning (scripts/ci-quarantine.mjs). An entry quarantines the test of that name in each of its files until its expiry date, then fails the run again. Keep the list short: fix the test, or renew the entry with new evidence. scripts/ci-flakes.mjs lists recent fail-then-pass reruns.",
+  "entries": [
+    {
+      "test": "worker-message-map-set.ts",
+      "files": ["tests/harness/differential.test.ts", "tests/harness/llvm-differential.test.ts"],
+      "owner": "ctate",
+      "reason": "the order of a Map and a Set carried through a worker message varies; #4026 makes the program deterministic, and this entry lapses once that has held for a week",
+      "added": "2026-11-22",
+      "expires": "2026-11-29",
+      "evidence": [
+        "run 44935403151 attempt 1, job 136941472843 test (Linux, plain, 17/20): llvm-differential dev stdout differs; passed on attempt 2 (2026-11-21)",
+        "run 44916632318 attempt 1, job 136887668189 test (Linux, plain, 20/20): same failure; passed on attempt 2 (2026-11-21)",
+        "run 44906359340 attempt 1, job 136855520819 test (Linux, plain, 20/20): same failure; passed on attempt 2 (2026-11-21)",
+        "run 44908481082 (main), job 136880339642 test (Linux, plain, 20/20): differential case passed on vitest's retry (2026-11-21)"
+      ]
+    },
+    {
+      "test": "the published Effect generator logs and completes statically",
+      "files": ["tests/harness/npm-static.test.ts"],
+      "owner": "ctate",
+      "reason": "times out at 300 s on a loaded runner; passes well inside it on a rerun",
+      "added": "2026-11-22",
+      "expires": "2026-12-06",
+      "evidence": [
+        "run 44950176395 attempt 1, job 136990036372 test (Linux, plain, 5/20): Test timed out in 300000ms; passed on attempt 2 (2026-11-21)"
+      ]
+    },
+    {
+      "test": "dns-response-question-match.cjs",
+      "files": ["tests/harness/differential.test.ts", "tests/harness/llvm-differential.test.ts"],
+      "owner": "ctate",
+      "reason": "sanitized dev build prints one line fewer than Node in some runs",
+      "added": "2026-11-22",
+      "expires": "2026-12-06",
+      "evidence": [
+        "run 44865486342 attempt 1, job 136729034387 test (Linux, san, 11/30): llvm-differential dev stdout differs; passed on attempt 2 (2026-11-21)",
+        "run 44812633382 attempt 1, job 136560283152 test (Linux, san, 11/30): same failure; passed on attempt 2 (2026-11-20)"
+      ]
+    },
+    {
+      "test": "dns-tcp-zero-frame.cjs",
+      "files": ["tests/harness/differential.test.ts", "tests/harness/llvm-differential.test.ts"],
+      "owner": "ctate",
+      "reason": "sanitized dev build sometimes prints nothing or exits 1",
+      "added": "2026-11-22",
+      "expires": "2026-12-06",
+      "evidence": [
+        "run 44887374388 attempt 1, job 136798027096 test (Linux, san, 7/30): llvm-differential dev stdout empty; passed on attempt 2 (2026-11-21)",
+        "run 44652935541 attempt 1, job 136016831607 test (Linux, san, 28/30): llvm-differential exit 1, Node exit 0; passed on attempt 2 (2026-11-20)"
+      ]
+    },
+    {
+      "test": "6807-node-island-exit-in-island-timer/main.ts",
+      "files": ["tests/harness/differential.test.ts", "tests/harness/llvm-differential.test.ts"],
+      "owner": "ctate",
+      "reason": "process.exit from an island timer races the native side's output",
+      "added": "2026-11-22",
+      "expires": "2026-12-06",
+      "evidence": [
+        "run 44637301623 attempt 1, job 135965130039 test (Linux, san, 15/30): llvm-differential dev stdout differs; passed on attempt 2 (2026-11-20)",
+        "run 44876660789 (main), test (Linux, san, 15/30): differential case passed on vitest's retry (2026-11-21)"
+      ]
+    }
+  ]
+}

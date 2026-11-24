@@ -1245,11 +1245,14 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // start, and let/const bindings that can be read before their
   // declaration carry an initialization check (Node's TDZ ReferenceError).
   // SC1016 remains for the shapes without an exact representation —
-  // CommonJS members, top-level await, default-export expressions,
-  // namespace imports or re-exports of cycle members, and var bindings
-  // reachable before their declaration ran. Classes carry an
-  // initialization check like the let/const bindings they behave as. The
-  // message names the offending construct.
+  // top-level await, default-export expressions, namespace imports or
+  // re-exports of cycle members, var bindings reachable before their
+  // declaration ran (classes carry an initialization check like the
+  // let/const bindings they behave as), a mixed ES-module/CommonJS
+  // cluster that a require() edge does not turn into Node's
+  // ERR_REQUIRE_CYCLE_MODULE, and top-level code that reaches another
+  // member of a require cycle only through a call or an escaping value.
+  // The message names the offending construct.
   SC1016: {
     feature: "circular imports",
     milestone: "later",
@@ -2215,19 +2218,39 @@ export function unsupportedNativeApiDiag(
   };
 }
 
-export function unsupportedPackageImportDiag(pkg: string, loc: SrcLoc): ScrDiagnostic {
+/** The package a refusal should name. TypeScript resolves a runtime import to
+ * the declaration package that types it (`@types/ms` for `ms`, and
+ * `@types/scope__name` for `@scope/name`); the refusal is about the runtime
+ * package the program loads, so name that one. */
+export function runtimePackageName(pkg: string): string {
+  if (!pkg.startsWith("@types/")) return pkg;
+  const bare = pkg.slice("@types/".length);
+  return bare.includes("__") ? "@" + bare.replace("__", "/") : bare;
+}
+
+export function unsupportedPackageImportDiag(
+  pkg: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return npmStaticRefusalDiag(
-    pkg,
+    runtimePackageName(pkg),
     "its implementation is not part of the compiled module graph",
     loc,
+    hint,
   );
 }
 
-export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagnostic {
+export function unsupportedPackageValueDiag(
+  pkg: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return npmStaticRefusalDiag(
-    pkg,
+    runtimePackageName(pkg),
     "its implementation is not part of the compiled module graph",
     loc,
+    hint,
   );
 }
 

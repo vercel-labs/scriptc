@@ -16,6 +16,7 @@ import {
 } from "../backend/llvm/emitter.js";
 import { inlineRcOption } from "../backend/llvm/shapes.js";
 import { carriesDebugSources, executableLinkFeatures } from "../backend/executable-features.js";
+import { sourceTextLoader } from "../backend/source-text-loader.js";
 import { REQUIRED_LINK_FEATURES } from "../backend/native-link-info-core.js";
 import type { NativeLinkFeatures } from "../backend/native-link-info-core.js";
 import { finishNodeIslands } from "../executable/islands.js";
@@ -658,6 +659,9 @@ export function prepareNativeExecutable(
             ? { debugSources: prepared.sourceTexts }
             : {}),
           positionSources: prepared.sourceTexts,
+          ...(options.fromLowered === undefined
+            ? {}
+            : { positionSourceLoader: sourceTextLoader() }),
           ...(conversionTrace ? { conversionTrace: true } : {}),
           ...(islandModuleData === undefined ? {} : { nodeIslandModuleData: islandModuleData }),
         });
@@ -785,6 +789,11 @@ export function prepareNativeLibrary(
     sanitizeAttributes: options.sanitize === true,
     timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
+    // A dev library carries the sources a dev executable does, so native
+    // debuggers and stack frames name the TypeScript lines.
+    ...(carriesDebugSources(profile.optimization, false)
+      ? { debugSources: prepared.sourceTexts }
+      : {}),
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

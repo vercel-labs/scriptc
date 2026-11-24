@@ -1,6 +1,0 @@
-import-meta-computed.ts:2:18 - error SC1090: import.meta with a runtime-computed key (use a statically-known metadata field) is not supported yet
-
-  1 | const key: "url" | "filename" = process.argv[2] === "url" ? "url" : "filename";
-  2 | const computed = import.meta[key];
-    |                  ^~~~~~~~~~~~~~~~
-  3 | console.log(computed);

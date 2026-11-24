@@ -12,6 +12,13 @@
  */
 #include "scr_runtime.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c defines this weakly for Mach-O's linker; the event-target
+ * unit's strong definition tells it that Event, CustomEvent and EventTarget
+ * construction is available. */
+int scr_dyn_event_target_unit_linked = 1;
+#endif
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -449,6 +456,13 @@ static ScrEtListener *scr_et_append(ScrEventTargetCore *core, ScrStr *type, ScrD
   return l;
 }
 
+/* The owner's notification after a listener leaves the core, however it
+ * left: removeEventListener, a `{ once: true }` listener firing, or an
+ * AbortSignal removing its listener. */
+static void scr_et_changed(ScrEventTargetCore *core, const ScrStr *type) {
+  if (core->changed) core->changed(core->changed_ctx, type);
+}
+
 static void scr_et_remove_matching(ScrEventTargetCore *core, const ScrStr *type,
                                    const ScrDyn *listener, bool capture) {
   ScrEtRoot *root = scr_et_root_find(core, type);
@@ -459,6 +473,7 @@ static void scr_et_remove_matching(ScrEventTargetCore *core, const ScrStr *type,
       scr_et_listener_remove(h);
       root->size--;
       if (root->size == 0) scr_et_root_unmap(core, root);
+      scr_et_changed(core, type);
       return;
     }
   }
@@ -849,6 +864,7 @@ void scr_et_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event) {
     if (handler->flags & SCR_ET_ONCE) {
       scr_et_listener_remove(handler);
       root->size--;
+      scr_et_changed(core, ev->type);
     }
     bool passive = (handler->flags & SCR_ET_PASSIVE) != 0;
     if (passive) ev->in_passive = true;
@@ -2193,6 +2209,12 @@ static void scr_et_broadcast_dispatch_type(ScrEventTargetCore *core, ScrDyn *sel
   scr_dyn_release(event);
 }
 
+static void scr_et_broadcast_watch(ScrEventTargetCore *core, void *ctx,
+                                   void (*changed)(void *ctx, const ScrStr *type)) {
+  core->changed = changed;
+  core->changed_ctx = ctx;
+}
+
 static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const char *type) {
   ScrStr *name = scr_str_new(type, strlen(type));
   ScrEtRoot *root = scr_et_root_find(core, name);
@@ -2203,6 +2225,7 @@ static double scr_et_broadcast_listener_count(ScrEventTargetCore *core, const ch
 static const ScrEtBroadcastOps scr_et_broadcast_table = {
     &scr_et_broadcast_core_new,  &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
     &scr_et_broadcast_dispatch_type, &scr_et_broadcast_listener_count,
+    &scr_et_broadcast_watch,
     &scr_et_target_method,       &scr_et_broadcast_method_value,
     &scr_et_handler_get,         &scr_et_handler_set,
 };

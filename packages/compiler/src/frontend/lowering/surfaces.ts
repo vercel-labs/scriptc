@@ -1507,6 +1507,15 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: { kind: "promise", inner: VOID },
         valueParams: exactValueParams(STRING, F64, F64),
       },
+      // The promise form exists on every platform and rejects with Node's
+      // ERR_METHOD_NOT_IMPLEMENTED where lchmod(2) does not exist (Linux);
+      // macOS runs the validation ladder and lchmod(2) through the runtime.
+      lchmod: {
+        fn: "fsp.lchmod",
+        params: [DYN, DYN],
+        result: { kind: "promise", inner: VOID },
+        valueParams: exactValueParams(DYN, DYN),
+      },
       // access' omitted mode and truncate's omitted len complete to 0 in
       // lowerBuiltinModuleCall, like their sync spellings. Both signatures are
       // fixed (path plus one optional number), so they box as function values
@@ -1754,6 +1763,8 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       privateEncrypt: { fn: "crypto.privateEncrypt", params: [], result: DYN },
       publicDecrypt: { fn: "crypto.publicDecrypt", params: [], result: DYN },
       diffieHellman: { fn: "crypto.diffieHellman", params: [], result: DYN },
+      encapsulate: { fn: "crypto.encapsulate", params: [], result: DYN },
+      decapsulate: { fn: "crypto.decapsulate", params: [], result: DYN },
       pbkdf2Sync: {
         fn: "crypto.pbkdf2",
         params: [BYTES_U8, BYTES_U8, F64, F64, STRING],
@@ -2412,6 +2423,16 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
     // into the checked-dynamic tree (special-cased in lowerBuiltinModuleCall — the entries
     // carry canonical shapes and route the dispatch). The Channel method
     // surface lowers through lowerDiagnosticsChannelMethodCall/lowerDiagnosticsChannelProperty.
+    // node:async_hooks — the hook registry and the execution-id reads. The
+    // callbacks object crosses as a dyn value and AsyncHook values are f64
+    // handles (type-mapper.ts), so the members lower in
+    // lowerAsyncHooksMethodCall/lowerAsyncHooksCall.
+    async_hooks: {
+      createHook: { fn: "ah.createHook", params: [DYN], result: F64 },
+      executionAsyncId: { fn: "ah.executionId", params: [], result: F64 },
+      triggerAsyncId: { fn: "ah.triggerId", params: [], result: F64 },
+      executionAsyncResource: { fn: "ah.executionResource", params: [], result: DYN },
+    },
     diagnostics_channel: {
       channel: { fn: "dc.channel", params: [STRING], result: F64 },
       subscribe: { fn: "dc.subscribe", params: [STRING, DYN], result: VOID },
@@ -2499,7 +2520,16 @@ export const BUILTIN_MODULE_CONSTS: Record<
   // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
   // in the namespace inventory, and the worker lowering supplies the value.
   worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
-  cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // The boolean members are RUNTIME reads (a compiled program can be
+  // either a primary or a worker): their rows stay here for the namespace
+  // inventory, and lower-cluster.ts claims every read before this table.
+  cluster: {
+    isPrimary: true,
+    isMaster: true,
+    isWorker: false,
+    SCHED_NONE: 1,
+    SCHED_RR: 2,
+  },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
   // string length limit (code units), and the inspect preview width.
@@ -3251,8 +3281,10 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.eldReset",
         "perf.eldPercentile",
         "perf.eldStat",
+        "perf.histoEwma",
+        "perf.histoBurnRate",
       ],
-      note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported",
+      note: "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile, burnRate, the min, max, mean, stddev, count, exceeds, skewness, kurtosis and EWMA readings, and the distribution comparisons are supported",
     },
     {
       id: "node-builtin.perf_hooks.createHistogram",
@@ -3269,6 +3301,8 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoSubtract",
         "perf.histoStat",
         "perf.histoStatBig",
+        "perf.histoEwma",
+        "perf.histoBurnRate",
         "perf.histoPercentile",
         "perf.histoPercentileBig",
         "perf.histoCountAt",
@@ -3277,6 +3311,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoPercentilesCount",
         "perf.histoPercentilesKey",
         "perf.histoPercentilesValue",
+        "perf.histoBucketArg",
+        "perf.histoLinearBucketsCount",
+        "perf.histoLogBucketsCount",
+        "perf.histoBucketsKey",
+        "perf.histoBucketsValue",
+        "perf.histoPercentilesValueBig",
+        "perf.histoLinearView",
+        "perf.histoLogView",
+        "perf.histoPercentilesAtView",
         "perf.histoDispose",
         "perf.histoKsTest",
         "perf.histoCohensD",
@@ -3284,8 +3327,44 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.histoMannWhitneyU",
         "perf.histoMannWhitneyZ",
         "perf.histoMannWhitneyP",
+        "perf.histoConfidence",
+        "perf.histoPercentileArg",
+        "perf.histoOther",
+        "perf.histoMeanCI",
+        "perf.histoWelch",
+        "perf.histoPercentileCI",
       ],
-      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
+      note: "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)",
+    },
+    {
+      id: "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      kind: "node-builtin",
+      name: "perf_hooks.createSlidingWindowHistogram",
+      fns: [
+        "perf.slidingNew",
+        "perf.slidingRecord",
+        "perf.slidingRecordBig",
+        "perf.slidingReset",
+        "perf.slidingSnapshot",
+        "perf.histoStat",
+        "perf.histoStatBig",
+        "perf.histoPercentile",
+        "perf.histoPercentileBig",
+        "perf.histoCountAt",
+        "perf.histoCdf",
+        "perf.histoCcdf",
+        "perf.histoPercentilesCount",
+        "perf.histoPercentilesKey",
+        "perf.histoPercentilesValue",
+      ],
+      note: "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's",
+    },
+    {
+      id: "node-builtin.perf_hooks.timerify",
+      kind: "node-builtin",
+      name: "perf_hooks.timerify",
+      fns: ["perf.timerify"],
+      note: "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type",
     },
     // ── the process global's ambient reads and authority calls
     // (lowerProcessProperty/lowerProcessMethodCall — process is a
@@ -3957,6 +4036,8 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
       "dynamic specifiers cannot exist in a compiled binary's fixed module graph",
     isBuiltin:
       "the lowered call checks a string against the baked Node v24 list, including bare/node: aliases and prefix-only builtins",
+    findPackageJSON:
+      "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph",
     syncBuiltinESMExports:
       "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change",
   },
@@ -3967,8 +4048,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     setFips:
-      "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
-      "in a non-FIPS build — getFips() answers 0 here",
+      "a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, " +
+      "Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with " +
+      "ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here",
   },
   http2: {
     connect:

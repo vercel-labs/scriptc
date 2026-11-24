@@ -1,0 +1,5 @@
+[
+    { "chapter": "timers", "signatures": ["`immediate[Symbol.dispose]()`", "`timeout[Symbol.dispose]()`", "`timeout[Symbol.toPrimitive]()`"], "status": "supported", "evidence": ["tests/corpus/2844-node-disposable-resources.ts", "tests/corpus/timers-timeout-close.ts", "tests/corpus/timers-handle-surface.ts"] },
+    { "chapter": "timers", "parent": "Class: `Timeout`", "signatures": ["`timeout.close()`"], "status": "supported", "evidence": ["tests/corpus/timers-timeout-close.ts"] },
+    { "chapter": "timers", "parent": "Timers", "signatures": ["Class: `Immediate`", "Class: `Timeout`"], "status": "supported", "evidence": ["tests/corpus/compat-core-members.mjs", "tests/corpus/compat-core-members.ts", "tests/corpus/timers-handle-surface.ts", "tests/corpus/timers-timeout-close.ts", "tests/corpus/timers-cross-kind-clears.ts"] }
+]

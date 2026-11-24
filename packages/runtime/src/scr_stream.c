@@ -215,6 +215,10 @@ struct ScrStreamState {
      * they ran — afterWrite's finishMaybe then puts 'finish' on a tick
      * of its own. */
     size_t after_holds;
+    /* A synchronous write failed and its onwriteError tick has not run yet
+     * (Node's pendingcb for that write): the finish must wait for the
+     * error path rather than start _final first. */
+    bool err_pending;
     /* clearBuffer is running its loop: a write completing inside it
      * leaves the next buffered write to the loop (Node's
      * kBufferProcessing), so completions keep their order */
@@ -297,6 +301,10 @@ struct ScrStreamState {
     /* The watcher must also report at the stream's close step when the
      * stream does not emit 'close' (an adapter that has to let go). */
     bool *close_step;
+    /* Registered after the stream was destroyed: Node's eos inspects the
+     * state at registration, so a silent destroy with a recorded error
+     * reports it, while a watcher that predates the destroy stays pending. */
+    bool *after_destroy;
     size_t n, cap;
   } fin;
 
@@ -502,6 +510,7 @@ static void scr_stream_state_drop(ScrStreamState *st, bool gc) {
   free(st->fin.cb);
   free(st->fin.inv);
   free(st->fin.close_step);
+  free(st->fin.after_destroy);
   free(st->pipes.dst);
   free(st->pipes.end);
   free(st->drain_srcs.src);
@@ -1559,6 +1568,21 @@ static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
   scr_queue_microtask(job);
 }
 
+/* Node's iterator reads through stream.read(), which asks the source for more
+ * once the bytes it leaves behind fall below the highWaterMark. The web
+ * adapters' single-chunk reads take a buffered entry whole instead of going
+ * through read(), so they ask for the same read(0) demand the iterator's
+ * read() makes: without it a transform keeps the write callback it holds
+ * while backpressured, and the write waits for a drain that never comes. */
+static void scr_stream_next_demand(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  if (!st->r.next_single || st->r.ended || st->destroyed || st->errored || st->r.reading ||
+      st->constructing)
+    return;
+  if (st->r.length != 0 && st->r.length >= st->r.hwm) return;
+  scr_st_tick(s, SCR_ST_READ0, NULL, NULL);
+}
+
 /* One pass of createAsyncIterator's loop for the parked waiter:
  * `stream.read()` (a _read below the hwm, then the buffered chunk; pushes
  * the _read makes join it), else the settled states (error, EOF), else
@@ -1601,6 +1625,7 @@ static void scr_stream_iter_step(ScrStream *s) {
       st->r.next_waiter = NULL;
       scr_stream_next_fulfill(st, single_waiter, single, single_kind);
       if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+      scr_stream_next_demand(s);
       return;
     }
     void *chunk = scr_stream_read_n_kind(s, want, &kind);
@@ -1678,6 +1703,7 @@ static void scr_stream_settle_next_waiter(ScrStream *s) {
     if (!st->error_emitted && !st->close_emitted) st->r.data_emitted = true;
     scr_stream_next_fulfill(st, w, chunk, kind);
     if (st->r.ended && st->r.length == 0) scr_stream_end_readable(s);
+    scr_stream_next_demand(s);
     return;
   }
   if (st->r.ended || st->destroyed) {
@@ -2442,11 +2468,6 @@ static SCR_TL ScrError *scr_stream_cb_error = NULL;
  * (ScrFsRenameFn: (cb, err-or-NULL) — NULL is Node's null). */
 static void *scr_stream_ecb_retain(void *p) { return p; }
 static void scr_stream_ecb_release(void *p) { (void)p; }
-static void scr_stream_ecb_trace(void *p, ScrTraceVisit visit, void *ctx) {
-  (void)p;
-  (void)visit;
-  (void)ctx;
-}
 static void scr_stream_ecb_fire(ScrClosure *wrapper) {
   ScrClosure *user = (ScrClosure *)scr_box_get_ref(wrapper->caps[0]);
   ScrFsRenameFn fn = (ScrFsRenameFn)scr_box_get_ref(wrapper->caps[1]);
@@ -2457,13 +2478,17 @@ ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
   ScrClosure *w = scr_closure_new((void *)scr_stream_ecb_fire, 2);
   w->caps[0] = scr_box_new_obj(scr_closure_retain_v, scr_closure_release_v, scr_closure_trace_v);
   scr_box_set_ref(w->caps[0], cb);
-  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, scr_stream_ecb_trace);
+  /* The adapter is a raw function pointer, not a collectable object: a
+   * NULL trace keeps the collector from visiting it as one. */
+  w->caps[1] = scr_box_new_obj(scr_stream_ecb_retain, scr_stream_ecb_release, NULL);
   scr_box_set_ref(w->caps[1], (void *)fn);
   return w;
 }
+ScrError *scr_stream_write_cb_error(void) { return scr_stream_cb_error; }
 #else
 #define SCR_WCB_CALL(cb, err) ((void (*)(ScrClosure *))(cb)->fn)(cb)
 #define SCR_WCB_CALL_ERROF(cb, st) SCR_WCB_CALL(cb, NULL)
+ScrError *scr_stream_write_cb_error(void) { return NULL; }
 #endif
 
 /* errorBuffer: once destroyed, the buffered writes' callbacks and the
@@ -2491,7 +2516,10 @@ static void scr_stream_error_buffer(ScrStream *s) {
     ScrClosure *cb = st->w.end_cbs[0];
     memmove(st->w.end_cbs, st->w.end_cbs + 1, (st->w.end_cbs_n - 1) * sizeof *st->w.end_cbs);
     st->w.end_cbs_n--;
-    ((void (*)(ScrClosure *))cb->fn)(cb);
+    /* Node's errorBuffer passes the stream's own terminal error (or the
+     * fresh ERR_STREAM_DESTROYED) to a buffered end() callback, so an
+     * error-first callback learns why the stream never finished. */
+    SCR_WCB_CALL_ERROF(cb, st);
     scr_closure_release(cb);
   }
 }
@@ -2741,9 +2769,9 @@ static void scr_stream_clear_buffer(ScrStream *s) {
  * drained after end(). */
 static void scr_stream_finish_maybe(ScrStream *s) {
   ScrStreamState *st = s->st;
-  if (!st->w.ending || st->w.writing || st->w.head < st->w.n || st->w.finished ||
-      st->destroyed || st->w.finish_scheduled || st->w.final_pending || st->flush_pending ||
-      st->constructing) {
+  if (!st->w.ending || st->w.writing || st->w.err_pending || st->w.head < st->w.n ||
+      st->w.finished || st->destroyed || st->w.finish_scheduled || st->w.final_pending ||
+      st->flush_pending || st->constructing) {
     /* a pending _final/_flush callback holds the finish (Node's
      * pendingcb), as does a construction in progress */
     return;
@@ -3710,17 +3738,21 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, ScrDyn *opts,
  *     error no longer crashes (the SCR_ST_ERROR suppression above). */
 
 static void scr_stream_fin_add(ScrStreamState *st, ScrClosure *cb /*moves*/, ScrStreamErrInv inv,
-                               bool close_step) {
+                               bool close_step, bool after_destroy) {
   if (st->fin.n == st->fin.cap) {
     st->fin.cap = st->fin.cap ? st->fin.cap * 2 : 2;
     st->fin.cb = realloc(st->fin.cb, st->fin.cap * sizeof *st->fin.cb);
     st->fin.inv = realloc(st->fin.inv, st->fin.cap * sizeof *st->fin.inv);
     st->fin.close_step = realloc(st->fin.close_step, st->fin.cap * sizeof *st->fin.close_step);
-    if (!st->fin.cb || !st->fin.inv || !st->fin.close_step) scr_stream_oom();
+    st->fin.after_destroy =
+        realloc(st->fin.after_destroy, st->fin.cap * sizeof *st->fin.after_destroy);
+    if (!st->fin.cb || !st->fin.inv || !st->fin.close_step || !st->fin.after_destroy)
+      scr_stream_oom();
   }
   st->fin.cb[st->fin.n] = cb;
   st->fin.inv[st->fin.n] = inv;
   st->fin.close_step[st->fin.n] = close_step;
+  st->fin.after_destroy[st->fin.n] = after_destroy;
   st->fin.n++;
 }
 
@@ -3753,27 +3785,33 @@ static ScrError *scr_stream_finish_status(ScrStream *s) {
 
 /* Report the watchers. `close_step_only` is the close-step notification of a
  * stream that does not emit 'close': only the watchers that asked for it fire,
- * and the others stay registered (Node's finished() stays pending there). */
-static void scr_stream_notify_finished_mode(ScrStream *s, bool close_step_only) {
+ * and the others stay registered (Node's finished() stays pending there).
+ * `late_too` adds the watchers registered after the stream was destroyed,
+ * which Node's eos answers from the state it inspects at registration even
+ * though a watcher registered before the destroy stays pending. */
+static void scr_stream_notify_finished_mode(ScrStream *s, bool close_step_only, bool late_too) {
   ScrStreamState *st = s->st;
   if (st->fin.n == 0) return;
   ScrClosure **cbs = st->fin.cb;
   ScrStreamErrInv *invs = st->fin.inv;
   bool *close_steps = st->fin.close_step;
+  bool *after_destroys = st->fin.after_destroy;
   size_t n = st->fin.n;
   st->fin.cb = NULL;
   st->fin.inv = NULL;
   st->fin.close_step = NULL;
+  st->fin.after_destroy = NULL;
   st->fin.n = 0;
   st->fin.cap = 0;
   ScrError *err = scr_stream_finish_status(s);
   size_t kept = 0;
   for (size_t i = 0; i < n; i++) {
-    if (close_step_only && !close_steps[i]) {
+    if (close_step_only && !close_steps[i] && !(late_too && after_destroys[i])) {
       /* Still waiting for a report Node would not give at the close step. */
       cbs[kept] = cbs[i];
       invs[kept] = invs[i];
       close_steps[kept] = close_steps[i];
+      after_destroys[kept] = after_destroys[i];
       kept++;
       continue;
     }
@@ -3785,17 +3823,19 @@ static void scr_stream_notify_finished_mode(ScrStream *s, bool close_step_only) 
     free(cbs);
     free(invs);
     free(close_steps);
+    free(after_destroys);
     return;
   }
   st->fin.cb = cbs;
   st->fin.inv = invs;
   st->fin.close_step = close_steps;
+  st->fin.after_destroy = after_destroys;
   st->fin.n = kept;
   st->fin.cap = n;
 }
 
 static void scr_stream_notify_finished(ScrStream *s) {
-  scr_stream_notify_finished_mode(s, false);
+  scr_stream_notify_finished_mode(s, false, false);
 }
 
 static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
@@ -3809,6 +3849,8 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
       memmove(&st->fin.inv[i], &st->fin.inv[i + 1], (st->fin.n - i - 1) * sizeof *st->fin.inv);
       memmove(&st->fin.close_step[i], &st->fin.close_step[i + 1],
               (st->fin.n - i - 1) * sizeof *st->fin.close_step);
+      memmove(&st->fin.after_destroy[i], &st->fin.after_destroy[i + 1],
+              (st->fin.n - i - 1) * sizeof *st->fin.after_destroy);
       st->fin.n--;
       break;
     }
@@ -3820,11 +3862,18 @@ static void scr_stream_finished_cleanup_fn(ScrClosure *self) {
 static ScrClosure *scr_stream_finish_register(ScrStream *s, ScrClosure *cb /*moves*/,
                                                ScrStreamErrInv inv, bool close_step) {
   ScrStreamState *st = s->st;
-  scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step);
+  scr_stream_fin_add(st, scr_closure_retain(cb), inv, close_step, st->destroyed);
   bool will_close = scr_stream_will_emit_close(st);
   if ((close_step && st->close_emitted) || (st->emit_close && st->close_emitted) ||
-      st->destroyed || (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
-    /* Already terminal: Node's eos still calls back asynchronously. */
+      (st->destroyed && (st->errored == NULL || st->error_emitted || st->close_emitted)) ||
+      (!will_close && st->w.finished && (!st->has_r || st->r.end_emitted))) {
+    /* Already terminal: Node's eos still calls back asynchronously. A
+     * destroyed stream with a pending error waits for its own error tick,
+     * which reports the watcher and consumes the error as Node's eos
+     * does; ticking it here would drop the watcher first, so the
+     * AbortError asyncDispose destroyed with would emit unhandled. A
+     * cleanly destroyed stream, one whose error was already reported, or
+     * one whose close step already ran has nothing left to wait for. */
     scr_st_tick(s, SCR_ST_FIN, NULL, NULL);
   }
   ScrClosure *cleanup = scr_closure_new((void *)&scr_stream_finished_cleanup_fn, 2);
@@ -5378,6 +5427,12 @@ typedef struct ScrDuplexify {
   ScrClosure *drain_l, *finish_l, *readable_l, *end_l; /* +1, the listeners, or NULL */
   ScrClosure *r_eos, *w_eos; /* +1: the eos listeners' cleanups, or NULL */
   bool readable, writable;
+  /* Duplex.fromWeb's pair: destroying it without an error closes the web
+   * sides cleanly, Node's web-pair adapter (no synthesized AbortError). */
+  bool web_pair;
+  /* The error this duplexify was destroyed with while the peers settle
+   * (the destroy callback receives it, not a peer's secondary error). +1. */
+  ScrError *destroy_err;
   bool ondrain, onfinish, onreadable;
   int onclose; /* _duplexify's onclose: undefined, null, or d's destroy callback */
   struct ScrDuplexify *live_prev, *live_next;
@@ -5397,6 +5452,7 @@ static void scr_dupx_release_v(void *p) {
   if (x->w_eos) scr_closure_release(x->w_eos);
   if (x->r) scr_stream_release(x->r);
   if (x->w) scr_stream_release(x->w);
+  if (x->destroy_err) scr_error_release(x->destroy_err);
   free(x);
 }
 
@@ -5470,7 +5526,12 @@ static void scr_dupx_onfinished(ScrDuplexify *x, ScrError *err) {
   x->onclose = SCR_DUPX_NULL;
   if (!x->d) return;
   if (onclose == SCR_DUPX_WAIT) {
-    scr_dupx_destroyed(x, err);
+    ScrError *own = x->destroy_err;
+    x->destroy_err = NULL;
+    /* The web pair reports the error it was destroyed with (none for a
+     * clean destroy); every other duplexify keeps the peer's outcome. */
+    scr_dupx_destroyed(x, x->web_pair ? own : err);
+    if (own) scr_error_release(own);
   } else if (err) {
     ScrStream *d = scr_stream_retain(x->d);
     scr_stream_release(scr_stream_destroy(d, err));
@@ -5499,9 +5560,34 @@ static void scr_dupx_r_eos(ScrClosure *cb, ScrStream *s, ScrError *err) {
 }
 
 /* d._write: w.write(chunk) ? callback() : (ondrain = callback) */
+/* The inner writable completed a write: the duplex's write completes with the
+ * same outcome, so a failing web sink reaches the caller's write callback. */
+static void scr_dupx_write_done(ScrClosure *cb) {
+  ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
+  /* The completion may arrive after the duplex was torn down (a web sink
+   * that settles late): there is no stream left to complete. */
+  if (!x->d) {
+    scr_dupx_release_v(x);
+    return;
+  }
+  ScrError *err = scr_stream_write_cb_error();
+  scr_stream_write_done(x->d, err ? scr_error_retain(err) : NULL);
+  scr_dupx_release_v(x);
+}
+
 static void scr_dupx_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
   ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
   const ScrStreamTypedDesc *desc = s->st->w.cur_desc;
+  if (x->web_pair) {
+    /* The web pair completes a write when the web sink does: a rejected sink
+     * write reaches the caller's write callback. */
+    ScrClosure *done = scr_dupx_closure((void *)&scr_dupx_write_done, x);
+    (void)(desc                        ? scr_stream_write_typed(x->w, chunk, desc, done)
+           : scr_stream_writes_values(s) ? scr_stream_write_dyn(x->w, (ScrDyn *)chunk, done)
+                                         : scr_stream_write(x->w, chunk, done));
+    scr_dupx_release_v(x);
+    return;
+  }
   bool ok = desc                        ? scr_stream_write_typed(x->w, chunk, desc, NULL)
             : scr_stream_writes_values(s) ? scr_stream_write_dyn(x->w, (ScrDyn *)chunk, NULL)
                                         : scr_stream_write(x->w, chunk, NULL);
@@ -5602,12 +5688,14 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
   (void)s;
   ScrDuplexify *x = scr_box_get_ref(cb->caps[0]);
   ScrError *e = err ? scr_error_retain(err) : NULL;
-  if (!e && x->onclose != SCR_DUPX_NULL) e = scr_compose_abort_error();
+  if (!e && x->onclose != SCR_DUPX_NULL && !x->web_pair) e = scr_compose_abort_error();
   x->onreadable = x->ondrain = x->onfinish = false;
   if (x->onclose == SCR_DUPX_NULL) {
     if (x->d) scr_dupx_destroyed(x, e);
   } else {
     x->onclose = SCR_DUPX_WAIT;
+    if (x->destroy_err) scr_error_release(x->destroy_err);
+    x->destroy_err = e ? scr_error_retain(e) : NULL;
     if (x->w && !x->w->st->destroyed) scr_stream_release(scr_stream_destroy(x->w, e));
     if (x->r && !x->r->st->destroyed) scr_stream_release(scr_stream_destroy(x->r, e));
   }
@@ -5617,13 +5705,14 @@ static void scr_dupx_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
 
 /* _duplexify({ readable: r, writable: w }): r and w borrowed, either NULL.
  * +1. */
-ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
+static ScrStream *scr_stream_duplexify_impl(ScrStream *r, ScrStream *w, bool web_pair) {
   ScrDuplexify *x = calloc(1, sizeof *x);
   if (!x) scr_stream_oom();
   x->rc = 1;
   x->r = r ? scr_stream_retain(r) : NULL;
   x->w = w ? scr_stream_retain(w) : NULL;
   x->onclose = SCR_DUPX_UNSET;
+  x->web_pair = web_pair;
   x->readable = r && scr_stream_prop(r, "readable") != 0;
   x->writable = w && scr_stream_prop(w, "writable") != 0;
   /* new Duplexify({ readableObjectMode, writableObjectMode, readable, writable }) */
@@ -5662,6 +5751,10 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
   if (scr_dupx_live) scr_dupx_live->live_prev = x;
   scr_dupx_live = x; /* the reference x was created with */
   return d;
+}
+
+ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w) {
+  return scr_stream_duplexify_impl(r, w, false);
 }
 
 /* Duplex.from(promise) (duplexify.js): a Duplexify({ objectMode: true,
@@ -5724,6 +5817,14 @@ ScrStream *scr_stream_duplex_from_promise(ScrPromise *p, ScrClosure *box) {
 ScrStream *scr_stream_duplexify_readable(ScrStream *r) { return scr_stream_duplexify(r, NULL); }
 ScrStream *scr_stream_duplexify_writable(ScrStream *w) { return scr_stream_duplexify(NULL, w); }
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w) { return scr_stream_duplexify(r, w); }
+/* Duplex.fromWeb's pair: duplexify defaults allowHalfOpen true, while Node's
+ * adapter passes false (adapters.js's newStreamDuplexFromReadableWritablePair
+ * defaults it). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open) {
+  ScrStream *d = scr_stream_duplexify_impl(r, w, true);
+  if (d->st) d->st->allow_half_open = allow_half_open;
+  return d;
+}
 
 /* ── node:stream/promises ─────────────────────────────────────────────
  * The promise forms ride the callback machinery above with a settling
@@ -7328,51 +7429,57 @@ static bool scr_stream_unshift_after_end(ScrStream *s) {
   return true;
 }
 
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
+/* readableAddChunk's answer: whether the stream can take more. */
+static bool scr_stream_unshift_answer(const ScrStreamState *st) {
+  return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
+}
+
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk) {
   ScrStreamState *st = s->st;
   /* A byte-mode stream drops a chunk that adds nothing before the 'end'
-   * check, as readableAddChunkUnshiftByteMode returns early for one. */
-  if (!((st->has_r && st->r.object_entries) || chunk->len > 0)) return;
-  if (scr_stream_unshift_after_end(s)) return;
+   * check, as readableAddChunkUnshiftByteMode returns early for one — with
+   * the same answer the added chunk would get (false at the high-water
+   * mark or after 'end'). */
+  if (!((st->has_r && st->r.object_entries) || chunk->len > 0))
+    return scr_stream_unshift_answer(st);
+  if (scr_stream_unshift_after_end(s)) return false;
   if (st->r.head_off > 0) {
     /* materialize the part-read head so the front slot is whole */
     void *rest = scr_stream_rbuf_take(st, scr_stream_entry_len(st, st->r.buf[st->r.first]) - st->r.head_off);
     scr_stream_rbuf_push(st, rest, scr_stream_rkind(st), true);
   }
-  scr_stream_add_chunk(s, chunk, true);
+  return scr_stream_add_chunk(s, chunk, true);
 }
 
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str) {
   if (s->st->has_r && s->st->r.object_entries) {
     /* object mode: the string itself goes to the front */
     ScrDyn *v = scr_dyn_new_str(str);
-    scr_stream_unshift_dyn(s, v);
+    bool ret = scr_stream_unshift_dyn(s, v);
     scr_dyn_release(v);
-    return;
+    return ret;
   }
   ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)str->len);
   memcpy(b->data, str->data, str->len);
   if (!str->ascii) scr_wtf8_to_utf8((char *)b->data, str->len);
   scr_stream_buffer(b);
-  scr_stream_unshift(s, b);
+  bool ret = scr_stream_unshift(s, b);
   scr_bytes_release(b);
+  return ret;
 }
 
 /* unshift(value): null is the end of the stream (Node's onEofChunk); an
  * object-mode stream takes any other value as one entry at the front; a
  * byte-mode stream takes Buffers and strings, ignores undefined and
  * reports another value as push does. Borrows d. */
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
   ScrStreamState *st = s->st;
-  if (d->kind == SCR_DYN_NULL) {
-    scr_stream_push_null(s);
-    return;
-  }
+  if (d->kind == SCR_DYN_NULL) return scr_stream_push_null(s);
   bool object = st->has_r && st->r.object_entries;
   if (!object && (d->kind == SCR_DYN_UNDEF || (d->kind == SCR_DYN_STR && d->v.str->len == 0) ||
                   (d->kind == SCR_DYN_BYTES && d->v.bytes->len == 0)))
-    return; /* nothing to add: Node answers without complaint, even after 'end' */
-  if (scr_stream_unshift_after_end(s)) return;
+    return scr_stream_unshift_answer(st); /* nothing to add: Node's own answer formula */
+  if (scr_stream_unshift_after_end(s)) return false;
   if (object) {
     void *entry;
     ScrEntryKind kind;
@@ -7390,17 +7497,16 @@ void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d) {
     scr_stream_rbuf_push(st, entry, kind, true);
     if (st->r.need_readable) scr_stream_emit_readable_nt(s);
     scr_stream_settle_next(s);
-    return;
+    return !st->r.ended && (st->r.length < st->r.hwm || st->r.length == 0);
   }
   if (d->kind == SCR_DYN_BYTES) {
     ScrBytes *b = scr_bytes_raw_view(d->v.bytes);
-    scr_stream_unshift(s, b);
+    bool ret = scr_stream_unshift(s, b);
     scr_bytes_release(b);
-  } else if (d->kind == SCR_DYN_STR) {
-    scr_stream_unshift_str(s, d->v.str);
-  } else {
-    scr_stream_push_dyn(s, d);
+    return ret;
   }
+  if (d->kind == SCR_DYN_STR) return scr_stream_unshift_str(s, d->v.str);
+  return scr_stream_push_dyn(s, d);
 }
 
 static void scr_stream_listener_error(ScrClosure *adapter, ScrError *error) {
@@ -7907,13 +8013,25 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s, ScrC
   } else if (chunk_s) {
     scr_stream_write_str(s, chunk_s, NULL);
   }
-  if (!st->has_w || st->destroyed) {
-    if (cb) scr_closure_release(cb);
-    return scr_stream_retain(s);
-  }
   if (cb) {
     if (st->w.finished) {
-      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb); /* already finished: plain call */
+      /* Node's end(): a finished stream reports ERR_STREAM_ALREADY_FINISHED
+       * to the callback (an error-first callback; a plain one takes the
+       * call with no error under SCR_STREAM_WRITE_ERRORS' plain-call form).
+       * This holds after autoDestroy closed the stream too: the finished
+       * state decides, not `destroyed`. */
+#ifdef SCR_STREAM_WRITE_ERRORS
+      ScrError *e = scr_stream_mkerr("ERR_STREAM_ALREADY_FINISHED",
+                                     "Cannot call end after a stream was finished");
+      scr_st_tick(s, SCR_ST_WCB_ERR, e, cb);
+#else
+      scr_st_tick(s, SCR_ST_WCB_ERR, NULL, cb);
+#endif
+      cb = NULL; /* the tick owns it now */
+    } else if (!st->has_w || st->destroyed) {
+      /* Node drops the callback on a destroyed stream that never finished. */
+      scr_closure_release(cb);
+      cb = NULL;
     } else {
       if (st->w.end_cbs_n == st->w.end_cbs_cap) {
         st->w.end_cbs_cap = st->w.end_cbs_cap ? st->w.end_cbs_cap * 2 : 2;
@@ -7921,8 +8039,10 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s, ScrC
         if (!st->w.end_cbs) scr_stream_oom();
       }
       st->w.end_cbs[st->w.end_cbs_n++] = cb;
+      cb = NULL; /* the list owns it now */
     }
   }
+  if (!st->has_w || st->destroyed) return scr_stream_retain(s);
   if (!st->w.ending) {
     st->w.ending = true;
     if (st->w.corked > 0) {
@@ -7966,6 +8086,10 @@ void scr_stream_write_done(ScrStream *s, ScrError *err /*moves*/) {
      * then errorOrDestroy) runs on a tick after a synchronous write. */
     if (!st->errored) st->errored = scr_error_retain(err);
     if (st->w.wsync) {
+      /* Node's pendingcb keeps a synchronous failed write counted until
+       * its onwriteError tick, so a following end() cannot start _final
+       * first; the destroy then carries THIS error. */
+      st->w.err_pending = true;
       scr_st_tick(s, SCR_ST_WRITE_ERR, err, ucb);
       return;
     }
@@ -8355,10 +8479,10 @@ static void scr_stream_emit_readable_now(ScrStream *s) {
   }
   st->r.need_readable = st->r.flowing != 1 && !st->r.ended &&
                         st->r.length <= st->r.hwm;
+  /* flow() alone reaches the end: Node emits 'end' only through a read
+   * (read()/read(0)) or through flow(), so a stream nobody observes stays
+   * unended after push(null) (readableEnded false). */
   scr_stream_flow(s);
-  if (!scr_exc_pending() && st->r.ended && st->r.length == 0) {
-    scr_stream_end_readable(s);
-  }
 }
 
 /* ── tick dispatch ────────────────────────────────────────────────────── */
@@ -8700,13 +8824,17 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
           if (w) scr_stream_next_fulfill(st, w, NULL, SCR_ENTRY_BYTES);
         }
         /* eos ordering: the finished()/pipeline watchers fire right after
-         * 'close' (Node's willEmitClose stance); a stream without the
-         * 'close' event reports at 'finish' or, for a destroy before it,
-         * not at all (Node leaves that watcher pending). */
+         * 'close' (Node's willEmitClose stance). A destroyed stream with a
+         * recorded error reports the watchers registered after the destroy
+         * even without the 'close' event (Node's eos calls back with that
+         * error, including one a destroy callback swallowed), while a
+         * watcher that predates the destroy stays pending, as Node leaves
+         * it; a clean silent destroy answers only a close-step watcher (an
+         * adapter that has to let go). */
         if (st->emit_close) {
           scr_stream_notify_finished(s);
         } else {
-          scr_stream_notify_finished_mode(s, true);
+          scr_stream_notify_finished_mode(s, true, st->destroyed && st->errored != NULL);
         }
         /* Fully closed: nothing calls the option callbacks again (Node's
          * contract), so drop them here — this breaks the reference cycle
@@ -8739,6 +8867,7 @@ static void scr_stream_run_tick(ScrStreamTick *t) {
       break;
     }
     case SCR_ST_WRITE_ERR: {
+      st->w.err_pending = false;
       ScrClosure *cb = t->cb;
       t->cb = NULL;
       if (cb) {
@@ -8892,12 +9021,40 @@ static bool scr_stream_wants_chunks(ScrStream *s) {
   return st->r.flowing == 1 || st->r.readable_listening || st->r.need_readable;
 }
 
+/* Resumes a bridged child stream no consumer holds (Node's flushStdio), so a
+ * child that exited still reaches EOF and 'end' instead of holding the
+ * child's 'close'. */
+static void scr_stream_child_flush(ScrStream *s) { scr_stream_release(scr_stream_resume(s)); }
+
+/* Registers the child bridge's 'close' listener on the stream, ahead of every
+ * listener the program registers afterwards (Node's maybeClose runs inside
+ * the stdio stream's close). */
+static void scr_stream_child_on_close(ScrStream *s, ScrClosure *cb /*moves*/) {
+  ScrStr *name = scr_str_new("close", 5);
+  /* One shot: the listener holds the child only until the stream closes. */
+  scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name, cb, scr_ee_inv_fixed0, true, false));
+  scr_str_release(name);
+}
+
+/* Whether a bridged child stream has closed: its 'close' was emitted or it
+ * was destroyed, which is what Node's maybeClose waits on for the stdio
+ * streams a ChildProcess holds. */
+static bool scr_stream_child_closed(ScrStream *s) {
+  const ScrStreamState *st = s->st;
+  if (!st) return true;
+  return st->destroyed || st->close_emitted;
+}
+
 const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_child_readable, scr_stream_child_writable,
   scr_stream_retain_v, scr_stream_release_v, scr_stream_trace,
   scr_stream_push, scr_stream_push_null,
   scr_stream_write_done, scr_stream_final_done,
   scr_stream_wants_chunks,
+  scr_stream_fail,
+  scr_stream_child_closed,
+  scr_stream_child_flush,
+  scr_stream_child_on_close,
 };
 
 static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }

@@ -4,6 +4,7 @@ import { closeSync, constants, mkdtempSync, openSync, readSync, rmSync, writeSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Ts7Wire, type Ts7WireIo } from "./rpc-wire.js";
+import { ensureExecutable } from "../../executable-mode.js";
 
 // Node's public spawn API does not expose synchronous pipe descriptors, so
 // the server's end of the channel is a named pipe on Windows and a FIFO pair
@@ -239,6 +240,7 @@ export class Ts7FifoIo implements Ts7WireIo {
 }
 
 export function spawnTs7Wire(executable: string, args: string[]): Ts7Wire {
+  ensureExecutable(executable);
   return new Ts7Wire(
     process.platform === "win32"
       ? new Ts7NamedPipeIo(executable, args)

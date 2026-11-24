@@ -289,9 +289,9 @@ level2(-2);
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("3\n");
+    expect(r.stdout).toBe("4\n");
     expect(r.stderr).toMatch(
-      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts\)\n    at level2 \(.*uncaught-frames\.ts\)\n$/,
+      /^Uncaught RangeError: negative input: -2\n    at helper \(.*uncaught-frames\.ts:\d+:\d+\)\n    at level2 \(.*uncaught-frames\.ts:\d+:\d+\)\n    at .*uncaught-frames\.ts:\d+:\d+\n$/,
     );
   });
 
@@ -308,9 +308,9 @@ setTimeout(() => {
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("1\n");
+    expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts\)\n/,
+      /^Uncaught Error: callback failed in timer\n    at fail \(.*uncaught-timer-frames\.ts:\d+:\d+\)\n/,
     );
   });
 
@@ -339,7 +339,7 @@ main();
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("2\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: TypeError: bad n 5\n    at load \(.*unhandled-rejection-frames\.ts:\d+:\d+\)\n$/,
     );
   });
 
@@ -354,20 +354,19 @@ new Promise((resolve, reject) => reject(make()));
 `,
     );
     expect(r.exitCode).toBe(1);
-    expect(r.stdout).toBe("2\n");
+    expect(r.stdout).toBe("3\n");
     expect(r.stderr).toMatch(
-      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts\)\n$/,
+      /^Unhandled promise rejection: Error: boom\n    at make \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at <anonymous> \(.*unhandled-dyn-rejection-frames\.ts:\d+:\d+\)\n    at .*unhandled-dyn-rejection-frames\.ts:\d+:\d+\n$/,
     );
   });
 });
 
 // A dev build (`--optimization dev` without `--strip`) keeps a source frame
-// in every function, whether or not the program reads a stack, and each
-// statement stores its position in the frame before it runs
-// (frame-positions.ts). An Error created anywhere, in the program or inside
-// the runtime, then names the statement that raised it and, for each
-// caller, the statement whose call was running. The position is the
-// statement's start, where Node reports the call or `new` expression.
+// in every function, whether or not the program reads a stack, and stores
+// the position of the call or throw site it is running (frame-positions.ts).
+// An Error created anywhere, in the program or inside the runtime, then
+// names the call or `new` expression that raised it and, for each caller,
+// the call site still running — the columns V8 prints.
 // A sanitized build keeps the frames of a release build, so these run in
 // the plain lane only.
 describe.skipIf(sanitize)("source positions in dev builds", () => {
@@ -398,10 +397,10 @@ console.log(outer(-2));
     expect(located(r.stderr)).toBe(
       [
         "Uncaught RangeError: negative input: -4",
-        "    at inner (located-uncaught.ts:2:14)",
-        "    at middle (located-uncaught.ts:7:3)",
-        "    at outer (located-uncaught.ts:10:3)",
-        "    at located-uncaught.ts:13:1",
+        "    at inner (located-uncaught.ts:2:20)",
+        "    at middle (located-uncaught.ts:7:10)",
+        "    at outer (located-uncaught.ts:10:10)",
+        "    at located-uncaught.ts:13:13",
         "",
       ].join("\n"),
     );
@@ -427,7 +426,7 @@ start();
     expect(located(r.stderr)).toBe(
       [
         "Unhandled promise rejection: Error: rejected first",
-        "    at start (located-rejection.ts:2:3)",
+        "    at start (located-rejection.ts:2:25)",
         "    at located-rejection.ts:4:1",
         "",
       ].join("\n"),
@@ -459,8 +458,8 @@ show('{"name":"ada","age":"36"}');
     expect(located(r.stderr)).toBe(
       [
         "Uncaught TypeError: expected number at $.age, got string",
-        "    at decode (located-conversion.ts:6:3)",
-        "    at show (located-conversion.ts:9:9)",
+        "    at decode (located-conversion.ts:6:15)",
+        "    at show (located-conversion.ts:9:16)",
         "    at located-conversion.ts:13:1",
         "",
       ].join("\n"),
@@ -482,7 +481,7 @@ console.log(config.port + 1);
     expect(located(r.stderr)).toBe(
       [
         "Uncaught TypeError: expected number at $.port, got string",
-        "    at located-top-level.ts:5:7",
+        "    at located-top-level.ts:5:21",
         "",
       ].join("\n"),
     );
@@ -520,10 +519,10 @@ console.log(ages(['{"name":"a","age":2}', '{"name":"b","age":"x"}']));
     expect(located(r.stderr)).toBe(
       [
         "Uncaught TypeError: expected number at $.age, got string",
-        "    at <anonymous> (located-callback.ts:7:19)",
-        "    at parseAll (located-callback.ts:6:3)",
-        "    at ages (located-callback.ts:12:3)",
-        "    at located-callback.ts:18:1",
+        "    at <anonymous> (located-callback.ts:7:24)",
+        "    at parseAll (located-callback.ts:8:6)",
+        "    at ages (located-callback.ts:12:22)",
+        "    at located-callback.ts:18:13",
         "",
       ].join("\n"),
     );
@@ -544,7 +543,7 @@ setTimeout(() => {
     expect(located(r.stderr)).toBe(
       [
         "Uncaught Error: callback failed in timer",
-        "    at fail (located-timer.ts:2:3)",
+        "    at fail (located-timer.ts:2:9)",
         "    at <anonymous> (located-timer.ts:5:3)",
         "",
       ].join("\n"),
@@ -580,7 +579,7 @@ main();
     expect(located(r.stderr)).toBe(
       [
         "Unhandled promise rejection: TypeError: bad n 2",
-        "    at load (located-async.ts:6:14)",
+        "    at load (located-async.ts:6:20)",
         "",
       ].join("\n"),
     );
@@ -613,7 +612,7 @@ run();
         "1",
         "a",
         "Error: no numbers",
-        "    at first (located-generic.ts:3:27)",
+        "    at first (located-generic.ts:3:33)",
         "    at run (located-generic.ts:10:5)",
         "    at located-generic.ts:16:1",
         "",
@@ -622,8 +621,8 @@ run();
     expect(located(r.stderr)).toBe(
       [
         "Uncaught Error: no names",
-        "    at first (located-generic.ts:3:27)",
-        "    at run (located-generic.ts:14:3)",
+        "    at first (located-generic.ts:3:33)",
+        "    at run (located-generic.ts:14:15)",
         "    at located-generic.ts:16:1",
         "",
       ].join("\n"),
@@ -667,9 +666,9 @@ console.log(drain("${mode}"));
     expect(located(r.stderr)).toBe(
       [
         "Uncaught Error: condition failed on call 4",
-        `    at more (located-loop-${mode}.ts:4:20)`,
-        `    at drain (located-loop-${mode}.ts:9:3)`,
-        `    at located-loop-${mode}.ts:21:1`,
+        `    at more (located-loop-${mode}.ts:4:26)`,
+        `    at drain (located-loop-${mode}.ts:9:10)`,
+        `    at located-loop-${mode}.ts:21:13`,
         "",
       ].join("\n"),
     );
@@ -681,14 +680,14 @@ console.log(drain("${mode}"));
     [
       "ctor",
       "too few sides: 2",
-      ["new Shape (located-members-ctor.ts:6:7)", "Shape.make (located-members-ctor.ts:12:5)"],
+      ["new Shape (located-members-ctor.ts:6:13)", "Shape.make (located-members-ctor.ts:12:12)"],
     ],
     [
       "getter",
       "too many sides: 200",
       [
-        "Shape.get angle (located-members-getter.ts:15:27)",
-        "Shape.describe (located-members-getter.ts:19:5)",
+        "Shape.get angle (located-members-getter.ts:15:33)",
+        "Shape.describe (located-members-getter.ts:19:23)",
       ],
     ],
   ])("class members have frames (%s)", async (which, message, frames) => {
@@ -729,7 +728,7 @@ if (which === "ctor") {
       [
         `Uncaught RangeError: ${message}`,
         ...frames.map((frame) => `    at ${frame}`),
-        `    at located-members-${which}.ts:${which === "ctor" ? "25:3" : "27:3"}`,
+        `    at located-members-${which}.ts:${which === "ctor" ? "25:29" : "27:31"}`,
         "",
       ].join("\n"),
     );
@@ -756,8 +755,8 @@ export function check(n: number): number {
     expect(located(r.stderr)).toBe(
       [
         "Uncaught RangeError: below limit: -3",
-        "    at check (located-limit.ts:3:18)",
-        "    at located-modules.ts:3:1",
+        "    at check (located-limit.ts:3:24)",
+        "    at located-modules.ts:3:13",
         "",
       ].join("\n"),
     );
@@ -788,7 +787,7 @@ console.log(check(2));
       [
         "Uncaught Error: too large: 2",
         "    at check (located-capture.ts:7:14)",
-        "    at located-capture.ts:11:1",
+        "    at located-capture.ts:11:13",
         "",
       ].join("\n"),
     );
@@ -818,8 +817,8 @@ console.log(start("shallow"));
     expect(located(r.stderr)).toBe(
       [
         "Uncaught RangeError: Maximum call stack size exceeded",
-        "    at start (located-overflow.ts:6:3)",
-        "    at located-overflow.ts:8:1",
+        "    at start (located-overflow.ts:6:10)",
+        "    at located-overflow.ts:8:13",
         "",
       ].join("\n"),
     );
@@ -904,7 +903,7 @@ findPage("home");
     expect(located(r.stdout)).toBe(
       [
         "Error: no user 7",
-        "    at fetchUser (located-capture-constructor.ts:19:3)",
+        "    at fetchUser (located-capture-constructor.ts:19:9)",
         "    at located-capture-constructor.ts:25:3",
         "",
       ].join("\n"),
@@ -912,7 +911,7 @@ findPage("home");
     expect(located(r.stderr)).toBe(
       [
         "Uncaught Error: not found: home",
-        "    at findPage (located-capture-constructor.ts:22:3)",
+        "    at findPage (located-capture-constructor.ts:22:9)",
         "    at located-capture-constructor.ts:29:1",
         "",
       ].join("\n"),
@@ -948,8 +947,8 @@ run();
     expect(located(r.stderr)).toBe(
       [
         "Uncaught Error: second failed",
-        "    at second (located-if-head.ts:6:3)",
-        "    at run (located-if-head.ts:9:3)",
+        "    at second (located-if-head.ts:6:9)",
+        "    at run (located-if-head.ts:10:6)",
         "    at located-if-head.ts:16:1",
         "",
       ].join("\n"),
@@ -971,8 +970,8 @@ console.log(make());
     expect(located(display.stdout)).toBe(
       [
         "Error: boom",
-        "    at make (located-display.ts:2:3)",
-        "    at located-display.ts:4:1",
+        "    at make (located-display.ts:2:10)",
+        "    at located-display.ts:4:13",
         "",
       ].join("\n"),
     );
@@ -1184,14 +1183,12 @@ console.log(await number(Promise.resolve("served")));
     expect(r.stderr).toBe("");
   });
 
-  test("a split require closing a CommonJS cycle keeps the const form's SC1016", async () => {
+  test("a split require closing a CommonJS cycle reads the partial exports", async () => {
     // Node answers the closing require with the dependency's partial exports
-    // ({ fromA: 1 } at this point), which the static export model cannot
-    // represent. Preflight treats the split assignment like `const a =
-    // require("./a.cjs")`, so the cycle keeps that form's SC1016 instead of
-    // reading uninitialized export storage. A cycle whose reads are all deferred
-    // compiles (tests/corpus/split-cjs-require-cycle).
-    const r = compileAndRun(
+    // ({ fromA: 1 } at this point): fromA is there, fromB is not, and the
+    // miss reports Node's circular-dependency warning. The split assignment
+    // reads through the live exports object like the const form does.
+    const r = await compileAndRun(
       "split-require-cycle",
       `require("./a.cjs");
 `,
@@ -1208,8 +1205,10 @@ console.log(a.fromA, a.fromB);
 `,
       },
     );
-    await expect(r).rejects.toThrow(
-      /SC1016: circular imports \(.*a\.cjs → .*b\.cjs → .*a\.cjs; the cycle closes through a require\(\) edge/,
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("1 undefined\n");
+    expect(r.stderr).toMatch(
+      /Warning: Accessing non-existent property 'fromB' of module exports inside circular dependency/,
     );
   });
 
@@ -3614,16 +3613,15 @@ console.log(count(require("./lib.cjs")));
 
 describe("builtin constructor values (JS lane)", () => {
   test("constructing one without a lowering throws the refusal that names it", async () => {
-    // `AsyncResource` has no lowering, so a JavaScript source reads the
-    // import as a function value that refuses when it is used
+    // `Intl.PluralRules` has no lowering, so a JavaScript source reads the
+    // global class as a value that refuses when it is constructed
     // (builtin-function-fences.ts). Node constructs the class, so "… is not
     // a constructor" would be the wrong error class and a fabricated
     // message: the construction is refused by name where it is written.
     const r = await compileAndRun(
       "builtin-token-construction",
-      `import { AsyncResource } from "node:async_hooks";
-function run() {
-  return new AsyncResource("demo");
+      `function run() {
+  return new Intl.PluralRules("en");
 }
 console.log("before");
 run();
@@ -3633,7 +3631,7 @@ run();
     expect(r.stdout).toBe("before\n");
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'new async_hooks\.AsyncResource' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:3\]\n$/,
+      /^Uncaught Error: 'new Intl\.PluralRules' is part of the standard library types but has no scriptc lowering yet \[SC2020 at .*builtin-token-construction\.mjs:2\]\n$/,
     );
   });
 
@@ -3792,10 +3790,11 @@ refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
 });
 
 // WebCrypto's native slice is crypto.subtle's secret-key methods and its
-// ECDSA, Ed25519 and RSA algorithms. Algorithms Node recognizes outside
-// that slice reject with a coded SC2020
-// Error instead of a Node-shaped success, and a JavaScript call of a
-// method outside it meets its named fence when it runs.
+// ECDSA, Ed25519, X448 and RSA algorithms. Algorithms Node recognizes
+// outside that slice reject with a coded SC2020 Error instead of a
+// Node-shaped success, and a JavaScript call of a method outside it meets
+// its named fence when it runs. An X448 call that the key's usage refuses
+// still reports Node's ExperimentalWarning as the algorithm normalizes.
 // Node's own rejections (unknown names, bad usages) are corpus-pinned
 // (6292, 6294); these refusals have no Node twin, so they live here.
 describe("WebCrypto refusals (JS lane)", () => {
@@ -3832,12 +3831,17 @@ await attempt("unwrap an ecdsa key", () =>
       "mjs",
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toBe("");
+    // X448 normalizes before the refusal, so the runtime reports Node's
+    // one-per-process ExperimentalWarning (its prefix carries the pid).
+    expect(r.stderr.replace(/\(node:\d+\)/, "(node:PID)")).toBe(
+      "(node:PID) ExperimentalWarning: The X448 Web Crypto API algorithm is an experimental feature and might change at any time\n" +
+        "(Use `node --trace-warnings ...` to show where the warning was created)\n",
+    );
     expect(r.stdout).toBe(
       "ed448 Error SC2020 crypto.subtle.sign with the Ed448 algorithm is not supported yet\n" +
         "ecdsa with an hmac key InvalidAccessError 15 Key algorithm mismatch\n" +
         "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
-        "x448 bits Error SC2020 crypto.subtle.deriveBits with the X448 algorithm is not supported yet\n" +
+        "x448 bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
         "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +
@@ -4103,7 +4107,7 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
         "x Error: e\n\u001b[90m    at thrower (node:fs:1:1)\u001b[39m\n" +
         "[ 1, ... 1 more item ]\n" +
         "Error SC2020 util.formatWithOptions with this maxArrayLength option has no lowering (maxArrayLength must be a non-negative integer or null)\n" +
-        "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
+        "[ 1, 2 ]\n" +
         "{ a: 1 } [ 1, 2 ]\n",
     );
     expect(r.stderr).toBe("");

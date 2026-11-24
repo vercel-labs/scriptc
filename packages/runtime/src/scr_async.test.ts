@@ -56,6 +56,12 @@ test("fiber stacks commit on demand and preserve large frames across suspension"
 // With every deadline already passed, the order is the timer heap's and the
 // loop's, not the clock's: tests/corpus/timers-cross-kind-clears.ts once
 // showed the first of these only when its own script ran fast enough.
+test("the promise resource table survives tombstone churn", async () => {
+  const result = await execFileAsync(bin, ["promises"]);
+  expect(result.stdout).toBe("promise table survives tombstone churn\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("a destroyed AsyncResource keeps its context until the resource is freed", async () => {
   const result = await execFileAsync(bin, ["destroy"]);
   expect(result.stdout).toBe(
@@ -67,6 +73,12 @@ test("a destroyed AsyncResource keeps its context until the resource is freed", 
 test("AsyncResource bindings own their payload and release it", async () => {
   const result = await execFileAsync(bin, ["bindings"]);
   expect(result.stdout).toBe("async resource bindings own and release their payload\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a promiseResolve hook may drop the settling promise's owner", async () => {
+  const result = await execFileAsync(bin, ["settlehook"]);
+  expect(result.stdout).toBe("a promiseResolve hook may drop the settling promise's owner\n");
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
@@ -90,10 +102,44 @@ test("an AsyncResource handle owns its payload", async () => {
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("executionAsyncResource answers a handle that owns its reference", async () => {
+  const result = await execFileAsync(bin, ["execres"]);
+  expect(result.stdout).toBe("async resource execution resource owns its reference\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("disposing an AsyncResource queues its destroy", async () => {
+  const result = await execFileAsync(bin, ["autodestroy"]);
+  expect(result.stdout).toBe("async resource disposal queues its destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a bound function's resource queues its destroy when the binding drops", async () => {
+  const result = await execFileAsync(bin, ["binddestroy"]);
+  expect(result.stdout).toBe("async resource bindings queue their destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a collected resource cycle queues its destroy", async () => {
+  const result = await execFileAsync(bin, ["cycledestroy"]);
+  expect(result.stdout).toBe("collected async resources queue their destroy\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 test("due timers run by deadline, then by creation, before the turn's immediates", async () => {
   const result = await execFileAsync(bin, ["timers"]);
   expect(result.stdout).toBe(
     "due timers run by deadline, then by creation, before the turn's immediates\n",
+  );
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
+test("a timer armed during a turn runs after that turn's immediates", async () => {
+  const result = await execFileAsync(bin, ["turnorder"]);
+  expect(result.stdout).toBe(
+    "a timer armed during a turn runs after that turn's immediates\n" +
+      "a timer armed by an I/O callback runs after that turn's immediates\n" +
+      "a timer armed by a startup tick runs before that turn's immediates\n",
   );
   expect(withoutContextWarning(result.stderr)).toBe("");
 });

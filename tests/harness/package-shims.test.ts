@@ -421,7 +421,7 @@ describe("package shims", () => {
     expect(await run(result.binaryPath, [], dir)).toBe("<x>\n");
   }, 180_000);
 
-  for (const name of ["undici7", "undici5"]) {
+  for (const name of ["undici8", "undici7", "undici5"]) {
     test(`${name}: endless chunk-size lines and large bodies stay in bounded memory`, async () => {
       const { dir, binary } = await buildInCase(name, "undici-bounded.ts");
       const out = await runAgainstPeer(binary, dir);
@@ -436,17 +436,21 @@ describe("package shims", () => {
     }, 300_000);
   }
 
-  test("undici7: fetch closes the connection of a redirect it follows or rejects", async () => {
-    const { dir, binary } = await buildInCase("undici7", "undici-redirect.ts");
-    expect(await runAgainstPeer(binary, dir)).toBe(
-      [
-        "follow 200 closed",
-        "error mode TypeError fetch failed",
-        "after error mode closed",
-        "",
-      ].join("\n"),
-    );
-  }, 180_000);
+  test.each(["undici8", "undici7"])(
+    "%s: fetch closes the connection of a redirect it follows or rejects",
+    async (name) => {
+      const { dir, binary } = await buildInCase(name, "undici-redirect.ts");
+      expect(await runAgainstPeer(binary, dir)).toBe(
+        [
+          "follow 200 closed",
+          "error mode TypeError fetch failed",
+          "after error mode closed",
+          "",
+        ].join("\n"),
+      );
+    },
+    180_000,
+  );
 
   test("undici5: a Host value with CR or LF throws before the request is written", async () => {
     const { dir, binary } = await buildInCase("undici5", "undici5-host.ts");
@@ -666,7 +670,7 @@ describe("package shims", () => {
   // under the declarations the compiler bundles (these cases have no
   // @types/node); undici-shim-types.test.ts has the same under the Node
   // types of the 20 line.
-  test.each(["undici5", "undici7"])(
+  test.each(["undici8", "undici5", "undici7"])(
     "%s: the bundled RequestInit spread whole fits the package's fetch and dispatch()",
     async (name) => {
       const dir = copyCase(name, `${name}-whole-init`);

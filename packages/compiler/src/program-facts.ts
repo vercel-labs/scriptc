@@ -292,6 +292,35 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: [],
   },
   {
+    name: "fetch-handle-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "functionsUseFetch",
+    source: "ir",
+    scope: "program",
+    setBy: "any fetch libCall in the IR (`fetch.function`, `fetch.requestNew` and the rest)",
+    gates:
+      "%main installs the handle property table, so a write onto a fetch Request, Response or Headers value adds an own property instead of throwing",
+    narrower:
+      "the written value's class, at run time; fetch values are checked-dynamic, so the census of typed handle receivers cannot see the write",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
+    name: "fetch-member-additions",
+    file: `${SRC}/frontend/lowering/handle-properties.ts`,
+    symbol: "fetchAdditions",
+    source: "syntax",
+    scope: "program",
+    setBy:
+      "a write, delete or definition of any member name in any implementation file, and a key the walk cannot read (a computed key, a non-literal Object.assign source) which names every member",
+    gates:
+      "a typed `json()`, `text()`, `bytes()` or `arrayBuffer()` call on a Response keeps its native body read only when no write can name that member; otherwise the call takes the checked-dynamic dispatch, whose handle-table lookup answers the own property before the prototype method",
+    narrower:
+      "the written value, at run time: a fetch handle is checked-dynamic in both tiers, so no write can be attributed to one statically",
+    tracked: "designs/handle-expandos",
+    lowererFields: [],
+  },
+  {
     name: "replaceable-methods",
     file: `${SRC}/frontend/lowering/class-method-mutations.ts`,
     symbol: "collectClassMethodMutations",
@@ -587,6 +616,20 @@ export const PROGRAM_FACTS: readonly ProgramFact[] = [
     lowererFields: ["importsNodeApi"],
   },
   {
+    name: "imports-diagnostics-channel",
+    file: `${SRC}/frontend/diagnostics-channel-import.ts`,
+    symbol: "programImportsDiagnosticsChannel",
+    source: "syntax",
+    scope: "program",
+    setBy: "an import or require of `diagnostics_channel` in any source file of the program",
+    gates:
+      "whether a global console output call publishes its arguments on the console.<member> diagnostics channels and formats a subscribed line from that array; a program without the import has no possible subscriber and keeps the plain console lowering",
+    narrower:
+      "the module specifier, at compile time: a require computed at run time is not followed, and such a program keeps the plain console lowering",
+    tracked: null,
+    lowererFields: ["importsDiagnosticsChannel"],
+  },
+  {
     name: "js-widened-fields",
     file: `${SRC}/frontend/lowering/lowerer.ts`,
     symbol: "jsWidenedFields",
@@ -850,6 +893,7 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   decides("frontend/lowering/handle-properties.ts#childAdditions", 2, "child-additions"),
   decides("frontend/lowering/handle-properties.ts#handleAdditions", 1, "handle-additions"),
+  decides("frontend/lowering/handle-properties.ts#fetchAdditions", 1, "fetch-member-additions"),
   scan(
     "frontend/lowering/handle-properties.ts#programHasJsSource",
     1,
@@ -973,6 +1017,17 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
     "a digest of the files a reused unit does not own",
   ),
   decides("frontend/node-api-import.ts#programImportsNodeApi", 1, "imports-node-api"),
+  decides(
+    "frontend/diagnostics-channel-import.ts#programImportsDiagnosticsChannel",
+    1,
+    "imports-diagnostics-channel",
+  ),
+  scan(
+    "frontend/diagnostics-channel-import.ts#sourceImportsDiagnosticsChannel",
+    1,
+    "prefilter",
+    "a file whose text never spells `diagnostics_channel` cannot name the module in a static import, export or require, so the walk skips it",
+  ),
   scan(
     "frontend/pipeline.ts#addDynamicImportGraph",
     1,
@@ -1012,9 +1067,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#entryPackageProgramRoots7",
-    1,
+    2,
     "discovery",
-    "program roots of the entry package",
+    "program roots of the entry package, including each JSX file's automatic runtime module",
   ),
   scan(
     "frontend/program.ts#declarationTwinRoots7",

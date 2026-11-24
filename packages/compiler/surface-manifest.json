@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.15",
+  "compilerVersion": "0.4.16",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -376,6 +376,30 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.async_hooks.createHook",
+      "kind": "node-builtin",
+      "name": "async_hooks.createHook",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.executionAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncId",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.executionAsyncResource",
+      "kind": "node-builtin",
+      "name": "async_hooks.executionAsyncResource",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.async_hooks.triggerAsyncId",
+      "kind": "node-builtin",
+      "name": "async_hooks.triggerAsyncId",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.buffer",
       "kind": "node-builtin",
       "name": "buffer",
@@ -478,6 +502,20 @@
       "name": "cluster",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.cluster.SCHED_NONE",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_NONE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.cluster.SCHED_RR",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_RR",
+      "status": "static",
+      "note": "constant value read"
     },
     {
       "id": "node-builtin.cluster.isMaster",
@@ -612,9 +650,21 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.decapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.decapsulate",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.encapsulate",
+      "kind": "node-builtin",
+      "name": "crypto.encapsulate",
       "status": "static"
     },
     {
@@ -791,7 +841,7 @@
       "name": "crypto.setFips",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here"
+      "note": "a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here"
     },
     {
       "id": "node-builtin.crypto.sign",
@@ -1467,6 +1517,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.promises.lchmod",
+      "kind": "node-builtin",
+      "name": "fs/promises.lchmod",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.fs.promises.lchown",
       "kind": "node-builtin",
       "name": "fs/promises.lchown",
@@ -1815,6 +1871,14 @@
       "kind": "node-builtin",
       "name": "module.enableCompileCache",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.module.findPackageJSON",
+      "kind": "node-builtin",
+      "name": "module.findPackageJSON",
+      "status": "unsupported",
+      "code": "SC2020",
+      "note": "the lowered call resolves a string-literal specifier against a static base (import.meta.url, __filename, or a path or file: URL literal) at build time and answers Node's nearest package.json; a runtime-computed specifier or base cannot exist in a compiled binary's fixed module graph"
     },
     {
       "id": "node-builtin.module.flushCompileCache",
@@ -2364,14 +2428,21 @@
       "kind": "node-builtin",
       "name": "perf_hooks.createHistogram",
       "status": "static",
-      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+      "note": "a RecordableHistogram over an HdrHistogram bucket layout set by the options; record, recordDelta, recordCorrected, reset, add, subtract, the readings (numeric and BigInt), percentile, countAt, cdf/ccdf, the percentiles Map, the linearBuckets/logBuckets maps and the ksTest, cohensD, cliffsD and mannWhitneyTest comparisons (both histogram kinds)"
+    },
+    {
+      "id": "node-builtin.perf_hooks.createSlidingWindowHistogram",
+      "kind": "node-builtin",
+      "name": "perf_hooks.createSlidingWindowHistogram",
+      "status": "static",
+      "note": "a SlidingWindowHistogram rotated by chunkDuration (milliseconds) or recordsPerChunk; record, reset and snapshot, whose Histogram answers the same readings as createHistogram's"
     },
     {
       "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
       "kind": "node-builtin",
       "name": "perf_hooks.monitorEventLoopDelay",
       "status": "static",
-      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile, burnRate, the min, max, mean, stddev, count, exceeds, skewness, kurtosis and EWMA readings, and the distribution comparisons are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.clearMarks",
@@ -2426,6 +2497,13 @@
       "name": "perf_hooks.performance.now",
       "status": "static",
       "note": "the global performance object and the performance.now.bind(performance) function value reach the same clock"
+    },
+    {
+      "id": "node-builtin.perf_hooks.timerify",
+      "kind": "node-builtin",
+      "name": "perf_hooks.timerify",
+      "status": "static",
+      "note": "performance.timerify and perf_hooks.timerify are the same wrapper: a timed call records a 'function' entry, delivered to the observers watching that type"
     },
     {
       "id": "node-builtin.process",
@@ -5831,9 +5909,8 @@
       "id": "stdlib.readable-stream.values",
       "kind": "stdlib",
       "name": "ReadableStream.values",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.1 / Undici 7.30.1; direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported"
+      "status": "static",
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-stream-values"
     },
     {
       "id": "stdlib.request.arrayBuffer",

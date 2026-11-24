@@ -1,0 +1,498 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { load } from "js-yaml";
+import { expect, test } from "vitest";
+import {
+  FAST_TEST_BUDGET_MS,
+  SMOKE_CORPUS,
+  fastTests,
+  moduleTokens,
+} from "../../scripts/ci-fast-tests.mjs";
+import {
+  decide,
+  forkAttestation,
+  isTrustedCiRun,
+  reviewState,
+  staleRuns,
+  testJobToRerun,
+  isExpensiveTierOf,
+} from "../../scripts/ci-review-gate.mjs";
+
+const repoRoot = join(import.meta.dirname, "../..");
+const repo = "vercel-labs/scriptc";
+const sha = "a".repeat(40);
+
+type Workflow = {
+  on: Record<
+    string,
+    {
+      types?: string[];
+      workflows?: string[];
+      inputs?: Record<
+        string,
+        { description?: string; type?: string; required?: boolean; default?: unknown }
+      >;
+    } | null
+  >;
+  permissions: Record<string, string>;
+  concurrency: { group: string; "cancel-in-progress": boolean };
+  jobs: Record<
+    string,
+    {
+      if?: string;
+      permissions?: Record<string, string>;
+      steps: { uses?: string; with?: Record<string, unknown>; run?: string }[];
+    }
+  >;
+};
+const gateWorkflow = load(
+  readFileSync(join(repoRoot, ".github/workflows/ci-review-gate.yml"), "utf8"),
+) as Workflow;
+
+const review = (
+  name: string,
+  status: string,
+  conclusion: string | null,
+  started = "2026-11-21T10:00:00Z",
+) => ({
+  name,
+  status,
+  conclusion,
+  started_at: started,
+  app: { slug: "vercel" },
+});
+const passed = [
+  review("Vercel Agent Review", "completed", "success"),
+  review("Vercel Security Review", "completed", "neutral"),
+];
+const pr = (overrides: Record<string, unknown> = {}) => ({
+  number: 42,
+  state: "open",
+  head: { sha, ref: "ctate/feature", repo: { full_name: repo } },
+  base: { ref: "main" },
+  labels: [],
+  ...overrides,
+});
+const gate = (overrides: Record<string, unknown> = {}) =>
+  decide({
+    mode: "review",
+    pr: pr(),
+    repo,
+    defaultBranch: "main",
+    reviewedSha: sha,
+    checkRuns: passed,
+    runs: [],
+    ...overrides,
+  });
+
+test("the expensive tier starts when both Vercel reviews passed on the pull request's head", () => {
+  expect(gate()).toEqual({
+    action: "dispatch",
+    reason: `both reviews passed on ${sha}`,
+    ref: "ctate/feature",
+    inputs: { pr: "42", sha, macos_suite: "darwin", scope: "all" },
+  });
+  // One review still running, failed, or missing keeps it waiting.
+  for (const checkRuns of [
+    [passed[0]!, review("Vercel Security Review", "in_progress", null)],
+    [passed[0]!, review("Vercel Security Review", "completed", "failure")],
+    [passed[0]!, review("Vercel Security Review", "completed", "action_required")],
+    [passed[0]!],
+    // A check run of the same name from another app does not count.
+    [passed[0]!, { ...passed[1]!, app: { slug: "github-actions" } }],
+  ])
+    expect(gate({ checkRuns }).action, JSON.stringify(checkRuns)).toBe("skip");
+  // The latest run of a review counts: a re-run that failed undoes an earlier pass.
+  expect(
+    reviewState([
+      ...passed,
+      review("Vercel Agent Review", "completed", "failure", "2026-11-21T11:00:00Z"),
+    ]).passed,
+  ).toBe(false);
+});
+
+test("the gate skips stale reviews, forks, stack upper layers, closed and labeled pull requests", () => {
+  expect(gate({ reviewedSha: "b".repeat(40) }).reason).toContain("the review ran on");
+  expect(
+    gate({ pr: pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } }) }).reason,
+  ).toContain("fork");
+  expect(gate({ pr: pr({ base: { ref: "ctate/lower" } }) }).reason).toContain(
+    "targets ctate/lower",
+  );
+  expect(gate({ pr: pr({ state: "closed" }) }).action).toBe("skip");
+  expect(gate({ pr: pr({ labels: [{ name: "ci:full" }] }) }).reason).toContain("ci:full");
+});
+
+test("the label and a manual run start the expensive tier whatever the reviews say", () => {
+  for (const mode of ["label", "manual"]) {
+    const decision = gate({ mode, checkRuns: [], reviewedSha: undefined });
+    expect(decision.action, mode).toBe("dispatch");
+    // Even on a pull request into another branch.
+    expect(gate({ mode, checkRuns: [], pr: pr({ base: { ref: "ctate/lower" } }) }).action).toBe(
+      "dispatch",
+    );
+  }
+});
+
+test("a running or green expensive tier of the same commit is not started again", () => {
+  const run = (status: string, conclusion: string | null) => ({
+    head_sha: sha,
+    display_title: `Expensive tier of #42 at ${sha}`,
+    status,
+    conclusion,
+    html_url: "https://example.test/run",
+  });
+  expect(gate({ runs: [run("in_progress", null)] }).action).toBe("skip");
+  expect(gate({ runs: [run("queued", null)] }).action).toBe("skip");
+  expect(gate({ runs: [run("completed", "success")] }).action).toBe("skip");
+  // A failed or cancelled one may run again, for example after the label is added.
+  expect(gate({ runs: [run("completed", "failure")] }).action).toBe("dispatch");
+  expect(gate({ runs: [run("completed", "cancelled")] }).action).toBe("dispatch");
+  // A dispatch for an older commit that raced a push ran, green and empty, on this head: it does not count.
+  const raced = {
+    ...run("completed", "success"),
+    display_title: `Expensive tier of #42 at ${"c".repeat(40)}`,
+  };
+  expect(gate({ runs: [raced] }).action).toBe("dispatch");
+  expect(gate({ runs: [{ ...raced, status: "in_progress", conclusion: null }] }).action).toBe(
+    "dispatch",
+  );
+  // Another pull request's run on the same commit does not count either.
+  expect(
+    gate({
+      runs: [{ ...run("completed", "success"), display_title: `Expensive tier of #7 at ${sha}` }],
+    }).action,
+  ).toBe("dispatch");
+  expect(isExpensiveTierOf(run("queued", null), 42, sha)).toBe(true);
+});
+
+test("only CI's own dispatched runs count, and a fork's run never becomes ci/full", () => {
+  const ci = {
+    path: ".github/workflows/ci.yml",
+    event: "workflow_dispatch",
+    repository: { full_name: repo },
+    head_repository: { full_name: repo },
+  };
+  expect(isTrustedCiRun(ci, repo)).toBe(true);
+  // workflow_run matches by name: another workflow named CI, a fork's run, or CI's own pull request run is not it.
+  expect(isTrustedCiRun({ ...ci, path: ".github/workflows/fake-ci.yml" }, repo)).toBe(false);
+  expect(isTrustedCiRun({ ...ci, head_repository: { full_name: "someone/scriptc" } }, repo)).toBe(
+    false,
+  );
+  expect(isTrustedCiRun({ ...ci, event: "pull_request" }, repo)).toBe(false);
+  // A fork's ci/full comes only from a maintainer's explicit attestation of the commit they checked.
+  const fork = pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  expect(forkAttestation(fork, repo, false, "ctate", sha)).toBeNull();
+  expect(forkAttestation(fork, repo, true, "ctate", sha)).toEqual({
+    sha,
+    state: "success",
+    description: "Fork CI checked by ctate, workflow files included",
+  });
+  expect(forkAttestation(pr(), repo, true, "ctate", sha)).toBeNull();
+  expect(forkAttestation({ ...fork, state: "closed" }, repo, true, "ctate", sha)).toBeNull();
+});
+
+test("fork_attest approves only the exact commit the maintainer checked", () => {
+  const fork = pr({ head: { sha, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  const pushed = "b".repeat(40);
+  expect(forkAttestation(fork, repo, true, "ctate", sha)?.sha).toBe(sha);
+  // The fork pushes while the dispatch queues: the new head is not the commit that was checked.
+  const movedFork = pr({ head: { sha: pushed, ref: "x", repo: { full_name: "someone/scriptc" } } });
+  expect(forkAttestation(movedFork, repo, true, "ctate", sha)).toBeNull();
+  // What was checked is named as that commit's full sha; a prefix, another commit, or nothing approves none.
+  for (const approvedSha of [undefined, "", sha.slice(0, 12), pushed, sha.toUpperCase(), ` ${sha}`])
+    expect(forkAttestation(fork, repo, true, "ctate", approvedSha), String(approvedSha)).toBeNull();
+  // The status goes to the attested commit alone, and the dispatch carries the sha.
+  const script = readFileSync(join(repoRoot, "scripts/ci-review-gate.mjs"), "utf8");
+  expect(script).toContain("repos/${repo}/statuses/${attestation.sha}");
+  expect(script).toContain("event.inputs?.sha");
+  const dispatch = gateWorkflow.on["workflow_dispatch"]!.inputs!;
+  expect(dispatch["sha"]).toMatchObject({ type: "string" });
+  expect(dispatch["fork_attest"]!.description).toContain("sha");
+});
+
+test("the gate workflow dispatches a pull request's full tier only by hand, and runs no pull request code", () => {
+  // Reviews and labels no longer dispatch anything: a pull request runs the fast tier, and the ci:full label
+  // runs the full suite in the pull request's own run.
+  expect(Object.keys(gateWorkflow.on!)).toEqual(["workflow_dispatch"]);
+  expect(gateWorkflow.jobs["gate"]!.if).toBe("${{ github.event_name == 'workflow_dispatch' }}");
+  expect(gateWorkflow.on["workflow_dispatch"]).toBeDefined();
+  expect(gateWorkflow.permissions).toEqual({ contents: "read" });
+  expect(gateWorkflow.concurrency["cancel-in-progress"]).toBe(false);
+  const job = gateWorkflow.jobs["gate"]!;
+  expect(job.permissions).toEqual({
+    contents: "read",
+    actions: "write",
+    checks: "read",
+    "pull-requests": "read",
+    statuses: "write",
+  });
+  // The default branch's gate script, never the pull request's, and no build or install.
+  const checkout = job.steps.find((step) => step.uses?.startsWith("actions/checkout@"))!;
+  expect(checkout.with!["ref"]).toBe("${{ github.event.repository.default_branch }}");
+  expect(checkout.with!["persist-credentials"]).toBe(false);
+  expect(job.steps.filter((step) => step.run)).toHaveLength(1);
+});
+
+test("the fast tier also runs the smoke set when asked, without duplicating a selected program", () => {
+  const testFiles = ["packages/compiler/test/emit-call.test.ts"];
+  const costs = { "packages/compiler/test/emit-call.test.ts": 1000 };
+  const base = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    { forceSmoke: true },
+  );
+  expect(base.selected).toEqual(["packages/compiler/test/emit-call.test.ts"]);
+  expect(base.smoke).toBe(true);
+  expect(base.corpus).toEqual(SMOKE_CORPUS);
+  // A program the maps already placed is not run twice.
+  const program = SMOKE_CORPUS[0]!;
+  const indexed = fastTests(
+    ["packages/runtime/src/scr_http.c"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["http", [program]]]),
+      corpusCosts: { [program]: 1000 },
+    },
+  );
+  expect(indexed.corpus.filter((entry) => entry === program)).toHaveLength(1);
+  // The smoke set is mandatory: mapped programs that exhaust the corpus budget do not displace it.
+  const tight = fastTests(
+    ["packages/runtime/src/scr_http.c"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["http", ["mapped.ts"]]]),
+      corpusCosts: { "mapped.ts": 1000 },
+      corpusBudget: 0,
+    },
+  );
+  expect(tight.corpus).toEqual(SMOKE_CORPUS);
+  expect(tight.deferredCorpus).toEqual(["mapped.ts"]);
+});
+
+test("the fast tier runs the changed tests and the tests named after changed sources, within its budget", () => {
+  const testFiles = [
+    "packages/compiler/src/backend/emit-call.test.ts",
+    "packages/compiler/test/emit-call.test.ts",
+    "packages/runtime/src/scr_json.test.ts",
+    "tests/harness/differential.test.ts",
+    "tests/harness/ci-lanes.test.ts",
+    "tests/harness/slow.test.ts",
+  ];
+  const costs = {
+    "packages/compiler/src/backend/emit-call.test.ts": 1000,
+    "packages/compiler/test/emit-call.test.ts": 2000,
+    "packages/runtime/src/scr_json.test.ts": 500,
+    "tests/harness/ci-lanes.test.ts": 300,
+    "tests/harness/slow.test.ts": FAST_TEST_BUDGET_MS,
+  };
+  expect(
+    fastTests(
+      [
+        "packages/compiler/src/backend/emit-call.ts",
+        "packages/runtime/src/scr_json.c",
+        "scripts/ci-lanes.mjs",
+        "docs/readme.md",
+      ],
+      testFiles,
+      costs,
+    ),
+  ).toEqual({
+    related: [],
+    selected: [
+      "tests/harness/ci-lanes.test.ts",
+      "packages/runtime/src/scr_json.test.ts",
+      "packages/compiler/src/backend/emit-call.test.ts",
+      "packages/compiler/test/emit-call.test.ts",
+    ],
+    deferred: [],
+    corpus: [],
+    deferredCorpus: [],
+    total: 3800,
+    corpusTotal: 0,
+    smoke: false,
+  });
+  // The corpus suites and anything past the budget wait for the expensive tier.
+  expect(
+    fastTests(
+      [
+        "tests/harness/differential.test.ts",
+        "tests/harness/slow.test.ts",
+        "tests/harness/ci-lanes.test.ts",
+      ],
+      testFiles,
+      costs,
+    ),
+  ).toEqual({
+    related: [],
+    selected: ["tests/harness/ci-lanes.test.ts"],
+    deferred: ["tests/harness/differential.test.ts", "tests/harness/slow.test.ts"],
+    corpus: [],
+    deferredCorpus: [],
+    total: 300,
+    corpusTotal: 0,
+    smoke: false,
+  });
+});
+
+test("a runtime or compiler change maps to the corpus programs that import its module", () => {
+  const corpusIndex = new Map([
+    ["http", ["http-client-finished-flag.ts", "http-server-close.ts"]],
+    ["fs", ["map-fs-watcher-values.ts"]],
+  ]);
+  const corpusCosts = {
+    "http-client-finished-flag.ts": 600,
+    "http-server-close.ts": 2_000,
+    "map-fs-watcher-values.ts": 900,
+  };
+  const selection = fastTests(
+    ["packages/runtime/src/scr_http.c", "packages/compiler/src/frontend/lib-http.ts"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+    { corpusIndex, corpusCosts },
+  );
+  expect(selection.corpus).toEqual(["http-client-finished-flag.ts", "http-server-close.ts"]);
+  expect(selection.smoke).toBe(false);
+  expect(selection.corpusTotal).toBe(2_600);
+  // A source whose name names no module falls back to the smoke slice.
+  const fallback = fastTests(
+    ["packages/compiler/src/backend/llvm/lower-stream.ts"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+    { corpusIndex, corpusCosts },
+  );
+  expect(fallback.smoke).toBe(true);
+  expect(fallback.corpus.length).toBeGreaterThan(0);
+});
+
+test("vitest-related files are selected once, within the same budget as everything else", () => {
+  const testFiles = ["packages/compiler/test/emit-call.test.ts"];
+  const selection = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    testFiles,
+    { "packages/compiler/test/emit-call.test.ts": 1_000 },
+    FAST_TEST_BUDGET_MS,
+    { related: ["packages/compiler/test/emit-call.test.ts"] },
+  );
+  expect(selection.related).toEqual(["packages/compiler/test/emit-call.test.ts"]);
+  expect(selection.selected).toEqual(["packages/compiler/test/emit-call.test.ts"]);
+  expect(selection.smoke).toBe(false);
+});
+
+test("a shared source's large related set is cut at the budget, not run through", () => {
+  // A compiler module imported by hundreds of tests: the module graph names
+  // them all, and the budget must still hold.
+  const related = Array.from(
+    { length: 100 },
+    (_, index) => `packages/compiler/test/related-${index}.test.ts`,
+  );
+  const costs = Object.fromEntries(related.map((file) => [file, 60_000]));
+  const selection = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    related,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    { related },
+  );
+  expect(selection.total).toBeLessThanOrEqual(FAST_TEST_BUDGET_MS);
+  expect(selection.selected).toHaveLength(20);
+  expect(selection.deferred).toHaveLength(80);
+  expect(selection.related).toEqual(selection.selected);
+});
+
+test("object-prototype names in a path are module tokens, not inherited aliases", () => {
+  expect([...moduleTokens("packages/compiler/src/backend/constructor.ts")]).toContain(
+    "constructor",
+  );
+  expect([...moduleTokens("packages/compiler/src/backend/toString.ts")]).toContain("tostring");
+  // And a constructor-named change selects the smoke slice rather than throwing.
+  const selection = fastTests(
+    ["packages/compiler/src/backend/constructor.ts"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+  );
+  expect(selection.smoke).toBe(true);
+});
+
+test("a push cancels the expensive tier still running on the pull request's older head", () => {
+  const run = (id: number, head: string, status: string) => ({ id, head_sha: head, status });
+  const newHead = "b".repeat(40);
+  expect(
+    staleRuns(
+      [
+        run(1, sha, "in_progress"),
+        run(2, sha, "queued"),
+        run(3, sha, "completed"),
+        run(4, newHead, "queued"),
+      ],
+      newHead,
+    ).map((stale) => stale.id),
+  ).toEqual([1, 2]);
+});
+
+test("a pull request runs the fast tier and passes the required check without the expensive tier", () => {
+  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as Workflow;
+  const steps = ci.jobs["test"]!.steps as { name?: string; if?: string; run?: string }[];
+  // No status is required beside the check, and no step waits for a dispatched tier.
+  expect(ci.jobs["test"]!.permissions).toEqual({ contents: "read" });
+  expect(steps.some((step) => step.name === "Require the expensive tier (ci/full)")).toBe(false);
+  expect(steps.some((step) => step.run?.includes("context=ci/full"))).toBe(false);
+  const gate = steps.find((step) => step.run?.includes('case "$MODE"'))!.run!;
+  expect(gate).toContain('test "${{ needs.code_quality.result }}" = success');
+  expect(gate).toContain("lane fast_tests");
+  // A pull request is fast unless the ci:full label asks for the full suite, and labeling starts a run.
+  const scope = ci.jobs["validation_scope"]!.steps.find((step) => step.id === "scope")!.run!;
+  expect(scope).toContain("fullLabel");
+  expect(scope).toContain("? 'fast'");
+  const pull = ci.on!["pull_request"] as { types?: string[] };
+  expect(pull.types).toEqual(["opened", "synchronize", "reopened", "labeled"]);
+});
+
+test("a passing expensive tier re-runs the pull request run's test check on the same commit", () => {
+  const dispatch = {
+    event: "workflow_dispatch",
+    conclusion: "success",
+    head_sha: sha,
+    display_title: `Expensive tier of #42 at ${sha}`,
+  };
+  const prRun = { head_sha: sha };
+  const failedTest = { id: 7, name: "test", status: "completed", conclusion: "failure" };
+  expect(testJobToRerun(dispatch, prRun, [failedTest])).toBe(failedTest);
+  expect(testJobToRerun({ ...dispatch, conclusion: "failure" }, prRun, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, { head_sha: "b".repeat(40) }, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, undefined, [failedTest])).toBeNull();
+  expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, conclusion: "success" }])).toBeNull();
+  expect(testJobToRerun(dispatch, prRun, [{ ...failedTest, status: "in_progress" }])).toBeNull();
+  // A raced dispatch, titled with an older commit, and manual runs vouch for nothing.
+  expect(
+    testJobToRerun(
+      { ...dispatch, display_title: `Expensive tier of #42 at ${"c".repeat(40)}` },
+      prRun,
+      [failedTest],
+    ),
+  ).toBeNull();
+  expect(testJobToRerun({ ...dispatch, display_title: "CI" }, prRun, [failedTest])).toBeNull();
+});
+
+test("expensive-tier runs carry their pull request and commit in their title, and the gate skips until it is on main", () => {
+  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+    "run-name": string;
+  };
+  expect(ci["run-name"]).toBe(
+    "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs.pr, inputs.sha) || '' }}",
+  );
+  const run = gateWorkflow.jobs["gate"]!.steps.at(-1)!.run!;
+  expect(run).toContain("if [ ! -f scripts/ci-review-gate.mjs ]; then");
+  expect(run.trim().endsWith("node scripts/ci-review-gate.mjs")).toBe(true);
+});

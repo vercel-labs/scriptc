@@ -115,6 +115,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.promiseResolve",
   // A promise boxed as a weak collection's key (scr_dyn_new_promise).
   "weakMap.promiseKey",
+  // Formatting a checked-dynamic value from a retained snapshot boxes any
+  // promise it holds (scr_dyn_new_promise, scr_dyn_promise_resolve).
+  "insp.formatSnapshot",
   // sqlite.backup answers a promise minted by the dyn-async unit.
   "sqlite.backup",
   // The generic Promise statics build and settle their capability's promise
@@ -151,6 +154,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "punycode.warn",
   // DEP0005 for the deprecated Buffer constructor.
   "buffer.deprecation",
+  // DEP0094 for assert.fail's deprecated multi-argument form.
+  "assert.failDeprecation",
   // util.aborted answers a checked-dynamic promise, and so do the
   // functions util.debounce and util.throttle return.
   "util.aborted",
@@ -189,6 +194,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "perf.observerDisconnect",
   "perf.observerTake",
   "perf.listEntries",
+  // performance.timerify: the wrapper, its entry and the options histogram
+  // (scr_perf.c; a program that only wraps a function still needs it).
+  "perf.timerify",
   // Blob and File (scr_blob.c, linked with this unit, which boxes their
   // reads as dyn promises).
   "als.bindCallbackDyn",
@@ -201,6 +209,16 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.newOptions",
   "als.run",
   "als.snapshot",
+  // The async_hooks hook registry and execution-id core (same unit: its
+  // callbacks cross as checked-dynamic values).
+  "ah.createHook",
+  "ah.createHookParts",
+  "ah.disable",
+  "ah.providers",
+  "ah.enable",
+  "ah.executionId",
+  "ah.executionResource",
+  "ah.triggerId",
   // The RunScope handle withScope answers, and AsyncResource's registry
   // with its bound functions.
   "als.withScope",
@@ -311,6 +329,15 @@ const LEGACY_TEXT_DECODER_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
 ]);
 
+/** Whether a dgram createSocket call can read an options record (and with
+ * it options.signal): the checked-dynamic view of an untyped value, or of
+ * a boxed value that is not the bare type string. */
+export function dgramCreateReadsSignal(arg: IrExpr | undefined): boolean {
+  if (arg === undefined) return false;
+  if (arg.kind !== "dynFrom") return true;
+  return arg.value.type.kind !== "string";
+}
+
 /** Signal-taking readline, stream and timers/promises entry points, which register abort listeners. */
 const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "events.onceSignal",
@@ -352,11 +379,16 @@ const ABORT_SIGNAL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
+  "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "stream.getDefaultHwm",
   "stream.setDefaultHwm",
   "child.stdioStream",
@@ -375,6 +407,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.duplexifyReadable",
   "stream.duplexifyWritable",
   "stream.duplexifyPair",
+  "stream.duplexifyPairHalf",
   "stream.duplexPair",
   "stream.wrap",
   "stream.wrapDyn",
@@ -445,11 +478,16 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
 const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "webstream.toWebReadable",
   "webstream.toWebReadableDyn",
+  "webstream.toWebReadableOpts",
+  "webstream.toWebReadableDynOpts",
   "webstream.writableFromWeb",
+  "webstream.writableFromWebOpts",
   "webstream.writableToWeb",
   "webstream.toWebDuplex",
   "webstream.toWebDuplexDyn",
   "readable.iterator",
+  "webstream.duplexFromWeb",
+  "webstream.duplexFromWebOpts",
   "readable.fromAsyncGen",
   "readable.fromAsyncIter",
   "readable.fromDone",
@@ -939,6 +977,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",
@@ -1119,6 +1159,8 @@ export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.spkacChallenge",
   "crypto.spkacPublicKey",
   "crypto.diffieHellman",
+  "crypto.encapsulate",
+  "crypto.decapsulate",
 ]);
 
 /** The WebCrypto algorithms scr_webcrypto_pki.c implements over the pki
@@ -1142,6 +1184,21 @@ function ed25519NameScan(): RuleScan {
   return {
     expr: (node) => {
       if (!named && node.kind === "strLit" && node.value.toLowerCase() === "ed25519") named = true;
+    },
+    result: () => named,
+  };
+}
+
+/** Whether a string literal names an ML-KEM parameter set (the node:crypto
+ * key types "ml-kem-512/768/1024" and the WebCrypto/JWK algorithm names
+ * "ML-KEM-<n>"): the mlkem unit links then, and with it the pki unit its
+ * hook installs into. */
+function mlkemNameScan(): RuleScan {
+  let named = false;
+  return {
+    expr: (node) => {
+      if (!named && node.kind === "strLit" && node.value.toLowerCase().startsWith("ml-kem"))
+        named = true;
     },
     result: () => named,
   };
@@ -1714,6 +1771,11 @@ const RUNTIME_FEATURE_RULES = {
    * queueMicrotask scheduling goes through the runtime's *_als entry
    * points, which carry the active stores into each callback. */
   asyncContext: rule({ fns: [...ASYNC_CONTEXT_LIB_FNS] }),
+  /** node:async_hooks (scr_async_dyn.c's hook registry and scr_async.c's
+   * execution-id core): the program starts tracking at startup —
+   * scr_async_hooks_install is emitted — so timers, immediates and ticks
+   * carry ids and enabled hooks dispatch. */
+  asyncHooks: rule({ prefixes: ["ah."] }),
   /** scr_wasm.c converts i64 values through BigInt, and BigIntStats reads
    * produce bigint values. */
   bigint: rule({
@@ -1759,6 +1821,25 @@ const RUNTIME_FEATURE_RULES = {
       "cp.execFileCwd",
       "cp.execFileOpts",
       "cp.spawnArmed",
+    ],
+  }),
+  /** node:cluster's module surface: scr_cluster.c, a unit of its own so a
+   * program that never names cluster links nothing of it. The unit also
+   * carries the %main cluster.init call and the worker-mode dispatch. */
+  cluster: rule({
+    fns: [
+      "cluster.init",
+      "cluster.isPrimary",
+      "cluster.isWorker",
+      "cluster.schedulingPolicy",
+      "cluster.fork",
+      "cluster.setup",
+      "cluster.disconnect",
+      "cluster.settings",
+      "cluster.workers",
+      "cluster.worker",
+      "cluster.on",
+      "cluster.off",
     ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
@@ -1968,8 +2049,13 @@ const RUNTIME_FEATURE_RULES = {
       // sink members through scr_dyn_invoke.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
+      "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // scr_event_target.c's events.on reads the receiver's pause() and
@@ -2143,9 +2229,12 @@ const RUNTIME_FEATURE_RULES = {
   dh: rule({ fns: [...DH_LIB_FNS] }),
   /** Argon2: scr_argon2.c. */
   argon2: rule({ fns: ["crypto.argon2Sync", "crypto.argon2Cb"] }),
-  /** ML-KEM (mlkem-native): selected by the node:crypto encapsulate and
-   * WebCrypto ML-KEM lowerings, and links the vendored archive. */
-  mlkem: rule({ fns: [] }),
+  /** ML-KEM (mlkem-native): links the vendored archive and the scr_mlkem.c
+   * wrapper when a string literal names a parameter set or the program
+   * encapsulates/decapsulates through pki; the wrapper and the pki unit
+   * select each other (LINK_FEATURE_REQUIREMENTS), since pki reaches ML-KEM
+   * by run-time algorithm and key names. */
+  mlkem: rule({ fns: ["crypto.encapsulate", "crypto.decapsulate"], scan: mlkemNameScan }),
   emitter: rule({
     initial: (mod) =>
       mod.workers === true || (mod.classes ?? []).some((c) => c.name === RUNTIME_EMITTER_CLASS),
@@ -2171,6 +2260,10 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** Subclasses of the runtime EventTarget/Event bases tear down and box
    * through the EventTarget unit even when no event.* libCall survives. */
+  /** The event-target unit also carries events.addAbortListener, which a
+   * dgram socket's options.signal is subscribed through: a createSocket
+   * call whose checked-dynamic argument can be an options record needs it
+   * (a bare type string does not). */
   eventTarget: rule({
     initial: (mod) =>
       (mod.classes ?? []).some(
@@ -2194,6 +2287,19 @@ const RUNTIME_FEATURE_RULES = {
       (node.fn === "cp.spawnArmed" &&
         node.args[14] !== undefined &&
         !isDynUndefined(node.args[14])) ||
+      // net.Socket's constructor options read options.signal at run time and
+      // attach it through addAbortListener; the lowering's flag says the
+      // emitted call references that helper (a dynamic options value, or a
+      // literal naming a signal). Without the flag the bare form links the
+      // net unit alone.
+      (node.fn === "net.socketNew" &&
+        (node.args[2] === undefined ||
+          (node.args[2].kind === "boolLit" && node.args[2].value === true))) ||
+      // dgram's createSocket options form reads options.signal at run time
+      // and closes the socket on abort through addAbortListener. Only the
+      // options form: the bare type string links the dgram unit alone.
+      ((node.fn === "dgram.createSocket" || node.fn === "dgram.createSocketCb") &&
+        dgramCreateReadsSignal(node.args[0])) ||
       // A program that reads one of these classes as a value may build or
       // call one (dyn.globalConstructor), and the construction runs this
       // unit.
@@ -2297,6 +2403,24 @@ const RUNTIME_FEATURE_RULES = {
    * number format and the table-driven grapheme segmenter — which must keep
    * linking no ICU code. */
   icu: rule({ prefixes: ["icu."] }),
+  /** A Console built with inspectOptions or colorMode formats its methods
+   * through the runtime's option-aware entries: scr_inspect.c's console
+   * entries with scr_console_native.c's argument forms. console.table
+   * inspects its cells over the same options, and both tables color per
+   * colorMode, so colorMode 'auto' reads the environment's color depth
+   * (scr_tty_colors.c). */
+  consoleOptions: rule({
+    fns: [
+      "console.table",
+      "console.instTable",
+      "console.instWriteArgs",
+      "console.instDirxmlArgs",
+      "console.instDirArgs",
+      "console.instTraceArgs",
+      "console.instAssertArgs",
+      "console.instGroupArgs",
+    ],
+  }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -2314,8 +2438,13 @@ const RUNTIME_FEATURE_RULES = {
       // non-iterable source (and a thrown member) through inspect.
       "webstream.toWebReadable",
       "webstream.toWebReadableDyn",
+      "webstream.toWebReadableOpts",
+      "webstream.toWebReadableDynOpts",
       "webstream.writableFromWeb",
+      "webstream.writableFromWebOpts",
       "webstream.writableToWeb",
+      "webstream.duplexFromWeb",
+      "webstream.duplexFromWebOpts",
       "webstream.toWebDuplex",
       "webstream.toWebDuplexDyn",
       // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
@@ -2447,7 +2576,7 @@ const RUNTIME_FEATURE_RULES = {
   /** A write completion callback that takes the error argument lowers
    * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
    * publishes the error the adapter delivers. */
-  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  streamWriteErrors: rule({ fns: ["writable.writeEcb", "writable.endEcb"] }),
   /** The program can pipe or unpipe a stream: pipe(), unpipe(), pipeline()
    * and compose() in every form, a call of a member named pipe or unpipe
    * (or a computed member) on an untyped value, which can reach a native
@@ -2812,6 +2941,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
   return {
     assert: false,
     asyncContext: false,
+    asyncHooks: false,
     bigint: false,
     bigstats: false,
     childProcess: false,
@@ -2860,6 +2990,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     http: false,
     icu: false,
     inspect: false,
+    consoleOptions: false,
     jsObjectModel: false,
     mutableBuffers: false,
     legacyTextDecoder: false,
@@ -2906,6 +3037,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childLifecycle: false,
     processFeatures: false,
     childOptionExt: false,
+    cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
     childStreamFlow: false,

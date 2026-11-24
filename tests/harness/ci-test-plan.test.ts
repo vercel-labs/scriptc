@@ -9,6 +9,7 @@ import {
   corpusFiles,
   darwinCorpusFiles,
   darwinFiles,
+  darwinSmokeCases,
   effectFiles,
   fileExclusions,
   caseShardedSideFiles,
@@ -84,7 +85,9 @@ test.for([1, 3, 5, 10, 20, 30])(
           expect(cache.env.SCRIPTC_CACHE_TEST_SHARD).toBe(plan.corpus.env.SCRIPTC_TEST_SHARD);
           expect(cache.env.SCRIPTC_TEST_STABLE_TOOLCHAIN).toBe("0");
         }
-        expect(plan.side.some((task) => task.name === "coverage sweep")).toBe(flavor === "plain");
+        expect(plan.side.some((task) => task.name === "coverage corpus sweep")).toBe(
+          flavor === "plain",
+        );
       }
     }
   },
@@ -175,8 +178,9 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   const job = jobs["native_frontend_san"]!;
   expect(job).toBeDefined();
   expect(job["runs-on"]).toBe("ubuntu-24.04");
+  // The queue leaves the sanitized shards to the push to main, which runs this job.
   expect(job.if).toBe(
-    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}",
+    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}",
   );
   expect(job.needs).toEqual(expect.arrayContaining(["validation_scope", "lanes", "native_linux"]));
   expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(30);
@@ -378,6 +382,29 @@ test.for([1, 2, 4, 8])(
   },
 );
 
+test.for([2, 4, 8])(
+  "the corpus's workers take side tasks once the corpus ends, within a budget of %i workers",
+  async (workers) => {
+    const plan = ciTestPlan({ shard: "1/10", flavor: "plain", workers, platform: "linux" });
+    expect(plan.side.length).toBeGreaterThan(workers);
+    const started: string[] = [];
+    let active = 0;
+    let peak = 0;
+    // The corpus ends at once; each side task takes a few milliseconds.
+    await runCiTestPlan(plan, async (task) => {
+      const cost = Number(task.env.SCRIPTC_TEST_WORKERS);
+      active += cost;
+      peak = Math.max(peak, active);
+      started.push(task.name);
+      if (task !== plan.corpus) await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= cost;
+    });
+    // Without the corpus's workers, the side queue would hold one worker at a time.
+    expect(peak).toBe(workers);
+    expect(started.toSorted()).toEqual([plan.corpus, ...plan.side].map((task) => task.name).sort());
+  },
+);
+
 test("CI reports failures after running every scheduled suite", async () => {
   const plan = ciTestPlan({ shard: "1/10", flavor: "plain" });
   const seen: string[] = [];
@@ -431,6 +458,32 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
   expect(corpusFiles).toEqual(expect.arrayContaining(darwinCorpusFiles));
 });
 
+test("the darwin smoke suite runs the corpus's fs and os programs in two processes", () => {
+  const plan = ciTestPlan({ shard: "1/1", flavor: "plain", workers: 2, suite: "darwin-smoke" });
+  expect(plan.sideWorkers).toBe(1);
+  expect(plan.side).toHaveLength(1);
+  const halves = [plan.corpus, plan.side[0]!];
+  expect(halves.map((half) => half.env.SCRIPTC_TEST_SHARD)).toEqual(["1/2", "2/2"]);
+  for (const half of halves) {
+    expect(half.args).toEqual(["test", ...darwinCorpusFiles, "-t", darwinSmokeCases]);
+    expect(half.env.SCRIPTC_TEST_WORKERS).toBe("1");
+  }
+  // vitest matches the pattern against "<file> <describe title> <case>", the
+  // case being the program's path under tests/corpus.
+  const pattern = new RegExp(darwinSmokeCases);
+  const title = "tests/harness/differential.test.ts differential corpus (3720 programs, shard 1/2)";
+  for (const name of [
+    "fs-lchmod.cjs",
+    "118-fs-stored-callbacks.cjs",
+    "1353-os-basics.ts",
+    "9-fs_x/main.ts",
+  ])
+    expect(pattern.test(`${title} ${name}`), name).toBe(true);
+  for (const name of ["process-env.ts", "node-fs-x.ts", "1-osc.ts", "2-cfs-x.ts"])
+    expect(pattern.test(`${title} ${name}`), name).toBe(false);
+  expect(pattern.test(title)).toBe(false);
+});
+
 /** Expands the ${{ }} expressions of a workflow value for one event: string
  * literals, ==, !=, !, &&, || and fromJSON, with matrix.shard left as
  * "{shard}". A value that is a single expression returns its result. */
@@ -455,7 +508,7 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
     needs: string[];
     strategy: {
       matrix: {
-        flavor: string[];
+        flavor: string | string[];
         shard: number[] | string;
         exclude?: { flavor: string; shard: number }[];
       };
@@ -472,19 +525,43 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(linux.needs).toContain("native_linux");
   // The sanitized shards are the lane's long pole, so they run thirty slices
   // while the plain lane keeps twenty; the exclusions leave exactly that.
-  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
   expect(linux.strategy.matrix.exclude).toEqual(
     Array.from({ length: 10 }, (_, index) => ({ flavor: "plain", shard: 21 + index })),
   );
+  // The matrix follows the run's tier: the queue runs the plain shards its plan reports, a push to main the
+  // sanitized shards, and a full run both flavors. Evaluate each expression for a tier.
+  const linuxMatrix = (tier: "queue" | "post" | "full") => {
+    const queue = tier === "queue" ? "true" : "false";
+    const post = tier === "post" ? "true" : "false";
+    const plan = JSON.stringify(JSON.stringify(Array.from({ length: 20 }, (_, i) => i + 1)));
+    const evaluate = (value: string): unknown => {
+      const single = /^\$\{\{(.*)\}\}$/s.exec(value);
+      expect(single, value).not.toBeNull();
+      const expression = single![1]!
+        .replaceAll("needs.lanes.outputs.queue", JSON.stringify(queue))
+        .replaceAll("needs.lanes.outputs.post", JSON.stringify(post))
+        .replaceAll("needs.queue_plan.outputs.plain_shards", plan)
+        .replaceAll("fromJSON", "JSON.parse");
+      return new Function(`return (${expression});`)();
+    };
+    return {
+      flavor: evaluate(String(linux.strategy.matrix.flavor)) as string[],
+      shard: evaluate(String(linux.strategy.matrix.shard)) as number[],
+    };
+  };
+  const all = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
+  expect(linuxMatrix("queue")).toEqual({ flavor: ["plain"], shard: all(20) });
+  expect(linuxMatrix("post")).toEqual({ flavor: ["san"], shard: all(30) });
+  expect(linuxMatrix("full")).toEqual({ flavor: ["plain", "san"], shard: all(30) });
   const shardsOf = (flavor: string): number[] =>
-    linux.strategy.matrix.shard.filter(
+    linuxMatrix("full").shard.filter(
       (shard) =>
         !linux.strategy.matrix.exclude!.some(
           (entry) => entry.flavor === flavor && entry.shard === shard,
         ),
     );
-  expect(shardsOf("plain")).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-  expect(shardsOf("san")).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+  expect(shardsOf("plain")).toEqual(all(20));
+  expect(shardsOf("san")).toEqual(all(30));
   expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe(
     "${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}",
   );
@@ -530,7 +607,8 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   );
   expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
   expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
-  for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(macos.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(typeof linux.strategy.matrix.flavor).toBe("string");
 });
 
 test("CI rejects malformed scheduling inputs", () => {

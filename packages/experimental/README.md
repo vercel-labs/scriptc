@@ -150,6 +150,42 @@ function visit(list: NodeList): void {
 
 scriptc reports a field that does not keep these rules (SC7009). Under Node.js the field holds the array the constructor stored. In builds with sanitizers, in programs that use `LifetimeRegion`, and on platforms other than 64-bit Linux and macOS, the elements stay in an ordinary array object.
 
+## SingleOwner
+
+`SingleOwner` marks a class whose instances scriptc can free without a reference count, because it proves each one has a single owner. It suits immutable structures built once and read many times, such as the nodes of a syntax tree or of a binary tree.
+
+```ts
+import type { SingleOwner } from "@scriptc/experimental";
+
+class TreeNode implements SingleOwner {
+  readonly left: TreeNode | null;
+  readonly right: TreeNode | null;
+  readonly weight: number;
+  constructor(left: TreeNode | null, right: TreeNode | null, weight: number) {
+    this.left = left;
+    this.right = right;
+    this.weight = weight;
+  }
+}
+
+function total(node: TreeNode | null): number {
+  if (node === null) return 0;
+  // Reading a field into a local is a borrow: `left` does not own the node.
+  const left = node.left;
+  return node.weight + total(left) + total(node.right);
+}
+```
+
+- Write `class C implements SingleOwner`. The class's own fields, its constructor and its uses decide the rest; there is no other annotation. A class name written as a type (not in an implements clause) is not a marker: scriptc reports it (SC7006).
+- Other code may read an instance through its owner, pass it to a function for the length of a call (a parameter the callee does not release is a borrow), read its fields into a local for as long as the node it came from is not released, and move it to a new owner by returning it or storing it at its last use.
+- A node may be held by the class's own fields (`C`, `C | null` or `C | undefined`) and by locals, parameters and returned values. Nothing else may hold one: another class's field, an array element, a record field, a module variable or a closure capture would be a second owner scriptc cannot follow.
+- The class's fields are written by the constructor only, so the structure is fixed once built, and the class is not part of a hierarchy.
+- When scriptc cannot prove the contract it reports the class and the expression that would hold a node twice (SC7010), and the program does not build. Remove the marker to keep the ordinary layout; the program behaves the same.
+- With the contract proved, instances carry no reference count and no collector header, and releasing the owner frees everything below it at once.
+- In a library build the class is reported (SC7010), since the library's host owns the lifetimes of the objects it receives. In a dev build (`--optimization=dev`) and in a program that uses `LifetimeRegion`, scriptc does not run the proof: the class keeps its reference count and the program behaves as without the marker.
+
+Under Node.js the marker is erased: the class is an ordinary class with the same behavior.
+
 ## Parallel loops
 
 `parallelInto`, `parallelReduce` and `parallelFor` split a range of indices into chunks and call a function once per chunk. Under Node.js, and in a scriptc build whose chunks do not qualify for several threads, the calls run in chunk order on the calling thread.
@@ -259,3 +295,4 @@ $ node --test --test-reporter=@scriptc/experimental/dual-run/reporter --test-rep
 ```
 
 It prints one line per file, shows a diff when the two runs differ, reports a file whose Node.js output itself varies as flaky, and fails the run on a difference. Both forms build through the `scriptc` command and its executable cache, found from `SCRIPTC_BIN`, `node_modules/.bin` or `PATH`. See [dual-run testing](https://scriptc.dev/docs/dual-run).
+

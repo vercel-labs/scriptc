@@ -84,6 +84,7 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  vendorMlkemDir,
   mlkemArchivePath,
   ensureMlkemArchive,
   brotliArchivePath,
@@ -345,8 +346,6 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       ? []
       : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
   ),
-  // ML-KEM (scr_mlkem.c): the vendored mlkem-native archive.
-  unitArgs((u) => (u.mlkemArchive === null ? [] : [u.mlkemArchive])),
   // node:sqlite (scr_sqlite.c) over the vendored SQLite amalgamation.
   unitArgs((u) =>
     u.sqliteArchive === null
@@ -369,8 +368,16 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
   // getColorDepth and hasColors of the process stream object, for a program
-  // that holds a process stream as a value and names one of them.
-  unit((u) => u.opts.events && u.opts.ttyColors === true, "scr_tty_colors.c"),
+  // that holds a process stream as a value and names one of them; and a
+  // Console built with inspectOptions or colorMode, whose 'auto' mode reads
+  // the same tables.
+  unit(
+    (u) =>
+      (u.opts.events && u.opts.ttyColors === true) ||
+      u.opts.consoleOptions === true ||
+      u.opts.inspect === true,
+    "scr_tty_colors.c",
+  ),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
@@ -468,6 +475,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
   // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
   unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // node:cluster's process management and worker handle (scr_cluster.c).
+  unit((u) => u.opts.cluster === true, "scr_cluster.c"),
   // process.features as a value: the stable flags object.
   unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
   // Object.isExtensible and Object.isSealed of a value typed dynamically.
@@ -526,6 +535,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.x509 === true, "scr_x509.c"),
   // Argon2 (crypto.argon2 and crypto.argon2Sync) is self-contained.
   unit((u) => u.opts.argon2 === true, "scr_argon2.c"),
+  // ML-KEM (node:crypto's encapsulate/decapsulate and WebCrypto): the
+  // wrapper unit over the vendored mlkem-native archive.
+  unit((u) => u.opts.mlkem === true, "scr_mlkem.c"),
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
   unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
@@ -586,6 +598,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
     "scr_stream_to_web.c",
+  ),
+  // Duplex.fromWeb reads and writes the web pair directly.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_duplex_from_web.c",
   ),
   // Writable.fromWeb wraps a web WritableStream's writer.
   unit(
@@ -1184,6 +1201,7 @@ export async function compileCInternal(
     "-Wno-deprecated-declarations", // ucontext fibers (scr_async.c)
     "-I",
     rtDir,
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
     ...runtimeUnitArgs({
       opts,
@@ -1211,6 +1229,8 @@ export async function compileCInternal(
       icuArchive,
       icuIncludeDirs,
     }),
+    // The ML-KEM cores follow the wrapper that references them.
+    ...(mlkemArchive !== null ? [mlkemArchive] : []),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET
     // triple exactly as it does for .c) — silence the -Woverride-module
@@ -1258,6 +1278,7 @@ export async function compileCInternal(
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
     ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...(sqliteArchive !== null ? ["-I", vendorSqliteDir()] : []),
     ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),
   ];

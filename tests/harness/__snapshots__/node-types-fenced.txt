@@ -86,7 +86,7 @@ fenced.ts:74:1 - error SC2020: 'crypto.setFips' is typed by @types/node but has 
      | ^~~~~~~~~~~~~~
   75 | fetch("https://example.invalid/", {
 
-  hint: a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here
+  hint: a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here
 
 fenced.ts:76:3 - error SC2020: 'RequestInit option 'integrity' in a static build' is typed by @types/node but has no scriptc lowering yet
 
@@ -104,7 +104,7 @@ fenced.ts:81:15 - error SC2020: 'ReadableStream.tee in a static build' is typed 
      |               ^~~~~~~~
   82 |   body["tee"]();
 
-  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo(), pipeThrough() and values() as direct calls; [Symbol.asyncIterator]() compiles when consumed directly by for await, while explicit symbol access remains unsupported
 
 fenced.ts:83:22 - error SC2020: 'ReadableStream.tee in a static build' is typed by @types/node but has no scriptc lowering yet
 
@@ -113,7 +113,7 @@ fenced.ts:83:22 - error SC2020: 'ReadableStream.tee in a static build' is typed 
      |                      ^~~~~~~~~~~
   84 | }
 
-  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported
+  hint: ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo(), pipeThrough() and values() as direct calls; [Symbol.asyncIterator]() compiles when consumed directly by for await, while explicit symbol access remains unsupported
 
 fenced.ts:89:23 - error SC2020: 'util.callbackify into a callback whose error parameter excludes null' is part of the standard library types but has no scriptc lowering yet
 

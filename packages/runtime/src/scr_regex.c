@@ -9,6 +9,13 @@
 #include "libregexp.h"
 #include "scr_regex_native.h"
 
+#if defined(__APPLE__)
+/* scr_dyn_invoke.c defines this weakly for Mach-O's linker: the regex
+ * unit's strong definition tells a linked program that RegExp construction
+ * is available. */
+int scr_dyn_regex_unit_linked = 1;
+#endif
+
 static void scr_regex_oom(void) {
   scr_trap("scriptc: out of memory\n");
 }
@@ -381,6 +388,7 @@ typedef struct ScrRegexCursor {
 typedef struct ScrRegexInput {
   const uint8_t *data;
   ScrStr *subject;
+  const ScrRegex *re; /* the pattern, for the literal-alternation scan */
   ScrRegexCursor cursor; /* of this call; see scr_regex_cursor */
   const ScrReNative *native; /* one-byte subjects of translated patterns */
   ScrRegexMatcherFn matcher; /* one-byte subjects of build-time matchers */
@@ -458,6 +466,7 @@ static void scr_regex_input_init(ScrRegexInput *input, const ScrRegex *re,
                                   const uint8_t *bc, ScrStr *s) {
   if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
   input->wide = !scr_regex_subject_ascii(s);
+  input->re = re;
   input->native = input->wide ? NULL : (const ScrReNative *)re->native;
   input->matcher = input->wide ? NULL : scr_regex_matcher(re);
   input->data = (const uint8_t *)s->data;
@@ -490,9 +499,188 @@ __attribute__((noinline)) static int scr_exec_engine(ScrRegexInput *input, const
   return rc;
 }
 
+/* A pattern that is nothing but alternatives of literal ASCII characters and
+ * single-character classes (`ggt|ggta`, `[cgt]gggtaaa|tttaccc[acg]`) needs no
+ * bytecode engine: the match is the first byte position where an alternative
+ * matches, and the alternatives are tried in source order. Compiles the
+ * pattern into a small program — a literal step is (0, byte), a class step is
+ * (1, 32-byte bitmap) — and returns the alternative count, or 0 for any other
+ * pattern. A compile runs per exec, not per start position: a global scan
+ * calls the executor once per match. */
+static int scr_simple_program(const ScrStr *source, uint8_t *prog, size_t cap, uint16_t *start,
+                              uint16_t *steps, uint8_t *firsts, uint8_t *firstMask,
+                              uint8_t *secondMask, uint8_t *thirdMask, uint8_t *singleBit,
+                              uint8_t *shortBit) {
+  const uint8_t *p = (const uint8_t *)source->data;
+  size_t n = source->len, at = 0, used = 0;
+  int count = 0;
+  while (at < n) {
+    if (count == 8) return 0;
+    size_t first = used;
+    int step = 0;
+    for (;;) {
+      uint8_t c = at < n ? p[at] : 0;
+      if (at >= n || c == '|') break;
+      if (step == 64) return 0;
+      if (c == '[') {
+        uint8_t bits[32] = {0};
+        at++;
+        bool negated = at < n && p[at] == '^';
+        if (negated) at++;
+        bool any = false;
+        while (at < n && p[at] != ']') {
+          uint8_t lo = p[at++];
+          if (lo == '\\') return 0;
+          uint8_t hi = lo;
+          if (at + 1 < n && p[at] == '-' && p[at + 1] != ']') {
+            at++;
+            hi = p[at++];
+            /* An escaped endpoint (`[0-\x39]`) is a class escape, not a
+             * literal backslash: the engine must answer. */
+            if (hi == '\\' || hi < lo) return 0;
+          }
+          for (unsigned ch = lo; ch <= hi; ch++) bits[ch >> 3] |= (uint8_t)(1u << (ch & 7));
+          any = true;
+        }
+        if (at >= n || !any || used + 33 > cap) return 0;
+        at++;
+        prog[used++] = 1;
+        for (int i = 0; i < 32; i++) prog[used++] = negated ? (uint8_t)~bits[i] : bits[i];
+        step++;
+      } else {
+        bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                     c == '_';
+        if (!plain || used + 2 > cap) return 0;
+        prog[used++] = 0;
+        prog[used++] = c;
+        at++;
+        step++;
+      }
+    }
+    if (step == 0) return 0;
+    start[count] = (uint16_t)first;
+    steps[count] = (uint16_t)step;
+    if (prog[first] == 0) firsts[prog[first + 1] >> 3] |= (uint8_t)(1u << (prog[first + 1] & 7));
+    else
+      for (int i = 0; i < 32; i++) firsts[i] |= prog[first + 1 + i];
+    /* Two-byte prefilter: the alternatives are at most eight, so a byte
+     * carries one bit each. An alternative matches at `p` only if its first
+     * step accepts data[p] and, unless it is one step long, its second step
+     * accepts data[p + 1]; the masks reject the rest before any compare. */
+    {
+      uint8_t bit = (uint8_t)(1u << count);
+      const uint8_t *s0 = prog + first, *s1 = s0 + (s0[0] == 0 ? 2 : 33);
+      if (s0[0] == 0) firstMask[s0[1]] |= bit;
+      else
+        for (int i = 0; i < 32; i++)
+          for (int b = 0; b < 8; b++)
+            if (s0[1 + i] & (uint8_t)(1u << b)) firstMask[i * 8 + b] |= bit;
+      if (steps[count] <= 2) *shortBit |= bit;
+      if (steps[count] == 1) *singleBit |= bit;
+      else {
+        if (s1[0] == 0) secondMask[s1[1]] |= bit;
+        else
+          for (int i = 0; i < 32; i++)
+            for (int b = 0; b < 8; b++)
+              if (s1[1 + i] & (uint8_t)(1u << b)) secondMask[i * 8 + b] |= bit;
+        if (steps[count] > 2) {
+          const uint8_t *s2 = s1 + (s1[0] == 0 ? 2 : 33);
+          if (s2[0] == 0) thirdMask[s2[1]] |= bit;
+          else
+            for (int i = 0; i < 32; i++)
+              for (int b = 0; b < 8; b++)
+                if (s2[1 + i] & (uint8_t)(1u << b)) thirdMask[i * 8 + b] |= bit;
+        }
+      }
+    }
+    count++;
+    if (at < n) {
+      at++; /* the separator */
+      /* A trailing `|` has an empty alternative, which matches the empty
+       * string: the engine answers. */
+      if (at == n) return 0;
+    }
+  }
+  return count;
+}
+
+/* The first occurrence of any alternative from `index` on. ASCII bytes never
+ * occur inside a WTF-8 sequence, so a byte match starts and ends on character
+ * boundaries. Non-ASCII subjects keep the engine. */
+__attribute__((noinline)) static int scr_exec_alternation(ScrRegexInput *input,
+                                                          const uint8_t *prog,
+                                                          const uint16_t *start,
+                                                          const uint16_t *steps,
+                                                          const uint8_t *firsts,
+                                                          const uint8_t *firstMask,
+                                                          const uint8_t *secondMask,
+                                                          const uint8_t *thirdMask, uint8_t singleBit,
+                                                          uint8_t shortBit, int count, int index) {
+  const uint8_t *data = input->data;
+  int limit = input->len;
+  if (index < 0) index = 0;
+  for (int p = index; p < limit; p++) {
+    uint8_t c0 = data[p];
+    if (!(firsts[c0 >> 3] & (uint8_t)(1u << (c0 & 7)))) continue;
+    /* Two bytes decide: at most one position in eight reaches the compares. */
+    uint8_t leads = firstMask[c0];
+    if (!leads) continue;
+    if (p + 1 >= limit) {
+      if (!(leads & singleBit)) continue;
+    } else if (!(leads &= secondMask[data[p + 1]] | singleBit))
+      continue;
+    if (p + 2 >= limit) {
+      if (!(leads & shortBit)) continue;
+    } else if (!(leads & (thirdMask[data[p + 2]] | shortBit)))
+      continue;
+    for (int k = 0; k < count; k++) {
+      const uint8_t *s = prog + start[k];
+      int n = steps[k], i = 0;
+      while (i < n && p + i < limit) {
+        uint8_t c = data[p + i];
+        if (s[0] == 0) {
+          if (c != s[1]) break;
+          s += 2;
+        } else {
+          if (!(s[1 + (c >> 3)] & (uint8_t)(1u << (c & 7)))) break;
+          s += 33;
+        }
+        i++;
+      }
+      if (i == n) {
+        input->capture[0] = (uint8_t *)(data + p);
+        input->capture[1] = (uint8_t *)(data + p + n);
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+/* Runs the simple scan for a pattern it describes; -1 when the pattern is
+ * anything else and the engine must answer. Kept out of line so the program
+ * buffers live in one small frame, not in every scr_exec caller. */
+__attribute__((noinline)) static int scr_try_simple_scan(ScrRegexInput *input, const ScrRegex *re,
+                                                         int index) {
+  uint8_t prog[1024], firsts[32] = {0}, firstMask[256] = {0}, secondMask[256] = {0};
+  uint8_t thirdMask[256] = {0}, singleBit = 0, shortBit = 0;
+  uint16_t start[8], steps[8];
+  int count = scr_simple_program(re->source, prog, sizeof prog, start, steps, firsts, firstMask,
+                                 secondMask, thirdMask, &singleBit, &shortBit);
+  if (count == 0) return -1;
+  return scr_exec_alternation(input, prog, start, steps, firsts, firstMask, secondMask, thirdMask,
+                              singleBit, shortBit, count, index);
+}
+
 /* Build-time matchers trap on allocation failure themselves. */
 static inline int scr_exec(ScrRegexInput *input, const uint8_t *bc, int index) {
   if (input->matcher) return input->matcher(input->data, input->len, index, input->capture);
+  const ScrRegex *re = input->re;
+  if (!input->wide && re->flags->len <= 1 &&
+      (re->flags->len == 0 || re->flags->data[0] == 'g')) {
+    int rc = scr_try_simple_scan(input, re, index);
+    if (rc >= 0) return rc;
+  }
   return scr_exec_engine(input, bc, index);
 }
 

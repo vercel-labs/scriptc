@@ -41,6 +41,7 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import {
   BOOL,
   DYN,
+  F64,
   type IrExpr,
   type IrGlobal,
   type IrStmt,
@@ -51,7 +52,7 @@ import {
 } from "../../ir/ir.js";
 import { npmStaticAccessorExport } from "../npm-static.js";
 import { keyedHelperName } from "./stable-names.js";
-import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
 import { cjsAccessorCall } from "./lower-exprs.js";
 import { isWriteTarget } from "./binding-analysis.js";
@@ -1390,6 +1391,42 @@ export function cjsExportsObjectValue(
   const target = cjsNamespaceTargetOf(lowerer, dep);
   if (target === null) return null;
   const loc = locOf(blame);
+  // A module whose whole export is chosen at run time between static tables
+  // (React's index.js) hands out the chosen table's own object: Node's
+  // module.exports IS that object, identity included. The selection global
+  // records the 1-based index of the table the module took, so the value is
+  // a choice between the tables' objects. A table without a real object
+  // keeps the refusal (the read could not answer Node's object).
+  {
+    const conditional = cjsConditionalWholeExportTargetsOf(lowerer, target);
+    const select = lowerer.cjsConditionalWholeExportSelectGlobals.get(target);
+    if (conditional !== null && select !== undefined) {
+      // The wrapper's own slot (assigned the chosen table's object by the
+      // branch statement) answers reads and writes through its binding.
+      const own = lowerer.cjsExportsObjects.get(target);
+      if (own !== undefined) return varRef(own.id, DYN, loc);
+      const refs = conditional.map((entry) => cjsExportsObjectRef(lowerer, entry.req.dep, loc));
+      if (refs.some((ref) => ref === null)) return null;
+      let chosen = refs[refs.length - 1]!;
+      for (let index = refs.length - 2; index >= 0; index--)
+        chosen = {
+          kind: "ternary",
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: varRef(select.id, F64, loc),
+            right: { kind: "numLit", value: index + 1, type: F64, loc },
+            type: BOOL,
+            loc,
+          },
+          then: refs[index]!,
+          else_: chosen,
+          type: DYN,
+          loc,
+        };
+      return chosen;
+    }
+  }
   // A module some code takes the object of has its real one: extensible,
   // in write order (cjs-exports-object-value.ts).
   const real = cjsExportsObjectRef(lowerer, target, loc);
@@ -1805,9 +1842,17 @@ export function cjsRequireSnapshotBindingsOf(
   const dep = lowerer.cjsModuleRefDepOf(decl.initializer);
   if (dep === null) return null;
   const bindings = new Map<ts.BindingElement, { name: ts.Identifier; key: string }>();
+  // A partial require() cycle: every plain binding snapshots the live
+  // exports object's member at this statement — the value Node
+  // destructures, undefined included.
+  const partial = lowerer.program.analysis.partialCjsCycleMembers.has(dep);
   for (const element of decl.name.elements.nodes) {
     const binding = cjsNamedBindingOf(lowerer, element);
     if (binding === null) continue;
+    if (partial) {
+      bindings.set(element, binding);
+      continue;
+    }
     let symbol = lowerer.cjsModuleExportSymbol(dep, binding.key);
     if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
       symbol = lowerer.checker.getAliasedSymbol(symbol);

@@ -80,6 +80,7 @@ import {
   transformStmtList,
 } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import type { JournalTable } from "./unit-journal.js";
 import * as ts from "../ts7/adapter.js";
 import { ALWAYS_THROW_LIB_FNS } from "../../ir/builtin-effects.js";
 import { replaceChildExpr } from "../../ir/fields.generated.js";
@@ -165,6 +166,144 @@ export interface WidthNote {
   drops: boolean;
 }
 
+/** A note a unit's lowering attached, before its unit names the function
+ * that holds its node (KeyOrderNotes.noteUnit). */
+type PendingNote =
+  | { readonly kind: "literal"; readonly node: IrExpr; readonly segments: KeyOrderSegment[] }
+  | { readonly kind: "copy"; readonly node: IrExpr; readonly shapeId: string }
+  | { readonly kind: "methodResult"; readonly node: IrExpr; readonly name: string }
+  | { readonly kind: "merge"; readonly node: IrExpr; readonly note: DeclaredMergeNote }
+  | { readonly kind: "width"; readonly node: IrExpr; readonly note: WidthNote }
+  | {
+      readonly kind: "sourceProbe";
+      readonly node: IrExpr;
+      readonly receiver: IrExpr;
+      readonly key: string;
+    }
+  | { readonly kind: "clone"; readonly node: IrExpr }
+  | { readonly kind: "observe"; readonly shapeId: string };
+
+/** One entry of the key-order journal: an observed shape, or a note with the
+ * function that holds its node and the node's position in that function's
+ * walk. */
+type JournalNoteOp =
+  | { readonly k: "observe"; readonly s: string }
+  | { readonly k: "note"; readonly f: string; readonly at: number; readonly n: JournalNote };
+
+/** A note's payload as an entry holds it; a node it names is the position
+ * of that node in the holding function's walk. */
+type JournalNote =
+  | { readonly k: "literal"; readonly s: readonly JournalSegment[] }
+  | { readonly k: "copy"; readonly s: string }
+  | { readonly k: "methodResult"; readonly n: string }
+  | { readonly k: "merge"; readonly o: string; readonly s: readonly IrType[]; readonly n: boolean }
+  | {
+      readonly k: "width";
+      readonly s: readonly (
+        | { readonly k: "key"; readonly n: string }
+        | { readonly k: "spread"; readonly v: number }
+      )[];
+      readonly d: boolean;
+    }
+  | { readonly k: "sourceProbe"; readonly r: number; readonly key: string }
+  | { readonly k: "clone" };
+
+/** An object-literal segment as an entry holds it. */
+type JournalSegment =
+  | { readonly k: "key"; readonly n: string; readonly d: boolean }
+  | { readonly k: "spread"; readonly s: string; readonly a: boolean; readonly v?: number }
+  | { readonly k: "opaque" };
+
+/** `note` as a journal entry, with the nodes it names by their positions in
+ * `index`, or null when one of those nodes is not in the walk. */
+function encodeNote(
+  note: Exclude<PendingNote, { kind: "observe" }>,
+  fn: string,
+  index: ReadonlyMap<object, number>,
+): string | null {
+  const at = index.get(note.node);
+  if (at === undefined) return null;
+  const position = (node: IrExpr): number | undefined => index.get(node);
+  let body: JournalNote;
+  switch (note.kind) {
+    case "literal": {
+      const segments: JournalSegment[] = [];
+      for (const segment of note.segments) {
+        if (segment.kind === "key")
+          segments.push({ k: "key", n: segment.name, d: segment.definite });
+        else if (segment.kind === "opaque") segments.push({ k: "opaque" });
+        else {
+          const value = segment.value === undefined ? undefined : position(segment.value);
+          if (segment.value !== undefined && value === undefined) return null;
+          segments.push({
+            k: "spread",
+            s: segment.shapeId,
+            a: segment.maybeAbsent,
+            ...(value === undefined ? {} : { v: value }),
+          });
+        }
+      }
+      body = { k: "literal", s: segments };
+      break;
+    }
+    case "copy":
+      body = { k: "copy", s: note.shapeId };
+      break;
+    case "methodResult":
+      body = { k: "methodResult", n: note.name };
+      break;
+    case "merge":
+      body = {
+        k: "merge",
+        o: note.note.outLocalId,
+        s: note.note.sources,
+        n: note.note.noteable,
+      };
+      break;
+    case "width": {
+      const segments: ({ k: "key"; n: string } | { k: "spread"; v: number })[] = [];
+      for (const segment of note.note.segments) {
+        if (segment.kind === "key") segments.push({ k: "key", n: segment.name });
+        else {
+          const value = position(segment.value);
+          if (value === undefined) return null;
+          segments.push({ k: "spread", v: value });
+        }
+      }
+      body = { k: "width", s: segments, d: note.note.drops };
+      break;
+    }
+    case "sourceProbe": {
+      const receiver = position(note.receiver);
+      if (receiver === undefined) return null;
+      body = { k: "sourceProbe", r: receiver, key: note.key };
+      break;
+    }
+    case "clone":
+      body = { k: "clone" };
+      break;
+  }
+  return JSON.stringify({ k: "note", f: fn, at, n: body });
+}
+
+/** The segments an entry holds, with the nodes it names resolved by
+ * `at`. */
+function decodeSegments(
+  segments: readonly JournalSegment[],
+  at: (index: number) => IrExpr,
+): KeyOrderSegment[] {
+  return segments.map((segment) => {
+    if (segment.k === "key") return { kind: "key", name: segment.n, definite: segment.d };
+    if (segment.k === "opaque") return { kind: "opaque" };
+    return {
+      kind: "spread",
+      shapeId: segment.s,
+      maybeAbsent: segment.a,
+      ...(segment.v === undefined ? {} : { value: at(segment.v) as IrExpr & { kind: "varRef" } }),
+    };
+  });
+}
+
 /** Witness notes the lowering attaches to the IR nodes it builds. Keyed by
  * node identity, so nodes a speculative lowering discards are never walked.
  * Literals the IR rewriters rebuild (traverse.ts mapExprChildren) carry
@@ -212,25 +351,209 @@ export class KeyOrderNotes {
    * value (applyKeyOrderWitnesses). */
   readonly warnings: ScrDiagnostic[] = [];
 
-  /** The sizes of the notes' tables (unit-journal.ts). */
+  /** What this pass itself made, which a unit's lowering cannot change: the
+   * shapes it rewrote, the shapes whose record source it kept, and its
+   * warnings (unit-journal.ts). */
   journalSizes(): number[] {
-    return [
-      this.literals.size,
-      this.copies.size,
-      this.methodResults.size,
-      this.merges.size,
-      this.widths.size,
-      this.sourceProbes.size,
-      this.clones.size,
-      this.observed.size,
-      this.changed.size,
-      this.keptSourceShapes.size,
-      this.warnings.length,
-    ];
+    return [this.changed.size, this.keptSourceShapes.size, this.warnings.length];
+  }
+
+  /** The notes the unit being lowered attached, until its unit names them
+   * (beginUnit, noteUnit), or null outside a unit. */
+  private pending: PendingNote[] | null = null;
+  /** The notes units attached, by the function that holds each node and the
+   * node's position in it (journalTable), or null when the note does not
+   * encode. */
+  private readonly journalLog: (string | null)[] = [];
+  /** Why an entry cannot be applied, for the entries that cannot. */
+  private readonly journalWhy = new Map<number, string>();
+  /** The entries a record added, waiting for the functions this build keeps
+   * (apply, attach). */
+  private pendingAttach: string[] = [];
+
+  /** Starts collecting the notes the next unit's lowering attaches
+   * (noteUnit). */
+  beginUnit(): void {
+    this.pending = [];
+  }
+
+  /** The notes the lowering of `unit`, whose own function is `unitFn`, has
+   * attached since beginUnit, as a table a unit's record carries
+   * (unit-journal.ts). An entry names the function that holds the note's
+   * node (`unit` for the unit's own, else the function's name) and the
+   * node's position in the function's walk; applying the entries attaches
+   * them to the functions a reused build keeps (attach). A note on a node of
+   * none of `functions` leaves the unit without a record, because no entry
+   * could name it. */
+  noteUnit(unit: string, functions: readonly IrFunction[]): void {
+    const pending = this.pending;
+    this.pending = null;
+    if (pending === null || pending.length === 0) return;
+    const walks = functions.map((fn, slot) => {
+      const nodes: (IrExpr | IrStmt)[] = [];
+      const index = new Map<object, number>();
+      const expr = (node: IrExpr): boolean => {
+        index.set(node, nodes.length);
+        nodes.push(node);
+        everyExprChild(node, expr, stmt);
+        return true;
+      };
+      const stmt = (node: IrStmt): boolean => {
+        index.set(node, nodes.length);
+        nodes.push(node);
+        everyStmtChild(node, expr, stmt);
+        return true;
+      };
+      for (const statement of fn.body) stmt(statement);
+      return { slot, nodes, index };
+    });
+    for (const note of pending) {
+      if (note.kind === "observe") {
+        this.journalLog.push(JSON.stringify({ k: "observe", s: note.shapeId }));
+        continue;
+      }
+      const walk = walks.find((candidate) => candidate.index.has(note.node));
+      // A node of no function the unit produced is one the witness pass
+      // never walks (a speculative lowering's AST the unit discarded), so
+      // no record needs the note.
+      if (walk === undefined) continue;
+      const encoded = encodeNote(
+        note,
+        walk.slot === 0 ? unit : functions[walk.slot]!.name,
+        walk.index,
+      );
+      if (encoded === null) this.journalWhy.set(this.journalLog.length, `encoding:${note.kind}`);
+      this.journalLog.push(encoded);
+    }
+  }
+
+  /** The notes units attached as a table a unit's record carries
+   * (unit-journal.ts). `functions` finds a kept function by the name its
+   * entries hold. */
+  journalTable(functions: (name: string) => IrFunction | undefined): JournalTable {
+    return {
+      name: "keyOrder",
+      size: () => this.journalLog.length,
+      // The notes a record adds are the notes of its unit's lowering; this
+      // build holds none of them until it applies the record.
+      holds: () => false,
+      agrees: () => true,
+      entries: (from) => {
+        const out: string[] = [];
+        for (let at = from; at < this.journalLog.length; at++) {
+          const text = this.journalLog[at]!;
+          if (text === null) return null;
+          out.push(text);
+        }
+        return out;
+      },
+      blocked: (from) => {
+        for (let at = from; at < this.journalLog.length; at++) {
+          const why = this.journalWhy.get(at);
+          if (why !== undefined) return why;
+        }
+        return null;
+      },
+      apply: (entries) => {
+        for (const entry of entries) {
+          const op = JSON.parse(entry) as JournalNoteOp;
+          if (op.k === "observe") this.observed.add(op.s);
+          else this.pendingAttach.push(entry);
+          this.journalLog.push(entry);
+        }
+      },
+      truncate: (from) => {
+        this.journalLog.length = from;
+      },
+      attach: () => this.attach(functions),
+    };
+  }
+
+  /** Attaches the notes a record added to the functions this build keeps
+   * (journalTable.attach). */
+  private attach(functions: (name: string) => IrFunction | undefined): void {
+    const entries = this.pendingAttach;
+    this.pendingAttach = [];
+    const walks = new Map<string, (IrExpr | IrStmt)[]>();
+    for (const entry of entries) {
+      const op = JSON.parse(entry) as JournalNoteOp;
+      if (op.k === "observe") continue;
+      let nodes = walks.get(op.f);
+      if (nodes === undefined) {
+        const fn = functions(op.f);
+        if (fn === undefined)
+          throw new InternalCompilerError(`key-order record names unknown function ${op.f}`);
+        nodes = [];
+        const expr = (node: IrExpr): boolean => {
+          nodes!.push(node);
+          everyExprChild(node, expr, stmt);
+          return true;
+        };
+        const stmt = (node: IrStmt): boolean => {
+          nodes!.push(node);
+          everyStmtChild(node, expr, stmt);
+          return true;
+        };
+        for (const statement of fn.body) stmt(statement);
+        walks.set(op.f, nodes);
+      }
+      const node = nodes[op.at];
+      if (node === undefined)
+        throw new InternalCompilerError(
+          `key-order record names no node ${op.at} of function ${op.f}`,
+        );
+      this.applyNote(op.n, node as IrExpr, nodes);
+    }
+  }
+
+  /** Adds `note` to the node `node`, resolving the nodes it names by their
+   * positions in the function's walk. */
+  private applyNote(note: JournalNote, node: IrExpr, nodes: readonly (IrExpr | IrStmt)[]): void {
+    const at = (index: number): IrExpr => {
+      const held = nodes[index];
+      if (held === undefined)
+        throw new InternalCompilerError(`key-order record names no node ${index}`);
+      return held as IrExpr;
+    };
+    switch (note.k) {
+      case "literal":
+        this.literals.set(node, decodeSegments(note.s, at));
+        break;
+      case "copy":
+        this.copies.set(node, note.s);
+        break;
+      case "methodResult":
+        this.methodResults.set(node, note.n);
+        break;
+      case "merge":
+        this.merges.set(node, { outLocalId: note.o, sources: [...note.s], noteable: note.n });
+        break;
+      case "width":
+        this.widths.set(node, {
+          segments: note.s.map((segment): WidthSegment =>
+            segment.k === "key"
+              ? { kind: "key", name: segment.n }
+              : { kind: "spread", value: at(segment.v) as IrExpr & { kind: "varRef" } },
+          ),
+          drops: note.d,
+        });
+        break;
+      case "sourceProbe":
+        this.sourceProbes.set(node, { receiver: at(note.r), key: note.key });
+        break;
+      case "clone":
+        this.clones.add(node);
+        break;
+    }
+  }
+
+  private note(note: PendingNote): void {
+    this.pending?.push(note);
   }
 
   literal(node: IrExpr, segments: KeyOrderSegment[]): IrExpr {
     this.literals.set(node, segments);
+    this.note({ kind: "literal", node, segments });
     return node;
   }
 
@@ -238,6 +561,7 @@ export class KeyOrderNotes {
    * declare (`drops`), with its contributors. */
   width(node: IrExpr, segments: WidthSegment[], drops: boolean): IrExpr {
     this.widths.set(node, { segments, drops });
+    this.note({ kind: "width", node, note: { segments, drops } });
     return node;
   }
 
@@ -249,6 +573,7 @@ export class KeyOrderNotes {
    * source can make true. */
   sourceProbe(node: IrExpr, receiver: IrExpr, key: string): IrExpr {
     this.sourceProbes.set(node, { receiver, key });
+    this.note({ kind: "sourceProbe", node, receiver, key });
     return node;
   }
 
@@ -260,6 +585,7 @@ export class KeyOrderNotes {
    * keys as Node does. */
   clone(node: IrExpr): IrExpr {
     this.clones.add(node);
+    this.note({ kind: "clone", node });
     return node;
   }
 
@@ -269,6 +595,7 @@ export class KeyOrderNotes {
 
   copy(node: IrExpr, sourceShapeId: string): IrExpr {
     this.copies.set(node, sourceShapeId);
+    this.note({ kind: "copy", node, shapeId: sourceShapeId });
     return node;
   }
 
@@ -276,12 +603,20 @@ export class KeyOrderNotes {
    * may replace on its instance (class-callbacks.ts classCallbackCall). */
   methodResult(node: IrExpr, name: string): IrExpr {
     this.methodResults.set(node, name);
+    this.note({ kind: "methodResult", node, name });
     return node;
   }
 
   /** A pass rebuilt `from` as `to` (traverse.ts mapExprChildren): the
    * rebuilt node is the same construction, so it keeps the witness. */
   follow(from: IrExpr, to: IrExpr): void {
+    const pending = this.pending;
+    if (pending !== null)
+      for (let at = 0; at < pending.length; at++) {
+        const note = pending[at]!;
+        if (note.kind !== "observe" && note.node === from)
+          pending[at] = { ...note, node: to } as PendingNote;
+      }
     const segments = this.literals.get(from);
     if (segments !== undefined) this.literals.set(to, segments);
     const source = this.copies.get(from);
@@ -300,6 +635,7 @@ export class KeyOrderNotes {
   /** A declared spread merge's wrapper, with its result local and sources. */
   declaredMerge(node: IrExpr, note: DeclaredMergeNote): IrExpr {
     this.merges.set(node, note);
+    this.note({ kind: "merge", node, note });
     return node;
   }
 
@@ -308,7 +644,9 @@ export class KeyOrderNotes {
   }
 
   observe(type: IrType): void {
-    if (type.kind === "record") this.observed.add(type.shapeId);
+    if (type.kind !== "record" || this.observed.has(type.shapeId)) return;
+    this.observed.add(type.shapeId);
+    this.note({ kind: "observe", shapeId: type.shapeId });
   }
 
   literalOf(node: IrExpr): KeyOrderSegment[] | undefined {

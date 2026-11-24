@@ -1,0 +1,2788 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": [
+    ".node-version",
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "scripts/toolchain.sha256",
+    "scripts/ci-vercel/**"
+  ],
+  "tasks": {
+    "//#ci:setup:build": {
+      "inputs": [
+        "packages/*/src/**",
+        "packages/*/ambient/**",
+        "packages/*/shims/**",
+        "packages/*/native/**",
+        "packages/*/surface-manifest.json",
+        "packages/*/tsconfig.json",
+        "packages/*/package.json",
+        "internal/*/src/**",
+        "internal/*/package.json",
+        "tsconfig.base.json"
+      ],
+      "outputs": [
+        "packages/*/dist/**"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:toolchain": {
+      "inputs": [
+        ".node-version",
+        "scripts/toolchain.sha256",
+        "scripts/ci-vercel/toolchain.mjs"
+      ],
+      "outputs": [
+        ".ci/toolchain/**"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:native": {
+      "dependsOn": [
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "native/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "packages/runtime/package.json",
+        "packages/runtime/LICENSE",
+        "packages/runtime-pack-common/**",
+        "packages/runtime-linux-x64-gnu/**",
+        "packages/llvm-linux-x64-gnu/**"
+      ],
+      "outputs": [
+        "packages/llvm-linux-x64-gnu/bin/**",
+        "packages/runtime-linux-x64-gnu/artifacts/**",
+        "packages/runtime-linux-x64-gnu/runtime-pack.json"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:native:musl": {
+      "dependsOn": [
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "native/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "packages/runtime/package.json",
+        "packages/runtime/LICENSE",
+        "packages/runtime-pack-common/**",
+        "packages/runtime-linux-x64-musl/**",
+        "packages/llvm-linux-x64-musl/**"
+      ],
+      "outputs": [
+        "packages/llvm-linux-x64-musl/bin/**",
+        "packages/runtime-linux-x64-musl/artifacts/**",
+        "packages/runtime-linux-x64-musl/runtime-pack.json"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:native:wasi": {
+      "dependsOn": [
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "packages/runtime/package.json",
+        "packages/runtime/LICENSE",
+        "packages/runtime-pack-common/**",
+        "packages/runtime-wasm32-wasi/**"
+      ],
+      "outputs": [
+        "packages/runtime-wasm32-wasi/artifacts/**",
+        "packages/runtime-wasm32-wasi/runtime-pack.json"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:libnode": {
+      "inputs": [
+        "packages/libnode-common/**",
+        "packages/runtime/src/scr_node_bridge.h"
+      ],
+      "outputs": [
+        ".ci/libnode/**"
+      ],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:code-quality": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/**",
+        "scripts/**",
+        "tests/harness/**",
+        "internal/**",
+        ".github/**",
+        "docs/**",
+        "vitest.config.ts",
+        "tsconfig.base.json",
+        "package.json",
+        "pnpm-workspace.yaml"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:coverage": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "tests/harness/coverage*.ts",
+        "tests/coverage-fixtures/**",
+        "tests/harness/coverage/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:ts7-parity": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "packages/types/**",
+        "tests/ts7/**",
+        "tests/corpus/**",
+        "tests/diagnostics/**",
+        "tests/deadstrip/**",
+        "tests/coverage-fixtures/**",
+        "tests/fixtures/**",
+        "scripts/test-ts7.mjs",
+        "scripts/generate-ts7-ast-schema.mjs",
+        "scripts/ts7-order-fixtures.mjs",
+        "packages/compiler/test/ts7/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:release": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:dev": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:linux-host-clang": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/native/**",
+        "packages/compiler/test/cc-driver.test.ts",
+        "native/**",
+        "packages/runtime/vendor/**"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:1": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:2": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:3": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:4": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:5": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:6": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:7": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:8": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:9": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:10": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:11": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:12": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:13": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:14": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:15": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:16": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:17": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:18": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:19": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:plain:20": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:1": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:2": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:3": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:4": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:5": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:6": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:7": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:8": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:9": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:10": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:11": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:12": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:13": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:14": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:15": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:16": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:17": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:18": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:19": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:20": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:21": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:22": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:23": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:24": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:25": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:26": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:27": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:28": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:29": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:test:san:30": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/**",
+        "scripts/ci-*.mjs",
+        "scripts/ci-test-costs.json",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:effects:plain:1": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:2": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:3": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:4": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:5": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:6": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:7": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:8": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:9": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:10": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:11": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:12": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:13": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:14": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:15": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:16": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:plain:sample": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:1": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:2": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:3": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:4": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:5": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:6": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:7": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:8": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:9": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:10": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:11": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:12": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:13": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:14": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:15": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:16": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:effects:san:sample": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/runtime/src/**",
+        "packages/runtime/vendor/**",
+        "native/**",
+        "tests/harness/effect*.ts",
+        "tests/fixtures/effect/**",
+        "tests/fixtures/effect4/**",
+        "scripts/ci-test-plan.mjs",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ],
+      "env": [
+        "VERCEL_GIT_PULL_REQUEST_ID",
+        "VERCEL_GIT_COMMIT_REF",
+        "GITHUB_HEAD_REF"
+      ]
+    },
+    "//#ci:lane:islands:1": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/node-islands/**",
+        "packages/compiler/src/frontend/lowering/**",
+        "packages/runtime/src/scr_node_*.ts",
+        "packages/runtime/src/scr_node_*.h",
+        "packages/libnode-*/**",
+        "packages/libnode-common/**",
+        "tests/harness/island-conformance.test.ts",
+        "tests/harness/npm-suite.ts",
+        "tests/harness/npm-cases.ts",
+        "tests/harness/libnode.ts",
+        "tests/fixtures/island-conformance/**",
+        "tests/fixtures/npm/**",
+        "tests/fixtures/commander-calc/**",
+        "tests/corpus/*/node_modules/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:islands:2": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/node-islands/**",
+        "packages/compiler/src/frontend/lowering/**",
+        "packages/runtime/src/scr_node_*.ts",
+        "packages/runtime/src/scr_node_*.h",
+        "packages/libnode-*/**",
+        "packages/libnode-common/**",
+        "tests/harness/island-conformance.test.ts",
+        "tests/harness/npm-suite.ts",
+        "tests/harness/npm-cases.ts",
+        "tests/harness/libnode.ts",
+        "tests/fixtures/island-conformance/**",
+        "tests/fixtures/npm/**",
+        "tests/fixtures/commander-calc/**",
+        "tests/corpus/*/node_modules/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:islands:3": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/node-islands/**",
+        "packages/compiler/src/frontend/lowering/**",
+        "packages/runtime/src/scr_node_*.ts",
+        "packages/runtime/src/scr_node_*.h",
+        "packages/libnode-*/**",
+        "packages/libnode-common/**",
+        "tests/harness/island-conformance.test.ts",
+        "tests/harness/npm-suite.ts",
+        "tests/harness/npm-cases.ts",
+        "tests/harness/libnode.ts",
+        "tests/fixtures/island-conformance/**",
+        "tests/fixtures/npm/**",
+        "tests/fixtures/commander-calc/**",
+        "tests/corpus/*/node_modules/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:islands:4": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:libnode",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/node-islands/**",
+        "packages/compiler/src/frontend/lowering/**",
+        "packages/runtime/src/scr_node_*.ts",
+        "packages/runtime/src/scr_node_*.h",
+        "packages/libnode-*/**",
+        "packages/libnode-common/**",
+        "tests/harness/island-conformance.test.ts",
+        "tests/harness/npm-suite.ts",
+        "tests/harness/npm-cases.ts",
+        "tests/harness/libnode.ts",
+        "tests/fixtures/island-conformance/**",
+        "tests/fixtures/npm/**",
+        "tests/fixtures/commander-calc/**",
+        "tests/corpus/*/node_modules/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:three-nodes-san": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "tests/corpus/**",
+        "tests/harness/three.test.ts",
+        "tests/harness/lsan.supp",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:native-frontend-san:programs": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/**",
+        "tests/harness/self-hosting-native-frontend*.test.ts",
+        "native/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:native-frontend-san:checks": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/**",
+        "tests/harness/self-hosting-native-frontend*.test.ts",
+        "native/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:native-frontend-san:frontend": {
+      "dependsOn": [
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/**",
+        "tests/harness/self-hosting-native-frontend*.test.ts",
+        "native/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:seed:plain": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:native:wasi",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "native/**",
+        "tests/harness/self-hosting*",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [
+        ".ci/bootstrap-seed/plain/**"
+      ],
+      "tags": [
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:setup:seed:san": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:native:wasi",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/**",
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "native/**",
+        "tests/harness/self-hosting*",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [
+        ".ci/bootstrap-seed/san/**"
+      ],
+      "tags": [
+        "ci:os:ubuntu",
+        "ci:cpus:16"
+      ]
+    },
+    "//#ci:lane:bootstrap:plain:commands": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain",
+        "ci:setup:seed:plain",
+        "ci:setup:native",
+        "ci:setup:native:wasi",
+        "ci:setup:libnode"
+      ],
+      "inputs": [
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "scripts/ci-*.mjs",
+        "packages/cli-*/**",
+        "tests/harness/self-hosting*",
+        "tests/harness/bootstrap-seed*",
+        "tests/harness/ci-native-bootstrap*",
+        "tests/harness/native-cli-packaging*",
+        "tests/harness/shard.ts",
+        "tests/harness/shard-balance.mjs",
+        "tests/harness/suite-lock.mjs",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:bootstrap:plain:rebuild": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain",
+        "ci:setup:seed:plain"
+      ],
+      "inputs": [
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "scripts/ci-*.mjs",
+        "packages/cli-*/**",
+        "tests/harness/self-hosting*",
+        "tests/harness/bootstrap-seed*",
+        "tests/harness/ci-native-bootstrap*",
+        "tests/harness/native-cli-packaging*",
+        "tests/harness/shard.ts",
+        "tests/harness/shard-balance.mjs",
+        "tests/harness/suite-lock.mjs",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:bootstrap:san:commands": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain",
+        "ci:setup:seed:san",
+        "ci:setup:native",
+        "ci:setup:native:wasi",
+        "ci:setup:libnode"
+      ],
+      "inputs": [
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "scripts/ci-*.mjs",
+        "packages/cli-*/**",
+        "tests/harness/self-hosting*",
+        "tests/harness/bootstrap-seed*",
+        "tests/harness/ci-native-bootstrap*",
+        "tests/harness/native-cli-packaging*",
+        "tests/harness/shard.ts",
+        "tests/harness/shard-balance.mjs",
+        "tests/harness/suite-lock.mjs",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:bootstrap:san:rebuild-frontend": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain",
+        "ci:setup:seed:san"
+      ],
+      "inputs": [
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "scripts/ci-*.mjs",
+        "packages/cli-*/**",
+        "tests/harness/self-hosting*",
+        "tests/harness/bootstrap-seed*",
+        "tests/harness/ci-native-bootstrap*",
+        "tests/harness/native-cli-packaging*",
+        "tests/harness/shard.ts",
+        "tests/harness/shard-balance.mjs",
+        "tests/harness/suite-lock.mjs",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:bootstrap:san:rebuild-emit": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:toolchain",
+        "ci:setup:seed:san"
+      ],
+      "inputs": [
+        "scripts/bootstrap-seed.mjs",
+        "scripts/build-native-cli.mts",
+        "scripts/ci-*.mjs",
+        "packages/cli-*/**",
+        "tests/harness/self-hosting*",
+        "tests/harness/bootstrap-seed*",
+        "tests/harness/ci-native-bootstrap*",
+        "tests/harness/native-cli-packaging*",
+        "tests/harness/shard.ts",
+        "tests/harness/shard-balance.mjs",
+        "tests/harness/suite-lock.mjs",
+        "vitest.config.ts",
+        "tsconfig.base.json"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:16"
+      ]
+    },
+    "//#ci:lane:native-profile": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/native/**",
+        "packages/compiler/package.json",
+        "native/**",
+        "packages/llvm-*/**",
+        "scripts/self-compile-*.mjs",
+        "scripts/build-native-cli*"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:llvm-artifacts": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/cli/src/**",
+        "packages/cli/test/**",
+        "packages/compiler/src/backend/**",
+        "tests/corpus/001-hello.ts",
+        "tests/harness/runtime-tree-shaking.test.ts",
+        "packages/runtime/src/**",
+        "native/**"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:llvm-artifacts:musl": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:native:musl",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/cli/src/**",
+        "packages/cli/test/**",
+        "packages/compiler/src/backend/**",
+        "tests/harness/executable-hardening.test.ts",
+        "packages/llvm-linux-x64-musl/**",
+        "packages/runtime-linux-x64-musl/**",
+        "packages/runtime/src/**",
+        "native/**"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:llvm-artifacts:wasi": {
+      "dependsOn": [
+        "ci:setup:build",
+        "ci:setup:native",
+        "ci:setup:native:wasi",
+        "ci:setup:toolchain"
+      ],
+      "inputs": [
+        "packages/cli/src/**",
+        "packages/cli/test/wasi-runtime-pack.test.ts",
+        "tests/harness/wasm-library.test.ts",
+        "packages/runtime-wasm32-wasi/**",
+        "packages/runtime/src/**",
+        "native/**"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    }
+  }
+}

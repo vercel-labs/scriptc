@@ -46,6 +46,25 @@ struct ScrDgramSocket {
   bool emit_listening;
   bool emit_connect;
   ScrStr *pending_err; /* deferred bind/connect/send failure */
+  /* the program's own error object for that failure, when the resolver
+   * handed one back (+1): it is delivered as-is, Node's identity */
+  ScrError *pending_err_obj;
+  /* pending_err's code when its message does not name one (static
+   * storage; NULL = the code the message maps to) */
+  const char *pending_code;
+  /* The options' net.BlockList filters (retained handles; NULL when the
+   * option was absent): sendBlockList gates outgoing destinations,
+   * receiveBlockList drops incoming sources. */
+  ScrDyn *send_block_list, *recv_block_list;
+  /* options.signal: the events.addAbortListener disposable (+1), released
+   * at 'close' — the listener closes the socket when the signal aborts. */
+  ScrDyn *abort_dispose;
+  /* createSocket({ lookup }): Node's custom resolver, called as
+   * lookup(address, family, callback(err, ip)) from bind, connect and the
+   * unconnected sends; the operation continues from the answer (+1,
+   * NULL = the literal resolver). */
+  ScrDyn *lookup;
+  bool lookup_ready; /* the continuation's re-entry guard */
   ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
   bool in_registry;
   struct ScrDgramSocket *next;

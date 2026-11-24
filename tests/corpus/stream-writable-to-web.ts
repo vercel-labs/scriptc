@@ -408,6 +408,90 @@ async function main(): Promise<void> {
   watchQuiet.destroy();
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
   log.push(`finished after quiet destroy called ${watchCalled}`);
+
+  // The web stream follows the writable's lifecycle: a write that was
+  // accepted and then failed rejects writer.closed with the stream's error,
+  // and a writable ended without a close aborts it.
+  const lateClosed = new Writable({
+    write(chunk, encoding, done): void {
+      setTimeout(() => done(new Error("eos fail")), 5);
+    },
+  });
+  const lateClosedWriter = Writable.toWeb(lateClosed).getWriter();
+  await lateClosedWriter.write(encoder.encode("t"));
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await lateClosedWriter.closed.then(
+    () => log.push("late failure closed resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`late failure closed rejected ${error.name} ${error.code} ${error.message}`),
+  );
+
+  const eosEndedWritable = new Writable({
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const eosEndedWriter = Writable.toWeb(eosEndedWritable).getWriter();
+  await eosEndedWriter.write(encoder.encode("u"));
+  eosEndedWritable.end();
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  await eosEndedWriter.closed.then(
+    () => log.push("ended writer closed resolved"),
+    (error: Error & { code?: string }) =>
+      log.push(`ended writer closed rejected ${error.name} ${error.code}`),
+  );
+
+  // Dropping an adapter with the writable still open leaves the stream and
+  // its watchers to the exit cleanup.
+  {
+    const open = new Writable({
+      write(chunk, encoding, done): void {
+        done();
+      },
+    });
+    const openWeb = Writable.toWeb(open);
+    await openWeb.getWriter().write(encoder.encode("v"));
+  }
+  log.push("open adapter dropped");
+
+  // The web stream's queuing strategy is the writable's: its highWaterMark,
+  // a byte-length size for a byte stream, and one unit per object in object
+  // mode.
+  const sizedWritable = new Writable({
+    highWaterMark: 1,
+    write(chunk, encoding, done): void {
+      setTimeout(done, 5);
+    },
+  });
+  const sizedWriter = Writable.toWeb(sizedWritable).getWriter();
+  log.push(`desired initial ${sizedWriter.desiredSize}`);
+  const sizedWrite = sizedWriter.write(encoder.encode("xy"));
+  log.push(`desired pending ${sizedWriter.desiredSize}`);
+  await sizedWrite;
+  log.push(`desired drained ${sizedWriter.desiredSize}`);
+
+  const objectWritable = new Writable({
+    objectMode: true,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const objectWriter = Writable.toWeb(objectWritable).getWriter();
+  log.push(`object desired initial ${objectWriter.desiredSize}`);
+  await objectWriter.write(encoder.encode("q"));
+  log.push(`object desired after write ${objectWriter.desiredSize}`);
+
+  const customSized = new Writable({
+    highWaterMark: 4,
+    write(chunk, encoding, done): void {
+      done();
+    },
+  });
+  const customWriter = Writable.toWeb(customSized).getWriter();
+  log.push(`custom desired initial ${customWriter.desiredSize}`);
+  await customWriter.write(encoder.encode("abcdef"));
+  log.push(`custom desired after write ${customWriter.desiredSize}`);
+
 }
 
 main().then(() => {

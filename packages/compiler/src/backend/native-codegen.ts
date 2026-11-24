@@ -13,7 +13,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
   buildCacheRoot,
@@ -46,9 +46,11 @@ import {
   type NativeProfileOptions,
 } from "./native-profile.js";
 import { writeTextParts } from "../text-parts.js";
+import { ensureExecutable } from "../executable-mode.js";
 
 import {
   NativeCodegenError,
+  nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
   parseJsonObject,
@@ -146,6 +148,7 @@ async function invoke(
   binaryPath: string,
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> {
+  ensureExecutable(binaryPath);
   try {
     return await execFileAsync(binaryPath, args, {
       encoding: "utf8",
@@ -211,6 +214,19 @@ async function resolveHelper(
       "missing_binary",
     );
   }
+  // A package manager that installs from a cache, or with lifecycle scripts
+  // disabled, can leave the helper at mode 0644 and its postinstall never
+  // repairs it: restore the execute bits before judging the file unusable.
+  try {
+    ensureExecutable(binaryPath);
+  } catch (error) {
+    throw new NativeCodegenError(
+      "SC3003",
+      `LLVM native helper package ${helper.packageName} cannot be executed: ${(error as Error).message}; reinstall scriptc or fix the file's permissions`,
+      "unusable_binary",
+    );
+  }
+  binaryStat = await stat(binaryPath);
   try {
     if (
       process.platform !== "win32" &&
@@ -340,22 +356,28 @@ function cacheKey(
   else
     for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
       hash.update(part);
-  return hash
-    .update("\0")
-    .update(JSON.stringify(target))
-    .update("\0")
-    .update(JSON.stringify(helper))
-    .update("\0")
-    .update(options.optimization ?? "2")
-    .update("\0")
-    .update(options.sanitize === true ? "sanitize" : "plain")
-    .update("\0")
-    .update(options.outputKind)
-    .update("\0")
-    .update(options.sourcePath)
-    .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
-    .digest("hex");
+  return (
+    hash
+      .update("\0")
+      .update(JSON.stringify(target))
+      .update("\0")
+      .update(JSON.stringify(helper))
+      .update("\0")
+      .update(options.optimization ?? "2")
+      .update("\0")
+      .update(options.sanitize === true ? "sanitize" : "plain")
+      .update("\0")
+      .update(options.outputKind)
+      // The module source file name is part of the output (the source name
+      // and the local-function profile identities), so it keys the artifact.
+      // The directories holding the file do not: the same LLVM text from
+      // another app's copy of the code is the same artifact.
+      .update("\0")
+      .update(basename(options.sourcePath))
+      .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
+      .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
+      .digest("hex")
+  );
 }
 
 function artifactMode(): number {
@@ -524,6 +546,18 @@ export async function emitNativeArtifact(
       "json",
       "--source-path",
       options.sourcePath,
+      // A divided module compiles its partitions concurrently; the helper
+      // runs as many lanes as the memory this build can give each one.
+      ...(outputs.length < 2
+        ? []
+        : [
+            "--jobs",
+            String(
+              nativeCodegenJobs(llvmInputBytes(options.llvm), outputs.length, {
+                unoptimized: options.optimization === "0",
+              }),
+            ),
+          ]),
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
     ]);

@@ -14,7 +14,12 @@ import {
 } from "./frontend/type-patches/command.js";
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
-import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
+import {
+  compilationTiming,
+  timingProcessMetrics,
+  type CompilationTiming,
+  type TimingClock,
+} from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
 import { finishNodeIslands } from "./executable/islands.js";
 import {
@@ -117,7 +122,6 @@ import {
 import { inlineRcOption } from "./backend/llvm/shapes.js";
 import {
   emitNativeArtifact,
-  isLlvmFile,
   llvmInputBytes,
   type LlvmInput,
   NativeCodegenError,
@@ -199,9 +203,11 @@ import {
 import { clearResolveCaches } from "./frontend/resolve.js";
 import { loadFfiProfile, type FfiProfile } from "./ffi/ffi-manifest.js";
 import { carriesDebugSources, executableLinkFeatures } from "./backend/executable-features.js";
+import { sourceTextLoader } from "./backend/source-text-loader.js";
 import { youngNurseryRequested } from "./backend/young-nursery.js";
 import { heapCensusRequested } from "./backend/llvm/heap-census.js";
 import { debugJsIcWays } from "./backend/llvm/js-ic.js";
+import { invalidIrSourceLoc } from "./backend/llvm/invalid-ir-loc.js";
 import { dynIndexFastpath } from "./ir/js-ic.js";
 import { representationReportPath } from "./backend/llvm/repr-report.js";
 import {
@@ -860,6 +866,7 @@ async function compileExecutableNative(
     ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
     ...(features.stdioObject ? { stdioObject: true } : {}),
     ...(features.ttyColors ? { ttyColors: true } : {}),
+    ...(features.consoleOptions ? { consoleOptions: true } : {}),
     ...(features.streamPipeEvents ? { streamPipeEvents: true } : {}),
     ...(features.fsStreamSignal ? { fsStreamSignal: true } : {}),
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
@@ -885,6 +892,7 @@ async function compileExecutableNative(
     ...(features.processFeatures ? { processFeatures: true } : {}),
     ...(features.islandChild ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.cluster ? { cluster: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.childStreamFlow ? { childStreamFlow: true } : {}),
@@ -1342,6 +1350,7 @@ async function prepareExecutableInput(
         targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
         ...debugOptions,
         positionSources: sourceTexts,
+        ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
         ...traceOptions,
         ...(await readFunctionLayout(opts)),
         pointerBits: buildPlatform === "wasi" ? 32 : 64,
@@ -1382,9 +1391,14 @@ async function prepareExecutableInput(
         });
       } catch (err) {
         if (!(err instanceof NativeCodegenError)) throw err;
+        // The helper reports the emitted IR it rejected. When its message
+        // quotes a slot, name the construct whose lowering wrote it instead
+        // of pointing at the entry (1:1).
+        const diag = nativeCodegenDiag(err.diagnosticCode, err.message, entryPath);
+        const loc = invalidIrSourceLoc(mod, err.message);
         return {
           ok: false,
-          diagnostics: [nativeCodegenDiag(err.diagnosticCode, err.message, entryPath)],
+          diagnostics: [loc === null ? diag : { ...diag, loc }],
           sourceTexts,
         };
       }
@@ -1426,12 +1440,13 @@ async function prepareExecutableInput(
   const useRuntimePack =
     opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, backend);
   const cpuCopyFunctionNames = await cpuCopyFunctions(opts);
-  let llvmSource: string | readonly string[];
+  let llvmSource: LlvmInput;
   try {
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
       ...debugOptions,
       positionSources: sourceTexts,
+      ...(opts.fromLowered === undefined ? {} : { positionSourceLoader: sourceTextLoader() }),
       ...traceOptions,
       ...(await readFunctionLayout(opts)),
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
@@ -1459,8 +1474,13 @@ async function prepareExecutableInput(
     return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
   }
   timing("llvm-emit");
+  const llvmBytes = llvmInputBytes(llvmSource);
   await writeLlvmSource(llvmSourcePath, llvmSource);
   timing("llvm-write");
+  // Code generation reads the file, and a program's text can be hundreds of
+  // megabytes: hand the file on and drop the heap it took before the helper
+  // and the compiler need theirs.
+  llvmSource = { file: llvmSourcePath, bytes: llvmBytes };
   let irPath: string | undefined;
   let irSourcePath: string | undefined;
   if (opts.emitIr) {
@@ -1477,13 +1497,9 @@ async function prepareExecutableInput(
     opts.strip === true,
   );
   timing("link-features");
-  const programSplit =
-    !useRuntimePack &&
-    backend === "llvm" &&
-    (opts.optimization ?? "release") === "dev" &&
-    typeof llvmSource === "string"
-      ? splitLlvmProgram(llvmSource)
-      : null;
+  // A development build's shards are computed from the written file when the
+  // link runs (compileExecutableNative): splitting here would hold the whole
+  // text past emission.
   timing("llvm-split");
   return {
     llvmSource,
@@ -1492,7 +1508,7 @@ async function prepareExecutableInput(
     irPath,
     irSourcePath,
     nativeFeatures,
-    programSplit,
+    programSplit: null,
     sourceTexts,
     stats: prepared.stats,
     ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
@@ -1588,9 +1604,10 @@ function shapeOverlayMemoDir(cacheRoot: string | null, implementation: string): 
 const frontendProcessEntry = fileURLToPath(new URL("./frontend-process.js", import.meta.url));
 
 /**
- * Whether `prepareExecutableInputInChild` may prepare this build: optimized executables, when the
- * compiler runs from its built files. Development builds split the LLVM text in this process, and
- * SCRIPTC_FRONTEND_PROCESS=0 keeps the frontend in-process.
+ * Whether `prepareExecutableInputInChild` may prepare this build: executables, when the compiler
+ * runs from its built files. The frontend, lowering and emission hold the program's text and
+ * typed IR, and the process exits when it has written the LLVM file, so code generation never
+ * shares a heap with them. SCRIPTC_FRONTEND_PROCESS=0 keeps the frontend in-process.
  *
  * compileTracked starts the process only when no earlier build of the same invocation emitted its
  * native program object (`hasEarlyExecutableNativeBuild`). A rebuild finds most native partitions
@@ -1601,7 +1618,6 @@ function preparesInChildProcess(opts: CompileRequestOptions): boolean {
   return (
     process.env["SCRIPTC_FRONTEND_PROCESS"] !== "0" &&
     (opts.outputKind ?? "exe") === "exe" &&
-    (opts.optimization ?? "release") !== "dev" &&
     existsSync(frontendProcessEntry)
   );
 }
@@ -1828,8 +1844,8 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     );
     const frontend = frontendInputs.snapshot();
     if (!("ok" in prepared)) {
-      if (isLlvmFile(prepared.llvmSource))
-        throw new InternalCompilerError("in-process preparation returned LLVM text as a file");
+      // The preparation wrote the text to the build's private file and hands
+      // the file on (BuildSources); the result names it.
       result = {
         kind: "prepared",
         llvmPath: prepared.llvmPath,
@@ -2870,7 +2886,7 @@ async function compileLibraryTracked(
         phase,
         phase_ms: Math.round((now - timingLast) * 10) / 10,
         total_ms: Math.round((now - timingStart) * 10) / 10,
-        rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        ...timingProcessMetrics(),
         ...detail,
       })}\n`,
     );
@@ -3028,6 +3044,10 @@ async function compileLibraryTracked(
     cacheRoot,
     earlyCacheOptions,
     profile.sidecar === null ? undefined : profile.sidecar.path,
+    // A dev library's translation unit carries the sources it was emitted
+    // from, so a cached one is reusable only when no edit moved a source
+    // position the frontend read (a comment or whitespace edit does).
+    carriesDebugSources(profile.optimization, false),
   );
   if (semanticHit !== null) {
     timing("semantic-cache-hit", { changed_sources: semanticHit.changedSources.length });
@@ -3071,6 +3091,9 @@ async function compileLibraryTracked(
       sanitizeAttributes: opts.sanitize === true,
       timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
+      // A dev library carries the sources a dev executable does, so native
+      // debuggers and stack frames name the TypeScript lines.
+      ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
     });
     timing("llvm-emit", {
       output_bytes:

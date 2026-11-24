@@ -536,7 +536,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     const adapter = emitter.liveDynRefAdapter(type);
     const rc = vAdapters(emitter.shapeHost, type);
     const key = typeKey(type);
-    const name = `sc_error_view_${errorViews.length}`;
+    const name = emitter.contentSymbol("sc_error_view_", key);
     emitter.resolveThunkDefs.push(
       `define internal ptr @${name}(ptr %v) ${FN_ATTRS} {`,
       `entry:`,
@@ -667,6 +667,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // Fetch-referencing programs register native fetch before main.
   // Runtime selection compiles scr_fetch.c on the same predicate.
   const usesFetch = runtimeFeatures.fetch;
+  const usesAsyncHooks = runtimeFeatures.asyncHooks;
   // URL programs give the host parser the IDNA unit's ToASCII.
   const usesUrlIdna = runtimeFeatures.urlIdna;
   // Programs whose checked-dynamic reads answer Buffer.prototype methods by
@@ -692,6 +693,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // emitter: node:test owns the final status when present; otherwise an
   // embedded process.exitCode owns it; ordinary programs return zero.
   const usesNodeTest = runtimeFeatures.nodeTest;
+  /* The entry file path the runner's tracing events carry, interned here so
+   * the string constant exists before the globals are written. */
+  const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
@@ -756,6 +760,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
   if (usesHttp) emitter.declare(`declare void @scr_http_dyn_install()`);
   if (usesFetch) emitter.declare(`declare void @scr_fetch_install()`);
+  if (usesAsyncHooks) emitter.declare(`declare void @scr_async_hooks_install()`);
   if (usesUrlIdna) emitter.declare(`declare void @scr_url_idna_install()`);
   if (usesDynBufferMembers) emitter.declare(`declare void @scr_bytes_buffer_members_install()`);
   if (usesSymbolFor) emitter.declare(`declare void @scr_sym_for_install()`);
@@ -763,7 +768,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
 
   if (usesNodeTest) {
     emitter.declare(`declare i32 @scr_test_exit_code()`);
-    emitter.declare(`declare void @scr_test_init()`);
+    emitter.declare(`declare void @scr_test_init(ptr)`);
   }
   if (snapshotsTlsCa) {
     emitter.declare(`declare void @scr_tls_ca_install()`);
@@ -1553,6 +1558,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
+    ...(usesAsyncHooks ? [`  call void @scr_async_hooks_install()`] : []),
     ...(usesUrlIdna ? [`  call void @scr_url_idna_install()`] : []),
     ...(usesDynBufferMembers ? [`  call void @scr_bytes_buffer_members_install()`] : []),
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
@@ -1567,7 +1573,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `  call void @scr_lib_init(i32 %argc, ptr %argv)`,
     // node:test takes Node's runtime options (the snapshot update flag and
     // the reporter options) out of argv first.
-    ...(usesNodeTest ? [`  call void @scr_test_init()`] : []),
+    ...(usesNodeTest ? [`  call void @scr_test_init(ptr ${testEntryPtr})`] : []),
     ...(asyncEntry
       ? [`  %top = call ptr @${mangleAsyncSpawn(emitter.mod.entry)}()`]
       : // The entry runs once: `noinline` keeps LLVM from inlining the

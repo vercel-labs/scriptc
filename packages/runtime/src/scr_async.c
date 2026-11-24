@@ -441,8 +441,14 @@ static void scr_promise_trace(void *o, ScrTraceVisit visit, void *ctx) {
 /* Teardown for the collector: release the payload only when the trace does
  * NOT visit it (the complement — see the contract in scr_runtime.h). The
  * cb destinations are always visited, so only the array frees here. */
+/* node:async_hooks PROMISE resources (defined with the hook core below). */
+static void scr_async_prom_init(ScrPromise *p);
+static void scr_async_prom_settled(ScrPromise *p);
+static void scr_async_prom_dropped(ScrPromise *p);
+
 static void scr_promise_gcfree(void *o) {
   ScrPromise *p = (ScrPromise *)o;
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_dropped(p);
   if (p->payload_kind == SCR_EXC_STR) {
     scr_str_release((ScrStr *)p->payload);
   } else if ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
@@ -472,6 +478,7 @@ ScrPromise *scr_promise_new(void) {
 #ifdef SCR_RC_AUDIT
   scr_live_promises++;
 #endif
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_init(p);
   return p;
 }
 
@@ -543,6 +550,59 @@ SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
 SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
 #endif
 
+/* The promises whose late handling raised 'rejectionHandled' since the
+ * last rejection checkpoint, in attach order. Each holds a reference of
+ * its own until a checkpoint delivers it (with the listeners registered
+ * then, so a listener removed meanwhile sees nothing, as in Node) or the
+ * loop drops it. */
+static SCR_TL ScrPromise **scr_rjh_queue = NULL;
+static SCR_TL size_t scr_rjh_head = 0, scr_rjh_len = 0, scr_rjh_cap = 0;
+
+static bool scr_rjh_pending(void) { return scr_rjh_head < scr_rjh_len; }
+
+static void scr_rjh_enqueue(ScrPromise *p) {
+  if (scr_rjh_len == scr_rjh_cap) {
+    size_t cap = scr_rjh_cap == 0 ? 8 : scr_rjh_cap * 2;
+    ScrPromise **next = realloc(scr_rjh_queue, cap * sizeof *next);
+    if (next == NULL) scr_oom();
+    scr_rjh_queue = next;
+    scr_rjh_cap = cap;
+  }
+  scr_rjh_queue[scr_rjh_len++] = scr_promise_retain(p);
+}
+
+/* Drops what no checkpoint delivered (loop exit, context shutdown). */
+static void scr_rjh_clear(void) {
+  for (size_t i = scr_rjh_head; i < scr_rjh_len; i++) scr_promise_release(scr_rjh_queue[i]);
+  scr_rjh_head = scr_rjh_len = 0;
+}
+
+/* Delivers what was queued since the previous checkpoint. A listener
+ * throw leaves a pending exception: the caller takes the loop's uncaught
+ * path. The batch leaves the queue before any listener runs: a listener
+ * that attaches a handler to another reported promise enqueues into a
+ * fresh queue, and that entry must reach the next checkpoint instead of
+ * overwriting a promise whose delivery is still due. Each entry's
+ * reference moves with it into this batch, so a promise is released once. */
+static bool scr_drain_rejection_handled(void) {
+  if (!scr_rjh_pending()) return true;
+  ScrPromise **batch = scr_rjh_queue;
+  size_t head = scr_rjh_head, len = scr_rjh_len;
+  scr_rjh_queue = NULL;
+  scr_rjh_head = scr_rjh_len = scr_rjh_cap = 0;
+  bool ok = true;
+  for (size_t i = head; i < len; i++) {
+    ScrPromise *p = batch[i];
+    /* A throwing listener stops delivery, but every queued reference is
+     * still dropped. */
+    if (ok && scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    scr_promise_release(p);
+    if (ok && scr_exc_pending()) ok = false;
+  }
+  free(batch);
+  return ok;
+}
+
 /* The 'beforeExit' hook (scr_events.c sets it in scr_events_install — the
  * loop-hook pattern, so listener-free binaries keep their size class):
  * called with process.exitCode when the loop runs out of ref'd work;
@@ -556,18 +616,37 @@ SCR_TL bool (*scr_process_before_exit_hook)(double code) = NULL;
  * lost, and `value` is the value it passed, +1 (the hook owns it). */
 SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value) = NULL;
 
+/* Whether 'rejectionHandled' is Node's own to raise: with Node's process
+ * events in charge (the island lane), the hook only tells Node that the
+ * promise is handled, and Node raises the event in its own turn. Nothing is
+ * queued then: the hook call is the notification, and a queue entry would
+ * hold the promise — and the island handle it carries — until a native
+ * checkpoint that lane may not reach before the program ends. */
+static bool scr_rjh_reports_to_node(void) {
+#ifdef SCR_NODE_ISLANDS
+  return scr_rjh_notify_fn == scr_ni_promise_handled;
+#else
+  return false;
+#endif
+}
+
 /* Every handler attach funnels here: mark the rejection observed, and
- * fire Node's 'rejectionHandled' when the attach arrived AFTER the
+ * queue Node's 'rejectionHandled' when the attach arrived AFTER the
  * report delivered this promise to 'unhandledRejection' listeners (the
  * model's one late-handling window — earlier handling keeps the promise
- * out of the report entirely). The flag clears on the first attach, so
- * one report fires at most one 'rejectionHandled' — Node's pairing. */
+ * out of the report entirely). Node raises that event on a later turn of
+ * the loop, not inside the attach, so it is queued and delivered at the
+ * next rejection checkpoint; a listener throw then reaches the loop's
+ * uncaught path instead of the attach's derived promise. The flag clears
+ * on the first attach, so one report queues at most one notification —
+ * Node's pairing. */
 static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
   if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
-    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    if (scr_rjh_reports_to_node()) scr_rjh_notify_fn(p);
+    else scr_rjh_enqueue(p);
   }
 }
 
@@ -653,6 +732,11 @@ void scr_promise_release(ScrPromise *p) {
   if (!p || p->rc == SIZE_MAX) return;
   if (--p->rc == 0) {
     scr_cyc_dead(p);
+    /* node:async_hooks: the resource dies with the promise. The side table
+     * keys entries by address and is probed from the hash home, so an entry
+     * left behind here is both a leak and — once the address is handed to a
+     * new promise — an entry that find() answers for the wrong promise. */
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_dropped(p);
     SCR_PROMISE_LAZY_DROP(p);
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
@@ -917,6 +1001,254 @@ struct ScrFiber {
   struct ScrFiber **stackless_previous;
 #endif
 };
+
+/* ── node:async_hooks execution ids and hooks (scr_async.h) ──────────
+ * One execution-id pair and one NULL hook table, kept in the always-linked
+ * core. Nothing here allocates while the table is NULL; the gated dyn-async
+ * unit installs it (and the createHook callbacks) when the IR uses
+ * async_hooks, which is what starts id allocation too. */
+SCR_TL const ScrAsyncHookOps *scr_async_hook_ops = NULL;
+typedef struct {
+  double id;
+  double trigger;
+} ScrAsyncIds;
+static SCR_TL double scr_async_id_counter = 1;
+static SCR_TL double scr_async_exec_id_value = 1;
+static SCR_TL double scr_async_exec_trigger_value = 0;
+
+double scr_async_next_id(void) { return ++scr_async_id_counter; }
+
+double scr_async_execution_id(void) { return scr_async_exec_id_value; }
+
+double scr_async_execution_trigger(void) { return scr_async_exec_trigger_value; }
+
+ScrAsyncExecState scr_async_exec_enter(double id, double trigger) {
+  ScrAsyncExecState prev;
+  prev.id = scr_async_exec_id_value;
+  prev.trigger = scr_async_exec_trigger_value;
+  scr_async_exec_id_value = id;
+  scr_async_exec_trigger_value = trigger;
+  return prev;
+}
+
+void scr_async_exec_leave(ScrAsyncExecState prev) {
+  scr_async_exec_id_value = prev.id;
+  scr_async_exec_trigger_value = prev.trigger;
+}
+
+static ScrAsyncIds *scr_async_track(const char *type, size_t type_len) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return NULL;
+  ScrAsyncIds *ids = malloc(sizeof *ids);
+  if (ids == NULL) {
+    fputs("scriptc: out of memory\n", stderr);
+    abort();
+  }
+  ids->id = scr_async_next_id();
+  ids->trigger = scr_async_exec_id_value;
+  if (ops->init != NULL) {
+    ScrDyn *resource = scr_dyn_new_obj(); /* the runtime's kinds carry no object */
+    ops->init(ids->id, type, type_len, ids->trigger, resource);
+    scr_dyn_release(resource);
+  }
+  return ids;
+}
+
+static ScrAsyncExecState scr_async_fire_begin(ScrAsyncIds *ids) {
+  ScrAsyncExecState prev = {0, 0};
+  if (ids == NULL) return prev;
+  prev = scr_async_exec_enter(ids->id, ids->trigger);
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->before != NULL) ops->before(ids->id);
+  return prev;
+}
+
+static void scr_async_fire_end(ScrAsyncIds *ids, ScrAsyncExecState prev, bool destroy) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+  if (destroy && ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
+/* The after hook alone: the timer loop decides destruction after it runs, so
+ * an after hook that refreshes the still-firing timer keeps the ids it
+ * re-arms with. */
+static void scr_async_fire_after(ScrAsyncIds *ids, ScrAsyncExecState prev) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+}
+
+static void scr_async_fire_destroy(ScrAsyncIds *ids) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
+static void scr_async_fire_end_keep(ScrAsyncIds *ids, ScrAsyncExecState prev) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(ids->id);
+  scr_async_exec_leave(prev);
+}
+
+static void scr_async_fire_cancel(ScrAsyncIds *ids) {
+  if (ids == NULL) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->destroy != NULL) ops->destroy(ids->id);
+  free(ids);
+}
+
+/* ── PROMISE resources of node:async_hooks ────────────────────────────
+ * Promises are the most numerous async resource, so their ids live in a
+ * side table keyed by the promise pointer: a program that does not use
+ * async_hooks pays one NULL test at creation, settlement and release, and
+ * allocates nothing. The table opens only when the hook table is
+ * installed, and ids are reported as Node's: init at creation with the
+ * creating execution as the trigger, promiseResolve once at settlement. */
+typedef struct {
+  ScrPromise *key; /* NULL empty, SCR_PROM_TOMBSTONE deleted */
+  double id;
+  double trigger;
+  bool resolved;
+} ScrAsyncPromEntry;
+#define SCR_PROM_TOMBSTONE ((ScrPromise *)(uintptr_t)1)
+static SCR_TL ScrAsyncPromEntry *scr_async_proms = NULL;
+static SCR_TL size_t scr_async_proms_cap = 0, scr_async_proms_len = 0;
+/* The slots an insert has to walk past: live entries plus tombstones. The
+ * resize test uses this, not the live count: dropping entries leaves
+ * tombstones that still occupy buckets, and a table can fill with them
+ * while few entries are live. */
+static SCR_TL size_t scr_async_proms_used = 0;
+
+static size_t scr_async_prom_home_cap(const ScrPromise *p, size_t cap) {
+  uint64_t h = (uint64_t)(uintptr_t)p * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(h >> 32) & (cap - 1);
+}
+
+static size_t scr_async_prom_home(const ScrPromise *p) {
+  return scr_async_prom_home_cap(p, scr_async_proms_cap);
+}
+
+static void scr_async_prom_teardown(void) {
+  free(scr_async_proms);
+  scr_async_proms = NULL;
+  scr_async_proms_cap = scr_async_proms_len = scr_async_proms_used = 0;
+}
+
+static ScrAsyncPromEntry *scr_async_prom_find(const ScrPromise *p) {
+  if (scr_async_proms_cap == 0) return NULL;
+  size_t at = scr_async_prom_home(p);
+  /* Bounded by the capacity: a table of live entries and tombstones can
+   * have no empty bucket left, and an absent key is ordinary (a directly
+   * awaited promise is not registered), so an unbounded probe would wrap
+   * forever on the event-loop thread. */
+  for (size_t probes = 0; probes < scr_async_proms_cap; probes++) {
+    ScrAsyncPromEntry *e = &scr_async_proms[at];
+    if (e->key == p) return e;
+    if (e->key == NULL) return NULL;
+    at = (at + 1) & (scr_async_proms_cap - 1);
+  }
+  return NULL;
+}
+
+static void scr_async_prom_insert(ScrPromise *p, double id, double trigger) {
+  if ((scr_async_proms_used + 1) * 4 >= scr_async_proms_cap * 3) {
+    size_t cap = scr_async_proms_cap ? scr_async_proms_cap * 2 : 64;
+    ScrAsyncPromEntry *grown = calloc(cap, sizeof *grown);
+    if (!grown) scr_oom();
+    for (size_t i = 0; i < scr_async_proms_cap; i++) {
+      ScrAsyncPromEntry *old = &scr_async_proms[i];
+      if (old->key == NULL || old->key == SCR_PROM_TOMBSTONE) continue;
+      /* The table is being rehashed INTO the new capacity: hashing with the
+       * old one would place entries where the new mask cannot find them. */
+      size_t at = scr_async_prom_home_cap(old->key, cap);
+      while (grown[at].key != NULL) at = (at + 1) & (cap - 1);
+      grown[at] = *old;
+    }
+    free(scr_async_proms);
+    scr_async_proms = grown;
+    scr_async_proms_cap = cap;
+    /* The rehash dropped every tombstone: only live entries were moved. */
+    scr_async_proms_used = scr_async_proms_len;
+    if (scr_async_proms_len == 0 && scr_async_proms_cap != 0) scr_atexit(scr_async_prom_teardown);
+  }
+  size_t at = scr_async_prom_home(p);
+  while (scr_async_proms[at].key != NULL && scr_async_proms[at].key != SCR_PROM_TOMBSTONE)
+    at = (at + 1) & (scr_async_proms_cap - 1);
+  /* A tombstone is a reusable slot; a never-used one adds to the walked
+   * slots. */
+  if (scr_async_proms[at].key == NULL) scr_async_proms_used++;
+  scr_async_proms[at].key = p;
+  scr_async_proms[at].id = id;
+  scr_async_proms[at].trigger = trigger;
+  scr_async_proms[at].resolved = false;
+  scr_async_proms_len++;
+}
+
+static void scr_async_prom_init(ScrPromise *p) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return;
+  double id = scr_async_next_id();
+  double trigger = scr_async_exec_id_value;
+  scr_async_prom_insert(p, id, trigger);
+  if (ops->init != NULL) {
+    ScrDyn *resource = scr_dyn_new_obj();
+    ops->init(id, "PROMISE", 7, trigger, resource);
+    scr_dyn_release(resource);
+  }
+}
+
+static void scr_async_prom_settled(ScrPromise *p) {
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL || e->resolved) return;
+  e->resolved = true;
+  if (ops->promise_resolve != NULL) ops->promise_resolve(e->id);
+}
+
+/* The execution pair a promise resource's callbacks run under: entered
+ * around the reaction job or the fiber resume a settlement wakes, so
+ * executionAsyncId() inside an awaited continuation is the promise's id,
+ * as in Node. */
+typedef struct {
+  ScrAsyncExecState prev;
+  double id;
+  bool tracked;
+} ScrAsyncPromScope;
+
+static ScrAsyncPromScope scr_async_prom_scope_enter(ScrPromise *p) {
+  ScrAsyncPromScope scope = {{0, 0}, 0, false};
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops == NULL) return scope;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL) return scope;
+  scope.prev = scr_async_exec_enter(e->id, e->trigger);
+  scope.id = e->id;
+  scope.tracked = true;
+  if (ops->before != NULL) ops->before(e->id);
+  return scope;
+}
+
+static void scr_async_prom_scope_leave(ScrAsyncPromScope scope) {
+  if (!scope.tracked) return;
+  const ScrAsyncHookOps *ops = scr_async_hook_ops;
+  if (ops != NULL && ops->after != NULL) ops->after(scope.id);
+  scr_async_exec_leave(scope.prev);
+}
+
+static void scr_async_prom_dropped(ScrPromise *p) {
+  if (scr_async_hook_ops == NULL) return;
+  ScrAsyncPromEntry *e = scr_async_prom_find(p);
+  if (e == NULL) return;
+  e->key = SCR_PROM_TOMBSTONE;
+  if (scr_async_proms_len > 0) scr_async_proms_len--;
+}
 
 /* ── AsyncLocalStorage (node:async_hooks) ─────────────────────────────
  * Stores are process-lived ids; the CONTEXT is an immutable refcounted
@@ -1297,6 +1629,7 @@ typedef struct {
   unsigned long id;
   bool reffed;     /* keeps the loop alive; unref() clears it (Node semantics) */
   double delay_ms; /* the original delay — refresh() re-arms to now + this */
+  ScrAsyncIds *async_ids; /* NULL unless async_hooks tracks; intervals keep it */
 } ScrTimer;
 
 static SCR_TL ScrTimer *scr_timers = NULL;
@@ -1576,7 +1909,8 @@ double scr_timer_user_delay(double after, double kind) {
 
 void scr_set_timeout(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, 0, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, 0, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
 }
 
@@ -1655,7 +1989,8 @@ static void scr_timer_remove_at(size_t i) {
 double scr_set_interval(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms); /* Node's clamp-and-trunc, like setTimeout */
   unsigned long id = scr_interval_next_id++;
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, ms, id, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, ms, id, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
   return (double)id;
 }
@@ -1666,7 +2001,8 @@ SCR_TL int scr_mt_wait_state = 0;
 double scr_set_timeout_handle(ScrClosure *cb, double ms) {
   ms = scr_timer_coerce_ms(ms);
   unsigned long id = scr_interval_next_id++;
-  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, id, true, ms};
+  ScrTimer t = {scr_now_ms() + ms, scr_timer_seq++, cb /* ownership moves in */, 0, id, true, ms,
+                scr_async_track("Timeout", 7)};
   scr_timer_push(t);
   return (double)id;
 }
@@ -1806,6 +2142,7 @@ typedef struct ScrNtick {
   ScrClosure *cb;             /* owned; NULL for a raw C-hook entry */
   ScrFsRenameFn error_cb;     /* process-write success adapter, or NULL */
   void (*raw)(void);          /* hook when cb == NULL (stream markers) */
+  ScrAsyncIds *async_ids;     /* NULL unless async_hooks tracks */
   struct ScrNtick *next;
 } ScrNtick;
 
@@ -1828,6 +2165,7 @@ void scr_next_tick(ScrClosure *cb /*moves*/) {
   ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = scr_als_bind(cb);
+  t->async_ids = scr_async_track("TickObject", 10);
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) {
     scr_hosted_tick(t);
@@ -1901,6 +2239,7 @@ void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
     ScrNtick *t = scr_nt_head;
     scr_nt_head = t->next;
+    scr_async_fire_cancel(t->async_ids);
     if (t->cb) scr_closure_release(t->cb);
     scr_mem_free(t);
   }
@@ -1937,8 +2276,15 @@ void scr_clear_interval(double handle) {
 #endif
   ScrTimer *found = scr_timer_find(id);
   if (found) {
-    scr_closure_release(found->cb);
+    /* Take the entry out of the heap BEFORE the destroy hook runs. The hook
+     * is program code: queueing timers or immediates here reallocates or
+     * reorders this storage, so neither the entry pointer nor its heap index
+     * survives the call. Its owned fields move to locals first. */
+    ScrClosure *cb = found->cb;
+    ScrAsyncIds *async_ids = found->async_ids;
     scr_timer_remove_at((size_t)(found - scr_timers));
+    scr_async_fire_cancel(async_ids);
+    scr_closure_release(cb);
   }
 }
 
@@ -1956,6 +2302,7 @@ typedef struct {
   unsigned long id;
   ScrClosure *cb; /* owned; NULL once fired or cleared */
   bool reffed;    /* keeps the loop alive; unref() clears it (Node semantics) */
+  ScrAsyncIds *async_ids; /* NULL unless async_hooks tracks */
 } ScrImmediate;
 
 static SCR_TL ScrImmediate *scr_immediates = NULL;
@@ -1969,16 +2316,23 @@ double scr_set_immediate(ScrClosure *cb) {
 #ifdef SCR_NODE_ISLANDS
   if (scr_loop_hosted != NULL) return scr_hosted_set_immediate(cb);
 #endif
+  /* The init hook runs program code and may queue immediates of its own:
+   * track FIRST, then commit this entry, so the hook's entries land in
+   * slots of their own (Node queues them before this one, and they run
+   * first). Tracking also may grow the queue, so the capacity check must
+   * follow it, not precede it. */
+  ScrAsyncIds *async_ids = scr_async_track("Immediate", 9);
   if (scr_nimmediates == scr_immediates_cap) {
     scr_immediates_cap = scr_immediates_cap ? scr_immediates_cap * 2 : 16;
     scr_immediates = realloc(scr_immediates, scr_immediates_cap * sizeof *scr_immediates);
     if (!scr_immediates) scr_oom();
   }
   unsigned long id = scr_interval_next_id++;
-  scr_immediates[scr_nimmediates].id = id;
-  scr_immediates[scr_nimmediates].cb = cb; /* ownership moves in */
-  scr_immediates[scr_nimmediates].reffed = true;
-  scr_nimmediates++;
+  ScrImmediate *im = &scr_immediates[scr_nimmediates++];
+  im->id = id;
+  im->cb = cb; /* ownership moves in */
+  im->reffed = true;
+  im->async_ids = async_ids;
   scr_pending_immediates++;
   scr_reffed_immediates++;
   return (double)id;
@@ -2006,13 +2360,20 @@ void scr_clear_immediate(double handle) {
 #endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im == NULL) return; /* already fired/cleared: no-op, like Node */
-  scr_closure_release(im->cb);
+  /* The slot is cleared before the destroy hook runs: the hook is program
+   * code, and queueing an immediate from it reallocates this array, so the
+   * entry pointer cannot survive the call. */
+  ScrClosure *cb = im->cb;
+  ScrAsyncIds *async_ids = im->async_ids;
   im->cb = NULL;
+  im->async_ids = NULL;
   if (scr_pending_immediates > 0) scr_pending_immediates--;
   if (im->reffed) {
     im->reffed = false;
     if (scr_reffed_immediates > 0) scr_reffed_immediates--;
   }
+  scr_async_fire_cancel(async_ids);
+  scr_closure_release(cb);
 }
 
 /* Immediate.unref()/ref()/hasRef(): the Timeout trio's exact story over
@@ -2334,6 +2695,9 @@ static inline void scr_promise_wake_one(ScrFiber *f) {
 /* Runs one callback waiter against its settled source and drops the
  * waiter's references (its destination and countdown state). */
 static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  bool async_tracked = __builtin_expect(scr_async_hook_ops != NULL, 0);
+  ScrAsyncPromScope async_scope;
+  if (async_tracked) async_scope = scr_async_prom_scope_enter(src);
   if (SCR_PROMISE_IS_REACTION(cb)) {
     scr_promise_reaction_run(cb, src);
     return;
@@ -2351,6 +2715,7 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
     scr_promise_settle_from(cb->dst, src);
   }
   scr_promise_release(cb->dst);
+  if (async_tracked) scr_async_prom_scope_leave(async_scope);
 }
 
 /* Queues a combinator's reaction job for a settled entry. The waiter's
@@ -2452,10 +2817,26 @@ static void scr_promise_settle_wake_cbs(ScrPromise *p) {
   for (size_t i = 0; i < ncbs; i++) {
     const struct ScrPromiseCbWaiter *cb = &cbs[i];
     if (cb->job_at == SCR_CB_SYNC) continue;
-    for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+      for (; w < cb->job_at && w < p->nwaiters; w++) {
+        ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+        scr_promise_wake_one(p->waiters[w]);
+        scr_async_prom_scope_leave(async_scope);
+      }
+    } else {
+      for (; w < cb->job_at && w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+    }
     scr_promise_cb_queue(cb, p);
   }
-  for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+    for (; w < p->nwaiters; w++) {
+      ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+      scr_promise_wake_one(p->waiters[w]);
+      scr_async_prom_scope_leave(async_scope);
+    }
+  } else {
+    for (; w < p->nwaiters; w++) scr_promise_wake_one(p->waiters[w]);
+  }
   p->nwaiters = 0;
   for (size_t i = 0; i < ncbs; i++) {
     if (cbs[i].job_at == SCR_CB_SYNC) scr_promise_cb_run(&cbs[i], p);
@@ -2466,13 +2847,28 @@ static void scr_promise_settle_wake_cbs(ScrPromise *p) {
 /* Settle helpers wake waiters into the microtask queue and dispatch the
  * callback waiters. */
 static void scr_promise_settle_wake(ScrPromise *p) {
+  /* A promiseResolve hook runs inside the settlement and can drop the last
+   * reference the program held to this promise (a reader's closed promise,
+   * for one); hold it for the whole wake so the settlement below never runs
+   * on a freed promise. */
+  scr_promise_retain(p);
+  if (__builtin_expect(scr_async_hook_ops != NULL, 0)) scr_async_prom_settled(p);
   if (p->ncbs != 0) {
     scr_promise_settle_wake_cbs(p);
   } else {
-    for (size_t i = 0; i < p->nwaiters; i++) scr_promise_wake_one(p->waiters[i]);
+    if (__builtin_expect(scr_async_hook_ops != NULL, 0)) {
+      for (size_t i = 0; i < p->nwaiters; i++) {
+        ScrAsyncPromScope async_scope = scr_async_prom_scope_enter(p);
+        scr_promise_wake_one(p->waiters[i]);
+        scr_async_prom_scope_leave(async_scope);
+      }
+    } else {
+      for (size_t i = 0; i < p->nwaiters; i++) scr_promise_wake_one(p->waiters[i]);
+    }
     p->nwaiters = 0;
   }
   if (p->state == SCR_PROM_REJECTED) scr_track_rejection(p);
+  scr_promise_release(p);
 }
 
 /* ── Promise.race ─────────────────────────────────────────────────────
@@ -3428,7 +3824,14 @@ static void scr_direct_finish(ScrFiber *self) {
   if (p->state == SCR_PROM_PENDING)
     scr_trap("scriptc: internal error: directly awaited body finished unsettled\n");
   self->done = true;
-  if (self->direct_awaiter != NULL) scr_promise_wake_one(self->direct_awaiter);
+  if (self->direct_awaiter != NULL) {
+    ScrAsyncPromScope async_scope;
+    bool async_tracked =
+        __builtin_expect(scr_async_hook_ops != NULL, 0) && self->promise != NULL;
+    if (async_tracked) async_scope = scr_async_prom_scope_enter(self->promise);
+    scr_promise_wake_one(self->direct_awaiter);
+    if (async_tracked) scr_async_prom_scope_leave(async_scope);
+  }
 }
 
 void scr_coro_async_finish(ScrFiber *self) {
@@ -6251,6 +6654,7 @@ static SCR_TL bool scr_hosted_deciding = false;
  * listeners: what they queued belongs to this turn. */
 static void scr_hosted_deciding_tick(void) {
   while (scr_hosted_finish_turn() && scr_hosted_unobserved_rejections()) {
+    if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
     if (scr_report_unhandled_rejections()) {
       scr_discard_unhandled_rejections();
       scr_process_exit((double)scr_exit_code_hint_get());
@@ -6273,6 +6677,9 @@ static void scr_hosted_deciding_tick(void) {
  * at the promise-job checkpoint that rejects it, before the turn's ticks
  * (the loop pass's root check), so it is decided at once. */
 void scr_loop_hosted_microtasks_done(void) {
+  /* A handler native code attached since the last checkpoint raises its
+   * 'rejectionHandled' now, in this turn's tick phase. */
+  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
   if (scr_nunhandled == 0 || scr_hosted_deciding) return;
   if (!scr_hosted_unobserved_rejections()) return;
   const ScrPromise *root = scr_loop_root;
@@ -6458,6 +6865,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
  * it left, then Node's checkpoint (ticks and microtasks of both sides). */
 static void scr_hosted_macrotask_done(void) {
   scr_hosted_settle_exception();
+  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
   scr_loop_hosted->checkpoint(0);
 }
 
@@ -6602,10 +7010,13 @@ static bool scr_loop_run_ticks(void) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
+    ScrAsyncIds *async_ids = t->async_ids;
     scr_mem_free(t);
     if (cb) {
+      ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);
+      scr_async_fire_end(async_ids, async_prev, true);
       scr_closure_release(cb);
     } else {
       raw(); /* one stream tick, FIFO with the user ticks around it */
@@ -6642,6 +7053,27 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * scheduled during the body exactly once, at startup — differentially
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
+  /* Timers armed during a turn belong to the NEXT turn's timers phase, not
+   * this one, with one boundary: the turn's STARTUP CHECKPOINT. Node's loop
+   * fixes the timers phase's set when it enters it, and the ticks/microtasks
+   * that run before that phase count as already queued — a due timer a
+   * process.nextTick callback arms during startup runs before this turn's
+   * immediates. Timers armed later, by the turn's I/O callbacks (or by a
+   * callback those restart the checkpoint through), belong to the next turn:
+   * a setTimeout(fn, 0) an I/O callback arms cannot overtake the setImmediate
+   * that callback arms after it. Without that cutoff the clock decided the
+   * order — when the turn crossed a millisecond boundary the zero-delay timer
+   * was already due and ran first (observed with
+   * 5615-next-tick-callback-phases.ts under ASan).
+   *
+   * The snapshot is therefore taken once per turn, after its startup
+   * checkpoint drains and BEFORE the I/O dispatch stations. `taken` keeps a
+   * same-turn restart (a callback queued ticks) from recapturing after those
+   * callbacks already armed timers; the flag resets when the turn completes.
+   * One scr_loop_run_pass call runs many turns, so it cannot be captured once
+   * per call — that would strand every timer armed in an earlier turn. */
+  unsigned long timer_seq_at_turn_start = scr_timer_seq;
+  bool timer_snapshot_taken = false;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
@@ -6675,12 +7107,26 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * earlier checkpoint have already delivered here. Handled listeners
      * may enqueue more jobs or ref'd work, so return to the checkpoint
      * head instead of declaring the loop exhausted underneath them. */
+    /* A handler attached since the previous checkpoint raises its
+     * 'rejectionHandled' now, after this turn's ticks and jobs (Node's
+     * moment for it) and with the listeners registered now. */
+    if (!scr_drain_rejection_handled()) return false;
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_report_unhandled_rejections()) {
       rejection_failed = true;
       break;
     }
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
-    if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+    if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+      continue;
+    /* This turn's startup checkpoint is drained: its ticks and microtasks
+     * are queued work, so a due timer they armed belongs to this turn's
+     * timers phase. Everything after this point (the I/O stations below
+     * included) belongs to the next turn. */
+    if (!timer_snapshot_taken) {
+      timer_seq_at_turn_start = scr_timer_seq;
+      timer_snapshot_taken = true;
+    }
     /* Quiescent between turns (microtasks drained, nothing running):
      * collect any cycles the turn left behind. One SCHEDULED pass — almost
      * always a nursery one, sized to the turn's own garbage. A full sweep
@@ -6713,7 +7159,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
       if (scr_exc_pending()) return false;
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+        continue;
     }
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
      * next-tick emissions ('data' flow kicks, 'readable'/'end'/'finish'/
@@ -7148,8 +7595,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     scr_sa_loop_waiting(false);
 #endif
-    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) SCR_PASS_PHASE(SCR_PASS_TIMERS);
-    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
+    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now &&
+        scr_timers[0].seq < timer_seq_at_turn_start)
+      SCR_PASS_PHASE(SCR_PASS_TIMERS);
+    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now &&
+           scr_timers[0].seq < timer_seq_at_turn_start) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
        * An interval entry is OUT of the heap while its callback runs;
@@ -7164,7 +7614,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_firing_refresh = false;
       }
       double started = t.id != 0 && t.repeat_ms > 0 ? scr_now_ms() : 0;
+      ScrAsyncExecState async_prev = scr_async_fire_begin(t.async_ids);
       ((void (*)(ScrClosure *))t.cb->fn)(t.cb);
+      /* The after hook runs before the destruction decision: it can refresh
+       * the still-firing timer, and the entry then keeps the ids it re-arms
+       * with instead of having them freed underneath it. */
+      scr_async_fire_after(t.async_ids, async_prev);
+      bool keep_ids =
+          t.id != 0 && !scr_firing_cleared && (t.repeat_ms > 0 || scr_firing_refresh);
       if (t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) {
         /* Re-arm relative to the time the callback started, as Node's
          * listOnTimeout does (getLibuvNow() before _onTimeout): a slow
@@ -7172,23 +7629,33 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
          * One slower than the interval makes the next tick due on the next
          * turn, without catch-up bursts. The ref state carries across
          * ticks (a self-unref'd interval stays unref'd). */
-        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
+        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id,
+                          scr_firing_reffed, t.delay_ms, t.async_ids};
         scr_timer_push(again);
       } else if (t.id != 0 && scr_firing_refresh && !scr_firing_cleared) {
         /* refresh() from inside the one-shot's own callback: re-arm to
          * now + the original delay, ref state carried (Node's
          * Timeout.refresh — the timer fires again). */
-        ScrTimer again = {scr_now_ms() + t.delay_ms, scr_timer_seq++, t.cb, 0, t.id, scr_firing_reffed, t.delay_ms};
+        ScrTimer again = {scr_now_ms() + t.delay_ms, scr_timer_seq++, t.cb, 0, t.id,
+                          scr_firing_reffed, t.delay_ms, t.async_ids};
         scr_timer_push(again);
       } else {
         scr_closure_release(t.cb);
+      }
+      if (!keep_ids) {
+        /* Nothing re-armed: the resource is done. Clear the firing id before
+         * the destroy hook so a refresh there cannot target a timer that no
+         * longer exists (its ids are freed next). */
+        scr_firing_id = 0;
+        scr_async_fire_destroy(t.async_ids);
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       /* Drain ticks and microtasks, and report the rejections the callback
        * left, before more timers (Node's runNextTicks between timers). */
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+        break;
     }
     /* The check phase: immediates queued BEFORE this phase started run
      * now, FIFO; ones a callback queues wait for the next turn (the end
@@ -7199,7 +7666,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * first (the timer loop's break above), so the phase only runs on a
      * drained checkpoint. */
     bool check_ran = false;
-    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
+    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && !scr_rjh_pending() &&
+        scr_pending_immediates > 0) {
       /* The slots of the immediates that ran are reused first. An earlier
        * phase left one pending whenever a callback queued the next, as a
        * chain of immediates does at every turn; once the fired part is at
@@ -7231,7 +7699,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           if (scr_reffed_immediates > 0) scr_reffed_immediates--;
         }
         scr_immediate_firing = scr_immediates[i].id;
+        ScrAsyncIds *async_ids = scr_immediates[i].async_ids; /* one-shot */
+        scr_immediates[i].async_ids = NULL;
+        ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
         ((void (*)(ScrClosure *))cb->fn)(cb);
+        scr_async_fire_end(async_ids, async_prev, true);
         scr_immediate_firing = 0;
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
@@ -7241,7 +7713,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         /* Node's runNextTicks between immediates also reports the
          * rejections the callback left before the next one runs; a
          * listener's jobs drain before the next report. */
-        while (scr_nunhandled > 0 && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+        while ((scr_nunhandled > 0 || scr_rjh_pending()) &&
+               (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+          if (!scr_drain_rejection_handled()) return false;
+          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
           if (scr_report_unhandled_rejections()) return true;
           if (SCR_PASS_HANDED_OVER()) return rejection_failed;
           if (!scr_loop_run_checkpoint()) return false;
@@ -7275,6 +7750,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       scr_loop_io_open = true;
       scr_loop_io_batches = 0;
     }
+    /* This turn is complete. Everything armed during it (I/O callbacks,
+     * timer callbacks, the check phase) is eligible for the next one; the
+     * next turn recaptures after its own startup checkpoint. */
+    timer_snapshot_taken = false;
   }
   return rejection_failed;
 }
@@ -7381,6 +7860,10 @@ bool scr_loop_run(ScrPromise *top_level) {
    * them as leaks. Uncaught callback throws still return above for main
    * to report through the existing exceptional teardown path. */
   scr_timers_teardown();
+  /* Queued 'rejectionHandled' events the loop never reached (a fatal throw,
+   * a handler attached as the last turn ended): released here with the
+   * timers, or the RC audit counts the promises as leaks. */
+  scr_rjh_clear();
   /* No reffed foreign registration or queued invocation remains at ordinary
    * exhaustion. Disarm posting before exit listeners/global teardown so a
    * post from a straggling native thread is dropped safely. */
@@ -8942,10 +9425,12 @@ void scr_loop_context_shutdown(void) {
     scr_context_ready_discard();
   }
   scr_discard_unhandled_rejections();
+  scr_rjh_clear();
   free(scr_ready); scr_ready = NULL; scr_ready_cap = 0;
   free(scr_timers); scr_timers = NULL; scr_timers_cap = 0;
   free(scr_immediates); scr_immediates = NULL; scr_immediates_cap = 0;
   free(scr_maybe_unhandled); scr_maybe_unhandled = NULL; scr_unhandled_cap = 0;
+  free(scr_rjh_queue); scr_rjh_queue = NULL; scr_rjh_cap = 0;
   scr_als_ctx_release(scr_als_main_slot); scr_als_main_slot = NULL;
   scr_fibers_abandoned = 0;
   scr_note_abandoned_fibers(0);

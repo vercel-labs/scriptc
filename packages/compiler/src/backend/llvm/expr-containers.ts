@@ -22,6 +22,7 @@ import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { F64_INF, f64Lit, loadArrCount, sizeToDouble } from "./common.js";
 import { MUTATING_COLLECTION_METHODS } from "../publication.js";
 import { borrowsStringInputs, emitStringInputs } from "./string-lifetimes.js";
+import { emitCursorStrIntrinsic } from "./string-cursor-loops.js";
 import {
   emitMapLookupKey,
   borrowsMapReadInputs,
@@ -359,6 +360,10 @@ export function emitStrIntrinsic(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "strIntrinsic" },
 ): LlValue {
+  if (e.receiver.kind === "varRef") {
+    const cursor = host.stringCursors.get(e.receiver.localId);
+    if (cursor !== undefined) return emitCursorStrIntrinsic(host, e, cursor);
+  }
   // String/array-returning methods hand back a +1 reference, including
   // identity returns. Inputs keep either a proven owner or a frame temp.
   // Omitted optional args get the C-side defaults from docs/ir.md.
@@ -1043,22 +1048,31 @@ export function emitArrIntrinsic(
     }
     case "sortPrimitive":
     case "toSortedPrimitive": {
-      if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      const noOp =
+        e.method === "sortPrimitive"
+          ? host.emitPublishedArrayGuard(r.name, e.receiver.type, 11)
+          : null;
       if (elem.kind === "date") {
         // Dates order by their toString() text.
         host.declare(`declare ptr @scr_arr_sort_by_text(ptr, i1 zeroext, ptr)`);
         host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
-        const sorted = B.tmp();
-        B.line(
-          `${sorted} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
-        );
+        const sorted = host.emitArrayMutationResult(r.name, e.receiver.type, noOp, () => {
+          const t = B.tmp();
+          B.line(
+            `${t} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
+          );
+          return t;
+        });
         return host.own({ name: sorted, type: e.type });
       }
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
-      const result = B.tmp();
-      B.line(
-        `${result} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
-      );
+      const result = host.emitArrayMutationResult(r.name, e.receiver.type, noOp, () => {
+        const t = B.tmp();
+        B.line(
+          `${t} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
+        );
+        return t;
+      });
       return host.own({ name: result, type: e.type });
     }
     case "sortValues": {
@@ -1094,10 +1108,13 @@ export function emitArrIntrinsic(
     }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      const noOp = host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
       host.declare(`declare ptr @scr_arr_reverse(ptr)`);
-      const t = B.tmp();
-      B.line(`${t} = call ptr @scr_arr_reverse(ptr ${r.name})`);
+      const t = host.emitArrayMutationResult(r.name, e.receiver.type, noOp, () => {
+        const made = B.tmp();
+        B.line(`${made} = call ptr @scr_arr_reverse(ptr ${r.name})`);
+        return made;
+      });
       return host.own({ name: t, type: e.type });
     }
     case "copyWithin":
@@ -1106,31 +1123,23 @@ export function emitArrIntrinsic(
       const args = e.args.map((arg) => host.emitExpr(arg));
       // fill's range is its last two arguments; copyWithin's target,
       // start and end are its three.
-      if (e.method === "copyWithin")
-        host.emitPublishedArrayGuard(
-          r.name,
-          e.receiver.type,
-          9,
-          args[0]!.name,
-          args[1]!.name,
-          args[2]!.name,
-        );
-      else
-        host.emitPublishedArrayGuard(
-          r.name,
-          e.receiver.type,
-          8,
-          args[args.length - 2]!.name,
-          args[args.length - 1]!.name,
-        );
-      if (host.checkedFills.has(e)) {
-        // A new int32 array with checked stores, filled with a value that
-        // may not be an int32: widen it first then.
-        const filled = B.newLabel("arr.fill.kind");
-        host.emitCheckedInt32Store(r.name, args[0]!.name, e.args[0]!, filled);
-        B.br(filled);
-        B.startBlock(filled);
-      }
+      const noOp =
+        e.method === "copyWithin"
+          ? host.emitPublishedArrayGuard(
+              r.name,
+              e.receiver.type,
+              9,
+              args[0]!.name,
+              args[1]!.name,
+              args[2]!.name,
+            )
+          : host.emitPublishedArrayGuard(
+              r.name,
+              e.receiver.type,
+              8,
+              args[args.length - 2]!.name,
+              args[args.length - 1]!.name,
+            );
       const helper =
         e.method === "copyWithin"
           ? "scr_arr_copy_within"
@@ -1140,10 +1149,22 @@ export function emitArrIntrinsic(
       const types = e.method === "fill" ? [accTy, "double", "double"] : args.map(() => "double");
       const signature = e.method === "fill" ? [accArg, "double", "double"] : types;
       host.declare(`declare ptr @${helper}(ptr, ${signature.join(", ")})`);
-      const result = B.tmp();
-      B.line(
-        `${result} = call ptr @${helper}(ptr ${r.name}, ${args.map((arg, i) => `${types[i]} ${arg.name}`).join(", ")})`,
-      );
+      const result = host.emitArrayMutationResult(r.name, e.receiver.type, noOp, () => {
+        if (host.checkedFills.has(e)) {
+          // A new int32 array with checked stores, filled with a value that
+          // may not be an int32: widen it first then. An empty range writes
+          // nothing and must not widen the storage.
+          const filled = B.newLabel("arr.fill.kind");
+          host.emitCheckedInt32Store(r.name, args[0]!.name, e.args[0]!, filled);
+          B.br(filled);
+          B.startBlock(filled);
+        }
+        const made = B.tmp();
+        B.line(
+          `${made} = call ptr @${helper}(ptr ${r.name}, ${args.map((arg, i) => `${types[i]} ${arg.name}`).join(", ")})`,
+        );
+        return made;
+      });
       return host.own({ name: result, type: e.type });
     }
     case "toSpliced": {

@@ -77,6 +77,9 @@ void *scr_net_server_get_http_ctx(ScrNetServer *s);
  * drops its own request/upgrade/connect lists there (the settle-releases-
  * listeners story across the layer seam). */
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *));
+/* the native context's settle hook: releases the listeners it owns that can
+ * no longer fire once the server settles */
+void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *));
 bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
 /* The dyn-dispatch hook for HTTP server events: scr_http.c registers it
  * at scr_http_dyn_install, and the netServer handle ops route
@@ -261,8 +264,21 @@ void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, Scr
  * timing); released unread on a server without deferral (a plain net
  * server never fires it, like Node). */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
+/* A listener for an event this server never fires: registered, inert. */
+void scr_net_server_on_inert(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
 ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+/* new net.Socket([options]): an unconnected socket (+1, or NULL with the
+ * throw pending). allowHalfOpen and signal lower; a descriptor (a number
+ * argument or options.fd) and the readable/writable sides throw the
+ * lowering fence. */
+ScrNetSocket *scr_net_sock_construct(const ScrDyn *options,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                     const ScrStr *fence);
+/* socket.connect(port[, host][, connectListener]): an idle socket dials
+ * (port and host validated first). */
+void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
+                               ScrClosure *cb /*moves, nullable*/);
 bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
 /* connect with a validated autoSelectFamilyAttemptTimeout option: the
  * budget runs Node's validateInt32-from-1 ladder (ERR_OUT_OF_RANGE /
@@ -353,7 +369,12 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);
+/* Whether the socket's dial is still waiting to be started: a request that
+ * queued for an agent slot holds its socket before it connects. */
+bool scr_net_sock_dial_pending(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
+ScrDyn *scr_net_sock_timeout_get(ScrNetSocket *s); /* +1 */
+bool scr_net_sock_allow_half_open(ScrNetSocket *s);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_net_sock_remote_address(ScrNetSocket *s); /* +1 or NULL (undefined arm) */
 double scr_net_sock_remote_port(ScrNetSocket *s);    /* NaN = undefined */
@@ -373,6 +394,7 @@ ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
 bool scr_net_is_socket_address(const ScrDyn *value);
 ScrDyn *scr_net_block_list_new(const ScrDyn *args);
 bool scr_net_is_block_list(const ScrDyn *value);
+bool scr_net_block_list_blocks(const ScrDyn *list, const char *ip, int family);
 /* net.BoundSocket: construction validates its options and binds (TCP or a
  * Unix-socket path); server.listen(bound[, cb]) adopts the descriptor. All
  * +1, borrowed arguments; may throw. */
@@ -520,6 +542,14 @@ void scr_net_sock_adopt_start(ScrNetSocket *t);
  * transport handshake, or fires 'connect'; any other status fails the
  * socket with "Proxy response (<status>) !== 200 when HTTP Tunneling". */
 void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
+/* The tunnel's failure report: `status` is the proxy's status code (-1 when
+ * the head is not an HTTP status line), `head`/`head_len` the response head.
+ * The formatter writes the socket error's text; without one the runtime's
+ * own (undici's) wording is used. */
+typedef void (*ScrNetTunnelMsgFn)(void *ctx, int status, const char *head, size_t head_len,
+                                  char *out, size_t cap);
+void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
+                                ScrNetTunnelMsgFn msg_fn, void *ctx);
 /* The status code of a CONNECT response head (head[0..len) ends with the
  * blank line), or -1 when it does not start with an HTTP/1.x status
  * line; and undici's message for a status other than 200 (or -1). */

@@ -363,6 +363,9 @@ double scr_ar_trigger_id(ScrDyn *handle);
 /* The execution context's ids: executionAsyncId()/triggerAsyncId(). */
 double scr_ar_execution_id(void);
 double scr_ar_execution_trigger(void);
+/* executionAsyncResource(): the AsyncResource whose runInAsyncScope or
+ * bound call is executing (+1), and a shared plain object elsewhere (+1). */
+ScrDyn *scr_ar_execution_resource(void);
 
 /* ── node:async_hooks execution ids and hooks ─────────────────────────
  * The always-linked core keeps one execution-id pair and ONE NULL hook
@@ -395,6 +398,17 @@ typedef struct ScrAsyncHookOps {
 extern SCR_TL const ScrAsyncHookOps *scr_async_hook_ops; /* NULL: not tracking */
 double scr_async_execution_id(void);
 double scr_async_execution_trigger(void);
+/* The execution-id pair's enter/leave around a resource's callback, and the
+ * counter every resource id comes from. AsyncResource shares the counter and
+ * the pair with the core's tracked kinds, so its scopes answer Node's
+ * executionAsyncId()/triggerAsyncId() and its ids interleave as Node's do. */
+typedef struct {
+  double id;
+  double trigger;
+} ScrAsyncExecState;
+ScrAsyncExecState scr_async_exec_enter(double id, double trigger);
+void scr_async_exec_leave(ScrAsyncExecState prev);
+double scr_async_next_id(void);
 
 /* createHook and the table's installation (scr_async_dyn.c). createHook
  * validates its five callbacks with Node's ERR_ASYNC_CALLBACK and answers a

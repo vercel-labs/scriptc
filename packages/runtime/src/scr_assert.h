@@ -53,7 +53,7 @@ void scr_assert_partial_deep_dyn(ScrDyn *a, ScrDyn *b, ScrStr *msg, bool has_msg
 void scr_assert_partial_deep_result(bool equal, bool negated, ScrStr *msg, bool has_msg);
 bool scr_assert_partial_eq_dyn(const ScrDyn *a, const ScrDyn *b);
 ScrStr *scr_assert_inspect_str(const ScrStr *s); /* util.inspect quoting; +1 */
-void scr_assert_ok(bool pass, ScrStr *message, bool generated);
+void scr_assert_ok(bool pass, ScrStr *message, bool generated, bool generated_from_truthiness);
 /* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
  * the deprecated form; everything moves in, throws. */
 void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,

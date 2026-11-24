@@ -119,11 +119,27 @@ jobs:
             --jq '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' \
             > "$RUNNER_TEMP/failing-jobs.json"
           echo "failing_jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")" >> "$GITHUB_OUTPUT"
-          BASE=$(gh api "repos/$REPO/git/ref/tags/green-main" --jq .object.sha 2>/dev/null || true)
-          [ -n "$BASE" ] || fail "green-main names no commit yet"
+          # The baseline is the newest passing main commit before this run: the green-main tag when it is an
+          # ancestor of the failed head, else the head of the newest successful push run. A repository with no tag,
+          # or with a tag someone seeded by hand and never advanced, still searches.
+          TAG_BASE=$(gh api "repos/$REPO/git/ref/tags/green-main" --jq .object.sha 2>/dev/null || true)
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=20" \
+            > "$RUNNER_TEMP/success-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}' > "$RUNNER_TEMP/success-runs.json"
+          RUN_BASE=$(jq -r --arg red "$RED" '[.workflow_runs[] | select(.head_sha != $red)][0].head_sha // ""' \
+            "$RUNNER_TEMP/success-runs.json")
+          BASE=""
+          for candidate in "$TAG_BASE" "$RUN_BASE"; do
+            [ -n "$candidate" ] || continue
+            [ "$candidate" = "$RED" ] && continue
+            git cat-file -e "$candidate^{commit}" 2>/dev/null ||
+              git fetch --no-tags --quiet origin "$candidate" 2>/dev/null || continue
+            git merge-base --is-ancestor "$candidate" "$RED" || continue
+            if [ -z "$BASE" ] || git merge-base --is-ancestor "$BASE" "$candidate"; then
+              BASE=$candidate
+            fi
+          done
+          [ -n "$BASE" ] || fail "no passing main commit before this run to search from"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
-          git cat-file -e "$BASE^{commit}" 2>/dev/null || git fetch --no-tags --quiet origin "$BASE" ||
-            fail "cannot read green-main at $BASE"
           if ! find failure-reports -name '*.json' -print -quit 2>/dev/null | grep -q .; then
             fail "the failed run kept no failing-test report"
           fi
@@ -192,6 +208,10 @@ jobs:
     outputs:
       outcome: ${{ steps.screen.outputs.outcome }}
     steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/bisect-probe
         with:
           sha: ${{ needs.plan.outputs.head }}
@@ -224,6 +244,10 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.probe_slots) }}
     steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - if: matrix.sha != ''
         uses: ./.github/actions/bisect-probe
         with:
@@ -336,6 +360,10 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.narrow_1.outputs.probe_slots || needs.plan.outputs.probe_slots) }}
     steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - if: matrix.sha != ''
         uses: ./.github/actions/bisect-probe
         with:
@@ -447,11 +475,15 @@ jobs:
         include:
           - role: culprit
             sha: ${{ needs.decide.outputs.culprit_sha }}
-            expect: "false"
+            expect: fail
           - role: predecessor
             sha: ${{ needs.decide.outputs.predecessor_sha }}
-            expect: "true"
+            expect: pass
     steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/bisect-probe
         with:
           sha: ${{ matrix.sha }}
@@ -460,13 +492,8 @@ jobs:
           repeat: "3"
           run_id: ${{ github.event.workflow_run.id }}
           artifact: confirm-${{ matrix.role }}
-      - name: Check the expected outcome
-        run: |
-          pass=$(jq -r .pass "$RUNNER_TEMP/result.json" 2>/dev/null || echo "")
-          if [ "$pass" != "${{ matrix.expect }}" ]; then
-            echo "::error::The ${{ matrix.role }} commit (${{ matrix.sha }}) gave pass=$pass; expected ${{ matrix.expect }}"
-            exit 1
-          fi
+          # Three failures on the culprit, three passes before it; a flake or an infra error fails the job.
+          expect: ${{ matrix.expect }}
 
   # A confirmed culprit gets a revert pull request, with the failing test and the green and red commits in its
   # body. Anything else that could not be confirmed gets an issue. A flake gets nothing.

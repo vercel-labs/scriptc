@@ -12,7 +12,12 @@ import {
   resolution,
   stillFailing,
 } from "../../scripts/ci/bisect.mjs";
-import { commandFor, envFor, outcome } from "../../scripts/ci/bisect-candidate.mjs";
+import {
+  commandFor,
+  envFor,
+  meetsExpectation,
+  outcome,
+} from "../../scripts/ci/bisect-candidate.mjs";
 
 const sha = (index: number) => `${index}`.padStart(40, "a");
 
@@ -121,7 +126,7 @@ test("the candidate runner re-runs exactly one reported test", () => {
     "run",
     "tests/harness/x.test.ts",
     "-t",
-    "^suite > case \\(1\\)$",
+    "^suite(?: > | )case \\(1\\)$",
   ]);
   expect(commandFor({ file: "tests/harness/x.test.ts", fullName: "" })).toEqual([
     "exec",
@@ -129,6 +134,10 @@ test("the candidate runner re-runs exactly one reported test", () => {
     "run",
     "tests/harness/x.test.ts",
   ]);
+  // Vitest joins a suite and its test with a space in --testNamePattern; the reporter joins them with " > ".
+  expect(commandFor({ file: "x.test.ts", fullName: "outer > inner > leaf" })[5]).toBe(
+    "^outer(?: > | )inner(?: > | )leaf$",
+  );
   expect(envFor({ san: true })).toEqual({ SCRIPTC_SAN: "1", ASAN_OPTIONS: "detect_leaks=0" });
   expect(envFor({ san: false })).toEqual({});
   expect(outcome([0, 0])).toBe("pass");
@@ -136,6 +145,19 @@ test("the candidate runner re-runs exactly one reported test", () => {
   expect(outcome([127])).toBe("infra");
   expect(outcome([null])).toBe("infra");
   expect(outcome([])).toBe("infra");
+});
+
+test("a confirmation holds only for three failures with no infrastructure error, or three passes", () => {
+  expect(meetsExpectation("pass", [0, 0, 0])).toBe(true);
+  expect(meetsExpectation("pass", [0, 0, 1])).toBe(false);
+  expect(meetsExpectation("fail", [1, 1, 1])).toBe(true);
+  // One pass among three failures is a flake, not a confirmation.
+  expect(meetsExpectation("fail", [1, 0, 1])).toBe(false);
+  // A runner failure (125 and above, or a signal) is not a test failure.
+  expect(meetsExpectation("fail", [1, 125, 1])).toBe(false);
+  expect(meetsExpectation("fail", [1, null, 1])).toBe(false);
+  expect(meetsExpectation("fail", [1, 1])).toBe(false);
+  expect(() => meetsExpectation("maybe", [1, 1, 1])).toThrow();
 });
 
 test("the workflow's plan and narrow commands speak JSON", () => {
@@ -207,7 +229,13 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
       {
         if?: string;
         permissions?: Record<string, string>;
-        steps?: { uses?: string; run?: string; with?: Record<string, string> }[];
+        steps?: {
+          id?: string;
+          env?: Record<string, string>;
+          uses?: string;
+          run?: string;
+          with?: Record<string, string>;
+        }[];
       }
     >;
   };
@@ -220,9 +248,24 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
   expect(workflow.jobs.plan!.permissions).toEqual({ actions: "read", contents: "read" });
   expect(workflow.jobs.unresolved!.if).toContain("needs.plan.outputs.applicable == 'true'");
   // The boundary ends with three runs on each side of the culprit.
+  // Every job that uses the local action checks the repository out first: a local action cannot be resolved
+  // before the checkout.
+  for (const name of ["flake_screen", "probe_1", "probe_2", "confirm"]) {
+    const steps = workflow.jobs[name]!.steps!;
+    const index = steps.findIndex((step) => step.uses === "./.github/actions/bisect-probe");
+    expect(index, name).toBeGreaterThan(0);
+    expect(steps[index - 1]!.uses, name).toContain("actions/checkout@");
+  }
+  // The boundary ends with three runs on each side, and the job fails unless all three hold.
   const confirm = workflow.jobs.confirm!;
   const probe = confirm.steps!.find((step) => step.uses === "./.github/actions/bisect-probe")!;
   expect(probe.with!.repeat).toBe("3");
+  expect(probe.with!.expect).toBe("${{ matrix.expect }}");
+  // The baseline falls back to the newest successful push run when the tag is absent or stale.
+  const planStep = workflow.jobs.plan!.steps!.find((step) => step.id === "plan")!;
+  expect(planStep.run).toContain("git/ref/tags/green-main");
+  expect(planStep.run).toContain("status=success");
+  expect(planStep.run).toContain("merge-base --is-ancestor");
   // The job that writes has exactly the tag-free writes it needs, and the revert never force-pushes.
   expect(workflow.jobs.conclude!.permissions).toEqual({
     contents: "write",
@@ -239,7 +282,12 @@ test("the probe action runs the reported tests and keeps their result", () => {
     new URL("../../.github/actions/bisect-probe/action.yml", import.meta.url),
     "utf8",
   );
-  expect(action).toContain("node scripts/ci/bisect-candidate.mjs");
+  // The runner is copied out before the probe checkout: an older commit does not carry it.
+  expect(action).toContain(
+    'cp scripts/ci/bisect-candidate.mjs "$RUNNER_TEMP/bisect-candidate.mjs"',
+  );
+  expect(action).toContain('--root "$GITHUB_WORKSPACE"');
+  expect(action).toContain("--expect");
   expect(action).toContain('--out "$RUNNER_TEMP/result.json"');
   expect(action).toContain("actions/upload-artifact@");
   expect(action).toContain("native-linux-x64-gnu");

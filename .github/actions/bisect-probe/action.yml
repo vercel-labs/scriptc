@@ -17,6 +17,12 @@ inputs:
     description: How many times to run the tests.
     required: false
     default: "1"
+  expect:
+    description: >-
+      When set (pass or fail), the job fails unless all runs meet it: pass = three passes, fail = three test
+      failures and no infrastructure error. Probes leave it empty.
+    required: false
+    default: ""
   run_id:
     description: The failed CI run whose native packages may be reused.
     required: true
@@ -26,6 +32,10 @@ inputs:
 runs:
   using: composite
   steps:
+    # The caller checks out the repository first, so this action and its runner can be read. The runner is copied
+    # out before the probe checkout: a commit from before the search existed does not carry it.
+    - shell: bash
+      run: cp scripts/ci/bisect-candidate.mjs "$RUNNER_TEMP/bisect-candidate.mjs"
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       with:
         ref: ${{ inputs.sha }}
@@ -85,11 +95,21 @@ runs:
       env:
         SPECS: ${{ inputs.specs }}
         REPEAT: ${{ inputs.repeat }}
+        EXPECT: ${{ inputs.expect }}
       run: |
         printf '%s' "$SPECS" > "$RUNNER_TEMP/specs.json"
-        node scripts/ci/bisect-candidate.mjs --specs "$RUNNER_TEMP/specs.json" --repeat "$REPEAT" \
-          --out "$RUNNER_TEMP/result.json" || true
+        candidate="$RUNNER_TEMP/bisect-candidate.mjs"
+        if [ -n "$EXPECT" ]; then
+          # A confirmation must hold: three failures on the culprit, three passes before it, never an infra error.
+          node "$candidate" --root "$GITHUB_WORKSPACE" --specs "$RUNNER_TEMP/specs.json" \
+            --repeat "$REPEAT" --expect "$EXPECT" --out "$RUNNER_TEMP/result.json"
+        else
+          # A probe's failure is its answer, kept in result.json rather than as a job failure.
+          node "$candidate" --root "$GITHUB_WORKSPACE" --specs "$RUNNER_TEMP/specs.json" \
+            --repeat "$REPEAT" --out "$RUNNER_TEMP/result.json" || true
+        fi
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      if: always()
       with:
         name: ${{ inputs.artifact }}
         path: ${{ runner.temp }}/result.json

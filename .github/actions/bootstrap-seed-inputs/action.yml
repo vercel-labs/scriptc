@@ -1,0 +1,21 @@
+name: Bootstrap seed inputs
+description: Name the files a bootstrap seed is built from, so a seed can be reused
+inputs:
+  flavor:
+    description: The instrumented lane the seed is built for
+    required: true
+outputs:
+  inputs:
+    description: The seed's identity; two checkouts that share it build the same seed
+    value: ${{ steps.name.outputs.inputs }}
+runs:
+  using: composite
+  steps:
+    # Runs before setup-node, as the cache restore needs the identity first;
+    # the hosted runner image carries Node on PATH.
+    - name: Hash the seed's build inputs
+      id: name
+      shell: bash
+      env:
+        SCRIPTC_BOOTSTRAP_SEED_FLAVOR: ${{ inputs.flavor }}
+      run: node scripts/bootstrap-seed-inputs.mjs

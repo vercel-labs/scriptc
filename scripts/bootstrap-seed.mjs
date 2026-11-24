@@ -6,13 +6,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const metadataName = "bootstrap-seed.json";
 
-/** Artifacts are scoped to one workflow revision and instrumentation lane.
- * The directory must stay fixed: FFI manifests and IR include absolute paths. */
-export function verifyBootstrapSeed(directory, revision, sanitize) {
-  const expected = { schema: 1, revision, sanitize, directory: resolve(directory) };
+/** Artifacts are scoped to the build inputs they were produced from and the
+ * instrumentation lane. Two checkouts that share those inputs build the same
+ * seed, so a queued batch whose pull requests touch no seed input reuses the
+ * seed from the push that landed before it. The directory must stay fixed:
+ * FFI manifests and IR include absolute paths. */
+export function verifyBootstrapSeed(directory, inputs, sanitize) {
+  const expected = { schema: 2, inputs, sanitize, directory: resolve(directory) };
   const metadata = JSON.parse(readFileSync(join(directory, metadataName), "utf8"));
-  if (!revision || Object.entries(expected).some(([key, value]) => metadata[key] !== value)) {
-    throw new Error("bootstrap seed identity does not match this checkout, lane, or directory");
+  if (!inputs || Object.entries(expected).some(([key, value]) => metadata[key] !== value)) {
+    throw new Error("bootstrap seed identity does not match these inputs, lane, or directory");
   }
   for (const path of [
     "distribution/bin/scriptc",
@@ -40,9 +43,8 @@ export function seedBuildEnvironment(sanitize) {
 
 async function main() {
   const directory = process.env.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY;
-  const revision = process.env.GITHUB_SHA;
-  if (!directory || !revision)
-    throw new Error("bootstrap seed directory and revision are required");
+  const inputs = process.env.SCRIPTC_BOOTSTRAP_SEED_INPUTS;
+  if (!directory || !inputs) throw new Error("bootstrap seed directory and inputs are required");
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("shared bootstrap seeds require the Linux x64 CI host");
   }
@@ -66,13 +68,15 @@ async function main() {
   writeFileSync(
     join(directory, metadataName),
     JSON.stringify({
-      schema: 1,
-      revision,
+      schema: 2,
+      inputs,
+      // Informational: the identity is the inputs, not the commit.
+      revision: process.env.GITHUB_SHA ?? null,
       sanitize,
       directory: resolve(directory),
     }) + "\n",
   );
-  verifyBootstrapSeed(directory, revision, sanitize);
+  verifyBootstrapSeed(directory, inputs, sanitize);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)

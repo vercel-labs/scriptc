@@ -134,6 +134,12 @@ test("due timers run by deadline, then by creation, before the turn's immediates
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+test("a timer armed during a turn runs after that turn's immediates", async () => {
+  const result = await execFileAsync(bin, ["turnorder"]);
+  expect(result.stdout).toBe("a timer armed during a turn runs after that turn's immediates\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 // The queue's capacity is the white-box part: a program sees it only as
 // memory that grows with every immediate it ever queued, and as a
 // clearImmediate that gets slower with them.

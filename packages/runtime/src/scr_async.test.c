@@ -143,6 +143,28 @@ static void due_timers_run_by_deadline_before_immediates(void) {
   puts("due timers run by deadline, then by creation, before the turn's immediates");
 }
 
+/* A timer armed during a turn runs in the NEXT turn's timers phase, so the
+ * immediate the same callback arms runs first ("tic"). Its deadline is
+ * already passed: without the turn cutoff the deadline alone let it run in
+ * this turn's timers phase, before the check phase ("tci") — the ordering
+ * 5615-next-tick-callback-phases.ts lost under ASan when the clock crossed a
+ * millisecond between arming the timer and reaching the timers phase. */
+static void timer_arms_immediate_and_due_timer(ScrClosure *self) {
+  (void)self;
+  turn_note('t');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void timer_armed_during_turn_waits_for_next_timers_phase(void) {
+  turn_count = 0;
+  push_due_timer(timer_arms_immediate_and_due_timer, scr_now_ms() - 1000);
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "tic", 3) == 0);
+  puts("a timer armed during a turn runs after that turn's immediates");
+}
+
 /* The immediate queue's storage. Whatever a program does with its immediates,
  * the queue holds a slot for each one that is waiting and reuses the slots of
  * those that ran or were cleared: its capacity follows the largest number
@@ -643,6 +665,10 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "timers") == 0) {
     due_timers_run_by_deadline_before_immediates();
+    return 0;
+  }
+  if (argc > 1 && strcmp(argv[1], "turnorder") == 0) {
+    timer_armed_during_turn_waits_for_next_timers_phase();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {

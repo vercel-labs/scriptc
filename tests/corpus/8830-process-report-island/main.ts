@@ -24,11 +24,15 @@ console.log("compact", typeof process.report.compact);
 console.log("excludeEnv", typeof process.report.excludeEnv);
 // writeReport writes the report to the named file and answers that name;
 // the report content is machine-specific, so only the round trip is shown.
-const written = process.report.writeReport("report-out.json");
+// The name carries the pid: the two corpus suites run this program side by
+// side in one checkout, and a fixed relative name made them unlink each
+// other's report (ENOENT in one of the pair).
+const reportName = `report-out-${process.pid}.json`;
+const written = process.report.writeReport(reportName);
 // unlinkSync answers undefined; it cannot be compared (SC1043), so its
 // result is shown through typeof instead.
 const removed = unlinkSync(written);
-console.log("written", written === "report-out.json", typeof removed);
+console.log("written", written === reportName, typeof removed);
 const prelude = process.report.getReport() as { header?: unknown };
 console.log("prelude", typeof prelude.header === "object");
 const hadEnv = process.report.excludeEnv;

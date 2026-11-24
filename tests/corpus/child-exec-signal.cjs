@@ -91,13 +91,19 @@ setTimeout(() => {
 // sequential so their order is fixed.
 setTimeout(() => {
   const listened = new AbortController();
+  let callbackError = null;
+  let listenerError = null;
   const lc = cp.exec("printf heard; sleep 5", { encoding: "utf8", signal: listened.signal }, (e, o, r) => {
+    callbackError = e;
     show("listen-callback", e, o, r);
     console.log("listen-callback-cmd", e && e.cmd, e && e.cause && e.cause.message);
   });
-  lc.on("error", (e) => console.log("listen-error", e.name, e.code, e.cmd, e.cause && e.cause.message));
+  lc.on("error", (e) => {
+    listenerError = e;
+    console.log("listen-error", e.name, e.code, e.cmd, e.cause && e.cause.message);
+  });
   lc.on("exit", (code, sig) => {
-    console.log("listen-exit", code, sig);
+    console.log("listen-exit", code, sig, "same-error", callbackError === listenerError);
     const fileSig = new AbortController();
     const fc = cp.execFile("sleep", ["5"], { encoding: "utf8", signal: fileSig.signal }, (e, o, r) =>
       show("listen-file-callback", e, o, r),

@@ -4,6 +4,8 @@ import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
   FAST_TEST_BUDGET_MS,
+  MAX_CORPUS_PROGRAMS,
+  MAX_TEST_FILES,
   SMOKE_CORPUS,
   WASI_RUNTIME_PACK_MARKER,
   fastTests,
@@ -440,9 +442,68 @@ test("a shared source's large related set is cut at the budget, not run through"
     { related },
   );
   expect(selection.total).toBeLessThanOrEqual(FAST_TEST_BUDGET_MS);
-  expect(selection.selected).toHaveLength(20);
-  expect(selection.deferred).toHaveLength(80);
+  // The budget also charges each file's start-up, so nineteen 60s files fit, not twenty.
+  expect(selection.selected).toHaveLength(19);
+  expect(selection.deferred).toHaveLength(81);
   expect(selection.related).toEqual(selection.selected);
+});
+
+test("a huge related set is capped by file count even when every file is cheap", () => {
+  const related = Array.from(
+    { length: 500 },
+    (_, index) => `packages/compiler/test/tiny-${index}.test.ts`,
+  );
+  const costs = Object.fromEntries(related.map((file) => [file, 1000]));
+  const selection = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    related,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    { related },
+  );
+  expect(selection.selected).toHaveLength(MAX_TEST_FILES);
+  expect(selection.deferred).toHaveLength(related.length - MAX_TEST_FILES);
+});
+
+test("the mandatory smoke set stays inside the corpus cap", () => {
+  const programs = Array.from({ length: 100 }, (_, index) => `crypto-${index}.ts`);
+  const costs = Object.fromEntries(programs.map((program) => [program, 1000]));
+  const selection = fastTests(
+    ["packages/runtime/src/scr_webcrypto.c"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["crypto", programs]]),
+      corpusCosts: costs,
+    },
+  );
+  // The mapped programs leave the smoke set its room: the final list, smoke included, never exceeds the cap.
+  expect(selection.corpus.length).toBe(MAX_CORPUS_PROGRAMS);
+  expect(selection.deferredCorpus.length).toBe(
+    programs.length + SMOKE_CORPUS.length - MAX_CORPUS_PROGRAMS,
+  );
+  for (const program of SMOKE_CORPUS) expect(selection.corpus).toContain(program);
+});
+
+test("a webcrypto runtime change maps to the crypto corpus programs", () => {
+  // scr_webcrypto*.c serves node:crypto; the alias keeps a WebCrypto change from selecting nothing (or everything).
+  expect([...moduleTokens("packages/runtime/src/scr_webcrypto.c")]).toContain("crypto");
+  expect([...moduleTokens("packages/runtime/src/scr_webcrypto_pki.c")]).toContain("crypto");
+  const programs = ["webcrypto-wrap-rsa-oaep.ts", "crypto-sign-listener-cycle.ts"];
+  const selection = fastTests(
+    ["packages/runtime/src/scr_webcrypto.c"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+    {
+      corpusIndex: new Map([["crypto", programs]]),
+      corpusCosts: { [programs[0]!]: 1000, [programs[1]!]: 1000 },
+    },
+  );
+  expect([...selection.corpus].sort()).toEqual([...programs].sort());
+  expect(selection.smoke).toBe(false);
 });
 
 test("object-prototype names in a path are module tokens, not inherited aliases", () => {

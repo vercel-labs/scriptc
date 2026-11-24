@@ -4065,7 +4065,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   ScrArr *run_args = args;
   ScrArr *shell_args = NULL;
   if (shell) {
-    const char *comspec = getenv("COMSPEC");
+    const char *comspec = scr_getenv("COMSPEC");
     if (comspec == NULL || *comspec == '\0') comspec = "cmd.exe";
     run_cmd = scr_str_new(comspec, strlen(comspec));
     shell_args = scr_arr_new(SCR_ELEM_STR, 4);

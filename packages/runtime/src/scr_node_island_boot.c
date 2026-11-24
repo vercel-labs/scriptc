@@ -130,7 +130,7 @@ static int nb_trace = -1;
 
 static bool nb_tracing(void) {
   if (nb_trace < 0) {
-    const char *t = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+    const char *t = scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE");
     nb_trace = t != NULL && strstr(t, "boot") != NULL;
   }
   return nb_trace == 1;
@@ -242,7 +242,7 @@ static char *nb_cstr(const char *s, size_t n) {
 
 static bool nb_env_matches(const NbEnv *e) {
   char *key = nb_cstr(e->key, e->key_len);
-  const char *now = getenv(key);
+  const char *now = scr_getenv(key);
   free(key);
   if (!e->present) return now == NULL;
   return now != NULL && strlen(now) == e->value_len && memcmp(now, e->value, e->value_len) == 0;
@@ -266,7 +266,7 @@ static void nb_env_swap(NbModule *m, NbSavedEnv *saved, bool restore) {
     if (!restore && nb_env_matches(e)) continue;
     char *key = nb_cstr(e->key, e->key_len);
     if (!restore) {
-      const char *now = getenv(key);
+      const char *now = scr_getenv(key);
       if (now != NULL) {
         saved[i].value = strdup(now);
         if (saved[i].value == NULL) nb_oom();

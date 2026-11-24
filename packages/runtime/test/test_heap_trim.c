@@ -14,6 +14,12 @@
 #ifdef SCR_WORKERS
 #include <pthread.h>
 #include <stdatomic.h>
+/* The allocator reads its tunables through the locked environment accessor.
+ * This harness links no script context, and trimming does not involve the
+ * environment: answer through the platform getenv, leave the lock a no-op. */
+const char *scr_context_getenv(const char *name) { return getenv(name); }
+void scr_context_env_process_lock(void) {}
+void scr_context_env_process_unlock(void) {}
 #endif
 
 #define COUNT 400000

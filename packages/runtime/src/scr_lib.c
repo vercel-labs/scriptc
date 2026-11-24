@@ -17026,7 +17026,7 @@ static const ScrTzNames *scr_tz_detect(void) {
   /* WASI's libc keeps every local time in UTC. */
   return scr_tz_find(scr_tz_utc);
 #else
-  const char *tz = getenv(scr_tz_env_name);
+  const char *tz = scr_getenv(scr_tz_env_name);
   if (tz && scr_tz_valid_id(tz)) {
     if (tz[0] == ':') tz++;
     return scr_tz_find(scr_tz_skip_prefix(tz));

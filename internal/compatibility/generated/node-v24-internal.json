@@ -64021,6 +64021,7 @@
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-stream-readbacks.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -65775,8 +65776,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.sentHeaders",
+        "tests": [
+          "tests/corpus/http2-stream-readbacks.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65798,8 +65802,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.sentInfoHeaders",
+        "tests": [
+          "tests/corpus/http2-stream-readbacks.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65821,8 +65828,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.sentTrailers",
+        "tests": [
+          "tests/corpus/http2-stream-readbacks.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -65871,8 +65881,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.http2stream.state",
+        "tests": [
+          "tests/corpus/http2-stream-readbacks.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -67929,7 +67942,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.addTrailers",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"
@@ -68241,7 +68254,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.writeContinue",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"
@@ -68267,7 +68280,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.writeEarlyHints",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"
@@ -68293,7 +68306,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.writeInformation",
         "tests": [
           "tests/corpus/http2-compat-trailers.ts"

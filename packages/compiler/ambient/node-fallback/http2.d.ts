@@ -572,8 +572,10 @@ declare module "http2" {
     readonly bufferSize: number;
     readonly aborted: boolean;
     readonly session: Http2Session;
-    readonly sentHeaders: OutgoingHttpHeaders;
-    readonly state: Record<string, number>;
+    readonly sentHeaders: any;
+    readonly sentInfoHeaders: any;
+    readonly sentTrailers: any;
+    readonly state: any;
     write(chunk: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;

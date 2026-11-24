@@ -290,10 +290,24 @@ static ScrDyn *scr_js_wrapper_boolean_method_value(const char *name) {
 
 /* Defines `key` on `object` as a non-enumerable, writable, configurable
  * data property, the attributes of a builtin prototype member. */
+/* Sets the attributes of the property `key` just added to `object`, when the
+ * add succeeded. A frozen, sealed or non-extensible prototype refuses the
+ * insert, and a refused insert leaves no property behind: there is no index
+ * to set attributes on, and writing through the absent index (SIZE_MAX)
+ * would run past the property table. Node's builtin prototypes carry their
+ * `constructor` from the start, so a program only reaches this after it
+ * froze the prototype itself, where Node's own define would throw. */
+static void scr_js_wrapper_set_attrs(ScrDyn *object, const char *key, size_t len, bool writable,
+                                     bool enumerable, bool configurable) {
+  size_t index = scr_dyn_obj_index_of(object, key, len);
+  if (index == SIZE_MAX) return;
+  scr_dyn_obj_set_attrs_at(object, index, writable, enumerable, configurable);
+}
+
 static void scr_js_wrapper_define_hidden(ScrDyn *object, const char *key, ScrDyn *value) {
   size_t len = strlen(key);
   scr_dyn_obj_set(object, key, len, value);
-  scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, key, len), true, false, true);
+  scr_js_wrapper_set_attrs(object, key, len, true, false, true);
 }
 
 static ScrDyn *scr_js_wrapper_method_value(const char *name, int kind, uint32_t length) {
@@ -357,10 +371,10 @@ static ScrDyn *scr_js_wrapper_object(int kind, ScrDyn *primitive) {
       char key[32];
       int key_len = snprintf(key, sizeof key, "%.0f", i);
       scr_dyn_obj_set(object, key, (size_t)key_len, unit);
-      scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, key, (size_t)key_len), false, true, false);
+      scr_js_wrapper_set_attrs(object, key, (size_t)key_len, false, true, false);
     }
     scr_dyn_obj_set(object, "length", 6, scr_dyn_new_num(units));
-    scr_dyn_obj_set_attrs_at(object, scr_dyn_obj_index_of(object, "length", 6), false, false, false);
+    scr_js_wrapper_set_attrs(object, "length", 6, false, false, false);
   }
   return object;
 }
@@ -375,9 +389,18 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
     /* The prototype may have been built first for Object.getPrototypeOf,
      * before any X.prototype read named its constructor: seed it now. */
     if (constructor && !scr_js_wrapper_protos_seeded[kind]) {
-      scr_js_wrapper_define_hidden(scr_js_wrapper_prototypes[kind], "constructor",
-                                   scr_dyn_retain(constructor));
-      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(scr_js_wrapper_prototypes[kind]));
+      ScrDyn *prototype = scr_js_wrapper_prototypes[kind];
+      /* Node's builtin prototypes carry `constructor` from the start; one
+       * this unit built for Object.getPrototypeOf grows it on the first
+       * X.prototype read. A program that froze, sealed or made the object
+       * non-extensible before that read leaves no slot for it: the member
+       * Node would have had cannot be added now, and defining it is the
+       * engine's TypeError, not the program's — so only the constructor's
+       * own `prototype` link is completed. */
+      if (scr_dyn_obj_index_of(prototype, "constructor", 11) != SIZE_MAX ||
+          scr_dyn_is_extensible(prototype))
+        scr_js_wrapper_define_hidden(prototype, "constructor", scr_dyn_retain(constructor));
+      scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
       scr_js_wrapper_protos_seeded[kind] = true;
     }
     return scr_js_wrapper_prototypes[kind];

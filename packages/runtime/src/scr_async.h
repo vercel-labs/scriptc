@@ -66,17 +66,29 @@ void scr_promise_release_v(void *p);
 typedef struct ScrFiber ScrFiber;
 /* Bytes of each async fiber's native stack (scr_async.c), mapped without a
  * guard page: compiled code checks scr_stack_guard instead, which sits
- * scr_stack_guard_for's reserve above the mapping's start. Deep enough for
- * ordinary recursion inside async bodies and generators once that reserve
- * is taken off; idle and shallow fibers only touch the pages they use.
- * AddressSanitizer's larger frames get more. */
+ * scr_stack_guard_for's reserve above the mapping's start. Idle and shallow
+ * fibers only touch the pages they use, so the mapping costs address space,
+ * not memory.
+ *
+ * A top-level-await module's initialization runs on its fiber until the first
+ * suspension, and that prefix evaluates its whole synchronous import graph:
+ * one large program's module initialization nests constructors and generated
+ * class helpers hundreds of KiB deep, which a 512 KiB fiber cannot hold (the
+ * guard's reserve leaves 384 KiB). 64-bit native targets therefore give a
+ * fiber the same budget as the process's main-thread stack, as AddressSanitizer
+ * builds already did. WASI and 32-bit targets keep the smaller stack, where
+ * address space is scarce. */
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define SCR_FIBER_STACK (8 * 1024 * 1024)
 #endif
 #endif
 #ifndef SCR_FIBER_STACK
+#if defined(__wasi__) || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ < 8)
 #define SCR_FIBER_STACK (512 * 1024)
+#else
+#define SCR_FIBER_STACK (8 * 1024 * 1024)
+#endif
 #endif
 /* Spawn + run eagerly to the first suspension; returns the promise, +1. */
 ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);

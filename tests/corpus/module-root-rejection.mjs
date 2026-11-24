@@ -1,3 +1,4 @@
+// @exit: 1
 // An immediate queued by a poll callback rejects the awaited module root.
 // Node ends the evaluation on that rejection: a timer armed beside it must
 // not run first.

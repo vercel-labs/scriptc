@@ -81,6 +81,7 @@ typedef struct ScrUtf8Stream {
   size_t fill; /* bytes actually buffered in buf */
   size_t cap;
   size_t release_bytes; /* the flush a deferred completion reports */
+  size_t release_units; /* the accounting units that flush carried */
   ScrU8FlushCb *flush_cbs;
   ScrU8Listener *listeners;
 } ScrUtf8Stream;
@@ -369,12 +370,14 @@ static void scr_u8_flush_cbs_run(ScrUtf8Stream *s) {
  * drain. */
 static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
   s->writing = false;
-  /* The whole flush completed: the buffer accounting Node also keeps in
-   * #len drops to what a listener writes during the 'write' event. */
-  s->len = 0;
   ScrDyn *count = scr_dyn_new_num((double)written);
   scr_u8_emit(s, SCR_U8_WRITE, count);
   scr_dyn_release(count);
+  /* Only the bytes this flush carried leave the accounting (Node's
+   * #len - n): a write that arrived while it was in flight stays queued.
+   * The 'write' listeners above still saw it counted, as Node's do. */
+  s->len = s->len >= s->release_units ? s->len - s->release_units : 0;
+  s->release_units = 0;
   if (scr_exc_pending()) return;
   if (s->len > s->min_length) {
     scr_u8_actual_write(s);
@@ -402,8 +405,10 @@ static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
 static void scr_u8_actual_write(ScrUtf8Stream *s) {
   if (s->writing || s->closed || s->fd < 0) return;
   size_t written = 0;
+  size_t units = s->len; /* everything buffered is in this flush */
   if (!scr_u8_write_out(s, &written)) return;
   s->writing = true;
+  s->release_units = units;
   if (s->sync) {
     scr_u8_release_done(s, written);
     return;

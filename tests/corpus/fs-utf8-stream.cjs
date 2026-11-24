@@ -254,6 +254,24 @@ function sameFileReopen(dir) {
   });
   s.on("close", () => {
     console.log("same-file reopen", JSON.stringify(fs.readFileSync(file, "utf8")));
+    interleavedStream(dir);
+  });
+}
+
+// A write queued while a flush is in flight stays queued: the completion
+// releases only the bytes it carried, and end() flushes the rest.
+function interleavedStream(dir) {
+  const file = join(dir, "interleaved.log");
+  const events = [];
+  const s = new fs.Utf8Stream({ dest: file });
+  s.on("write", (n) => events.push("write:" + n));
+  s.on("ready", () => {
+    s.write("abc");
+    s.write("def");
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("interleaved", events.join(","), JSON.stringify(fs.readFileSync(file, "utf8")));
     reopenStream(dir);
   });
 }

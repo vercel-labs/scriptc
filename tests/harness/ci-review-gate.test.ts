@@ -4,6 +4,7 @@ import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
   FAST_TEST_BUDGET_MS,
+  MAX_CORPUS_PROGRAMS,
   MAX_TEST_FILES,
   SMOKE_CORPUS,
   WASI_RUNTIME_PACK_MARKER,
@@ -462,6 +463,28 @@ test("a huge related set is capped by file count even when every file is cheap",
   );
   expect(selection.selected).toHaveLength(MAX_TEST_FILES);
   expect(selection.deferred).toHaveLength(related.length - MAX_TEST_FILES);
+});
+
+test("the mandatory smoke set stays inside the corpus cap", () => {
+  const programs = Array.from({ length: 100 }, (_, index) => `crypto-${index}.ts`);
+  const costs = Object.fromEntries(programs.map((program) => [program, 1000]));
+  const selection = fastTests(
+    ["packages/runtime/src/scr_webcrypto.c"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["crypto", programs]]),
+      corpusCosts: costs,
+    },
+  );
+  // The mapped programs leave the smoke set its room: the final list, smoke included, never exceeds the cap.
+  expect(selection.corpus.length).toBe(MAX_CORPUS_PROGRAMS);
+  expect(selection.deferredCorpus.length).toBe(
+    programs.length + SMOKE_CORPUS.length - MAX_CORPUS_PROGRAMS,
+  );
+  for (const program of SMOKE_CORPUS) expect(selection.corpus).toContain(program);
 });
 
 test("a webcrypto runtime change maps to the crypto corpus programs", () => {

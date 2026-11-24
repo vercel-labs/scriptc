@@ -260,11 +260,16 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   const corpusWeigh = (program) => corpusCosts[program] ?? corpusMedian;
   const corpus = [];
   const deferredCorpus = [];
+  // The mandatory smoke set is appended after this loop; leave it room inside the cap instead of pushing the
+  // final list over it.
+  const corpusLimit = forceSmoke
+    ? Math.max(0, MAX_CORPUS_PROGRAMS - SMOKE_CORPUS.length)
+    : MAX_CORPUS_PROGRAMS;
   let corpusTotal = 0;
   for (const program of [...corpusSet].sort(
     (a, b) => corpusWeigh(a) - corpusWeigh(b) || a.localeCompare(b),
   )) {
-    if (corpus.length >= MAX_CORPUS_PROGRAMS || corpusTotal + corpusWeigh(program) > corpusBudget)
+    if (corpus.length >= corpusLimit || corpusTotal + corpusWeigh(program) > corpusBudget)
       deferredCorpus.push(program);
     else {
       corpus.push(program);
@@ -298,6 +303,10 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     const present = new Set(corpus);
     for (const program of SMOKE_CORPUS) {
       if (present.has(program)) continue;
+      if (corpus.length >= MAX_CORPUS_PROGRAMS) {
+        deferredCorpus.push(program);
+        continue;
+      }
       present.add(program);
       corpus.push(program);
       corpusTotal += corpusWeigh(program);

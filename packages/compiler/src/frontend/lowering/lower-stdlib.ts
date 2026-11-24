@@ -2421,6 +2421,11 @@ function uncompiledImportPackage(lowerer: Lowerer, call: ts.CallExpression): str
 const OUTSIDE_GRAPH_PACKAGE =
   /npm package '([^']+)' statically: its implementation is not part of the compiled module graph/;
 
+/** The way forward for an `import()` of a package the build does not
+ * compile: a static import is what puts a package in the module graph. */
+const LAZY_PACKAGE_HINT =
+  "add a static import so the package joins the module graph, or let it run in a Node island";
+
 /** `statement` was abandoned with `refusals`. Where one of them names a
  * package the program does not compile, the build answers it with a Node
  * island and lowers the program again, and the statement then lowers as far
@@ -2452,7 +2457,7 @@ export function reportUncompiledImportsOf(
       const pkg = uncompiledImportPackage(lowerer, node);
       if (pkg !== null && !named.has(pkg)) {
         named.add(pkg);
-        lowerer.pushDiag(unsupportedPackageImportDiag(pkg, locOf(node)));
+        lowerer.pushDiag(unsupportedPackageImportDiag(pkg, locOf(node), LAZY_PACKAGE_HINT));
       }
     }
     ts.forEachChild(node, walk);
@@ -2482,7 +2487,9 @@ function lowerResolvedImport(
     // call (lower-node-island.ts, lowerIslandLoadCall).
     const npm = resolveNpmImport(ts.getSourceFileOfNode(call).fileName, specifier);
     if (npm !== null) {
-      lowerer.pushDiag(unsupportedPackageImportDiag(npm.packageName, locOf(call)));
+      lowerer.pushDiag(
+        unsupportedPackageImportDiag(npm.packageName, locOf(call), LAZY_PACKAGE_HINT),
+      );
       throw new PoisonError();
     }
     lowerer.refuseUnsupportedApi("'import()'", call);

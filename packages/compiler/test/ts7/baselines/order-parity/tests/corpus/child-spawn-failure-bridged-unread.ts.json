@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-spawn-failure-bridged-unread.ts"
+ ],
+ "diags": []
+}

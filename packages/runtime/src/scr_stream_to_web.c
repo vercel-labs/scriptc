@@ -17,6 +17,12 @@ struct StwCtx {
   size_t rc;
   ScrStream *readable; /* +1 until the source drops it */
   bool cancelled;
+  /* A type: "bytes" stream: a chunk larger than the pending read's view
+   * keeps its tail here for the next read. */
+  bool byte_mode;
+  size_t read_limit;
+  ScrBytes *remainder; /* +1: the tail, as a Uint8Array copy */
+  size_t remainder_off; /* bytes of it already delivered */
 };
 
 static StwCtx *stw_ref(StwCtx *c) {
@@ -27,6 +33,7 @@ static StwCtx *stw_ref(StwCtx *c) {
 static void stw_unref(StwCtx *c) {
   if (--c->rc > 0) return;
   if (c->readable) scr_stream_release(c->readable);
+  if (c->remainder) scr_bytes_release(c->remainder);
   free(c);
 }
 
@@ -94,6 +101,42 @@ static ScrDyn *stw_detach_chunk(StwCtx *c, ScrDyn *value) {
   return out;
 }
 
+/* A Uint8Array copy of `count` bytes of `src` at `off` (+1). A byte stream
+ * hands its own copies to the controller — the view it fills can take the
+ * copy's buffer — while a remainder stays ours. */
+static ScrBytes *stw_copy_bytes(const ScrBytes *src, size_t off, size_t count) {
+  ScrBytes *copy = scr_bytes_new(SCR_BYTES_U8, (double)count);
+  if (count > 0) memcpy(copy->data, src->data + off, count);
+  copy->is_buffer = false;
+  copy->is_data_view = false;
+  return copy;
+}
+
+/* The bytes a type: "bytes" stream takes from a chunk: a Uint8Array copy of
+ * a view's raw bytes (any typed array or DataView, its whole byte range by
+ * its byte offset), or NULL for a value that is not a view at all — Node's
+ * byte controller refuses that with ERR_INVALID_ARG_TYPE. */
+static ScrBytes *stw_byte_chunk_copy(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_BYTES || value->v.bytes == NULL) return NULL;
+  ScrBytes *raw = scr_bytes_raw_view(value->v.bytes); /* +1 */
+  ScrBytes *copy = stw_copy_bytes(raw, 0, (size_t)scr_bytes_byte_len(raw));
+  scr_bytes_release(raw);
+  return copy;
+}
+
+/* A chunk the byte stream cannot take (a string or an object from an
+ * object-mode readable): Node's controller throws ERR_INVALID_ARG_TYPE there.
+ * The adapter errors the stream with the same error instead of dropping the
+ * chunk, so the read rejects. */
+static void stw_byte_chunk_refuse(StwRead *r, ScrDyn *value) {
+  scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", value);
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *reason = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  r->sink->error(r->sink_ctx, reason);
+  scr_dyn_release(reason);
+}
+
 /* The read settled: the chunk, or the end marker; the sink answers the
  * pull either way. */
 static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
@@ -102,6 +145,30 @@ static ScrDyn *stw_on_chunk(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   ScrDyn *end = scr_stream_from_done();
   if (value == end) {
     r->sink->close(r->sink_ctx);
+  } else if (r->ctx->byte_mode) {
+    ScrBytes *bytes = stw_byte_chunk_copy(value);
+    if (bytes == NULL) {
+      stw_byte_chunk_refuse(r, value);
+    } else {
+      /* The pending read's view bounds this delivery. What the view cannot
+       * hold stays here; the next read serves it by offset, so a long chunk
+       * is copied once and each read copies only the bytes it delivers. */
+      size_t limit = r->ctx->read_limit;
+      r->ctx->read_limit = 0;
+      ScrBytes *head = NULL;
+      if (limit > 0 && (size_t)scr_bytes_byte_len(bytes) > limit) {
+        head = stw_copy_bytes(bytes, 0, limit);
+        if (r->ctx->remainder) scr_bytes_release(r->ctx->remainder);
+        r->ctx->remainder = bytes; /* +1 moves */
+        r->ctx->remainder_off = limit;
+        bytes = NULL;
+      }
+      ScrDyn *chunk = scr_dyn_new_bytes(bytes != NULL ? bytes : head);
+      r->sink->chunk(r->sink_ctx, chunk);
+      scr_dyn_release(chunk);
+      if (bytes != NULL) scr_bytes_release(bytes);
+      else scr_bytes_release(head);
+    }
   } else {
     ScrDyn *chunk = stw_detach_chunk(r->ctx, value);
     r->sink->chunk(r->sink_ctx, chunk);
@@ -128,6 +195,23 @@ static ScrDyn *stw_on_error(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
  * adapter enqueues each 'data' chunk), answered through the sink. */
 static bool stw_read_into(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx) {
   StwCtx *c = ctx;
+  if (c->byte_mode && c->remainder != NULL) {
+    size_t left = (size_t)scr_bytes_byte_len(c->remainder) - c->remainder_off;
+    size_t want = c->read_limit > 0 && c->read_limit < left ? c->read_limit : left;
+    ScrBytes *head = stw_copy_bytes(c->remainder, c->remainder_off, want);
+    c->remainder_off += want;
+    if (c->remainder_off >= (size_t)scr_bytes_byte_len(c->remainder)) {
+      scr_bytes_release(c->remainder);
+      c->remainder = NULL;
+      c->remainder_off = 0;
+    }
+    c->read_limit = 0;
+    ScrDyn *chunk = scr_dyn_new_bytes(head);
+    sink->chunk(sink_ctx, chunk);
+    scr_dyn_release(chunk);
+    scr_bytes_release(head);
+    return true;
+  }
   ScrPromise *p = scr_stream_next_chunk_dyn_single(c->readable);
   if (!p) return false; /* the read reported its own error; the caller drops */
   StwRead *r = stw_read_new(c, sink, sink_ctx);
@@ -167,7 +251,11 @@ static ScrPromise *stw_cancel(void *ctx, ScrDyn *reason) {
 
 static void stw_release(void *ctx) { stw_unref((StwCtx *)ctx); }
 
-static const ScrWebStreamSource stw_source = {stw_read_into, stw_cancel, stw_release};
+/* The pending read's view size: the next read asks for no more than it. */
+static void stw_set_read_limit(void *ctx, size_t bytes) { ((StwCtx *)ctx)->read_limit = bytes; }
+
+static const ScrWebStreamSource stw_source = {stw_read_into, stw_cancel, stw_release,
+                                              stw_set_read_limit};
 
 /* The adapter's own 'error' listener: Node's toWeb keeps an eos watcher on
  * the readable, which is what stops a lifecycle error (a cancel reason
@@ -188,21 +276,45 @@ static void stw_watch_errors(ScrStream *s) {
   scr_closure_release(listener);
 }
 
-/* Readable.toWeb(readable[, options]): the web ReadableStream (+1). flags'
- * bit 1 asks for a byte stream (options.type === 'bytes'). */
-ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags) {
-  (void)flags;
+/* The adapter over `readable` with the option flags and an optional queuing
+ * strategy (NULL for none). flags' bit 1 asks for a byte stream, which Node
+ * builds with its own strategy: the options strategy does not apply there
+ * (and is not checked). Otherwise the strategy's highWaterMark and size drive
+ * the over-source's pulls and desiredSize, as new ReadableStream(source,
+ * strategy) does; a strategy the web stream unit refuses answers NULL with
+ * the exception pending, and this context's reference goes with it. */
+static ScrDyn *stw_build(ScrStream *s, double flags, ScrDyn *strategy) {
   StwCtx *c = calloc(1, sizeof *c);
   if (!c) abort();
   c->rc = 1;
+  c->byte_mode = ((int)flags & 1) != 0;
   c->readable = scr_stream_retain(s);
   stw_watch_errors(s);
-  return scr_webstream_readable_over(&stw_source, c); /* the stream takes the context's reference */
+  /* the stream takes the context's reference */
+  if (c->byte_mode) return scr_webstream_bytes_over(&stw_source, c);
+  ScrDyn *out = scr_webstream_readable_over_opts(&stw_source, c, strategy);
+  if (!out) stw_unref(c); /* the refused strategy left the reference with us */
+  return out;
+}
+
+/* Readable.toWeb(readable): the web ReadableStream (+1). */
+ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags) {
+  return stw_build(s, flags, NULL);
+}
+
+/* Readable.toWeb(readable, { strategy }): the same adapter over the
+ * strategy's queuing (scr_webstream_readable_over_opts validates it). */
+ScrDyn *scr_stream_to_web_readable_opts(ScrStream *s, double flags, ScrDyn *strategy) {
+  return stw_build(s, flags, strategy);
 }
 
 /* Readable.toWeb over a checked-dynamic value: a boxed native readable
  * unwraps, and any other value throws the not-supported Error. */
 ScrDyn *scr_stream_to_web_readable_dyn(const ScrDyn *value, double flags) {
+  return scr_stream_to_web_readable_dyn_opts(value, flags, NULL);
+}
+
+ScrDyn *scr_stream_to_web_readable_dyn_opts(const ScrDyn *value, double flags, ScrDyn *strategy) {
   ScrStream *s = scr_stream_native_readable_of_dyn(value);
   if (!s) {
     static const char message[] =
@@ -210,7 +322,7 @@ ScrDyn *scr_stream_to_web_readable_dyn(const ScrDyn *value, double flags) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  ScrDyn *out = scr_stream_to_web_readable(s, flags);
+  ScrDyn *out = scr_stream_to_web_readable_opts(s, flags, strategy);
   scr_stream_release(s);
   return out;
 }

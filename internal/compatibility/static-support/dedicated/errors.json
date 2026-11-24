@@ -1,0 +1,6 @@
+[
+    { "chapter": "errors", "symbols": ["ERR_TLS_REQUIRED_SERVER_NAME"], "status": "supported", "evidence": ["tests/corpus/7440-tls-server-add-context.ts"] },
+    { "chapter": "errors", "symbols": ["ERR_CRYPTO_INVALID_KEYLEN", "ERR_CRYPTO_INVALID_STATE"], "status": "supported", "evidence": ["tests/corpus/6708-dh-errors.js", "tests/corpus/crypto-kdf-arguments.cjs", "tests/corpus/crypto-sign-callback-types.ts"] },
+    { "chapter": "errors", "symbols": ["ERR_CRYPTO_UNKNOWN_DH_GROUP"], "status": "supported", "evidence": ["tests/corpus/6708-dh-errors.js"] },
+    { "chapter": "errors", "symbols": ["ERR_CRYPTO_ECDH_INVALID_FORMAT", "ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY"], "status": "supported", "evidence": ["tests/corpus/6702-ecdh-errors.js"] }
+]

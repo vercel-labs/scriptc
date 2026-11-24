@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-implicit-bind-failure.ts"
+ ],
+ "diags": []
+}

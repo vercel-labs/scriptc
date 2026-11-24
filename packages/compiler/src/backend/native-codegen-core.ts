@@ -62,6 +62,60 @@ export function nativeProgramPartitions(
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));
 }
 
+/** The memory the code generation of one build may use, as a share of what
+ * the host reports available. The rest belongs to the compiler, the checker
+ * and the rest of the machine. */
+const CODEGEN_MEMORY_SHARE = 0.75;
+/** A partition compile's peak, as a multiple of the bytes of the partition
+ * it parses and optimizes; unoptimized partitions are compiled on their own
+ * and peak lower. */
+const OPTIMIZED_PARTITION_OVERHEAD = 16;
+const UNOPTIMIZED_PARTITION_OVERHEAD = 10;
+/** The least memory a lane is assumed to take, so that a small program's
+ * many shallow lanes still leave the compiler room on a small host. */
+const MIN_LANE_BYTES = 192 * 1024 * 1024;
+
+export interface NativeCodegenJobsOptions {
+  /** Memory the host has for this build; the process's available memory. */
+  availableBytes?: number;
+  /** The host's hardware threads, when they are not the process's own. */
+  parallelism?: number;
+  /** The build is unoptimized (dev). */
+  unoptimized?: boolean;
+}
+
+/** The partitions one build compiles at once: its partitions, the host's
+ * hardware threads, or as many lanes as the memory available for code
+ * generation can give that much peak each, whichever is fewest. A module
+ * that stays one partition is optimized as one and compiles on its own. */
+export function nativeCodegenJobs(
+  llvmBytes: number,
+  partitions: number,
+  options: NativeCodegenJobsOptions = {},
+): number {
+  const parallelism = Math.max(1, options.parallelism ?? availableParallelism());
+  if (partitions < 2) return 1;
+  let availableBytes = options.availableBytes;
+  if (availableBytes === undefined) {
+    try {
+      availableBytes = process.availableMemory();
+    } catch {
+      // A host without the API measures nothing; assume a small one.
+    }
+    if (availableBytes === undefined) availableBytes = 8 * 1024 * 1024 * 1024;
+  }
+  const partitionBytes = Math.max(1, llvmBytes / Math.min(partitions, parallelism));
+  const laneBytes = Math.max(
+    partitionBytes *
+      (options.unoptimized === true
+        ? UNOPTIMIZED_PARTITION_OVERHEAD
+        : OPTIMIZED_PARTITION_OVERHEAD),
+    MIN_LANE_BYTES,
+  );
+  const fit = Math.floor((availableBytes * CODEGEN_MEMORY_SHARE) / laneBytes);
+  return Math.max(1, Math.min(parallelism, fit));
+}
+
 export interface NativeBuildPartitionsOptions {
   /** The link takes one native object: a native program object, or a host
    * without a native codegen target. */

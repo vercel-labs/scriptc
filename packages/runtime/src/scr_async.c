@@ -550,6 +550,59 @@ SCR_TL void (*scr_rjh_notify_fn)(ScrPromise *p) = NULL;
 SCR_TL void (*scr_urj_node_fn)(ScrPromise *p) = NULL;
 #endif
 
+/* The promises whose late handling raised 'rejectionHandled' since the
+ * last rejection checkpoint, in attach order. Each holds a reference of
+ * its own until a checkpoint delivers it (with the listeners registered
+ * then, so a listener removed meanwhile sees nothing, as in Node) or the
+ * loop drops it. */
+static SCR_TL ScrPromise **scr_rjh_queue = NULL;
+static SCR_TL size_t scr_rjh_head = 0, scr_rjh_len = 0, scr_rjh_cap = 0;
+
+static bool scr_rjh_pending(void) { return scr_rjh_head < scr_rjh_len; }
+
+static void scr_rjh_enqueue(ScrPromise *p) {
+  if (scr_rjh_len == scr_rjh_cap) {
+    size_t cap = scr_rjh_cap == 0 ? 8 : scr_rjh_cap * 2;
+    ScrPromise **next = realloc(scr_rjh_queue, cap * sizeof *next);
+    if (next == NULL) scr_oom();
+    scr_rjh_queue = next;
+    scr_rjh_cap = cap;
+  }
+  scr_rjh_queue[scr_rjh_len++] = scr_promise_retain(p);
+}
+
+/* Drops what no checkpoint delivered (loop exit, context shutdown). */
+static void scr_rjh_clear(void) {
+  for (size_t i = scr_rjh_head; i < scr_rjh_len; i++) scr_promise_release(scr_rjh_queue[i]);
+  scr_rjh_head = scr_rjh_len = 0;
+}
+
+/* Delivers what was queued since the previous checkpoint. A listener
+ * throw leaves a pending exception: the caller takes the loop's uncaught
+ * path. The batch leaves the queue before any listener runs: a listener
+ * that attaches a handler to another reported promise enqueues into a
+ * fresh queue, and that entry must reach the next checkpoint instead of
+ * overwriting a promise whose delivery is still due. Each entry's
+ * reference moves with it into this batch, so a promise is released once. */
+static bool scr_drain_rejection_handled(void) {
+  if (!scr_rjh_pending()) return true;
+  ScrPromise **batch = scr_rjh_queue;
+  size_t head = scr_rjh_head, len = scr_rjh_len;
+  scr_rjh_queue = NULL;
+  scr_rjh_head = scr_rjh_len = scr_rjh_cap = 0;
+  bool ok = true;
+  for (size_t i = head; i < len; i++) {
+    ScrPromise *p = batch[i];
+    /* A throwing listener stops delivery, but every queued reference is
+     * still dropped. */
+    if (ok && scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    scr_promise_release(p);
+    if (ok && scr_exc_pending()) ok = false;
+  }
+  free(batch);
+  return ok;
+}
+
 /* The 'beforeExit' hook (scr_events.c sets it in scr_events_install — the
  * loop-hook pattern, so listener-free binaries keep their size class):
  * called with process.exitCode when the loop runs out of ref'd work;
@@ -563,18 +616,37 @@ SCR_TL bool (*scr_process_before_exit_hook)(double code) = NULL;
  * lost, and `value` is the value it passed, +1 (the hook owns it). */
 SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value) = NULL;
 
+/* Whether 'rejectionHandled' is Node's own to raise: with Node's process
+ * events in charge (the island lane), the hook only tells Node that the
+ * promise is handled, and Node raises the event in its own turn. Nothing is
+ * queued then: the hook call is the notification, and a queue entry would
+ * hold the promise — and the island handle it carries — until a native
+ * checkpoint that lane may not reach before the program ends. */
+static bool scr_rjh_reports_to_node(void) {
+#ifdef SCR_NODE_ISLANDS
+  return scr_rjh_notify_fn == scr_ni_promise_handled;
+#else
+  return false;
+#endif
+}
+
 /* Every handler attach funnels here: mark the rejection observed, and
- * fire Node's 'rejectionHandled' when the attach arrived AFTER the
+ * queue Node's 'rejectionHandled' when the attach arrived AFTER the
  * report delivered this promise to 'unhandledRejection' listeners (the
  * model's one late-handling window — earlier handling keeps the promise
- * out of the report entirely). The flag clears on the first attach, so
- * one report fires at most one 'rejectionHandled' — Node's pairing. */
+ * out of the report entirely). Node raises that event on a later turn of
+ * the loop, not inside the attach, so it is queued and delivered at the
+ * next rejection checkpoint; a listener throw then reaches the loop's
+ * uncaught path instead of the attach's derived promise. The flag clears
+ * on the first attach, so one report queues at most one notification —
+ * Node's pairing. */
 static void scr_prom_observe(ScrPromise *p) {
   p->rejection_observed = true;
   if (p->identity != NULL) p->identity->observed = true;
   if (p->reported_unhandled) {
     p->reported_unhandled = false;
-    if (scr_rjh_notify_fn != NULL) scr_rjh_notify_fn(p);
+    if (scr_rjh_reports_to_node()) scr_rjh_notify_fn(p);
+    else scr_rjh_enqueue(p);
   }
 }
 
@@ -6582,6 +6654,7 @@ static SCR_TL bool scr_hosted_deciding = false;
  * listeners: what they queued belongs to this turn. */
 static void scr_hosted_deciding_tick(void) {
   while (scr_hosted_finish_turn() && scr_hosted_unobserved_rejections()) {
+    if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
     if (scr_report_unhandled_rejections()) {
       scr_discard_unhandled_rejections();
       scr_process_exit((double)scr_exit_code_hint_get());
@@ -6604,6 +6677,9 @@ static void scr_hosted_deciding_tick(void) {
  * at the promise-job checkpoint that rejects it, before the turn's ticks
  * (the loop pass's root check), so it is decided at once. */
 void scr_loop_hosted_microtasks_done(void) {
+  /* A handler native code attached since the last checkpoint raises its
+   * 'rejectionHandled' now, in this turn's tick phase. */
+  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
   if (scr_nunhandled == 0 || scr_hosted_deciding) return;
   if (!scr_hosted_unobserved_rejections()) return;
   const ScrPromise *root = scr_loop_root;
@@ -6789,6 +6865,7 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
  * it left, then Node's checkpoint (ticks and microtasks of both sides). */
 static void scr_hosted_macrotask_done(void) {
   scr_hosted_settle_exception();
+  if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
   scr_loop_hosted->checkpoint(0);
 }
 
@@ -6976,6 +7053,27 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * scheduled during the body exactly once, at startup — differentially
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
+  /* Timers armed during a turn belong to the NEXT turn's timers phase, not
+   * this one, with one boundary: the turn's STARTUP CHECKPOINT. Node's loop
+   * fixes the timers phase's set when it enters it, and the ticks/microtasks
+   * that run before that phase count as already queued — a due timer a
+   * process.nextTick callback arms during startup runs before this turn's
+   * immediates. Timers armed later, by the turn's I/O callbacks (or by a
+   * callback those restart the checkpoint through), belong to the next turn:
+   * a setTimeout(fn, 0) an I/O callback arms cannot overtake the setImmediate
+   * that callback arms after it. Without that cutoff the clock decided the
+   * order — when the turn crossed a millisecond boundary the zero-delay timer
+   * was already due and ran first (observed with
+   * 5615-next-tick-callback-phases.ts under ASan).
+   *
+   * The snapshot is therefore taken once per turn, after its startup
+   * checkpoint drains and BEFORE the I/O dispatch stations. `taken` keeps a
+   * same-turn restart (a callback queued ticks) from recapturing after those
+   * callbacks already armed timers; the flag resets when the turn completes.
+   * One scr_loop_run_pass call runs many turns, so it cannot be captured once
+   * per call — that would strand every timer armed in an earlier turn. */
+  unsigned long timer_seq_at_turn_start = scr_timer_seq;
+  bool timer_snapshot_taken = false;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
@@ -7009,12 +7107,26 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * earlier checkpoint have already delivered here. Handled listeners
      * may enqueue more jobs or ref'd work, so return to the checkpoint
      * head instead of declaring the loop exhausted underneath them. */
+    /* A handler attached since the previous checkpoint raises its
+     * 'rejectionHandled' now, after this turn's ticks and jobs (Node's
+     * moment for it) and with the listeners registered now. */
+    if (!scr_drain_rejection_handled()) return false;
+    if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_report_unhandled_rejections()) {
       rejection_failed = true;
       break;
     }
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
-    if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+    if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+      continue;
+    /* This turn's startup checkpoint is drained: its ticks and microtasks
+     * are queued work, so a due timer they armed belongs to this turn's
+     * timers phase. Everything after this point (the I/O stations below
+     * included) belongs to the next turn. */
+    if (!timer_snapshot_taken) {
+      timer_seq_at_turn_start = scr_timer_seq;
+      timer_snapshot_taken = true;
+    }
     /* Quiescent between turns (microtasks drained, nothing running):
      * collect any cycles the turn left behind. One SCHEDULED pass — almost
      * always a nursery one, sized to the turn's own garbage. A full sweep
@@ -7047,7 +7159,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) {
       if (scr_exc_pending()) return false;
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) continue;
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+        continue;
     }
     /* Stream tick dispatch (scr_stream.c, when linked): the deferred
      * next-tick emissions ('data' flow kicks, 'readable'/'end'/'finish'/
@@ -7482,8 +7595,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     scr_sa_loop_waiting(false);
 #endif
-    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) SCR_PASS_PHASE(SCR_PASS_TIMERS);
-    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
+    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now &&
+        scr_timers[0].seq < timer_seq_at_turn_start)
+      SCR_PASS_PHASE(SCR_PASS_TIMERS);
+    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now &&
+           scr_timers[0].seq < timer_seq_at_turn_start) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
        * An interval entry is OUT of the heap while its callback runs;
@@ -7538,7 +7654,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       /* Drain ticks and microtasks, and report the rejections the callback
        * left, before more timers (Node's runNextTicks between timers). */
-      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
+      if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
+        break;
     }
     /* The check phase: immediates queued BEFORE this phase started run
      * now, FIFO; ones a callback queues wait for the next turn (the end
@@ -7549,7 +7666,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * first (the timer loop's break above), so the phase only runs on a
      * drained checkpoint. */
     bool check_ran = false;
-    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
+    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && !scr_rjh_pending() &&
+        scr_pending_immediates > 0) {
       /* The slots of the immediates that ran are reused first. An earlier
        * phase left one pending whenever a callback queued the next, as a
        * chain of immediates does at every turn; once the fired part is at
@@ -7595,7 +7713,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         /* Node's runNextTicks between immediates also reports the
          * rejections the callback left before the next one runs; a
          * listener's jobs drain before the next report. */
-        while (scr_nunhandled > 0 && (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+        while ((scr_nunhandled > 0 || scr_rjh_pending()) &&
+               (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+          if (!scr_drain_rejection_handled()) return false;
+          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
           if (scr_report_unhandled_rejections()) return true;
           if (SCR_PASS_HANDED_OVER()) return rejection_failed;
           if (!scr_loop_run_checkpoint()) return false;
@@ -7629,6 +7750,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       scr_loop_io_open = true;
       scr_loop_io_batches = 0;
     }
+    /* This turn is complete. Everything armed during it (I/O callbacks,
+     * timer callbacks, the check phase) is eligible for the next one; the
+     * next turn recaptures after its own startup checkpoint. */
+    timer_snapshot_taken = false;
   }
   return rejection_failed;
 }
@@ -7735,6 +7860,10 @@ bool scr_loop_run(ScrPromise *top_level) {
    * them as leaks. Uncaught callback throws still return above for main
    * to report through the existing exceptional teardown path. */
   scr_timers_teardown();
+  /* Queued 'rejectionHandled' events the loop never reached (a fatal throw,
+   * a handler attached as the last turn ended): released here with the
+   * timers, or the RC audit counts the promises as leaks. */
+  scr_rjh_clear();
   /* No reffed foreign registration or queued invocation remains at ordinary
    * exhaustion. Disarm posting before exit listeners/global teardown so a
    * post from a straggling native thread is dropped safely. */
@@ -9296,10 +9425,12 @@ void scr_loop_context_shutdown(void) {
     scr_context_ready_discard();
   }
   scr_discard_unhandled_rejections();
+  scr_rjh_clear();
   free(scr_ready); scr_ready = NULL; scr_ready_cap = 0;
   free(scr_timers); scr_timers = NULL; scr_timers_cap = 0;
   free(scr_immediates); scr_immediates = NULL; scr_immediates_cap = 0;
   free(scr_maybe_unhandled); scr_maybe_unhandled = NULL; scr_unhandled_cap = 0;
+  free(scr_rjh_queue); scr_rjh_queue = NULL; scr_rjh_cap = 0;
   scr_als_ctx_release(scr_als_main_slot); scr_als_main_slot = NULL;
   scr_fibers_abandoned = 0;
   scr_note_abandoned_fibers(0);

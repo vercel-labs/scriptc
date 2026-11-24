@@ -98,6 +98,10 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
     case "tls.createSecureContextDyn":
       return finishRuntimeCall(host, e, "scr_tls_create_secure_context_dyn", a);
+    case "tls.checkServerIdentity":
+      // (hostname, cert) → Error | undefined; may throw the alt-name
+      // format error from its parser.
+      return finishRuntimeCall(host, e, "scr_tls_check_server_identity", [a[0]!, a[1]!]);
     case "tls.pemDyn":
       return finishRuntimeCall(host, e, "scr_tls_pem_from_dyn", [
         a[0]!,
@@ -175,6 +179,36 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", [a[0]!, a[1]!, ptr()]);
     case "tls.wrapSocketCtx":
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", a);
+    case "tls.sockOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_sock_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
+    case "tls.serverOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_server_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
     case "tls.sockOnSession": {
       const cb = args[1]!,
         type = callbackType(cb);
@@ -186,7 +220,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_session", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }

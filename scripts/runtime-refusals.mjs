@@ -52,6 +52,9 @@ const NODE_WORDING = [
   // node:sqlite's JSValueToSQLiteResult: the SQLITE error a user-defined
   // function answers with when it returns a promise.
   /^Asynchronous user-defined functions are not supported$/,
+  // Http2ServerResponse's one-time UnsupportedWarning (RFC 7540 has no
+  // reason phrase); Node prints this message verbatim.
+  /^Status message is not supported by HTTP\/2 \(RFC7540 8\.1\.2\.4\)$/,
   /^is not supported$/, // ERR_INVALID_ARG_VALUE's reason, raised with Node's code
 ];
 

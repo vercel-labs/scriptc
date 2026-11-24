@@ -62,7 +62,8 @@ int version(int Argc, char **Argv) {
       // Commands and options added within one protocol version, for callers
       // that also run against older helpers.
       {"features", json::Array{"runtime-unit-profile", "profile-functions",
-                                "runtime-unit-optional-bitcode"}},
+                                "runtime-unit-optional-bitcode",
+                                "partition-jobs"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;
@@ -96,7 +97,7 @@ int scriptc::runCommand(int Argc, char **Argv) {
           "--filetype <obj|asm> --target <triple> --opt-level <0|1|2|3|s|z> "
           "--relocation-model pic --diagnostic-format json "
           "--source-path <path> --import-bitcode <file> --cache-dir <dir> "
-          "--profile-generate <pattern> --profile-use <file.profdata>");
+          "--jobs <n> --profile-generate <pattern> --profile-use <file.profdata>");
     return scriptc::emit(*Options);
   }
   return scriptc::reportError("usage",

@@ -530,12 +530,15 @@ void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
 }
 
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  return scr_array_frozen_error(op, a->len, index, n, 0);
+/* The emitted array guards: SCR_FROZEN_THREW after throwing, SCR_FROZEN_NOOP
+ * when the operation writes nothing (the receiver is the result), else
+ * SCR_FROZEN_RUN (scr_array.h). */
+int scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
+  return scr_array_frozen_guard(op, a, a->len, index, n, 0);
 }
 
-bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
-  return scr_array_frozen_error(op, a->len, x, y, z);
+int scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
+  return scr_array_frozen_guard(op, a, a->len, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

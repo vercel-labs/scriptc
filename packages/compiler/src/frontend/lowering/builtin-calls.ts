@@ -10,6 +10,7 @@ import {
   lowerMonitorEventLoopDelayCall,
   lowerCreateHistogramCall,
 } from "./builtins/performance.js";
+import { lowerCreateSlidingWindowHistogramCall } from "./builtins/sliding-histogram.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
@@ -202,6 +203,9 @@ export function lowerBuiltinCall(
   if (bi.module === "perf_hooks" && bi.member === "createHistogram") {
     return lowerCreateHistogramCall(lowerer, expr);
   }
+  if (bi.module === "perf_hooks" && bi.member === "createSlidingWindowHistogram") {
+    return lowerCreateSlidingWindowHistogramCall(lowerer, expr);
+  }
   if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
     return lowerEventLoopUtilizationCall(lowerer, expr);
   }
@@ -216,6 +220,8 @@ export function lowerBuiltinCall(
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;
   }
+  const clusterServed = lowerer.lowerClusterModuleCall(expr, bi, loc);
+  if (clusterServed) return clusterServed;
   const served = lowerer.lowerNetModuleCall(expr, bi, loc);
   if (served) return served;
   const dgramServed = lowerer.lowerDgramDnsModuleCall(expr, bi, loc);

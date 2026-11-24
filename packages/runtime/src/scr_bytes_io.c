@@ -3267,8 +3267,34 @@ void scr_fs_lchmod_chk(const ScrDyn *path, const ScrDyn *mode, const ScrDyn *cb,
 static void scr_fs_lchmod_apply(const ScrDyn *path, const ScrDyn *mode) {
   ScrStr *p = path->kind == SCR_DYN_STR ? scr_str_retain(path->v.str)
                                         : scr_bytes_string(path->v.bytes, 0, path->v.bytes->len);
+  /* A path is passed to lchmod(2) as a C string: an embedded NUL would cut
+   * it short and reach a different file. Node's getValidatedPath refuses it
+   * with ERR_INVALID_ARG_VALUE before the call. */
+  if (memchr(p->data, 0, p->len)) {
+    scr_fs_invalid_named_path(path, p, "path");
+    scr_str_release(p);
+    return;
+  }
   double m = mode->kind == SCR_DYN_NUM ? mode->v.num : (double)strtol(mode->v.str->data, NULL, 8);
+  /* Node reaches a symbolic link's own entry on macOS by opening the path
+   * with O_SYMLINK and then fchmod(2), so a failure reports the step it
+   * happened in: a missing path is Node's "ENOENT: ..., open 'x'". The
+   * write access is Node's own (a writable but unreadable link is reached,
+   * and a directory fails the open with EISDIR rather than being chmodded).
+   * O_NONBLOCK keeps the inline call from waiting for a writer when the
+   * path is a FIFO: the open answers ENXIO instead of parking the loop. */
+#ifdef O_SYMLINK
+  int fd = open(p->data, O_WRONLY | O_SYMLINK | O_NONBLOCK);
+  if (fd < 0) {
+    scr_fs_throw(errno, "open", p);
+    scr_str_release(p);
+    return;
+  }
+  if (fchmod(fd, (mode_t)m) != 0) scr_fs_throw(errno, "fchmod", p);
+  close(fd);
+#else
   if (lchmod(p->data, (mode_t)m) != 0) scr_fs_throw(errno, "lchmod", p);
+#endif
   scr_str_release(p);
 }
 #endif

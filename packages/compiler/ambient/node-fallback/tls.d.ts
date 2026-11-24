@@ -136,7 +136,11 @@ declare module "tls" {
    * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the
    * runtime fence — the options-record stance's divergence-66 shape). */
+  /** The TLS versions a connection accepts (@types/node's name). */
+  export type SecureVersion = "TLSv1.2" | "TLSv1.3";
   export interface ConnectionOptions {
+    minVersion?: SecureVersion;
+    maxVersion?: SecureVersion;
     port?: number;
     host?: string;
     /* an open socket to run the client handshake over */
@@ -177,6 +181,19 @@ declare module "tls" {
   /* @types/node's name for createSecureContext's options */
   export type SecureContextOptions = TlsOptions;
   export function createSecureContext(options?: TlsOptions): SecureContext;
+  /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+   * verification — undefined when the certificate's DNS/IP subject
+   * alternative names match (a CN only when there are no DNS SANs), the
+   * ERR_TLS_CERT_ALTNAME_INVALID error otherwise. The second form admits
+   * the minimal legacy-certificate shape the function reads. */
+  export function checkServerIdentity(hostname: string, cert: PeerCertificate): Error | undefined;
+  export function checkServerIdentity(
+    hostname: string,
+    cert: {
+      subjectaltname?: string;
+      subject?: { [attribute: string]: string | string[] };
+    },
+  ): Error | undefined;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
    * Mozilla roots ('bundled', and rootCertificates) AND the platform

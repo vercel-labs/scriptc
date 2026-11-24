@@ -21,6 +21,7 @@ import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js
 import { isDeclBoundaryTypeNode } from "../decl-projection.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { timingProcessMetrics } from "../../timing.js";
 import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
@@ -840,6 +841,11 @@ import {
 } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
 import {
+  clusterMemberValue,
+  lowerClusterMethodCall,
+  lowerClusterModuleCall,
+} from "./lower-cluster.js";
+import {
   lowerNodeTestModuleCall,
   lowerTestDirectCall,
   lowerTestMethodCall,
@@ -930,6 +936,7 @@ import {
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
   isArrayIterationCallback,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -1870,6 +1877,7 @@ function lowerToIrWithIslands(
       phase,
       phase_ms: Math.round((now - phaseLast) * 10) / 10,
       total_ms: Math.round((now - phaseStarted) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -2290,6 +2298,7 @@ function lowerToIrWithIslands(
     process.stderr.write(
       `scriptc lowering ${JSON.stringify({
         phase: "async-protocol-flows",
+        ...timingProcessMetrics(),
         scan_ms: asyncProtocols.elapsedMs,
         sites: asyncProtocols.sites,
         marked: asyncProtocols.markedCount,
@@ -4045,6 +4054,21 @@ export class Lowerer {
    * that assigns module.exports) does not change the binding. Required
    * bindings read the live slot at their own position instead. */
   readonly cjsRuntimeExportSnapshotGlobals = new Map<ts.SourceFile, IrGlobal>();
+  /** Per module some namespace import reads, the export members its
+   * functions assign (`cjsExportsAssignedInFunctions`): each member's slot
+   * takes the values the module's exports held when the first ESM module
+   * imported it, and the live slot its writes keep updating. Node builds a
+   * CommonJS module's namespace object at that import, not when the module
+   * finished evaluating (a require-and-mutate can come between), so a
+   * namespace read observes the snapshot slot. Registered before any init
+   * lowers (collectProgram), filled by the first importing module's init. */
+  readonly cjsNamespaceMemberSnapshots = new Map<
+    ts.SourceFile,
+    Map<string, { snapshot: IrGlobal; source: IrGlobal }>
+  >();
+  /** Per namespace-imported module, the flag its snapshot copy sets so a
+   * later importer keeps the first snapshot instead of replacing it. */
+  readonly cjsNamespaceSnapshotTakenGlobals = new Map<ts.SourceFile, IrGlobal>();
   /** The require bindings whose module had a run-time export choice: they
    * keep their own checked-dynamic storage (the value the require answered
    * at that position), unlike alias-plumbing require bindings. */
@@ -5459,6 +5483,12 @@ export class Lowerer {
    * property exports — different object, same declaration — so globalOf
    * falls back through the shared node (collectGlobals registers both). */
   readonly globalsByDeclNode = new Map<ts.Node, IrGlobal>();
+  /** Whether collectProgram has finished registering this pass's globals.
+   * Until it has, aliasStorageSymbolOf asks afresh. */
+  globalsCollected = false;
+  /** aliasStorageSymbolOf's answer per alias symbol for the post-collection
+   * phase; see that method for why collection-time answers are not kept. */
+  readonly aliasStorageBySymbol = new Map<ts.Symbol, ts.Symbol | null>();
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
@@ -5484,6 +5514,12 @@ export class Lowerer {
     ts.SourceFile,
     { global: IrGlobal; loadedId: string; build: () => IrExpr }
   >();
+  /** `module.builtinModules` as a value: one frozen string[] global per
+   * program (builtinModulesValue), so every read — the named binding, the
+   * namespace member, the boxed namespace and a dynamic import — answers
+   * the same array, as Node answers one frozen array. A journaled table, so
+   * a replayed unit keeps the same global. */
+  readonly builtinModulesEntry = new Map<string, { global: IrGlobal; loadedId: string }>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
    * collection; lowerDynamicImportCall reads it per site). A program module
@@ -5710,6 +5746,10 @@ export class Lowerer {
    * function when a record replays the unit. */
   readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
+  /** Set when the program names node:cluster: %main then calls
+   * cluster.init and always uses the fork-target dispatch (target -1 is
+   * the entry, the module a worker restarts). */
+  clusterUsed = false;
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
    * parts (members resolve statically); "typeOnly" — a skipped
@@ -6483,6 +6523,7 @@ export class Lowerer {
       checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
       checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
       checkedTable("importMetaObjects", () => this.importMetaObjects.size),
+      checkedTable("builtinModulesEntry", () => this.builtinModulesEntry.size),
       checkedTable("dynImports", () => this.dynImports.size),
       checkedTable("createRequireImports", () => this.createRequireImports.size),
       checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
@@ -6777,6 +6818,8 @@ export class Lowerer {
     // program's modules (registered before lowering begins), and the memo is
     // a cache of that detection.
     "cjsRuntimeExportSnapshotGlobals",
+    "cjsNamespaceMemberSnapshots",
+    "cjsNamespaceSnapshotTakenGlobals",
     "cjsRuntimeRequireBindings",
     "cjsRuntimeWholeExportModules",
     "cjsConditionalExportMirrors",
@@ -6823,6 +6866,13 @@ export class Lowerer {
     // program's declarations and of the two collections above, emptied
     // whenever either grows.
     "islandAliasBindings",
+    // Whether collectProgram has finished registering this pass's globals:
+    // a phase setting fixed before the first body unit lowers.
+    "globalsCollected",
+    // aliasStorageSymbolOf's answer per alias symbol for the post-collection
+    // phase. A replayed unit skips body lowering, its only caller, and a new
+    // collection or a late global registration clears the memo.
+    "aliasStorageBySymbol",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides
@@ -6964,6 +7014,13 @@ export class Lowerer {
         "writesOntoChildren",
         () => this.writesOntoChildren,
         () => (this.writesOntoChildren = true),
+      ),
+      // node:cluster: %main calls cluster.init and always uses the fork
+      // dispatch when the program names the module (buildMain).
+      flag(
+        "clusterUsed",
+        () => this.clusterUsed,
+        () => (this.clusterUsed = true),
       ),
       flag(
         "regexGroupResults",
@@ -8830,6 +8887,7 @@ export class Lowerer {
       const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
       if (global !== undefined) {
         this.globalsBySymbol.set(symbol, global);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
     }
@@ -8852,6 +8910,7 @@ export class Lowerer {
       const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
       if (conditionalSlot !== null) {
         this.globalsBySymbol.set(symbol, conditionalSlot);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
@@ -8921,15 +8980,25 @@ export class Lowerer {
    * module, and the lowering compiles the JavaScript. A declaration bridge
    * (`export * from "../types"`) re-exports a declaration another module
    * implements, so the import the reference came through answers too. Null
-   * when no compiled module implements the symbol. */
+   * when no compiled module implements the symbol.
+   *
+   * The import's own module answers first. A declaration can re-export a
+   * name from another package's declaration (`@types/react/jsx-runtime`'s
+   * `export { Fragment } from "./"`) while the JavaScript Node loads defines
+   * its own binding of that name (react-jsx-runtime's
+   * `exports.Fragment = REACT_FRAGMENT_TYPE`). The declaration's own twin is
+   * then a different module, whose storage the importer's module may not
+   * have initialized yet, so it is only the fallback. */
   declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
-    const direct = this.declarationTwinDirectSymbolOf(symbol);
-    if (direct !== null || alias === null) return direct;
-    const cached = this.declarationTwinRouted.get(alias);
-    if (cached !== undefined) return cached;
-    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
-    this.declarationTwinRouted.set(alias, routed);
-    return routed;
+    if (alias !== null) {
+      let routed = this.declarationTwinRouted.get(alias);
+      if (routed === undefined) {
+        routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+        this.declarationTwinRouted.set(alias, routed);
+      }
+      if (routed !== null) return routed;
+    }
+    return this.declarationTwinDirectSymbolOf(symbol);
   }
 
   private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
@@ -9009,7 +9078,28 @@ export class Lowerer {
     const name = ts.isImportClause(imported)
       ? "default"
       : (imported.propertyName ?? imported.name).text;
-    return this.moduleExportSymbolOf(dep, name, symbol);
+    const exported = this.moduleExportSymbolOf(dep, name, symbol);
+    if (exported !== null && !this.declaredOnlyInDeclarationFiles(exported)) return exported;
+    // `module.exports = require("./impl.cjs")`: the checker types the
+    // require from impl's own declaration, which can again name a third
+    // module's declaration. The binding is the one impl defines, when the
+    // modules the export forwards to agree on it.
+    let forwarded: ts.Symbol | null = null;
+    for (const mod of cjsReexportedModules(this.program, dep).slice(1)) {
+      if (mod.isDeclarationFile) continue;
+      const own = this.moduleExportSymbolOf(mod, name, symbol);
+      if (own === null || this.declaredOnlyInDeclarationFiles(own)) continue;
+      if (forwarded !== null && forwarded !== own) return null;
+      forwarded = own;
+    }
+    return forwarded;
+  }
+
+  private declaredOnlyInDeclarationFiles(symbol: ts.Symbol): boolean {
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)
+    );
   }
 
   private moduleExportSymbolOf(
@@ -9095,23 +9185,36 @@ export class Lowerer {
    * member global), or null. Alias chains through CommonJS re-exports keep
    * the exporter's stored value at every hop; see resolveValueSymbol. */
   aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    // Once collection has run, an alias chain's storage hop is an answer
+    // about the immutable program, and the lowering asks about the same
+    // import alias once per reference to it. Collection itself registers
+    // globals as it goes, so answers taken there are not kept.
+    const memoize = this.globalsCollected && !this.collecting;
+    if (memoize) {
+      const cached = this.aliasStorageBySymbol.get(symbol);
+      if (cached !== undefined) return cached;
+    }
+    let result: ts.Symbol | null = null;
     let hop = symbol;
     const seen = new Set<ts.Symbol>();
     for (let depth = 0; depth < 32; depth++) {
-      if (seen.has(hop)) return null;
+      if (seen.has(hop)) break;
       seen.add(hop);
       // The checker's immediate-target query is an alias-only operation.
-      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) break;
       const next = this.checker.getImmediateAliasedSymbol(hop);
-      if (!next || seen.has(next)) return null;
+      if (!next || seen.has(next)) break;
       if (
         this.globalsBySymbol.has(next) ||
         next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
-      )
-        return next;
+      ) {
+        result = next;
+        break;
+      }
       hop = next;
     }
-    return null;
+    if (memoize) this.aliasStorageBySymbol.set(symbol, result);
+    return result;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native
@@ -9555,6 +9658,50 @@ export class Lowerer {
    * ESM default import of it binds — or null for every other module. */
   cjsRuntimeExportSnapshotOf(dep: ts.SourceFile): IrGlobal | null {
     return this.cjsRuntimeExportSnapshotGlobals.get(dep) ?? null;
+  }
+
+  /** The stores that fill a module's namespace-member snapshot slots
+   * (`cjsNamespaceMemberSnapshots`) from its live export storage. */
+  cjsNamespaceSnapshotStores(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const slots = this.cjsNamespaceMemberSnapshots.get(dep);
+    if (slots === undefined) return [];
+    const stores: IrStmt[] = [];
+    for (const { snapshot, source } of slots.values()) {
+      stores.push({
+        kind: "assign",
+        localId: snapshot.id,
+        value: { kind: "varRef", localId: source.id, type: source.type, loc },
+        loc,
+      });
+    }
+    return stores;
+  }
+
+  /** The guarded copy an ESM link to CommonJS module `dep` emits right after
+   * `dep`'s initializer runs: the first link copies the namespace snapshot
+   * from `dep`'s current exports and sets the flag later links check. Node
+   * builds the namespace object at the first ESM import, so a dependency a
+   * require mutated before that import is what the namespace shows. */
+  cjsNamespaceSnapshotLinkStmts(dep: ts.SourceFile, loc: SrcLoc): IrStmt[] {
+    const stores = this.cjsNamespaceSnapshotStores(dep, loc);
+    const taken = this.cjsNamespaceSnapshotTakenGlobals.get(dep);
+    if (stores.length === 0 || taken === undefined) return [];
+    return [
+      {
+        kind: "if",
+        cond: {
+          kind: "bin",
+          op: "===",
+          left: { kind: "varRef", localId: taken.id, type: taken.type, loc },
+          right: numLit(0, loc),
+          type: BOOL,
+          loc,
+        },
+        then: [...stores, { kind: "assign", localId: taken.id, value: numLit(1, loc), loc }],
+        else_: null,
+        loc,
+      },
+    ];
   }
 
   /** Whether a write of export global `globalId` also has to reach the slots
@@ -12359,6 +12506,73 @@ export class Lowerer {
       }
       return out;
     };
+    /** The array a pattern-position literal builds when one of its
+     * positions spreads a VARIABLE-length array: its length is a run-time
+     * fact, so the pattern's contextual tuple cannot hold it and the literal
+     * is lowered as the array it is. The element type joins the literal's
+     * positions and its spread sources' elements; null when the initializer
+     * is not such a literal (or holds a position this analysis cannot
+     * describe). */
+    const spreadLiteralType = (init: ts.Expression): IrType | null => {
+      const leaves: ts.ArrayLiteralExpression[] = [];
+      let variableSpread = false;
+      const walk = (e: ts.Expression): boolean => {
+        let x = e;
+        while (ts.isParenthesizedExpression(x)) x = x.expression;
+        if (ts.isConditionalExpression(x)) return walk(x.whenTrue) && walk(x.whenFalse);
+        if (!ts.isArrayLiteralExpression(x)) return false;
+        leaves.push(x);
+        for (const el of x.elements.nodes)
+          if (ts.isSpreadElement(el) && !this.checker.isTupleType(this.typeOf(el.expression)))
+            variableSpread = true;
+        return true;
+      };
+      if (!walk(init) || !variableSpread) return null;
+      const arms: IrType[] = [];
+      const note = (t: IrType | null, arm = false): void => {
+        if (t === null) return;
+        if (t.kind === "union") {
+          for (const inner of this.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+          return;
+        }
+        const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+        // A position that is itself the unit value says nothing about the
+        // element type; a unit ARM of the source's element type is a value
+        // the positions can hold.
+        if (isUnitType(part) && !arm) return;
+        if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+      };
+      for (const lit of leaves) {
+        for (const el of lit.elements.nodes) {
+          if (ts.isOmittedExpression(el)) continue;
+          if (!ts.isSpreadElement(el)) {
+            note(this.mapTypeOf(this.typeOf(el)));
+            continue;
+          }
+          const spread = this.mapTypeOf(this.typeOf(el.expression));
+          if (spread === null) continue;
+          if (spread.kind === "array") {
+            note(spread.elem);
+            continue;
+          }
+          if (spread.kind === "string") {
+            note(STRING);
+            continue;
+          }
+          const spreadShape =
+            spread.kind === "record" ? this.shapes.get(spread.shapeId) : undefined;
+          if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
+        }
+      }
+      if (arms.every(isUnitType)) return null;
+      const elem: IrType =
+        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) };
+      // The widening this analysis records arms the element type; one it
+      // cannot arm has no missing position to describe.
+      const widened =
+        elem.kind === "union" ? this.withUndefinedArmOf(elem) : this.withUndefinedArm(elem);
+      return widened ? arrayOf(elem) : null;
+    };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (ts.isObjectBindingPattern(name)) {
         // `const { 0: a, 1: b, length } = parts` reads positions like the
@@ -12383,7 +12597,8 @@ export class Lowerer {
         return scanPositions(positions, init, arrayType);
       }
       if (!ts.isArrayBindingPattern(name)) return false;
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+      let sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "array") sourceType = spreadLiteralType(init);
       if (sourceType?.kind !== "array") return false;
       return scanPositions(
         name.elements.nodes.filter((el): el is ts.BindingElement => !ts.isOmittedExpression(el)),
@@ -15232,6 +15447,7 @@ export class Lowerer {
     const event: Record<string, unknown> = {
       phase,
       phase_ms: Math.round((performance.now() - started) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -16565,12 +16781,12 @@ export class Lowerer {
       reuse.finish();
       if (process.env["SCRIPTC_TIMING"] === "1")
         process.stderr.write(
-          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...reuse.stats })}\n`,
+          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...timingProcessMetrics(), ...reuse.stats })}\n`,
         );
     }
     if (recorded !== null && process.env["SCRIPTC_TIMING"] === "1")
       process.stderr.write(
-        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...recorded })}\n`,
+        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...timingProcessMetrics(), ...recorded })}\n`,
       );
     const orderedUnits = unitsInOrder();
     this.settleGenericDemandPriorities();
@@ -17041,12 +17257,13 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Until the program writes its first
-    // constructor value, values are not looked at, so a diagnostic made
-    // that early is marked too: lowering order is not evaluation order, and
-    // the mark counts only if the program turns out to hold a constructor.
-    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
-      d.heldConstructor = true;
+    // (held-constructors.ts): the type mapper raises constructorTouches for
+    // every mapping that reaches a constructor's function type, and
+    // lowerExpr for every value that holds one, in any pass. A diagnostic
+    // made before the program's first constructor value is not marked for
+    // that reason alone: ordering changes which unit lowers first, not
+    // whether the refusal involves a constructor.
+    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in
@@ -19043,7 +19260,7 @@ export class Lowerer {
     // destination's representation (a bare unit literal has none).
     if (
       expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
+      isUnitType(expr.result.type) &&
       !typeEquals(expr.type, expected)
     ) {
       const result = this.coerceToExpected(expr.result, expected);
@@ -19733,6 +19950,32 @@ export class Lowerer {
         return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
       }
       return expr;
+    }
+    if (isUnitType(expr.type) && expr.kind === "seqExpr") {
+      // An undefined-typed sequence (an effectful `void` operand) flowing
+      // into an undefined-armed union: the wrap holds the unit literal, and
+      // the sequence's effects run before it.
+      const tag = this.armTag(expected.unionId, expr.type);
+      if (tag >= 0) {
+        const literal: IrExpr = {
+          kind: "unitLit",
+          unit: expr.type.kind === "nullT" ? "null" : "undefined",
+          type: expr.type,
+          loc: expr.loc,
+        };
+        const wrapped: IrExpr = {
+          kind: "unionWrap",
+          unionId: expected.unionId,
+          tag,
+          value: literal,
+          type: expected,
+          loc: expr.loc,
+        };
+        const effects = unitEffectStatements(expr);
+        return effects.length === 0
+          ? wrapped
+          : { kind: "seqExpr", stmts: effects, result: wrapped, type: expected, loc: expr.loc };
+      }
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -21736,6 +21979,15 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return void f()`: the sequence runs its effect and JS returns
+      // undefined, so its statements become the tail of the block (a
+      // nested sequence's result keeps its own effects too).
+      if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(e), { kind: "return", value: null, loc }],
+          loc,
+        };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {
@@ -25396,12 +25648,19 @@ export class Lowerer {
       const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
     }
+    // node:cluster's values are runtime reads (a compiled program can be
+    // a primary or a worker): isPrimary/isWorker/isMaster, the scheduling
+    // policy, settings, workers and the process's own worker handle.
+    if (bi.module === "cluster") {
+      const value = clusterMemberValue(this, bi.member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    // module.builtinModules through a namespace binding — the baked
-    // Node v24 list, a fresh string[] per read.
+    // module.builtinModules through a namespace binding — the baked Node v24
+    // list as Node's one frozen array.
     if (bi.module === "module" && bi.member === "builtinModules") {
-      return builtinModulesArrayLit(loc);
+      return this.builtinModulesValue(loc);
     }
     if (bi.module === "http" && bi.member === "METHODS") {
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
@@ -25506,6 +25765,17 @@ export class Lowerer {
    * their existing validated libCall lowering. The value descriptor is
    * deliberately narrower than table membership because many table rows
    * are only dispatch sentinels for call-site-specific lowering. */
+  /** Module members Node exposes as a class: an ordinary function with its
+   * own prototype object. The value is the runtime's one-per-(module, name)
+   * class value, so `constructor` identity and `instanceof` compare one
+   * object. Values are the class's `length`. */
+  private static readonly MODULE_CLASS_VALUES: ReadonlyMap<string, number> = new Map([
+    ["http.IncomingMessage", 1],
+    ["http.ServerResponse", 2],
+    ["http2.Http2ServerRequest", 4],
+    ["http2.Http2ServerResponse", 2],
+  ]);
+
   lowerBuiltinCallableValue(bi: { module: string; member: string }, loc: SrcLoc): IrExpr | null {
     const assertion = assertFunctionValue(bi, loc);
     if (assertion) return assertion;
@@ -25533,8 +25803,236 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    if (bi.module === "module" && bi.member === "isBuiltin")
+      return this.lowerModuleIsBuiltinValue(loc);
+    if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
+      return this.lowerModuleSyncBuiltinValue(loc);
+    const classArity = Lowerer.MODULE_CLASS_VALUES.get(`${bi.module}.${bi.member}`);
+    if (classArity !== undefined) {
+      return {
+        kind: "libCall",
+        fn: "dyn.moduleClassValue",
+        args: [
+          { kind: "strLit", value: bi.module, type: STRING, loc },
+          { kind: "strLit", value: bi.member, type: STRING, loc },
+          numLit(classArity, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** `module.isBuiltin` as a value: Node's function that answers whether a
+   * module name is a builtin. A direct call folds a literal at build time; a
+   * held value is a real function over the same rule — the runtime
+   * canonicalises the id against the baked list (scr_process_builtin_id),
+   * and an empty answer means "not a builtin". Node's name and length ride
+   * on the value. */
+  lowerModuleIsBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.isBuiltin";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "isBuiltin");
+      this.builtinCallableValueLengths.set(fnName, 1);
+      const input = { localId: "input", name: "input", type: DYN };
+      const inputLocal = { id: "input", name: "input", type: DYN, mutable: false };
+      const id = { id: "id", name: "id", type: STRING, mutable: false };
+      this.liftedFns.push({
+        name: fnName,
+        params: [input],
+        returnType: BOOL,
+        locals: [inputLocal, id],
+        body: [
+          {
+            kind: "if",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: {
+                kind: "libCall",
+                fn: "dyn.typeof",
+                args: [varRef(inputLocal.id, DYN, loc)],
+                type: STRING,
+                loc,
+              },
+              right: { kind: "strLit", value: "string", type: STRING, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [
+              {
+                kind: "varDecl",
+                localId: id.id,
+                init: {
+                  kind: "libCall",
+                  fn: "process.builtinId",
+                  args: [varRef(inputLocal.id, DYN, loc), builtinModulesArrayLit(loc)],
+                  type: STRING,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "return",
+                value: {
+                  kind: "strEq",
+                  negated: true,
+                  left: varRef(id.id, STRING, loc),
+                  right: { kind: "strLit", value: "", type: STRING, loc },
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          {
+            kind: "return",
+            value: { kind: "boolLit", value: false, type: BOOL, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [DYN], ret: BOOL },
+        loc,
+      },
+      fnName: "isBuiltin",
+      fnLength: 1,
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** `module.syncBuiltinESMExports` as a value: the statement form refreshes
+   * the events module's ES module namespace copy of defaultMaxListeners; a
+   * held value calls the same runtime refresh and answers undefined, as
+   * Node's function does. */
+  lowerModuleSyncBuiltinValue(loc: SrcLoc): IrExpr {
+    const cacheKey = "%builtin.module.syncBuiltinESMExports";
+    let fnName = this.builtinCallableValueFns.get(cacheKey);
+    if (fnName === undefined) {
+      fnName = cacheKey;
+      this.builtinCallableValueFns.set(cacheKey, fnName);
+      this.builtinCallableValueNames.set(fnName, "syncBuiltinESMExports");
+      this.builtinCallableValueLengths.set(fnName, 0);
+      this.liftedFns.push({
+        name: fnName,
+        params: [],
+        returnType: VOID,
+        locals: [],
+        body: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "libCall", fn: "emitter.esmSync", args: [], type: VOID, loc },
+            loc,
+          },
+        ],
+        loc,
+      });
+    }
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "closure",
+        fnName,
+        captures: [],
+        type: { kind: "func", params: [], ret: VOID },
+        loc,
+      },
+      fnName: "syncBuiltinESMExports",
+      fnLength: 0,
+      type: DYN,
+      loc,
+    };
+  }
+
+  /** `module.builtinModules` as a value: Node answers one frozen array
+   * (Object.isFrozen is true and every read is the same array). The first
+   * read builds the baked Node v24 list into a program global and freezes
+   * it; every later read — the named binding, the namespace member read, the
+   * boxed namespace, and a dynamic import's member — answers that array. */
+  builtinModulesValue(loc: SrcLoc): IrExpr {
+    const entryKey = "%g.builtinModules";
+    let entry = this.builtinModulesEntry.get(entryKey);
+    if (entry === undefined) {
+      const id = "%g.builtinModules";
+      const loadedId = "%g.builtinModules%loaded";
+      const global: IrGlobal = {
+        id,
+        name: "%builtinModules",
+        type: arrayOf(STRING),
+        mutable: true,
+      };
+      this.globalsList.push(global, { id: loadedId, name: "%loaded", type: BOOL, mutable: true });
+      entry = { global, loadedId };
+      this.builtinModulesEntry.set(entryKey, entry);
+    }
+    const arrayType = arrayOf(STRING);
+    const slot = this.declareHiddenLocal("%builtinModules", arrayType);
+    const built: IrExpr = {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: slot.id, init: builtinModulesArrayLit(loc), loc },
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "array.freeze",
+            args: [varRef(slot.id, arrayType, loc)],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      result: varRef(slot.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        {
+          kind: "if",
+          cond: {
+            kind: "unary",
+            op: "!",
+            operand: { kind: "varRef", localId: entry.loadedId, type: BOOL, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [
+            {
+              kind: "assign",
+              localId: entry.loadedId,
+              value: { kind: "boolLit", value: true, type: BOOL, loc },
+              loc,
+            },
+            { kind: "assign", localId: entry.global.id, value: built, loc },
+          ],
+          else_: null,
+          loc,
+        },
+      ],
+      result: varRef(entry.global.id, arrayType, loc),
+      type: arrayType,
+      loc,
+    };
   }
 
   /** One builtin module member as a value BY NAME (no expression node): the
@@ -25547,9 +26045,13 @@ export class Lowerer {
    * answers JavaScript-only class/global spellings a box never needs). */
   lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
     const bi = { module, member };
+    if (module === "cluster") {
+      const value = clusterMemberValue(this, member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
-    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")
@@ -25962,6 +26464,28 @@ export class Lowerer {
     loc: SrcLoc,
   ): IrExpr | null {
     return lowerDgramDnsModuleCall(this, expr, bi, loc);
+  }
+
+  // The cluster spoke (lower-cluster.ts): the module's value reads, its
+  // function calls, and the cluster object's event registration. Worker
+  // members are checked-dynamic calls onto the runtime handle.
+  lowerClusterModuleCall(
+    expr: ts.CallExpression,
+    bi: { module: string; member: string },
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return lowerClusterModuleCall(this, expr, bi, loc);
+  }
+
+  lowerClusterMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerClusterMethodCall(this, call, access);
+  }
+
+  clusterMemberValue(member: string, loc: SrcLoc): IrExpr | null {
+    return clusterMemberValue(this, member, loc);
   }
 
   lowerDgramMethodCall(

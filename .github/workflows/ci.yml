@@ -1,20 +1,37 @@
 name: CI
+# A hand-dispatched full tier names the commit it runs on. The runs API reports no inputs, and a dispatch that
+# raced a push runs on the new head (and does nothing there), so this title tells the runs of a commit's dispatched
+# full tier apart. Every other run keeps GitHub's default title.
+run-name: "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs.pr, inputs.sha) || '' }}"
 
 on:
   push:
     branches: [main]
+  # An ordinary pull request runs the fast tier; the ci:full label asks for the full suite. Labeling a pull
+  # request starts a run for the new tier, and the next push keeps it while the label stays.
   pull_request:
-  # A merge queue group, once the repository turns the queue on: the tree that would become main, tested before
-  # it does. It runs what a push to main runs. Nothing starts such a run until then.
+    types: [opened, synchronize, reopened, labeled]
+  # A merge queue group: the tree that would become main, tested before it does. It runs the fast gate: the plain
+  # shards, code quality and the TypeScript baselines. The global lanes run on the push to main.
   merge_group:
-  # Nightly full macOS sweep. Pushes to main run no macOS jobs, and pull requests run them only when they change
-  # darwin code (scripts/ci-lanes.mjs).
+  # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
+  # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
   schedule:
     - cron: "17 7 * * *"
   # A manual run, for example on a release candidate commit. It runs every lane; macos_suite selects the complete
-  # suite on macOS, as the nightly sweep runs it, or the darwin suite that pull requests run.
+  # suite on macOS, as the nightly sweep runs it, or the darwin suite that pull requests run. With pr and sha it is
+  # a pull request's full tier instead (ci-review-gate.yml can dispatch it on the pull request's branch): the lanes
+  # that pull request selects, on that commit, in the pull request's concurrency group.
   workflow_dispatch:
     inputs:
+      pr:
+        description: The pull request whose full tier this run is (ci-review-gate.yml); empty for a manual run
+        type: string
+        default: ""
+      sha:
+        description: The pull request head commit this run is for; the run does nothing when the branch moved on
+        type: string
+        default: ""
       macos_suite:
         description: The test suite to run on macOS
         type: choice
@@ -33,9 +50,10 @@ concurrency:
   # covers every commit merged before it. Releases still require a green run on their own commit: the release's
   # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
   # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
-  # main pushes.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && format('dispatch-{0}', github.run_id) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # main pushes. A pull request's dispatched full tier (a dispatch with pr) runs in a group of its own beside the
+  # pull request's: it never cancels the pull request run, whose checks the merge gate requires.
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
 # writes to the repository, comments on a pull request or requests an OIDC token; caches and artifacts do not use
@@ -46,15 +64,22 @@ permissions:
 jobs:
   # GitHub recommends stack.base.ref == base.ref for the lowest unmerged PR:
   # https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests
-  # Only trusted, same-repository upper layers defer full CI. Forks, ordinary
-  # PRs, pushes and incomplete metadata always retain full validation.
+  # Only trusted, same-repository upper layers defer CI. Every other pull
+  # request runs the fast tier unless it carries the ci:full label; pushes,
+  # merge queue groups, the nightly sweep and manual runs keep their tiers.
   validation_scope:
     name: Select CI scope
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
+      # fast: a pull request runs the fast tier (code_quality, fast_tests with the smoke set, and the TS7
+      # baselines) in minutes. The ci:full label runs every lane the pull request selects instead; so do pushes,
+      # merge queue groups, the nightly sweep and manual runs. superseded: a dispatched run whose branch moved on
+      # runs nothing; the new head has its own.
+      tier: ${{ steps.scope.outputs.tier }}
     steps:
       - id: scope
         # Read GitHub's event directly; do not run scripts from a PR checkout.
@@ -80,15 +105,30 @@ jobs:
           // A manual run of the shape overlay validation alone skips the other lanes.
           const shapeOnly = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' &&
             event.inputs?.scope === 'shape_overlay';
-          const full = !upperLayer && !shapeOnly;
-          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\n`);
-          console.log(full ? 'Run full CI' : 'Defer full CI until this PR becomes the lowest unmerged layer');
+          // A dispatched full tier of a pull request (ci-review-gate.yml) names the commit it runs on.
+          const gated = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && (event.inputs?.pr ?? '') !== '';
+          const superseded = gated && event.inputs?.sha !== process.env.GITHUB_SHA;
+          const full = !upperLayer && !shapeOnly && !superseded;
+          // A pull request runs the fast tier unless it carries the label that asks for the full suite.
+          const fullLabel = (pr?.labels ?? []).some((label) => label?.name === 'ci:full');
+          const tier = superseded ? 'superseded'
+            : process.env.GITHUB_EVENT_NAME === 'pull_request' && !fullLabel
+              ? 'fast'
+              : 'full';
+          appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
+          console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
+            : !full ? 'Defer CI until this PR becomes the lowest unmerged layer'
+            : tier === 'fast' ? 'Run the fast tier; the ci:full label runs the full suite'
+            : 'Run full CI');
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
-  # request's diff, so a pull request cannot change its own selection). Pushes to main and merge queue groups run
-  # every lane except macos, whose jobs the nightly sweep runs on main. The nightly sweep and manual runs run every
-  # lane.
+  # request's diff, so a pull request cannot change its own selection). Pushes to main run every global lane, and a
+  # merge queue group runs the fast gate: the plain shards, the TypeScript 7 baselines and the checks above them.
+  # The lane outputs still name what a full run would do, and the queue and post outputs below say which of the
+  # two tiers this run is. The nightly sweep and manual runs run every lane but macos_smoke, which the complete
+  # macOS lane covers. A pull request's fast tier turns every lane off; its ci:full run and its dispatched full
+  # tier select lanes the same way against the pull request's base.
   lanes:
     needs: validation_scope
     if: ${{ needs.validation_scope.outputs.full == 'true' }}
@@ -97,6 +137,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       # A pull request runs the base revision's lane selector, and one that
       # predates a lane emits nothing for it; that lane is off then, so its job
@@ -107,34 +148,92 @@ jobs:
       bootstrap: ${{ steps.lanes.outputs.bootstrap || 'false' }}
       profile: ${{ steps.lanes.outputs.profile || 'false' }}
       islands: ${{ steps.lanes.outputs.islands || 'false' }}
+      macos_smoke: ${{ steps.lanes.outputs.macos_smoke || 'false' }}
+      # The fast tier's own tests (fast_tests): on in a pull request's fast tier, off where every lane runs.
+      fast: ${{ steps.lanes.outputs.fast || 'false' }}
       # The shards of the effects lane to run: all sixteen, or the one that a pull request changing compiler or
       # runtime sources samples (scripts/ci-lanes.mjs).
       effect_shards: ${{ steps.lanes.outputs.effect_shards || '[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]' }}
+      # queue: a merge queue group, which runs the fast gate only. post: a push to main, which runs the global
+      # lanes the queue leaves out. Every other event is a full run, as its lane outputs say.
+      queue: ${{ steps.lanes.outputs.queue || 'false' }}
+      post: ${{ steps.lanes.outputs.post || 'false' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.pr != ''
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - id: lanes
         env:
-          EVENT: ${{ github.event_name }}
+          EVENT: ${{ inputs.pr != '' && 'pull_request' || github.event_name }}
+          TIER: ${{ needs.validation_scope.outputs.tier }}
           BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"; }
-          if [ "$EVENT" = push ] || [ "$EVENT" = merge_group ]; then
-            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\n' | tee -a "$GITHUB_OUTPUT"
+          every() { printf 'linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\nqueue=false\npost=false\n' | tee -a "$GITHUB_OUTPUT"; }
+          # A push to main and a merge queue group run the same lanes on the page; the queue and post outputs below
+          # pick the tier, and each job's condition reads them.
+          queued() {
+            printf 'linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n' |
+              tee -a "$GITHUB_OUTPUT"
+          }
+          # A dispatched full tier reads the pull request's base from the API.
+          base() { [ -n "$BASE" ] || BASE=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .base.sha); }
+          if [ "$TIER" = fast ]; then
+            printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\nqueue=false\npost=false\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = merge_group ]; then
+            queued
+            printf 'queue=true\npost=false\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = push ]; then
+            queued
+            printf 'queue=false\npost=true\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" != pull_request ]; then
             every
-          elif git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
+          elif base && git show "$BASE:scripts/ci-lanes.mjs" > "$RUNNER_TEMP/ci-lanes.mjs" 2> /dev/null; then
             node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --pr "$PR" --github-output
+            printf 'queue=false\npost=false\n' | tee -a "$GITHUB_OUTPUT"
           else
             echo "The base commit has no scripts/ci-lanes.mjs: every lane"
             every
           fi
 
+  # The tests a merge queue group runs, from scripts/ci/queue-tests.mjs. Today that is every plain shard, with no
+  # separate smoke list; the script is the seam a later change uses to swap the full shard set for a selected
+  # subset and a smoke corpus without editing this workflow. It runs on every full event so the test matrix always
+  # has a list; only a queue run reads it.
+  queue_plan:
+    needs: [validation_scope, lanes]
+    if: ${{ needs.validation_scope.outputs.full == 'true' }}
+    name: plan queue tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      plain_shards: ${{ steps.plan.outputs.plain_shards }}
+      smoke: ${{ steps.plan.outputs.smoke }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          # The base revision's copy decides, as it does for the lane selector: a queued change cannot widen its own
+          # selection. The pull request that lands this script has no copy on its base yet, and runs its own.
+          BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE" ] && git show "$BASE:scripts/ci/queue-tests.mjs" > "$RUNNER_TEMP/queue-tests.mjs" 2> /dev/null; then
+            node "$RUNNER_TEMP/queue-tests.mjs" --github-output
+          else
+            node scripts/ci/queue-tests.mjs --github-output
+          fi
+
+  # The preflight gate: every expensive lane waits on this job (native_linux, and each lane that does not wait on
+  # native_linux), so a pull request that fails formatting, lint, the TypeScript build or a generated-file check
+  # ends red in minutes without starting a shard. `pnpm preflight` (scripts/preflight.mjs) runs the same checks.
   code_quality:
     name: lint and format
     runs-on: ubuntu-24.04
@@ -149,10 +248,19 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
       - run: pnpm format:check
+      - run: pnpm lint
+      # The relocated runtime sources and the TypeScript baselines are small checks the fast tier runs on every
+      # pull request. The header check lands with its own change; run it as soon as the script is on the branch,
+      # so the two merge in either order.
+      - name: Relocated runtime headers
+        run: "[ ! -f scripts/check-relocated-runtime-headers.mjs ] || node scripts/check-relocated-runtime-headers.mjs"
+      - name: TypeScript 7 preflight/order baselines
+        run: pnpm test:ts7 --baselines-only
+      - name: TypeScript build
+        run: pnpm build
       - name: Code quality and CI policy contracts
-        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts
+        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts
         env:
           SCRIPTC_TEST_WORKERS: "1"
       - name: Verify mixed-source generated AST getters
@@ -162,8 +270,50 @@ jobs:
       - name: Verify the generated IR codec
         run: pnpm generate:ir-codec --check
 
+  # The fast tier of a pull request: the TypeScript build (the typecheck) and the tests related to its changes,
+  # plus the smoke set (scripts/ci-fast-tests.mjs), against freshly built or restored Linux native packages.
+  # code_quality runs lint, format, the header check and the TypeScript baselines beside it. Everything else runs
+  # only when the ci:full label asks for the full suite.
+  fast_tests:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.fast == 'true' }}
+    name: test (Linux, fast tier)
+    runs-on: ubuntu-24.04
+    # A hang detector: native packages take 13 minutes at the 99th percentile
+    # and 21 at most (native_linux), the related tests about five.
+    timeout-minutes: 45
+    env:
+      SCRIPTC_TEST_WORKERS: "4"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - uses: ./.github/actions/icu-downloads
+      - name: Typecheck (TypeScript build)
+        run: pnpm build
+      - uses: ./.github/actions/libnode
+      - name: Related tests
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD" --smoke
+
   native_macos:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: build (macOS arm64 native packages)
     runs-on: macos-15
@@ -196,8 +346,12 @@ jobs:
           path: ${{ runner.temp }}/native-darwin-arm64.tar.gz
           retention-days: 1
 
+  # The merge queue's plain shards, the push to main's sanitized shards, and a full run's both flavors. The queue
+  # already ran the plain suite on the tree it landed, so a push runs none of it again and runs only the sanitized
+  # flavor the queue leaves out. The queue's list comes from scripts/ci/queue-tests.mjs (queue_plan), the seam a
+  # later change swaps for a selected subset and a smoke corpus.
   tests:
-    needs: [validation_scope, lanes, native_linux]
+    needs: [validation_scope, lanes, queue_plan, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }})
     # The full suite runs on Linux x64, whose hosted runners start without the
@@ -209,7 +363,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [plain, san]
+        # The queue runs the plain flavor only; its shards come from queue_plan. A push to main runs the sanitized
+        # flavor only, which is what the queue leaves out. A full run runs both over all thirty slices, of which the
+        # plain flavor keeps twenty.
+        flavor: ${{ needs.lanes.outputs.queue == 'true' && fromJSON('["plain"]') || needs.lanes.outputs.post == 'true' && fromJSON('["san"]') || fromJSON('["plain", "san"]') }}
         # The sanitized shards are this lane's long pole: with twenty slices
         # they run 33 to 43 minutes of tests each, against the plain lane's
         # 20. Thirty slices cut each sanitized shard's share of the corpus to
@@ -217,7 +374,7 @@ jobs:
         # measured cost, and the case-split harnesses by their cost tables
         # (tests/harness/shard.ts); every shard's union still runs every case
         # exactly once.
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
+        shard: ${{ needs.lanes.outputs.queue == 'true' && fromJSON(needs.queue_plan.outputs.plain_shards) || fromJSON('[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30]') }}
         exclude:
           # Plain keeps twenty: only the sanitized flavor is sharded further.
           - { flavor: plain, shard: 21 }
@@ -245,7 +402,7 @@ jobs:
       # (scripts/ci-test-plan.mjs, tests/harness/lsan.supp).
       ASAN_OPTIONS: detect_leaks=0
       # Within-file partition for the large case-driven harnesses
-      # (differential, llvm-differential, npm, server, Test262, coverage, and
+      # (differential, llvm-differential, npm, server, Test262, coverage corpus, and
       # Vercel E2E): partition stable case names into slice i of the job's
       # shard count, twenty on the plain lane and thirty on the sanitized one
       # (tests/harness/shard.ts). The shards' unions run every case exactly
@@ -353,8 +510,42 @@ jobs:
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
 
+  # Pushes to main run no macOS lane, so a darwin-only regression could land unseen until the nightly sweep. This
+  # one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin smoke suite
+  # (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows the host
+  # platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
+  tests_macos_smoke:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos_smoke == 'true' && needs.lanes.outputs.queue != 'true' }}
+    name: test (macOS, plain, darwin smoke)
+    runs-on: macos-15
+    # A hang detector at about twice the longest expected run: native packages
+    # took 21 minutes at most on a cache miss (native_macos), the smoke corpus
+    # about four on top. Typical runs take 6 to 12 minutes.
+    timeout-minutes: 50
+    env:
+      SCRIPTC_TEST_WORKERS: "2"
+      SCRIPTC_TEST_SHARD: 1/1
+      SCRIPTC_CI_SUITE: darwin-smoke
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/native-packages
+        with:
+          target: darwin-arm64
+      - run: pnpm build
+      - name: Tests (darwin smoke suite)
+        run: node scripts/ci-test.mjs
+
   native_linux:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: build (Linux x64 native packages)
     runs-on: ubuntu-24.04
@@ -389,7 +580,7 @@ jobs:
 
   effects:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.effects == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.effects == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, Effect ${{ matrix.shard }}/16)
     runs-on: ubuntu-24.04
     # Longest green shard 2026-11-07..21: plain 32 minutes, sanitized 43.
@@ -439,7 +630,7 @@ jobs:
   # platform's results.
   island_conformance:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.islands == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux, Node island conformance ${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
     # Longest green shard 2026-11-07..21: 14 minutes.
@@ -472,13 +663,39 @@ jobs:
       - uses: ./.github/actions/libnode
       - run: pnpm test tests/harness/island-conformance.test.ts
 
+  # The coverage report snapshots and fixtures (tests/harness/coverage.test.ts), once per run. They ran in every
+  # plain shard, where one stale snapshot failed twenty jobs; the corpus half of the sweep
+  # (coverage-corpus.test.ts) still splits the corpus across the plain shards (scripts/ci-test-plan.mjs). The
+  # coverage analysis runs the frontend only, so this job needs no native packages.
+  coverage:
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
+    name: test (Linux, coverage report)
+    runs-on: ubuntu-24.04
+    # About two minutes of tests.
+    timeout-minutes: 20
+    env:
+      SCRIPTC_TEST_WORKERS: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test tests/harness/coverage.test.ts
+
   # The sanitized three.js nodes build alone: beside the san corpus's other
   # workers it took 860 to more than 1200 seconds of its shard
   # (SCRIPTC_THREE_SANITIZED_NODES_JOB in scripts/ci-test-plan.mjs). It keeps
   # the corpus's LeakSanitizer settings.
   three_nodes_san:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux, san, three.js nodes)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -517,7 +734,7 @@ jobs:
   # files in the shard side queue (scripts/ci-test-plan.mjs).
   native_frontend_san:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux, san, native frontend ${{ matrix.suite }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -560,7 +777,7 @@ jobs:
   # must build and run as in the default build. It builds its own native
   # packages, so it does not depend on the other lanes.
   shape_overlay_native:
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '' }}
     name: build (Linux x64 native packages, shape overlay)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -593,7 +810,7 @@ jobs:
 
   shape_overlay:
     needs: [shape_overlay_native]
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '' }}
     name: test (Linux, shape overlay, ${{ matrix.suite }} ${{ matrix.shard }}/8)
     runs-on: ubuntu-24.04
     # Longest green shard 2026-11-07..21: 59 minutes (effect).
@@ -639,8 +856,8 @@ jobs:
   # Build each instrumented seed once. Downstream contracts retain the same
   # compiler and source artifacts without repeating seed construction.
   bootstrap_seed:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: build (Linux, ${{ matrix.flavor }}, bootstrap seed)
     runs-on: ubuntu-24.04
     # Longest green seed 2026-11-07..21: plain 41 minutes, sanitized 37.
@@ -722,8 +939,8 @@ jobs:
   # itself is judged by the zero-cost gate, which has a baseline build to pair
   # it with.
   native_profile:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.profile == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: check (native compiler profile)
     runs-on: ubuntu-24.04
     # The compiler build takes about as long as the seed's on a hosted runner.
@@ -751,13 +968,15 @@ jobs:
 
   bootstrap:
     needs: [validation_scope, lanes, bootstrap_seed]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.bootstrap == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, native bootstrap, ${{ matrix.phase }})
     # These contracts are portable. Standard Linux runners have enough memory
     # for LLVM optimization alongside the compiler that produces its input.
     runs-on: ubuntu-24.04
     # Longest green phase 2026-11-07..21: plain commands 12 minutes, rebuild
-    # 34; sanitized commands 22, rebuild-frontend 46, rebuild-emit 67.
+    # 34; sanitized commands 22, rebuild-frontend 46, rebuild-emit 67. The
+    # plain rebuild gets 90 so its self-build keeps the growth room its step
+    # limit (the seed build's 60 minutes) assumes, plus the ~15-minute tail.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -767,7 +986,7 @@ jobs:
         # emits, links and probes the next generation from the seed's IR.
         include:
           - { flavor: plain, phase: commands, timeout: 30 }
-          - { flavor: plain, phase: rebuild, timeout: 70 }
+          - { flavor: plain, phase: rebuild, timeout: 90 }
           - { flavor: san, phase: commands, timeout: 45 }
           - { flavor: san, phase: rebuild-frontend, timeout: 90 }
           - { flavor: san, phase: rebuild-emit, timeout: 130 }
@@ -835,8 +1054,8 @@ jobs:
   # Linux feature-test macro omissions at compile time and separate-libm
   # omissions/order errors at link time.
   linux_host_clang:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (linux host clang/glibc)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -864,8 +1083,8 @@ jobs:
   # The TS7 parity sweep exercises the compiler frontend, so it can run
   # alongside the Linux LLVM/runtime package build instead of following it.
   ts7_parity:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (TypeScript 7 parity)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -886,8 +1105,8 @@ jobs:
   # tsc-ts, the default checker, and tsgo (SCRIPTC_CHECKER=tsgo) serve the same TypeScript 7 API. Every corpus
   # program must compile to the same LLVM IR, with the same diagnostics, with either checker.
   checker_identity:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (tsgo and tsc-ts give the same IR, ${{ matrix.optimization }})
     runs-on: ubuntu-24.04
     # The release and the dev corpus compiles do not depend on each other, so
@@ -914,7 +1133,7 @@ jobs:
 
   llvm_artifacts_linux_x64:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang)
     runs-on: ubuntu-24.04
     # The glibc helper and runtime pack come from native_linux, as the macOS
@@ -968,7 +1187,7 @@ jobs:
 
   llvm_artifacts_linux_x64_musl:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang, musl)
     runs-on: ubuntu-24.04
     # The static musl helper and runtime pack, restored from the
@@ -1015,7 +1234,7 @@ jobs:
 
   llvm_artifacts_linux_x64_wasi:
     needs: [validation_scope, lanes, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang, wasm32)
     runs-on: ubuntu-24.04
     # The wasm32-wasi runtime pack (restored from the native-packages cache
@@ -1194,7 +1413,7 @@ jobs:
             packages/cli-darwin-arm64 packages/libnode-darwin-arm64
 
   llvm_artifacts_macos_x64:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
@@ -1243,7 +1462,7 @@ jobs:
   windows_cli:
     name: test (windows CLI smoke)
     needs: [validation_scope, lanes, llvm_artifacts_windows_x64]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     runs-on: windows-latest
     timeout-minutes: 15
     env:
@@ -1328,8 +1547,8 @@ jobs:
           --testNamePattern "Windows CA roots honor"
 
   llvm_artifacts_windows_x64:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (Windows x64 MSVC LLVM artifacts)
     # The official LLVM 22 Windows archives are MSVC-built and the helper
     # selects CMake's VS 2022 generator. `windows-latest` can move to an
@@ -1401,8 +1620,8 @@ jobs:
           retention-days: 1
 
   mobile_runtime_packs:
-    needs: [validation_scope, lanes]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    needs: [validation_scope, lanes, code_quality]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}
     name: test (${{ matrix.runtime }})
     strategy:
       fail-fast: false
@@ -1418,7 +1637,7 @@ jobs:
 
   # The iOS runtime packs build on macOS runners, so they run in the macos lane.
   mobile_runtime_packs_ios:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (${{ matrix.runtime }})
     strategy:
@@ -1441,14 +1660,18 @@ jobs:
       [
         validation_scope,
         lanes,
+        queue_plan,
         code_quality,
+        fast_tests,
         native_macos,
         tests,
         tests_macos,
+        tests_macos_smoke,
         native_linux,
         effects,
         island_conformance,
         three_nodes_san,
+        coverage,
         native_frontend_san,
         bootstrap_seed,
         native_profile,
@@ -1471,8 +1694,11 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - name: All lanes green
+        id: lanes
         run: |
           test "${{ needs.validation_scope.result }}" = success
           test "${{ needs.code_quality.result }}" = success
@@ -1481,32 +1707,80 @@ jobs:
               test "${{ needs.lanes.result }}" = success
               # A lane job passes when it succeeded, or when it was skipped because its lane is off.
               lane() { [ "$2" = success ] || { [ "$3" = false ] && [ "$2" = skipped ]; } || { echo "$1: $2 (lane $3)"; exit 1; }; }
-              lane native_macos "${{ needs.native_macos.result }}" "${{ needs.lanes.outputs.macos }}"
-              lane tests "${{ needs.tests.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
-              lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
-              lane island_conformance "${{ needs.island_conformance.result }}" "${{ needs.lanes.outputs.islands }}"
-              lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
-              lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.profile }}"
-              lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
-              lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane checker_identity "${{ needs.checker_identity.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
-              lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
-              lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"
-              lane windows_cli "${{ needs.windows_cli.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane llvm_artifacts_windows_x64 "${{ needs.llvm_artifacts_windows_x64.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane mobile_runtime_packs "${{ needs.mobile_runtime_packs.result }}" "${{ needs.lanes.outputs.linux }}"
-              lane mobile_runtime_packs_ios "${{ needs.mobile_runtime_packs_ios.result }}" "${{ needs.lanes.outputs.macos }}"
+              # A job of the run's own tier must succeed; a skip is a failure there.
+              require() { [ "$2" = success ] || { echo "$1: $2"; exit 1; }; }
+              MODE=full
+              if [ "${{ needs.lanes.outputs.queue }}" = true ]; then MODE=queue; fi
+              if [ "${{ needs.lanes.outputs.post }}" = true ]; then MODE=post; fi
+              case "$MODE" in
+                queue)
+                  # The merge queue's fast gate: the plain shards and the checks above them. Everything the queue
+                  # leaves to the post-merge run is skipped, so it is not required here.
+                  require queue_plan "${{ needs.queue_plan.result }}"
+                  require native_linux "${{ needs.native_linux.result }}"
+                  require tests "${{ needs.tests.result }}"
+                  ;;
+                post)
+                  # A push to main runs the global lanes the queue leaves out: the sanitized shards and everything
+                  # below, but no plain shard, which the queue ran on the tree it landed.
+                  require native_linux "${{ needs.native_linux.result }}"
+                  require tests "${{ needs.tests.result }}"
+                  require effects "${{ needs.effects.result }}"
+                  require island_conformance "${{ needs.island_conformance.result }}"
+                  require three_nodes_san "${{ needs.three_nodes_san.result }}"
+                  require coverage "${{ needs.coverage.result }}"
+                  require native_frontend_san "${{ needs.native_frontend_san.result }}"
+                  require bootstrap_seed "${{ needs.bootstrap_seed.result }}"
+                  require native_profile "${{ needs.native_profile.result }}"
+                  require bootstrap "${{ needs.bootstrap.result }}"
+                  require linux_host_clang "${{ needs.linux_host_clang.result }}"
+                  require ts7_parity "${{ needs.ts7_parity.result }}"
+                  require checker_identity "${{ needs.checker_identity.result }}"
+                  require llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}"
+                  require llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}"
+                  require llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}"
+                  require tests_macos_smoke "${{ needs.tests_macos_smoke.result }}"
+                  require windows_cli "${{ needs.windows_cli.result }}"
+                  require llvm_artifacts_windows_x64 "${{ needs.llvm_artifacts_windows_x64.result }}"
+                  require mobile_runtime_packs "${{ needs.mobile_runtime_packs.result }}"
+                  ;;
+                full)
+                  require queue_plan "${{ needs.queue_plan.result }}"
+                  lane fast_tests "${{ needs.fast_tests.result }}" "${{ needs.lanes.outputs.fast }}"
+                  lane native_macos "${{ needs.native_macos.result }}" "${{ needs.lanes.outputs.macos }}"
+                  lane tests "${{ needs.tests.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane tests_macos "${{ needs.tests_macos.result }}" "${{ needs.lanes.outputs.macos }}"
+                  lane tests_macos_smoke "${{ needs.tests_macos_smoke.result }}" "${{ needs.lanes.outputs.macos_smoke }}"
+                  lane native_linux "${{ needs.native_linux.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane effects "${{ needs.effects.result }}" "${{ needs.lanes.outputs.effects }}"
+                  lane island_conformance "${{ needs.island_conformance.result }}" "${{ needs.lanes.outputs.islands }}"
+                  lane three_nodes_san "${{ needs.three_nodes_san.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane coverage "${{ needs.coverage.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane native_frontend_san "${{ needs.native_frontend_san.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane bootstrap_seed "${{ needs.bootstrap_seed.result }}" "${{ needs.lanes.outputs.bootstrap }}"
+                  lane native_profile "${{ needs.native_profile.result }}" "${{ needs.lanes.outputs.profile }}"
+                  lane bootstrap "${{ needs.bootstrap.result }}" "${{ needs.lanes.outputs.bootstrap }}"
+                  lane linux_host_clang "${{ needs.linux_host_clang.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane checker_identity "${{ needs.checker_identity.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
+                  lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
+                  lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"
+                  lane windows_cli "${{ needs.windows_cli.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane llvm_artifacts_windows_x64 "${{ needs.llvm_artifacts_windows_x64.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane mobile_runtime_packs "${{ needs.mobile_runtime_packs.result }}" "${{ needs.lanes.outputs.linux }}"
+                  lane mobile_runtime_packs_ios "${{ needs.mobile_runtime_packs_ios.result }}" "${{ needs.lanes.outputs.macos }}"
+                  ;;
+              esac
               ;;
             false)
+              if [ "${{ needs.validation_scope.outputs.tier }}" = superseded ]; then
+                echo "::notice::The branch moved on before this dispatched run started; its new head runs its own CI."
+                exit 0
+              fi
               echo "::notice::Full CI is deferred until this PR becomes the lowest unmerged layer. Merge the stack from the bottom up."
               exit 1
               ;;

@@ -551,6 +551,7 @@ const DYN_READ_ONLY = new Set<IrLibFn>([
   "dyn.arrLen",
   "dyn.bagGet",
   "dyn.bitwise",
+  "dyn.classCase",
   "dyn.classHash",
   "dyn.classValueHash",
   "dyn.compare",

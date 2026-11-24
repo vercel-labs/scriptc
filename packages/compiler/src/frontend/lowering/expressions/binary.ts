@@ -66,6 +66,7 @@ import {
 } from "../lower-exprs.js";
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
+import { isRuntimeOptionalHttp2StreamRead } from "./narrowing.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { findStaticOn, storedClassValueType } from "../lower-classes.js";
@@ -73,7 +74,11 @@ import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { constantCondition } from "../constant-conditions.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
+import {
+  fenceNodeModuleMutation,
+  isNodeModuleHandle,
+  lowerRequireCacheHas,
+} from "../lower-node-module.js";
 import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
 import { errorToStringCall } from "../error-methods.js";
 import {
@@ -421,6 +426,9 @@ function mayLowerAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
     );
   }
   if (ts.isPropertyAccessExpression(expr)) {
+    // Http2ServerRequest.stream on an allowHTTP1 server's HTTP/1 request:
+    // declared as the stream, but Node answers undefined there.
+    if (isRuntimeOptionalHttp2StreamRead(lowerer, expr)) return true;
     // A CommonJS module member the module may leave unassigned.
     if (cjsRuntimeOptionalExportStorage(lowerer, expr) !== null) return true;
     const type = lowerer.checker.getTypeAtLocation(expr.expression);
@@ -2508,6 +2516,32 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
   if (expr.operatorToken.kind === ts.SyntaxKind.PlusToken && lowerer.constructorFunctionTypes) {
     left = builtinConstructorText(lowerer, expr.left, left) ?? left;
     right = builtinConstructorText(lowerer, expr.right, right) ?? right;
+  }
+  if (strictEquality && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A module view held in checked-dynamic storage is compared as the
+    // object it holds: the checker's handle type (a number) must not pull
+    // the read back to it.
+    const moduleView = (n: ts.Node, e: IrExpr): IrExpr =>
+      e.kind === "dynCheck" && e.value.type.kind === "dyn" && isNodeModuleHandle(lowerer, n)
+        ? e.value
+        : e;
+    left = moduleView(expr.left, left);
+    right = moduleView(expr.right, right);
+    // A view against a module handle (require.cache's entry, require.main)
+    // is Node's object against the same object: the handle is read as its
+    // view so the comparison is identity.
+    const viewOf = (n: ts.Node, e: IrExpr, other: IrExpr): IrExpr =>
+      other.type.kind === "dyn" && isNodeModuleHandle(lowerer, n)
+        ? {
+            kind: "libCall",
+            fn: "module.dynOf",
+            args: [lowerer.coerceToExpected(e, DYN)],
+            type: DYN,
+            loc: e.loc,
+          }
+        : e;
+    left = viewOf(expr.left, left, right);
+    right = viewOf(expr.right, right, left);
   }
   if (strictEquality) {
     const storedLeft = runtimeOptionalStorageOperand(lowerer, expr.left);

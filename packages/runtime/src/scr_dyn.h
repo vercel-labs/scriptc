@@ -265,6 +265,7 @@ typedef enum {
   Y(ASYNC_RESOURCE) /* async_hooks AsyncResource (scr_async_dyn.c) */ \
   Y(CHILD_CHANNEL) /* subprocess.channel's Control object (scr_child.c) */ \
   Y(CLOSE_EVENT) /* CloseEvent (scr_event_target.c) */ \
+  Y(CLUSTER_WORKER) /* node:cluster worker handle (scr_cluster.c) */ \
   Y(DNS_RESOLVER) /* node:dns Resolver (scr_dns_resolve.c) */ \
   Y(DNS_RESOLVER_PROMISES) /* node:dns/promises Resolver (scr_dns_resolve.c) */ \
   Y(ELD_HISTOGRAM) /* monitorEventLoopDelay IntervalHistogram (scr_perf_loop.c) */ \
@@ -276,6 +277,7 @@ typedef enum {
   Y(PERF_ENTRY_LIST) /* PerformanceObserverEntryList (scr_perf.c) */ \
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
+  Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \
@@ -1551,6 +1553,12 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
 bool scr_dyn_data_view_is(const ScrDyn *value);
 ScrDyn *scr_dyn_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
 ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrStr *what);
+/* A Node module class value (`http.IncomingMessage`, `http2.Http2ServerRequest`,
+ * …): one ordinary function with a prototype object per (module, name) per
+ * program, so `instanceof` and `constructor` identity compare one value.
+ * Answers +1; NULL with the exception pending when the allocation failed.
+ * scr_json.c. */
+ScrDyn *scr_dyn_builtin_class_value(const ScrStr *module, const ScrStr *name, double arity);
 /* Installed by scr_dyn_invoke.c when it interns a builtin constructor value
  * (scr_dyn_global_constructor): false when `callee` is not one of them;
  * otherwise true with `new callee(...args)` in *result (+1, or NULL with
@@ -2175,6 +2183,11 @@ bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list);
+/* Reflect.construct(target, argumentsList, newTarget): Node's construction
+ * with an explicit newTarget's prototype on the receiver. +1 or NULL with
+ * the exception pending. */
+ScrDyn *scr_dyn_reflect_construct(const ScrDyn *target, const ScrDyn *arguments,
+                                  const ScrDyn *new_target, bool explicit_new_target);
 ScrDyn *scr_dyn_apply_array_like(const ScrDyn *target, const ScrDyn *receiver, const ScrDyn *arguments, const char *what);
 bool scr_dyn_same_value(const ScrDyn *left, const ScrDyn *right);
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method);
@@ -2276,6 +2289,8 @@ extern SCR_TL size_t scr_uncloneable_count;
 /* An %Error as the boundary's dyn shape ({name, message[, code]}).
  * Borrows; +1. */
 ScrDyn *scr_dyn_from_error(const ScrError *e);
+/* The Error a dynamic error box was built from (+1), or NULL. */
+ScrError *scr_dyn_error_value(const ScrDyn *d);
 void scr_error_register_dyn(const ScrVt *vt, ScrDyn *(*box)(void *));
 ScrDyn *scr_error_dyn_fields(const ScrError *e);
 /* The `stack` member an error view reads as a non-empty string, for

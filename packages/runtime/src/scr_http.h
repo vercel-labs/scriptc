@@ -56,6 +56,10 @@ typedef struct ScrHttpH2Ops {
    * headers, no END_STREAM. Throws catchably on an invalid status. */
   void (*write_info)(void *stream, double status, ScrStr *const *names,
                      ScrStr *const *values, size_t nheaders);
+  /* Body bytes the compat request handed to the program (or discarded):
+   * the h2 receive window's credit for them returns to the peer. Borrows
+   * the stream. */
+  void (*consumed)(void *stream, size_t n);
 } ScrHttpH2Ops;
 
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);

@@ -6515,8 +6515,8 @@ static bool sf_start_hop(SfTransfer *t) {
    * share an address keep their own connections. A proxied request dials
    * its own connection. */
   ScrHttpClientReq *client =
-      proxy ? scr_http_request_ex(dial, dial_port, path, t->method, 0, headers, false, NULL,
-                                  NULL, default_port, wrap, wrap_ctx)
+      proxy ? scr_http_request_ex_direct(dial, dial_port, path, t->method, 0, headers, false, NULL,
+                                         NULL, default_port, wrap, wrap_ctx)
             : scr_http_fetch_request(https, dial, dial_port, path, t->method, headers,
                                      default_port, wrap, wrap_ctx, bare);
   scr_arr_release(headers);

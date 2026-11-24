@@ -24,6 +24,15 @@ const pageSource = async (file) => {
   return parts.join("\n");
 };
 const meta = (html, key) => decode(html.match(new RegExp(`<meta (?:name|property)="${key}" content="([^"]*)"`))?.[1] ?? "");
+/** The social card URL's path and version, shared by og:image and twitter:image. */
+const versionedImage = (html, path) => {
+  const image = new URL(meta(html, "og:image"));
+  assert.equal(image.origin, siteUrl);
+  assert.equal(image.pathname, path);
+  assert.match(image.searchParams.get("v") ?? "", /^[0-9a-f]{8}$/);
+  assert.equal(meta(html, "twitter:image"), image.href);
+  return image;
+};
 
 for (const { href, title, headings } of pages) {
   test(`${href} preserves its title, social card and published heading anchors`, async () => {
@@ -33,6 +42,7 @@ for (const { href, title, headings } of pages) {
     assert.equal(decode(html.match(/<title>([^<]*)<\/title>/)?.[1] ?? ""), `${title} | scriptc`);
     assert.equal(meta(html, "description"), description);
     assert.equal(meta(html, "og:title"), `${title} | scriptc`);
+    versionedImage(html, href === "/docs" ? "/og/introduction" : `/og/${href.slice("/docs/".length)}`);
     assert.ok(html.includes(`<link rel="canonical" href="${siteUrl}${href}"`));
     assert.equal((html.match(/<h1\b/g) ?? []).length, 1);
     assert.ok(html.includes('data-geistdocs-article="title"'));
@@ -190,7 +200,9 @@ test("homepage and existing social images still render", async () => {
   assert.ok(html.includes('href="/docs/quickstart"'));
   assert.ok(html.includes("832040"));
   assert.doesNotMatch(html, /~320KB|~620KB|about 4ms|~35ms/);
-  for (const path of ["/og", "/og/limitations"]) {
+  const homeImage = versionedImage(html, "/og");
+  // The route ignores the version query, so the cache-busting URL still renders the card.
+  for (const path of ["/og", "/og/limitations", `${homeImage.pathname}${homeImage.search}`]) {
     const image = await get(path);
     assert.equal(image.status, 200, path);
     assert.match(image.headers.get("content-type"), /^image\/png/);

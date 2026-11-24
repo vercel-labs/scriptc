@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/imported-process-env-value.ts"
+ ],
+ "diags": []
+}

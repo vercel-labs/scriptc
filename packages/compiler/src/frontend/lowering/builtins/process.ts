@@ -164,7 +164,10 @@ export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     type: BOOL,
     loc,
   };
-  if (lowerer.forkTargets.length === 0) return fromNode;
+  // A cluster worker's channel is the re-exec marker's, so it is a runtime
+  // question whether this process has one (the primary does not). The
+  // marker channel answers process.ipcOpen, which the child unit owns.
+  if (lowerer.forkTargets.length === 0 && !lowerer.clusterUsed) return fromNode;
   return {
     kind: "logical",
     op: "||",
@@ -1960,7 +1963,7 @@ export function lowerProcessMethodCall(
     const loc = locOf(call);
     const member = access.name.text;
     const args = call.arguments.nodes;
-    if (member === "pause" || member === "resume") {
+    if (member === "pause" || member === "resume" || member === "ref" || member === "unref") {
       if (args.length !== 0) {
         lowerer.noLowering(`stdin.${member} with ${args.length} arguments`, call);
       }
@@ -1973,7 +1976,14 @@ export function lowerProcessMethodCall(
       }
       return {
         kind: "libCall",
-        fn: member === "pause" ? "stdin.pause" : "stdin.resume",
+        fn:
+          member === "pause"
+            ? "stdin.pause"
+            : member === "resume"
+              ? "stdin.resume"
+              : member === "ref"
+                ? "stdin.ref"
+                : "stdin.unref",
         args: [],
         type: VOID,
         loc,

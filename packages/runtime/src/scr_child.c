@@ -1405,6 +1405,8 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;
   double status;
+  /* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+  double pid;
   ScrStr *out;
   ScrStr *err;
   /* The call's encoding option as a canonical Buffer encoding name (+1;
@@ -1458,6 +1460,8 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
+/* Node's result.pid — the child's id, 0 when the spawn itself failed. */
+double scr_spawn_res_pid(ScrSpawnRes *r) { return r->pid; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
   return scr_child_capture_text(r->out, r->encoding);
 }
@@ -1498,6 +1502,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->rc = 1;
   r->has_status = has_status;
   r->status = status;
+  r->pid = 0;
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
@@ -1549,6 +1554,7 @@ static ScrSpawnRes *scr_win_enobufs_res(const ScrWinSyncRes *w, ScrStr *cmd, Scr
 #else
   (void)args;
 #endif
+  r->pid = (double)w->pid;
   return r;
 }
 
@@ -1576,7 +1582,9 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   free(w.err.data);
   if (w.enobufs) return scr_win_enobufs_res(&w, cmd, args, killsig, out_s, err_s);
   if (!w.timed_out) {
-    return scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    ScrSpawnRes *r = scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    r->pid = (double)w.pid;
+    return r;
   }
   /* Node's timeout shape: status null, signal = killSignal's name, error
    * ETIMEDOUT (the kill may have raced a normal exit; Node reports the
@@ -1592,6 +1600,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
   r->spawn_errno = -4039.0;
   r->args = scr_child_snapshot_args(args);
 #endif
+  r->pid = (double)w.pid;
   return r;
 }
 
@@ -2069,6 +2078,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -2148,6 +2160,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -3347,6 +3360,7 @@ bool scr_child_has_exit_code(ScrChild *c) {
   if (c->state == SCR_CHILD_EXITED) return c->has_code;
   return c->state == SCR_CHILD_SPAWN_FAILED && c->settled;
 }
+
 double scr_child_exit_code(ScrChild *c) {
   if (c->state == SCR_CHILD_SPAWN_FAILED) return (double)c->spawn_uv_errno;
   return c->code;
@@ -3988,7 +4002,9 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   free(w.err.data);
   if (w.enobufs) return scr_win_enobufs_res(&w, cmd, args, killsig, out_s, err_s);
   if (!w.timed_out) {
-    return scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    ScrSpawnRes *r = scr_spawn_res_new(true, (double)w.exit_code, out_s, err_s);
+    r->pid = (double)w.pid;
+    return r;
   }
   ScrSpawnRes *r = scr_spawn_res_new(false, 0, out_s, err_s);
   r->signal_name = scr_signal_name(killsig);
@@ -3999,6 +4015,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   r->spawn_errno = -4039.0;
   r->args = scr_child_snapshot_args(args);
 #endif
+  r->pid = (double)w.pid;
   return r;
 }
 
@@ -4158,6 +4175,8 @@ struct ScrSpawnRes {
   size_t rc;
   bool has_status;  /* false: signal death or spawn failure (status null) */
   double status;
+  /* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+  double pid;
   ScrStr *out; /* captured stdout bytes */
   ScrStr *err; /* captured stderr bytes */
   /* The call's encoding option as a canonical Buffer encoding name (+1;
@@ -4215,6 +4234,8 @@ void scr_spawn_res_release_v(void *p) { scr_spawn_res_release((ScrSpawnRes *)p);
 
 bool scr_spawn_res_has_status(ScrSpawnRes *r) { return r->has_status; }
 double scr_spawn_res_status(ScrSpawnRes *r) { return r->status; }
+/* Node's result.pid — the child's id, 0 when the spawn itself failed. */
+double scr_spawn_res_pid(ScrSpawnRes *r) { return r->pid; }
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r) {
   return scr_child_capture_text(r->out, r->encoding);
 }
@@ -4332,6 +4353,7 @@ static ScrSpawnRes *scr_spawn_res_new(bool has_status, double status,
   r->rc = 1;
   r->has_status = has_status;
   r->status = status;
+  r->pid = 0;
   r->out = out;
   r->err = err;
   r->spawn_errname = NULL;
@@ -4637,6 +4659,7 @@ static ScrSpawnRes *scr_spawn_sync_core(ScrStr *cmd, ScrArr *args, double timeou
     r->args = scr_child_snapshot_args(args);
 #endif
   }
+  r->pid = (double)pid;
   return r;
 }
 
@@ -5509,6 +5532,9 @@ struct ScrChild {
   ScrChildStream *err_stream;
   ScrChildWriter *in_stream;
   ScrDyn *out_dyn, *err_dyn, *in_dyn;
+  /* ChildProcess.stdio in the checked-dynamic lane (+1): the same one
+   * array per child the typed read keeps in stdio_array. */
+  ScrDyn *stdio_dyn;
   /* The launch configured an IPC slot (fork's fourth stdio entry), whether
    * or not the channel was made: a fork that FAILED to spawn still answers
    * Node's four-entry stdio array, whose fourth slot is null. */
@@ -5771,6 +5797,7 @@ void scr_child_release(ScrChild *c) {
     scr_dyn_release(c->out_dyn);
     scr_dyn_release(c->err_dyn);
     scr_dyn_release(c->in_dyn);
+    scr_dyn_release(c->stdio_dyn);
     scr_dyn_release(c->abort_dispose);
     scr_dyn_release(c->abort_signal);
     scr_child_stream_release(c->out_stream);
@@ -8391,6 +8418,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
     r->args = scr_child_snapshot_args(args);
 #endif
   }
+  r->pid = (double)pid;
   return r;
 }
 
@@ -8878,6 +8906,7 @@ static ScrDyn *scr_spawn_res_dyn_get(void *h, const char *key, size_t len) {
     return scr_spawn_res_has_status(r) ? scr_dyn_new_num(scr_spawn_res_status(r))
                                        : scr_dyn_new_null();
   }
+  if (len == 3 && memcmp(key, "pid", 3) == 0) return scr_dyn_new_num(scr_spawn_res_pid(r));
   if (len == 6 && memcmp(key, "stdout", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stdout(r));
   if (len == 6 && memcmp(key, "stderr", 6) == 0) return scr_spawn_res_dyn_str(scr_spawn_res_stderr(r));
   if (len == 6 && memcmp(key, "signal", 6) == 0) {
@@ -9701,12 +9730,40 @@ static void scr_ipc_fire_messages(ScrIpc *ipc) {
   scr_als_dispatch_leave(prev);
 }
 
+/* node:cluster's protocol messages: installed by scr_cluster_init, absent
+ * from every other program (see scr_child.h). */
+static SCR_TL ScrClusterIsInternalFn scr_cluster_is_internal_hook = NULL;
+static SCR_TL ScrClusterDispatchFn scr_cluster_dispatch_hook = NULL;
+
+void scr_child_set_cluster_hooks(ScrClusterIsInternalFn is_internal,
+                                 ScrClusterDispatchFn dispatch) {
+  scr_cluster_is_internal_hook = is_internal;
+  scr_cluster_dispatch_hook = dispatch;
+}
+
+static ScrChild *scr_child_owner_of_ipc(ScrIpc *ipc) {
+  if (ipc == scr_process_ipc) return NULL;
+  for (ScrChild *c = scr_children; c != NULL; c = c->next) {
+    if (c->ipc == ipc) return c;
+  }
+  return NULL;
+}
+
 static void scr_ipc_fire_messages_in(ScrIpc *ipc) {
   while (ipc->n_pending > 0 && ipc->n_message > 0 && !scr_exc_pending()) {
     ScrDyn *message = ipc->pending[0];
     memmove(ipc->pending, ipc->pending + 1,
             (ipc->n_pending - 1) * sizeof(*ipc->pending));
     ipc->n_pending--;
+    if (scr_cluster_is_internal_hook != NULL && scr_cluster_is_internal_hook(message)) {
+      /* A cluster protocol message: the cluster unit handles it and no
+       * user listener observes it, as Node's internal-message channel
+       * does. */
+      if (scr_cluster_dispatch_hook != NULL)
+        scr_cluster_dispatch_hook(scr_child_owner_of_ipc(ipc), message);
+      scr_dyn_release(message);
+      continue;
+    }
     size_t count = ipc->n_message;
     ScrIpcMessageEntry *snapshot = malloc(count * sizeof(*snapshot));
     if (!snapshot) scr_trap("out of memory");
@@ -9927,7 +9984,9 @@ double scr_process_fork_target(double target_count) {
     scr_process_fork_id = -1;
     return -1;
   }
-  if (!isfinite(target) || target < 0 || trunc(target) != target ||
+  /* -1 is the program's own entry: cluster.fork() restarts the artifact
+   * as a worker with the entry selected (scr_cluster.c). */
+  if (!isfinite(target) || trunc(target) != target || target < -1 ||
       target >= target_count) {
     scr_trap("invalid fork target");
   }
@@ -10010,14 +10069,34 @@ bool scr_process_ipc_connected(void) {
   return scr_process_ipc != NULL && scr_process_ipc->connected;
 }
 bool scr_process_ipc_open(void) { return scr_process_ipc != NULL; }
+/* A process without a channel (a cluster primary, or a program that never
+ * forked) answers Node's undefined member: process.send/disconnect throw
+ * their TypeError. The compiler's own presence test covers every other
+ * path, so these guards only run for node:cluster's runtime-shaped
+ * channel. */
+static bool scr_process_ipc_absent(const char *member) {
+  char msg[64];
+  int n = snprintf(msg, sizeof msg, "process.%s is not a function", member);
+  scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)n);
+  return false;
+}
+
 bool scr_process_ipc_send(ScrStr *json) {
+  if (scr_process_ipc == NULL) return scr_process_ipc_absent("send");
   return scr_ipc_send(scr_process_ipc, json, NULL, NULL);
 }
 bool scr_process_ipc_send_cb(ScrStr *json, ScrClosure *cb,
                              ScrIpcSendFn fn) {
+  if (scr_process_ipc == NULL) return scr_process_ipc_absent("send");
   return scr_ipc_send(scr_process_ipc, json, cb, fn);
 }
-void scr_process_ipc_disconnect(void) { scr_ipc_disconnect(scr_process_ipc); }
+void scr_process_ipc_disconnect(void) {
+  if (scr_process_ipc == NULL) {
+    scr_process_ipc_absent("disconnect");
+    return;
+  }
+  scr_ipc_disconnect(scr_process_ipc);
+}
 void scr_process_ipc_on_message(ScrClosure *cb, ScrIpcMessageFn fn,
                                 bool once) {
   scr_ipc_add_message(scr_process_ipc, cb, fn, once);
@@ -10482,12 +10561,44 @@ static ScrDyn *scr_child_dyn_invoke(
   return NULL;
 }
 
+/* ChildProcess.stdio in the checked-dynamic lane: Node's one array per
+ * child — the piped handles at their slots (the same checked-dynamic views
+ * child.stdin/stdout/stderr answer, so identity holds), null for every slot
+ * that is not a pipe, and null in a fork's fourth (IPC) slot — built once
+ * and answered by every later read (+1). */
+static ScrDyn *scr_child_stdio_dyn(ScrChild *child) {
+  if (child->stdio_dyn) return scr_dyn_retain(child->stdio_dyn);
+  ScrDyn *array = scr_dyn_new_arr();
+  ScrDyn *slot = scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->out_stream, &child->out_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  slot = scr_child_bridge_readable(child->err_stream, &child->err_dyn);
+  if (!slot) {
+    scr_dyn_release(array);
+    return NULL;
+  }
+  scr_dyn_arr_push(array, slot);
+  if (child->ipc_slot) scr_dyn_arr_push(array, scr_dyn_new_null());
+  child->stdio_dyn = scr_dyn_retain(array);
+  return array;
+}
+
 static ScrDyn *scr_child_dyn_get(void *h, const char *key, size_t key_len) {
   ScrChild *child = (ScrChild *)h;
   SCR_IF_ISLAND(child, scr_child_island_ops->stdio(child));
   if (key_len == 6 && !memcmp(key, "stdout", 6)) return scr_child_bridge_readable(child->out_stream, &child->out_dyn);
   if (key_len == 6 && !memcmp(key, "stderr", 6)) return scr_child_bridge_readable(child->err_stream, &child->err_dyn);
   if (key_len == 5 && !memcmp(key, "stdin", 5)) return scr_child_bridge_writable(child->in_stream, &child->in_dyn);
+  if (key_len == 5 && !memcmp(key, "stdio", 5)) return scr_child_stdio_dyn(child);
   if (key_len == 6 && memcmp(key, "killed", 6) == 0) {
     return scr_dyn_new_bool(scr_child_killed(child));
   }

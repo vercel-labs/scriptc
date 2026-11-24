@@ -358,7 +358,7 @@ export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpress
     );
   }
   const present: IrExpr =
-    lowerer.forkTargets.length === 0
+    lowerer.forkTargets.length === 0 && !lowerer.clusterUsed
       ? nodeThrowExpr(
           0,
           "SC2020",
@@ -395,7 +395,11 @@ export function lowerProcessIpcDisconnect(lowerer: Lowerer, call: ts.CallExpress
 
 export function lowerProcessIpcSend(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
   const loc = locOf(call);
-  if (lowerer.forkTargets.length === 0) return lowerChannelLessSend(lowerer, call);
+  // A cluster program's channel is a runtime question: the worker has the
+  // re-exec marker's channel and the primary has none (the runtime throws
+  // Node's TypeError there).
+  if (lowerer.forkTargets.length === 0 && !lowerer.clusterUsed)
+    return lowerChannelLessSend(lowerer, call);
   const { json, callback } = ipcSendArguments(lowerer, call, loc);
   if (callback === null) {
     return { kind: "libCall", fn: "process.send", args: [json], type: BOOL, loc };

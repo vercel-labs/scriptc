@@ -377,6 +377,62 @@ test("property lookup caches hits and misses by type and name within each projec
   snapshot.dispose();
 });
 
+test("immediate alias and module export answers are memoized per project", () => {
+  const requests: string[] = [];
+  const snapshot = new SemanticSnapshot(1, {
+    text: (method, payload) => {
+      const query = JSON.parse(payload) as { project: string; symbol: number };
+      requests.push(`${method}:${query.project}:${query.symbol}`);
+      if (method === "getImmediateAliasedSymbol" && query.symbol === 2) return "null";
+      if (method === "getExportsOfModule")
+        return JSON.stringify([
+          { id: 20, project: query.project, name: "member", flags: 4, checkFlags: 0 },
+        ]);
+      return JSON.stringify({
+        id: query.symbol + 10,
+        project: query.project,
+        name: "target",
+        flags: 4,
+        checkFlags: 0,
+      });
+    },
+    // Object replies are read as bytes; they carry the same JSON.
+    binary(method, payload) {
+      return Buffer.from(this.text(method, payload), "utf8");
+    },
+  });
+  const project = snapshot.addProject("project", () => undefined);
+  const facade = new CheckerFacade(new SemanticChecker(project));
+  const alias = snapshot.symbol({
+    id: 1,
+    project: "project",
+    name: "alias",
+    flags: 4,
+    checkFlags: 0,
+  });
+  const end = snapshot.symbol({ id: 2, project: "project", name: "end", flags: 4, checkFlags: 0 });
+  const module = snapshot.symbol({
+    id: 3,
+    project: "project",
+    name: "module",
+    flags: 4,
+    checkFlags: 0,
+  });
+  const target = facade.getImmediateAliasedSymbol(alias);
+  expect(facade.getImmediateAliasedSymbol(alias)).toBe(target);
+  expect(facade.getImmediateAliasedSymbol(end)).toBeUndefined();
+  expect(facade.getImmediateAliasedSymbol(end)).toBeUndefined();
+  const exports = facade.getExportsOfModule(module);
+  expect(facade.getExportsOfModule(module)).toBe(exports);
+  expect(requests).toEqual([
+    "getImmediateAliasedSymbol:project:1",
+    "getImmediateAliasedSymbol:project:2",
+    "getExportsOfModule:project:3",
+  ]);
+  snapshot.dispose();
+  expect(() => facade.getImmediateAliasedSymbol(alias)).toThrow("disposed");
+});
+
 for (const server of servers)
   test(`dependency edits invalidate positive and negative property answers (${server.name})`, () => {
     const h = connect(server, {

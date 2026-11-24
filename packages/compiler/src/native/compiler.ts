@@ -94,6 +94,7 @@ import {
   rewriteHugeTextExecutable,
 } from "../backend/huge-text.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
+import { stageImportBitcodeSync } from "../backend/native/import-bitcode.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
 import {
@@ -715,12 +716,18 @@ export class NativeCompiler {
           // leaves: the helper may inline them into the program's own code.
           // Release and dev units ship none, so those postures link what they
           // always did.
+          // A swapped bitcode file could change the executable while the
+          // manifest and the linked objects still match, so the helper reads
+          // only private copies made from bytes that matched the manifest.
+          const pack = optimization === "speed" ? selectPack() : null;
           const importBitcode =
-            optimization === "speed"
-              ? selectPack().selected.bitcode.map((artifact) =>
-                  join(selectPack().root, artifact.path),
-                )
-              : [];
+            pack === null
+              ? []
+              : stageImportBitcodeSync(
+                  pack.root,
+                  pack.selected.bitcode,
+                  join(stage, "runtime-bitcode"),
+                );
           const objects = this.emitProgramObject(
             llvmInput,
             object,

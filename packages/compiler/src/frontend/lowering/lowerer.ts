@@ -6863,6 +6863,13 @@ export class Lowerer {
     // program's declarations and of the two collections above, emptied
     // whenever either grows.
     "islandAliasBindings",
+    // Whether collectProgram has finished registering this pass's globals:
+    // a phase setting fixed before the first body unit lowers.
+    "globalsCollected",
+    // aliasStorageSymbolOf's answer per alias symbol for the post-collection
+    // phase. A replayed unit skips body lowering, its only caller, and a new
+    // collection or a late global registration clears the memo.
+    "aliasStorageBySymbol",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides

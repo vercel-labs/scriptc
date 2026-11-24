@@ -2540,15 +2540,18 @@ done:
 
 /* normalizeAlgorithm(algorithm, 'wrapKey' / 'unwrapKey'), falling back to
  * the 'encrypt' / 'decrypt' registry as Node does: AES-KW (no
- * parameters), or the AES ciphers with their dictionaries. */
+ * parameters), RSA-OAEP (an RsaOaepParams whose label the asymmetric unit
+ * reads), or the AES ciphers with their dictionaries. */
 static const char *scr_wc_normalize_wrap(ScrDyn *identifier, const char *method,
                                          ScrWcCipherParams *params) {
   memset(params, 0, sizeof *params);
   ScrStr *name = scr_wc_algorithm_name(identifier, "Algorithm");
   if (!name) return NULL;
   bool kw = scr_wc_ascii_ieq(name, "AES-KW");
+  bool oaep = scr_wc_ascii_ieq(name, "RSA-OAEP");
   scr_str_release(name);
   if (kw) return "AES-KW";
+  if (oaep) return "RSA-OAEP";
   return scr_wc_normalize_cipher(identifier, method, params);
 }
 
@@ -2645,14 +2648,31 @@ ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
   if (!scr_wc_algorithm_identifier(a.v[3])) goto done;
   const char *name = scr_wc_normalize_wrap(a.v[3], "wrapKey", &params);
   if (!name) goto done;
-  /* An ECDSA, Ed25519 or RSA key never has an AES algorithm. */
-  if (!wrapping || strcmp(wrapping->name, name) != 0) {
-    scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
-    goto done;
-  }
-  if (!(wrapping->usages & SCR_WC_USAGE_WRAP_KEY)) {
-    scr_throw_domex("InvalidAccessError", "Unable to use this key to wrapKey");
-    goto done;
+  bool oaep = strcmp(name, "RSA-OAEP") == 0;
+  if (oaep) {
+    /* The RSA-OAEP key (scr_webcrypto_pki.c) wraps the payload; a secret
+     * key never does. Its usage and half are checked before the export, as
+     * Node checks them before exportKey. */
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->oaep_wrap_usable ||
+        !scr_wc_asymmetric->oaep_wrap) {
+      scr_wc_unsupported("wrapKey", "the RSA-OAEP algorithm");
+      goto done;
+    }
+    if (wrapping) {
+      scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+      goto done;
+    }
+    if (!scr_wc_asymmetric->oaep_wrap_usable(a.v[2], false)) goto done;
+  } else {
+    /* An ECDSA, Ed25519 or RSA key never has an AES algorithm. */
+    if (!wrapping || strcmp(wrapping->name, name) != 0) {
+      scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+      goto done;
+    }
+    if (!(wrapping->usages & SCR_WC_USAGE_WRAP_KEY)) {
+      scr_throw_domex("InvalidAccessError", "Unable to use this key to wrapKey");
+      goto done;
+    }
   }
   bool kw = strcmp(name, "AES-KW") == 0;
   if (key) {
@@ -2661,12 +2681,17 @@ ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
   } else if (scr_wc_asymmetric && scr_wc_asymmetric->export_sync) {
     /* An asymmetric CryptoKey: wrap its exported encoding, as Node does. */
     payload = scr_wc_wrap_asymmetric(a.v[0], a.v[1], format, kw);
-    if (!payload) goto done;
   } else {
     scr_wc_unsupported("wrapKey", "an ECDSA, Ed25519 or RSA key");
     goto done;
   }
-  result = scr_wc_run_cipher(aes, name, false, wrapping, &params, payload);
+  if (!payload) goto done;
+  if (oaep) {
+    ScrBytes *out = scr_wc_asymmetric->oaep_wrap(a.v[3], a.v[2], payload, false);
+    result = out ? scr_wc_deferred_buffer(out) : scr_wc_deferred_rejection();
+  } else {
+    result = scr_wc_run_cipher(aes, name, false, wrapping, &params, payload);
+  }
 done:
   if (payload) scr_bytes_release(payload);
   scr_wc_cipher_params_drop(&params);
@@ -2757,16 +2782,32 @@ ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes) {
   if (!scr_wc_normalize(v[4], scr_wc_import_names, SCR_WC_COUNT(scr_wc_import_names),
                         SCR_WC_OP_IMPORT, &imported))
     goto done;
-  if (!unwrapping || strcmp(unwrapping->name, name) != 0) {
-    scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
-    goto done;
-  }
-  if (!(unwrapping->usages & SCR_WC_USAGE_UNWRAP_KEY)) {
-    scr_throw_domex("InvalidAccessError", "Unable to use this key to unwrapKey");
-    goto done;
+  bool oaep = strcmp(name, "RSA-OAEP") == 0;
+  if (oaep) {
+    if (!scr_wc_asymmetric || !scr_wc_asymmetric->oaep_wrap_usable ||
+        !scr_wc_asymmetric->oaep_wrap) {
+      scr_wc_unsupported("unwrapKey", "the RSA-OAEP algorithm");
+      goto done;
+    }
+    if (unwrapping) {
+      scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+      goto done;
+    }
+    if (!scr_wc_asymmetric->oaep_wrap_usable(v[2], true)) goto done;
+  } else {
+    if (!unwrapping || strcmp(unwrapping->name, name) != 0) {
+      scr_throw_domex("InvalidAccessError", "Key algorithm mismatch");
+      goto done;
+    }
+    if (!(unwrapping->usages & SCR_WC_USAGE_UNWRAP_KEY)) {
+      scr_throw_domex("InvalidAccessError", "Unable to use this key to unwrapKey");
+      goto done;
+    }
   }
   if (!scr_wc_max_length(wrapped, "data")) goto done;
-  ScrBytes *bytes = scr_wc_cipher_bytes(aes, name, true, unwrapping, &params, wrapped);
+  ScrBytes *bytes =
+      oaep ? scr_wc_asymmetric->oaep_wrap(v[3], v[2], wrapped, true)
+           : scr_wc_cipher_bytes(aes, name, true, unwrapping, &params, wrapped);
   if (!bytes) {
     result = scr_wc_deferred_rejection();
     goto done;

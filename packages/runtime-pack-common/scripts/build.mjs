@@ -208,6 +208,12 @@ async function build() {
   // although that code and its data were unchanged; without it, the program
   // runs as fast as with an unprofiled runtime.
   const unprofiledUnits = new Set(["scr_message.c"]);
+  // The runtime units whose bodies a program build may import: the hot map,
+  // string and array leaves (scr_map_entry_str, scr_str_*, scr_arr_*). The
+  // speed flavor ships each selected variant's pruned import bitcode beside
+  // its object; importing more units would grow the pack and every build's
+  // compile time without changing these leaves.
+  const importBitcodeUnits = new Set(["scr_map.c", "scr_string.c", "scr_array.c"]);
   // The instrumented units' functions, which SCRIPTC_RUNTIME_PROFILE_FUNCTIONS
   // names a file for; the refresh script keeps only their records.
   const profiledFunctions = new Set();
@@ -521,6 +527,12 @@ async function build() {
               }),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
+            const bitcodeOutput =
+              flavor === "speed" &&
+              importBitcodeUnits.has(unit.source) &&
+              unitHelper?.features.includes("runtime-unit-optional-bitcode") === true
+                ? join(dirname(output), unit.source.replace(/\.c$/, ".import.bc"))
+                : null;
             let unitBuild = false;
             if (
               flavor === "speed" &&
@@ -545,6 +557,7 @@ async function build() {
                     ? ["--opt-level", "2"]
                     : (speedProfile?.args ?? []),
                 object: output,
+                bitcode: bitcodeOutput,
                 triple: matrix.target.llvm_triple,
                 tag: unit.source.replace(/\.c$/, ""),
                 sections:
@@ -566,6 +579,15 @@ async function build() {
               path: artifactPath(output),
               sha256: await sha256(output),
               size: (await stat(output)).size,
+              ...(unitBuild && bitcodeOutput !== null
+                ? {
+                    bitcode: {
+                      path: artifactPath(bitcodeOutput),
+                      sha256: await sha256(bitcodeOutput),
+                      size: (await stat(bitcodeOutput)).size,
+                    },
+                  }
+                : {}),
             };
             variants.push(built);
           }

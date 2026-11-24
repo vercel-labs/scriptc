@@ -33,6 +33,7 @@ export async function createNativeLinkInfo(options: {
     selected: {
       features: pack.features,
       runtime: pack.selectedRuntimeArtifacts,
+      bitcode: pack.selectedBitcodeArtifacts,
       archives: pack.selectedArchiveArtifacts,
       data: pack.selectedDataArtifacts,
       systemLibraries: pack.systemLibraries,

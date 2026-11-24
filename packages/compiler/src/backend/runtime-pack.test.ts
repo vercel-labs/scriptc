@@ -16,7 +16,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
-import { speedFlavorFallbackWarning } from "./runtime-pack-core.js";
+import { selectRuntimePackArtifacts, speedFlavorFallbackWarning } from "./runtime-pack-core.js";
 import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
@@ -134,6 +134,47 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
 }
 
 describe("runtime pack manifests", () => {
+  test("a variant's import bitcode is selected with the variant", async () => {
+    const { manifest } = await fixture();
+    const unit = structuredClone(manifest.flavors.release!.runtime_units[0]!);
+    const bitcode = {
+      path: "artifacts/speed/runtime/default/scr_bytes.import.bc",
+      sha256: "b".repeat(64),
+      size: 5,
+    };
+    unit.variants[0] = { ...unit.variants[0]!, bitcode };
+    const parsed = parseRuntimePackManifest({
+      ...manifest,
+      flavors: {
+        release: { optimization: "-O2", runtime_units: [] },
+        dev: { optimization: "-O0", runtime_units: [] },
+        speed: { optimization: "-O2", runtime_units: [unit] },
+      },
+    });
+    const selected = selectRuntimePackArtifacts(parsed, BASE, "speed");
+    expect(selected.runtime.map((artifact) => artifact.path)).toEqual(["artifacts/base.o"]);
+    expect(selected.bitcode).toEqual([bitcode]);
+  });
+
+  test("a variant's import bitcode must be a valid artifact", async () => {
+    const { manifest } = await fixture();
+    const unit = structuredClone(manifest.flavors.release!.runtime_units[0]!);
+    unit.variants[0] = {
+      ...unit.variants[0]!,
+      bitcode: { path: "../escape.import.bc", sha256: "b".repeat(64), size: 5 },
+    };
+    expect(() =>
+      parseRuntimePackManifest({
+        ...manifest,
+        flavors: {
+          release: { optimization: "-O2", runtime_units: [] },
+          dev: { optimization: "-O0", runtime_units: [] },
+          speed: { optimization: "-O2", runtime_units: [unit] },
+        },
+      }),
+    ).toThrow(RuntimePackError);
+  });
+
   test("the object linker is configured independently from the C compiler", () => {
     expect(resolvePlatformLinker({})).toBe("clang");
     expect(resolvePlatformLinker({ SCRIPTC_LINKER: "ld-driver" })).toBe("ld-driver");

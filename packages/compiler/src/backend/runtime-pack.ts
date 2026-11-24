@@ -41,6 +41,9 @@ export interface RuntimePackSelection {
   flavor: NativeOptimization;
   features: RuntimeFeatureSet;
   runtimeObjects: string[];
+  /** The selected units' import bitcode, verified like the objects. Passed
+   * to the helper as `--import-bitcode`. */
+  bitcodeFiles: string[];
   archives: string[];
   /** Files the executable loads at run time, installed beside it. */
   dataFiles: string[];
@@ -52,6 +55,7 @@ export interface RuntimePackSelection {
   /** Exact installed inputs observed while the selected artifacts were verified. */
   sourceDependencies: NativeArtifactDependency[];
   selectedRuntimeArtifacts: RuntimePackArtifact[];
+  selectedBitcodeArtifacts: RuntimePackArtifact[];
   selectedArchiveArtifacts: RuntimePackArtifact[];
   selectedDataArtifacts: RuntimePackArtifact[];
   selectedHeaderArtifacts: RuntimePackArtifact[];
@@ -218,6 +222,7 @@ export async function loadRuntimePack(options: {
   );
   const features = selected.features;
   const selectedVariants = selected.runtime;
+  const selectedBitcode = selected.bitcode;
   const selectedArchives = selected.archives;
   const selectedData = selected.data;
   // The C-source path compiles scr_intl.c against these headers and links
@@ -225,6 +230,7 @@ export async function loadRuntimePack(options: {
   const selectedHeaders = features.intl === true ? (manifest.headers ?? []) : [];
   const selectedArtifactPaths = [
     ...selectedVariants,
+    ...selectedBitcode,
     ...selectedArchives,
     ...selectedData,
     ...selectedHeaders,
@@ -235,8 +241,9 @@ export async function loadRuntimePack(options: {
   } catch {
     throw new RuntimePackError("runtime pack artifact set changed during selection", "invalid");
   }
-  const [runtimeObjects, archives, dataFiles, headerFiles] = await Promise.all([
+  const [runtimeObjects, bitcodeFiles, archives, dataFiles, headerFiles] = await Promise.all([
     Promise.all(selectedVariants.map((artifact) => verifyArtifact(root, artifact))),
+    Promise.all(selectedBitcode.map((artifact) => verifyArtifact(root, artifact))),
     Promise.all(selectedArchives.map((artifact) => verifyArtifact(root, artifact))),
     Promise.all(selectedData.map((artifact) => verifyArtifact(root, artifact))),
     Promise.all(selectedHeaders.map((artifact) => verifyArtifact(root, artifact))),
@@ -260,6 +267,7 @@ export async function loadRuntimePack(options: {
     flavor,
     features,
     runtimeObjects,
+    bitcodeFiles,
     archives,
     dataFiles,
     headerFiles,
@@ -268,12 +276,14 @@ export async function loadRuntimePack(options: {
       packagePath,
       manifestPath,
       ...runtimeObjects,
+      ...bitcodeFiles,
       ...archives,
       ...dataFiles,
       ...headerFiles,
     ],
     sourceDependencies,
     selectedRuntimeArtifacts: selectedVariants,
+    selectedBitcodeArtifacts: selectedBitcode,
     selectedArchiveArtifacts: selectedArchives,
     selectedDataArtifacts: selectedData,
     selectedHeaderArtifacts: selectedHeaders,

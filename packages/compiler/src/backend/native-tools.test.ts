@@ -109,6 +109,21 @@ test.skipIf(process.platform === "win32")(
   },
 );
 
+test("import bitcode is passed to the helper once per file", () => {
+  const options = emitOptions();
+  writeFileSync(options.outputPath, "object");
+  vi.mocked(execFileSync).mockReturnValue("");
+  const bitcode = [
+    join(options.packageRoot, "scr_map.import.bc"),
+    join(options.packageRoot, "scr_string.import.bc"),
+  ];
+  emitNativeObject({ ...options, importBitcode: bitcode });
+  const args = vi.mocked(execFileSync).mock.calls[0]![1] as string[];
+  expect(
+    args.flatMap((arg, index) => (arg === "--import-bitcode" ? [args[index + 1]] : [])),
+  ).toEqual(bitcode);
+});
+
 test("a helper's structured diagnostic reaches the build diagnostic", () => {
   const options = emitOptions();
   const stderr = '{"ok":false,"code":"verification_failed","message":"bad module"}';

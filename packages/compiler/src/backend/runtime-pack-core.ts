@@ -24,6 +24,11 @@ export interface RuntimePackVariant extends RuntimePackArtifact {
   id: string;
   when: Record<string, boolean>;
   defines: string[];
+  /** The variant's pruned import bitcode (native/llvm-codegen's
+   * runtime-import.h): the bodies a program build may import with
+   * `--import-bitcode`, reduced to what an import can take. Absent when the
+   * pack was built without a helper that can emit it. */
+  bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -280,7 +285,8 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
               Array.isArray(variant.defines) &&
-              variant.defines.every((entry) => typeof entry === "string")
+              variant.defines.every((entry) => typeof entry === "string") &&
+              (variant.bitcode === undefined || validArtifact(variant.bitcode))
             );
           })
         );
@@ -558,6 +564,9 @@ export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
   /** Selected unit variants. */
   runtime: RuntimePackArtifact[];
+  /** The selected variants' import bitcode: what a program build passes to
+   * the helper as `--import-bitcode`. */
+  bitcode: RuntimePackArtifact[];
   archives: RuntimePackArtifact[];
   /** Files to install beside the executable (ICU's data file for Intl). */
   data: RuntimePackArtifact[];
@@ -660,9 +669,13 @@ export function selectRuntimePackArtifacts(
       `the ${manifest.target.name} runtime pack has no ICU objects, which Intl needs; reinstall a runtime package that supports Intl`,
       "unsupported",
     );
+  const units = selectedRuntimeUnits(selectedFlavor, features);
   return {
     features,
-    runtime: selectedRuntimeUnits(selectedFlavor, features).map(({ variant }) => variant),
+    runtime: units.map(({ variant }) => variant),
+    bitcode: units.flatMap(({ variant }) =>
+      variant.bitcode === undefined ? [] : [variant.bitcode],
+    ),
     archives: manifest.archives.filter((archive) =>
       evaluateRuntimePredicate(archive.predicate, features),
     ),

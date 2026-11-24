@@ -69,7 +69,7 @@ function fixture(platform: string, driver: string) {
         licenses: [],
         packageText: "{}",
         manifestText: "{}",
-        selected: { runtime: [], archives: [] },
+        selected: { runtime: [], bitcode: [], archives: [] },
         flavor: "release",
       }) as unknown as NativeRuntimeSelection,
   };

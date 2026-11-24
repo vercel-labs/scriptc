@@ -330,6 +330,7 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
+    importBitcode: readonly string[] = [],
   ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -377,6 +378,9 @@ export class NativeCompiler {
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
+            ...(importBitcode.length === 0
+              ? {}
+              : { importBitcode: importBitcode.map((path) => fileDigest(path)) }),
           }),
         );
         const cached = outputs.map((_, index) =>
@@ -422,6 +426,7 @@ export class NativeCompiler {
       partitions,
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
+      ...(importBitcode.length === 0 ? {} : { importBitcode }),
     });
     if (this.cache !== null && key !== null) {
       try {
@@ -461,6 +466,7 @@ export class NativeCompiler {
     library: boolean,
     profile?: NativeProfileOptions,
     llvmDigest?: () => string,
+    importBitcode: readonly string[] = [],
   ): NativeObjects {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
@@ -482,6 +488,7 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
+        importBitcode,
       );
     }
     const objects: string[] = [];
@@ -704,6 +711,16 @@ export class NativeCompiler {
           ]);
           requireNativeArtifact(object);
         } else if (outputKind === "exe") {
+          // The speed flavor ships pruned import bitcode for the hot runtime
+          // leaves: the helper may inline them into the program's own code.
+          // Release and dev units ship none, so those postures link what they
+          // always did.
+          const importBitcode =
+            optimization === "speed"
+              ? selectPack().selected.bitcode.map((artifact) =>
+                  join(selectPack().root, artifact.path),
+                )
+              : [];
           const objects = this.emitProgramObject(
             llvmInput,
             object,
@@ -713,6 +730,7 @@ export class NativeCompiler {
             false,
             profile,
             digestLlvm,
+            importBitcode,
           );
           programObjects = objects.paths;
           profileMatch = objects.profileMatch;

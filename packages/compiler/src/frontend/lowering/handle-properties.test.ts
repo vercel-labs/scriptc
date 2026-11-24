@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { VOID, type IrExpr, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
 import { compile, deserializeModule } from "../../index.js";
+import { FunctionCensus } from "./function-census.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 
@@ -35,6 +36,7 @@ test("renames a libCall the IR reaches from several statements once", () => {
       childAdditions: { written: new Set(), everyName: false, any: true },
     } as unknown as Lowerer,
     functions,
+    new FunctionCensus(),
   );
   expect(call).toMatchObject({ kind: "libCall", fn: "child.propsDefine" });
   expect(functions[0]!.body[0]).toMatchObject({
@@ -52,6 +54,7 @@ test("a child write in a module without the child fact installs no wrapper", () 
       childAdditions: { written: new Set(), everyName: false, any: true },
     } as unknown as Lowerer,
     functions,
+    new FunctionCensus(),
   );
   // The write is dead: the module cannot box a child, so nothing installs.
   expect(functions[0]!.body).toEqual([]);

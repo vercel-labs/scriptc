@@ -137,3 +137,38 @@ test("volatile slots render their loads and stores volatile and nothing else", (
     "entry:\n  %sc_l_a_0 = alloca ptr\n  store volatile ptr null, ptr %sc_l_a_0\n  ret void",
   );
 });
+
+test("rendered helper IR opens labelled blocks and ends them at branches", () => {
+  const blocks = new BlockBuilder();
+  blocks.line("%size = call i64 @llvm.coro.size.i64()");
+  blocks.rendered([
+    "  %n = add i64 %size, 0",
+    "  br i1 true, label %fast, label %slow",
+    "fast: ; the inline path",
+    "  %b = inttoptr i64 0 to ptr",
+    "  %f = phi ptr [ %b, %fast ], [ %o, %slow ]",
+    "  br label %done",
+    "slow:",
+    "  %o = call ptr @scr_rt_calloc(i64 %n)",
+    "  br label %done",
+    "done:",
+  ]);
+  blocks.terminate("ret void");
+  expect(blocks.render()).toBe(
+    [
+      "entry:",
+      "  %size = call i64 @llvm.coro.size.i64()",
+      "  %n = add i64 %size, 0",
+      "  br i1 true, label %fast, label %slow",
+      "fast:",
+      "  %b = inttoptr i64 0 to ptr",
+      "  %f = phi ptr [ %b, %fast ], [ %o, %slow ]",
+      "  br label %done",
+      "slow:",
+      "  %o = call ptr @scr_rt_calloc(i64 %n)",
+      "  br label %done",
+      "done:",
+      "  ret void",
+    ].join("\n"),
+  );
+});

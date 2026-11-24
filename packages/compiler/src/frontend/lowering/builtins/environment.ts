@@ -10,6 +10,7 @@ import {
   heldEnvWriteDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { bindingNeverReassigned } from "../binding-analysis.js";
+import { builtinImportOf } from "./module-bindings.js";
 import { constituentTypes } from "../../ts7/checker.js";
 import { pairsSnapshotHelper } from "../pairs-snapshot.js";
 import { definedEnvValue } from "../../defines.js";
@@ -111,6 +112,12 @@ export function holdsEnvSnapshot(
   // binding's initializer (depth >= 1) it is the hold's source.
   if (isProcessEnv(lowerer, inner)) return depth > 0;
   if (!ts.isIdentifier(inner) || depth >= 4) return false;
+  // `import { env } from "node:process"` (or its CommonJS destructuring
+  // twin) binds the same environment object Node exports, so it is a hold
+  // like `const env = process.env`: member accesses alias the live table
+  // and bare uses re-snapshot.
+  const imported = builtinImportOf(lowerer, inner);
+  if (imported !== null && imported.module === "process" && imported.member === "env") return true;
   const symbol = lowerer.checker.getSymbolAtLocation(inner);
   const decl = symbol?.valueDeclaration ?? symbol?.declarations[0];
   if (decl === undefined) return false;

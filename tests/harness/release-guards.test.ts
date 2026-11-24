@@ -164,7 +164,16 @@ test("CI on main keeps one group without cancelling, and pull requests keep canc
     concurrency: { group: string; "cancel-in-progress": string };
   };
   expect(ci.concurrency.group).toContain("github.event_name == 'push' && 'main'");
-  expect(ci.concurrency["cancel-in-progress"]).toBe("${{ github.event_name == 'pull_request' }}");
+  // A pull request's expensive tier (a dispatch with pr) runs in a group of its own, apart from the pull
+  // request's, so it never cancels the pull request run the merge gate's checks come from; other manual runs,
+  // such as the release CI gate's, keep a group per run.
+  expect(ci.concurrency.group).toContain(
+    "github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id))",
+  );
+  expect(ci.concurrency.group).toContain("|| github.event.pull_request.number ||");
+  expect(ci.concurrency["cancel-in-progress"]).toBe(
+    "${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}",
+  );
 });
 
 test("a version npm already holds counts as published only when npm holds this payload", () => {

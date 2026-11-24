@@ -977,6 +977,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",
@@ -1819,6 +1821,25 @@ const RUNTIME_FEATURE_RULES = {
       "cp.execFileCwd",
       "cp.execFileOpts",
       "cp.spawnArmed",
+    ],
+  }),
+  /** node:cluster's module surface: scr_cluster.c, a unit of its own so a
+   * program that never names cluster links nothing of it. The unit also
+   * carries the %main cluster.init call and the worker-mode dispatch. */
+  cluster: rule({
+    fns: [
+      "cluster.init",
+      "cluster.isPrimary",
+      "cluster.isWorker",
+      "cluster.schedulingPolicy",
+      "cluster.fork",
+      "cluster.setup",
+      "cluster.disconnect",
+      "cluster.settings",
+      "cluster.workers",
+      "cluster.worker",
+      "cluster.on",
+      "cluster.off",
     ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
@@ -3016,6 +3037,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childLifecycle: false,
     processFeatures: false,
     childOptionExt: false,
+    cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
     childStreamFlow: false,

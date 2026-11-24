@@ -144,6 +144,7 @@ declare module "net" {
     on(event: "close", listener: (hadError: boolean) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "session", listener: (session: Buffer) => void): void;
+    on(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     on(
       event: "lookup",
@@ -179,6 +180,7 @@ declare module "net" {
     addListener(event: "close", listener: (hadError: boolean) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "session", listener: (session: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     addListener(
       event: "lookup",
@@ -211,6 +213,7 @@ declare module "net" {
     once(event: "close", listener: (hadError: boolean) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "session", listener: (session: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     once(
       event: "lookup",
@@ -291,6 +294,11 @@ declare module "net" {
       event: "tlsClientError",
       listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
     ): void;
+    /* tls and https servers: the NSS key-log lines of their connections;
+     * a plain server keeps the listener inert, as Node's EventEmitter does */
+    on(event: "keylog", listener: (line: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;

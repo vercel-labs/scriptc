@@ -2520,7 +2520,16 @@ export const BUILTIN_MODULE_CONSTS: Record<
   // SHARE_ENV is a symbol, not a constant value: its entry keeps the member
   // in the namespace inventory, and the worker lowering supplies the value.
   worker_threads: { isMainThread: true, threadId: 0, SHARE_ENV: undefined },
-  cluster: { isPrimary: true, isMaster: true, isWorker: false },
+  // The boolean members are RUNTIME reads (a compiled program can be
+  // either a primary or a worker): their rows stay here for the namespace
+  // inventory, and lower-cluster.ts claims every read before this table.
+  cluster: {
+    isPrimary: true,
+    isMaster: true,
+    isWorker: false,
+    SCHED_NONE: 1,
+    SCHED_RR: 2,
+  },
   punycode: { version: "2.1.0" },
   // The largest Buffer length, the bound the allocation checks use; V8's
   // string length limit (code units), and the inspect preview width.
@@ -4039,8 +4048,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     setFips:
-      "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
-      "in a non-FIPS build — getFips() answers 0 here",
+      "a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, " +
+      "Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with " +
+      "ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here",
   },
   http2: {
     connect:

@@ -65,6 +65,7 @@
 #include <unistd.h>
 #else
 #include <io.h>
+#include <process.h> /* _getpid */
 #endif
 
 #ifdef _WIN32
@@ -692,6 +693,7 @@ struct ScrH2Stream {
   bool respond_sent;    /* server: respond() ran */
   bool want_end;        /* end() called; END_STREAM rides the last flush */
   bool end_recv;        /* END_STREAM arrived */
+  bool end_after_headers; /* END_STREAM rode the initial HEADERS block */
   bool end_emitted;
   bool close_queued, close_emitted;
   bool err_code_queued; /* a nonzero-code 'error' rides the close sweep */
@@ -3275,6 +3277,31 @@ bool scr_http2_stream_headers_sent(ScrH2Stream *st) {
 }
 bool scr_http2_stream_aborted(ScrH2Stream *st) { return st->aborted; }
 bool scr_http2_stream_pending(ScrH2Stream *st) { return false; /* streams send at request() */ }
+bool scr_http2_stream_end_after_headers(ScrH2Stream *st) { return st->end_after_headers; }
+
+/* Http2Stream.bufferSize: the bytes buffered for the writable side (the
+ * send buffer withheld by flow control). */
+double scr_http2_stream_buffer_size(ScrH2Stream *st) { return (double)st->wbuf.len; }
+
+/* Http2ServerRequest.authority/scheme: the request's pseudo-headers
+ * (+1), NULL when the peer sent none. */
+static ScrStr *scr_h2_req_pseudo(ScrHttpReq *r, const char *name, size_t len) {
+  ScrStr *key = scr_str_new(name, len);
+  ScrStr *value = scr_http_req_header(r, key);
+  scr_str_release(key);
+  /* Http2ServerRequest.authority/scheme are strings: a block without the
+   * pseudo-header (CONNECT shapes) answers "". */
+  return value != NULL ? value : scr_str_new("", 0);
+}
+
+ScrStr *scr_http2_req_authority(ScrHttpReq *r) {
+  /* Node's getAuthority: :authority, else the host field. */
+  ScrStr *authority = scr_h2_req_pseudo(r, ":authority", 10);
+  if (authority->len > 0) return authority;
+  scr_str_release(authority);
+  return scr_h2_req_pseudo(r, "host", 4);
+}
+ScrStr *scr_http2_req_scheme(ScrHttpReq *r) { return scr_h2_req_pseudo(r, ":scheme", 7); }
 
 ScrH2Session *scr_http2_stream_session(ScrH2Stream *st) {
   return scr_http2_session_retain(st->sess);
@@ -3531,6 +3558,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     s->max_created_stream_id = stream_id;
     if (end_stream) {
       st->end_recv = true;
+      st->end_after_headers = true;
       st->state = SCR_H2_S_CLOSED_REMOTE;
     }
     bool connect_request = false;
@@ -4260,7 +4288,11 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (authority) scr_str_release(authority);
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
-  if (end) scr_h2_stream_mark_local_closed(st);
+  if (end) {
+    /* Node reports endAfterHeaders only on a server stream whose request
+     * ended at its HEADERS block; a client stream always answers false. */
+    scr_h2_stream_mark_local_closed(st);
+  }
   return st; /* the create ref moves out; the session's vector holds its own */
 }
 
@@ -5267,6 +5299,52 @@ static const ScrDynHandleOps scr_h2_dynh_session_ops = {
   "Http2Session", &scr_http2_session_retain_v, &scr_http2_session_release_v,
   &scr_h2_dynh_session_invoke, &scr_h2_dynh_session_get, &scr_h2_dynh_session_set, NULL,
 };
+
+/* Http2ServerResponse.statusMessage is always "" and a read or write emits
+ * Node's one-time UnsupportedWarning (RFC 7540 has no reason phrase). The
+ * report runs on the next tick, as process.emitWarning's listeners do. */
+static void scr_h2_status_msg_warn_tick(ScrClosure *cb) {
+  (void)cb;
+  static const char text[] = "Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  if (scr_warning_emit_hook) {
+    scr_warning_emit_hook("UnsupportedWarning", NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+#ifdef _WIN32
+    long pid = (long)_getpid();
+#else
+    long pid = (long)getpid();
+#endif
+    fprintf(stderr, "(node:%ld) UnsupportedWarning: %.*s\n", pid, (int)message->len,
+            message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(message);
+}
+
+static SCR_TL bool scr_h2_status_msg_warned = false;
+
+static void scr_h2_status_msg_schedule(void) {
+  if (scr_h2_status_msg_warned) return;
+  scr_h2_status_msg_warned = true;
+  scr_next_tick(scr_closure_new((void *)&scr_h2_status_msg_warn_tick, 0));
+}
+
+void scr_http2_status_message_unsupported(ScrHttpRes *res, const ScrDyn *value) {
+  (void)res;
+  (void)value;
+  scr_h2_status_msg_schedule();
+}
+
+void scr_http2_status_message_read(ScrHttpRes *res) {
+  (void)res;
+  scr_h2_status_msg_schedule();
+}
 
 void scr_http2_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_H2_STREAM, &scr_h2_dynh_stream_ops);

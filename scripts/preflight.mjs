@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 export const preflightChecks = [
   { run: "pnpm format:check" },
   { run: "pnpm lint" },
+  {
+    run: "[ ! -f scripts/check-relocated-runtime-headers.mjs ] || node scripts/check-relocated-runtime-headers.mjs",
+  },
+  { run: "pnpm test:ts7 --baselines-only" },
   { run: "pnpm build" },
   {
     run: "pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts",

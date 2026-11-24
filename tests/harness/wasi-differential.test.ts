@@ -1,3 +1,4 @@
+// @requires-wasi-runtime-pack: needs @scriptc/runtime-wasm32-wasi/runtime-pack.json.
 /* wasm32-wasi is a production LLVM target. This lane compares
  * pointer-width-sensitive corpus seeds against Node and pins the backend
  * selection independently of the host platform.

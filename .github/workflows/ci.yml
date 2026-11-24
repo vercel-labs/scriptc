@@ -1263,10 +1263,10 @@ jobs:
           target: wasm32-wasi
           helper: "false"
       - run: pnpm build
-      - name: WASI helper object/runtime-pack smoke
-        # The differential lane needs this job's wasm32-wasi runtime pack and zig; the fast tier has neither
-        # (scripts/ci-fast-tests.mjs keeps it out of PR selection).
-        run: pnpm test packages/cli/test/wasi-runtime-pack.test.ts tests/harness/wasm-library.test.ts tests/harness/wasi-differential.test.ts
+      - name: WASI runtime-pack and differential lanes
+        # Every test that needs this job's wasm32-wasi runtime pack says so in its source
+        # (@requires-wasi-runtime-pack); the fast tier does not build the pack, so it leaves them out.
+        run: pnpm test $(node scripts/ci-fast-tests.mjs --wasi-tests)
 
   llvm_artifacts_macos_arm64:
     needs: [validation_scope, lanes, native_macos]

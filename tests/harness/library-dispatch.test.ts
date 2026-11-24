@@ -1,3 +1,4 @@
+// @requires-wasi-runtime-pack: needs @scriptc/runtime-wasm32-wasi/runtime-pack.json.
 import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";

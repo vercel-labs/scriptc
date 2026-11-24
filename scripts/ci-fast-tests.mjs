@@ -44,16 +44,25 @@ export const SMOKE_BUDGET_MS = 3 * 60_000;
 
 // The corpus suites, the isolated and case-sharded suites, and the memory-heavy files run only in the expensive
 // tier: any one of them takes longer than the fast tier.
-// The wasm32-wasi differential lane runs wherever zig is on PATH, and the fast tier's native-package setup puts it
-// there, but the lane needs @scriptc/runtime-wasm32-wasi/runtime-pack.json, which only the WASI artifact lane
-// builds (llvm_artifacts_linux_x64_wasi). Selecting it here fails with SC3003.
-const wasiLane = "tests/harness/wasi-differential.test.ts";
 const expensiveOnly = new Set([
   ...fileExclusions,
   ...nativeFrontendFiles,
   ...Object.keys(memoryHeavyFiles),
-  wasiLane,
 ]);
+
+/** A test that needs the wasm32-wasi runtime pack says so in its source; the fast tier does not build that pack. */
+export const WASI_RUNTIME_PACK_MARKER = "@requires-wasi-runtime-pack";
+
+/** The tests that need @scriptc/runtime-wasm32-wasi/runtime-pack.json, read from their own marker. */
+export function wasiRuntimePackTests(testFiles, root = repoRoot) {
+  return testFiles.filter((file) => {
+    try {
+      return readFileSync(join(root, file), "utf8").includes(WASI_RUNTIME_PACK_MARKER);
+    } catch {
+      return false;
+    }
+  });
+}
 
 const isTest = (file) => file.endsWith(".test.ts");
 
@@ -185,6 +194,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     corpusCosts = {},
     corpusBudget = SMOKE_BUDGET_MS,
     forceSmoke = false,
+    excluded = expensiveOnly,
   } = options;
   const byStem = new Map();
   for (const file of testFiles) {
@@ -211,7 +221,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   for (const file of [...staticSelection].sort(
     (a, b) => weigh(a) - weigh(b) || a.localeCompare(b),
   )) {
-    if (expensiveOnly.has(file) || total + weigh(file) > budget) deferred.push(file);
+    if (excluded.has(file) || total + weigh(file) > budget) deferred.push(file);
     else {
       selected.push(file);
       total += weigh(file);
@@ -300,7 +310,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
  * the caller, which selects within the fast tier's 20-minute single-worker
  * budget. The expensive suites are excluded so the import graph cannot pull
  * one in. */
-function relatedTestFiles(changedTs) {
+function relatedTestFiles(changedTs, excluded = expensiveOnly) {
   if (changedTs.length === 0) return { status: 0, files: [] };
   const cacheDir = join(repoRoot, "node_modules/.cache");
   mkdirSync(cacheDir, { recursive: true });
@@ -323,7 +333,7 @@ function relatedTestFiles(changedTs) {
         `--json=${outputPath}`,
         "-c",
         configPath,
-        ...[...expensiveOnly].flatMap((file) => [`--exclude=${file}`]),
+        ...[...excluded].flatMap((file) => [`--exclude=${file}`]),
       ],
       {
         cwd: repoRoot,
@@ -349,6 +359,14 @@ function relatedTestFiles(changedTs) {
 }
 
 async function main() {
+  if (process.argv.includes("--wasi-tests")) {
+    const files = globSync(["packages/*/{src,test}/**/*.test.ts", "tests/harness/**/*.test.ts"], {
+      cwd: repoRoot,
+      exclude: (path) => path.includes("node_modules"),
+    }).sort();
+    console.log(wasiRuntimePackTests(files).join(" "));
+    return;
+  }
   const index = process.argv.indexOf("--base");
   const base = index === -1 ? undefined : process.argv[index + 1];
   const headIndex = process.argv.indexOf("--head");
@@ -374,12 +392,14 @@ async function main() {
   const changedTs = changed.filter(
     (file) => /\.[cm]?tsx?$/.test(file) && !isTest(file) && !file.endsWith(".d.ts"),
   );
-  const relatedRun = dryRun ? { status: 0, files: [] } : relatedTestFiles(changedTs);
+  const excluded = new Set([...expensiveOnly, ...wasiRuntimePackTests(testFiles)]);
+  const relatedRun = dryRun ? { status: 0, files: [] } : relatedTestFiles(changedTs, excluded);
   const selection = fastTests(changed, testFiles, testCosts.plain, FAST_TEST_BUDGET_MS, {
     related: relatedRun.files,
     corpusIndex,
     corpusCosts,
     forceSmoke,
+    excluded,
   });
 
   const relatedSet = new Set(selection.related);

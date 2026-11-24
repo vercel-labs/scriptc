@@ -28,6 +28,7 @@ await show(
   Readable.from([Buffer.from("ab")], { objectMode: false, encoding: "base64" }),
 );
 await show("typed utf-8 spelling", Readable.from([Buffer.from("ab")], { encoding: "utf-8" }));
+await show("typed undefined encoding", Readable.from([Buffer.from("ab")], { encoding: undefined }));
 
 try {
   Readable.from([], { encoding: "nope" });

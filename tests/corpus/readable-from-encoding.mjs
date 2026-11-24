@@ -59,6 +59,16 @@ await show("utf-8 spelling", Readable.from([Buffer.from("ab")], { encoding: "utf
   await show("web source hex", Readable.from(web, { encoding: "hex" }));
 }
 
+// An explicitly falsy encoding leaves the readable undecoded, as Node's
+// state constructor does; a truthy non-string is coerced and validated.
+for (const encoding of [undefined, null, "", false, 0, NaN]) {
+  await show(`falsy ${String(encoding)}`, Readable.from([Buffer.from("ab")], { encoding }));
+}
+{
+  const encoding = "";
+  await show("falsy variable", Readable.from([Buffer.from("ab")], { encoding }));
+}
+
 // A spelling Node does not know, whatever its type, is its runtime throw.
 for (const encoding of ["nope", 5]) {
   try {

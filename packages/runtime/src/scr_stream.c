@@ -2131,7 +2131,9 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
   ScrStr *encoding_name = NULL; /* the spelling when it differs, +1 */
   if (opts && opts->kind == SCR_DYN_OBJ && !duplex) {
     ScrDyn *enc = scr_dyn_obj_get(opts, "encoding", 8);
-    if (enc) {
+    /* An explicitly falsy value (undefined, null, "", false, 0, NaN) leaves
+     * the readable undecoded, as the state constructor's option does. */
+    if (enc && scr_dyn_truthy(enc)) {
       scr_stream_check_encoding_option(enc);
       if (scr_exc_pending()) {
         if (iter) scr_dyn_release(iter);

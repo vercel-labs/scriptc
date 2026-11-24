@@ -3496,8 +3496,19 @@ function fromOptions(
     } else if (prop.name.text === "encoding") {
       // The readable state's decoder: a literal Node knows folds to its
       // canonical name; a literal it does not know is the constructor's
-      // RUNTIME ERR_UNKNOWN_ENCODING, not a compile fence.
+      // RUNTIME ERR_UNKNOWN_ENCODING, not a compile fence. An explicitly
+      // falsy value (undefined, null, "", false, 0) leaves the readable
+      // undecoded, as the state constructor's option does.
       const t = lowerer.typeOf(value);
+      const falsy =
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        value.kind === ts.SyntaxKind.FalseKeyword ||
+        (ts.isNumericLiteral(value) && Number(value.text) === 0) ||
+        (ts.isIdentifier(value) &&
+          value.text === "undefined" &&
+          (t.flags & ts.TypeFlags.Undefined) !== 0) ||
+        (t.isStringLiteralType() && t.value === "");
+      if (falsy) continue;
       if (!t.isStringLiteralType()) {
         dynamicEncoding = true;
         continue;

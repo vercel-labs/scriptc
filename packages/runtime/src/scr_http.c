@@ -7916,6 +7916,12 @@ static bool scr_http_client_parse_head(ScrHttpConn *conn, size_t head_len, ScrHt
     c->response_started = true;
     c->response_done = true; /* the exchange settled: no timeout/hang-up paths */
     c->res = scr_http_req_retain(res);
+    /* Node takes the socket out of the agent before the handover: the
+     * handed-over socket is the listener's, so agent.sockets and
+     * totalSocketCount do not name it inside the handler and its maxSockets
+     * slot is already free for the queued requests. */
+    scr_http_conn_uncount(conn);
+    scr_http_client_agent_detach(c);
     memmove(conn->buf, conn->buf + head_len, conn->len - head_len);
     conn->len -= head_len;
     if (handover->n == 0) {

@@ -30,3 +30,21 @@ button { cursor: pointer; }
 .compatibility-table th, .compatibility-table td { padding: 0.5rem 0.75rem; text-align: left; color: var(--ds-gray-900); }
 .compatibility-table th { border-bottom: 1px solid var(--ds-gray-alpha-400); font-size: 0.75rem; font-weight: 500; }
 .compatibility-table td { border-bottom: 1px solid var(--ds-gray-alpha-200); }
+
+/*
+ * Vercel Labs header lockup: the slash and the gaps around it follow the
+ * social card's spacing formula, scaled to the 18px logo. The slash is the
+ * card's parallelogram (6.2px wide, 14.8px tall, 1.05px stroke) and the
+ * package icon wrapper's text color supplies the same gray as before.
+ * Flex gap is 10px, so the margins make an 11px gap after the logo and a
+ * 7.7px gap before the product name.
+ */
+header .w-5.text-center {
+  width: 6.2px;
+  height: 14.8px;
+  margin-inline: 1px -2.3px;
+  background-color: currentColor;
+  clip-path: polygon(83.06% 0, 100% 0, 16.94% 100%, 0 100%);
+}
+
+header .w-5.text-center > svg { display: none; }

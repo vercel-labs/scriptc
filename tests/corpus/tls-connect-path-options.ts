@@ -8,7 +8,9 @@ const cert = fs.readFileSync("tests/fixtures/server/certs/localhost.pem");
 const key = fs.readFileSync("tests/fixtures/server/certs/localhost-key.pem");
 const ca = fs.readFileSync("tests/fixtures/server/certs/ca.pem");
 
-const socketPath = "/tmp/scriptc-tls-path-options.sock";
+/* one bind path per process: the differential and llvm-differential
+ * suites run this program at the same time in one job */
+const socketPath = `/tmp/scriptc-tls-path-options-${process.pid}.sock`;
 fs.rmSync(socketPath, { force: true });
 
 const server = tls.createServer({ key, cert }, (socket) => {

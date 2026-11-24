@@ -294,6 +294,8 @@ A declaration with type parameters has no patch command, because its type is the
 
 The report describes the program a build compiles, including which packages run in Node islands. If `scriptc build` reports a Node island for a package that coverage compiled, pass the same packages to coverage with `--node-island=<package>` to see the claims of that build. `--fail-on=type-claims` fails a coverage run when the program has any claim.
 
+The Node island section is a report, not a promise that the build runs: a build that uses an island also needs the libnode pack for its target (`npm i -D @scriptc/libnode-<target>@<version>`), which coverage does not. A package that ships native bindings must also have had its install script run; with pnpm 12 and later, approve it with `pnpm approve-builds`, or the island stops at run time with "Could not locate the bindings file".
+
 ## Diagnostic codes
 
 Coverage and `scriptc build` report the same diagnostic codes. Common ones include:

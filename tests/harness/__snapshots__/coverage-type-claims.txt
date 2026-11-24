@@ -8,7 +8,7 @@ scriptc coverage tests/coverage-fixtures/node-islands-type-claims/main.ts
     tc-island  static
     tc-native  static
 
-  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+  Node islands   (would-be, report-only: the build is unchanged; a build needs the libnode pack for its target; --node-islands=auto)
     marked  tc-island@3.1.0 (marked by scriptc.packages)
     1 package stays native: tc-native
     hint: scriptc coverage --explain-island=<package> lists every reason

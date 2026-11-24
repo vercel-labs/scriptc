@@ -271,12 +271,14 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
 /** The test files Vitest's module graph relates to the changed TS sources.
  *
  * Runs `vitest list` — collection only, no test bodies — against a generated
- * config whose `related` names the changes, rather than `vitest related`,
- * which would RUN every related file before the budget could consider it. A
- * change to a shared compiler module relates to hundreds of files; the list
- * is handed back to the caller, which selects within the fast tier's
- * 20-minute single-worker budget. The expensive suites are excluded so the
- * import graph cannot pull one in. */
+ * config whose `test.related` names the changes, rather than `vitest related`,
+ * which would RUN every related file before the budget could consider it. The
+ * option lives under `test`: a top-level `related` is ignored, and collection
+ * would list every eligible test file for every change. A change to a shared
+ * compiler module relates to hundreds of files; the list is handed back to
+ * the caller, which selects within the fast tier's 20-minute single-worker
+ * budget. The expensive suites are excluded so the import graph cannot pull
+ * one in. */
 function relatedTestFiles(changedTs) {
   if (changedTs.length === 0) return { status: 0, files: [] };
   const cacheDir = join(repoRoot, "node_modules/.cache");
@@ -287,7 +289,7 @@ function relatedTestFiles(changedTs) {
   writeFileSync(
     configPath,
     `import base from ${JSON.stringify(baseConfig)};\n` +
-      `export default { ...base, related: JSON.parse(process.env["FAST_RELATED_FILES"] ?? "[]") };\n`,
+      `export default { ...base, test: { ...base.test, related: JSON.parse(process.env["FAST_RELATED_FILES"] ?? "[]") } };\n`,
   );
   try {
     const result = spawnSync(

@@ -1682,6 +1682,109 @@ static void scr_dyn_region_leave(ScrDyn *d) {
   *slot = NULL;
 }
 
+#ifdef SCR_LSAN_IMMORTAL
+/* ── the leak scan's record of dynamic nodes ───────────────────────────
+ * An abandoned fiber's frame is scanned for the values the leak checker
+ * cannot follow through a layout slot's cell word (scr_async.c). The scan
+ * asks this record, never the bytes at an address: a Buffer holds data the
+ * program controls, so a header-shaped word in one must not pass for a node
+ * whose fields the scan then dereferences. Every node is recorded when the
+ * allocator makes it and dropped when its memory is freed. */
+static void *const scr_lsan_dyns_tomb = (void *)(uintptr_t)1;
+static volatile int scr_lsan_dyns_lock;
+static void **scr_lsan_dyns;
+static size_t scr_lsan_dyns_cap, scr_lsan_dyns_live, scr_lsan_dyns_dead;
+
+static void scr_lsan_dyns_acquire(void) {
+  while (__atomic_exchange_n(&scr_lsan_dyns_lock, 1, __ATOMIC_ACQUIRE)) {
+    /* the critical sections are a probe and a swap */
+  }
+}
+static void scr_lsan_dyns_release(void) {
+  __atomic_store_n(&scr_lsan_dyns_lock, 0, __ATOMIC_RELEASE);
+}
+static size_t scr_lsan_dyns_slot(const void *p, size_t cap) {
+  return (((size_t)((uintptr_t)p >> 4) * (size_t)0x9e3779b97f4a7c15ull)) & (cap - 1);
+}
+/* Rebuilds the table at `cap`, dropping the tombstones; the caller holds
+ * the lock. A failed allocation leaves the record as it was: the scan then
+ * misses values (a leak is reported) rather than inventing them. */
+static void scr_lsan_dyns_rehash(size_t cap) {
+  void **grown = calloc(cap, sizeof *grown);
+  if (!grown) return;
+  for (size_t i = 0; i < scr_lsan_dyns_cap; i++) {
+    void *p = scr_lsan_dyns[i];
+    if (!p || p == scr_lsan_dyns_tomb) continue;
+    size_t j = scr_lsan_dyns_slot(p, cap);
+    while (grown[j]) j = (j + 1) & (cap - 1);
+    grown[j] = p;
+  }
+  free(scr_lsan_dyns);
+  scr_lsan_dyns = grown;
+  scr_lsan_dyns_cap = cap;
+  scr_lsan_dyns_dead = 0;
+}
+void scr_lsan_dyns_add(void *node) {
+  scr_lsan_dyns_acquire();
+  if ((scr_lsan_dyns_live + scr_lsan_dyns_dead + 1) * 4 >= scr_lsan_dyns_cap * 3)
+    scr_lsan_dyns_rehash(scr_lsan_dyns_cap ? scr_lsan_dyns_cap * 2 : 1024);
+  if (scr_lsan_dyns_cap) {
+    size_t mask = scr_lsan_dyns_cap - 1;
+    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    size_t empty = SIZE_MAX;
+    while (scr_lsan_dyns[i]) {
+      if (scr_lsan_dyns[i] == node) {
+        scr_lsan_dyns_release();
+        return;
+      }
+      if (scr_lsan_dyns[i] == scr_lsan_dyns_tomb && empty == SIZE_MAX) empty = i;
+      i = (i + 1) & mask;
+    }
+    if (empty != SIZE_MAX) {
+      i = empty;
+      scr_lsan_dyns_dead--;
+    }
+    scr_lsan_dyns[i] = node;
+    scr_lsan_dyns_live++;
+  }
+  scr_lsan_dyns_release();
+}
+void scr_lsan_dyns_remove(const void *node) {
+  scr_lsan_dyns_acquire();
+  if (scr_lsan_dyns_cap) {
+    size_t mask = scr_lsan_dyns_cap - 1;
+    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    while (scr_lsan_dyns[i]) {
+      if (scr_lsan_dyns[i] == node) {
+        scr_lsan_dyns[i] = scr_lsan_dyns_tomb;
+        scr_lsan_dyns_live--;
+        scr_lsan_dyns_dead++;
+        break;
+      }
+      i = (i + 1) & mask;
+    }
+  }
+  scr_lsan_dyns_release();
+}
+bool scr_lsan_dyns_has(const void *node) {
+  bool found = false;
+  scr_lsan_dyns_acquire();
+  if (scr_lsan_dyns_cap) {
+    size_t mask = scr_lsan_dyns_cap - 1;
+    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    while (scr_lsan_dyns[i]) {
+      if (scr_lsan_dyns[i] == node) {
+        found = true;
+        break;
+      }
+      i = (i + 1) & mask;
+    }
+  }
+  scr_lsan_dyns_release();
+  return found;
+}
+#endif
+
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
@@ -1743,6 +1846,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
   }
 #ifdef SCR_RC_AUDIT
   scr_live_dyns++;
+#endif
+#ifdef SCR_LSAN_IMMORTAL
+  scr_lsan_dyns_add(fresh);
 #endif
   return fresh;
 }
@@ -2142,6 +2248,11 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
   /* scr_cyc_free_inline with the filter's test before the hook's call: a
    * node no observer holds makes none. */
   if (scr_weak_dispose_hook && scr_dispose_maybe_observed(d)) scr_weak_dispose_hook(d);
+#ifdef SCR_LSAN_IMMORTAL
+  /* The memory goes back to the allocator: it is no longer a node, and a
+   * scan must not take it for one if it is later reused. */
+  scr_lsan_dyns_remove(d);
+#endif
   scr_cyc_free_unobserved_inline(d);
 }
 

@@ -80,6 +80,8 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
  * (scr_lsan_keep_fiber_values). Weak like the leak-region hooks: a
  * sanitizer runtime without an allocator interface leaves them NULL. */
 const void *__sanitizer_get_allocated_begin(const void *p) __attribute__((weak));
+/* scr_json.c: the dynamic nodes this program allocated (SCR_LSAN_IMMORTAL). */
+bool scr_lsan_dyns_has(const void *node);
 size_t __sanitizer_get_allocated_size(const volatile void *p) __attribute__((weak));
 #endif
 #endif
@@ -1588,14 +1590,13 @@ static void scr_lsan_push_dyn(ScrLsanScan *s, ScrDyn *d) {
 }
 
 /* A word that lies exactly one cycle header into an allocation of at least
- * a dynamic value's size, whose header names the dynamic-value type and
- * whose own type fields look like one: a plain scan cannot mistake program
- * data for a dynamic value. */
+ * a dynamic value's size, that scr_json.c records as a node it allocated,
+ * and whose own fields still look like one. */
 static bool scr_lsan_is_dyn(const void *w, size_t bytes) {
   if (bytes < sizeof(ScrCycHdr) + sizeof(ScrDyn)) return false;
-  const ScrCycHdr *h = scr_cyc_hdr((void *)w);
-  if (h->id == 0 || (uint32_t)h->id >= SCR_CYC_MAX_TYPES) return false;
-  if (scr_cyc_types[h->id].kind != SCR_CYC_KIND_DYN) return false;
+  /* Provenance, not the bytes at the address: a Buffer holds data the
+   * program controls, and the scan dereferences what it takes for a node. */
+  if (!scr_lsan_dyns_has(w)) return false;
   const ScrDyn *d = w;
   return (unsigned)d->kind <= (unsigned)SCR_DYN_PROXY && d->rc != 0;
 }

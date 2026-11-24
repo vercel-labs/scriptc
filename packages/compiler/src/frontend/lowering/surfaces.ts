@@ -2375,8 +2375,21 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
-    // its members lower through the globals' own paths.
-    "stream/web": {},
+    // its members lower through the globals' own paths. ReadableStreamTee is
+    // the one function beside them (webstream.tee), the default tee with an
+    // optional structuredClone of the second branch's chunks.
+    "stream/web": {
+      ReadableStreamTee: {
+        fn: "webstream.tee",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 1,
+      },
+    },
     // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
     // — every call shape is special-cased: optional messages complete, the
     // comparisons pick per-type libCalls, deep equality synthesizes

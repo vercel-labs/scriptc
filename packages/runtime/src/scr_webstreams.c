@@ -1901,6 +1901,9 @@ struct WsTee {
   ScrDyn *pending_chunk;
   ScrDyn *source_error; /* the error the source stream errored with */
   bool request_live;
+  /* ReadableStreamTee(stream, true)'s cloneForBranch2: the second branch
+   * receives a structuredClone of each chunk instead of the chunk itself. */
+  bool clone2;
 };
 
 static void ws_tee_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -1953,7 +1956,21 @@ static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
   t->pending_chunk = NULL;
   if (!t->canceled1) ws_rcontroller_deliver(t->branch1->controller, value);
   if (scr_exc_pending()) scr_exc_clear();
-  if (!t->canceled2) ws_rcontroller_deliver(t->branch2->controller, value);
+  if (!t->canceled2) {
+    ScrDyn *second = value;
+    if (t->clone2) {
+      second = scr_structured_clone(value, NULL);
+      if (second == NULL) {
+        /* A chunk structuredClone refuses (a function, a proxy): Node's
+         * own tee throws the DataCloneError out of this microtask, which
+         * ends the process. Keep both branches running with the chunk. */
+        if (scr_exc_pending()) scr_exc_clear();
+        second = value;
+      }
+    }
+    ws_rcontroller_deliver(t->branch2->controller, second);
+    if (second != value) scr_dyn_release(second);
+  }
   if (scr_exc_pending()) scr_exc_clear();
   scr_dyn_release(value);
 }
@@ -2057,12 +2074,14 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error) {
   ws_queue_microtask(ws_tee_source_errored, ws_retain(t));
 }
 
-/* readableStreamDefaultTee: false with the exception pending. */
-static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2) {
+/* readableStreamDefaultTee: false with the exception pending. `clone2` is
+ * ReadableStreamTee's cloneForBranch2, which tee() itself never sets. */
+static bool ws_readable_tee_ex(WsReadable *s, bool clone2, WsReadable **out1, WsReadable **out2) {
   WsReader *reader = ws_reader_new(s, false);
   if (!reader) return false;
   WsTee *t = ws_obj_new(sizeof *t, &ws_tee_type);
   t->reader = reader;
+  t->clone2 = clone2;
   ws_deferred_init(&t->cancel_promise);
   /* Each branch's controller holds the tee as its source until it clears
    * its algorithms, and the tee holds the branches. */
@@ -2075,6 +2094,33 @@ static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2)
   *out2 = ws_readable_retain(t->branch2);
   ws_tee_release(t);
   return true;
+}
+
+/* tee(): the branches of the default tee, which never clones. */
+static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2) {
+  return ws_readable_tee_ex(s, false, out1, out2);
+}
+
+/* node:stream/web's ReadableStreamTee(stream[, cloneForBranch2]) (the
+ * webstream.tee libCall): the two branches tee() makes, with the second
+ * branch reading a structuredClone of each chunk when cloneForBranch2 is
+ * truthy (Node's fetch tees a body's stream this way). The argument check
+ * raises Node's TypeError from the call itself; +1. */
+ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
+  if (!stream || stream->kind != SCR_DYN_HANDLE ||
+      (stream->v.handle.tag != SCR_DYNH_WS_READABLE && stream->v.handle.tag != SCR_DYNH_WEB_STREAM)) {
+    scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
+    return NULL;
+  }
+  bool clone2 = clone != NULL && clone->kind != SCR_DYN_UNDEF && scr_dyn_truthy(clone);
+  WsReadable *a, *b;
+  if (!ws_readable_tee_ex(stream->v.handle.ptr, clone2, &a, &b)) return NULL;
+  ScrDyn *pair = scr_dyn_new_arr();
+  scr_dyn_arr_push(pair, ws_stream_box(a));
+  scr_dyn_arr_push(pair, ws_stream_box(b));
+  ws_readable_release(a);
+  ws_readable_release(b);
+  return pair;
 }
 
 /* ── ReadableStream.from (readableStreamFromIterable) ─────────────── */

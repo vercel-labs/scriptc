@@ -1882,6 +1882,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
+  // ReadableStreamTee's argument TypeError and a locked stream's state
+  // error, which Node raises from the call itself.
+  "webstream.tee",
 ];
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member

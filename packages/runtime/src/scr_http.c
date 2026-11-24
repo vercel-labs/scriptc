@@ -3270,7 +3270,8 @@ enum {
   SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
   SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
   SCR_HTTP_EMIT_CLIENT_WCB = 12, /* ScrHttpClientReq: write(chunk, cb) callbacks */
-  SCR_HTTP_EMIT_CLIENT_WAE = 13 /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_CLIENT_WAE = 13, /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_CLIENT_WAE_CB = 14 /* ScrHttpWaeCb: the late write callback, ahead of WAE */
 };
 
 typedef struct {
@@ -3278,11 +3279,21 @@ typedef struct {
   void *h; /* +1 */
 } ScrHttpEmit;
 
+/* A write callback answered for a message that cannot write: the queue runs
+ * it ahead of the write-after-end 'error' the same call reports (Node's
+ * callback-before-error order). */
+typedef struct {
+  struct ScrHttpClientReq *c; /* +1 */
+  ScrClosure *listener;       /* +1 */
+} ScrHttpWaeCb;
+
 static SCR_TL ScrHttpEmit *scr_http_emits = NULL;
 static SCR_TL size_t scr_http_emits_head = 0, scr_http_emits_len = 0, scr_http_emits_cap = 0;
 
 static void scr_http_client_release_internal(struct ScrHttpClientReq *c);
 static void scr_http_client_settle(struct ScrHttpClientReq *c);
+static void scr_http_client_fire_error_cb(ScrClosure *listener, const char *code,
+                                          const char *message);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
 static void scr_http_client_queue_wcb_handoff(struct ScrHttpClientReq *c);
@@ -3341,6 +3352,13 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
+  case SCR_HTTP_EMIT_CLIENT_WAE_CB: {
+    ScrHttpWaeCb *p = (ScrHttpWaeCb *)e->h;
+    scr_closure_release(p->listener);
+    scr_http_client_release_internal(p->c);
+    free(p);
+    break;
+  }
   }
 }
 
@@ -3496,6 +3514,7 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
   case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
+  case SCR_HTTP_EMIT_CLIENT_WAE_CB: return scr_http_client_ctx(((ScrHttpWaeCb *)e->h)->c);
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
 }
@@ -3607,6 +3626,11 @@ static void scr_http_proto_sweep(void) {
     case SCR_HTTP_EMIT_CLIENT_WAE:
       scr_http_client_emit_write_after_end((struct ScrHttpClientReq *)e.h);
       break;
+    case SCR_HTTP_EMIT_CLIENT_WAE_CB: {
+      ScrHttpWaeCb *p = (ScrHttpWaeCb *)e.h;
+      scr_http_client_fire_error_cb(p->listener, "ERR_STREAM_WRITE_AFTER_END", "write after end");
+      break;
+    }
     case SCR_HTTP_EMIT_CLIENT_ABORT:
       scr_http_client_emit_abort((struct ScrHttpClientReq *)e.h);
       break;
@@ -10356,21 +10380,15 @@ static void scr_http_client_fire_error_cb(ScrClosure *listener, const char *code
   scr_str_release(text);
 }
 
-/* A write callback for a message that can no longer accept writes completes
- * with Node's write-after-end error. */
-static void scr_http_client_late_write_cb_nt(ScrClosure *cb) {
-  ScrClosure *listener = scr_box_get_ref(cb->caps[0]);
-  if (listener == NULL) return;
-  scr_http_client_fire_error_cb(listener, "ERR_STREAM_WRITE_AFTER_END", "write after end");
-  scr_closure_release(listener);
-}
-
-static void scr_http_client_late_write_cb(const ScrDyn *callback) {
-  ScrClosure *listener = scr_dyn_listener_closure_err(callback);
-  ScrClosure *job = scr_closure_new((void *)&scr_http_client_late_write_cb_nt, 1);
-  job->caps[0] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, NULL);
-  scr_box_set_ref(job->caps[0], listener); /* the box owns the closure now */
-  scr_next_tick(job);
+/* A write callback for a message that can no longer accept writes: queued
+ * ahead of the write-after-end report so the callback runs first, as Node's
+ * afterWrite does. */
+static void scr_http_client_queue_late_write_cb(ScrHttpClientReq *c, const ScrDyn *callback) {
+  ScrHttpWaeCb *p = malloc(sizeof *p);
+  if (!p) scr_http_oom();
+  p->c = scr_http_client_retain(c);
+  p->listener = scr_dyn_listener_closure_err(callback);
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WAE_CB, p);
 }
 
 bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk, const ScrDyn *encoding,
@@ -10379,11 +10397,12 @@ bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk, const 
   /* a message that already ended (or settled) accepts no more writes; the
    * callback still completes, and it never joins a list that will not fire */
   if (c->ended || c->destroyed || c->close_emitted || c->writable_finished) {
-    if (callback->kind == SCR_DYN_FUNC) scr_http_client_late_write_cb(callback);
-    /* Node reports a write after end on the message's 'error' list while it
-     * still holds its socket, with or without a callback; a finished
-     * message answers the callback alone. */
-    if (c->ended && !c->writable_finished && !c->destroyed && !c->close_emitted)
+    if (callback->kind == SCR_DYN_FUNC) scr_http_client_queue_late_write_cb(c, callback);
+    /* Node reports a write after end on the message's 'error' list until the
+     * response completes — including from the 'finish' listener, which runs
+     * before the response's 'end' — with or without a callback; once the
+     * response is done the callback alone is answered. */
+    if (c->ended && !c->response_done && !c->destroyed && !c->close_emitted)
       scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WAE, scr_http_client_retain(c));
     return false;
   }

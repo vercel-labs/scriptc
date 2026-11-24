@@ -111,6 +111,8 @@ void *scr_spawn_res_retain_v(void *p);
 void scr_spawn_res_release_v(void *p);
 bool scr_spawn_res_has_status(ScrSpawnRes *r);
 double scr_spawn_res_status(ScrSpawnRes *r);
+/* Node's result.pid: the child's id, 0 when the spawn itself failed. */
+double scr_spawn_res_pid(ScrSpawnRes *r);
 ScrStr *scr_spawn_res_stdout(ScrSpawnRes *r); /* +1, decoded per encoding */
 ScrStr *scr_spawn_res_stderr(ScrSpawnRes *r); /* +1, decoded per encoding */
 /* The captured bytes, undecoded (whatever the encoding option): the Buffer

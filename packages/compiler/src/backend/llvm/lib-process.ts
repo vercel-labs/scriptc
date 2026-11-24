@@ -304,6 +304,15 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     }
     return { name: "", type: e.type };
   }
+  if (e.fn === "spawnRes.pid") {
+    // Node's spawnSync-result pid: the child's id, 0 when the spawn
+    // itself failed — a plain number, no union.
+    const recv = host.emitExpr(e.args[0]!);
+    host.declare(`declare double @scr_spawn_res_pid(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call double @scr_spawn_res_pid(ptr ${recv.name})`);
+    return { name: out, type: e.type };
+  }
   if (e.fn === "spawnRes.status" || e.fn === "child.pid" || e.fn === "child.exitCode") {
     // `number | null` / `number | undefined`, constructed type-
     // directedly over the runtime's has/get pairs (exprs.ts).

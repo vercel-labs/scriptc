@@ -5,6 +5,7 @@ import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 import { runOnCodegenServer } from "./codegen-server.js";
 import {
+  nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
   validateNativeCodegenVersion,
@@ -103,6 +104,12 @@ export function emitNativeObject(options: {
 }): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
   const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
+  const jobs =
+    outputs.length < 2
+      ? null
+      : nativeCodegenJobs(statSync(options.inputPath).size, outputs.length, {
+          unoptimized: options.optimization === "dev",
+        });
   const stdout = runHelperTool(options.server ?? null, options.executable, [
     "emit",
     "--input",
@@ -120,6 +127,7 @@ export function emitNativeObject(options: {
     "json",
     "--source-path",
     options.sourcePath,
+    ...(jobs === null ? [] : ["--jobs", String(jobs)]),
     ...(options.partitionCache === undefined || outputs.length < 2
       ? []
       : ["--cache-dir", options.partitionCache]),

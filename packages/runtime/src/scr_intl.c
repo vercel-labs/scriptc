@@ -786,6 +786,13 @@ static bool scr_intl_is_unicode_type(const ScrStr *text) {
 
 /** A feature of the service this runtime does not implement: the coded
  * refusal, never a formatter that answers something else. */
+/* Node's RangeError for a locales argument that is not a structurally
+ * valid language tag ("Incorrect locale information provided"). */
+static void scr_intl_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
 static void scr_intl_refuse(const char *what) {
   ScrJsonBuf message;
   scr_jb_init(&message);
@@ -811,15 +818,41 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   }
   char text[ULOC_FULLNAME_CAPACITY];
   if (tag->len >= sizeof text) {
-    scr_intl_refuse("this Intl locale");
+    scr_intl_bad_locale();
     return false;
   }
   memcpy(text, tag->data, tag->len);
   text[tag->len] = '\0';
+  /* ECMA-402's IsStructurallyValidLanguageTag: alphanumeric subtags
+   * separated by single hyphens, each non-empty. Node refuses anything
+   * else with the RangeError below, before any negotiation. */
+  size_t subtag = 0;
+  for (size_t i = 0; i < tag->len; i++) {
+    char c = text[i];
+    if (c == '-') {
+      if (subtag == 0) {
+        scr_intl_bad_locale();
+        return false;
+      }
+      subtag = 0;
+      continue;
+    }
+    bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    if (!alnum) {
+      scr_intl_bad_locale();
+      return false;
+    }
+    subtag++;
+  }
+  if (subtag == 0) {
+    scr_intl_bad_locale();
+    return false;
+  }
   UErrorCode status = U_ZERO_ERROR;
-  uloc_forLanguageTag(text, out, (int32_t)size, NULL, &status);
-  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING) {
-    scr_intl_refuse("this Intl locale");
+  int32_t parsed = 0;
+  uloc_forLanguageTag(text, out, (int32_t)size, &parsed, &status);
+  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING || parsed != (int32_t)tag->len) {
+    scr_intl_bad_locale();
     return false;
   }
   return true;

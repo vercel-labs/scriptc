@@ -825,30 +825,53 @@ jobs:
       SCRIPTC_SAN: ${{ matrix.flavor == 'san' && '1' || '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # A seed is a function of the files its build reads, not of the commit
+      # that holds them: a queued batch whose pull requests touch none of them
+      # reuses the seed the last push to main produced, and skips the 40-50
+      # minutes below. The identity travels with the seed, and the contracts
+      # that consume it check it, so a reused seed is never mistaken for one
+      # built from other inputs.
+      - uses: ./.github/actions/bootstrap-seed-inputs
+        id: seed_inputs
+        with:
+          flavor: ${{ matrix.flavor }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: seed
+        with:
+          path: ${{ runner.temp }}/native-bootstrap
+          key: ${{ steps.seed_inputs.outputs.inputs }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        if: steps.seed.outputs.cache-hit != 'true'
         with:
           version: 11.1.3
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        if: steps.seed.outputs.cache-hit != 'true'
         with:
           node-version-file: .node-version
           cache: pnpm
       - uses: ./.github/actions/llvm-linux
-      - run: pnpm install --frozen-lockfile
+        if: steps.seed.outputs.cache-hit != 'true'
+      - if: steps.seed.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/zig
+        if: steps.seed.outputs.cache-hit != 'true'
       - uses: ./.github/actions/native-packages
+        if: steps.seed.outputs.cache-hit != 'true'
         with:
           target: linux-x64-gnu
       - uses: ./.github/actions/native-packages
+        if: steps.seed.outputs.cache-hit != 'true'
         with:
           target: wasm32-wasi
           helper: "false"
-      - run: pnpm build
+      - if: steps.seed.outputs.cache-hit != 'true'
+        run: pnpm build
       # The sanitized seed compiles the compiler's 700 MB module with one clang
       # process under AddressSanitizer. It peaks near 14 GB while the Node
       # process that emitted the module still holds about 6 GB. Together they
       # exceed the runner's 16 GB of memory, so back them with swap.
       - name: Enlarge swap for the sanitized seed
-        if: matrix.flavor == 'san'
+        if: matrix.flavor == 'san' && steps.seed.outputs.cache-hit != 'true'
         run: |
           sudo swapoff -a
           sudo rm -f /mnt/swapfile
@@ -858,9 +881,21 @@ jobs:
           sudo swapon /mnt/swapfile
           free -h
       - name: Prepare bootstrap seed
+        if: steps.seed.outputs.cache-hit != 'true'
         run: node scripts/bootstrap-seed.mjs
         env:
           SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
+          SCRIPTC_BOOTSTRAP_SEED_INPUTS: ${{ steps.seed_inputs.outputs.inputs }}
+      # Publish the seed before the archive and upload, so neither a slow
+      # upload nor a later step can throw away a 40-50 minute build. Two pushes
+      # can share a key and race to save it; a lost race leaves the seed
+      # uploaded for this run either way, so it must not fail the job.
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        if: steps.seed.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: ${{ runner.temp }}/native-bootstrap
+          key: ${{ steps.seed.outputs.cache-primary-key }}
       - name: Archive seed and compiler artifacts
         run: tar -C "$RUNNER_TEMP" -cf "$RUNNER_TEMP/bootstrap-seed.tar" native-bootstrap
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -949,6 +984,12 @@ jobs:
       SCRIPTC_BOOTSTRAP_PHASE: ${{ matrix.phase }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The same identity the seed job named, so a seed built from other
+      # inputs can never pass for this checkout's.
+      - uses: ./.github/actions/bootstrap-seed-inputs
+        id: seed_inputs
+        with:
+          flavor: ${{ matrix.flavor }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3
@@ -1001,6 +1042,7 @@ jobs:
           node scripts/ci-native-bootstrap.mjs
         env:
           SCRIPTC_BOOTSTRAP_SEED_DIRECTORY: ${{ runner.temp }}/native-bootstrap
+          SCRIPTC_BOOTSTRAP_SEED_INPUTS: ${{ steps.seed_inputs.outputs.inputs }}
           SCRIPTC_BOOTSTRAP_PACKAGE_DIR: ${{ runner.temp }}/native-cli-package
 
   # A real host-clang/glibc build, not the zig cross-target lane: catches

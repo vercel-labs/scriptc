@@ -1,0 +1,38 @@
+name: Bootstrap seed inputs
+description: Name the files a bootstrap seed is built from, so a seed can be reused
+inputs:
+  flavor:
+    description: The instrumented lane the seed is built for
+    required: true
+outputs:
+  inputs:
+    description: The seed's identity; two checkouts that share it build the same seed
+    value: ${{ steps.name.outputs.inputs }}
+runs:
+  using: composite
+  steps:
+    - name: Hash the seed's build inputs
+      id: name
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Every file the seed build reads: the compiler's own sources that it
+        # compiles, the runtime pack and LLVM helper it links, the build
+        # scripts, the toolchain pins, and the CI steps that invoke them. A
+        # change to any of them earns a new seed; any other change reuses one.
+        hash="$(git ls-files -z -- \
+          .node-version .npmrc package.json pnpm-lock.yaml pnpm-workspace.yaml \
+          tsconfig.base.json patches native scripts \
+          ':(glob)packages/*/src/**' ':(glob)packages/*/native/**' \
+          ':(glob)packages/*/scripts/**' ':(glob)packages/*/vendor/**' \
+          ':(glob)packages/*/profiles/**' ':(glob)packages/*/*.json' \
+          ':(glob)packages/*/*.mjs' ':(glob)packages/*/*.h' \
+          .github/workflows/ci.yml ':(glob).github/actions/**' \
+          | xargs -0 sha256sum -- | sha256sum | cut -d' ' -f1)"
+        # An empty or malformed hash would name every tree alike and hand one
+        # tree's seed to another; stop here instead.
+        if ! [[ "$hash" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "bootstrap seed inputs hash is malformed: '$hash'" >&2
+          exit 1
+        fi
+        echo "inputs=bootstrap-seed-v2-${{ inputs.flavor }}-${ImageOS:-unknown}-${ImageVersion:-unknown}-${hash}" >> "$GITHUB_OUTPUT"

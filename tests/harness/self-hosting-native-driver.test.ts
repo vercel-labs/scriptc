@@ -78,7 +78,8 @@ test(
       mkdtempSync(
         join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-bootstrap-"),
       );
-    if (sharedSeed) verifyBootstrapSeed(sharedSeed, process.env["GITHUB_SHA"], sanitize);
+    if (sharedSeed)
+      verifyBootstrapSeed(sharedSeed, process.env["SCRIPTC_BOOTSTRAP_SEED_INPUTS"], sanitize);
     const executable = (name: string) =>
       join(directory, name + (process.platform === "win32" ? ".exe" : ""));
     const options = {

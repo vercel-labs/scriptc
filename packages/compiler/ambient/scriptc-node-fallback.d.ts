@@ -1111,8 +1111,18 @@ interface SubtleCrypto {
     format: KeyFormat,
     wrappedKey: BufferSource,
     unwrappingKey: CryptoKey,
-    unwrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
-    unwrappedKeyAlgorithm: AlgorithmIdentifier | HmacImportParams,
+    unwrapAlgorithm:
+      | AlgorithmIdentifier
+      | AesGcmParams
+      | AesCbcParams
+      | AesCtrParams
+      | RsaOaepParams,
+    unwrappedKeyAlgorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
@@ -1126,7 +1136,7 @@ interface SubtleCrypto {
     format: KeyFormat,
     key: CryptoKey,
     wrappingKey: CryptoKey,
-    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
   ): Promise<ArrayBuffer>;
 }
 interface Crypto {

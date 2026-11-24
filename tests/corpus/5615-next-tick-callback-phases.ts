@@ -56,6 +56,12 @@ function io(): void {
           setTimeout(tickOnly, 0);
         });
       }, 0);
+      // Stay in the I/O callback past the timer's deadline: Node's check
+      // phase (this setImmediate) runs before the next timers phase even
+      // when the timer is already due, so the order must not depend on how
+      // quickly the loop gets back here.
+      const until = Date.now() + 3;
+      while (Date.now() < until) {}
     });
   });
 }

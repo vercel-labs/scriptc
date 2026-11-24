@@ -73,6 +73,9 @@ interface ClassReference {
 /** The static field storage of a flag without a class. */
 const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
 
+/** The flags of a callee that names no flagged static owner. */
+const NO_STATIC_FLAGS: readonly CycleInitFlag[] = [];
+
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
@@ -906,8 +909,30 @@ function rewriteFunction(
   if (active.size === 0 && classes.size === 0 && called.length === 0) return;
   const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
     active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
-  const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
-    (flag.staticOwners ?? []).some((owner) => fnName.startsWith(`%${owner}.static:`));
+  // Calls and static-method reads are the common nodes: index the flagged
+  // classes by the callee they name, once, instead of scanning every class
+  // per node (`%<owner>.static:<name>` and the dispatch helper's instanceof
+  // call). The scan costs O(nodes × classes) on a large program. A static
+  // method a subclass inherits is named by every flagged class whose owner
+  // list holds the base, so the index keeps all of them in class order:
+  // which one covers a reference depends on the reference's location.
+  const staticOwnerFlags = new Map<string, CycleInitFlag[]>();
+  const instanceofFlag = new Map<string, CycleInitFlag>();
+  for (const [className, flag] of classes) {
+    for (const owner of flag.staticOwners ?? []) {
+      const flags = staticOwnerFlags.get(owner);
+      if (flags === undefined) staticOwnerFlags.set(owner, [flag]);
+      else flags.push(flag);
+    }
+    instanceofFlag.set(`%dyn.class.instanceof:${className}`, flag);
+  }
+  const staticFlagsOf = (fnName: string): readonly CycleInitFlag[] => {
+    if (!fnName.startsWith("%")) return NO_STATIC_FLAGS;
+    const marker = fnName.indexOf(".static:");
+    return marker > 1
+      ? (staticOwnerFlags.get(fnName.slice(1, marker)) ?? NO_STATIC_FLAGS)
+      : NO_STATIC_FLAGS;
+  };
   // A generic class's instantiations (`Box%<hex>`) are the class values
   // that construction and `instanceof` name; the binding the program reads
   // is the family (`Box`), which owns the initialization state.
@@ -932,23 +957,41 @@ function rewriteFunction(
         const flag = classes.get(e.className) ?? familyFlagOf(e.className);
         return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
       }
-      case "call":
-        for (const [className, flag] of classes) {
-          if (
-            (namesStatic(flag, e.callee) || e.callee === `%dyn.class.instanceof:${className}`) &&
-            coversReference(flag, e.loc)
-          )
-            return flag;
-        }
+      case "call": {
+        const instance = instanceofFlag.get(e.callee);
+        if (instance !== undefined && coversReference(instance, e.loc)) return instance;
+        for (const flag of staticFlagsOf(e.callee)) if (coversReference(flag, e.loc)) return flag;
         return undefined;
-      case "closure":
+      }
+      case "closure": {
         // A static method read as a value (`const f = K.m`) reads K.
-        for (const flag of classes.values())
-          if (namesStatic(flag, e.fnName) && coversReference(flag, e.loc)) return flag;
+        for (const flag of staticFlagsOf(e.fnName)) if (coversReference(flag, e.loc)) return flag;
         return undefined;
+      }
       default:
         return undefined;
     }
+  };
+  // The storage-less bindings' call references, by source location, so the
+  // walk asks a map instead of scanning every such binding per node.
+  const calledAt = new Map<string, Map<number, { end: number; flag: CycleInitFlag }[]>>();
+  for (const flag of called)
+    for (const reference of flag.references ?? []) {
+      let byStart = calledAt.get(reference.loc.file);
+      if (byStart === undefined) {
+        byStart = new Map();
+        calledAt.set(reference.loc.file, byStart);
+      }
+      const entry = { end: reference.loc.end, flag };
+      const list = byStart.get(reference.loc.start);
+      if (list === undefined) byStart.set(reference.loc.start, [entry]);
+      else list.push(entry);
+    }
+  const calledFlagAt = (loc: SrcLoc): CycleInitFlag | undefined => {
+    const list = calledAt.get(loc.file)?.get(loc.start);
+    if (list === undefined) return undefined;
+    for (const entry of list) if (entry.end === loc.end) return entry.flag;
+    return undefined;
   };
   // Most functions name no flagged binding: the walk below only asks whether
   // one node would be rewritten, and stops at the first that would, so a
@@ -960,7 +1003,7 @@ function rewriteFunction(
       if (found) return false;
       if (
         classFlagOf(e) !== undefined ||
-        called.some((flag) => calledReference(flag, e.loc) !== undefined) ||
+        calledFlagAt(e.loc) !== undefined ||
         ((e.kind === "varRef" || e.kind === "incDec" || e.kind === "assignExpr") &&
           flagOf(e.localId, e.loc) !== undefined)
       ) {
@@ -1052,16 +1095,15 @@ function rewriteFunction(
       }
       // The IR of a call of a storage-less binding: the callee is read
       // before the arguments, so the check comes first.
-      for (const flag of called) {
-        if (calledReference(flag, e.loc) !== undefined)
-          return {
-            kind: "seqExpr",
-            stmts: [check(flag, e.loc)],
-            result: e,
-            type: e.type,
-            loc: e.loc,
-          };
-      }
+      const calledFlag = calledFlagAt(e.loc);
+      if (calledFlag !== undefined)
+        return {
+          kind: "seqExpr",
+          stmts: [check(calledFlag, e.loc)],
+          result: e,
+          type: e.type,
+          loc: e.loc,
+        };
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = flagOf(e.localId, e.loc);
       if (flag === undefined) return e;

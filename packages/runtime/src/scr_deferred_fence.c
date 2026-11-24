@@ -32,7 +32,7 @@ static char scr_fence_lock;
 /* Whether this is the first time `site` fires in the process and its
  * report is wanted. `guarded` is a site inside its own try/catch. */
 static bool scr_fence_first(const char *site, bool guarded) {
-  const char *setting = getenv("SCRIPTC_DEFERRED_REPORT");
+  const char *setting = scr_getenv("SCRIPTC_DEFERRED_REPORT");
   if (setting != NULL && strcmp(setting, "0") == 0) return false;
   if (guarded && (setting == NULL || strcmp(setting, "all") != 0)) return false;
   while (__atomic_test_and_set(&scr_fence_lock, __ATOMIC_ACQUIRE)) {

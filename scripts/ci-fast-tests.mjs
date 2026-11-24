@@ -38,6 +38,14 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 // so this is about five minutes of wall time.
 export const FAST_TEST_BUDGET_MS = 20 * 60_000;
 
+// Each selected file pays its start-up and collection before its tests, which the measured per-file costs do not
+// include. The module graph can relate one shared compiler change to hundreds of small files: a 529-file related
+// set spent this budget and still ran for 35 minutes. Charge the overhead, and cap the set; the rest waits for
+// the full tier.
+export const FILE_OVERHEAD_MS = 2_000;
+export const MAX_TEST_FILES = 60;
+export const MAX_CORPUS_PROGRAMS = 80;
+
 // The curated smoke slice's own budget. It is smaller than the fast tier's:
 // a fallback, not the tier.
 export const SMOKE_BUDGET_MS = 3 * 60_000;
@@ -49,6 +57,20 @@ const expensiveOnly = new Set([
   ...nativeFrontendFiles,
   ...Object.keys(memoryHeavyFiles),
 ]);
+
+/** A test that needs the wasm32-wasi runtime pack says so in its source; the fast tier does not build that pack. */
+export const WASI_RUNTIME_PACK_MARKER = "@requires-wasi-runtime-pack";
+
+/** The tests that need @scriptc/runtime-wasm32-wasi/runtime-pack.json, read from their own marker. */
+export function wasiRuntimePackTests(testFiles, root = repoRoot) {
+  return testFiles.filter((file) => {
+    try {
+      return readFileSync(join(root, file), "utf8").includes(WASI_RUNTIME_PACK_MARKER);
+    } catch {
+      return false;
+    }
+  });
+}
 
 const isTest = (file) => file.endsWith(".test.ts");
 
@@ -109,6 +131,8 @@ const MODULE_ALIASES = {
   fetch: ["http", "https", "undici"],
   tcp: ["net"],
   dgram: ["dgram"],
+  // WebCrypto is the crypto module's Web Crypto API; scr_webcrypto*.c serves node:crypto.
+  webcrypto: ["crypto"],
 };
 
 /** Every Node module name a changed file's path tokens can name. */
@@ -180,6 +204,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     corpusCosts = {},
     corpusBudget = SMOKE_BUDGET_MS,
     forceSmoke = false,
+    excluded = expensiveOnly,
   } = options;
   const byStem = new Map();
   for (const file of testFiles) {
@@ -203,13 +228,21 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   const selected = [];
   const deferred = [];
   let total = 0;
+  let charged = 0;
   for (const file of [...staticSelection].sort(
     (a, b) => weigh(a) - weigh(b) || a.localeCompare(b),
   )) {
-    if (expensiveOnly.has(file) || total + weigh(file) > budget) deferred.push(file);
+    const cost = weigh(file);
+    if (
+      excluded.has(file) ||
+      selected.length >= MAX_TEST_FILES ||
+      charged + cost + FILE_OVERHEAD_MS > budget
+    )
+      deferred.push(file);
     else {
       selected.push(file);
-      total += weigh(file);
+      total += cost;
+      charged += cost + FILE_OVERHEAD_MS;
     }
   }
 
@@ -227,11 +260,17 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   const corpusWeigh = (program) => corpusCosts[program] ?? corpusMedian;
   const corpus = [];
   const deferredCorpus = [];
+  // The mandatory smoke set is appended after this loop; leave it room inside the cap instead of pushing the
+  // final list over it.
+  const corpusLimit = forceSmoke
+    ? Math.max(0, MAX_CORPUS_PROGRAMS - SMOKE_CORPUS.length)
+    : MAX_CORPUS_PROGRAMS;
   let corpusTotal = 0;
   for (const program of [...corpusSet].sort(
     (a, b) => corpusWeigh(a) - corpusWeigh(b) || a.localeCompare(b),
   )) {
-    if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
+    if (corpus.length >= corpusLimit || corpusTotal + corpusWeigh(program) > corpusBudget)
+      deferredCorpus.push(program);
     else {
       corpus.push(program);
       corpusTotal += corpusWeigh(program);
@@ -248,7 +287,8 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   if (selected.length === 0 && corpus.length === 0) {
     smoke = true;
     for (const program of SMOKE_CORPUS) {
-      if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
+      if (corpus.length >= MAX_CORPUS_PROGRAMS || corpusTotal + corpusWeigh(program) > corpusBudget)
+        deferredCorpus.push(program);
       else {
         corpus.push(program);
         corpusTotal += corpusWeigh(program);
@@ -263,6 +303,10 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     const present = new Set(corpus);
     for (const program of SMOKE_CORPUS) {
       if (present.has(program)) continue;
+      if (corpus.length >= MAX_CORPUS_PROGRAMS) {
+        deferredCorpus.push(program);
+        continue;
+      }
       present.add(program);
       corpus.push(program);
       corpusTotal += corpusWeigh(program);
@@ -295,7 +339,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
  * the caller, which selects within the fast tier's 20-minute single-worker
  * budget. The expensive suites are excluded so the import graph cannot pull
  * one in. */
-function relatedTestFiles(changedTs) {
+function relatedTestFiles(changedTs, excluded = expensiveOnly) {
   if (changedTs.length === 0) return { status: 0, files: [] };
   const cacheDir = join(repoRoot, "node_modules/.cache");
   mkdirSync(cacheDir, { recursive: true });
@@ -318,7 +362,7 @@ function relatedTestFiles(changedTs) {
         `--json=${outputPath}`,
         "-c",
         configPath,
-        ...[...expensiveOnly].flatMap((file) => [`--exclude=${file}`]),
+        ...[...excluded].flatMap((file) => [`--exclude=${file}`]),
       ],
       {
         cwd: repoRoot,
@@ -344,6 +388,14 @@ function relatedTestFiles(changedTs) {
 }
 
 async function main() {
+  if (process.argv.includes("--wasi-tests")) {
+    const files = globSync(["packages/*/{src,test}/**/*.test.ts", "tests/harness/**/*.test.ts"], {
+      cwd: repoRoot,
+      exclude: (path) => path.includes("node_modules"),
+    }).sort();
+    console.log(wasiRuntimePackTests(files).join(" "));
+    return;
+  }
   const index = process.argv.indexOf("--base");
   const base = index === -1 ? undefined : process.argv[index + 1];
   const headIndex = process.argv.indexOf("--head");
@@ -369,12 +421,14 @@ async function main() {
   const changedTs = changed.filter(
     (file) => /\.[cm]?tsx?$/.test(file) && !isTest(file) && !file.endsWith(".d.ts"),
   );
-  const relatedRun = dryRun ? { status: 0, files: [] } : relatedTestFiles(changedTs);
+  const excluded = new Set([...expensiveOnly, ...wasiRuntimePackTests(testFiles)]);
+  const relatedRun = dryRun ? { status: 0, files: [] } : relatedTestFiles(changedTs, excluded);
   const selection = fastTests(changed, testFiles, testCosts.plain, FAST_TEST_BUDGET_MS, {
     related: relatedRun.files,
     corpusIndex,
     corpusCosts,
     forceSmoke,
+    excluded,
   });
 
   const relatedSet = new Set(selection.related);

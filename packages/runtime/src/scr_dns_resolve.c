@@ -1934,7 +1934,7 @@ static ScrDyn *scr_dnsq_hosts_reverse(const char *text, int family) {
   size_t want_len = family == 4 ? 4 : 16;
 #ifdef _WIN32
   char path[512];
-  const char *root = getenv("SystemRoot");
+  const char *root = scr_getenv("SystemRoot");
   snprintf(path, sizeof path, "%s\\System32\\drivers\\etc\\hosts", root != NULL ? root : "C:\\Windows");
 #else
   const char *path = "/etc/hosts";

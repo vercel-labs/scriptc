@@ -257,17 +257,19 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   }
 
   // The fast tier asks for the smoke set on every pull request, not only as the fallback for an empty
-  // selection, so every run exercises real programs. Programs the maps already selected are not run twice.
-  if (!smoke && forceSmoke) {
-    smoke = true;
+  // selection. The set is mandatory: it runs even when mapped corpus programs have filled the change-driven
+  // budget, so the tier always covers the major runtime subsystems. Programs already selected are not run twice.
+  if (forceSmoke) {
+    const present = new Set(corpus);
     for (const program of SMOKE_CORPUS) {
-      if (corpus.includes(program)) continue;
-      if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
-      else {
-        corpus.push(program);
-        corpusTotal += corpusWeigh(program);
-      }
+      if (present.has(program)) continue;
+      present.add(program);
+      corpus.push(program);
+      corpusTotal += corpusWeigh(program);
     }
+    for (let index = deferredCorpus.length - 1; index >= 0; index--)
+      if (present.has(deferredCorpus[index])) deferredCorpus.splice(index, 1);
+    smoke = true;
   }
 
   return {

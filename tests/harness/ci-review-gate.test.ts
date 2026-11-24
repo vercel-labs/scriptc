@@ -261,6 +261,21 @@ test("the fast tier also runs the smoke set when asked, without duplicating a se
     },
   );
   expect(indexed.corpus.filter((entry) => entry === program)).toHaveLength(1);
+  // The smoke set is mandatory: mapped programs that exhaust the corpus budget do not displace it.
+  const tight = fastTests(
+    ["packages/runtime/src/scr_http.c"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["http", ["mapped.ts"]]]),
+      corpusCosts: { "mapped.ts": 1000 },
+      corpusBudget: 0,
+    },
+  );
+  expect(tight.corpus).toEqual(SMOKE_CORPUS);
+  expect(tight.deferredCorpus).toEqual(["mapped.ts"]);
 });
 
 test("the fast tier runs the changed tests and the tests named after changed sources, within its budget", () => {

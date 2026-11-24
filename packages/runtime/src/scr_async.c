@@ -939,22 +939,18 @@ SCR_TL const ScrAsyncHookOps *scr_async_hook_ops = NULL;
 typedef struct {
   double id;
   double trigger;
-} ScrAsyncExecState;
-typedef struct {
-  double id;
-  double trigger;
 } ScrAsyncIds;
 static SCR_TL double scr_async_id_counter = 1;
 static SCR_TL double scr_async_exec_id_value = 1;
 static SCR_TL double scr_async_exec_trigger_value = 0;
 
-static double scr_async_next_id(void) { return ++scr_async_id_counter; }
+double scr_async_next_id(void) { return ++scr_async_id_counter; }
 
 double scr_async_execution_id(void) { return scr_async_exec_id_value; }
 
 double scr_async_execution_trigger(void) { return scr_async_exec_trigger_value; }
 
-static ScrAsyncExecState scr_async_exec_enter(double id, double trigger) {
+ScrAsyncExecState scr_async_exec_enter(double id, double trigger) {
   ScrAsyncExecState prev;
   prev.id = scr_async_exec_id_value;
   prev.trigger = scr_async_exec_trigger_value;
@@ -963,7 +959,7 @@ static ScrAsyncExecState scr_async_exec_enter(double id, double trigger) {
   return prev;
 }
 
-static void scr_async_exec_leave(ScrAsyncExecState prev) {
+void scr_async_exec_leave(ScrAsyncExecState prev) {
   scr_async_exec_id_value = prev.id;
   scr_async_exec_trigger_value = prev.trigger;
 }

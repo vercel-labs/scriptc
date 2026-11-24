@@ -6354,6 +6354,9 @@ struct ScrHttpClientReq {
   bool close_emitted; /* settled: listeners dropped, off the registry */
   ScrHttpReq *res; /* +1 once the head parses */
   ScrNetLs resp_ls, err_ls, timeout_ls, close_ls, upgrade_ls, socket_ls, finish_ls, abort_ls;
+  /* end(cb) callbacks: Node's flushEndCallbacks runs them before the
+   * 'finish' listeners */
+  ScrNetLs endcb_ls;
   /* write(chunk, cb): the callbacks of the chunks this message has written,
    * fired when its bytes reach the socket — at the cork flush, not when the
    * socket buffer happens to drain (which can be earlier). */
@@ -6557,6 +6560,7 @@ static void scr_http_client_settle(struct ScrHttpClientReq *c) {
   scr_net_ls_drop(&c->close_ls);
   scr_net_ls_drop(&c->socket_ls);
   scr_net_ls_drop(&c->finish_ls);
+  scr_net_ls_drop(&c->endcb_ls);
   scr_net_ls_drop(&c->wcb_ls);
   c->wcb_handed = false; /* the socket's callbacks find empty lists */
   c->finish_wait = false;
@@ -6651,6 +6655,10 @@ static void scr_http_client_emit_finish(ScrHttpClientReq *c) {
   }
   c->wcb_handed = false;
   c->writable_finished = true;
+  /* end(cb) callbacks first, then the 'finish' listeners: Node's
+   * flushEndCallbacks ahead of the finish emit */
+  scr_net_fire0_this(&c->endcb_ls, c, SCR_DYNH_HTTP_CLIENT);
+  scr_net_ls_drop(&c->endcb_ls);
   scr_net_fire0_this(&c->finish_ls, c, SCR_DYNH_HTTP_CLIENT);
   scr_net_ls_drop(&c->finish_ls);
   scr_net_ls_drop(&c->wcb_ls);
@@ -10442,9 +10450,9 @@ void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk, const Sc
     return;
   }
   /* end(cb): the callback runs when the request's body has gone out, with or
-   * without data in this call. */
+   * without data in this call — ahead of the 'finish' listeners. */
   if (callback->kind == SCR_DYN_FUNC)
-    scr_net_ls_add(&c->finish_ls, scr_dyn_listener_closure0(callback), NULL, true);
+    scr_net_ls_add(&c->endcb_ls, scr_dyn_listener_closure0(callback), NULL, true);
   if (!has_body) {
     scr_http_client_end(c);
     return;

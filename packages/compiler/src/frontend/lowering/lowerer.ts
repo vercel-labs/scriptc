@@ -21,6 +21,7 @@ import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js
 import { isDeclBoundaryTypeNode } from "../decl-projection.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { timingProcessMetrics } from "../../timing.js";
 import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
@@ -1876,6 +1877,7 @@ function lowerToIrWithIslands(
       phase,
       phase_ms: Math.round((now - phaseLast) * 10) / 10,
       total_ms: Math.round((now - phaseStarted) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -2296,6 +2298,7 @@ function lowerToIrWithIslands(
     process.stderr.write(
       `scriptc lowering ${JSON.stringify({
         phase: "async-protocol-flows",
+        ...timingProcessMetrics(),
         scan_ms: asyncProtocols.elapsedMs,
         sites: asyncProtocols.sites,
         marked: asyncProtocols.markedCount,
@@ -15416,6 +15419,7 @@ export class Lowerer {
     const event: Record<string, unknown> = {
       phase,
       phase_ms: Math.round((performance.now() - started) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -16749,12 +16753,12 @@ export class Lowerer {
       reuse.finish();
       if (process.env["SCRIPTC_TIMING"] === "1")
         process.stderr.write(
-          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...reuse.stats })}\n`,
+          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...timingProcessMetrics(), ...reuse.stats })}\n`,
         );
     }
     if (recorded !== null && process.env["SCRIPTC_TIMING"] === "1")
       process.stderr.write(
-        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...recorded })}\n`,
+        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...timingProcessMetrics(), ...recorded })}\n`,
       );
     const orderedUnits = unitsInOrder();
     this.settleGenericDemandPriorities();

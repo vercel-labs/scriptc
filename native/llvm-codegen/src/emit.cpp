@@ -111,6 +111,10 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ImportBitcode.push_back(Value.str());
     else if (Arg == "--cache-dir")
       Options.CacheDirectory = Value.str();
+    else if (Arg == "--jobs") {
+      if (Value.getAsInteger(10, Options.Jobs) || Options.Jobs > 1024)
+        return std::nullopt;
+    }
     else if (Arg == "--profile-generate")
       Options.ProfileGenerate = Value.str();
     else if (Arg == "--profile-use")
@@ -962,10 +966,22 @@ void addPreLinkValuePropagation(PassBuilder &PB) {
       });
 }
 
-// Runs Work(I) for every partition on a pool sized to the host. Outputs never
-// depend on the pool size or scheduling order.
-void forEachPartition(size_t Count, function_ref<void(size_t)> Work) {
-  DefaultThreadPool Pool(hardware_concurrency());
+// The threads one build compiles with: its caller's --jobs cap, else one per
+// hardware thread.
+ThreadPoolStrategy laneStrategy(const EmitOptions &Options) {
+  ThreadPoolStrategy Strategy = hardware_concurrency();
+  if (Options.Jobs != 0) {
+    Strategy.ThreadsRequested = Options.Jobs;
+    Strategy.Limit = true;
+  }
+  return Strategy;
+}
+
+// Runs Work(I) for every partition on a pool sized to the build. Outputs
+// never depend on the pool size or scheduling order.
+void forEachPartition(const EmitOptions &Options, size_t Count,
+                      function_ref<void(size_t)> Work) {
+  DefaultThreadPool Pool(laneStrategy(Options));
   for (size_t I = 0; I < Count; ++I)
     Pool.async([&Work, I] { Work(I); });
   Pool.wait();
@@ -1072,7 +1088,7 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
                              const ArtifactCache &Cache,
                              std::vector<SmallVector<char, 0>> &Objects) {
   SharedFailure Failures;
-  forEachPartition(Plan.Modules.size(), [&](size_t I) {
+  forEachPartition(Options, Plan.Modules.size(), [&](size_t I) {
     // The object names its own partition, so its identity is part of what
     // the cache entry holds.
     std::string Identity = partitionDebugIdentity(I);
@@ -1127,7 +1143,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
   bool Annotating = !Options.ProfileUse.empty();
   std::vector<std::unique_ptr<MemoryBuffer>> Summaries(Count);
   SharedFailure Failures;
-  forEachPartition(Count, [&](size_t I) {
+  forEachPartition(Options, Count, [&](size_t I) {
     std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
     // A reused summary has no block counts to record, so a recording build
     // annotates every partition again.
@@ -1354,7 +1370,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
   if (!Options.ProfileUse.empty())
     limitProfileImports();
   lto::LTO Link(std::move(Config),
-                lto::createInProcessThinBackend(hardware_concurrency()));
+                lto::createInProcessThinBackend(laneStrategy(Options)));
   // Profile instrumentation gives every partition its own weak copy of the
   // variables the profile runtime reads (the profile format and file name).
   // One copy prevails and stays visible so the runtime's defaults do not.
@@ -1410,10 +1426,16 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
                   ProfileMatch &Match) {
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
-  // helper build; source content and partition count arrive per module.
+  // helper build; source content and partition count arrive per module. Of
+  // the source path only the module source file name is part of it: the name
+  // is the module's source file name and the prefix of its local-function
+  // profile identities, so two entries with different names must not share.
+  // The directories are not: partitions with the same bytes from another
+  // app's copy of the same code reuse this build's artifacts.
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
-                                Options.RelocationModel, Options.SourcePath,
+                                Options.RelocationModel,
+                                moduleSourceName(Options.SourcePath),
                                 "profile-generate", Options.ProfileGenerate});
   // A profile changes every partition it describes, so its bytes key them.
   if (!Options.ProfileUse.empty()) {
@@ -1503,7 +1525,7 @@ int emitPartitions(const EmitOptions &Options) {
       bool Optimized = Options.OptLevel != "0";
       std::optional<ProgramPartitions> Text = partitionProgramText(
           (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()),
-          /*SkipDominated=*/Optimized);
+          /*SkipDominated=*/Optimized, Options.Jobs);
       // An optimized partition is simplified before the thin link and
       // optimized again after it, so one that holds more than two thirds of
       // the program's function text takes longer than optimizing the module
@@ -1754,7 +1776,7 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   DataLayout Layout = M.getDataLayout();
   std::vector<std::vector<SmallString<256>>> Temporaries(Count);
   SharedFailure Failures;
-  forEachPartition(Count, [&](size_t I) {
+  forEachPartition(Options, Count, [&](size_t I) {
     if (I == 0) {
       if (Split)
         keepCodegenPart(M, Split->PartOf, 0);

@@ -15,6 +15,7 @@ import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { varRef } from "../../../ir/build.js";
 import {
+  BOOL,
   DATE_T,
   DYN,
   F64,
@@ -93,12 +94,80 @@ function intlLocale(
       effects: [],
     };
   const value = lowerer.lowerExpr(arg);
+  const defaultMarker = (): IrExpr => ({
+    kind: "strLit",
+    value: INTL_DEFAULT_LOCALE,
+    type: STRING,
+    loc: locOf(arg),
+  });
   if (value.type.kind === "array")
     lowerer.noLowering(
       `${what} with a locale list`,
       arg,
       "choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string",
     );
+  // An undefined locale selects the default locale, as Node treats an
+  // absent locales argument; a checked-dynamic value is converted with
+  // ToString after that test, so an object reaches the runtime as Node's
+  // "[object Object]" and takes the invalid-tag RangeError.
+  if (value.type.kind === "dyn") {
+    const undefinedText: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.typeof",
+      args: [value],
+      type: STRING,
+      loc: locOf(arg),
+    };
+    return {
+      locale: {
+        kind: "ternary",
+        cond: {
+          kind: "strEq",
+          negated: false,
+          left: undefinedText,
+          right: { kind: "strLit", value: "undefined", type: STRING, loc: locOf(arg) },
+          type: BOOL,
+          loc: locOf(arg),
+        },
+        then: defaultMarker(),
+        else_: {
+          kind: "libCall",
+          fn: "dyn.toStringCoerce",
+          args: [value],
+          type: STRING,
+          loc: locOf(arg),
+        },
+        type: STRING,
+        loc: locOf(arg),
+      },
+      effects: [],
+    };
+  }
+  if (value.type.kind === "union") {
+    const tag = lowerer.armTag(value.type.unionId, UNDEFINED_T);
+    if (tag >= 0) {
+      const text = lowerer.coerceInto(arg, value, STRING);
+      return {
+        locale: {
+          kind: "ternary",
+          cond: {
+            kind: "unionIsTag",
+            unionId: value.type.unionId,
+            tag,
+            negated: false,
+            value,
+            type: BOOL,
+            loc: locOf(arg),
+          },
+          then: defaultMarker(),
+          else_: text,
+          type: STRING,
+          loc: locOf(arg),
+        },
+        effects: [],
+      };
+    }
+  }
   const text = lowerer.coerceInto(arg, value, STRING);
   if (text.type.kind !== "string")
     lowerer.noLowering(

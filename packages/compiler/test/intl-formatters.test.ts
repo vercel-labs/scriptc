@@ -167,6 +167,23 @@ test("literal and runtime locale strings compile; a locale list is refused", asy
   ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a locale list'/);
 });
 
+test("an undefined or dynamic locale selects the default locale", async () => {
+  expect(
+    await intlCalls(`
+      declare const locale: string | undefined;
+      console.log(new Intl.NumberFormat(locale).format(1));
+      export {};
+    `),
+  ).toContain("icu.numberFormatNew");
+  expect(
+    await intlCalls(`
+      const dynamic = JSON.parse('"en-US"');
+      console.log(new Intl.NumberFormat(dynamic).format(1));
+      export {};
+    `),
+  ).toContain("icu.numberFormatNew");
+});
+
 test("an empty locale tag is passed to the runtime, which raises Node's RangeError", async () => {
   // The argument expressions all evaluate first; the runtime validates the
   // tag when the formatter is built, as Node does.

@@ -25,3 +25,11 @@ try {
 // moves the Date is seen by the formatter's own time read.
 const stamped = new Date(0);
 console.log("order", stamped.toLocaleDateString((stamped.setTime(86400000), "en-US")));
+
+// An undefined locale value selects the default locale, as Node does; a
+// computed string is used as given.
+function formatIn(locale) {
+  return new Intl.NumberFormat(locale).format(1234.5);
+}
+console.log("undefined-locale", formatIn(undefined));
+console.log("runtime-locale", formatIn("de-DE"));

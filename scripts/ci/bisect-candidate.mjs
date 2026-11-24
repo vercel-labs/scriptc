@@ -53,6 +53,20 @@ export function meetsExpectation(expect, groups) {
   return groups.every(holds);
 }
 
+/**
+ * Groups a runner's attempts by the test and flavor each ran: the same test can fail in both the plain and the
+ * sanitized lane, and each lane's three runs are a confirmation of their own.
+ */
+export function runsBySpec(runs) {
+  const groups = new Map();
+  for (const run of runs) {
+    const key = `${run.spec.file}\u0000${run.spec.fullName ?? ""}\u0000${run.spec.san ? "san" : "plain"}`;
+    const group = groups.get(key) ?? groups.set(key, []).get(key);
+    group.push(run.code);
+  }
+  return [...groups.values()];
+}
+
 /** Whether a set of process exit codes means the tests passed, failed, or could not be judged. */
 export function outcome(codes) {
   if (codes.length === 0 || codes.some((code) => code === null || code >= 126)) return "infra";
@@ -84,14 +98,9 @@ function main() {
       runs.push({ spec, code: result.status });
     }
   const codes = runs.map((run) => run.code);
-  // Each reported test's three runs are judged together: several failing tests each need their own 3/3.
-  const bySpec = new Map();
-  for (const run of runs) {
-    const key = `${run.spec.file}\u0000${run.spec.fullName ?? ""}`;
-    const group = bySpec.get(key) ?? bySpec.set(key, []).get(key);
-    group.push(run.code);
-  }
-  const holds = expect === undefined ? undefined : meetsExpectation(expect, [...bySpec.values()]);
+  // Each reported test's three runs are judged together, per lane: several failing tests (or both flavors of one
+  // test) each need their own 3/3.
+  const holds = expect === undefined ? undefined : meetsExpectation(expect, runsBySpec(runs));
   const answer = outcome(codes);
   const result = {
     pass: answer === "pass",

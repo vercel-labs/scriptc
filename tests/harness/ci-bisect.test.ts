@@ -17,6 +17,7 @@ import {
   envFor,
   meetsExpectation,
   outcome,
+  runsBySpec,
 } from "../../scripts/ci/bisect-candidate.mjs";
 
 const sha = (index: number) => `${index}`.padStart(40, "a");
@@ -117,6 +118,23 @@ test("a flake screen and a confirmation use the reported tests' own outcomes", (
   expect(confirmed([fail, fail, pass], [pass, pass, pass])).toBe(false);
   expect(confirmed([fail, fail, fail], [pass, fail, pass])).toBe(false);
   expect(confirmed([{ pass: false, infra: true }, fail, fail], [pass, pass, pass])).toBe(false);
+});
+
+test("the same test in both lanes is confirmed once per lane, not as one group of six", () => {
+  const spec = { file: "tests/harness/differential.test.ts", fullName: "corpus > case.ts" };
+  const runs = (san: boolean, codes: number[]) =>
+    codes.map((code) => ({ spec: { ...spec, san }, code }));
+  const both = [...runs(false, [1, 1, 1]), ...runs(true, [1, 1, 1])];
+  const groups = runsBySpec(both);
+  expect(groups).toEqual([
+    [1, 1, 1],
+    [1, 1, 1],
+  ]);
+  expect(meetsExpectation("fail", groups)).toBe(true);
+  // A pass in either lane's three still rejects the boundary.
+  expect(
+    meetsExpectation("fail", runsBySpec([...runs(false, [1, 0, 1]), ...runs(true, [1, 1, 1])])),
+  ).toBe(false);
 });
 
 test("the candidate runner re-runs exactly one reported test", () => {

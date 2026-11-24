@@ -31,6 +31,7 @@ import { moduleUsesChildProcess } from "../../ir/runtime-features.js";
 import { everyStmt, transformStmtList } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
+import type { FunctionCensus } from "./function-census.js";
 import { GUARDED_CONSUMERS, consumerName } from "./primitive-wrappers.js";
 import {
   childStreamSetsEncoding,
@@ -1118,7 +1119,11 @@ function functionsUseFetch(functions: IrFunction[]): boolean {
  * property-table entries (in place), installs the table in %main, hands the
  * runtime the member names the program shadows, and guards the graph
  * walkers of a program that adds properties to handles. */
-export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
+export function applyHandleProperties(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   // The install asks the runtime for the child wrapper, whose ops scr_child.c
   // installs. That unit links from the module's childProcess fact — the same
   // fact the emitter reads — so a request for the wrapper is gated on it.
@@ -1137,14 +1142,23 @@ export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[])
   if (handle) renames.set("dyn.defineProps", "handle.propsDefineProps");
   // A node the IR shares at several places is renamed once.
   const calls = new Set<IrExpr & { kind: "libCall" }>();
-  const visitor = {
-    expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall" && renames.has(e.fn)) calls.add(e);
-      return true;
-    },
-    stmt: (): boolean => true,
-  };
-  for (const fn of functions) for (const s of fn.body) everyStmt(s, visitor);
+  for (const fn of functions) {
+    let renamed = false;
+    const visitor = {
+      expr: (e: IrExpr): boolean => {
+        if (e.kind === "libCall" && renames.has(e.fn)) {
+          calls.add(e);
+          renamed = true;
+        }
+        return true;
+      },
+      stmt: (): boolean => true,
+    };
+    for (const s of fn.body) everyStmt(s, visitor);
+    // The rename below changes a libCall's entry point inside a statement
+    // list that stays the same array.
+    if (renamed) census.forget(fn);
+  }
   for (const call of calls) (call as { fn: IrLibFn }).fn = renames.get(call.fn)!;
   const main = functions.find((fn) => fn.name === ENTRY_NAME);
   if (main) {

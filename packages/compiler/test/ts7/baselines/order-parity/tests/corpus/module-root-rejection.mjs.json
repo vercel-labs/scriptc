@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-root-rejection.mjs"
+ ],
+ "diags": []
+}

@@ -65,6 +65,11 @@ test("a file prefix map renames whole folders, the first match once", () => {
   expect(shownFile("/work/stage/a.ts", map)).toBe("/work/app/a.ts");
   expect(shownFile("/work/stages/a.ts", map)).toBe("/work/stages/a.ts");
 
+  // A filesystem root ends with its separator, as a source and as a target.
+  expect(shownFile("/app/a.ts", [["/", "/work"]])).toBe("/work/app/a.ts");
+  expect(shownFile("D:/app/a.ts", [["D:/", "C:/work"]])).toBe("C:/work/app/a.ts");
+  expect(shownFile("/work/stage/a.ts", [["/work/stage", "/"]])).toBe("/a.ts");
+
   // Offsets are read from the source's own text and shown under its new name.
   const sources = new SourceLocations(new Map([["/work/stage/a.ts", "one\ntwo"]]), undefined, map);
   expect(sources.position({ file: "/work/stage/a.ts", start: 4, end: 7 })).toEqual({

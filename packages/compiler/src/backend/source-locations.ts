@@ -15,9 +15,16 @@ export type FilePrefixMap = readonly (readonly [from: string, to: string])[];
  * that holds it gives its place. */
 export function shownFile(file: string, map: FilePrefixMap): string {
   for (const [from, to] of map) {
-    if (file.startsWith(`${from}/`)) return to + file.slice(from.length);
+    const prefix = folderPrefix(from);
+    if (file.startsWith(prefix)) return folderPrefix(to) + file.slice(prefix.length);
   }
   return file;
+}
+
+/** What the paths in `folder` start with. A filesystem root, such as `/` or
+ * `D:/`, ends with its separator. */
+function folderPrefix(folder: string): string {
+  return folder.endsWith("/") ? folder : `${folder}/`;
 }
 
 /** The UTF-16 offsets at which each line of `text` starts. */

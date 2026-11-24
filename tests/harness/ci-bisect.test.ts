@@ -147,17 +147,37 @@ test("the candidate runner re-runs exactly one reported test", () => {
   expect(outcome([])).toBe("infra");
 });
 
-test("a confirmation holds only for three failures with no infrastructure error, or three passes", () => {
-  expect(meetsExpectation("pass", [0, 0, 0])).toBe(true);
-  expect(meetsExpectation("pass", [0, 0, 1])).toBe(false);
-  expect(meetsExpectation("fail", [1, 1, 1])).toBe(true);
+test("a confirmation holds only for three failures with no infrastructure error, or three passes, per test", () => {
+  expect(meetsExpectation("pass", [[0, 0, 0]])).toBe(true);
+  expect(meetsExpectation("pass", [[0, 0, 1]])).toBe(false);
+  expect(meetsExpectation("fail", [[1, 1, 1]])).toBe(true);
   // One pass among three failures is a flake, not a confirmation.
-  expect(meetsExpectation("fail", [1, 0, 1])).toBe(false);
+  expect(meetsExpectation("fail", [[1, 0, 1]])).toBe(false);
   // A runner failure (125 and above, or a signal) is not a test failure.
-  expect(meetsExpectation("fail", [1, 125, 1])).toBe(false);
-  expect(meetsExpectation("fail", [1, null, 1])).toBe(false);
-  expect(meetsExpectation("fail", [1, 1])).toBe(false);
-  expect(() => meetsExpectation("maybe", [1, 1, 1])).toThrow();
+  expect(meetsExpectation("fail", [[1, 125, 1]])).toBe(false);
+  expect(meetsExpectation("fail", [[1, null, 1]])).toBe(false);
+  expect(meetsExpectation("fail", [[1, 1]])).toBe(false);
+  // Every failing test needs its own three failures: several tests must not be judged as one run.
+  expect(
+    meetsExpectation("fail", [
+      [1, 1, 1],
+      [1, 1, 1],
+    ]),
+  ).toBe(true);
+  expect(
+    meetsExpectation("fail", [
+      [1, 1, 1],
+      [1, 0, 1],
+    ]),
+  ).toBe(false);
+  expect(
+    meetsExpectation("pass", [
+      [0, 0, 0],
+      [0, 0, 1],
+    ]),
+  ).toBe(false);
+  expect(meetsExpectation("pass", [])).toBe(false);
+  expect(() => meetsExpectation("maybe", [[1, 1, 1]])).toThrow();
 });
 
 test("the workflow's plan and narrow commands speak JSON", () => {
@@ -265,6 +285,9 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
   const planStep = workflow.jobs.plan!.steps!.find((step) => step.id === "plan")!;
   expect(planStep.run).toContain("git/ref/tags/green-main");
   expect(planStep.run).toContain("status=success");
+  // Every successful run is a candidate, not only the newest: main may have passed a newer commit already.
+  expect(planStep.run).toContain("workflow_runs[].head_sha");
+  expect(planStep.run).toContain("--paginate --slurp");
   expect(planStep.run).toContain("merge-base --is-ancestor");
   // The job that writes has exactly the tag-free writes it needs, and the revert never force-pushes.
   expect(workflow.jobs.conclude!.permissions).toEqual({

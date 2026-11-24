@@ -34,15 +34,23 @@ export function envFor(spec) {
   return spec.san ? { SCRIPTC_SAN: "1", ASAN_OPTIONS: "detect_leaks=0" } : {};
 }
 
-/** Whether three runs meet a confirmation expectation: pass = three passes, fail = three test failures and no
- * infrastructure error. A single flake or a runner failure must never confirm a culprit. */
-export function meetsExpectation(expect, codes) {
-  if (expect === "pass") return codes.length === 3 && codes.every((code) => code === 0);
-  if (expect === "fail")
-    return (
-      codes.length === 3 && codes.every((code) => Number.isInteger(code) && code > 0 && code < 125)
-    );
-  throw new Error(`unknown expectation ${JSON.stringify(expect)}`);
+/**
+ * Whether every reported test meets a confirmation expectation, with three runs each: pass = three zero exits,
+ * fail = three test failures and no infrastructure error. A single flake or a runner failure must never confirm a
+ * culprit, and a run with several failing tests must satisfy the expectation for every one of them.
+ */
+export function meetsExpectation(expect, groups) {
+  if (!Array.isArray(groups) || groups.length === 0) return false;
+  const holds =
+    expect === "pass"
+      ? (codes) => codes.length === 3 && codes.every((code) => code === 0)
+      : expect === "fail"
+        ? (codes) =>
+            codes.length === 3 &&
+            codes.every((code) => Number.isInteger(code) && code > 0 && code < 125)
+        : null;
+  if (holds === null) throw new Error(`unknown expectation ${JSON.stringify(expect)}`);
+  return groups.every(holds);
 }
 
 /** Whether a set of process exit codes means the tests passed, failed, or could not be judged. */
@@ -76,26 +84,26 @@ function main() {
       runs.push({ spec, code: result.status });
     }
   const codes = runs.map((run) => run.code);
+  // Each reported test's three runs are judged together: several failing tests each need their own 3/3.
+  const bySpec = new Map();
+  for (const run of runs) {
+    const key = `${run.spec.file}\u0000${run.spec.fullName ?? ""}`;
+    const group = bySpec.get(key) ?? bySpec.set(key, []).get(key);
+    group.push(run.code);
+  }
+  const holds = expect === undefined ? undefined : meetsExpectation(expect, [...bySpec.values()]);
   const answer = outcome(codes);
   const result = {
     pass: answer === "pass",
     infra: answer === "infra",
-    ...(expect === undefined ? {} : { expected: expect, holds: meetsExpectation(expect, codes) }),
+    ...(expect === undefined ? {} : { expected: expect, holds }),
     specs,
     runs: runs.map(({ spec, code }) => ({ file: spec.file, fullName: spec.fullName, code })),
   };
   if (option("--out")) writeFileSync(option("--out"), JSON.stringify(result));
   console.log(JSON.stringify(result));
   process.exitCode =
-    expect !== undefined
-      ? meetsExpectation(expect, codes)
-        ? 0
-        : 1
-      : answer === "pass"
-        ? 0
-        : answer === "fail"
-          ? 1
-          : 125;
+    expect !== undefined ? (holds ? 0 : 1) : answer === "pass" ? 0 : answer === "fail" ? 1 : 125;
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main();

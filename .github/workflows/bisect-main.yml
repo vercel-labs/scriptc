@@ -119,17 +119,20 @@ jobs:
             --jq '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' \
             > "$RUNNER_TEMP/failing-jobs.json"
           echo "failing_jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")" >> "$GITHUB_OUTPUT"
-          # The baseline is the newest passing main commit before this run: the green-main tag when it is an
-          # ancestor of the failed head, else the head of the newest successful push run. A repository with no tag,
-          # or with a tag someone seeded by hand and never advanced, still searches.
+          # The baseline is the newest passing main commit before this run. Candidates are the green-main tag and
+          # every successful push run's head, newest first; the search takes the newest one that is an ancestor of
+          # the failed head. Scanning all of them, not just the newest run, keeps the search alive when main has
+          # already passed a newer commit, and a repository with no tag still searches.
           TAG_BASE=$(gh api "repos/$REPO/git/ref/tags/green-main" --jq .object.sha 2>/dev/null || true)
-          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=20" \
-            > "$RUNNER_TEMP/success-runs.json" 2>/dev/null || echo '{"workflow_runs":[]}' > "$RUNNER_TEMP/success-runs.json"
-          RUN_BASE=$(jq -r --arg red "$RED" '[.workflow_runs[] | select(.head_sha != $red)][0].head_sha // ""' \
-            "$RUNNER_TEMP/success-runs.json")
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" \
+            --paginate --slurp > "$RUNNER_TEMP/success-runs.json" 2>/dev/null ||
+            echo '[]' > "$RUNNER_TEMP/success-runs.json"
+          CANDIDATES=$( {
+            [ -n "$TAG_BASE" ] && printf '%s\n' "$TAG_BASE"
+            jq -r '[.[] | .workflow_runs[].head_sha] | .[]' "$RUNNER_TEMP/success-runs.json"
+          } | awk 'NF' )
           BASE=""
-          for candidate in "$TAG_BASE" "$RUN_BASE"; do
-            [ -n "$candidate" ] || continue
+          for candidate in $CANDIDATES; do
             [ "$candidate" = "$RED" ] && continue
             git cat-file -e "$candidate^{commit}" 2>/dev/null ||
               git fetch --no-tags --quiet origin "$candidate" 2>/dev/null || continue

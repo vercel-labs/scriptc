@@ -7066,6 +7066,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * tick or a promise job of the previous callback) do not defer anything:
    * Node runs those in the next check phase, after the timers. */
   bool in_dispatch = false;
+  bool deferred_since_timers = false;
   uint64_t immediate_generation_before_dispatch = scr_immediate_generation;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
@@ -7331,8 +7332,15 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * Node's next iteration). Pending immediates are guaranteed here, which
      * keeps the poll below from sleeping and lets the check phase run. */
     bool defer_timers = in_dispatch && scr_pending_immediates > 0 &&
-                        scr_immediate_generation != immediate_generation_before_dispatch;
+                        scr_immediate_generation != immediate_generation_before_dispatch &&
+                        !deferred_since_timers;
     in_dispatch = false;
+    /* One deferral at a time: the check phase that follows this poll dispatch
+     * runs next, and the turn after it runs the timers phase whatever the
+     * dispatch does. A ready poll (a busy socket, a TLS handshake per pass)
+     * therefore cannot keep pushing the timers phase back — at most every
+     * other turn defers, and every due timer fires within one turn. */
+    deferred_since_timers = defer_timers;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:

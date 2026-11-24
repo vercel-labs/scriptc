@@ -1,3 +1,4 @@
+// @normalize-pid
 // Members of node:http2's compatibility request and response, each read
 // or called on a request that completes: the request's method, url,
 // headers, httpVersion, rawHeaders, socket and setTimeout(); the
@@ -15,17 +16,19 @@ await new Promise((resolve) => {
     lines.push(`request rawHeaders ${Array.isArray(request.rawHeaders)} ${request.rawHeaders.includes("x-t")}`);
     lines.push(`request socket ${typeof request.socket.remotePort} ${request.socket.remoteAddress} ${typeof request.connection.remotePort}`);
     request.setTimeout(5000, () => lines.push("request timeout"));
-    lines.push(`response start ${response.statusCode} ${response.headersSent} ${response.finished} ${response.writableEnded} ${response.req === request}`);
+    lines.push(`response start ${response.statusCode} ${response.headersSent} ${response.finished} ${response.writableEnded} ${response.req === request} ${JSON.stringify(response.statusMessage)}`);
     lines.push(`response socket ${typeof response.socket.remotePort} ${typeof response.connection.remotePort}`);
     response.setHeader("X-G", "v");
     response.setHeader("x-gone", "1");
     lines.push(`response getHeader ${response.getHeader("x-g")} ${response.getHeader("nope")} ${response.hasHeader("x-g")} ${response.hasHeader("nope")}`);
+    lines.push(`response getHeaderNames ${response.getHeaderNames().sort().join(",")}`);
+    lines.push(`response getHeaders ${String(response.getHeaders()["x-g"])}`);
     response.removeHeader("x-gone");
     lines.push(`response removeHeader ${response.hasHeader("x-gone")}`);
     response.statusCode = 202;
     lines.push(`response statusCode ${response.statusCode}`);
-    response.writeHead(201, { "x-w": "1" });
-    lines.push(`response writeHead ${response.headersSent} ${response.statusCode}`);
+    response.writeHead(201, "Created", { "x-w": "1" });
+    lines.push(`response writeHead ${response.headersSent} ${response.statusCode} ${JSON.stringify(response.statusMessage)}`);
     response.write("a");
     response.write("b");
     response.end("c", () => lines.push(`response end callback ${response.finished} ${response.writableEnded}`));

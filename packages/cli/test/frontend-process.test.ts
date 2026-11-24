@@ -140,6 +140,50 @@ test.skipIf(helperTarget === null)(
 );
 
 test.skipIf(helperTarget === null)(
+  "a development executable built from the frontend process's file matches the in-process build",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-frontend-process-dev-"));
+    try {
+      const src = join(dir, "src");
+      await mkdir(src);
+      await writeFile(
+        join(src, "main.ts"),
+        'console.log([1, 2, 3].map((x) => x + 1).join(","));\n',
+      );
+      const entry = join(src, "main.ts");
+      const args = ["--optimization", "dev"];
+      await mkdir(join(dir, "child"));
+      await mkdir(join(dir, "inline"));
+      const child = await build(
+        entry,
+        join(dir, "child", "program"),
+        join(dir, "cache-child"),
+        false,
+        { args },
+      );
+      const inline = await build(
+        entry,
+        join(dir, "inline", "program"),
+        join(dir, "cache-inline"),
+        true,
+        { args },
+      );
+      expect(child.code).toBe(0);
+      expect(inline.code).toBe(0);
+      expect(child.stderr).toContain('"phase":"frontend-process"');
+      expect(inline.stderr).not.toContain('"phase":"frontend-process"');
+      expect(await readFile(join(dir, "child", "program"))).toEqual(
+        await readFile(join(dir, "inline", "program")),
+      );
+      expect((await execFileAsync(join(dir, "child", "program"))).stdout).toBe("2,3,4\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  240_000,
+);
+
+test.skipIf(helperTarget === null)(
   "a compile called from evaluated code runs its frontend process once",
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-frontend-process-eval-"));

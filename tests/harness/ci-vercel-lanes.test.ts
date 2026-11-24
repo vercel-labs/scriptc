@@ -82,3 +82,14 @@ test("the other setup outputs are rebuilt from empty directories", () => {
   expect(runnerSource).toContain("fresh(libnodeDirectory)");
   expect(runnerSource).toContain('fresh(join(root, ".ci/bootstrap-seed", flavor))');
 });
+
+test("the toolchain provides the static zlib and zstd the helper links", () => {
+  // The image ships the runtime libraries, not the development ones, and the static LLVM helper links -lz and
+  // -lzstd. The toolchain unpacks the pinned Ubuntu packages into a sysroot and run-lane points the compiler at it.
+  expect(toolchainSource).toContain("zlib1g-dev");
+  expect(toolchainSource).toContain("libzstd-dev");
+  expect(toolchainSource).toContain("sysroot/lib/libz.a");
+  expect(toolchainSource).toContain("sysroot/lib/libzstd.a");
+  expect(runnerSource).toContain("LIBRARY_PATH");
+  expect(runnerSource).toContain("CPATH");
+});

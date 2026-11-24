@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WASI } from "node:wasi";
@@ -33,9 +34,13 @@ vi.mock("../../packages/compiler/src/frontend/pipeline-native.js", async () => {
 
 const fixture = join(import.meta.dirname, "../library-mode/wasm");
 const hasZig = spawnSync("zig", ["version"]).status === 0;
+// Built by the wasm artifacts job; the fast tier has no wasm32-wasi pack.
+const hasWasmPack = existsSync(
+  join(import.meta.dirname, "../../packages/runtime-wasm32-wasi/runtime-pack.json"),
+);
 type Api = Record<string, (...args: number[]) => number> & { memory: WebAssembly.Memory };
 
-describe.skipIf(!hasZig).each(["node", "native"] as const)(
+describe.skipIf(!hasZig || !hasWasmPack).each(["node", "native"] as const)(
   "Wasm library embedding (%s driver)",
   (driver) => {
     let directory: string;

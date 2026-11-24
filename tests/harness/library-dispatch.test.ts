@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { WASI } from "node:wasi";
@@ -7,13 +8,15 @@ import { compileLibrary } from "@scriptc/compiler";
 
 const fixture = join(import.meta.dirname, "../library-mode/wasm/dispatch.mjs");
 const modes = ["native", "sanitized", "wasm-dev"] as const;
+// Built by the wasm artifacts job; the fast tier has no wasm32-wasi pack.
+const wasmPack = join(import.meta.dirname, "../../packages/runtime-wasm32-wasi/runtime-pack.json");
 
 test.for(modes)(
   "synchronous checked dispatch in a %s library matches Node",
   async (mode, context) => {
     if (
       mode === "wasm-dev"
-        ? spawnSync("zig", ["version"]).status !== 0
+        ? spawnSync("zig", ["version"]).status !== 0 || !existsSync(wasmPack)
         : process.platform !== "darwin" && process.platform !== "linux"
     )
       context.skip();

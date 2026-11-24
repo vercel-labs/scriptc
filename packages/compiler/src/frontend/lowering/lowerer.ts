@@ -5480,6 +5480,12 @@ export class Lowerer {
    * property exports — different object, same declaration — so globalOf
    * falls back through the shared node (collectGlobals registers both). */
   readonly globalsByDeclNode = new Map<ts.Node, IrGlobal>();
+  /** Whether collectProgram has finished registering this pass's globals.
+   * Until it has, aliasStorageSymbolOf asks afresh. */
+  globalsCollected = false;
+  /** aliasStorageSymbolOf's answer per alias symbol for the post-collection
+   * phase; see that method for why collection-time answers are not kept. */
+  readonly aliasStorageBySymbol = new Map<ts.Symbol, ts.Symbol | null>();
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
@@ -8871,6 +8877,7 @@ export class Lowerer {
       const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
       if (global !== undefined) {
         this.globalsBySymbol.set(symbol, global);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
     }
@@ -8893,6 +8900,7 @@ export class Lowerer {
       const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
       if (conditionalSlot !== null) {
         this.globalsBySymbol.set(symbol, conditionalSlot);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
@@ -9167,23 +9175,36 @@ export class Lowerer {
    * member global), or null. Alias chains through CommonJS re-exports keep
    * the exporter's stored value at every hop; see resolveValueSymbol. */
   aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    // Once collection has run, an alias chain's storage hop is an answer
+    // about the immutable program, and the lowering asks about the same
+    // import alias once per reference to it. Collection itself registers
+    // globals as it goes, so answers taken there are not kept.
+    const memoize = this.globalsCollected && !this.collecting;
+    if (memoize) {
+      const cached = this.aliasStorageBySymbol.get(symbol);
+      if (cached !== undefined) return cached;
+    }
+    let result: ts.Symbol | null = null;
     let hop = symbol;
     const seen = new Set<ts.Symbol>();
     for (let depth = 0; depth < 32; depth++) {
-      if (seen.has(hop)) return null;
+      if (seen.has(hop)) break;
       seen.add(hop);
       // The checker's immediate-target query is an alias-only operation.
-      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) break;
       const next = this.checker.getImmediateAliasedSymbol(hop);
-      if (!next || seen.has(next)) return null;
+      if (!next || seen.has(next)) break;
       if (
         this.globalsBySymbol.has(next) ||
         next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
-      )
-        return next;
+      ) {
+        result = next;
+        break;
+      }
       hop = next;
     }
-    return null;
+    if (memoize) this.aliasStorageBySymbol.set(symbol, result);
+    return result;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native

@@ -185,6 +185,10 @@ export function buildSanitizedRuntime(
     zlib,
     "-I",
     join(mbedtls, "include"),
+    // scr_tls.c reads the negotiated key-exchange group from the engine's
+    // private handshake params (ssl_misc.h), as the other runtime compiles do.
+    "-I",
+    join(mbedtls, "library"),
     "-I",
     join(brotli, "include"),
     "-I",

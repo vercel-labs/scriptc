@@ -1,9 +1,13 @@
 // stream/consumers over a web ReadableStream: Node's consumers iterate
 // their argument, so a web stream's chunks reach text(), bytes(),
-// arrayBuffer() and blob() the way a Node readable's do. Every call goes
-// through an untyped parameter, the argument shape Node accepts for any
-// async iterable.
+// arrayBuffer() and blob() the way a Node readable's do, and so does a
+// constructor-function Node stream; a locked web stream rejects the
+// returned promise with its state error. Every call goes through an
+// untyped parameter, the argument shape Node accepts for any async
+// iterable.
+import { Readable } from "node:stream";
 import { arrayBuffer, blob, bytes, text } from "node:stream/consumers";
+import { inherits } from "node:util";
 
 const web = (chunks) =>
   new ReadableStream({
@@ -49,3 +53,28 @@ try {
 } catch (error) {
   console.log("error rejected", error === failure, error.message);
 }
+
+// A constructor-function stream (Readable.call in a plain function) reads
+// as a Node readable's does, and a locked web stream rejects the returned
+// promise with its state error instead of the call throwing.
+function Source() {
+  Readable.call(this);
+  this.sent = false;
+}
+inherits(Source, Readable);
+Source.prototype._read = function () {
+  if (this.sent) return;
+  this.sent = true;
+  this.push("constructor");
+  this.push(null);
+};
+console.log("constructor", await collectText(new Source()));
+const locked = web(["a"]);
+locked.getReader();
+const pending = collectBytes(locked);
+console.log("locked promise", pending instanceof Promise);
+await pending.then(
+  (value) => console.log("locked resolved", value.length),
+  (error) => console.log("locked rejected", error.name, error.message),
+);
+console.log("locked after");

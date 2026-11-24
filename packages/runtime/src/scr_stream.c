@@ -9765,6 +9765,39 @@ ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
   return NULL;
 }
 
+/* A consumer's source failed before any stream existed (a locked web
+ * ReadableStream: its iteration method throws). The stream answers that
+ * error on its first read, so the consumer's promise rejects with it:
+ * Node's consumers iterate inside an async function, and the same throw
+ * rejects their promise instead of throwing at the call. */
+static void scr_sc_failure_read(ScrClosure *cb, ScrStream *s, double size) {
+  (void)size;
+  ScrError *err = scr_box_get_ref(cb->caps[0]); /* +1 */
+  if (!err) return;
+  scr_stream_release(scr_stream_destroy(s, err)); /* destroy takes the error */
+}
+
+/* The failed source: the pending exception as the stream's error (an
+ * Error value as itself, another truthy thrown value carried by an Error
+ * that boxes back to it — Node hands the thrown value on). +1. */
+static ScrStream *scr_sc_failed_readable(void) {
+  ScrCaught *c = scr_exc_take();
+  ScrDyn *d = scr_caught_to_dyn(c);
+  ScrError *err = d ? scr_errdyn_err_of(d) : NULL;
+  if (d && !err && scr_dyn_truthy(d)) err = scr_error_from_dyn(d);
+  if (d) scr_dyn_release(d);
+  scr_caught_release(c);
+  if (!err) {
+    static const char msg[] = "the stream is not async iterable";
+    ScrStr *text = scr_str_new(msg, sizeof msg - 1);
+    err = scr_error_new(SCR_ERR_TYPE, text);
+  }
+  ScrClosure *read = scr_closure_new((void *)&scr_sc_failure_read, 1);
+  read->caps[0] = scr_box_new_obj(scr_error_retain_v, scr_error_release_v, NULL);
+  scr_box_set_ref(read->caps[0], err); /* the box takes the reference */
+  return scr_stream_new_readable(-1, true, true, read, &scr_sc_failure_read, NULL, NULL);
+}
+
 /* The readable a stream/consumers call reads (the sc.source libCall): a
  * native stream as itself (+1), and a web ReadableStream as the Readable
  * Readable.from builds over it, since Node's consumers iterate their
@@ -9778,7 +9811,10 @@ ScrStream *scr_stream_consumer_source(const ScrDyn *value, const ScrStr *message
     int tag = value->v.handle.tag;
     if (tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WS_READABLE) {
       ScrStream *from = scr_stream_from_dyn((ScrDyn *)value, NULL);
-      if (from || scr_exc_pending()) return from;
+      if (from) return from;
+      /* The conversion threw (a locked stream's iterator method): the
+       * consumer's promise rejects with that error. */
+      if (scr_exc_pending()) return scr_sc_failed_readable();
     }
   }
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");

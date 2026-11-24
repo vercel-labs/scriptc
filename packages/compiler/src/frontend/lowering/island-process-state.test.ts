@@ -8,6 +8,7 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
+import { FunctionCensus } from "./function-census.js";
 import { shareIslandProcessState } from "./island-process-state.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 
@@ -50,9 +51,11 @@ const body = (exprs: IrExpr[]): IrStmt[] => exprs.map((expr) => ({ kind: "exprSt
 
 test("a program with Node islands reads and writes process.exitCode through the island unit", () => {
   const exprs = calls();
-  shareIslandProcessState({ usesNodeIsland: true } as unknown as Lowerer, [
-    fn(ENTRY_NAME, body(exprs)),
-  ]);
+  shareIslandProcessState(
+    { usesNodeIsland: true } as unknown as Lowerer,
+    [fn(ENTRY_NAME, body(exprs))],
+    new FunctionCensus(),
+  );
   expect(exprs.map((e) => e.fn)).toEqual([
     "nodeIsland.setExitCode",
     "nodeIsland.setExitCode",
@@ -65,9 +68,11 @@ test("a program with Node islands reads and writes process.exitCode through the 
 
 test("a program without Node islands keeps the runtime's exit-code calls", () => {
   const exprs = calls();
-  shareIslandProcessState({ usesNodeIsland: false } as unknown as Lowerer, [
-    fn(ENTRY_NAME, body(exprs)),
-  ]);
+  shareIslandProcessState(
+    { usesNodeIsland: false } as unknown as Lowerer,
+    [fn(ENTRY_NAME, body(exprs))],
+    new FunctionCensus(),
+  );
   expect(exprs.map((e) => e.fn)).toEqual([
     "process.setExitCode",
     "process.setExitCodeTracked",

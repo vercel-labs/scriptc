@@ -92,6 +92,18 @@ function assertElfObject(path) {
     throw new Error(`${path} is not an ELF 64-bit LSB relocatable x86-64 object`);
 }
 
+/** A temporary directory whose compilers fail, proving a build used none of them. */
+function trapCompilers() {
+  const work = mkdtempSync(join(tmpdir(), "scriptc-no-compiler-"));
+  const traps = join(work, "traps");
+  mkdirSync(traps, { recursive: true });
+  for (const tool of ["clang", "cc", "gcc", "ar", "ld"]) {
+    writeFileSync(join(traps, tool), "#!/bin/sh\nexit 97\n");
+    chmodSync(join(traps, tool), 0o755);
+  }
+  return { work, traps };
+}
+
 /** The static musl helper must not name an interpreter. */
 function assertNoInterpreter(path) {
   const headers = output("readelf", ["-l", path]);
@@ -133,10 +145,10 @@ function pushMode() {
   }
 }
 
-/** The one effect shard a pull request runs, as scripts/ci-lanes.mjs picks it from the pull request's number. */
+/** The one effect shard a pull request runs, chosen from the pull request's number like scripts/ci-lanes.mjs. */
 function effectSampleShard() {
   const number = Number(process.env.VERCEL_GIT_PULL_REQUEST_ID);
-  if (Number.isSafeInteger(number) && number > 0) return (number % 16) + 1;
+  if (Number.isSafeInteger(number) && number > 0) return (number % 48) + 1;
   let seed = process.env.VERCEL_GIT_COMMIT_REF ?? process.env.GITHUB_HEAD_REF ?? "";
   if (seed === "") {
     try {
@@ -147,7 +159,7 @@ function effectSampleShard() {
   }
   let hash = 0;
   for (const character of seed) hash = (hash * 31 + character.codePointAt(0)) >>> 0;
-  return (hash % 16) + 1;
+  return (hash % 48) + 1;
 }
 
 const frontendSuites = {
@@ -165,8 +177,18 @@ switch (lane) {
     pnpm(["build"]);
     break;
   }
-  case "native": {
+  // The two halves of the glibc native build, split so each task stays under the runner deadline.
+  case "native:helper": {
+    fresh(join(root, "packages/llvm-linux-x64-gnu/bin"));
     pnpm(["--filter", "@scriptc/llvm-linux-x64-gnu", "build:native"]);
+    break;
+  }
+  case "native:pack": {
+    fresh(join(root, "packages/runtime-linux-x64-gnu/artifacts"));
+    rmSync(join(root, "packages/runtime-linux-x64-gnu/runtime-pack.json"), { force: true });
+    rmSync(join(root, "packages/runtime-linux-x64-gnu/runtime-pack.verified.json"), {
+      force: true,
+    });
     pnpm(["--filter", "@scriptc/runtime-linux-x64-gnu", "build:native"], { CC: "zig", AR: "zig" });
     run(process.execPath, ["packages/runtime-linux-x64-gnu/scripts/verify.mjs"]);
     break;
@@ -227,10 +249,15 @@ switch (lane) {
   // checker_identity: every corpus program compiles to the same IR and
   // diagnostics with tsgo and with tsc-ts.
   case "checker-identity": {
-    const optimization = args[0];
+    const [optimization, shard] = args;
     if (optimization !== "release" && optimization !== "dev")
       throw new Error("checker-identity needs release or dev");
-    pnpm(["test:checker-identity", "--optimization", optimization]);
+    pnpm([
+      "test:checker-identity",
+      "--optimization",
+      optimization,
+      ...(shard === undefined ? [] : ["--shard", shard]),
+    ]);
     break;
   }
 
@@ -257,8 +284,6 @@ switch (lane) {
     const count = integer(countText, "shard count");
     const shard = integer(shardText, "shard");
     if (shard > count) throw new Error(`shard ${shard} is outside 1..${count}`);
-    if (flavor === "plain" && count !== 20) throw new Error("plain tests run twenty shards");
-    if (flavor === "san" && count !== 30) throw new Error("sanitized tests run thirty shards");
     sh("ulimit -c 0; exec node scripts/ci-test.mjs", {
       SCRIPTC_TEST_WORKERS: "4",
       SCRIPTC_TEST_SHARD: `${shard}/${count}`,
@@ -308,11 +333,11 @@ switch (lane) {
       break;
     }
     const shard = effectSampleShard();
-    console.log(`Running effect shard ${shard}/16 for ${flavor}`);
+    console.log(`Running effect shard ${shard}/48 for ${flavor}`);
     pnpm(["test", "tests/harness/effect.test.ts", "tests/harness/effect4.test.ts"], {
       SCRIPTC_TEST_WORKERS: "1",
       SCRIPTC_EFFECT_TEST_CONCURRENCY: "1",
-      SCRIPTC_TEST_SHARD: `${shard}/16`,
+      SCRIPTC_TEST_SHARD: `${shard}/48`,
       SCRIPTC_SAN: flavor === "san" ? "1" : "",
       ASAN_OPTIONS: "detect_leaks=0",
     });
@@ -416,16 +441,10 @@ switch (lane) {
     break;
   }
 
-  // llvm_artifacts_linux_x64: the glibc helper and runtime pack with no clang
-  // on PATH, a reachability check, and the Debian 12 glibc 2.36 smoke.
-  case "llvm-artifacts": {
-    const work = mkdtempSync(join(tmpdir(), "scriptc-llvm-artifacts-"));
-    const traps = join(work, "traps");
-    mkdirSync(traps, { recursive: true });
-    for (const tool of ["clang", "cc", "gcc", "ar", "ld"]) {
-      writeFileSync(join(traps, tool), "#!/bin/sh\nexit 97\n");
-      chmodSync(join(traps, tool), 0o755);
-    }
+  // llvm_artifacts_linux_x64: the workflow's lane split by step, so each Vercel CI task stays well under the
+  // runner's per-task deadline. Together the steps run what the one Actions job runs.
+  case "llvm-artifacts:object": {
+    const { work, traps } = trapCompilers();
     const object = join(work, "hello.o");
     run(
       process.execPath,
@@ -440,6 +459,10 @@ switch (lane) {
       { PATH: `${traps}:${baseEnv.PATH}` },
     );
     assertElfObject(object);
+    break;
+  }
+  case "llvm-artifacts:smoke": {
+    const work = mkdtempSync(join(tmpdir(), "scriptc-llvm-smoke-"));
     const executable = join(work, "hello");
     run(
       process.execPath,
@@ -448,7 +471,13 @@ switch (lane) {
     );
     if (output(executable, []).trim() !== "hello world")
       throw new Error("the built executable did not print hello world");
+    break;
+  }
+  case "llvm-artifacts:tree-shaking": {
     pnpm(["test", "tests/harness/runtime-tree-shaking.test.ts"]);
+    break;
+  }
+  case "llvm-artifacts:docker": {
     run("docker", [
       "run",
       "--rm",
@@ -469,13 +498,15 @@ switch (lane) {
     break;
   }
 
-  // llvm_artifacts_linux_x64_musl: the static musl helper, with no clang on
-  // PATH, run under Alpine, and the executable hardening contract for both
-  // libc flavors.
-  case "llvm-artifacts:musl": {
+  // llvm_artifacts_linux_x64_musl: the static musl helper's checks, split by step.
+  case "llvm-artifacts:musl:static": {
     const helper = "packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen";
     if (!existsSync(join(root, helper))) throw new Error(`${helper} is missing`);
     assertNoInterpreter(join(root, helper));
+    break;
+  }
+  case "llvm-artifacts:musl:alpine": {
+    const helper = "packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen";
     const identity = output("docker", [
       "run",
       "--rm",
@@ -492,18 +523,20 @@ switch (lane) {
       !version.supported_targets?.includes("wasm32-unknown-wasi")
     )
       throw new Error(`the musl helper reported an unexpected identity: ${identity}`);
+    break;
+  }
+  case "llvm-artifacts:musl:hardening": {
     pnpm(["test", "tests/harness/executable-hardening.test.ts"]);
     break;
   }
 
-  // llvm_artifacts_linux_x64_wasi: the wasm32-wasi runtime pack and the WASI
-  // helper object and runtime-pack smoke.
-  case "llvm-artifacts:wasi": {
-    pnpm([
-      "test",
-      "packages/cli/test/wasi-runtime-pack.test.ts",
-      "tests/harness/wasm-library.test.ts",
-    ]);
+  // llvm_artifacts_linux_x64_wasi: the wasm32-wasi runtime pack's checks, split by step.
+  case "llvm-artifacts:wasi:runtime-pack": {
+    pnpm(["test", "packages/cli/test/wasi-runtime-pack.test.ts"]);
+    break;
+  }
+  case "llvm-artifacts:wasi:wasm-library": {
+    pnpm(["test", "tests/harness/wasm-library.test.ts"]);
     break;
   }
 

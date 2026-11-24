@@ -102,7 +102,7 @@ static _Atomic int scr_worker_stats_mode = -1;
 static bool scr_worker_stats(void) {
   int mode = atomic_load_explicit(&scr_worker_stats_mode, memory_order_relaxed);
   if (mode < 0) {
-    const char *value = getenv("SCRIPTC_WORKER_STATS");
+    const char *value = scr_getenv("SCRIPTC_WORKER_STATS");
     mode = value != NULL && value[0] == '1';
     atomic_store_explicit(&scr_worker_stats_mode, mode, memory_order_relaxed);
   }

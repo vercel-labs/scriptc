@@ -173,7 +173,7 @@ void scr_pub_refuse(ScrPub *ctx, const char *message) {
 
 /* An emitted refusing walker: the static path is diagnostic only. */
 void scr_pub_refuse_at(ScrPub *ctx, const char *message, const char *detail) {
-  if (!ctx->refusal && getenv("SCRIPTC_PUBLISH_TRACE"))
+  if (!ctx->refusal && scr_getenv("SCRIPTC_PUBLISH_TRACE"))
     fprintf(stderr, "scriptc: publish refused %s\n", detail);
   scr_pub_refuse(ctx, message);
 }
@@ -438,7 +438,7 @@ void scr_publish(void *root, ScrPubFn fn) {
   ctx.refusal = NULL;
   int traced = atomic_load_explicit(&scr_pub_trace, memory_order_relaxed);
   if (traced < 0) {
-    traced = getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+    traced = scr_getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
     atomic_store_explicit(&scr_pub_trace, traced, memory_order_relaxed);
   }
   bool trace = traced != 0;

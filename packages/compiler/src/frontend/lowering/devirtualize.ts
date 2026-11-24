@@ -6,7 +6,7 @@ import {
   callSiteReturnType,
   typeEquals,
 } from "../../ir/ir.js";
-import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
+import { everyStmtList, transformStmtList, withStructureSharing } from "../../ir/traverse.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
 import { isVariadicFunctionType, type FinishedBodies } from "./variadic-functions.js";
@@ -48,31 +48,30 @@ export interface DevirtualizeFacts {
  * virtual. Methods replaceable at runtime never reach this pass: their
  * calls take the checked property path instead of a virtualCall.
  *
- * The rewrite passes every expression of the bodies it leaves through its
- * hands, replaced or kept, and it is the last step to rewrite them before
- * lowering's last checks (Lowerer.finishModule names the one exception and
- * what it writes). It answers what those checks would otherwise walk the
- * program again to learn (FinishedBodies). */
+ * The rewrite runs with structure sharing on, the way the module finish
+ * does: a body with no virtual call is left as it is instead of copied, and
+ * a rewritten body keeps every subtree the rewrite did not replace. It
+ * answers what the later checks would otherwise walk the program again to
+ * learn (FinishedBodies), read off the same pass that collects the classes
+ * the rewrite consults. */
 export function devirtualizeVirtualCalls(
   lowerer: Lowerer,
   functions: IrFunction[],
   facts: DevirtualizeFacts,
 ): FinishedBodies {
-  const sites = new ConstructedClasses(lowerer, functions, facts);
   const bodies: FinishedBodies = { variadicFunctions: false };
-  for (const fn of functions)
-    fn.body = transformStmtList(fn.body, {
-      stmt: (statement) => statement,
-      expr: (expression) => {
-        const left =
-          expression.kind === "virtualCall" ? sites.devirtualize(expression) : expression;
-        // The traversal hands a replacement's children here in turn, so this
-        // sees each expression of the rewritten body.
-        if (isVariadicFunctionType(left.type)) bodies.variadicFunctions = true;
-        return left;
-      },
-    });
-  return bodies;
+  const sites = new ConstructedClasses(lowerer, functions, facts, bodies);
+  return withStructureSharing(() => {
+    for (const fn of functions) {
+      if (!sites.hasVirtualCalls(fn)) continue;
+      fn.body = transformStmtList(fn.body, {
+        stmt: (statement) => statement,
+        expr: (expression) =>
+          expression.kind === "virtualCall" ? sites.devirtualize(expression) : expression,
+      });
+    }
+    return bodies;
+  });
 }
 
 class ConstructedClasses {
@@ -85,11 +84,14 @@ class ConstructedClasses {
   private readonly exportedNames: ReadonlySet<string>;
   private readonly openMemo = new Map<ClassInfo, boolean>();
   private readonly subtreeMemo = new Map<ClassInfo, ClassInfo[]>();
+  /** The bodies the rewrite has anything to do in. */
+  private readonly withVirtualCalls = new Set<IrFunction>();
 
   constructor(
     private readonly lowerer: Lowerer,
     functions: readonly IrFunction[],
     private readonly facts: DevirtualizeFacts,
+    bodies: FinishedBodies,
   ) {
     const subtree = (name: string): void => {
       this.allocated.add(name);
@@ -102,6 +104,10 @@ class ConstructedClasses {
       everyStmtList(fn.body, {
         stmt: () => true,
         expr: (e) => {
+          if (e.kind === "virtualCall") this.withVirtualCalls.add(fn);
+          // The rewrite keeps every type, so a variadic function type here
+          // is one in the body it leaves: the check below needs no walk.
+          if (isVariadicFunctionType(e.type)) bodies.variadicFunctions = true;
           if (e.kind === "new") this.allocated.add(e.className);
           else if (e.kind === "classRef") subtree(e.className);
           else if (e.kind === "newValue" && e.callee.type.kind === "classval")
@@ -111,6 +117,11 @@ class ConstructedClasses {
       });
     }
     this.exportedNames = facts.library ? exportedNames(facts.files) : new Set();
+  }
+
+  /** Whether the body holds a virtual call the rewrite may replace. */
+  hasVirtualCalls(fn: IrFunction): boolean {
+    return this.withVirtualCalls.has(fn);
   }
 
   devirtualize(e: VirtualCall): IrExpr {

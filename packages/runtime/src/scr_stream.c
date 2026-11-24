@@ -1067,7 +1067,18 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
               : value ? scr_stream_write_dyn(dst, value, NULL)
               : b     ? scr_stream_write(dst, b, NULL)
                       : scr_stream_write_str(dst, str, NULL);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) {
+      /* A synchronous write error (a null chunk's ERR_STREAM_NULL_VALUES,
+       * for one) fails the destination with it: the pipe must settle, as
+       * Node's pipeline rejects with the write's error rather than leaving
+       * the delivery pending forever. */
+      ScrError *werr = scr_stream_take_error();
+      if (werr) {
+        scr_stream_error_or_destroy(dst, werr);
+        scr_error_release(werr);
+      }
+      return;
+    }
     i++;
     if (!ok && !dst->st->destroyed) {
       ScrStreamState *dstt = dst->st;

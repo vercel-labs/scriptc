@@ -178,6 +178,40 @@ function collectTyped() {
   console.log("pair null stage", out.join(","));
 }
 
+// A null chunk that reaches a node writable fails the pipeline with the
+// write's error; the pipeline settles instead of staying pending.
+{
+  const { writable } = collect();
+  const nuller = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+    },
+  });
+  const outcome = await pipeline(Readable.from(["a"]), nuller, writable).then(
+    () => "no error",
+    (error) => `${error.code} ${error.message}`,
+  );
+  console.log("null to node sink", outcome);
+}
+
+{
+  const { writable } = collect();
+  const nuller = new TransformStream({
+    transform(_chunk, controller) {
+      controller.enqueue(null);
+    },
+  });
+  const outcome = await pipeline(
+    Readable.from(["a"]),
+    { readable: nuller.readable, writable: nuller.writable },
+    writable,
+  ).then(
+    () => "no error",
+    (error) => `${error.code} ${error.message}`,
+  );
+  console.log("pair null to node sink", outcome);
+}
+
 {
   const single = compose(upper());
   const seen = [];

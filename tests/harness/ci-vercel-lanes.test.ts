@@ -16,7 +16,7 @@ const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.ur
   scripts: Record<string, string>;
 };
 const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
-  tasks: Record<string, { env?: string[]; inputs?: string[]; tags?: string[] }>;
+  tasks: Record<string, { env?: string[]; inputs?: string[]; outputs?: string[]; tags?: string[] }>;
 };
 
 function runLane(args: string[], env: Record<string, string>) {
@@ -134,6 +134,31 @@ test("every runtime pack builds after the host LLVM helper", () => {
     "//#ci:setup:native:wasi",
   ])
     expect(turbo.tasks[name]!.dependsOn, name).toContain("ci:setup:llvm-helper");
+});
+
+test("the build setup clears its outputs before they run", () => {
+  // A checkout can force-add an ignored output tree; without clearing it first, a build would cache the planted
+  // files alongside what it generated, and a later clean run would restore and execute them.
+  expect(runnerSource).toContain("clearOutputs(");
+  expect(runnerSource).toContain('readdirSync(join(root, "packages")');
+  expect((runnerSource.match(/clearOutputs\(/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  // The declared cache tree cannot carry a planted node_modules beside the build output.
+  expect(turbo.tasks["//#ci:setup:build"]!.outputs).toContain("!packages/*/dist/node_modules/**");
+});
+
+test("the seed and build tasks hash every script", () => {
+  // Imported staging helpers decide executable outputs; the task key names the whole scripts tree rather than a
+  // hand list, so a newly imported helper invalidates the cached build or seed.
+  for (const name of [
+    "//#ci:setup:build",
+    "//#ci:setup:llvm-helper",
+    "//#ci:setup:runtime-pack",
+    "//#ci:setup:native:musl",
+    "//#ci:setup:native:wasi",
+    "//#ci:setup:seed:plain",
+    "//#ci:setup:seed:san",
+  ])
+    expect(turbo.tasks[name]!.inputs, name).toContain("scripts/**");
 });
 
 test("the checker identity lane is sharded and the toolchain reports its steps", () => {

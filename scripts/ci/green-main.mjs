@@ -15,12 +15,17 @@ export const GREEN_MAIN_TAG = "green-main";
 export const TAG_PATH = `tags/${GREEN_MAIN_TAG}`;
 export const TAG_REF = `refs/${TAG_PATH}`;
 
-/** What moving the tag from `currentSha` to `nextSha` takes: create it, update it, or leave it alone. */
-export function tagAction(currentSha, nextSha) {
+/**
+ * What moving the tag from `currentSha` to `nextSha` takes: create it, move it forward, leave it, or stale when
+ * the tag already names a newer commit. `ancestor` says `nextSha` descends from `currentSha`; a rerun of an older
+ * push passes an older commit and must never drag the tag back.
+ */
+export function tagAction(currentSha, nextSha, { ancestor = false } = {}) {
   if (typeof nextSha !== "string" || !/^[0-9a-f]{40}$/.test(nextSha))
     throw new Error(`green-main needs a full commit sha, got ${JSON.stringify(nextSha)}`);
   if (currentSha === nextSha) return "unchanged";
-  return typeof currentSha === "string" && currentSha.length > 0 ? "update" : "create";
+  if (typeof currentSha !== "string" || currentSha.length === 0) return "create";
+  return ancestor ? "update" : "stale";
 }
 
 /** The REST request that performs `action` for `sha` in `repo`: a tag ref, and nothing else. */
@@ -36,13 +41,50 @@ export function tagRequest(action, repo, sha) {
     return {
       method: "PATCH",
       path: `repos/${repo}/git/refs/${TAG_PATH}`,
-      fields: { sha, force: "true" },
+      // `force` is a boolean in the API's request body; `gh api -F` sends it as one.
+      fields: { sha, force: true },
     };
   throw new Error(`nothing to request for ${action}`);
 }
 
+/** The `gh api` arguments for a request: strings with `-f`, booleans and numbers with `-F`. */
+export function ghArgs({ method, path, fields }) {
+  const args = ["api", "--method", method, path];
+  for (const [name, value] of Object.entries(fields))
+    args.push(
+      typeof value === "boolean" || typeof value === "number" ? "-F" : "-f",
+      `${name}=${value}`,
+    );
+  return args;
+}
+
 function gh(args) {
   return execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+function git(args, cwd = process.cwd()) {
+  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+/** Whether `ancestor` is an ancestor of `descendant` in the repository at `cwd`. */
+export function isAncestor(ancestor, descendant, cwd = process.cwd()) {
+  try {
+    git(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
+    return true;
+  } catch (error) {
+    // 1 is "not an ancestor"; anything else is a missing object or a broken repository.
+    if (error.status === 1) return false;
+    throw error;
+  }
+}
+
+/** Makes sure the commit is present locally: a rerun's checkout may not reach the tag's commit. */
+function ensureCommit(sha) {
+  try {
+    git(["cat-file", "-e", `${sha}^{commit}`]);
+  } catch {
+    git(["fetch", "--no-tags", "--quiet", "origin", sha]);
+  }
 }
 
 /** The commit the tag names now, or undefined when it does not exist yet. */
@@ -63,9 +105,22 @@ function main() {
   const dryRun = process.argv.includes("--dry-run");
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   // Reading the tag is read-only; a dry run still reports whether it would create or update.
-  const action = tagAction(currentTagSha(repo), sha);
+  const current = currentTagSha(repo);
+  let ancestor = false;
+  if (typeof current === "string" && current.length > 0 && current !== sha) {
+    ensureCommit(current);
+    ancestor = isAncestor(current, sha);
+  }
+  const action = tagAction(current, sha, { ancestor });
   if (action === "unchanged") {
     console.log(`green-main already names ${sha}`);
+    return;
+  }
+  if (action === "stale") {
+    console.log(
+      `::notice::green-main already names a newer passing commit (${current}); leaving it rather than moving ` +
+        `it back to ${sha}`,
+    );
     return;
   }
   const request = tagRequest(action, repo, sha);
@@ -73,9 +128,7 @@ function main() {
     console.log(`${request.method} ${request.path} ${JSON.stringify(request.fields)}`);
     return;
   }
-  const args = ["api", "--method", request.method, request.path];
-  for (const [name, value] of Object.entries(request.fields)) args.push("-f", `${name}=${value}`);
-  gh([...args, "--silent"]);
+  gh([...ghArgs(request), "--silent"]);
   console.log(`green-main now names ${sha} (${action})`);
 }
 

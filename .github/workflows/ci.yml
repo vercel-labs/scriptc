@@ -1892,6 +1892,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          # A rerun of an older push needs the newer commits to tell whether the tag already names one.
+          fetch-depth: 0
           persist-credentials: false
       - name: Move the green-main tag
         env:

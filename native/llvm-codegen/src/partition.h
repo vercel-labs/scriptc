@@ -39,10 +39,12 @@ struct ProgramPartitions {
 // metadata node reaches are left out of every partition. Returns nullopt
 // for any construct outside the emitter's narrow top-level grammar; callers
 // then split a parsed module. With SkipDominated, a division that
-// dominatedPartitions rejects has no Sources.
+// dominatedPartitions rejects has no Sources. Jobs caps the partitions
+// assembled at once (0: one per hardware thread).
 std::optional<ProgramPartitions> partitionProgramText(llvm::StringRef Text,
                                                       unsigned Count,
-                                                      bool SkipDominated);
+                                                      bool SkipDominated,
+                                                      unsigned Jobs);
 
 // Whether the largest partition would hold more than two thirds of the
 // program's function bytes.

@@ -12,6 +12,8 @@
  *   zig           the pinned Zig (runtime pack C/C++ compiler and archiver)
  *   cmake         CMake, which the LLVM helper is configured with
  *   ninja         CMake's generator
+ *   sysroot       static zlib and zstd libraries and headers: the static LLVM
+ *                 helper links -lz and -lzstd, which the image does not ship
  *
  * Every archive is checked against its pinned SHA-256 before it is unpacked.
  * A checkout may carry files under .ci/ (git does not refuse a forced add of
@@ -24,6 +26,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -34,9 +37,9 @@ import {
 } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inflateRawSync } from "node:zlib";
+import { gunzipSync, inflateRawSync, zstdDecompressSync } from "node:zlib";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const ci = join(root, ".ci");
@@ -80,6 +83,18 @@ const sources = [
     name: "ninja-1.13.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
     url: "https://files.pythonhosted.org/packages/6e/53/ebfed7b689c338dd8ebeec9c0730c8d56821292f14e2536e5f3ef1a05744/ninja-1.13.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
     sha256: "65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c",
+  },
+  {
+    // Ubuntu 24.04's development packages: their static archives and headers are copied into the sysroot. The
+    // task image is the same release, but does not ship the -dev packages.
+    name: "zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb",
+    url: "https://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb",
+    sha256: "419902a649e1078f24596cdf31ced9c839519828790f59888056fcdcd58e8a28",
+  },
+  {
+    name: "libzstd-dev_1.5.5+dfsg2-2build1_amd64.deb",
+    url: "https://archive.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd-dev_1.5.5+dfsg2-2build1_amd64.deb",
+    sha256: "2692254b78b0beeb284cda9bd34883ba470881475bc7c0eefbef479404bcfd23",
   },
 ];
 
@@ -166,6 +181,45 @@ function place(from, to) {
   renameSync(from, to);
 }
 
+/** Unpacks the data archive of a Debian package into `directory` and returns it. */
+function extractDeb(deb, directory) {
+  const bytes = readFileSync(deb);
+  if (bytes.toString("ascii", 0, 8) !== "!<arch>\n")
+    throw new Error(`${deb} is not a Debian package archive`);
+  let offset = 8;
+  while (offset + 60 <= bytes.length) {
+    const name = bytes
+      .toString("ascii", offset, offset + 16)
+      .trim()
+      .replace(/\/$/, "");
+    const size = Number(bytes.toString("ascii", offset + 48, offset + 58).trim());
+    if (!Number.isSafeInteger(size) || size < 0) throw new Error(`${deb} has a bad member size`);
+    const start = offset + 60;
+    if (name.startsWith("data.tar")) {
+      const data = bytes.subarray(start, start + size);
+      const tar = name.endsWith(".zst")
+        ? zstdDecompressSync(data)
+        : name.endsWith(".gz")
+          ? gunzipSync(data)
+          : data;
+      mkdirSync(directory, { recursive: true });
+      const path = join(directory, "data.tar");
+      writeFileSync(path, tar);
+      execFileSync("tar", ["-xf", path, "-C", directory], { stdio: "inherit" });
+      rmSync(path);
+      return directory;
+    }
+    offset = start + size + (size % 2);
+  }
+  throw new Error(`${deb} has no data archive`);
+}
+
+/** Copies a file out of an unpacked Debian package. */
+function copyFromDeb(directory, from, to) {
+  mkdirSync(dirname(to), { recursive: true });
+  copyFileSync(join(directory, from), to);
+}
+
 async function main() {
   // Nothing already under .ci/ is an input: the checkout may carry files there, and the archives it could carry
   // are only accepted when their SHA-256 matches the pin.
@@ -190,6 +244,31 @@ async function main() {
     join(toolchain, "ninja"),
   );
 
+  // The static LLVM helper links -lz and -lzstd. The image has the runtime libraries but no development files, so
+  // the pinned Ubuntu packages supply the static archives and headers; run-lane puts the sysroot on the compilers'
+  // LIBRARY_PATH and CPATH.
+  const sysroot = join(toolchain, "sysroot");
+  const zlib = extractDeb(
+    archives.get("zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb"),
+    join(staging, "zlib"),
+  );
+  for (const [from, to] of [
+    ["usr/lib/x86_64-linux-gnu/libz.a", "lib/libz.a"],
+    ["usr/include/zlib.h", "include/zlib.h"],
+    ["usr/include/zconf.h", "include/zconf.h"],
+  ])
+    copyFromDeb(zlib, from, join(sysroot, to));
+  const zstd = extractDeb(
+    archives.get("libzstd-dev_1.5.5+dfsg2-2build1_amd64.deb"),
+    join(staging, "zstd"),
+  );
+  for (const [from, to] of [
+    ["usr/lib/x86_64-linux-gnu/libzstd.a", "lib/libzstd.a"],
+    ["usr/include/zstd.h", "include/zstd.h"],
+    ["usr/include/zstd_errors.h", "include/zstd_errors.h"],
+  ])
+    copyFromDeb(zstd, from, join(sysroot, to));
+
   for (const path of [
     "llvm-22.1.8/bin/llvm-config",
     "llvm-22.1.8/bin/clang",
@@ -197,6 +276,10 @@ async function main() {
     "zig/zig",
     "cmake/bin/cmake",
     "ninja/ninja",
+    "sysroot/lib/libz.a",
+    "sysroot/lib/libzstd.a",
+    "sysroot/include/zlib.h",
+    "sysroot/include/zstd.h",
   ])
     if (!existsSync(join(toolchain, path))) throw new Error(`.ci/toolchain is missing ${path}`);
 

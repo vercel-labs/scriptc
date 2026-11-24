@@ -10,6 +10,6 @@
 // has no lowering (the default-locale form lowers over ICU).)
 const up = Math.cbrt(2);
 const tau = Math.PI * 2;
-const price = (19.99).toLocaleString("de-DE");
+const price = (19.99).toLocaleString(["de-DE"]);
 const n = Number.parseFloat("3.14");
 void n;

@@ -138,3 +138,11 @@ await attempt("algorithm mismatch", () => crypto.subtle.wrapKey("pkcs8", ecdsa.p
 await attempt("unwrap algorithm mismatch", () =>
   crypto.subtle.unwrapKey("pkcs8", wrappedEd, kwKek, { name: "AES-GCM", iv }, { name: "Ed25519" }, true, ["sign"]),
 );
+// AES-KW takes only a multiple of 8 bytes, so a P-256 SPKI (91 bytes) and
+// 24 unwrapped bytes that are not a valid SPKI both fail like Node.
+await attempt("kw spki", () => crypto.subtle.wrapKey("spki", ecdsa.publicKey, kwKek, "AES-KW"));
+await attempt("kw unwrap spki", () =>
+  crypto.subtle.unwrapKey("spki", new Uint8Array(24), kwKek, "AES-KW", { name: "ECDSA", namedCurve: "P-256" }, true, [
+    "verify",
+  ]),
+);

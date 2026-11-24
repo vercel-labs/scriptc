@@ -12,8 +12,11 @@ const toolchainSource = readFileSync(
   new URL("../../scripts/ci-vercel/toolchain.mjs", import.meta.url),
   "utf8",
 );
+const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+  scripts: Record<string, string>;
+};
 const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
-  tasks: Record<string, { env?: string[]; inputs?: string[] }>;
+  tasks: Record<string, { env?: string[]; inputs?: string[]; tags?: string[] }>;
 };
 
 function runLane(args: string[], env: Record<string, string>) {
@@ -44,7 +47,7 @@ test("the effect tasks hash the branch and pull request they sample for", () => 
   const effects = Object.entries(turbo.tasks).filter(([name]) =>
     name.startsWith("//#ci:lane:effects:"),
   );
-  expect(effects.map(([name]) => name)).toHaveLength(34);
+  expect(effects.map(([name]) => name)).toHaveLength(98);
   for (const [name, task] of effects)
     expect(task.env, name).toEqual(
       expect.arrayContaining([
@@ -92,4 +95,31 @@ test("the toolchain provides the static zlib and zstd the helper links", () => {
   expect(toolchainSource).toContain("sysroot/lib/libzstd.a");
   expect(runnerSource).toContain("LIBRARY_PATH");
   expect(runnerSource).toContain("CPATH");
+});
+
+test("the Vercel lanes are resharded to keep each task under the runner deadline", () => {
+  const names = Object.keys(turbo.tasks);
+  const count = (pattern: RegExp) => names.filter((name) => pattern.test(name)).length;
+  expect(count(/^\/\/#ci:lane:test:plain:\d+$/)).toBe(60);
+  expect(count(/^\/\/#ci:lane:test:san:\d+$/)).toBe(90);
+  expect(count(/^\/\/#ci:lane:effects:(plain|san):\d+$/)).toBe(96);
+  expect(count(/^\/\/#ci:lane:islands:\d+$/)).toBe(8);
+  expect(count(/^\/\/#ci:lane:llvm-artifacts:/)).toBe(9);
+  // The monolithic builds stay in the task graph for local runs but are no longer selected by Vercel CI.
+  for (const name of names.filter((name) =>
+    /^\/\/#ci:(lane:(bootstrap|native-profile|native-frontend-san:|three-nodes-san)|setup:seed:)/.test(
+      name,
+    ),
+  ))
+    expect(turbo.tasks[name]!.tags ?? [], name).not.toContain("ci");
+});
+
+test("every Vercel task has a package script that runs it", () => {
+  for (const name of Object.keys(turbo.tasks).filter((name) => name.startsWith("//#"))) {
+    const script = pkg.scripts[name.slice(3)];
+    expect(script, name).toBeDefined();
+    expect(script, name).toMatch(
+      /^(node scripts\/ci-vercel\/run-lane\.mjs|node scripts\/ci-vercel\/toolchain\.mjs)/,
+    );
+  }
 });

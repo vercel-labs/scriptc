@@ -439,9 +439,14 @@ static bool scr_tls_version_dyn(const ScrDyn *v, const char *which, int def, int
  * Node's default security level allows too. Answers false when no version
  * in [min, max] is available (a maximum below 1.2, or min above max), which
  * Node reports as ERR_SSL_NO_PROTOCOLS_AVAILABLE when the handshake starts. */
-static bool scr_tls_conf_versions(mbedtls_ssl_config *conf, int min, int max) {
+static bool scr_tls_versions_available(int min, int max) {
   if (min < 12) min = 12;
-  if (max < min) return false;
+  return max >= min;
+}
+
+static bool scr_tls_conf_versions(mbedtls_ssl_config *conf, int min, int max) {
+  if (!scr_tls_versions_available(min, max)) return false;
+  if (min < 12) min = 12;
   mbedtls_ssl_conf_min_tls_version(conf, min == 13 ? MBEDTLS_SSL_VERSION_TLS1_3 : MBEDTLS_SSL_VERSION_TLS1_2);
   mbedtls_ssl_conf_max_tls_version(conf, max == 13 ? MBEDTLS_SSL_VERSION_TLS1_3 : MBEDTLS_SSL_VERSION_TLS1_2);
   return true;
@@ -2458,9 +2463,12 @@ ScrNetServer *scr_tls_create_server_sni(const char *cert, size_t cert_len, const
 
 static ScrNetServer *scr_https_create_server_auth(const char *cert, size_t cert_len, const char *key,
                                                   size_t key_len, ScrClosure *handler /*moves*/,
-                                                  ScrHttpReqFn fn, const ScrTlsClientAuth *auth /*nullable*/) {
+                                                  ScrHttpReqFn fn, const ScrTlsClientAuth *auth /*nullable*/,
+                                                  int min_version, int max_version) {
   ScrNetServer *s = scr_http_create_server(handler, fn);
   ScrTlsSrv *srv = scr_tls_srv_new(cert, cert_len, key, key_len, true /* ALPN http/1.1 */);
+  (void)scr_tls_conf_versions(&srv->conf, min_version, max_version);
+  srv->max_tls12 = max_version == 12;
   scr_tls_srv_client_auth(srv, auth);
   /* wrap the parser hook: TLS first, parser at establishment */
   scr_net_server_get_native_conn(s, &srv->inner_conn, &srv->inner_ctx, &srv->inner_ctx_free);
@@ -2473,7 +2481,7 @@ static ScrNetServer *scr_https_create_server_auth(const char *cert, size_t cert_
 ScrNetServer *scr_https_create_server(const char *cert, size_t cert_len, const char *key,
                                        size_t key_len, ScrClosure *handler /*moves*/,
                                        ScrHttpReqFn fn) {
-  return scr_https_create_server_auth(cert, cert_len, key, key_len, handler, fn, NULL);
+  return scr_https_create_server_auth(cert, cert_len, key, key_len, handler, fn, NULL, 12, 13);
 }
 
 /* The SNI-callback form of the allowHTTP1 compatibility server: the same
@@ -3882,14 +3890,33 @@ ScrNetServer *scr_https_create_server_dyn(const ScrDyn *opts /*borrowed*/,
     scr_closure_release(handler);
     return NULL;
   }
+  int min_version = 12, max_version = 13;
+  if (!scr_tls_versions_dyn(opts, &min_version, &max_version, "https.createServer")) {
+    scr_https_release_http_options(&http);
+    scr_dyn_release(plain);
+    scr_closure_release(handler);
+    return NULL;
+  }
   if (!scr_tls_srv_opts_walk_ex(opts, "https.createServer", &cert, &key, false, &auth)) {
     scr_https_release_http_options(&http);
     scr_dyn_release(plain);
     scr_closure_release(handler);
     return NULL;
   }
+  if (!scr_tls_versions_available(min_version, max_version)) {
+    scr_bytes_release(cert);
+    scr_bytes_release(key);
+    scr_bytes_release(auth.ca);
+    scr_https_release_http_options(&http);
+    scr_dyn_release(plain);
+    scr_closure_release(handler);
+    scr_tls_opt_fence("https.createServer", "maxVersion",
+                      "a version range with neither TLSv1.2 nor TLSv1.3 has no lowering");
+    return NULL;
+  }
   ScrNetServer *s = scr_https_create_server_auth((const char *)cert->data, cert->len,
-                                                  (const char *)key->data, key->len, handler, fn, &auth);
+                                                  (const char *)key->data, key->len, handler, fn, &auth,
+                                                  min_version, max_version);
   scr_bytes_release(auth.ca);
   if (has_http) scr_https_apply_http_options(s, &http);
   scr_https_release_http_options(&http);

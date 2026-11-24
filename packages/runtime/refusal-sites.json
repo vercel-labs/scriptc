@@ -1915,6 +1915,12 @@
  },
  {
   "file": "scr_tls.c",
+  "function": "scr_https_create_server_dyn",
+  "message": "a version range with neither TLSv1.2 nor TLSv1.3 has no lowering",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_tls.c",
   "function": "scr_tls_srv_of_server",
   "message": "%s on a server that is not a tls or https server is not supported yet",
   "code": "SC2020"

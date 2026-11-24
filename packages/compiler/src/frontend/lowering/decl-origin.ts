@@ -31,6 +31,7 @@ import type { IrExpr, IrModule } from "../../ir/ir.js";
 import { everyModuleNode } from "../../ir/traverse.js";
 import { trackedReadFile } from "../input-tracker.js";
 import { isInstalledPackagePath } from "../resolve.js";
+import type { FunctionCensus } from "./function-census.js";
 import * as ts from "../ts7/adapter.js";
 
 export const ORIGIN_SEPARATOR = "\x1f";
@@ -666,8 +667,22 @@ export function renderOriginNote(origin: string, arm: string, windows = false): 
  * whose check was later replaced leaves its origin behind), renumbered in
  * first-use order; drops the table when none is left, so the runtime unit
  * is not linked for nothing. */
-export function compactDeclOrigins(mod: IrModule): void {
+export function compactDeclOrigins(mod: IrModule, census: FunctionCensus): void {
   const table = mod.declOrigins ?? [];
+  // Only a checked conversion carries an origin. With none in any function
+  // body, every origin is unused, and the whole-module walk (which visits
+  // every type tree too) can be skipped.
+  let anyCheck = false;
+  for (const fn of mod.functions) {
+    if (census.hasExpr(fn, "dynCheck")) {
+      anyCheck = true;
+      break;
+    }
+  }
+  if (!anyCheck) {
+    delete mod.declOrigins;
+    return;
+  }
   const remap = new Map<number, number>();
   const used: string[] = [];
   // A node the IR shares at several places is renumbered once.

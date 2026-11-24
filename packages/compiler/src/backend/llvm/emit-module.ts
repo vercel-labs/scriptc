@@ -632,6 +632,14 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // A program that can register an 'error' listener on a child installs
   // the builder of a failed spawn's error object (runtime-features.ts).
   const usesChildErrorEvent = runtimeFeatures.childErrorEvent;
+  // Programs that can reach the child's checked-dynamic kill fill the
+  // inspect unit's renderer hook (the unit is linked whenever this fires):
+  // scr_child_kill_dyn's own call reaches it, and so does the dynamic
+  // dispatcher's route, which only exists in a program that links the
+  // dynamic tier anyway — keeping the renderer alive there costs nothing,
+  // while a typed program that never touches the dynamic tier drops it.
+  const usesChildKillDyn =
+    runtimeFeatures.childKillDyn || (runtimeFeatures.inspect && runtimeFeatures.dynTier);
   // fsPromises.watch iterates over the watcher unit, so it installs the
   // same loop hooks.
   const usesFsWatch = runtimeFeatures.fsWatch || runtimeFeatures.fsWatchEvents;
@@ -700,6 +708,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
   if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
+  if (usesChildKillDyn) emitter.declare(`declare void @scr_insp_install_hook()`);
   const childStreamBoxes =
     usesChildProcess &&
     usesStream &&
@@ -1532,6 +1541,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       : []),
     ...(usesChildProcess ? [`  call void @scr_child_dyn_install()`] : []),
     ...(usesChildErrorEvent ? [`  call void @scr_child_error_event_install()`] : []),
+    ...(usesChildKillDyn ? [`  call void @scr_insp_install_hook()`] : []),
     ...(childStreamBoxes
       ? [
           `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,

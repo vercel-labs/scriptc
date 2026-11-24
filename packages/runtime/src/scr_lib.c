@@ -432,7 +432,7 @@ bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args) {
  * the archive's objects free of any atexit reference — the K8 ambient
  * audit's bar). */
 /* The inspect renderer for units that cannot link the inspect unit: the
- * inspect unit installs this from its constructor in executable builds. */
+ * compiler's install call fills it for programs that need it. */
 ScrStr *(*scr_insp_dyn_s_hook)(ScrDyn *d, double depth) = NULL;
 
 void scr_lib_init(int argc, char **argv) {

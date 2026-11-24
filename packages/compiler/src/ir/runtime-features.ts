@@ -1856,6 +1856,12 @@ const RUNTIME_FEATURE_RULES = {
    * program that never reads `.error` keeps the default object and the
    * result container exactly as they were. */
   childErrorFields: rule({ fns: ["spawnRes.error"] }),
+  /** child.kill's checked-dynamic signal renders an invalid value with the
+   * inspect unit's text: the compiler installs that unit's renderer hook
+   * for programs that call it (scr_inspect.c, scr_insp_install_hook). A
+   * program that only inspects other values keeps no reference to the
+   * renderer, so the dynamic tier it reaches stays out of the link. */
+  childKillDyn: rule({ fns: ["child.killDyn"] }),
   /** pause(), resume(), isPaused() and readableFlowing on a child's output
    * stream: Node's flowing state lives on the handle in a build of
    * scr_child.c of its own (SCR_CHILD_STREAM_FLOW), so a program that never
@@ -3043,6 +3049,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
+    childKillDyn: false,
     childStreamFlow: false,
     childErrorEvent: false,
     declAdopt: false,

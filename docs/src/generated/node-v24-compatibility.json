@@ -35570,8 +35570,8 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "detail": "Exercised by differential programs written as a JavaScript module and as a TypeScript source; the claim covers the call shapes they use.",
+        "status": "supported",
+        "detail": "Implemented by the node:http server lowering and runtime; differential corpus programs pin the supported shapes under Node.",
         "verification": "test-backed"
       }
     },

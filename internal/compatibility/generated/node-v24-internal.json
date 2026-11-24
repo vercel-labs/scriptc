@@ -20769,6 +20769,7 @@
           "tests/fixtures/node-types/keys.ts",
           "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
+          "tests/harness/crypto-unsupported-audit.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21492,7 +21493,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21545,7 +21547,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21809,7 +21812,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21839,7 +21843,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -58970,8 +58975,10 @@
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
+          "tests/corpus/http-client-connect-agent.ts",
           "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/http-client-upgrade-agent.ts",
           "tests/corpus/http-global-proxy-auth-port.ts",
           "tests/corpus/http-global-proxy-bypass.ts",
           "tests/corpus/http-global-proxy-plain.ts",
@@ -60333,11 +60340,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'connect'",
         "tests": [
           "tests/corpus/compat-http-client-connect.ts",
-          "tests/corpus/compat-http-client-connect.mjs"
+          "tests/corpus/compat-http-client-connect.mjs",
+          "tests/corpus/http-client-connect-agent.ts",
+          "tests/corpus/http-client-upgrade-agent.ts"
         ]
       },
       "anchorSource": "exact"
@@ -117587,6 +117596,7 @@
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/fixtures/node-types/webcrypto-keys.ts",
+          "tests/harness/crypto-unsupported-audit.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -122115,7 +122125,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122163,7 +122174,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122211,7 +122223,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122259,7 +122272,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122353,7 +122367,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122401,7 +122416,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122478,7 +122494,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122526,7 +122543,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122574,7 +122592,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122622,7 +122641,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122670,7 +122690,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122718,7 +122739,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"

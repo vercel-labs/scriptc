@@ -360,7 +360,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             : type.params[0]!.kind === "string"
               ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-      params = ["ptr", "ptr", "ptr"];
+      params = ["ptr", "ptr"];
       break;
     case "http2.sessionOnPing":
       runtime = "scr_http2_session_on_ping";
@@ -370,7 +370,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
           : type.params[0]!.kind === "dyn"
             ? "scr_net_data_thunk_dyn"
             : "scr_net_data_thunk_bytes";
-      params = ["ptr", "ptr", "ptr"];
+      params = ["ptr", "ptr"];
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";

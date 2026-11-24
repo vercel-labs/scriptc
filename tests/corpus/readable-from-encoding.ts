@@ -79,3 +79,31 @@ try {
   console.log(`typed catch ${e.code} ${e.message}`);
 }
 console.log("typed after");
+
+// The encoding initializer evaluates after the source value and before
+// from.js opens the source's iterator: a throwing initializer leaves the
+// iterator unopened, and the effects run in Node's order.
+const orderLog: string[] = [];
+class IteratorSource {
+  [Symbol.iterator](): Iterator<Buffer> {
+    orderLog.push("iter");
+    return [Buffer.from("ab")][Symbol.iterator]();
+  }
+}
+const encode = (): "utf8" => {
+  orderLog.push("encode");
+  return "utf8";
+};
+const refuse = (): "utf8" => {
+  orderLog.push("refuse");
+  throw new Error("encoded");
+};
+await show("ordered", Readable.from(new IteratorSource(), { encoding: encode() }));
+console.log("ordered log", orderLog.join(","));
+orderLog.length = 0;
+try {
+  Readable.from(new IteratorSource(), { encoding: refuse() });
+  console.log("ordered missed");
+} catch (error) {
+  console.log(`ordered refused ${(error as Error).message} ${orderLog.join(",")}`);
+}

@@ -31,12 +31,17 @@ if (effectConcurrency !== undefined && effectConcurrency !== "1" && effectConcur
   throw new Error("SCRIPTC_EFFECT_TEST_CONCURRENCY must be 1 or 2");
 }
 
-const failureReporters = process.env["SCRIPTC_CI_FAILURES"]
+// A CI test job keeps its failures for the post-merge culprit search too (SCRIPTC_CI_FAILURE_ARCHIVE), not only for
+// the quarantine check (SCRIPTC_CI_FAILURES, set per task by scripts/ci-test.mjs).
+const failureReportsEnabled = Boolean(
+  process.env["SCRIPTC_CI_FAILURES"] || process.env["SCRIPTC_CI_FAILURE_ARCHIVE"],
+);
+const failureReporters = failureReportsEnabled
   ? [fileURLToPath(new URL("./scripts/ci-failure-reporter.mjs", import.meta.url))]
   : [];
 // With the failure reporter, the runner that counts the errors a test's body throws (scripts/ci-quarantine-runner.mjs),
 // so a hook's error is never taken for a quarantined test's.
-const failureRunner = process.env["SCRIPTC_CI_FAILURES"]
+const failureRunner = failureReportsEnabled
   ? { runner: fileURLToPath(new URL("./scripts/ci-quarantine-runner.mjs", import.meta.url)) }
   : {};
 

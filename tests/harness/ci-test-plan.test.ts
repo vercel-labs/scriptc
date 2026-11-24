@@ -138,7 +138,7 @@ test("the sanitized three.js nodes build leaves the Linux corpus for its own job
       "${{ github.workspace }}/tests/harness/lsan.supp",
     ),
   );
-  expect(job.steps.at(-1)!.run).toBe(
+  expect(lastRun(job)).toBe(
     `pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"`,
   );
 });
@@ -192,7 +192,7 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   );
   // Two cores: the sanitized build starts one clang per core, and four of them beside the
   // compile in Node need more than the runner's 16 GB.
-  expect(job.steps.at(-1)!.run).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
+  expect(lastRun(job)).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
   expect(jobs["test"]!.needs).toContain("native_frontend_san");
 });
 
@@ -502,6 +502,10 @@ function expand(value: string, context: { event: string; macosSuite: string | nu
   );
 }
 
+/** The last step that runs a command: a job may end with an upload step that only keeps a report. */
+const lastRun = (job: { steps: { run?: string }[] }) =>
+  job.steps.filter((step) => step.run !== undefined).at(-1)!.run;
+
 test("pull requests run the full suite on Linux and the darwin suite on macOS", () => {
   type Job = {
     "runs-on": string;
@@ -599,14 +603,14 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(coreStep).toBeLessThan(linux.steps.length - 1);
   // Linux runs the suites in a memory-capped scope where systemd manages the
   // runner, and directly elsewhere.
-  const linuxRun = linux.steps.at(-1)!.run as string;
+  const linuxRun = lastRun(linux) as string;
   expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
   expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
   expect(linuxRun).toMatch(
     /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
   );
   expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
-  expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
+  expect(lastRun(macos)).toBe("node scripts/ci-test.mjs");
   expect(macos.strategy.matrix.flavor).toEqual(["plain", "san"]);
   expect(typeof linux.strategy.matrix.flavor).toBe("string");
 });

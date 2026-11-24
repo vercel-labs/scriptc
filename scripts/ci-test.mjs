@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -80,7 +80,12 @@ async function main() {
       `::warning title=Expired flaky-test quarantine::${entry.test} (owner ${entry.owner}) expired on ` +
         `${entry.expires} and fails the run again: fix it, or renew the entry in tests/harness/flaky-quarantine.json.`,
     );
-  const reports = mkdtempSync(join(tmpdir(), "scriptc-ci-failures-"));
+  // A job that keeps its reports gives the post-merge bisect the failing tests (SCRIPTC_CI_FAILURE_ARCHIVE); the
+  // others use a temporary directory, deleted at the end.
+  const archive = process.env.SCRIPTC_CI_FAILURE_ARCHIVE;
+  const reports = archive
+    ? (mkdirSync(archive, { recursive: true }), archive)
+    : mkdtempSync(join(tmpdir(), "scriptc-ci-failures-"));
   let taskIndex = 0;
   try {
     await runCiTestPlan(
@@ -88,7 +93,10 @@ async function main() {
       (task) =>
         new Promise((resolve, reject) => {
           const started = Date.now();
-          const reportPath = join(reports, `${taskIndex++}.json`);
+          const reportPath = join(
+            reports,
+            `${taskIndex++}-${task.name.replace(/[^a-z0-9]+/gi, "-")}.json`,
+          );
           console.log(`[CI] Starting ${task.name} (${task.env.SCRIPTC_TEST_WORKERS} workers)`);
           const child = spawn("pnpm", task.args, {
             cwd: fileURLToPath(new URL("../", import.meta.url)),
@@ -118,7 +126,7 @@ async function main() {
         }),
     );
   } finally {
-    rmSync(reports, { recursive: true, force: true });
+    if (!archive) rmSync(reports, { recursive: true, force: true });
   }
 }
 

@@ -633,6 +633,16 @@ static void scr_tls_srv_client_auth(ScrTlsSrv *s, const ScrTlsClientAuth *auth) 
   if (!auth->request) return;
   s->request_cert = true;
   s->reject_unauthorized = auth->reject;
+  /* A resumed handshake carries no peer certificate, and this engine's
+   * ticket restores the session without the peer identity or its
+   * verification result. A server that requires client certificates
+   * therefore issues and accepts no tickets: a resumption attempt becomes
+   * a full handshake that re-runs the requirement, and one ticket key can
+   * never carry a trust decision across contexts that verify differently. */
+#if defined(MBEDTLS_SSL_SESSION_TICKETS)
+  mbedtls_ssl_conf_session_tickets_cb(&s->conf, NULL, NULL, NULL);
+  mbedtls_ssl_conf_session_tickets(&s->conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
+#endif
   /* OPTIONAL: the handshake records the verdict and goes on, as Node's
    * verify callback does; scr_tls_handshake applies rejectUnauthorized */
   mbedtls_ssl_conf_authmode(&s->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
@@ -4976,6 +4986,16 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
 }
 
 
+/* An independent Buffer holding `b`'s bytes (+1): every getter answers a
+ * copy, so mutating a returned Buffer never changes the next answer (Node's
+ * session and ticket Buffers are independent too). */
+static ScrBytes *scr_tls_bytes_copy(const ScrBytes *b) {
+  ScrBytes *copy = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
+  copy->is_buffer = true;
+  if (b->len > 0) memcpy(copy->data, b->data, b->len);
+  return copy;
+}
+
 /* The client 'session' event: fires ONCE per socket with the serialized
  * mbedTLS session — the established session for TLS 1.2 (its ticket rides
  * the handshake), the ticket receipt for TLS 1.3. Node delivers the event
@@ -4985,7 +5005,7 @@ static ScrTlsSock *scr_tls_sock_of(ScrNetSocket *s) {
 /* The current session as a Buffer (+1), NULL when the handshake has no
  * resumable session yet (a TLS 1.3 client before its ticket). */
 static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
-  if (t->session_cached != NULL) return scr_bytes_retain(t->session_cached);
+  if (t->session_cached != NULL) return scr_tls_bytes_copy(t->session_cached);
   mbedtls_ssl_session sess;
   mbedtls_ssl_session_init(&sess);
   if (mbedtls_ssl_get_session(&t->ssl, &sess) != 0) {
@@ -5010,7 +5030,7 @@ static ScrBytes *scr_tls_session_bytes(ScrTlsSock *t) {
     scr_bytes_release(buf);
     return NULL;
   }
-  t->session_cached = scr_bytes_retain(buf);
+  t->session_cached = scr_tls_bytes_copy(buf);
   return buf;
 }
 
@@ -5325,7 +5345,7 @@ ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s) {
     if (b != NULL) scr_bytes_release(b);
   }
   if (t->ticket_cached == NULL) return scr_dyn_undefined();
-  ScrBytes *copy = scr_bytes_retain(t->ticket_cached);
+  ScrBytes *copy = scr_tls_bytes_copy(t->ticket_cached);
   ScrDyn *d = scr_dyn_new_bytes(copy);
   scr_bytes_release(copy);
   return d;

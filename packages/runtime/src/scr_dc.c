@@ -379,17 +379,23 @@ static void dc_throw_apply(const ScrDyn *fn) {
 /* ── bindStore / runStores (the AsyncLocalStorage integration) ─────────
  * bindStore is per-store SET semantics (a re-bind replaces the
  * transform); runStores enters every bound store with transform(data)
- * (identity without a transform), publishes INSIDE the entered contexts
- * (subscribers observe getStore(), Node's shape), runs fn with thisArg
- * bound and the arguments forwarded, and restores in reverse — the
- * finally, so a throw still restores. A transform throw skips its store
- * and surfaces as an uncaught exception on the next tick, as in Node. */
+ * (identity only for an undefined transform), publishes INSIDE the entered
+ * contexts (subscribers observe getStore(), Node's shape), runs fn with
+ * thisArg bound and the arguments forwarded, and restores in reverse — the
+ * finally, so a throw still restores. Node wraps the stores in insertion
+ * order, so the LAST-bound store is outermost and its transform runs first;
+ * the walk below enters them in that order. A transform throw skips its
+ * store and surfaces as an uncaught exception on the next tick, as in
+ * Node. */
 
 void scr_dc_chan_bind_store(double handle, double als_id, ScrDyn *transform) {
   ScrDcChannel *ch = dc_of(handle);
-  /* Node keeps the transform value as given (a non-function one throws when
-   * runStores calls it); a falsy one is the identity. */
-  ScrDyn *t = (transform != NULL && scr_dyn_truthy(transform)) ? scr_dyn_retain(transform) : NULL;
+  /* Node keeps the transform value as given, and only an undefined transform
+   * is the identity: null, false, 0 and '' are stored and throw when
+   * runStores calls them. */
+  ScrDyn *t = (transform != NULL && transform->kind != SCR_DYN_UNDEF)
+                  ? scr_dyn_retain(transform)
+                  : NULL;
   for (size_t i = 0; i < ch->nbinds; i++) {
     if (ch->binds[i].als_id == als_id) {
       scr_dyn_release(ch->binds[i].transform);
@@ -423,22 +429,46 @@ bool scr_dc_chan_unbind_store(double handle, double als_id) {
   return false;
 }
 
+/* One store the walk will enter, captured before any transform runs. */
+typedef struct {
+  double als_id;
+  ScrDyn *transform; /* owned by the snapshot while the walk runs */
+} ScrDcEnter;
+
 /* Enter every bound store (transform(data) or data itself); the returned
  * malloc'd array of PREVIOUS snapshots (*n_out entries) restores in
- * reverse. A store whose transform throws is not entered. */
+ * reverse. Node wraps the stores in insertion order, so the last-bound
+ * store is outermost: its transform runs first and its context is entered
+ * first, leaving the first-bound store innermost. A store whose transform
+ * throws is not entered.
+ *
+ * The bindings are snapshotted before the first transform runs. A transform
+ * may unbind or bind stores, and Node builds its chain of store calls before
+ * it runs any of them, so this run keeps the bindings it started with (and
+ * never reads a slot an unbind released). */
 static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out) {
   *n_out = 0;
-  if (ch->nbinds == 0) return NULL;
-  ScrAlsCtx **prevs = malloc(ch->nbinds * sizeof *prevs);
-  if (!prevs) {
+  size_t n = ch->nbinds;
+  if (n == 0) return NULL;
+  ScrDcEnter *enters = malloc(n * sizeof *enters);
+  ScrAlsCtx **prevs = malloc(n * sizeof *prevs);
+  if (enters == NULL || prevs == NULL) {
+    free(enters);
+    free(prevs);
     fputs("scriptc: out of memory\n", stderr);
     abort();
   }
-  for (size_t i = 0; i < ch->nbinds; i++) {
+  for (size_t i = 0; i < n; i++) {
+    enters[i].als_id = ch->binds[i].als_id;
+    enters[i].transform =
+        ch->binds[i].transform != NULL ? scr_dyn_retain(ch->binds[i].transform) : NULL;
+  }
+  for (size_t k = n; k > 0; k--) {
+    ScrDcEnter *entry = &enters[k - 1];
     ScrDyn *value;
-    if (ch->binds[i].transform != NULL) {
+    if (entry->transform != NULL) {
       ScrDyn *args[1] = {data};
-      if (!scr_dyn_is_callable(ch->binds[i].transform)) {
+      if (!scr_dyn_is_callable(entry->transform)) {
         /* Node calls the stored value, so a non-function answers V8's call
          * TypeError for its own local name; the throw is deferred as a
          * transform throw is. */
@@ -447,7 +477,7 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
         dc_defer_pending_throw();
         continue;
       }
-      value = scr_dyn_call(ch->binds[i].transform, args, 1, "transform");
+      value = scr_dyn_call(entry->transform, args, 1, "transform");
       if (value == NULL) {
         dc_defer_pending_throw();
         continue;
@@ -455,10 +485,12 @@ static ScrAlsCtx **dc_stores_enter(ScrDcChannel *ch, ScrDyn *data, size_t *n_out
     } else {
       value = scr_dyn_retain(data);
     }
-    prevs[*n_out] = scr_als_enter(ch->binds[i].als_id, value);
+    prevs[*n_out] = scr_als_enter(entry->als_id, value);
     scr_dyn_release(value);
     (*n_out)++;
   }
+  for (size_t i = 0; i < n; i++) scr_dyn_release(enters[i].transform);
+  free(enters);
   return prevs;
 }
 

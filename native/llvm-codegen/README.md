@@ -45,6 +45,8 @@ WebAssembly code generation differs from LLVM's default pipeline in two ways tha
 
 `--cache-dir <dir>` names a private directory the caller owns for one helper build. Simplified partitions are stored under the hash of their exact source and objects under the hash of the exact module after importing, each with a trailing digest and published by rename, so a rebuild recompiles only the partitions an edit can affect. Partitions drop the names of their struct types before the thin link, which would otherwise number same-named types from different partitions in an order that any edit can shift, changing the module after importing in partitions the edit did not touch.
 
+`--jobs <n>` caps how many partitions a build parses, optimizes, thin-links and compiles at once (the default is one per hardware thread). scriptc passes the number the build's available memory can give a per-partition peak; the objects it emits do not depend on the count.
+
 `--import-bitcode <unit.bc>`, given once per runtime-pack unit that ships bitcode, imports runtime functions for inlining; scriptc's program builds do not pass it. Small runtime functions reachable from the program's runtime calls are imported as `available_externally` so LLVM can inline them; the runtime objects remain the only definitions. The helper never runs a sanitizer pass, so with import it also drops the emitter's inert `sanitize_address` attributes, which would otherwise block that inlining. Without `--import-bitcode` the module is optimized exactly as emitted.
 
 Runtime-pack builds emit each unit of the executable `speed` flavor through the helper:

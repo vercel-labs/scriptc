@@ -429,6 +429,7 @@ import type {
   SrcLoc,
 } from "../../ir/ir.js";
 import {
+  adoptsAtTypedSlot,
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
@@ -21023,6 +21024,22 @@ export class Lowerer {
         ),
       );
     if (!preservesIdentity || value.kind === "dynCheck") {
+      // A dynamic value can take the key's type as a live capsule when the
+      // target has one: the record is the very object the other name
+      // holds, so the collection's key identity survives (the popup store's
+      // untyped layer array feeding a Set of layer records). Any other
+      // conversion copies, which would change the key.
+      if (
+        value.kind !== "dynCheck" &&
+        value.type.kind === "dyn" &&
+        adoptsAtTypedSlot(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        return sharedDynConversion(this, value, expected, locOf(node));
+      }
       this.noLowering(
         `collection key conversion from '${this.fmt(value.type)}' to '${this.fmt(expected)}' requiring a structural copy or dynamic conversion`,
         node,

@@ -81,6 +81,9 @@ struct ScrChild {
   ScrChildErrEntry *err_cbs;
   size_t n_err, cap_err;
   ScrClosure *exec_cb;
+  /* Mirrors scr_child.c: exec/execFile's callback ran (the exit path or an
+   * abort) — Node's exithandler guard. */
+  bool exec_fired;
   ScrExecFileFn exec_fn;
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
@@ -169,6 +172,9 @@ struct ScrChild {
   ScrChildErrEntry *err_cbs;
   size_t n_err, cap_err;
   ScrClosure *exec_cb;
+  /* Mirrors scr_child.c: exec/execFile's callback ran (the exit path or an
+   * abort) — Node's exithandler guard. */
+  bool exec_fired;
   ScrExecFileFn exec_fn;
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */

@@ -3485,33 +3485,39 @@ static bool scr_child_kill_dyn_head(ScrChild *c, const ScrDyn *signal, bool *kil
   return false;
 }
 
-/* The compiler's killDyn call: the feature rule links the inspect unit with
- * it, so the message is Node's inspect rendering. */
-bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
-  bool killed = false;
-  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
-  ScrStr *shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
-  scr_child_kill_dyn_throw(shown->data, shown->len);
-  scr_str_release(shown);
-  return false;
-}
-
-/* The dynamic dispatcher's route, which holds no reference to the inspect
- * unit: a program that never selected it still links, and the shared
- * inspect-lite renderer draws the message (exact for null, booleans,
- * numbers, strings and the empty shapes). */
-bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
-  bool killed = false;
-  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+/* The error text for a signal value that is not one: Node's inspect
+ * rendering when the inspect unit is linked (its constructor installs the
+ * hook, and the compiler's killDyn rule links it), the shared lite renderer
+ * otherwise. Throws ERR_UNKNOWN_SIGNAL. Borrows the value. */
+static void scr_child_kill_dyn_render(const ScrDyn *signal) {
   ScrStr *shown = scr_insp_dyn_s_hook ? scr_insp_dyn_s_hook((ScrDyn *)signal, 0) : NULL;
   if (shown != NULL) {
     scr_child_kill_dyn_throw(shown->data, shown->len);
     scr_str_release(shown);
-    return false;
+    return;
   }
   char rendered[160];
   const char *text = scr_dyn_inspect_lite(signal, rendered, sizeof rendered);
   scr_child_kill_dyn_throw(text, strlen(text));
+}
+
+/* The compiler's killDyn call: the feature rule links the inspect unit for
+ * it, and that unit installs the renderer hook, so the message is Node's
+ * inspect text. This entry itself holds no reference to the unit, so a
+ * runtime built without it still links. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  scr_child_kill_dyn_render(signal);
+  return false;
+}
+
+/* The dynamic dispatcher's route: the same renderer, without the compiler
+ * rule that selects the inspect unit on the other entry's behalf. */
+bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  scr_child_kill_dyn_render(signal);
   return false;
 }
 
@@ -7691,33 +7697,64 @@ static bool scr_child_kill_dyn_head(ScrChild *c, const ScrDyn *signal, bool *kil
   return false;
 }
 
-/* The compiler's killDyn call: the feature rule links the inspect unit with
- * it, so the message is Node's inspect rendering. */
-bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
-  bool killed = false;
-  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
-  ScrStr *shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
-  scr_child_kill_dyn_throw(shown->data, shown->len);
-  scr_str_release(shown);
-  return false;
-}
-
-/* The dynamic dispatcher's route, which holds no reference to the inspect
- * unit: a program that never selected it still links, and the shared
- * inspect-lite renderer draws the message (exact for null, booleans,
- * numbers, strings and the empty shapes). */
-bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
-  bool killed = false;
-  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+/* The error text for a signal value that is not one: Node's inspect
+ * rendering when the inspect unit is linked (its constructor installs the
+ * hook, and the compiler's killDyn rule links it), the shared lite renderer
+ * otherwise. Throws ERR_UNKNOWN_SIGNAL. Borrows the value. */
+static void scr_child_kill_dyn_render(const ScrDyn *signal) {
   ScrStr *shown = scr_insp_dyn_s_hook ? scr_insp_dyn_s_hook((ScrDyn *)signal, 0) : NULL;
   if (shown != NULL) {
     scr_child_kill_dyn_throw(shown->data, shown->len);
     scr_str_release(shown);
-    return false;
+    return;
   }
   char rendered[160];
   const char *text = scr_dyn_inspect_lite(signal, rendered, sizeof rendered);
   scr_child_kill_dyn_throw(text, strlen(text));
+}
+
+#ifdef SCR_CHILD_FOREIGN
+/* The checked-dynamic kill for a child a Node island made: the same
+ * sanitizer over the island's kill (there is no native state to read), and
+ * the same ERR_UNKNOWN_SIGNAL text for a value that is not a signal. */
+static bool scr_child_kill_dyn_island(ScrChild *c, const ScrDyn *signal) {
+  if (signal->kind == SCR_DYN_UNDEF)
+    return scr_child_island_ops->kill(c->island, NULL, (double)SIGTERM);
+  if (signal->kind == SCR_DYN_STR)
+    return scr_child_island_ops->kill(c->island, signal->v.str, 0);
+  if (signal->kind == SCR_DYN_NUM)
+    return scr_child_island_ops->kill(c->island, NULL, signal->v.num);
+  if (signal->kind == SCR_DYN_NULL) {
+    scr_child_kill_dyn_throw("null", 4);
+  } else if (signal->kind == SCR_DYN_BOOL) {
+    const char *text = signal->v.b ? "true" : "false";
+    scr_child_kill_dyn_throw(text, strlen(text));
+  } else {
+    scr_child_kill_dyn_render(signal);
+  }
+  return false;
+}
+#endif
+
+/* The compiler's killDyn call: the feature rule links the inspect unit for
+ * it, and that unit installs the renderer hook, so the message is Node's
+ * inspect text. This entry itself holds no reference to the unit, so a
+ * runtime built without it still links. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  SCR_IF_ISLAND(c, return scr_child_kill_dyn_island(c, signal));
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  scr_child_kill_dyn_render(signal);
+  return false;
+}
+
+/* The dynamic dispatcher's route: the same renderer, without the compiler
+ * rule that selects the inspect unit on the other entry's behalf. */
+bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  SCR_IF_ISLAND(c, return scr_child_kill_dyn_island(c, signal));
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  scr_child_kill_dyn_render(signal);
   return false;
 }
 

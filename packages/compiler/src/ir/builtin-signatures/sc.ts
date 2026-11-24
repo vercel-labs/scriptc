@@ -10,6 +10,14 @@ export const scSignatures = defineLibFnSignatures({
    * sc.buffer: the concatenated bytes, sc.arrayBuffer: an ArrayBuffer
    * dyn over them) or rejected with the stream's
    * error / ERR_STREAM_PREMATURE_CLOSE. */
+  /** The readable a consumer reads over an untyped argument: a native
+   * stream, or a web ReadableStream as Readable.from builds one (Node's
+   * consumers iterate their argument). Typed as a Duplex so the consumer
+   * slot accepts it; other values throw the not-supported message. */
+  "sc.source": {
+    argTypes: [DYN, STRING],
+    result: { kind: "object", className: "%Duplex" },
+  },
   "sc.text": { argTypes: [null], result: { kind: "promise", inner: STRING } },
   "sc.json": { argTypes: [null], result: { kind: "promise", inner: DYN } },
   "sc.buffer": { argTypes: [null], result: { kind: "promise", inner: BYTES_U8 } },

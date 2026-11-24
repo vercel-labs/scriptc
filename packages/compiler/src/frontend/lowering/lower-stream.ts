@@ -4441,18 +4441,19 @@ function lowerStreamModuleCallbackCall(
           "Node rejects the promise with 'stream is not async iterable' — pass a readable stream",
         );
       }
-      // An untyped argument unwraps to the native stream it holds; any
-      // other value is refused by name there (Node reads every async
-      // iterable, a web ReadableStream included).
+      // An untyped argument unwraps to the native stream it holds, or to
+      // the Readable Readable.from builds over a web ReadableStream, which
+      // Node's consumers reach through async iteration; any other value is
+      // refused by name there.
       const recv: IrExpr =
         argV.type.kind === "dyn"
           ? {
               kind: "libCall",
-              fn: "stream.unboxDyn",
+              fn: "sc.source",
               args: [
                 argV,
                 strLit(
-                  `stream/consumers.${bi.member} over an untyped value that is not a native stream is not supported yet`,
+                  `stream/consumers.${bi.member} over an untyped value that is not a native stream or web ReadableStream is not supported yet`,
                   locOf(args[0]!),
                 ),
               ],

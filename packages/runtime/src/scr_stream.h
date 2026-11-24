@@ -145,6 +145,10 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* The readable a stream/consumers call reads (+1): a native stream, or a
+ * web ReadableStream as Readable.from builds one (Node's consumers iterate
+ * their argument); NULL with `message` thrown for every other value. */
+ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *message);
 /* Whether pipeline() keeps a checked-dynamic first stage as an iterable
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */

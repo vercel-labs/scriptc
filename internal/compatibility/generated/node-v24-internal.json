@@ -122811,6 +122811,7 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/compat-stream-consumers-bytes.mjs",
           "tests/corpus/compat-stream-consumers-bytes.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
@@ -122971,10 +122972,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.blob",
         "tests": [
-          "tests/corpus/stream-consumers.ts"
+          "tests/corpus/stream-consumers.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -123025,11 +123027,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.bytes",
         "tests": [
           "tests/corpus/compat-stream-consumers-bytes.mjs",
-          "tests/corpus/compat-stream-consumers-bytes.ts"
+          "tests/corpus/compat-stream-consumers-bytes.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs"
         ]
       },
       "anchorSource": "exact"

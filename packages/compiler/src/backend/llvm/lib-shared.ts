@@ -2190,6 +2190,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sp.finished": "scr_sp_finished",
   // stream/consumers' promise consumers (+1 promises; may-throw pending
   // check — the 'newListener' meta emit can run user code).
+  "sc.source": "scr_stream_consumer_source",
   "sc.text": "scr_sc_text",
   "sc.json": "scr_sc_json",
   "sc.buffer": "scr_sc_buffer",

@@ -1088,7 +1088,7 @@ function renderNodeIslands(
 ): void {
   const n = report.islands.length + report.userModules.length;
   out.push(
-    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; a build needs the libnode pack for its target; --node-islands=${report.policy})`)}`,
   );
   if (n === 0) out.push(`    ${c(DIM, "none")}`);
   const widest = Math.max(0, ...report.islands.map((i) => i.class.length));

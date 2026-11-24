@@ -3044,6 +3044,10 @@ async function compileLibraryTracked(
     cacheRoot,
     earlyCacheOptions,
     profile.sidecar === null ? undefined : profile.sidecar.path,
+    // A dev library's translation unit carries the sources it was emitted
+    // from, so a cached one is reusable only when no edit moved a source
+    // position the frontend read (a comment or whitespace edit does).
+    carriesDebugSources(profile.optimization, false),
   );
   if (semanticHit !== null) {
     timing("semantic-cache-hit", { changed_sources: semanticHit.changedSources.length });
@@ -3087,6 +3091,9 @@ async function compileLibraryTracked(
       sanitizeAttributes: opts.sanitize === true,
       timing,
       ...inlineRcOption(profile.optimization, opts.sanitize === true),
+      // A dev library carries the sources a dev executable does, so native
+      // debuggers and stack frames name the TypeScript lines.
+      ...(carriesDebugSources(profile.optimization, false) ? { debugSources: sourceTexts } : {}),
     });
     timing("llvm-emit", {
       output_bytes:

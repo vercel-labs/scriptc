@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-pipeline-callback-ternary.mjs"
+ ],
+ "diags": []
+}

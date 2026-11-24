@@ -287,17 +287,7 @@ export class FunctionViews {
         this.looked.add(pair);
         const test = this.quietly(lowerer, () => this.throughHelper(lowerer, helper, view));
         if (test === null) continue;
-        let entry = this.helpers.get(name);
-        if (entry === undefined) {
-          entry = { own: helper.body, tests: new Map() };
-          this.helpers.set(name, entry);
-          // A fused pipeline calls the callback itself and would skip the
-          // tests: the helper leaves the registry fusion reads.
-          lowerer.arrHofInfo.delete(name);
-        }
-        entry.tests.set(view.factory.name, test);
-        const tests = entry.tests;
-        helper.body = [...[...tests.keys()].sort().map((key) => tests.get(key)!), ...entry.own];
+        this.addHelperTest(lowerer, helper, view.factory.name, test);
         // A caller of this helper that hands the callback a longer list
         // reaches the variadic function through the test above.
         if (view.source.rest === true && this.exactThrough) {
@@ -365,6 +355,77 @@ export class FunctionViews {
     };
   }
 
+  /** Installs `test` in the array-method helper under `name`, keeping the
+   * tests ahead of the helper's own body. */
+  private addHelperTest(lowerer: Lowerer, helper: IrFunction, name: string, test: IrStmt): void {
+    let entry = this.helpers.get(helper.name);
+    if (entry === undefined) {
+      entry = { own: helper.body, tests: new Map() };
+      this.helpers.set(helper.name, entry);
+      // A fused pipeline calls the callback itself and would skip the
+      // tests: the helper leaves the registry fusion reads.
+      lowerer.arrHofInfo.delete(helper.name);
+    }
+    entry.tests.set(name, test);
+    const tests = entry.tests;
+    helper.body = [...[...tests.keys()].sort().map((key) => tests.get(key)!), ...entry.own];
+  }
+
+  /** `if (f is a callable the program checked into this type) return <the
+   * same helper for the full parameter list>(…, <the callable checked into
+   * that list>, …)`, for the array-method helper `helper`. The callable
+   * reaches the function behind it with every argument the method passes.
+   * Null when the helper already passes everything or the wide signature
+   * is outside the boundary's domain. */
+  private throughBoundaryHelper(lowerer: Lowerer, helper: IrFunction): IrStmt | null {
+    const loc = helper.loc;
+    const recipe = lowerer.arrHofRecipes.get(helper.name);
+    const wide = recipe === undefined ? null : widerArrayHelper(lowerer, recipe, loc);
+    if (wide === null || wide === helper.name) return null;
+    const full = lowerer.liftedFnNamed(wide)?.params[1]?.type;
+    const callback = helper.params[1]!;
+    if (full?.kind !== "func" || callback.type.kind !== "func") return null;
+    if (
+      !canAdaptDynFuncTo(
+        full,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    )
+      return null;
+    const value: IrExpr = { kind: "varRef", localId: callback.localId, type: callback.type, loc };
+    const callable: IrExpr = {
+      kind: "dynCheck",
+      value: { kind: "viewSource", value, adapter: null, type: DYN, loc },
+      type: full,
+      loc,
+    };
+    const call: IrExpr = {
+      kind: "call",
+      callee: wide,
+      args: helper.params.map((param): IrExpr =>
+        param === callback
+          ? callable
+          : { kind: "varRef", localId: param.localId, type: param.type, loc },
+      ),
+      type: helper.returnType,
+      loc,
+    };
+    return {
+      kind: "if",
+      cond: { kind: "viewOf", value, adapter: null, type: BOOL, loc },
+      then:
+        helper.returnType.kind === "void"
+          ? [
+              { kind: "exprStmt", expr: call, loc },
+              { kind: "return", value: null, loc },
+            ]
+          : [{ kind: "return", value: call, loc }],
+      else_: null,
+      loc,
+    };
+  }
+
   /** Runs `build` with diagnostics captured. The adapters built here
    * belong to no source statement, so a refusal while building one is not
    * the program's: the widening adapter stays as it was. */
@@ -390,7 +451,19 @@ export class FunctionViews {
     const wideners = this.adapters
       .filter((adapter) => this.widens(adapter) || this.widensArgument(lowerer, adapter))
       .sort(byFactoryName);
-    if (wideners.length === 0 && this.holders.size === 0 && this.converters.size === 0) return;
+    // A program that stores a variadic function in a fixed signature and
+    // hands it to an array method: the helper tests for a callable the
+    // program checked into the callback's type below.
+    const boundaryHelpers =
+      lowerer.arrHofRecipes.size > 0 &&
+      (lowerer.coercions.variadicAdapterSources.size > 0 || lowerer.notedVariadicStores.size > 0);
+    if (
+      wideners.length === 0 &&
+      this.holders.size === 0 &&
+      this.converters.size === 0 &&
+      !boundaryHelpers
+    )
+      return;
     // A dynamic caller passes more arguments than a view's type has, and
     // untyped ones where the type names one. The views it must see through
     // box as the function they forward to, in a program that boxes a
@@ -413,7 +486,7 @@ export class FunctionViews {
       if (body !== undefined) body.boxesSource = true;
     }
     if (this.converters.size > 0) this.untypedCalls(lowerer, functions);
-    if (wideners.length === 0) return;
+    if (wideners.length === 0 && !boundaryHelpers) return;
     // The function types the program checks callables into.
     const checkedInto = new Set<string>();
     const noted = new Set<string>();
@@ -440,6 +513,28 @@ export class FunctionViews {
         },
         stmt: () => true,
       });
+    }
+    if (boundaryHelpers) {
+      for (const name of [...lowerer.arrHofRecipes.keys()].sort()) {
+        const helper = lowerer.liftedFnNamed(name);
+        const callback = helper?.params[1];
+        if (helper === undefined || callback?.type.kind !== "func") continue;
+        if (!checkedInto.has(typeKey(callback.type))) continue;
+        const pair = `${name}\n@boundary`;
+        if (this.looked.has(pair)) continue;
+        this.looked.add(pair);
+        const test = this.quietly(lowerer, () => this.throughBoundaryHelper(lowerer, helper));
+        if (test === null) continue;
+        this.addHelperTest(lowerer, helper, "", test);
+        const recipe = lowerer.arrHofRecipes.get(name);
+        if (recipe !== undefined) {
+          const key = typeKey(callback.type);
+          let served = lowerer.coercions.variadicWideServed.get(key);
+          if (served === undefined)
+            lowerer.coercions.variadicWideServed.set(key, (served = new Set()));
+          served.add(arrayHelperConsumer(recipe));
+        }
+      }
     }
     for (const widening of wideners) {
       if (!checkedInto.has(typeKey(widening.source))) continue;
@@ -478,6 +573,10 @@ export class FunctionViews {
         loc,
       });
       install(widening);
+      // The test hands the untyped callable behind the view the wide
+      // call's whole argument list, so a variadic function stored in the
+      // slot reaches it with every argument there.
+      lowerer.coercions.variadicServedAdapters.add(widening.factory.name);
     }
   }
 

@@ -76114,7 +76114,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }
@@ -76160,7 +76160,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Collects a Node Readable stream's chunks for the tested forms; web ReadableStreams and other async iterables remain unsupported.",
         "verification": "test-backed"
       }

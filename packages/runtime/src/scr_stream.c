@@ -9765,6 +9765,26 @@ ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
   return NULL;
 }
 
+/* The readable a stream/consumers call reads (the sc.source libCall): a
+ * native stream as itself (+1), and a web ReadableStream as the Readable
+ * Readable.from builds over it, since Node's consumers iterate their
+ * argument and a web stream is async-iterable. Every other value keeps the
+ * compiled program's not-supported message. */
+ScrStream *scr_stream_consumer_source(const ScrDyn *value, const ScrStr *message) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) return stream;
+  if (value->kind == SCR_DYN_HANDLE) {
+    int tag = value->v.handle.tag;
+    if (tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WS_READABLE) {
+      ScrStream *from = scr_stream_from_dyn((ScrDyn *)value, NULL);
+      if (from || scr_exc_pending()) return from;
+    }
+  }
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  return NULL;
+}
+
 /* Whether a checked-dynamic object's member is of type "object". */
 static bool scr_stream_dyn_member_object(const ScrDyn *value, const char *key) {
   ScrDyn *m = scr_dyn_obj_read(value, key, strlen(key));

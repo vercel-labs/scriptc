@@ -53,4 +53,43 @@ const errored = new Promise((resolve) =>
 controller.abort(new Error("stop"));
 log.push(`signal ${await errored} destroyed ${signalled.destroyed}`);
 
+// A web readable's null chunk ends the adapted readable, in object mode
+// too: Duplex.fromWeb takes it as the end of the stream, not as a value,
+// and the chunks the readable enqueues after it are dropped.
+const nullSource = () =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(null);
+      controller.enqueue("after");
+      controller.close();
+    },
+  });
+
+const objectNullBody = new TransformStream();
+const objectNull = Duplex.fromWeb(
+  { readable: nullSource(), writable: objectNullBody.writable },
+  { objectMode: true },
+);
+const objectNullChunks = [];
+const objectNullEnd = new Promise((resolve) =>
+  objectNull
+    .on("data", (chunk) =>
+      objectNullChunks.push(chunk === null ? "null" : `${typeof chunk}:${String(chunk)}`),
+    )
+    .on("end", () => resolve("end")),
+);
+log.push(`null object ${await objectNullEnd} ${objectNullChunks.join("|")}`);
+
+const byteNullBody = new TransformStream();
+const byteNull = Duplex.fromWeb({ readable: nullSource(), writable: byteNullBody.writable }, {});
+const byteNullChunks = [];
+const byteNullEnd = new Promise((resolve) =>
+  byteNull
+    .on("data", (chunk) =>
+      byteNullChunks.push(chunk === null ? "null" : `${typeof chunk}:${String(chunk)}`),
+    )
+    .on("end", () => resolve("end")),
+);
+log.push(`null byte ${await byteNullEnd} ${byteNullChunks.join("|")}`);
+
 for (const line of log) console.log(line);

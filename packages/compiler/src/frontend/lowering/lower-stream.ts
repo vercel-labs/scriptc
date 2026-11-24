@@ -3849,6 +3849,36 @@ function streamArgOf(
   lowered: IrExpr,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose" | "toWeb",
 ): IrExpr {
+  // A plain { readable, writable } record of web streams is a stage Node
+  // accepts: compose adapts it like Duplex.from, and pipeline pumps its web
+  // sides with the chunks untouched. Its static type is a record rather
+  // than a stream, so it takes the same checked-dynamic adapter as a dyn
+  // stage.
+  const pairishStage =
+    (what === "compose" || what === "pipeline") &&
+    lowered.type.kind === "record" &&
+    lowerer.dynConvertible(lowered.type) &&
+    (lowerer.shapes.get(lowered.type.shapeId)?.fields ?? []).some(
+      (f) => f.name === "readable" || f.name === "writable",
+    );
+  if (
+    what === "compose" &&
+    (lowered.type.kind === "dyn" || lowered.type.kind === "jsval" || pairishStage)
+  ) {
+    // A checked-dynamic compose stage: the runtime adapts a web stream pair
+    // (or a TransformStream, whose members are one) and answers Node's error
+    // for anything else.
+    const loc = locOf(node);
+    const stage: IrExpr =
+      lowered.type.kind === "dyn" ? lowered : { kind: "dynFrom", value: lowered, type: DYN, loc };
+    return {
+      kind: "libCall",
+      fn: "stream.duplexFromDyn",
+      args: [stage],
+      type: { kind: "object", className: "%Duplex" },
+      loc,
+    };
+  }
   // A Hash, Hmac, Cipheriv or Decipheriv stage is its Transform; pipeline
   // and compose stages keep the value alive until the stream settles.
   const v = isValueStream(lowerer, node)
@@ -3857,6 +3887,8 @@ function streamArgOf(
   // A checked-dynamic pipeline stage (an untyped source or destination):
   // a boxed native stream unwraps at run time; other values (iterables,
   // functions) throw the not-supported Error there.
+  if (pairishStage && what === "pipeline")
+    return unboxDynStage(lowerer, { kind: "dynFrom", value: v, type: DYN, loc: locOf(node) }, node);
   if (v.type.kind === "dyn" && what === "pipeline") return unboxDynStage(lowerer, v, node);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   if (!streamSidesOf(lowerer, info)) {

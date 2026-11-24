@@ -559,6 +559,11 @@ static ScrStream *sdfw_build(ScrDyn *pair, double flags, double hwm, ScrDyn *sig
       sdfw_closure((void *)&sdfw_destroy_inv, c), &sdfw_destroy_inv);
   c->duplex = scr_stream_retain(d);
   if (((int)flags & 2) != 0) scr_stream_set_object_mode(d, true, true);
+  /* A pipeline's pair stage carries web chunks as they are: a null chunk is
+   * a value there, where Duplex.fromWeb — and a node stream — answers the
+   * end of the readable or the write's null-values error. Only the
+   * pipeline's adaptation asks for it (bit 8). */
+  if (((int)flags & 8) != 0) scr_stream_set_web_chunks(d, true);
   if (((int)flags & 4) != 0) scr_stream_set_decode_strings(d, false);
   if (encoding != NULL && encoding->len > 0) {
     ScrStream *decoded = scr_stream_set_encoding(d, encoding);

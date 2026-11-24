@@ -1,9 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedInputFiles, seedInputs } from "../../scripts/bootstrap-seed-inputs.mjs";
 
 test("bootstrap artifacts require a complete seed from the same inputs, lane, and path", () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-seed-contract-"));
@@ -144,4 +147,54 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
   expect(upload.with?.name).toBe("bootstrap-seed-${{ matrix.flavor }}-${{ github.sha }}");
   expect(download.with?.name).toBe(upload.with?.name);
   expect(upload.with?.["if-no-files-found"]).toBe("error");
+  // The identity the cache is keyed by comes from the one input-naming script.
+  const action = readFileSync(
+    new URL("../../.github/actions/bootstrap-seed-inputs/action.yml", import.meta.url),
+    "utf8",
+  );
+  expect(action).toContain("node scripts/bootstrap-seed-inputs.mjs");
+});
+
+test("the seed identity covers every package file the build reads, and skips package tests", () => {
+  const repo = fileURLToPath(new URL("../..", import.meta.url));
+  const files = seedInputFiles(repo);
+  // Directories the identity must not miss: ambient declarations and shims
+  // change what the seed compiles even though neither sits under src/.
+  expect(files).toContain("packages/compiler/ambient/scriptc.d.ts");
+  expect(files.some((path) => path.startsWith("packages/compiler/shims/"))).toBe(true);
+  expect(files).toContain("scripts/build-native-cli.mts");
+  expect(files).toContain(".github/workflows/ci.yml");
+  // No build reads a package's test directory; naming one would only make
+  // test-only changes rebuild the seeds.
+  expect(files.some((path) => path.startsWith("packages/compiler/test/"))).toBe(false);
+});
+
+test("the seed identity moves with an input file, not with a documentation edit", () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-seed-inputs-"));
+  const write = (path: string, text: string) => {
+    const file = join(directory, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+  };
+  const identity = () =>
+    seedInputs(directory, { flavor: "plain", imageOS: "ubuntu24", imageVersion: "1.2.3" });
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: directory });
+    write("package.json", "{}\n");
+    write("packages/compiler/ambient/a.d.ts", "declare const a: 1;\n");
+    write("docs/page.mdx", "first\n");
+    execFileSync("git", ["add", "-A"], { cwd: directory });
+    const first = identity();
+    write("docs/page.mdx", "second\n");
+    expect(identity()).toBe(first);
+    write("packages/compiler/ambient/a.d.ts", "declare const a: 2;\n");
+    expect(identity()).not.toBe(first);
+    // A directory added to a package later joins the identity without a list
+    // entry anywhere.
+    write("packages/compiler/shims/new/dep.mjs", "export default 1;\n");
+    execFileSync("git", ["add", "-A"], { cwd: directory });
+    expect(identity()).not.toBe(first);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -10,6 +10,12 @@ import { fileURLToPath } from "node:url";
 export const preflightChecks = [
   { run: "pnpm format:check" },
   { run: "pnpm lint" },
+  // A missing runtime include, or a relocated header the builds' include
+  // lists do not carry, is a parse away: catch it here instead of in a
+  // merge-queue rebuild-emit run.
+  { run: "node scripts/check-relocated-runtime-headers.mjs" },
+  { run: "pnpm test:ts7 --baselines-only" },
+  { run: "node scripts/registry-claims.mjs --check" },
   { run: "pnpm build" },
   {
     run: "pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts",

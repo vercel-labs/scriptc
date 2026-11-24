@@ -146,12 +146,23 @@ await Promise.all(
 const mine = claimant(byHead.has(head) ? stackOf(byHead.get(head)) : head);
 mine.names.push({ number: Infinity, title: here });
 // Committed and uncommitted changes since the branch left origin/main, and
-// untracked files as wholly added.
+// untracked files as wholly added. A merge queue group's synthetic head has
+// no history of its own in the shallow checkout; the pull request it came
+// from already ran this check, so the merge-group run compares the head with
+// itself instead of failing to find a merge base.
+const branchBase = (() => {
+  try {
+    return git("merge-base", "origin/main", "HEAD").trim();
+  } catch (error) {
+    if (process.env["GITHUB_EVENT_NAME"] === "merge_group") return "HEAD";
+    throw error;
+  }
+})();
 const untracked = git("ls-files", "--others", "--exclude-standard", "-z")
   .split("\0")
   .filter(Boolean);
 mine.claims.push(
-  ...claimsOf(git("diff", git("merge-base", "origin/main", "HEAD").trim())),
+  ...claimsOf(git("diff", branchBase)),
   ...untracked
     .map((file) => claimsOf(`+++ b/${file}\n` + readFileSync(file, "utf8").replace(/^/gm, "+")))
     .flat(),

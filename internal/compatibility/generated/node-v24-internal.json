@@ -1382,7 +1382,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2213-async-local-storage.cjs",
@@ -12083,8 +12083,10 @@
           "tests/corpus/child-spawn-timeout-overflow.ts",
           "tests/corpus/child-spawn-timeout.ts",
           "tests/corpus/child-spawnfile-spawnargs.ts",
+          "tests/corpus/child-spawnsync-pid.cjs",
           "tests/corpus/child-stdin-pipe-interface.ts",
           "tests/corpus/child-stdio-array-general-streams.ts",
+          "tests/corpus/child-stdio-array.cjs",
           "tests/corpus/child-stdio-array/main.ts",
           "tests/corpus/child-stdio-options/main.ts",
           "tests/corpus/child-stdio-stream-types.ts",
@@ -12270,7 +12272,8 @@
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
-          "tests/corpus/child-shell-file-validation.cjs"
+          "tests/corpus/child-shell-file-validation.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12390,7 +12393,8 @@
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
-          "tests/corpus/child-shell-file-validation.cjs"
+          "tests/corpus/child-shell-file-validation.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12434,7 +12438,8 @@
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
-          "tests/corpus/child-shell-file-validation.cjs"
+          "tests/corpus/child-shell-file-validation.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -12478,7 +12483,8 @@
           "tests/corpus/child-spawn-options-dynamic.cjs",
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
-          "tests/corpus/child-shell-file-validation.cjs"
+          "tests/corpus/child-shell-file-validation.cjs",
+          "tests/corpus/child-spawnsync-pid.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -13121,7 +13127,8 @@
         "evidence": "compiler-feature:child_process.stdio",
         "tests": [
           "tests/corpus/child-stdio-array/main.ts",
-          "tests/corpus/child-stdio-array-general-streams.ts"
+          "tests/corpus/child-stdio-array-general-streams.ts",
+          "tests/corpus/child-stdio-array.cjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -20762,6 +20769,7 @@
           "tests/fixtures/node-types/keys.ts",
           "tests/fixtures/node-types/x509-issuer-certificate.ts",
           "tests/fixtures/node-types/x509-methods.ts",
+          "tests/harness/crypto-unsupported-audit.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -21485,7 +21493,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21538,7 +21547,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21802,7 +21812,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -21832,7 +21843,8 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/fixtures/node-types/keys.ts",
-          "tests/corpus/crypto-key-sources.cjs"
+          "tests/corpus/crypto-key-sources.cjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -35027,6 +35039,7 @@
           "tests/corpus/compat-errors-stream-callbacks.mjs",
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
+          "tests/corpus/compat-errors-tls-options.mjs",
           "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
@@ -41720,8 +41733,11 @@
       "anchor": "err_tls_alpn_callback_with_protocols",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_ALPN_CALLBACK_WITH_PROTOCOLS",
+        "tests": [
+          "tests/corpus/compat-errors-tls-options.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -41813,8 +41829,11 @@
       "anchor": "err_tls_invalid_context",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_CONTEXT"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_CONTEXT",
+        "tests": [
+          "tests/corpus/compat-errors-tls-options.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58956,8 +58975,13 @@
           "tests/corpus/http-agent-create-connection.mjs",
           "tests/corpus/http-agent-keep-alive-hooks.ts",
           "tests/corpus/http-agent-max-total-sockets.ts",
+          "tests/corpus/http-client-connect-agent.ts",
           "tests/corpus/http-client-header-values.mjs",
           "tests/corpus/http-client-lifecycle.ts",
+          "tests/corpus/http-client-upgrade-agent.ts",
+          "tests/corpus/http-global-proxy-auth-port.ts",
+          "tests/corpus/http-global-proxy-bypass.ts",
+          "tests/corpus/http-global-proxy-plain.ts",
           "tests/corpus/http-max-requests-per-socket.ts",
           "tests/corpus/http-outgoing-pipe.ts",
           "tests/corpus/http-response-cork.ts",
@@ -58982,7 +59006,6 @@
           "tests/corpus/http-set-headers.ts",
           "tests/corpus/http-write-backpressure.ts",
           "tests/corpus/net-server-dispose-http.ts",
-          "tests/diagnostics/compat-absent-http-members.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/server/cases/http-trailers/main.ts",
           "tests/fixtures/server/cases/http2-connect/main.ts",
@@ -60317,11 +60340,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http.'connect'",
         "tests": [
           "tests/corpus/compat-http-client-connect.ts",
-          "tests/corpus/compat-http-client-connect.mjs"
+          "tests/corpus/compat-http-client-connect.mjs",
+          "tests/corpus/http-client-connect-agent.ts",
+          "tests/corpus/http-client-upgrade-agent.ts"
         ]
       },
       "anchorSource": "exact"
@@ -63848,10 +63873,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "partial",
         "evidence": "compiler-feature:http.http.setGlobalProxyFromEnv",
         "tests": [
-          "tests/diagnostics/compat-absent-http-members.ts"
+          "tests/corpus/http-global-proxy-plain.ts",
+          "tests/corpus/http-global-proxy-auth-port.ts",
+          "tests/corpus/http-global-proxy-bypass.ts"
         ]
       },
       "anchorSource": "exact"
@@ -67435,7 +67462,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.request.setTimeout",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67461,7 +67488,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.aborted",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs"
@@ -67540,7 +67567,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connection",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67566,7 +67593,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.headers",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67592,7 +67619,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.httpVersion",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67618,7 +67645,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.method",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67644,7 +67671,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.rawHeaders",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67722,7 +67749,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.socket",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67800,7 +67827,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.url",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -67826,7 +67853,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'aborted'",
         "tests": [
           "tests/corpus/compat-http2-abort.mjs"
@@ -67928,7 +67955,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.appendHeader",
         "tests": [
           "tests/corpus/compat-http2-headers.mjs"
@@ -67977,7 +68004,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.end",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68003,7 +68030,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68029,7 +68056,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeaderNames",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -68056,7 +68083,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.getHeaders",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -68083,7 +68110,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.hasHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68109,7 +68136,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.removeHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68135,7 +68162,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.setHeader",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68161,7 +68188,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.setTimeout",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
@@ -68188,7 +68215,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.write",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68292,7 +68319,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.response.writeHead",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68318,7 +68345,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.connection",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68344,7 +68371,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.finished",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68370,7 +68397,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.headersSent",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68396,7 +68423,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.req",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68445,7 +68472,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.socket",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68471,7 +68498,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.statusCode",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68497,8 +68524,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.statusMessage",
+        "tests": [
+          "tests/corpus/compat-http2-compat-members.mjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -68543,7 +68573,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.writableEnded",
         "tests": [
           "tests/corpus/compat-http2-compat-members.mjs"
@@ -68569,7 +68599,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'close'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -68595,7 +68625,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'finish'",
         "tests": [
           "tests/corpus/compat-http2-event-order.mjs"
@@ -70402,7 +70432,7 @@
       },
       "static": {
         "status": "not-applicable",
-        "evidence": "derived:descendants"
+        "evidence": "compiler-chapter-policy:stream_iter"
       },
       "anchorSource": "chapter"
     },
@@ -89373,7 +89403,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1475-readline-closed-stdin.ts",
@@ -117565,6 +117595,7 @@
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/fixtures/node-types/webcrypto-keys.ts",
+          "tests/harness/crypto-unsupported-audit.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -122093,7 +122124,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122141,7 +122173,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122189,7 +122222,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122237,7 +122271,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122331,7 +122366,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122379,7 +122415,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122456,7 +122493,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122504,7 +122542,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122552,7 +122591,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122600,7 +122640,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122648,7 +122689,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -122696,7 +122738,8 @@
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/corpus/7081-webcrypto-ed25519.mjs",
           "tests/corpus/7085-webcrypto-ecdsa-rsa.ts",
-          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+          "tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs",
+          "tests/harness/crypto-unsupported-audit.test.ts"
         ]
       },
       "anchorSource": "exact"
@@ -127237,7 +127280,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1404-zlib-crypto-bytes.ts",

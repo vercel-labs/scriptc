@@ -57,6 +57,7 @@ import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
 import { isMockTrackerCall } from "./mock-callsites.js";
+import { timingProcessMetrics } from "../../timing.js";
 
 export interface MemberCallReceivers {
   /** Whether a call of member `name` on a record passes the record. */
@@ -908,7 +909,7 @@ function report(
   all: boolean,
 ): void {
   process.stderr.write(
-    `scriptc lowering ${JSON.stringify({ phase: "member-call-receivers", phase_ms: Date.now() - start, readers, names, escaped, all })}\n`,
+    `scriptc lowering ${JSON.stringify({ phase: "member-call-receivers", phase_ms: Date.now() - start, ...timingProcessMetrics(), readers, names, escaped, all })}\n`,
   );
 }
 

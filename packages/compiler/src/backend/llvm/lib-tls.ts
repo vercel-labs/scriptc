@@ -192,7 +192,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_keylog", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }
@@ -207,7 +207,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_server_on_keylog", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }
@@ -222,7 +222,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_session", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }

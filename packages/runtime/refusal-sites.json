@@ -781,6 +781,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_proxy_configured",
+  "message": "environment proxy URLs other than http:// are not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_dynh_unsupported",
   "message": "'%s.prototype.%s' on a dynamic value is not supported yet%s%s",
   "code": "SC2020"
@@ -1312,6 +1318,18 @@
   "function": "scr_dyn_for_in_keys",
   "message": "for-in over this checked-dynamic kind is not supported yet",
   "code": "SC1090"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct newTarget for this target is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_construct_with",
+  "message": "Reflect.construct with a distinct island newTarget is not supported yet",
+  "code": "SC2020"
  },
  {
   "file": "scr_json.c",
@@ -2335,8 +2353,14 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_apply_array_like",
+  "function": "scr_dyn_apply_args_limit",
   "message": "Function.prototype.apply exceeds the native argument limit",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_reflect_args_limit",
+  "message": "Reflect.construct exceeds the native argument limit",
   "code": "SC2020"
  },
  {

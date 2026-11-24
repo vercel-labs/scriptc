@@ -1,4 +1,4 @@
-import { CheckerCache } from "./checker-cache.js";
+import { ABSENT, CheckerCache } from "./checker-cache.js";
 /* The checker facade: 5.9.3-shaped TypeChecker methods over 7.1's sync
  * client, built around the survey's feasibility verdict. Naive per-call use
  * of the sync client costs 0.1-0.3 ms of IPC per query; the census counted
@@ -317,14 +317,15 @@ export class CheckerFacade {
     this.ensureActive();
     let properties = this.cache.propertyOfType.get(type);
     if (properties === undefined) {
-      properties = new Map<string, Ts7Symbol | undefined>();
+      properties = new Map<string, Ts7Symbol | typeof ABSENT>();
       this.cache.propertyOfType.set(type, properties);
     }
     // Absence is an answer too. Both keys belong to this immutable project;
     // another snapshot or project must ask its own checker.
-    if (properties.has(name)) return properties.get(name);
+    const cached = properties.get(name);
+    if (cached !== undefined) return cached === ABSENT ? undefined : cached;
     const symbol = this.raw.getPropertyOfType(type, name);
-    properties.set(name, symbol);
+    properties.set(name, symbol ?? ABSENT);
     return symbol;
   }
 
@@ -407,7 +408,7 @@ export class CheckerFacade {
       "getContextualTypes",
       missing,
       (chunk) => this.raw.getContextualTypes(chunk),
-      (node, type) => this.cache.contextualType.set(node, type),
+      (node, type) => this.cache.contextualType.set(node, type ?? ABSENT),
     );
   }
 
@@ -420,7 +421,7 @@ export class CheckerFacade {
       "getResolvedSignatures",
       missing,
       (chunk) => this.raw.getResolvedSignatures(chunk),
-      (node, signature) => this.cache.resolvedSignature.set(node, signature),
+      (node, signature) => this.cache.resolvedSignature.set(node, signature ?? ABSENT),
     );
   }
 
@@ -483,7 +484,7 @@ export class CheckerFacade {
         asked = true;
       }
       try {
-        this.cache.resolvedSignature.set(node, this.raw.getResolvedSignature(node));
+        this.cache.resolvedSignature.set(node, this.raw.getResolvedSignature(node) ?? ABSENT);
       } catch {
         // Unanswered: the direct query asks again.
       }
@@ -521,7 +522,7 @@ export class CheckerFacade {
     const symbols = chunked(missing, (chunk) =>
       withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
     );
-    missing.forEach((node, i) => this.cache.symbolAtLocation.set(node, symbols[i]));
+    missing.forEach((node, i) => this.cache.symbolAtLocation.set(node, symbols[i] ?? ABSENT));
   }
 
   /** Batches the hot getTypeAtLocation nodes structure collection may read
@@ -554,7 +555,9 @@ export class CheckerFacade {
     );
     this.resolveCallsFirst(distinctTypes);
     const types = chunked(distinctTypes, (chunk) => this.typesWithPanicFence(chunk));
-    distinctTypes.forEach((node, index) => this.cache.typeAtLocation.set(node, types[index]));
+    distinctTypes.forEach((node, index) =>
+      this.cache.typeAtLocation.set(node, types[index] ?? ABSENT),
+    );
   }
 
   /** Batches getTypeAtLocation for exactly `nodes`, for an analysis that
@@ -572,7 +575,7 @@ export class CheckerFacade {
       "getTypeAtLocations",
       missing,
       (chunk) => this.raw.getTypeAtLocation(chunk) as (Type | undefined)[],
-      (node, type) => this.cache.typeAtLocation.set(node, type),
+      (node, type) => this.cache.typeAtLocation.set(node, type ?? ABSENT),
     );
   }
 
@@ -601,7 +604,7 @@ export class CheckerFacade {
     );
     this.resolveCallsFirst(nodes);
     const types = chunked(nodes, (chunk) => this.typesWithPanicFence(chunk));
-    nodes.forEach((n, i) => this.cache.typeAtLocation.set(n, types[i]));
+    nodes.forEach((n, i) => this.cache.typeAtLocation.set(n, types[i] ?? ABSENT));
   }
 
   /** withPanicFence over the type sweep (observed panic: GetTypeAtLocation
@@ -634,7 +637,7 @@ export class CheckerFacade {
     const symbols = chunked(nodes, (chunk) =>
       withPanicFence(chunk, (c) => this.raw.getSymbolAtLocation(c)),
     );
-    nodes.forEach((n, i) => this.cache.symbolAtLocation.set(n, symbols[i]));
+    nodes.forEach((n, i) => this.cache.symbolAtLocation.set(n, symbols[i] ?? ABSENT));
     if (!prefetchSymbolTypes) return;
     // The walk's companion query: types of the symbols the file mentions.
     // Include warm node answers too: a preceding symbol-only analysis may
@@ -644,14 +647,15 @@ export class CheckerFacade {
     const seen = new Set<Ts7Symbol>();
     for (const node of symbolNodes) {
       const symbol = this.cache.symbolAtLocation.get(node);
-      if (symbol === undefined || seen.has(symbol) || this.cache.typeOfSymbol.has(symbol)) continue;
+      if (symbol === undefined || symbol === ABSENT) continue;
+      if (seen.has(symbol) || this.cache.typeOfSymbol.has(symbol)) continue;
       seen.add(symbol);
       distinct.push(symbol);
     }
     const symbolTypes = chunked(distinct, (chunk) =>
       withPanicFence(chunk, (c) => this.raw.getTypeOfSymbol(c)),
     );
-    distinct.forEach((s, i) => this.cache.typeOfSymbol.set(s, symbolTypes[i]));
+    distinct.forEach((s, i) => this.cache.typeOfSymbol.set(s, symbolTypes[i] ?? ABSENT));
   }
 
   private autoPrefetch(node: Node, kind: "types" | "symbols"): void {
@@ -670,14 +674,14 @@ export class CheckerFacade {
 
   getTypeAtLocation(node: Node): Type {
     this.ensureActive();
-    if (this.cache.typeAtLocation.has(node))
-      return this.cache.typeAtLocation.get(node) ?? this.anyType();
+    const cached = this.cache.typeAtLocation.get(node);
+    if (cached !== undefined) return cached === ABSENT ? this.anyType() : cached;
     this.autoPrefetch(node, "types");
-    if (this.cache.typeAtLocation.has(node))
-      return this.cache.typeAtLocation.get(node) ?? this.anyType();
+    const prefetched = this.cache.typeAtLocation.get(node);
+    if (prefetched !== undefined) return prefetched === ABSENT ? this.anyType() : prefetched;
     this.resolveCallsFirst([node]);
     const type = this.raw.getTypeAtLocation(node);
-    this.cache.typeAtLocation.set(node, type);
+    this.cache.typeAtLocation.set(node, type ?? ABSENT);
     return type ?? this.anyType();
   }
 
@@ -698,18 +702,20 @@ export class CheckerFacade {
 
   private symbolAtLocation(node: Node): Ts7Symbol | undefined {
     this.ensureActive();
-    if (this.cache.symbolAtLocation.has(node)) return this.cache.symbolAtLocation.get(node);
+    const cached = this.cache.symbolAtLocation.get(node);
+    if (cached !== undefined) return cached === ABSENT ? undefined : cached;
     this.autoPrefetch(node, "symbols");
-    if (this.cache.symbolAtLocation.has(node)) return this.cache.symbolAtLocation.get(node);
+    const prefetched = this.cache.symbolAtLocation.get(node);
+    if (prefetched !== undefined) return prefetched === ABSENT ? undefined : prefetched;
     const symbol = this.raw.getSymbolAtLocation(node);
-    this.cache.symbolAtLocation.set(node, symbol);
+    this.cache.symbolAtLocation.set(node, symbol ?? ABSENT);
     return symbol;
   }
 
   getTypeOfSymbol(symbol: Ts7Symbol): Type {
     this.ensureActive();
-    if (this.cache.typeOfSymbol.has(symbol))
-      return this.cache.typeOfSymbol.get(symbol) ?? this.anyType();
+    const cached = this.cache.typeOfSymbol.get(symbol);
+    if (cached !== undefined) return cached === ABSENT ? this.anyType() : cached;
     // The direct (memo-miss) path wears the same panic fence as the
     // prefetch sweep: symbols the sweep never saw (members resolved from
     // other files' d.ts) can hit the identical server panics (observed:
@@ -717,7 +723,7 @@ export class CheckerFacade {
     // engine graph), and the fence's answer is the sweep's — undefined,
     // presented as `any`.
     const [type] = withPanicFence([symbol], (c) => this.raw.getTypeOfSymbol(c));
-    this.cache.typeOfSymbol.set(symbol, type);
+    this.cache.typeOfSymbol.set(symbol, type ?? ABSENT);
     return type ?? this.anyType();
   }
 
@@ -734,7 +740,7 @@ export class CheckerFacade {
     }
     if (missing.length === 0) return;
     const types = withPanicFence(missing, (chunk) => this.raw.getTypeOfSymbol(chunk));
-    missing.forEach((symbol, i) => this.cache.typeOfSymbol.set(symbol, types[i]));
+    missing.forEach((symbol, i) => this.cache.typeOfSymbol.set(symbol, types[i] ?? ABSENT));
   }
 
   getAliasedSymbol(symbol: Ts7Symbol): Ts7Symbol {
@@ -752,7 +758,11 @@ export class CheckerFacade {
    * where the chain ends. getAliasedSymbol answers the chain's end. */
   getImmediateAliasedSymbol(symbol: Ts7Symbol): Ts7Symbol | undefined {
     this.ensureActive();
-    return this.raw.getImmediateAliasedSymbol(symbol);
+    const cached = this.cache.immediateAliasedSymbol.get(symbol);
+    if (cached !== undefined) return cached === ABSENT ? undefined : cached;
+    const next = this.raw.getImmediateAliasedSymbol(symbol);
+    this.cache.immediateAliasedSymbol.set(symbol, next ?? ABSENT);
+    return next;
   }
 
   /** A module symbol's exports, with the members of its `export *`
@@ -760,7 +770,11 @@ export class CheckerFacade {
    * module's own declarations). */
   getExportsOfModule(symbol: Ts7Symbol): readonly Ts7Symbol[] {
     this.ensureActive();
-    return this.raw.getExportsOfModule(symbol);
+    const cached = this.cache.exportsOfModule.get(symbol);
+    if (cached !== undefined) return cached;
+    const exports = this.raw.getExportsOfModule(symbol);
+    this.cache.exportsOfModule.set(symbol, exports);
+    return exports;
   }
 
   getDeclaredTypeOfSymbol(symbol: Ts7Symbol): Type {
@@ -775,9 +789,10 @@ export class CheckerFacade {
 
   getContextualType(node: Node): Type | undefined {
     this.ensureActive();
-    if (this.cache.contextualType.has(node)) return this.cache.contextualType.get(node);
+    const cached = this.cache.contextualType.get(node);
+    if (cached !== undefined) return cached === ABSENT ? undefined : cached;
     const type = this.raw.getContextualType(node as never);
-    this.cache.contextualType.set(node, type);
+    this.cache.contextualType.set(node, type ?? ABSENT);
     return type;
   }
 
@@ -800,9 +815,10 @@ export class CheckerFacade {
 
   getResolvedSignature(node: Node): Signature | undefined {
     this.ensureActive();
-    if (this.cache.resolvedSignature.has(node)) return this.cache.resolvedSignature.get(node);
+    const cached = this.cache.resolvedSignature.get(node);
+    if (cached !== undefined) return cached === ABSENT ? undefined : cached;
     const signature = this.raw.getResolvedSignature(node);
-    this.cache.resolvedSignature.set(node, signature);
+    this.cache.resolvedSignature.set(node, signature ?? ABSENT);
     return signature;
   }
 
@@ -817,10 +833,10 @@ export class CheckerFacade {
 
   getReturnTypeOfSignature(signature: Signature): Type {
     this.ensureActive();
-    if (this.cache.returnTypeOf.has(signature))
-      return this.cache.returnTypeOf.get(signature) ?? this.anyType();
+    const cached = this.cache.returnTypeOf.get(signature);
+    if (cached !== undefined) return cached === ABSENT ? this.anyType() : cached;
     const type = this.raw.getReturnTypeOfSignature(signature);
-    this.cache.returnTypeOf.set(signature, type);
+    this.cache.returnTypeOf.set(signature, type ?? ABSENT);
     return type ?? this.anyType();
   }
 

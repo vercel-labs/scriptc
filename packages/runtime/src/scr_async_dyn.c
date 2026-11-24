@@ -2677,6 +2677,7 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(message);
 }
 
+
 static void scr_timer_this_fire(ScrClosure *self) {
   ScrClosure *cb = scr_box_get_ref(self->caps[0]);
   double handle = scr_timer_running_handle();

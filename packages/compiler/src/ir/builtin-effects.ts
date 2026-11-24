@@ -151,6 +151,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "strdec.nextDyn",
   "dyn.construct",
   "dyn.reflectApply",
+  "dyn.reflectConstruct",
   "dyn.reflectGet",
   "dyn.usingMethod",
   "dyn.usingDispose",
@@ -461,6 +462,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
+  "http.setGlobalProxyFromEnv",
   "http.agentCreateConnectionCheck",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",

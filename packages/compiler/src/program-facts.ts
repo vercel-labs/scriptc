@@ -1067,9 +1067,9 @@ export const PROGRAM_SCANS: readonly ProgramScan[] = [
   ),
   scan(
     "frontend/program.ts#entryPackageProgramRoots7",
-    1,
+    2,
     "discovery",
-    "program roots of the entry package",
+    "program roots of the entry package, including each JSX file's automatic runtime module",
   ),
   scan(
     "frontend/program.ts#declarationTwinRoots7",

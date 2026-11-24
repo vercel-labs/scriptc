@@ -329,6 +329,16 @@ export const dynSignatures = defineLibFnSignatures({
    * Symbol(Symbol.iterator))"). The frontend picks by position. */
   "dyn.packPushSpreadIter": { argTypes: [DYN, DYN], result: VOID },
   "dyn.reflectApply": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** Reflect.construct(target, argumentsList[, newTarget]): constructs
+   * `target` with the list's elements, using `newTarget`'s prototype when
+   * the third ARGUMENT is present (an explicit undefined is Node's
+   * IsConstructor TypeError, not the absent case, so the trailing bool is
+   * the call's arity). A distinct newTarget over an ordinary function runs
+   * the target over a receiver built from newTarget's prototype; the forms
+   * the runtime cannot build honestly (a class or builtin target with a
+   * distinct newTarget) throw the "not supported yet" Error rather than
+   * diverge. May throw Node's TypeErrors. */
+  "dyn.reflectConstruct": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
   "dyn.reflectGet": { argTypes: [DYN, DYN, DYN], result: DYN },
   /** `using` / `await using` with a dyn value (scr_json.c): usingMethod
    * runs the declaration's checks and answers what usingDispose calls at

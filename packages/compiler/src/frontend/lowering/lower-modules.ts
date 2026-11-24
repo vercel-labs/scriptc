@@ -602,6 +602,10 @@ export function appendDynamicImportModules(
  * signatures are cheap and calls resolve against them; only BODY lowering
  * is reachability-gated. */
 export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
+  // A new collection may register more globals than the last; alias answers
+  // memoized against the old set are stale until it finishes.
+  lowerer.globalsCollected = false;
+  lowerer.aliasStorageBySymbol.clear();
   const computed = new Set<ts.ClassDeclaration>();
   for (const fp of parts)
     for (const decl of fp.classDecls) {
@@ -727,6 +731,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   }
   markCycleEarlyBindings(lowerer);
   markRequireEarlyBindings(lowerer);
+  lowerer.globalsCollected = true;
 }
 
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
@@ -2916,12 +2921,18 @@ export function collectGlobals(
       // module.exports gets its own export slot here, while `x` keeps the
       // ordinary declaration storage registered below. Reassigning `x`
       // therefore leaves the exported value alone, as in Node.
-      const cjs = cjsExportDiscardReason(stmt) === null ? cjsExportAssignmentOf(stmt) : null;
+      const discarded = cjsExportDiscardReason(stmt);
+      const cjs = discarded === null ? cjsExportAssignmentOf(stmt) : null;
       const registerExport = (nameNode: ts.Node, name: string, typeNode: ts.Node): void =>
         registerCjsExportGlobal(lowerer, sf, tag, nameNode, name, typeNode);
       // Export members assigned in VALUE position at the module's top
-      // level (`const src = exports.src = []`) are exports too.
-      for (const nested of nestedCjsExportAssignmentsOf(stmt, cjs?.expr)) {
+      // level (`const src = exports.src = []`) are exports too. A
+      // statement Node discards registers nothing: its write lands on the
+      // exports object a `module.exports =` assignment replaced, which no
+      // importer reads.
+      for (const nested of discarded === null
+        ? nestedCjsExportAssignmentsOf(stmt, cjs?.expr)
+        : []) {
         registerExport(nested.name, nested.name.text, nested.value);
       }
       if (cjs?.kind === "member" && ts.isIdentifier(cjs.name)) {
@@ -3974,7 +3985,25 @@ export function collectGlobals(
             !lowerer.mapTypeOf(lowerer.typeOf(nameNode))
           )
             continue;
-          let type = handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode));
+          // A binding initialized with a CommonJS module's whole export
+          // holds that export object itself: Node's object, the same one
+          // every requirer reads. Unboxing the checked-dynamic object into
+          // the checker's static shape would copy it, so `a === lib` would
+          // answer false where Node answers true. (lowerVarDecl takes the
+          // same rule for locals.)
+          let holdsCjsModuleValue = false;
+          if (!decl.type && !hasJsTypeAnnotation(decl) && ts.isIdentifier(decl.name)) {
+            let source: ts.Expression | undefined = decl.initializer;
+            while (source !== undefined && ts.isParenthesizedExpression(source))
+              source = source.expression;
+            holdsCjsModuleValue =
+              source !== undefined &&
+              ts.isIdentifier(source) &&
+              lowerer.cjsLocalModuleBindingOf(source);
+          }
+          let type = holdsCjsModuleValue
+            ? DYN
+            : (handleT ?? factoryType ?? (inferredJsCall ? DYN : lowerer.irTypeOf(nameNode)));
           // `const made = new V()` where V is a mixin RESULT binding: the
           // checker types the value by the class expression the mixin body
           // returns, but the binding holds the call site's INSTANTIATION

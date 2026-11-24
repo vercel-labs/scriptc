@@ -1,0 +1,10 @@
+{
+  "ci": {
+    "bootstrapping": {
+      "installEnv": {},
+      "resources": {
+        "vcpus": 8
+      }
+    }
+  }
+}

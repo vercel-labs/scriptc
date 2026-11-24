@@ -369,6 +369,9 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);
+/* Whether the socket's dial is still waiting to be started: a request that
+ * queued for an agent slot holds its socket before it connects. */
+bool scr_net_sock_dial_pending(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
 ScrDyn *scr_net_sock_timeout_get(ScrNetSocket *s); /* +1 */
 bool scr_net_sock_allow_half_open(ScrNetSocket *s);
@@ -543,6 +546,14 @@ void scr_net_sock_adopt_start(ScrNetSocket *t);
  * transport handshake, or fires 'connect'; any other status fails the
  * socket with "Proxy response (<status>) !== 200 when HTTP Tunneling". */
 void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
+/* The tunnel's failure report: `status` is the proxy's status code (-1 when
+ * the head is not an HTTP status line), `head`/`head_len` the response head.
+ * The formatter writes the socket error's text; without one the runtime's
+ * own (undici's) wording is used. */
+typedef void (*ScrNetTunnelMsgFn)(void *ctx, int status, const char *head, size_t head_len,
+                                  char *out, size_t cap);
+void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
+                                ScrNetTunnelMsgFn msg_fn, void *ctx);
 /* The status code of a CONNECT response head (head[0..len) ends with the
  * blank line), or -1 when it does not start with an HTTP/1.x status
  * line; and undici's message for a status other than 200 (or -1). */

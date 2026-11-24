@@ -111,20 +111,24 @@ function intlLocale(
   // ToString after that test, so an object reaches the runtime as Node's
   // "[object Object]" and takes the invalid-tag RangeError.
   if (value.type.kind === "dyn") {
-    const undefinedText: IrExpr = {
-      kind: "libCall",
-      fn: "dyn.typeof",
-      args: [value],
-      type: STRING,
-      loc: locOf(arg),
-    };
+    // The expression evaluates once: the test and the conversion both read
+    // the held value, so its side effects run once and the tag tested is
+    // the tag converted.
+    const held = lowerer.declareHiddenLocal("%localeValue", DYN);
+    const heldRef = varRef(held.id, DYN, locOf(arg));
     return {
       locale: {
         kind: "ternary",
         cond: {
           kind: "strEq",
           negated: false,
-          left: undefinedText,
+          left: {
+            kind: "libCall",
+            fn: "dyn.typeof",
+            args: [heldRef],
+            type: STRING,
+            loc: locOf(arg),
+          },
           right: { kind: "strLit", value: "undefined", type: STRING, loc: locOf(arg) },
           type: BOOL,
           loc: locOf(arg),
@@ -133,20 +137,23 @@ function intlLocale(
         else_: {
           kind: "libCall",
           fn: "dyn.toStringCoerce",
-          args: [value],
+          args: [heldRef],
           type: STRING,
           loc: locOf(arg),
         },
         type: STRING,
         loc: locOf(arg),
       },
-      effects: [],
+      effects: [{ kind: "varDecl", localId: held.id, init: value, loc: locOf(arg) }],
     };
   }
   if (value.type.kind === "union") {
     const tag = lowerer.armTag(value.type.unionId, UNDEFINED_T);
     if (tag >= 0) {
-      const text = lowerer.coerceInto(arg, value, STRING);
+      // One evaluation: the test and the conversion read the held value.
+      const local = lowerer.declareHiddenLocal("%localeValue", value.type);
+      const heldRef = varRef(local.id, value.type, locOf(arg));
+      const text = lowerer.coerceInto(arg, heldRef, STRING);
       return {
         locale: {
           kind: "ternary",
@@ -155,7 +162,7 @@ function intlLocale(
             unionId: value.type.unionId,
             tag,
             negated: false,
-            value,
+            value: heldRef,
             type: BOOL,
             loc: locOf(arg),
           },
@@ -164,7 +171,7 @@ function intlLocale(
           type: STRING,
           loc: locOf(arg),
         },
-        effects: [],
+        effects: [{ kind: "varDecl", localId: local.id, init: value, loc: locOf(arg) }],
       };
     }
   }

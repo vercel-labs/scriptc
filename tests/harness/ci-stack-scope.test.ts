@@ -16,7 +16,6 @@ const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
 ) as { jobs: Record<string, Job> };
 const scopeJob = workflow.jobs.validation_scope!;
-const gateStep = scopeJob.steps!.find((step) => step.id === "gate")!;
 const scopeScript = scopeJob.steps!.find((step) => step.id === "scope")!.run!;
 // Validation jobs that run only nightly and on manual runs, outside the
 // required check (the shape overlay over the real-package suites).
@@ -178,11 +177,7 @@ test("scope selection treats branch metadata as data, without executing it", () 
   expect(runScope("pull_request", stacked("feature/$(exit 1)\n'\"; exit 1"))).toBe("full=false\n");
   expect(scopeScript).not.toContain("${{");
   expect(scopeJob.permissions).toEqual({ contents: "read" });
-  expect(scopeJob.steps).toHaveLength(2);
-  expect(gateStep.uses).toBeUndefined();
-  // The probe reads both files the gate needs; only their presence on the default branch counts.
-  expect(gateStep.run).toContain(".github/workflows/ci-review-gate.yml");
-  expect(gateStep.run).toContain("scripts/ci-review-gate.mjs");
+  expect(scopeJob.steps).toHaveLength(1);
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
 });
 
@@ -202,7 +197,7 @@ const laneOf = (name: string) => {
   return laneNames.find((lane) => condition.includes(`needs.lanes.outputs.${lane} == 'true'`));
 };
 
-test("a pull request from this repository runs the fast tier until its reviews pass", () => {
+test("a pull request runs the fast tier unless the ci:full label asks for the full suite", () => {
   const ordinary = {
     repository: { full_name: repository, default_branch: "main" },
     pull_request: {
@@ -213,24 +208,23 @@ test("a pull request from this repository runs the fast tier until its reviews p
     },
   };
   expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
-  // The ci:full label overrides the gate.
+  // The ci:full label asks for the full suite in the pull request's own run.
   const labeled = {
     ...ordinary,
     pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
   };
   expect(runScopeOutputs("pull_request", labeled)).toBe("full=true\ntier=full\n");
-  // A fork's branch cannot be dispatched, so its pull request run runs every lane.
+  // A fork's pull request runs the fast tier too: nothing is dispatched on its branch.
   const fork = {
     ...ordinary,
     pull_request: { ...ordinary.pull_request, head: { repo: { full_name: "someone/scriptc" } } },
   };
-  expect(runScopeOutputs("pull_request", fork)).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("pull_request", fork)).toBe("full=true\ntier=fast\n");
   for (const eventName of ["push", "merge_group", "schedule"])
     expect(runScopeOutputs(eventName, { repository: ordinary.repository }), eventName).toBe(
       "full=true\ntier=full\n",
     );
-  // The expensive tier ci-review-gate.yml dispatches runs on the commit the reviews passed on, and nothing once
-  // the branch moved on.
+  // A hand-dispatched full tier names the commit it runs on, and does nothing once the branch moved on.
   const gated = { repository: ordinary.repository, inputs: { pr: "12", sha: "abc", scope: "all" } };
   expect(runScopeOutputs("workflow_dispatch", gated, "abc")).toBe("full=true\ntier=full\n");
   expect(runScopeOutputs("workflow_dispatch", gated, "def")).toBe("full=false\ntier=superseded\n");
@@ -238,12 +232,12 @@ test("a pull request from this repository runs the fast tier until its reviews p
   expect(runScopeOutputs("workflow_dispatch", manual, "def")).toBe("full=true\ntier=full\n");
 });
 
-test("a superseded expensive tier passes the required check without reporting ci/full", () => {
+test("a superseded dispatch passes the required check and reports no status", () => {
   const superseded = runGate("false", {}, undefined, "superseded");
   expect(superseded.status).toBe(0);
   expect(superseded.stdout).toContain("its new head runs its own CI");
-  const report = workflow.jobs.test!.steps!.find((step) => step.name === "Report ci/full")!;
-  expect(report.if).toContain("needs.validation_scope.outputs.tier != 'superseded'");
+  // The required check writes no commit status of its own.
+  expect(workflow.jobs.test!.steps!.some((step) => step.name === "Report ci/full")).toBe(false);
 });
 
 test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
@@ -306,9 +300,12 @@ test("the queue runs the fast gate, and a push to main runs the global lanes it 
   expect(tests.strategy!.matrix!.flavor).toContain("needs.lanes.outputs.post == 'true'");
   expect(tests.strategy!.matrix!.shard).toContain("needs.queue_plan.outputs.plain_shards");
   expect(tests.needs).toContain("queue_plan");
-  // The full parity sweep is off in the queue; the baseline completeness pass is on.
+  // The full parity sweep is off in the queue; the baseline completeness pass runs in code_quality, which every
+  // tier needs.
   expect(workflow.jobs.ts7_parity!.if).toContain("needs.lanes.outputs.queue != 'true'");
-  expect(workflow.jobs.ts7_baselines!.if).toContain("needs.lanes.outputs.queue == 'true'");
+  expect(workflow.jobs.code_quality!.steps!.map((step) => step.run)).toContain(
+    "pnpm test:ts7 --baselines-only",
+  );
 });
 
 test("a lane the base revision's selector does not name leaves its job off", () => {
@@ -344,7 +341,6 @@ const queueJobs = new Set([
   "code_quality",
   "native_linux",
   "tests",
-  "ts7_baselines",
 ]);
 const postJobs = new Set([
   "validation_scope",
@@ -426,7 +422,7 @@ function runGate(
   return spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { encoding: "utf8" });
 }
 
-test("a pull request keeps full CI until the gate is on the default branch", () => {
+test("the fast tier needs no gate on the default branch, and other events never take it", () => {
   const ordinary = {
     repository: { full_name: repository, default_branch: "main" },
     pull_request: {
@@ -436,18 +432,14 @@ test("a pull request keeps full CI until the gate is on the default branch", () 
       labels: [],
     },
   };
-  expect(runScopeOutputs("pull_request", ordinary, "", "true")).toBe("full=true\ntier=fast\n");
-  // The pull request that introduces the gate cannot be gated yet: its own run validates every lane, as before.
-  expect(runScopeOutputs("pull_request", ordinary, "", "false")).toBe("full=true\ntier=full\n");
-  // A probe that reports nothing counts as absent.
-  expect(runScopeOutputs("pull_request", ordinary, "", "")).toBe("full=true\ntier=full\n");
-  // The label still asks for full CI, and other events never take the fast tier.
+  expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
+  // The label asks for the full suite in the pull request's own run.
   const labeled = {
     ...ordinary,
     pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
   };
-  expect(runScopeOutputs("pull_request", labeled, "", "false")).toBe("full=true\ntier=full\n");
-  expect(runScopeOutputs("push", { repository: ordinary.repository }, "", "false")).toBe(
+  expect(runScopeOutputs("pull_request", labeled)).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("push", { repository: ordinary.repository })).toBe(
     "full=true\ntier=full\n",
   );
 });
@@ -503,7 +495,7 @@ test("the fast tier passes the required check on its own jobs, with every lane o
 
 test("full validation rejects any failed, cancelled or skipped expensive job", () => {
   // The queue's baseline pass is off in a full run, so its skip there is expected.
-  for (const job of heavyJobs.filter((name) => name !== "ts7_baselines"))
+  for (const job of heavyJobs)
     for (const result of ["failure", "cancelled", "skipped"])
       expect(runGate("true", { [job]: result }).status, `${job}: ${result}`).toBe(1);
 });
@@ -520,7 +512,7 @@ test("the merge queue's required check passes on the fast gate alone", () => {
     fast: "false",
   };
   expect(runGate("true", {}, queue, "full", "queue").status).toBe(0);
-  for (const job of ["queue_plan", "native_linux", "tests", "ts7_baselines"])
+  for (const job of ["queue_plan", "native_linux", "tests"])
     expect(runGate("true", { [job]: "failure" }, queue, "full", "queue").status, job).toBe(1);
   // A job the queue leaves to the post-merge run is skipped there, and a skip is not a failure.
   expect(runGate("true", { effects: "failure" }, queue, "full", "queue").status).toBe(0);

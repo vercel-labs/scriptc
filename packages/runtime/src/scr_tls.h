@@ -97,9 +97,15 @@ void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn
 void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
- * secureConnect listeners on a client); released unread on a plain socket
- * or after the handshake. */
+ * secureConnect listeners on a client) and again when a renegotiation
+ * completes; released unread on a plain socket, kept until the socket
+ * settles otherwise. */
 void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
+/* TLSSocket.renegotiate(options[, callback]): Node's validation and
+ * answers (undefined on a destroyed socket, false when the engine refuses
+ * — TLS 1.3 always does — and true once it starts). */
+struct ScrDyn *scr_tls_sock_renegotiate(ScrNetSocket *s, struct ScrDyn *options,
+                                        struct ScrDyn *callback);
 
 /* ── h2 over TLS (scr_tls.c ↔ scr_http2.c): the ALPN=h2 server wrap and
  * the https-authority client wrap. scr_http2.c calls both directly —

@@ -3905,6 +3905,31 @@ function lowerNetSocketMethodCall(
       ? value
       : lowerer.coerceInto(call, value, declared);
   }
+  if (name === "renegotiate") {
+    // TLSSocket.renegotiate(options[, callback]): Node's options record
+    // (required) and an optional completion that runs with null when the
+    // renegotiated handshake completes. Answers a boolean — undefined on a
+    // destroyed socket, as Node's own return is.
+    if (args.length > 2) {
+      lowerer.noLowering(
+        `renegotiate with ${args.length} arguments`,
+        call,
+        "the form is renegotiate(options[, callback])",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const options: IrExpr =
+      args.length >= 1 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
+    const callback: IrExpr =
+      args.length >= 2 ? lowerer.lowerExprExpecting(args[1]!, DYN) : dynUndefinedExpr(loc);
+    return {
+      kind: "libCall",
+      fn: "tls.sockRenegotiate",
+      args: [receiver, options, callback],
+      type: DYN,
+      loc,
+    };
+  }
   {
     const certificate = lowerTlsCertificateCall(lowerer, call, name, () =>
       coerceToHandle(lowerer, access.expression, NETSOCKET_T),

@@ -150,4 +150,8 @@ export const tlsSignatures = defineLibFnSignatures({
    * key-log lines, each a Buffer. */
   "tls.sockOnKeylog": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
   "tls.serverOnKeylog": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
+  /** renegotiate(options[, callback]): Node's options and completion
+   * validations throw; answers true/false, or undefined on a destroyed
+   * socket. */
+  "tls.sockRenegotiate": { argTypes: [NETSOCKET_T, DYN, DYN], result: DYN },
 });

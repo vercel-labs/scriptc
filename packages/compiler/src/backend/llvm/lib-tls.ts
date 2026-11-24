@@ -113,6 +113,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
     case "tls.sockGetCipher":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
+    case "tls.sockRenegotiate":
+      return finishRuntimeCall(host, e, "scr_tls_sock_renegotiate", a);
     case "tls.sockAlpnProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
     case "tls.serverAddContext":

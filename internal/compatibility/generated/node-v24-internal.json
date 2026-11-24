@@ -103917,6 +103917,10 @@
           "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-keylog.ts",
+          "tests/corpus/tls-renegotiate-disabled.ts",
+          "tests/corpus/tls-renegotiate-dyn.cjs",
+          "tests/corpus/tls-renegotiate-reverify.ts",
+          "tests/corpus/tls-renegotiate.ts",
           "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-keylog-capture.ts",
           "tests/corpus/tls-server-keylog-this.cjs",
@@ -104905,7 +104909,8 @@
         "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.disableRenegotiation",
         "tests": [
-          "tests/corpus/tls-socket-extras.ts"
+          "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-renegotiate-disabled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105308,7 +105313,8 @@
         "status": "supported",
         "evidence": "compiler-feature:tls.tlsSocket.getSession",
         "tests": [
-          "tests/corpus/tls-socket-extras.ts"
+          "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-renegotiate-disabled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -105470,8 +105476,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.renegotiate",
+        "tests": [
+          "tests/corpus/tls-renegotiate.ts",
+          "tests/corpus/tls-renegotiate-dyn.cjs",
+          "tests/corpus/tls-renegotiate-disabled.ts",
+          "tests/corpus/tls-renegotiate-reverify.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -105947,7 +105959,8 @@
         "status": "supported",
         "evidence": "compiler-feature:tls.servername",
         "tests": [
-          "tests/corpus/tls-socket-extras.ts"
+          "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-renegotiate-disabled.ts"
         ]
       },
       "anchorSource": "ancestor"

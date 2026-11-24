@@ -77,7 +77,15 @@ declare module "tls" {
     readonly servername: string | false;
     /* The session a resumption would use; null before one exists. */
     getSession(): Buffer | null;
-    /* Renegotiation is off by default: the call is a no-op. */
+    /* Start a post-handshake renegotiation (TLS 1.2; a TLS 1.3 connection
+     * answers false with the engine's wrong-version error to the callback).
+     * The completion runs once the renegotiated handshake is secure. */
+    renegotiate(
+      options: { requestCert?: boolean; rejectUnauthorized?: boolean },
+      callback?: (err: Error | null) => void,
+    ): boolean;
+    /* Renegotiation is on, as in Node; this turns it off for later
+     * handshakes (the call is otherwise a no-op). */
     disableRenegotiation(): void;
   }
   /* A certificate as getPeerCertificate() and X509Certificate's

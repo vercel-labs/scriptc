@@ -9141,18 +9141,19 @@ bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key) {
 /* The slot a class value's type key selects in a class-value table of
  * `bits` slot bits, computed exactly as a generated table's switch does
  * (ir/class-key-index.ts classValueSlot): the key's length and last four
- * bytes folded together, then reduced to the high bits. -1, which no case
- * holds, for a value that is not a class value or whose key is shorter than
- * four bytes. */
+ * bytes folded together, then reduced to the high bits. The fold wraps at
+ * 32 bits, so the length term, the key's last four bytes and their sum are
+ * all unsigned. -1, which no case holds, for a value that is not a class
+ * value or whose key is shorter than four bytes. */
 int scr_dyn_class_value_slot(const ScrDyn *value, int bits) {
   if (!value || value->kind != SCR_DYN_FUNC || !value->v.fn.sig) return -1;
   const char *key = value->v.fn.sig;
   size_t len = strlen(key);
   if (len < 4) return -1;
-  int32_t tail;
+  uint32_t tail;
   memcpy(&tail, key + len - 4, sizeof tail);
-  int32_t folded = (int32_t)((uint32_t)len * UINT32_C(0x9e3779b1)) + tail;
-  uint32_t mixed = (uint32_t)folded * UINT32_C(0x85ebca6b);
+  uint32_t folded = (uint32_t)len * UINT32_C(0x9e3779b1) + tail;
+  uint32_t mixed = folded * UINT32_C(0x85ebca6b);
   return (int)(mixed >> (32 - bits));
 }
 

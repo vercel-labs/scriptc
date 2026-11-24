@@ -369,13 +369,16 @@ static void scr_u8_flush_cbs_run(ScrUtf8Stream *s) {
  * either flush what is left, close for an ending stream, or announce the
  * drain. */
 static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
-  s->writing = false;
   ScrDyn *count = scr_dyn_new_num((double)written);
+  /* The flush is still in flight for the listeners, as in Node's #release:
+   * an end() they call sets #ending and waits for this completion instead
+   * of starting an empty flush of its own. */
   scr_u8_emit(s, SCR_U8_WRITE, count);
   scr_dyn_release(count);
+  s->writing = false;
   /* Only the bytes this flush carried leave the accounting (Node's
-   * #len - n): a write that arrived while it was in flight stays queued.
-   * The 'write' listeners above still saw it counted, as Node's do. */
+   * #len - n): a write that arrived while it was in flight stays queued,
+   * and the listeners above saw it counted as Node's do. */
   s->len = s->len >= s->release_units ? s->len - s->release_units : 0;
   s->release_units = 0;
   if (scr_exc_pending()) return;
@@ -545,8 +548,12 @@ static ScrDyn *scr_u8_flush_sync(ScrUtf8Stream *s) {
     return NULL;
   }
   size_t written = 0;
+  /* The in-flight flush keeps its accounting until its own completion (a
+   * flushSync during an async write must not erase it): only the buffered
+   * data leaves here. */
+  size_t buffered = s->len - (s->writing && s->release_units <= s->len ? s->release_units : 0);
   if (!scr_u8_write_out(s, &written)) return NULL;
-  s->len = 0;
+  s->len -= buffered;
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -618,11 +625,12 @@ static ScrDyn *scr_u8_reopen(ScrUtf8Stream *s, const ScrDyn *file) {
   ScrStr *path = given ? scr_dyn_string_coerce_js(file) : scr_str_retain(s->file);
   if (path == NULL) return NULL;
   size_t written = 0;
+  size_t buffered = s->len - (s->writing && s->release_units <= s->len ? s->release_units : 0);
   if (!scr_u8_write_out(s, &written)) {
     scr_str_release(path);
     return NULL;
   }
-  s->len = 0;
+  s->len -= buffered;
   if (!scr_fs_path_ok(path, "path")) {
     scr_str_release(path);
     return NULL;

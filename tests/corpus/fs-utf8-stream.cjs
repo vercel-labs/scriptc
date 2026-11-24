@@ -272,6 +272,45 @@ function interleavedStream(dir) {
   });
   s.on("close", () => {
     console.log("interleaved", events.join(","), JSON.stringify(fs.readFileSync(file, "utf8")));
+    endInListener(dir);
+  });
+}
+
+// end() from a 'write' listener waits for the flush that raised the event
+// instead of starting a second one.
+function endInListener(dir) {
+  const file = join(dir, "end-listener.log");
+  const events = [];
+  const s = new fs.Utf8Stream({ dest: file });
+  s.on("write", (n) => {
+    events.push("write:" + n);
+    s.end();
+  });
+  s.on("finish", () => events.push("finish"));
+  s.on("ready", () => s.write("abc"));
+  s.on("close", () => {
+    events.push("close");
+    console.log("end in listener", events.join(","), JSON.stringify(fs.readFileSync(file, "utf8")));
+    flushSyncDuringWrite(dir);
+  });
+}
+
+// flushSync() during an async write leaves the in-flight write's accounting
+// alone, so a later write is still measured against it.
+function flushSyncDuringWrite(dir) {
+  const file = join(dir, "flush-during.log");
+  const events = [];
+  const s = new fs.Utf8Stream({ dest: file, maxLength: 4 });
+  s.on("drop", (data) => events.push("drop:" + JSON.stringify(data)));
+  s.on("write", (n) => events.push("write:" + n));
+  s.on("ready", () => {
+    s.write("abc");
+    s.flushSync();
+    console.log("flush sync ret", s.write("de"));
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("flush sync during", events.join(","), JSON.stringify(fs.readFileSync(file, "utf8")));
     reopenStream(dir);
   });
 }

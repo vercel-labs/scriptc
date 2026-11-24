@@ -351,7 +351,9 @@ jobs:
 
   probe_2:
     needs: [plan, narrow_1]
-    if: ${{ needs.plan.outputs.applicable == 'true' && needs.narrow_1.outputs.resolved == 'false' && needs.narrow_1.outputs.has_probes == 'true' }}
+    # Runs after round one even when it resolved: a skipped job would suppress the jobs that need it, and the empty
+    # slots simply skip their steps.
+    if: ${{ needs.plan.outputs.applicable == 'true' }}
     name: probe again ${{ matrix.index }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -379,7 +381,9 @@ jobs:
 
   narrow_2:
     needs: [plan, narrow_1, probe_2]
-    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.narrow_1.outputs.resolved == 'false' && needs.narrow_1.outputs.has_probes == 'true' && needs.narrow_1.outputs.reason == '' }}
+    # Always runs, like narrow_1: when round one resolved, its body reports no second bracket instead of skipping,
+    # so the jobs that need it are never suppressed.
+    if: ${{ always() && needs.plan.result == 'success' }}
     name: narrow the range again
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -405,6 +409,12 @@ jobs:
           EXPECTED: ${{ needs.narrow_1.outputs.probe_count }}
         run: |
           blocked() { printf 'resolved=false\nreason=%s\n' "$1" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "${{ needs.narrow_1.outputs.resolved }}" = true ] ||
+             [ "${{ needs.narrow_1.outputs.has_probes }}" != true ] ||
+             [ -n "${{ needs.narrow_1.outputs.reason }}" ]; then
+            printf 'resolved=false\nreason=\nculprit_sha=\npredecessor_sha=\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           printf '%s' "$COMMITS" > "$RUNNER_TEMP/commits.json"
           results="[]"
           for dir in probe-results/*/; do
@@ -465,7 +475,7 @@ jobs:
   # Three failures on the culprit and three passes on the commit before it: the boundary is deterministic.
   confirm:
     needs: [plan, decide]
-    if: ${{ needs.plan.outputs.applicable == 'true' && needs.decide.outputs.culprit_sha != '' }}
+    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.decide.outputs.culprit_sha != '' }}
     name: confirm ${{ matrix.role }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25

@@ -294,8 +294,13 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
     expect(index, name).toBeGreaterThan(0);
     expect(steps[index - 1]!.uses, name).toContain("actions/checkout@");
   }
-  // The boundary ends with three runs on each side, and the job fails unless all three hold.
+  // Round two never skips: a skipped job would suppress the confirmation that needs it.
+  expect(workflow.jobs.probe_2!.if).not.toContain("resolved");
+  expect(workflow.jobs.narrow_2!.if).toContain("always()");
+  const narrow2 = workflow.jobs.narrow_2!.steps!.find((step) => step.id === "narrow")!;
+  expect(narrow2.run).toContain('"${{ needs.narrow_1.outputs.resolved }}" = true');
   const confirm = workflow.jobs.confirm!;
+  expect(confirm.if).toContain("always()");
   const probe = confirm.steps!.find((step) => step.uses === "./.github/actions/bisect-probe")!;
   expect(probe.with!.repeat).toBe("3");
   expect(probe.with!.expect).toBe("${{ matrix.expect }}");

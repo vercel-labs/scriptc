@@ -244,9 +244,16 @@ export function classPrototypeData(
         loc,
       };
       const init = helper.body[0]!;
-      if (init.kind === "if")
+      if (init.kind === "if") {
+        // This adds slots to a helper that an earlier unit may have lifted.
+        // The lifted-functions table only grows by addition, so the in-place
+        // write is no part of this unit's function: name it (unit-journal.ts
+        // UnitEvents.touch), so the unit carries the changed helper instead of
+        // HeldTables.check finding an unnamed write. A helper this unit lifted
+        // is not yet held when the unit started, so naming it costs the unit
+        // nothing.
+        lowerer.unitEvents?.touch(info.def.prototypeDataHelper);
         init.then.push({ kind: "assign", localId: originalId, value: boxedValue, loc });
-      if (init.kind === "if")
         init.then.push({
           kind: "exprStmt",
           expr: {
@@ -262,6 +269,7 @@ export function classPrototypeData(
           },
           loc,
         });
+      }
     }
   }
   return { kind: "call", callee: info.def.prototypeDataHelper, args: [], type: DYN, loc };
@@ -657,6 +665,11 @@ export function reflectClassPrototype(
   const initialization = helper?.body[0];
   if (!helper || initialization?.kind !== "if" || info.prototypeReflectionReady) return prototype;
   info.prototypeReflectionReady = true;
+  // The rebuild below changes an existing lifted helper in place. Name it for
+  // the unit being recorded (unit-journal.ts UnitEvents.touch): the helper
+  // table only grows by addition, so the write must be carried by the unit
+  // that made it.
+  lowerer.unitEvents?.touch(helper.name);
   // Earlier method or JSON views may have installed only observed slots.
   // Rebuild them in declaration order when the entire prototype is exposed.
   // Lowering passes may have rebuilt these statements, so match their

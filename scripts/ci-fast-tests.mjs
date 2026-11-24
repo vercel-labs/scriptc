@@ -44,10 +44,15 @@ export const SMOKE_BUDGET_MS = 3 * 60_000;
 
 // The corpus suites, the isolated and case-sharded suites, and the memory-heavy files run only in the expensive
 // tier: any one of them takes longer than the fast tier.
+// The wasm32-wasi differential lane runs wherever zig is on PATH, and the fast tier's native-package setup puts it
+// there, but the lane needs @scriptc/runtime-wasm32-wasi/runtime-pack.json, which only the WASI artifact lane
+// builds (llvm_artifacts_linux_x64_wasi). Selecting it here fails with SC3003.
+const wasiLane = "tests/harness/wasi-differential.test.ts";
 const expensiveOnly = new Set([
   ...fileExclusions,
   ...nativeFrontendFiles,
   ...Object.keys(memoryHeavyFiles),
+  wasiLane,
 ]);
 
 const isTest = (file) => file.endsWith(".test.ts");

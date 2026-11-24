@@ -234,6 +234,25 @@ test("the gate workflow dispatches a pull request's full tier only by hand, and 
   expect(job.steps.filter((step) => step.run)).toHaveLength(1);
 });
 
+test("the wasi differential lane runs in its own job, never in the fast tier", () => {
+  const wasi = "tests/harness/wasi-differential.test.ts";
+  const testFiles = ["packages/compiler/test/emit-call.test.ts", wasi];
+  const costs = { "packages/compiler/test/emit-call.test.ts": 1000, [wasi]: 1000 };
+  // Even when the lane is the changed file, or the related graph names it, the fast tier leaves it out: its
+  // runtime pack is not built there and the lane would fail with SC3003.
+  const selection = fastTests([wasi], testFiles, costs, FAST_TEST_BUDGET_MS, { related: [wasi] });
+  expect(selection.selected).toEqual([]);
+  expect(selection.deferred).toContain(wasi);
+  // The WASI artifact lane does build the pack, and runs it there.
+  const workflow = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
+    jobs: Record<string, { steps: { run?: string }[] }>;
+  };
+  const commands = workflow.jobs["llvm_artifacts_linux_x64_wasi"]!.steps.map(
+    (step) => step.run ?? "",
+  ).join("\n");
+  expect(commands).toContain(wasi);
+});
+
 test("the fast tier also runs the smoke set when asked, without duplicating a selected program", () => {
   const testFiles = ["packages/compiler/test/emit-call.test.ts"];
   const costs = { "packages/compiler/test/emit-call.test.ts": 1000 };

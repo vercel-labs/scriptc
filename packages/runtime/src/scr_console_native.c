@@ -748,7 +748,7 @@ void scr_console_group(double delta) {
  * cursorTo(stdout, 0, 0), then clearScreenDown(stdout). */
 static void scr_console_clear_tty(int fd) {
   if (!scr_process_is_tty(fd)) return;
-  const char *term = getenv("TERM");
+  const char *term = scr_getenv("TERM");
   if (term && strcmp(term, "dumb") == 0) return;
   scr_stdio_write_text(fd, "\x1b[1;1H", 6);
   scr_stdio_write_text(fd, "\x1b[0J", 4);

@@ -5,6 +5,17 @@
 #include "scr_runtime.h"
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+
+#ifdef SCR_WORKERS
+/* Worker executables read the allocator's tunables through the runtime's
+ * locked environment accessor. This harness links no script context, and the
+ * allocation contracts under test do not involve the environment: answer
+ * through the platform getenv and leave the lock a no-op. */
+const char *scr_context_getenv(const char *name) { return getenv(name); }
+void scr_context_env_process_lock(void) {}
+void scr_context_env_process_unlock(void) {}
+#endif
 
 #if SCR_SMALL_ALLOC
 /* Whether p is a block of the calling thread's arena: in the window, in a

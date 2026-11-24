@@ -74,7 +74,14 @@ describe("library profile validation", () => {
         [folder("stage/src"), folder("src")],
         [folder("stage"), folder("../app")],
       ]);
-    for (const file_prefix_map of ["src", ["src"], { stage: 1 }, { stage: "" }, { "": "src" }]) {
+    for (const file_prefix_map of [
+      null,
+      "src",
+      ["src"],
+      { stage: 1 },
+      { stage: "" },
+      { "": "src" },
+    ]) {
       expectSc4001({ ...good, file_prefix_map }, "file_prefix_map");
     }
   });

@@ -618,7 +618,7 @@ export function loadLibraryProfile(
         `'optimization' must be "release", "dev", or "speed", got '${optimization}'`,
       );
     }
-    const prefixMapRaw = p["file_prefix_map"] ?? {};
+    const prefixMapRaw = p["file_prefix_map"] === undefined ? {} : p["file_prefix_map"];
     if (
       prefixMapRaw === null ||
       typeof prefixMapRaw !== "object" ||

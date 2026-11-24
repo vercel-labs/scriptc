@@ -1447,7 +1447,9 @@ static void scr_net_sock_update_read(ScrNetSocket *s) {
 static void scr_net_sock_update_write(ScrNetSocket *s) {
   bool want = s->fd >= 0 &&
               (s->connecting || (s->tunnel != NULL ? s->tunnel->out_off < s->tunnel->out_len
-                                              : s->wlen > s->whead || s->t_want_write));
+                                              : s->wlen > s->whead || s->t_want_write ||
+                                                    (s->tops != NULL && s->tops->write_pending &&
+                                                     s->tops->write_pending(s->tctx))));
   if (want && !s->write_armed) {
     scr_net_watch_write(s->fd, s, true);
     s->write_armed = true;
@@ -1474,6 +1476,14 @@ static void scr_net_sock_close_fd(ScrNetSocket *s) {
  * drained (or was empty). Full close once the read half is done too. */
 static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
   if (s->fd < 0 || !s->wr_ending || s->wr_done || s->wlen > s->whead || s->tunnel != NULL) return;
+  /* the transport may still hold unsent bytes of its own (the TLS
+   * handshake hold): push them now, so an end() that follows a write
+   * inside the hold window still flushes; if they cannot all go, the FIN
+   * waits and the readiness path retries */
+  if (s->tops != NULL && s->tops->write_pending && s->tops->write_pending(s->tctx)) {
+    if (s->tops->drain != NULL) s->tops->drain(s->tctx);
+    if (s->tops->write_pending(s->tctx)) return;
+  }
   /* a transport says goodbye first (TLS close_notify), best-effort */
   if (s->tops && s->t_est) s->tops->shutdown_write(s->tctx);
   shutdown(s->fd, SHUT_WR);
@@ -1491,6 +1501,10 @@ static void scr_net_sock_maybe_finish_write(ScrNetSocket *s) {
   if (s->rd_eof) scr_net_sock_close_fd(s);
   else scr_net_sock_update_read(s); /* the drain-to-EOF mode arms here */
 }
+
+/* A transport finished flushing its own held bytes: the write half may
+ * now settle (an end() queued while they were pending gets its FIN). */
+void scr_net_sock_finish_check(ScrNetSocket *s) { scr_net_sock_maybe_finish_write(s); }
 
 /* The write buffer emptied (or its bytes moved elsewhere): every pending
  * write is complete. */

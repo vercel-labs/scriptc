@@ -103917,6 +103917,8 @@
           "tests/corpus/tls-export-keying-material.ts",
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-keylog.ts",
+          "tests/corpus/tls-max-send-fragment-dyn.mjs",
+          "tests/corpus/tls-max-send-fragment.ts",
           "tests/corpus/tls-server-class.ts",
           "tests/corpus/tls-server-keylog-capture.ts",
           "tests/corpus/tls-server-keylog-this.cjs",
@@ -105516,8 +105518,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.setMaxSendFragment",
+        "tests": [
+          "tests/corpus/tls-max-send-fragment.ts",
+          "tests/corpus/tls-max-send-fragment-dyn.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

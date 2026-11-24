@@ -83,6 +83,9 @@ ScrDyn *scr_tls_sock_servername(ScrNetSocket *s);
 ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s);
 /* tlsSocket.disableRenegotiation(): renegotiation is off by default. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
+/* setMaxSendFragment(size): Node's validation ladder, then the 512..16384
+ * range OpenSSL accepts; true when the cap was set. */
+bool scr_tls_sock_set_max_send_fragment(ScrNetSocket *s, const ScrDyn *size);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
  * (each +1, as above). */
 ScrDyn *scr_tls_sock_dyn_member(ScrNetSocket *s, double which);

@@ -79,6 +79,9 @@ declare module "tls" {
     getSession(): Buffer | null;
     /* Renegotiation is off by default: the call is a no-op. */
     disableRenegotiation(): void;
+    /* Cap each outgoing record's plaintext at `size` bytes (512..16384);
+     * answers false outside that range. */
+    setMaxSendFragment(size: number): boolean;
   }
   /* A certificate as getPeerCertificate() and X509Certificate's
    * toLegacyObject() answer it: subject and issuer map attribute short

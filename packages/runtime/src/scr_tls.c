@@ -913,6 +913,14 @@ typedef struct ScrTlsSock {
   bool holding;
   unsigned char *held;
   size_t held_len, held_off, held_cap;
+  /* setMaxSendFragment(size): the plaintext cap for each engine write, so
+   * records leave no larger than Node's maximum fragment; 0 leaves the
+   * engine's own limit in place */
+  size_t max_send_fragment;
+  /* the length of the record the engine buffered but has not finished
+   * writing: a retry must pass exactly that length, whatever the cap has
+   * become in between, or the socket's byte accounting desynchronizes */
+  size_t w_pending;
 } ScrTlsSock;
 
 static bool scr_tls_alert_error(ScrTlsSock *t, unsigned char alert);
@@ -1347,6 +1355,9 @@ static int scr_tls_flush_held(ScrTlsSock *t) {
 static int scr_tls_bio_send(void *ctx, const unsigned char *buf, size_t len) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   if (t->quiet_failure) return (int)len;
+  /* Handshake flights (and app data written while the established events
+   * run) wait in the hold; the socket's write side stays "pending" until
+   * these bytes leave (the write_pending op), so no FIN overtakes them. */
   if (t->holding) {
     scr_tls_hold(t, buf, len);
     return (int)len;
@@ -1449,12 +1460,32 @@ static ssize_t scr_tls_xread(void *tctx, char *buf, size_t n) {
 
 static ssize_t scr_tls_xwrite(void *tctx, const char *buf, size_t n) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
+  if (t->w_pending != 0) {
+    /* the engine buffered a record on the previous call and is still
+     * writing it: it answers with the length of the retry's argument, so
+     * the retry must carry exactly the buffered length. The cap may have
+     * changed since; passing a different length here would make the send
+     * loop advance by the wrong count (dropping or repeating bytes). */
+    if (n > t->w_pending) n = t->w_pending;
+  } else {
+    /* a set maximum fragment caps every engine write, so each record
+     * leaves at that size; the socket's send loop resumes with the rest */
+    int room = mbedtls_ssl_get_max_out_record_payload(&t->ssl);
+    size_t cap = room > 0 ? (size_t)room : n;
+    if (t->max_send_fragment != 0 && cap > t->max_send_fragment) cap = t->max_send_fragment;
+    if (n > cap) n = cap;
+  }
   int r = mbedtls_ssl_write(&t->ssl, (const unsigned char *)buf, n);
-  if (r >= 0) return r;
+  if (r >= 0) {
+    t->w_pending = 0;
+    return r;
+  }
   if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE) {
+    t->w_pending = n;
     errno = EAGAIN;
     return -1;
   }
+  t->w_pending = 0;
   errno = EPIPE;
   return -1;
 }
@@ -1954,6 +1985,10 @@ static void scr_tls_release_hold(ScrClosure *self) {
   if (t != NULL && t->holding) {
     t->holding = false;
     if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
+    /* an end() that ran while those bytes were held deferred its FIN: the
+     * settlement runs again now that they are out (a partial flush leaves
+     * the socket's write side pending; readiness retries it) */
+    scr_net_sock_finish_check(s);
   }
   scr_net_sock_release(s);
 }
@@ -2120,6 +2155,15 @@ static bool scr_tls_pending(void *tctx) {
          mbedtls_ssl_get_bytes_avail(&t->ssl) > 0;
 }
 
+/* The transport's own unsent ciphertext (the handshake hold): records the
+ * engine accepted while the established events were still running wait
+ * here, so the socket's write side is not done until they leave — and no
+ * FIN may go out ahead of them. */
+static bool scr_tls_write_pending(void *tctx) {
+  ScrTlsSock *t = (ScrTlsSock *)tctx;
+  return t->held_len > t->held_off;
+}
+
 static void scr_tls_shutdown_write(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   if (t->notify_sent) return;
@@ -2151,7 +2195,9 @@ static void scr_tls_free(void *tctx) {
 /* The fd is writable again: the rest of what was held goes out. */
 static void scr_tls_drain(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
-  if (!t->holding && t->held_len > t->held_off) (void)scr_tls_flush_held(t);
+  /* held records go to the socket now: readiness retries what EAGAIN
+   * leaves, and the write half's settlement waits on them (write_pending) */
+  if (t->held_len > t->held_off) (void)scr_tls_flush_held(t);
 }
 
 /* The 'secure' event: after a client's secureConnect listeners, as Node
@@ -2193,6 +2239,7 @@ static const ScrNetTransportOps SCR_TLS_OPS = {
   .handshake = scr_tls_handshake,
   .on_established = scr_tls_on_established,
   .pending = scr_tls_pending,
+  .write_pending = scr_tls_write_pending,
   .shutdown_write = scr_tls_shutdown_write,
   .free = scr_tls_free,
   .settle = scr_tls_settle,
@@ -5264,6 +5311,48 @@ ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s) {
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }
 
+/* A JS number as V8 prints it in an error's Received tail ("70000",
+ * "1.5", "NaN", "Infinity"). Integer-valued doubles print without a
+ * fraction. */
+static void scr_tls_number_text(double v, char *buf, size_t cap) {
+  if (v != v) {
+    snprintf(buf, cap, "NaN");
+  } else if (isinf(v)) {
+    snprintf(buf, cap, v < 0 ? "-Infinity" : "Infinity");
+  } else if (trunc(v) == v && v >= -9007199254740992.0 && v <= 9007199254740992.0) {
+    snprintf(buf, cap, "%.0f", v);
+  } else {
+    snprintf(buf, cap, "%.17g", v);
+  }
+}
+
+/* TLSSocket.setMaxSendFragment(size): Node's validateInteger gate first
+ * (ERR_INVALID_ARG_TYPE for a non-number, ERR_OUT_OF_RANGE for a
+ * non-integer), then OpenSSL's range — 512..16384 answers true and caps
+ * each outgoing record's plaintext, anything else answers false. A plain
+ * or closed socket answers false (Node's closed handle throws instead). */
+bool scr_tls_sock_set_max_send_fragment(ScrNetSocket *s, const ScrDyn *size) {
+  if (size->kind != SCR_DYN_NUM) {
+    scr_dyn_arg_type_fail("size", "of type number", size);
+    return false;
+  }
+  double v = size->v.num;
+  if (!(trunc(v) == v) || isinf(v)) {
+    char shown[64], text[224];
+    scr_tls_number_text(v, shown, sizeof shown);
+    int n = snprintf(text, sizeof text,
+                     "The value of \"size\" is out of range. It must be an integer. Received %s",
+                     shown);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || t->settled) return false;
+  if (v < 512 || v > 16384) return false;
+  t->max_send_fragment = (size_t)v;
+  return true;
+}
+
 /* `x instanceof tls.Server` over a checked-dynamic value: false for every
  * non-server value (a null, another handle, a plain object). */
 bool scr_tls_server_is_dyn(const ScrDyn *v) {
@@ -5582,8 +5671,6 @@ static bool scr_tls_dynh_on(ScrNetSocket *s, const char *event, const ScrDyn *cb
 
 static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *const *args,
                                  size_t argc, ScrDyn **out) {
-  (void)args;
-  (void)argc;
   if (scr_tls_sock_of(s) == NULL) return false;
   if (strcmp(method, "getProtocol") == 0) {
     *out = scr_tls_sock_get_protocol(s);
@@ -5591,6 +5678,11 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
   }
   if (strcmp(method, "getCipher") == 0) {
     *out = scr_tls_sock_get_cipher(s);
+    return true;
+  }
+  if (strcmp(method, "setMaxSendFragment") == 0) {
+    bool ok = scr_tls_sock_set_max_send_fragment(s, argc >= 1 ? args[0] : scr_dyn_undefined());
+    *out = scr_dyn_new_bool(ok);
     return true;
   }
   if (strcmp(method, "setServername") == 0) {
@@ -5617,7 +5709,7 @@ static bool scr_tls_dynh_invoke(ScrNetSocket *s, const char *method, ScrDyn *con
     "getPeerCertificate", "getCertificate", "getSession",
     "getTLSTicket", "getEphemeralKeyInfo", "getFinished", "getPeerFinished",
     "getSharedSigalgs", "getPeerX509Certificate", "getX509Certificate",
-    "exportKeyingMaterial", "isSessionReused", "renegotiate", "setMaxSendFragment",
+    "exportKeyingMaterial", "isSessionReused", "renegotiate",
     "enableTrace", "disableRenegotiation", "setSession", NULL,
   };
   for (size_t i = 0; tls_methods[i] != NULL; i++) {

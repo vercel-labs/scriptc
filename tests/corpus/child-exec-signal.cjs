@@ -54,3 +54,33 @@ cp.exec("sleep 5", { encoding: "utf8", timeout: 5000, signal: race.signal }, (e1
   setTimeout(() => late.abort(), 800);
 });
 setTimeout(() => race.abort(), 100);
+
+// What an abort returns: the stdout and stderr collected before it reach the
+// callback, the abort actually stops the command (a later marker never
+// appears), and signal: undefined means no cancellation support. The cases
+// run one after another so their order is fixed.
+setTimeout(() => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const partial = new AbortController();
+  cp.exec("printf early-out; printf early-err >&2; sleep 5", { encoding: "utf8", signal: partial.signal }, (e, out, err) => {
+    show("partial-captures", e, out, err);
+    const marker = path.join(os.tmpdir(), `scriptc-exec-abort-${process.pid}`);
+    try {
+      fs.unlinkSync(marker);
+    } catch {}
+    const killed = new AbortController();
+    cp.exec(`sleep 0.6; printf late > ${marker}`, { encoding: "utf8", signal: killed.signal }, (e2, o2, r2) => {
+      show("kill-abort", e2, o2, r2);
+      setTimeout(() => {
+        console.log("marker-written", fs.existsSync(marker));
+        cp.exec("echo undef-ok", { encoding: "utf8", signal: undefined }, (e3, o3, r3) =>
+          show("undefined-signal", e3, o3, r3),
+        );
+      }, 1000);
+    });
+    setTimeout(() => killed.abort(), 100);
+  });
+  setTimeout(() => partial.abort(), 300);
+}, 1000);

@@ -501,6 +501,13 @@ static int scr_exec_kill_signal(ScrStr *kill_signal, bool *ok);
 static void scr_child_abort_dispose(ScrChild *c);
 static void scr_child_abort_fire(ScrChild *c);
 static ScrDyn *scr_child_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+/* Node's options.signal subscription, the same one spawnArmed and the
+ * callback exec/execFile forms install: keeps the signal (+1) on the child
+ * and, for one that aborts later, subscribes the listener through `add`
+ * (NULL when the program holds no AbortSignal to pass). A signal already
+ * aborted at the call fires from the poll right after 'spawn'. Borrows the
+ * signal unless it installs the subscription. */
+static void scr_child_arm_signal(ScrChild *c, ScrDyn *signal, ScrAbortAddFn add);
 
 #ifdef _WIN32
 /* ── Windows arm: real children via CreateProcessW ────────────────────
@@ -4077,11 +4084,6 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
                              ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal,
                              const ScrDyn *signal, bool has_signal, ScrAbortAddFn add) {
-  /* The abort subscription is the POSIX arm's today: the signal rides the
-   * ABI on both platforms and is unused here. */
-  (void)signal;
-  (void)has_signal;
-  (void)add;
   /* Consume the armed maxBuffer before the first throw path: a rejected
    * option must not leave its limit for the next unrelated capture. */
   double max_buffer = scr_child_max_take();
@@ -4102,8 +4104,21 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     free(msg);
     return NULL;
   }
+  /* Node's spawn validates options.signal after the execFile options: an
+   * AbortSignal instance, or the property TypeError. An undefined value is
+   * absent, as validateAbortSignal treats it. */
+  bool has_abort = has_signal && signal != NULL && signal->kind != SCR_DYN_UNDEF;
+  if (has_abort && (signal->kind != SCR_DYN_HANDLE ||
+                    signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)) {
+    scr_closure_release(cb);
+    scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
                                env_pairs, cwd);
+  /* The signal an abort sends: killSignal, resolved above (Node kills with
+   * the same one on timeout and abort). */
+  c->kill_signo = signo;
   c->exec_cb = cb;
   c->exec_fn = fn;
   c->exec_file = scr_str_retain(cmd);
@@ -4120,6 +4135,10 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     c->deadline_ms = scr_now_ms() + delay;
     c->deadline_signo = signo;
   }
+  /* Node's spawn subscribes to options.signal: an already-aborted signal
+   * fires on the next tick (after 'spawn'), another fires its abort
+   * listener; exec's callback receives the AbortError in place of exit. */
+  if (has_abort) scr_child_arm_signal(c, (ScrDyn *)signal, add);
   return c;
 }
 #endif /* SCR_CHILD_CP_OPTIONS */
@@ -8515,9 +8534,10 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     return NULL;
   }
   /* Node's spawn validates options.signal after the execFile options: an
-   * AbortSignal instance, or the property TypeError. */
-  bool has_abort = has_signal;
-  if (has_abort && (signal == NULL || signal->kind != SCR_DYN_HANDLE ||
+   * AbortSignal instance, or the property TypeError. An undefined value is
+   * absent, as validateAbortSignal treats it. */
+  bool has_abort = has_signal && signal != NULL && signal->kind != SCR_DYN_UNDEF;
+  if (has_abort && (signal->kind != SCR_DYN_HANDLE ||
                     signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)) {
     scr_closure_release(cb);
     scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
@@ -8525,6 +8545,9 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   }
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
                                env_pairs, cwd);
+  /* The signal an abort sends: killSignal, resolved above (Node kills with
+   * the same one on timeout and abort). */
+  c->kill_signo = signo;
   c->exec_cb = cb;
   c->exec_fn = fn;
   c->exec_file = scr_str_retain(cmd);
@@ -8544,25 +8567,7 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   /* Node's spawn subscribes to options.signal: an already-aborted signal
    * fires on the next tick (after 'spawn'), another fires its abort
    * listener; exec's callback receives the AbortError in place of exit. */
-  if (has_abort) {
-    c->abort_signal = scr_dyn_retain(signal);
-    ScrStr *key = scr_str_new("aborted", 7);
-    ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
-    scr_str_release(key);
-    bool pre = aborted != NULL && scr_dyn_truthy(aborted);
-    scr_dyn_release(aborted);
-    if (pre) {
-      c->abort_pre = true;
-    } else if (add != NULL) {
-      ScrClosure *clo = scr_closure_new((void *)&scr_child_abort_thunk, 1);
-      clo->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
-      scr_box_set_ref(clo->caps[0], scr_child_retain(c));
-      ScrDyn *listener =
-          scr_dyn_new_func(clo, &scr_child_abort_thunk, 0, "()", "onAbortListener");
-      c->abort_dispose = add(signal, listener);
-      scr_dyn_release(listener);
-    }
-  }
+  if (has_abort) scr_child_arm_signal(c, (ScrDyn *)signal, add);
   return c;
 }
 #endif /* SCR_CHILD_CP_OPTIONS */
@@ -8707,15 +8712,24 @@ static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
 /* abortChildProcess: child.kill(killSignal), then 'error' with Node's
  * AbortError whose cause is signal.reason — only when the kill reached a
  * live child (kill() answers false once the process is gone). */
-/* An aborted exec/execFile call: Node's errorhandler hands the callback
- * the AbortError with empty captures and the exit path never calls it
- * again. The callback (the maxBuffer wrapper included) is invoked once. */
+/* The bytes a capture holds so far, built the way the exit path builds them
+ * (each arm's scr_child_stream_capture_value does the same). */
+static ScrStr *scr_exec_capture_text(ScrChildStream *s) {
+  return s == NULL || s->capture_len == 0
+      ? scr_str_new("", 0)
+      : scr_str_new((const char *)s->capture_data, s->capture_len);
+}
+
+/* An aborted exec/execFile call: Node's errorhandler hands the callback the
+ * AbortError along with the stdout and stderr collected so far, and the exit
+ * path never calls it again. The callback (the maxBuffer wrapper included)
+ * is invoked once. */
 static void scr_exec_abort_deliver(ScrChild *c, ScrDyn *reason) {
   if (c->exec_fired || c->exec_cb == NULL || c->exec_fn == NULL) return;
   c->exec_fired = true;
   ScrError *error = scr_error_abort(reason);
-  ScrStr *out = scr_str_new("", 0);
-  ScrStr *err = scr_str_new("", 0);
+  ScrStr *out = scr_exec_capture_text(c->out_stream);
+  ScrStr *err = scr_exec_capture_text(c->err_stream);
   c->exec_fn(c->exec_cb, error, out, err); /* error/out/err move */
 }
 
@@ -8771,6 +8785,31 @@ static ScrDyn *scr_child_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* Node's subscription to options.signal, shared by spawnArmed and the
+ * callback exec/execFile forms (both platforms). */
+static void scr_child_arm_signal(ScrChild *c, ScrDyn *signal, ScrAbortAddFn add) {
+  c->abort_signal = scr_dyn_retain(signal);
+  ScrStr *key = scr_str_new("aborted", 7);
+  ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+  scr_str_release(key);
+  bool pre = aborted != NULL && scr_dyn_truthy(aborted);
+  scr_dyn_release(aborted);
+  if (pre) {
+    /* Node: process.nextTick(onAbortListener), after 'spawn': the poll
+     * fires it right after scr_child_fire_spawn. */
+    c->abort_pre = true;
+    return;
+  }
+  if (add == NULL) return;
+  ScrClosure *clo = scr_closure_new((void *)&scr_child_abort_thunk, 1);
+  clo->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_child_retain(c));
+  ScrDyn *listener =
+      scr_dyn_new_func(clo, &scr_child_abort_thunk, 0, "()", "onAbortListener");
+  c->abort_dispose = add(signal, listener);
+  scr_dyn_release(listener);
+}
+
 /* cp.spawn with `timeout`, `killSignal` and `signal` (the
  * SCR_CHILD_CP_OPTIONS build): scr_spawn_opts plus Node's launch checks,
  * its timeout timer (kill at the deadline; the captures stay, unlike
@@ -8802,27 +8841,7 @@ ScrChild *scr_spawn_armed(ScrStr *cmd, ScrArr *args, double in_mode, double out_
     c->deadline_ms = scr_now_ms() + delay;
     c->deadline_signo = signo;
   }
-  if (has_signal) {
-    c->abort_signal = scr_dyn_retain(signal);
-    ScrStr *key = scr_str_new("aborted", 7);
-    ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
-    scr_str_release(key);
-    bool pre = aborted != NULL && scr_dyn_truthy(aborted);
-    scr_dyn_release(aborted);
-    if (pre) {
-      /* Node: process.nextTick(onAbortListener), after 'spawn': the poll
-       * fires it right after scr_child_fire_spawn. */
-      c->abort_pre = true;
-    } else if (add != NULL) {
-      ScrClosure *clo = scr_closure_new((void *)&scr_child_abort_thunk, 1);
-      clo->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
-      scr_box_set_ref(clo->caps[0], scr_child_retain(c));
-      ScrDyn *listener =
-          scr_dyn_new_func(clo, &scr_child_abort_thunk, 0, "()", "onAbortListener");
-      c->abort_dispose = add(signal, listener);
-      scr_dyn_release(listener);
-    }
-  }
+  if (has_signal) scr_child_arm_signal(c, signal, add);
   return c;
 }
 #endif /* SCR_CHILD_CP_OPTIONS */

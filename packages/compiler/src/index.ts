@@ -14,7 +14,12 @@ import {
 } from "./frontend/type-patches/command.js";
 import { optimizationField, type NativeOptimization } from "./backend/optimization.js";
 import { targetCpuField, targetCpuTargetRefusal } from "./backend/target-cpu.js";
-import { compilationTiming, type CompilationTiming, type TimingClock } from "./timing.js";
+import {
+  compilationTiming,
+  timingProcessMetrics,
+  type CompilationTiming,
+  type TimingClock,
+} from "./timing.js";
 import { prepareExecutableModule, type PreparedExecutableModule } from "./executable/prepare.js";
 import { finishNodeIslands } from "./executable/islands.js";
 import {
@@ -117,7 +122,6 @@ import {
 import { inlineRcOption } from "./backend/llvm/shapes.js";
 import {
   emitNativeArtifact,
-  isLlvmFile,
   llvmInputBytes,
   type LlvmInput,
   NativeCodegenError,
@@ -1436,7 +1440,7 @@ async function prepareExecutableInput(
   const useRuntimePack =
     opts.nativeProgramObject === true || usesPrecompiledRuntimePack(opts, backend);
   const cpuCopyFunctionNames = await cpuCopyFunctions(opts);
-  let llvmSource: string | readonly string[];
+  let llvmSource: LlvmInput;
   try {
     llvmSource = emitLlvmModuleSource(mod, {
       targetTriple: process.env["SCRIPTC_TARGET"] ?? "",
@@ -1470,8 +1474,13 @@ async function prepareExecutableInput(
     return { ok: false, diagnostics: llvmRefusalDiags(err, entryPath), sourceTexts };
   }
   timing("llvm-emit");
+  const llvmBytes = llvmInputBytes(llvmSource);
   await writeLlvmSource(llvmSourcePath, llvmSource);
   timing("llvm-write");
+  // Code generation reads the file, and a program's text can be hundreds of
+  // megabytes: hand the file on and drop the heap it took before the helper
+  // and the compiler need theirs.
+  llvmSource = { file: llvmSourcePath, bytes: llvmBytes };
   let irPath: string | undefined;
   let irSourcePath: string | undefined;
   if (opts.emitIr) {
@@ -1488,13 +1497,9 @@ async function prepareExecutableInput(
     opts.strip === true,
   );
   timing("link-features");
-  const programSplit =
-    !useRuntimePack &&
-    backend === "llvm" &&
-    (opts.optimization ?? "release") === "dev" &&
-    typeof llvmSource === "string"
-      ? splitLlvmProgram(llvmSource)
-      : null;
+  // A development build's shards are computed from the written file when the
+  // link runs (compileExecutableNative): splitting here would hold the whole
+  // text past emission.
   timing("llvm-split");
   return {
     llvmSource,
@@ -1503,7 +1508,7 @@ async function prepareExecutableInput(
     irPath,
     irSourcePath,
     nativeFeatures,
-    programSplit,
+    programSplit: null,
     sourceTexts,
     stats: prepared.stats,
     ...(prepared.islands === undefined ? {} : { islands: prepared.islands }),
@@ -1599,9 +1604,10 @@ function shapeOverlayMemoDir(cacheRoot: string | null, implementation: string): 
 const frontendProcessEntry = fileURLToPath(new URL("./frontend-process.js", import.meta.url));
 
 /**
- * Whether `prepareExecutableInputInChild` may prepare this build: optimized executables, when the
- * compiler runs from its built files. Development builds split the LLVM text in this process, and
- * SCRIPTC_FRONTEND_PROCESS=0 keeps the frontend in-process.
+ * Whether `prepareExecutableInputInChild` may prepare this build: executables, when the compiler
+ * runs from its built files. The frontend, lowering and emission hold the program's text and
+ * typed IR, and the process exits when it has written the LLVM file, so code generation never
+ * shares a heap with them. SCRIPTC_FRONTEND_PROCESS=0 keeps the frontend in-process.
  *
  * compileTracked starts the process only when no earlier build of the same invocation emitted its
  * native program object (`hasEarlyExecutableNativeBuild`). A rebuild finds most native partitions
@@ -1612,7 +1618,6 @@ function preparesInChildProcess(opts: CompileRequestOptions): boolean {
   return (
     process.env["SCRIPTC_FRONTEND_PROCESS"] !== "0" &&
     (opts.outputKind ?? "exe") === "exe" &&
-    (opts.optimization ?? "release") !== "dev" &&
     existsSync(frontendProcessEntry)
   );
 }
@@ -1839,8 +1844,8 @@ export async function runFrontendProcess(requestPath: string, resultPath: string
     );
     const frontend = frontendInputs.snapshot();
     if (!("ok" in prepared)) {
-      if (isLlvmFile(prepared.llvmSource))
-        throw new InternalCompilerError("in-process preparation returned LLVM text as a file");
+      // The preparation wrote the text to the build's private file and hands
+      // the file on (BuildSources); the result names it.
       result = {
         kind: "prepared",
         llvmPath: prepared.llvmPath,
@@ -2881,7 +2886,7 @@ async function compileLibraryTracked(
         phase,
         phase_ms: Math.round((now - timingLast) * 10) / 10,
         total_ms: Math.round((now - timingStart) * 10) / 10,
-        rss_mb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+        ...timingProcessMetrics(),
         ...detail,
       })}\n`,
     );

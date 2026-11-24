@@ -13,13 +13,12 @@
 //                       corpus programs that import the Node module they
 //                       serve (node:http, node:tls, node:fs, ...), run
 //                       through the differential suite with -t.
-//   4. smoke corpus     when 1-3 select nothing: a curated ~3-minute corpus
-//                       slice spanning the major runtime subsystems, so a
-//                       pull request that touches nothing we can map still
-//                       runs real programs instead of a green no-op.
+//   4. smoke corpus     a curated ~3-minute corpus slice spanning the major
+//                       runtime subsystems. It runs when 1-3 select nothing,
+//                       and on every pull request with --smoke, so a change
+//                       that maps nothing still runs real programs.
 //
-// The expensive tier runs everything once both Vercel reviews pass
-// (ci-review-gate.yml).
+// The full suite runs when the pull request carries the ci:full label.
 //
 // usage: node scripts/ci-fast-tests.mjs --base <sha> --head <sha> [--dry-run]
 import { execFileSync, spawnSync } from "node:child_process";
@@ -180,6 +179,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     corpusIndex = new Map(),
     corpusCosts = {},
     corpusBudget = SMOKE_BUDGET_MS,
+    forceSmoke = false,
   } = options;
   const byStem = new Map();
   for (const file of testFiles) {
@@ -254,6 +254,22 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
         corpusTotal += corpusWeigh(program);
       }
     }
+  }
+
+  // The fast tier asks for the smoke set on every pull request, not only as the fallback for an empty
+  // selection. The set is mandatory: it runs even when mapped corpus programs have filled the change-driven
+  // budget, so the tier always covers the major runtime subsystems. Programs already selected are not run twice.
+  if (forceSmoke) {
+    const present = new Set(corpus);
+    for (const program of SMOKE_CORPUS) {
+      if (present.has(program)) continue;
+      present.add(program);
+      corpus.push(program);
+      corpusTotal += corpusWeigh(program);
+    }
+    for (let index = deferredCorpus.length - 1; index >= 0; index--)
+      if (present.has(deferredCorpus[index])) deferredCorpus.splice(index, 1);
+    smoke = true;
   }
 
   return {
@@ -333,8 +349,9 @@ async function main() {
   const headIndex = process.argv.indexOf("--head");
   const head = headIndex === -1 ? undefined : process.argv[headIndex + 1];
   if (!base || !head)
-    throw new Error("usage: ci-fast-tests.mjs --base <sha> --head <sha> [--dry-run]");
+    throw new Error("usage: ci-fast-tests.mjs --base <sha> --head <sha> [--smoke] [--dry-run]");
   const dryRun = process.argv.includes("--dry-run");
+  const forceSmoke = process.argv.includes("--smoke");
   const changed = execFileSync("git", ["diff", "--name-only", `${base}...${head}`], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -357,6 +374,7 @@ async function main() {
     related: relatedRun.files,
     corpusIndex,
     corpusCosts,
+    forceSmoke,
   });
 
   const relatedSet = new Set(selection.related);

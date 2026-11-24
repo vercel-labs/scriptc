@@ -18,6 +18,7 @@ import { corpusSelect, shardSuffix } from "./shard.js";
 import { recentCrashReport } from "./crash-report.js";
 import { spawnFailure } from "./spawn-failure.js";
 import { runStep, type Track, STEP_TIMEOUT_MS } from "./step-timeout.js";
+import { createNodeOracleCache } from "./oracle-cache.js";
 import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
 import { programDefines } from "./define-directive.js";
@@ -173,6 +174,20 @@ function comparableStderr(stderr: Buffer): Buffer {
 
 const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs")).href;
 
+// The Node-oracle result cache differential.test.ts uses (tests/harness/
+// oracle-cache.ts). The suites split the corpus identically, so a shard's
+// recorded Node verdicts serve both lanes; only the SPAWN is skipped, the
+// native side always runs live.
+const spawnCachedNode = createNodeOracleCache({
+  repoRoot,
+  comptimeShim,
+  programInputs,
+  // This suite spawns process.execPath, not PATH's `node`; the cache key
+  // follows the spawned executable so the two suites share only when they
+  // really run the same Node build.
+  nodeCommand: process.execPath,
+});
+
 /** differential.test.ts's twin: the Node oracle runs with
  * --experimental-transform-types for corpus programs using non-erasable
  * syntax — the `// @transform-types` directive (namespaces) OR any enum
@@ -284,7 +299,11 @@ async function build(file: string, optimization: "release" | "dev") {
 describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${targetCpu === undefined ? "" : `, ${targetCpu}`}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    { timeout: CASE_TIMEOUT_MS },
+    // retry: absorbs ORACLE-side nondeterminism, not compiler bugs — the same
+    // stance differential.test.ts takes. A program whose Node verdict and
+    // native run disagree only under momentary load (or an ETXTBSY-adjacent
+    // spawn hiccup the loop above did not cover) re-runs once.
+    { retry: 1, timeout: CASE_TIMEOUT_MS },
     async ([rel, file], { skip }) => {
       // Programs that call into Node need a libnode pack (libnode.ts).
       if (requiresLibnode(file) && libnodePack() === null) skip();
@@ -295,7 +314,9 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
         ...programDefines(directiveHead(file))?.env,
       };
       const oracle = await runStep(`${rel}: node oracle`, (track) =>
-        runBinary(process.execPath, nodeOracleArgs(file), undefined, oracleEnv, track),
+        spawnCachedNode(file, () =>
+          runBinary(process.execPath, nodeOracleArgs(file), undefined, oracleEnv, track),
+        ),
       );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);

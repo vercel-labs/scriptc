@@ -9126,12 +9126,34 @@ ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key) {
 }
 
 bool scr_dyn_class_is(const ScrDyn *value, const char *type_key) {
-  return value && value->kind == SCR_DYN_FUNC && value->v.fn.class_obj &&
-      strcmp(value->v.fn.sig, type_key) == 0;
+  if (!value || value->kind != SCR_DYN_FUNC || !value->v.fn.class_obj) return false;
+  /* A compiled class's key is the interned literal the compiler passes both
+   * when it makes the class value and at every test of it, so the pointer
+   * answers. A key the runtime built elsewhere (another program's class
+   * value, a name with its own storage) compares by bytes. */
+  return value->v.fn.sig == type_key || strcmp(value->v.fn.sig, type_key) == 0;
 }
 
 bool scr_dyn_class_is_key(const ScrDyn *value, const ScrStr *type_key) {
   return scr_dyn_class_is(value, type_key->data);
+}
+
+/* The slot a class value's type key selects in a class-value table of
+ * `bits` slot bits, computed exactly as a generated table's switch does
+ * (ir/class-key-index.ts classValueSlot): the key's length and last four
+ * bytes folded together, then reduced to the high bits. -1, which no case
+ * holds, for a value that is not a class value or whose key is shorter than
+ * four bytes. */
+int scr_dyn_class_value_slot(const ScrDyn *value, int bits) {
+  if (!value || value->kind != SCR_DYN_FUNC || !value->v.fn.sig) return -1;
+  const char *key = value->v.fn.sig;
+  size_t len = strlen(key);
+  if (len < 4) return -1;
+  int32_t tail;
+  memcpy(&tail, key + len - 4, sizeof tail);
+  int32_t folded = (int32_t)((uint32_t)len * UINT32_C(0x9e3779b1)) + tail;
+  uint32_t mixed = (uint32_t)folded * UINT32_C(0x85ebca6b);
+  return (int)(mixed >> (32 - bits));
 }
 
 ScrClassObj *scr_dyn_class_check(const ScrDyn *value, const char *type_key, const ScrDynPath *path) {

@@ -19,6 +19,10 @@ const cases = [
   ["big", (c) => c.kill(1n)],
   ["sym", (c) => c.kill(Symbol("s"))],
   ["empty", (c) => c.kill("")],
+  // A JS string may hold an embedded NUL, and Node's message keeps every
+  // byte of it.
+  ["nul-in-name", (c) => c.kill("a\u0000bc")],
+  ["nul-only", (c) => c.kill("\u0000")],
   // A signal value carried in a variable takes the same sanitizer path.
   [
     "variable-null",

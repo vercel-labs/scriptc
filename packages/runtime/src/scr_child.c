@@ -213,6 +213,24 @@ static void scr_child_error_cmd(ScrError *e, const char *cmd) {
   scr_error_set_prop(e, "cmd", 3, scr_child_dyn_cstr(cmd));
 }
 
+/* Node's ERR_UNKNOWN_SIGNAL text: the prefix plus the offending value,
+ * copied by length. The value comes from a JS string, which may hold an
+ * embedded NUL, and Node's message keeps every byte of it, so a C-string
+ * copy would truncate the text (and, when the length is passed on, read
+ * bytes the copy never wrote). Answers a malloc'd buffer and its length;
+ * the caller frees it. */
+static char *scr_child_unknown_signal_msg(const char *text, size_t len, size_t *out_len) {
+  static const char prefix[] = "Unknown signal: ";
+  size_t plen = sizeof prefix - 1;
+  char *msg = malloc(plen + len + 1);
+  if (!msg) scr_child_oom();
+  memcpy(msg, prefix, plen);
+  if (len > 0) memcpy(msg + plen, text, len);
+  msg[plen + len] = '\0';
+  if (out_len != NULL) *out_len = plen + len;
+  return msg;
+}
+
 /* The promisified forms add the captured outputs. Borrows. */
 static void scr_child_error_outputs(ScrError *e, ScrStr *out, ScrStr *err) {
   scr_error_set_prop(e, "stdout", 6, scr_dyn_new_str(out));
@@ -3402,11 +3420,9 @@ static bool scr_child_kill_signo(ScrChild *c, int signo) {
 bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
   int signo = scr_signal_from_name_ci(signal);
   if (signo < 0) {
-    size_t cap = 16 + signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) scr_child_oom();
-    int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(signal->data, signal->len, &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -3419,11 +3435,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
   if (!isfinite(signum) || signum != trunc(signum)) {
     char recv[48];
     scr_num_received(signum, recv);
-    size_t len = strlen(recv);
-    char *msg = malloc(16 + len + 1);
-    if (!msg) scr_child_oom();
-    snprintf(msg, 16 + len + 1, "Unknown signal: %s", recv);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(recv, strlen(recv), &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -3435,10 +3449,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * every other value throws ERR_UNKNOWN_SIGNAL with the value inspected. */
 /* Throws Node's ERR_UNKNOWN_SIGNAL for a rendered value. */
 static void scr_child_kill_dyn_throw(const char *text, size_t len) {
-  char *msg = malloc(16 + len + 1);
-  if (!msg) scr_child_oom();
-  snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+  size_t mlen = 0;
+  char *msg = scr_child_unknown_signal_msg(text, len, &mlen);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, mlen, "ERR_UNKNOWN_SIGNAL");
   free(msg);
 }
 
@@ -4168,12 +4181,10 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   bool signal_ok = true;
   int signo = scr_exec_kill_signal(kill_signal, &signal_ok);
   if (!signal_ok) {
-    size_t cap = 16 + kill_signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) scr_child_oom();
-    int len = snprintf(msg, cap, "Unknown signal: %s", kill_signal->data);
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(kill_signal->data, kill_signal->len, &len);
     scr_closure_release(cb);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return NULL;
   }
@@ -7612,11 +7623,9 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, signal, 0));
   int signo = scr_signal_from_name_ci(signal);
   if (signo < 0) {
-    size_t cap = 16 + signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) scr_child_oom();
-    int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(signal->data, signal->len, &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -7631,11 +7640,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
   if (!isfinite(signum) || signum != trunc(signum)) {
     char recv[48];
     scr_num_received(signum, recv);
-    size_t len = strlen(recv);
-    char *msg = malloc(16 + len + 1);
-    if (!msg) scr_child_oom();
-    snprintf(msg, 16 + len + 1, "Unknown signal: %s", recv);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(recv, strlen(recv), &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -7648,10 +7655,9 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * Node's message shows. */
 /* Throws Node's ERR_UNKNOWN_SIGNAL for a rendered value. */
 static void scr_child_kill_dyn_throw(const char *text, size_t len) {
-  char *msg = malloc(16 + len + 1);
-  if (!msg) scr_child_oom();
-  snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+  size_t mlen = 0;
+  char *msg = scr_child_unknown_signal_msg(text, len, &mlen);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, mlen, "ERR_UNKNOWN_SIGNAL");
   free(msg);
 }
 
@@ -8661,12 +8667,10 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   bool signal_ok = true;
   int signo = scr_exec_kill_signal(kill_signal, &signal_ok);
   if (!signal_ok) {
-    size_t cap = 16 + kill_signal->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) scr_child_oom();
-    int len = snprintf(msg, cap, "Unknown signal: %s", kill_signal->data);
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(kill_signal->data, kill_signal->len, &len);
     scr_closure_release(cb);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return NULL;
   }
@@ -8765,11 +8769,9 @@ static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
       *signo = resolved;
       return true;
     }
-    size_t cap = 16 + value->v.str->len + 1;
-    char *msg = malloc(cap);
-    if (!msg) scr_child_oom();
-    int len = snprintf(msg, cap, "Unknown signal: %s", value->v.str->data);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(value->v.str->data, value->v.str->len, &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -8787,9 +8789,10 @@ static bool scr_spawn_kill_signal(const ScrDyn *value, int *signo) {
     }
     char text[40];
     (void)scr_f64_to_str(num, text);
-    char msg[64];
-    int len = snprintf(msg, sizeof msg, "Unknown signal: %s", text);
-    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
+    size_t len = 0;
+    char *msg = scr_child_unknown_signal_msg(text, strlen(text), &len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
     return false;
   }
   scr_dyn_prop_type_fail("options.killSignal", "one of type string or number", value);

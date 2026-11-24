@@ -1,5 +1,6 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -325,6 +326,21 @@ import { type ClassHierarchy, classHierarchyOf } from "./construction-reads.js";
 import { enumObjectRefusal, type EnumObject } from "./enum-objects.js";
 import { enumNumberReadMayMiss } from "./lower-enums.js";
 import { recordTextCodecClass, sortArms } from "../../ir/ir.js";
+import { moduleRuntimeFeatures } from "../../ir/runtime-features.js";
+import { PROGRAM_FACTS } from "../../program-facts.js";
+import { unitsObserveEnabled } from "../../units/mode.js";
+import { packageOfFile, type PackageScopeCache } from "../../units/packages.js";
+import { classNumbering } from "../../units/summary.js";
+import type {
+  UnitDeclarationFact,
+  UnitFactValue,
+  UnitFileEdge,
+  UnitFileInput,
+  UnitGenericDeclaration,
+  UnitGenericDemand,
+  UnitLoweringData,
+  UnitObservation,
+} from "../../units/types.js";
 import { assignLegacyTiers, type DynamicFunction } from "../../ir/tiers.js";
 import { dynamicSlotOperationCounts, dynamicTierWarning } from "./dynamic-tier.js";
 import { promoteJsvals } from "../../ir/jsval.js";
@@ -1253,6 +1269,10 @@ export interface LowerResult {
    * A per-unit consumer keys its cache by this set instead of hashing every
    * function's IR. */
   changedUnits?: readonly string[];
+  /** SCRIPTC_UNITS=observe: the unit graph's inputs and the per-file data a
+   * unit summary reads (units/). Present only when the mode is on and the
+   * program lowered; it changes nothing the build emits. */
+  unitObservation?: UnitObservation;
   /** --provenance-sources only: per-file statement attribution (the
    * coverage report aggregates it per provenance package). */
   statsByFile?: Map<string, { total: number; failed: number }>;
@@ -1357,6 +1377,10 @@ export interface LowerOptions {
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** The text the build rewrote (import elision, JSX) in its original
+   * spelling, by file. The unit observation hashes the user's source, not
+   * the rewrite, so two apps' copies of one package agree (M0). */
+  unitOriginalTexts?: ReadonlyMap<string, string> | undefined;
   /** LoadResult.dynamicImportRejections. */
   dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped export names of
@@ -2563,6 +2587,24 @@ function lowerToIrWithIslands(
   // the ones its package's module-init code reaches (the island growth's
   // sure rule reads them). `covered` below keeps this same fence list.
   markModuleInitFences(resultLowerer, result.runtimeFences);
+  // SCRIPTC_UNITS=observe (units/): collect the graph's inputs and the
+  // per-file summary data from the pass whose result stands. Report-only —
+  // nothing read here reaches the IR, and a failure to collect never fails
+  // the build.
+  if (unitsObserveEnabled() && result.module !== null) {
+    try {
+      result = {
+        ...result,
+        unitObservation: resultLowerer.unitObservation(
+          result.module,
+          options.moduleEdges,
+          options.unitOriginalTexts,
+        ),
+      };
+    } catch {
+      /* the observation is a report, not a build step */
+    }
+  }
   if (options.coverage !== true) return result;
   const remainderPass = (general: boolean, dyn = dynNodeStreams): Lowerer =>
     new Lowerer(program, entry, moduleOrder, {
@@ -3449,6 +3491,57 @@ export interface CjsConditionalExportMirror {
 /** The program module a createRequire binding requires. */
 type CreateRequireTarget = NonNullable<ReturnType<typeof createRequireProgramModuleOf>>;
 
+/** A unit fact's cached state as JSON data: a set becomes its sorted items,
+ * a map its sorted entries, a boolean stays itself, and a class instance
+ * with named parts (the member-receiver census, the global-write census, the
+ * async-protocol holders) becomes those parts. The observation compares two
+ * apps' values, so the spelling must be stable, not pretty. */
+function describeFactValue(value: unknown): unknown {
+  // A fact's state is lazily computed: unset (undefined) and null mean the
+  // build never asked, which is not the same as the fact being false. The
+  // report marks both "unobserved" so two apps that never asked do not look
+  // as if they agreed on a value.
+  if (value === undefined || value === null) return "unobserved";
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string")
+    return value;
+  if (value instanceof Set) return [...value].map(factKeyName).sort();
+  if (value instanceof Map) {
+    const entries = [...value.entries()].map(
+      ([key, member]) => [factKeyName(key), describeFactValue(member)] as const,
+    );
+    entries.sort((a, b) => a[0].localeCompare(b[0]));
+    return entries;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (typeof record["any"] === "boolean")
+      return {
+        any: record["any"],
+        keyed: typeof record["keyed"] === "function" ? (record["keyed"] as () => boolean)() : null,
+      };
+    if (record["names"] instanceof Set)
+      return {
+        names: [...(record["names"] as Set<string>)].sort(),
+        computed: record["computed"] === true,
+        unknownNames: record["unknownNames"] === true,
+      };
+    if (typeof record["sites"] === "number")
+      return { sites: record["sites"], elapsedMs: record["elapsedMs"] };
+    return Object.keys(record).sort();
+  }
+  return String(value);
+}
+
+/** A set or map member's stable name: a declaration's own name, or the value
+ * as text. */
+function factKeyName(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  const named = (value as { name?: { text?: string } } | null)?.name?.text;
+  if (typeof named === "string") return named;
+  return typeof value;
+}
+
 export class Lowerer {
   readonly frontendServices: FrontendServices | undefined;
   readonly checker: ts.TypeChecker;
@@ -3595,6 +3688,19 @@ export class Lowerer {
   private readonly genericClassDemandOwner = new Map<ClassInfo, GenericDemandOwner>();
   private readonly genericDemandPriority = new Map<GenericInstance, DeclaredOrderPriorityRef>();
   private readonly genericClassDemandPriority = new Map<ClassInfo, DeclaredOrderPriorityRef>();
+  /** SCRIPTC_UNITS=observe: the generic instances bodies demanded, with the
+   * lowering unit that demanded each one (its closure root, resolved to a
+   * file when the observation is collected). */
+  readonly unitGenericDemands: {
+    kind: "function" | "class";
+    generic: string;
+    instance: string;
+    owner: string | null;
+  }[] = [];
+  private readonly unitGenericDemandKeys = new Set<string>();
+  /** The declaration node of each retained unit body, for the observation's
+   * owner→file lookup. Set by the emitting pass. */
+  private unitSources = new Map<string, ts.Node>();
 
   private withGenericDemandOwner<T>(owner: GenericDemandOwner, fn: () => T): T {
     const previous = this.genericDemandOwner;
@@ -3606,8 +3712,40 @@ export class Lowerer {
     }
   }
 
+  /** The generic family an instance name belongs to: `<family>%<instance>`.
+   * A qualified family name itself can hold a `%` (the module mangle), so
+   * the longest declared qualified name that prefixes the instance wins, and
+   * stripping the final `%…` is only the fallback. */
+  private genericFamilyOf(instance: string): string {
+    let best: string | null = null;
+    for (const info of this.genericFnsBySymbol.values()) {
+      const qualified = info.qualifiedName;
+      if (!instance.startsWith(qualified)) continue;
+      const next = instance.charAt(qualified.length);
+      if (next !== "%") continue;
+      if (best === null || qualified.length > best.length) best = qualified;
+    }
+    if (best !== null) return best;
+    const at = instance.lastIndexOf("%");
+    return at < 0 ? instance : instance.slice(0, at);
+  }
+
+  private recordUnitGenericDemand(
+    kind: "function" | "class",
+    generic: string,
+    instance: string,
+  ): void {
+    if (!unitsObserveEnabled()) return;
+    const owner = this.closureRoot;
+    const key = `${kind}\0${generic}\0${instance}\0${owner}`;
+    if (this.unitGenericDemandKeys.has(key)) return;
+    this.unitGenericDemandKeys.add(key);
+    this.unitGenericDemands.push({ kind, generic, instance, owner });
+  }
+
   noteGenericInstanceDemand(inst: GenericInstance): void {
     this.unitEvents?.record("functionDemand", inst.name);
+    this.recordUnitGenericDemand("function", this.genericFamilyOf(inst.name), inst.name);
     const owner = this.genericDemandOwner;
     owner?.functionDemands.push(inst);
     const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
@@ -3624,6 +3762,7 @@ export class Lowerer {
 
   noteGenericClassInstanceDemand(info: ClassInfo): void {
     this.unitEvents?.record("classDemand", info.def.name);
+    this.recordUnitGenericDemand("class", info.def.genericOf ?? info.def.name, info.def.name);
     const owner = this.genericDemandOwner;
     owner?.classDemands.push(info);
     const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
@@ -6984,6 +7123,15 @@ export class Lowerer {
     // unit reused from a record does not lower, so the hint falls back to
     // the generic install line.
     "nodeIslandUse",
+    // SCRIPTC_UNITS=observe's report state: the generic instances bodies
+    // demanded (with the owner that demanded each) and the source node of
+    // each retained unit body. The observation reads them from the pass that
+    // lowered the whole program, and an observe build never reads the unit
+    // journal (index.ts skips the executable cache in that mode), so a
+    // replayed unit never has to restore them.
+    "unitGenericDemands",
+    "unitGenericDemandKeys",
+    "unitSources",
   ];
 
   /** The fields a unit must leave as they were, and the flags it may set
@@ -16814,6 +16962,14 @@ export class Lowerer {
       files: parts.map((fp) => fp.sf),
     });
     this.reachableForArtifacts = reachable;
+    if (unitsObserveEnabled()) {
+      // The observation resolves each demanded instance's owner (a closure
+      // root name) to the file that declares it.
+      const sources = new Map<string, ts.Node>();
+      for (const [name, unit] of units)
+        if (unit.source !== undefined) sources.set(name, unit.source);
+      this.unitSources = sources;
+    }
     const changedUnits = reuse === null ? undefined : reuse.changedUnits();
     const changedDump = process.env["SCRIPTC_UNIT_CHANGED_DUMP"];
     if (changedUnits !== undefined && changedDump !== undefined && changedDump !== "")
@@ -16896,6 +17052,235 @@ export class Lowerer {
       return built.length === 0 ? "" : JSON.stringify(built, positionFree);
     }
     return "";
+  }
+
+  /** The kind a top-level statement declares under, or null for module
+   * plumbing (imports, export lists) and executable statements (which are
+   * init code, not declarations). */
+  private unitDeclarationKind(statement: ts.Node): string | null {
+    if (ts.isFunctionDeclaration(statement)) return "function";
+    if (ts.isClassDeclaration(statement)) return "class";
+    if (ts.isInterfaceDeclaration(statement)) return "interface";
+    if (ts.isTypeAliasDeclaration(statement)) return "type";
+    if (ts.isEnumDeclaration(statement)) return "enum";
+    if (ts.isModuleDeclaration(statement)) return "namespace";
+    if (ts.isVariableStatement(statement)) return "variable";
+    if (ts.isExportAssignment(statement)) return "export";
+    return null;
+  }
+
+  /** The names a declaration statement declares. A variable statement
+   * declares one entry per binding. */
+  private unitDeclarationNames(statement: ts.Node): string[] {
+    if (ts.isVariableStatement(statement)) {
+      const names: string[] = [];
+      for (const declaration of statement.declarationList.declarations.nodes) {
+        const name = declaration.name;
+        if (ts.isIdentifier(name)) names.push(name.text);
+      }
+      return names;
+    }
+    const named = statement as { name?: { text?: string } };
+    const text = named.name?.text;
+    if (typeof text === "string") return [text];
+    if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) return ["default"];
+    return [""];
+  }
+
+  /** The program facts whose state this Lowerer holds, as stable JSON text,
+   * and every other registered fact as unobserved (the FACT-AUDIT slices
+   * fill those in). */
+  private unitProgramFactValues(): Record<string, UnitFactValue> {
+    const observed = new Map<string, string>([
+      ["member-call-receivers", JSON.stringify(describeFactValue(this.memberReceivers))],
+      ["thenables-may-be-defined", JSON.stringify(describeFactValue(this.thenablesMayBeDefined))],
+      ["creates-wrappers", JSON.stringify(describeFactValue(this.createsWrappers))],
+      ["typed-web-streams", JSON.stringify(describeFactValue(this.typedWebStreams))],
+      ["names-web-stream-class", JSON.stringify(describeFactValue(this.namesWebStreamClass))],
+      ["reads-node-object-value", JSON.stringify(describeFactValue(this.nodeObjectValueReads))],
+      [
+        "socket-encoding-reachable",
+        JSON.stringify(describeFactValue(this.socketEncodingReachable)),
+      ],
+      ["unix-listen-reachable", JSON.stringify(describeFactValue(this.unixListenReachable))],
+      ["patches-stdio", JSON.stringify(describeFactValue(this.patchesStdio))],
+      ["reads-exit-code", JSON.stringify(describeFactValue(this.readsExitCode))],
+      ["async-protocol-holders", JSON.stringify(describeFactValue(this.ownAsyncProtocolHolders))],
+      ["imports-node-api", JSON.stringify(describeFactValue(this.importsNodeApi))],
+      ["js-widened-fields", JSON.stringify(describeFactValue(this.jsWidenedFields))],
+      ["global-object-writes", JSON.stringify(describeFactValue(this.globalObjectWrites))],
+      ["inspect-tables-read", JSON.stringify(describeFactValue(this.inspectTablesTouched))],
+      [
+        "computed-environment-write",
+        JSON.stringify(describeFactValue(this.computedEnvironmentWrite)),
+      ],
+    ]);
+    const facts: Record<string, UnitFactValue> = {};
+    for (const fact of PROGRAM_FACTS) {
+      const value = observed.get(fact.name);
+      facts[fact.name] = {
+        value: value ?? "unobserved",
+        // Where a fact was set needs the occurrence's symbol or declaration;
+        // the cached values above do not carry it. The audit marks these
+        // unobserved rather than guessing.
+        setByOwnFiles: "unobserved",
+      };
+    }
+    return facts;
+  }
+
+  /** The file a demanded instance's lowering unit (a closure root name) is
+   * written in: a retained unit body's declaration, a module init, a
+   * generic instance's family declaration, or a specialized class. */
+  private unitOwnerFile(owner: string | null): string | null {
+    if (owner === null) return null;
+    const source = this.unitSources.get(owner);
+    if (source !== undefined) return ts.getSourceFileOfNode(source).fileName;
+    for (const [sf, initName] of this.initNameOf) if (initName === owner) return sf.fileName;
+    const family = this.genericFamilyOf(owner);
+    for (const info of this.genericFnsBySymbol.values())
+      if (info.qualifiedName === family) return ts.getSourceFileOfNode(info.decl).fileName;
+    const info = this.classes.get(owner) ?? this.classes.get(family);
+    return info === undefined ? null : info.def.loc.file;
+  }
+
+  /** M0 observation (units/): the unit graph's inputs and the per-file data
+   * a unit summary reads, collected from this (winning) pass. Report-only:
+   * the caller keeps the build as it was. */
+  unitObservation(
+    module: IrModule,
+    edges: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined,
+    originalTexts?: ReadonlyMap<string, string>,
+  ): UnitObservation {
+    const files = this.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile);
+    const entryPackage = packageOfFile(this.entry.fileName, dirname(this.entry.fileName));
+    const appRoot = entryPackage.root ?? dirname(this.entry.fileName);
+    const scopeCache: PackageScopeCache = new Map();
+    const relativeOf = new Map<string, string>();
+    const fileInputs: UnitFileInput[] = [];
+    for (const sf of files) {
+      const pkg = packageOfFile(sf.fileName, appRoot, scopeCache);
+      relativeOf.set(sf.fileName, pkg.relative);
+      fileInputs.push({
+        file: sf.fileName,
+        relative: pkg.relative,
+        packageName: pkg.name,
+        packageVersion: pkg.version,
+        packageRoot: pkg.root,
+        digest: createHash("sha256")
+          .update(originalTexts?.get(sf.fileName) ?? ts.carriedSourceText(sf))
+          .digest("hex"),
+      });
+    }
+    const inProgram = new Set(files.map((sf) => sf.fileName));
+    const moduleEdges: UnitFileEdge[] = [];
+    if (edges !== undefined) {
+      for (const [from, list] of edges) {
+        if (!inProgram.has(from.fileName)) continue;
+        for (const edge of list)
+          if (inProgram.has(edge.dep.fileName))
+            moduleEdges.push({ from: from.fileName, to: edge.dep.fileName });
+      }
+    }
+    const declarations: UnitDeclarationFact[] = [];
+    const exportsOfModule: { module: string; names: readonly string[] }[] = [];
+    for (const sf of files) {
+      const module = relativeOf.get(sf.fileName)!;
+      for (const statement of sf.statements.nodes) {
+        const kind = this.unitDeclarationKind(statement);
+        if (kind === null) continue;
+        const facts = this.declarationFacts(statement);
+        for (const name of this.unitDeclarationNames(statement))
+          declarations.push({ module, name, kind, facts });
+      }
+      const symbol = this.checker.getSymbolAtLocation(sf);
+      const names =
+        symbol === undefined
+          ? []
+          : this.checker
+              .getExportsOfModule(symbol)
+              .map((exported) => ts.symbolName(exported))
+              .sort();
+      exportsOfModule.push({ module, names });
+    }
+    const genericFunctions: UnitGenericDeclaration[] = [];
+    for (const info of this.genericFnsBySymbol.values()) {
+      const file = ts.getSourceFileOfNode(info.decl).fileName;
+      const module = relativeOf.get(file);
+      if (module === undefined) continue;
+      genericFunctions.push({ module, name: info.baseName, qualified: info.qualifiedName });
+    }
+    const genericClasses: UnitGenericDeclaration[] = [];
+    for (const sf of files) {
+      const module = relativeOf.get(sf.fileName)!;
+      for (const statement of sf.statements.nodes) {
+        if (!ts.isClassDeclaration(statement) || statement.typeParameters === undefined) continue;
+        let qualified: string;
+        try {
+          qualified = this.classNamer(statement);
+        } catch {
+          continue;
+        }
+        if (!this.classes.has(qualified)) continue;
+        genericClasses.push({
+          module,
+          name: statement.name?.text ?? "default",
+          qualified,
+        });
+      }
+    }
+    const demands: UnitGenericDemand[] = [];
+    const demandKeys = new Set<string>();
+    for (const demand of this.unitGenericDemands) {
+      const file = this.unitOwnerFile(demand.owner);
+      const ownerModule = file === null ? null : (relativeOf.get(file) ?? null);
+      const key = `${demand.kind}\0${demand.generic}\0${demand.instance}\0${ownerModule ?? ""}`;
+      if (demandKeys.has(key)) continue;
+      demandKeys.add(key);
+      demands.push({
+        kind: demand.kind,
+        generic: demand.generic,
+        instance: demand.instance,
+        ownerModule,
+      });
+    }
+    const initOrder = (sf: ts.SourceFile): number => {
+      const at = this.moduleOrder.indexOf(sf);
+      return at < 0 ? Number.MAX_SAFE_INTEGER : at;
+    };
+    const inits = files
+      .filter((sf) => this.initNameOf.has(sf))
+      .sort((a, b) => initOrder(a) - initOrder(b) || a.fileName.localeCompare(b.fileName))
+      .map((sf) => ({ module: relativeOf.get(sf.fileName)!, name: this.initNameOf.get(sf)! }));
+    const numbering = classNumbering(
+      (module.classes ?? []).map((def) => ({
+        name: def.name,
+        ...(def.base === undefined ? {} : { base: def.base }),
+        methods: def.methods ?? [],
+      })),
+    );
+    const classes: { file: string; name: string; id: number; slots: string[] }[] = [];
+    for (const def of module.classes ?? []) {
+      if (!inProgram.has(def.loc.file)) continue;
+      const numbered = numbering.get(def.name);
+      if (numbered === undefined) continue;
+      classes.push({ file: def.loc.file, name: def.name, id: numbered.id, slots: numbered.slots });
+    }
+    const lowering: UnitLoweringData = {
+      declarations,
+      exports: exportsOfModule,
+      generics: { functions: genericFunctions, classes: genericClasses, demands },
+      inits,
+      facts: this.unitProgramFactValues(),
+    };
+    return {
+      entry: this.entry.fileName,
+      files: fileInputs,
+      edges: moduleEdges,
+      lowering,
+      classes,
+      runtimeFeatures: moduleRuntimeFeatures(module),
+    };
   }
 
   /** The lowerer's side of a recorded wave (unit-journal.ts).

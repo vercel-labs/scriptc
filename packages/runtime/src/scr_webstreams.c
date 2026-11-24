@@ -1954,23 +1954,36 @@ static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
   t->reading = false;
   ScrDyn *value = t->pending_chunk;
   t->pending_chunk = NULL;
+  /* cloneForBranch2 clones before either branch sees the chunk, so the two
+   * branches never share the producer's object. A chunk structuredClone
+   * refuses (one with a function member, a proxy) therefore errors both
+   * branches with that error and cancels the source: Node's own tee throws
+   * the DataCloneError out of its microtask instead, an uncaught exception
+   * that ends the process (Node 24.22.1 and later). */
+  ScrDyn *second = value;
+  if (t->clone2) {
+    second = scr_structured_clone(value, NULL);
+    if (second == NULL) {
+      ScrCaught *caught = scr_exc_take();
+      ScrDyn *error = caught != NULL ? scr_caught_to_dyn(caught) : NULL;
+      scr_caught_release(caught);
+      if (error != NULL) {
+        ws_rcontroller_error(t->branch1->controller, error);
+        if (scr_exc_pending()) scr_exc_clear();
+        ws_rcontroller_error(t->branch2->controller, error);
+        if (scr_exc_pending()) scr_exc_clear();
+        scr_promise_release(ws_readable_cancel(t->reader->stream, error));
+        scr_dyn_release(error);
+      }
+      if (scr_exc_pending()) scr_exc_clear();
+      scr_dyn_release(value);
+      return;
+    }
+  }
   if (!t->canceled1) ws_rcontroller_deliver(t->branch1->controller, value);
   if (scr_exc_pending()) scr_exc_clear();
-  if (!t->canceled2) {
-    ScrDyn *second = value;
-    if (t->clone2) {
-      second = scr_structured_clone(value, NULL);
-      if (second == NULL) {
-        /* A chunk structuredClone refuses (a function, a proxy): Node's
-         * own tee throws the DataCloneError out of this microtask, which
-         * ends the process. Keep both branches running with the chunk. */
-        if (scr_exc_pending()) scr_exc_clear();
-        second = value;
-      }
-    }
-    ws_rcontroller_deliver(t->branch2->controller, second);
-    if (second != value) scr_dyn_release(second);
-  }
+  if (!t->canceled2) ws_rcontroller_deliver(t->branch2->controller, second);
+  if (second != value) scr_dyn_release(second);
   if (scr_exc_pending()) scr_exc_clear();
   scr_dyn_release(value);
 }
@@ -2120,6 +2133,13 @@ ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
   if (stream == NULL || !scr_dyn_handle_class_receiver(SCR_DYNH_WS_READABLE, stream, &receiver) ||
       receiver == NULL) {
     if (scr_exc_pending()) return NULL; /* the view's own failure */
+    scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
+    return NULL;
+  }
+  /* Only a handle of this class carries the stream the tee reads: a view
+   * an alias answers with is checked like the argument itself. */
+  if (receiver->kind != SCR_DYN_HANDLE || receiver->v.handle.tag != SCR_DYNH_WS_READABLE) {
+    scr_dyn_release(receiver);
     scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
     return NULL;
   }

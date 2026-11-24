@@ -709,6 +709,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "readable.pipe",
   "readable.pipeGeneral",
   "readable.unpipe",
+  "readable.setEncodingOption",
   "writable.write",
   "writable.writeStr",
   "writable.writeU",

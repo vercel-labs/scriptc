@@ -67,3 +67,15 @@ try {
 // A const bound to a literal folds without a runtime check.
 const spelled = "hex";
 await show("typed const", Readable.from([Buffer.from("ab")], { encoding: spelled }));
+
+// An invalid runtime encoding throws where the call is: the caller's catch
+// sees Node's error and execution continues normally.
+const bad = (): string => "nope";
+try {
+  Readable.from([Buffer.from("ab")], { encoding: bad() });
+  console.log("typed catch missed");
+} catch (error) {
+  const e = error as { code?: string; message: string };
+  console.log(`typed catch ${e.code} ${e.message}`);
+}
+console.log("typed after");

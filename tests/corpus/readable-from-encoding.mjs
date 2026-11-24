@@ -69,6 +69,17 @@ for (const encoding of [undefined, null, "", false, 0, NaN]) {
   await show("falsy variable", Readable.from([Buffer.from("ab")], { encoding }));
 }
 
+// An invalid runtime encoding throws where the call is: the catch sees it
+// and execution continues.
+const badEncoding = () => "nope";
+try {
+  Readable.from([Buffer.from("ab")], { encoding: badEncoding() });
+  console.log("runtime catch missed");
+} catch (error) {
+  console.log(`runtime catch ${error.code} ${error.message}`);
+}
+console.log("runtime after");
+
 // A spelling Node does not know, whatever its type, is its runtime throw.
 for (const encoding of ["nope", 5]) {
   try {

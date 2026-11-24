@@ -2107,6 +2107,11 @@ static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2)
  * truthy (Node's fetch tees a body's stream this way). The argument check
  * raises Node's TypeError from the call itself; +1. */
 ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
+  /* The class this tee and its receiver conversion belong to, and the
+   * fetch body tag's alias to it, are installed here: a program can tee a
+   * Response body before it ever used a web stream class, and the body is
+   * a valid argument once the class exists. */
+  ws_install();
   /* The stream this class's tee runs on: a web stream this unit made, or a
    * fetch body's handle through the web view the fetch unit makes for it.
    * A fetch body's pointer is that unit's stream, never a WsReadable, so

@@ -6,6 +6,21 @@
 import { ReadableStream, ReadableStreamTee } from "node:stream/web";
 import * as web from "node:stream/web";
 
+// A Response body is a valid tee argument before the program has used any
+// web stream class: the call installs the classes, and the body tag's
+// alias to the readable class, itself.
+const preinitBody = new Response("hello").body;
+const preinitPair = ReadableStreamTee(preinitBody);
+const preinitRead = async (reader) => {
+  const { value, done } = await reader.read();
+  return done ? "<done>" : new TextDecoder().decode(value);
+};
+console.log(
+  "preinit",
+  await preinitRead(preinitPair[0].getReader()),
+  await preinitRead(preinitPair[1].getReader()),
+);
+
 const make = (chunks) =>
   new ReadableStream({
     start(controller) {

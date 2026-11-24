@@ -47,8 +47,6 @@
     "ci:lane:code-quality": "node scripts/ci-vercel/run-lane.mjs code-quality",
     "ci:lane:coverage": "node scripts/ci-vercel/run-lane.mjs coverage",
     "ci:lane:ts7-parity": "node scripts/ci-vercel/run-lane.mjs ts7-parity",
-    "ci:lane:checker-identity:release": "node scripts/ci-vercel/run-lane.mjs checker-identity release",
-    "ci:lane:checker-identity:dev": "node scripts/ci-vercel/run-lane.mjs checker-identity dev",
     "ci:lane:linux-host-clang": "node scripts/ci-vercel/run-lane.mjs linux-host-clang",
     "ci:lane:effects:plain:sample": "node scripts/ci-vercel/run-lane.mjs effects-sample plain",
     "ci:lane:effects:san:sample": "node scripts/ci-vercel/run-lane.mjs effects-sample san",
@@ -328,7 +326,11 @@
     "ci:lane:llvm-artifacts:musl:alpine": "node scripts/ci-vercel/run-lane.mjs llvm-artifacts:musl:alpine",
     "ci:lane:llvm-artifacts:musl:hardening": "node scripts/ci-vercel/run-lane.mjs llvm-artifacts:musl:hardening",
     "ci:lane:llvm-artifacts:wasi:runtime-pack": "node scripts/ci-vercel/run-lane.mjs llvm-artifacts:wasi:runtime-pack",
-    "ci:lane:llvm-artifacts:wasi:wasm-library": "node scripts/ci-vercel/run-lane.mjs llvm-artifacts:wasi:wasm-library"
+    "ci:lane:llvm-artifacts:wasi:wasm-library": "node scripts/ci-vercel/run-lane.mjs llvm-artifacts:wasi:wasm-library",
+    "ci:lane:checker-identity:release:1": "node scripts/ci-vercel/run-lane.mjs checker-identity release 1/2",
+    "ci:lane:checker-identity:release:2": "node scripts/ci-vercel/run-lane.mjs checker-identity release 2/2",
+    "ci:lane:checker-identity:dev:1": "node scripts/ci-vercel/run-lane.mjs checker-identity dev 1/2",
+    "ci:lane:checker-identity:dev:2": "node scripts/ci-vercel/run-lane.mjs checker-identity dev 2/2"
   },
   "devDependencies": {
     "@scriptc/experimental": "workspace:*",

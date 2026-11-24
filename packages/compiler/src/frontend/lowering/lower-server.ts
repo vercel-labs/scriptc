@@ -4869,6 +4869,43 @@ function lowerH2StreamMethodCall(
       loc,
     };
   }
+  if (name === "pushStream") {
+    requireStatementPosition(lowerer, call, "stream.pushStream(...)");
+    if (args.length < 2 || args.length > 3) {
+      lowerer.noLowering(
+        `stream.pushStream with ${args.length} arguments`,
+        call,
+        "use pushStream(headers, callback) or pushStream(headers, options, callback)",
+      );
+    }
+    // The promise's headers are the request's: the pseudo headers the
+    // caller gives override Node's defaults (:method GET, the request's
+    // :authority and :scheme, :path "/").
+    const headersArg = lowerH2HeadersArg(lowerer, args[0]!);
+    const optionsArg = args.length === 3 ? args[1]! : undefined;
+    const endStream =
+      optionsArg !== undefined ? h2BoolOption(lowerer, optionsArg, "endStream") : null;
+    const { cb } = lowerCallbackArg(
+      lowerer,
+      args[args.length - 1]!,
+      "pushStream callbacks",
+      3,
+      (p, i) =>
+        i === 0
+          ? p.kind === "object" && p.className === "%Error"
+          : i === 1
+            ? p.kind === "http2Stream"
+            : p.kind === "dyn",
+      "use (err, pushStream, headers), (err, pushStream), (err) or () — type the headers parameter as any",
+    );
+    return {
+      kind: "libCall",
+      fn: "http2.streamPushStream",
+      args: [receiver(), headersArg, boolLit(endStream ?? false, loc), cb],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "write" || name === "end") {
     requireStatementPosition(lowerer, call, `stream.${name}(...)`);
     const minArgs = name === "write" ? 1 : 0;
@@ -5222,16 +5259,28 @@ function lowerH2StreamMethodCall(
         loc,
       };
     }
+    if (event === "push") {
+      // A promised stream's response block: Node's 'push' event, with the
+      // same (headers[, flags]) record as 'response'.
+      const cb = h2HeadersCallbackAdapter(lowerer, args[1]!, "push listeners", null, true, loc);
+      return {
+        kind: "libCall",
+        fn: "http2.streamOnPush",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "push", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
+    "respond/sendTrailers/additionalHeaders/pushStream/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
   );
 }
 
@@ -6012,6 +6061,8 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
+    if (m === "pushAllowed")
+      return { kind: "libCall", fn: "http2.streamPushAllowed", args: [recv()], type: BOOL, loc };
     if (m === "endAfterHeaders")
       return {
         kind: "libCall",
@@ -8286,6 +8337,9 @@ function lowerHttp2ModuleCall(
     let listenerNode: ts.Expression | undefined = args[1];
     let reject: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
     let ca: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+    // options.settings.enablePush: the one session setting the client's own
+    // behavior follows (whether it accepts pushes) — -1 leaves the default.
+    let enablePush = -1;
     const arg1IsDyn =
       args.length >= 2 &&
       (lowerer.typeOf(args[1]!).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
@@ -8350,6 +8404,27 @@ function lowerHttp2ModuleCall(
               );
             }
           }
+          if (name === "settings" && ts.isObjectLiteralExpression(valueNode)) {
+            // The session's own SETTINGS: only enablePush changes what this
+            // unit does (it gates accepting the peer's promises); the rest
+            // stay accepted-and-inert like the other tuning options.
+            for (const setting of valueNode.properties.nodes) {
+              if (
+                ts.isPropertyAssignment(setting) &&
+                ts.isIdentifier(setting.name) &&
+                setting.name.text === "enablePush"
+              ) {
+                if (setting.initializer.kind === ts.SyntaxKind.TrueKeyword) enablePush = 1;
+                else if (setting.initializer.kind === ts.SyntaxKind.FalseKeyword) enablePush = 0;
+                else
+                  lowerer.noLowering(
+                    "connect settings.enablePush with a non-boolean literal",
+                    setting,
+                    "spell enablePush as true or false",
+                  );
+              }
+            }
+          }
         }
       }
       listenerNode = args[2];
@@ -8371,7 +8446,7 @@ function lowerHttp2ModuleCall(
       return {
         kind: "libCall",
         fn: "http2.connectCb",
-        args: [auth, reject, ca, cb],
+        args: [auth, reject, ca, { kind: "numLit", value: enablePush, type: F64, loc }, cb],
         type: HTTP2SESSION_T,
         loc,
       };
@@ -8379,7 +8454,7 @@ function lowerHttp2ModuleCall(
     return {
       kind: "libCall",
       fn: "http2.connect",
-      args: [auth, reject, ca],
+      args: [auth, reject, ca, { kind: "numLit", value: enablePush, type: F64, loc }],
       type: HTTP2SESSION_T,
       loc,
     };

@@ -29,6 +29,9 @@ typedef void (*ScrH2ConnectFn)(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket 
 typedef void (*ScrH2GoawayFn)(ScrClosure *cb, double code, double last,
                               ScrBytes *opaque /*borrowed, NULL = none*/);
 typedef void (*ScrH2SettingsFn)(ScrClosure *cb, ScrDyn *settings /*+1*/);
+/* The pushStream callback: (err, pushStream, headers). The error is NULL
+ * on success; the stream and headers are +1 when present, NULL on error. */
+typedef void (*ScrH2PushFn)(ScrClosure *cb, ScrError *err, ScrH2Stream *st, ScrDyn *headers);
 
 ScrH2Session *scr_http2_session_retain(ScrH2Session *s);
 void scr_http2_session_release(ScrH2Session *s);
@@ -72,6 +75,7 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
  * self-connect shapes); throws catchably on bad input */
 ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthorized,
                                  const char *ca /*borrowed, NULL = none*/, size_t ca_len,
+                                 double enable_push /* -1 = leave the default */,
                                  ScrClosure *cb /*moves, nullable*/,
                                  ScrH2ConnectFn fn); /* +1 */
 /* end_stream: -1 = the method's payload-meaningless default, 0/1 explicit */
@@ -149,6 +153,16 @@ void scr_http2_stream_respond_wait(ScrH2Stream *st, ScrArr *pairs /*borrowed, nu
  * throw Node's errors when the stream or the response state forbids them. */
 void scr_http2_stream_additional_headers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/);
 void scr_http2_stream_send_trailers(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/);
+/* pushStream(headers[, options], callback): send a PUSH_PROMISE and report
+ * the new stream on the next turn. Throws Node's ERR_HTTP2_PUSH_DISABLED
+ * when the peer or the stream's state forbids a push, and
+ * ERR_HTTP2_NESTED_PUSH from a promised stream. */
+void scr_http2_stream_push_stream(ScrH2Stream *st, ScrArr *pairs /*borrowed, nullable*/,
+                                   bool end_stream, ScrClosure *cb /*moves, nullable*/,
+                                   ScrH2PushFn fn);
+bool scr_http2_stream_push_allowed(ScrH2Stream *st);
+/* 'push' on a promised stream: the response block of an accepted push. */
+void scr_http2_stream_on_push(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrH2RespFn fn, bool once);
 void scr_http2_stream_on_trailers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_want_trailers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_headers(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
@@ -204,6 +218,12 @@ void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *
 void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 void scr_http2_goaway_thunk1(ScrClosure *cb, double code, double last, ScrBytes *opaque);
 void scr_http2_goaway_thunk0(ScrClosure *cb, double code, double last, ScrBytes *opaque);
+/* pushStream callbacks: (err, pushStream, headers), and every shorter
+ * prefix. Unused values release here. */
+void scr_http2_push_thunk3(ScrClosure *cb, ScrError *err, ScrH2Stream *st, ScrDyn *headers);
+void scr_http2_push_thunk2(ScrClosure *cb, ScrError *err, ScrH2Stream *st, ScrDyn *headers);
+void scr_http2_push_thunk1(ScrClosure *cb, ScrError *err, ScrH2Stream *st, ScrDyn *headers);
+void scr_http2_push_thunk0(ScrClosure *cb, ScrError *err, ScrH2Stream *st, ScrDyn *headers);
 
 void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn);
 

@@ -21,6 +21,7 @@
  *   this function returns, unconditionally.
  */
 #include "scr_runtime.h"
+#include "scr_inspect.h"
 #include <math.h>
 #include <stdio.h>
 #ifdef SCR_CHILD_STREAM_FLOW
@@ -3413,7 +3414,52 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
 }
 
 bool scr_child_kill_num(ScrChild *c, double signum) {
+  /* Node's sanitizeKillSignal: an integer passes through (0 probes), any
+   * other number is an unknown signal rendered as Node renders it. */
+  if (!isfinite(signum) || signum != trunc(signum)) {
+    char recv[48];
+    scr_num_received(signum, recv);
+    size_t len = strlen(recv);
+    char *msg = malloc(16 + len + 1);
+    if (!msg) scr_child_oom();
+    snprintf(msg, 16 + len + 1, "Unknown signal: %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
+    return false;
+  }
   return scr_child_kill_signo(c, (int)signum);
+}
+
+/* child.kill's checked-dynamic form: Node's sanitizeKillSignal decides at
+ * the call — undefined is SIGTERM, a name or an integer is the signal, and
+ * every other value throws ERR_UNKNOWN_SIGNAL with the value inspected. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  if (signal->kind == SCR_DYN_UNDEF) {
+    ScrStr *name = scr_str_new("SIGTERM", 7);
+    bool killed = scr_child_kill(c, name);
+    scr_str_release(name);
+    return killed;
+  }
+  if (signal->kind == SCR_DYN_STR) return scr_child_kill(c, signal->v.str);
+  if (signal->kind == SCR_DYN_NUM) return scr_child_kill_num(c, signal->v.num);
+  ScrStr *shown = NULL;
+  const char *text;
+  if (signal->kind == SCR_DYN_NULL) text = "null";
+  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
+  else {
+    /* Node's message inspects the value; the killDyn feature rule links
+     * the inspect unit for the programs that can reach this. */
+    shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
+    text = shown->data;
+  }
+  size_t len = strlen(text);
+  char *msg = malloc(16 + len + 1);
+  if (!msg) scr_child_oom();
+  snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+  free(msg);
+  scr_str_release(shown);
+  return false;
 }
 
 /* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
@@ -7537,10 +7583,56 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
   return scr_child_kill_signo(c, signo);
 }
 
-/* child.kill(number) — the numeric form passes through (0 probes). */
+/* child.kill(number) — Node's sanitizeKillSignal: an integer passes
+ * through (0 probes); any other number throws ERR_UNKNOWN_SIGNAL with the
+ * value rendered as Node renders it. */
 bool scr_child_kill_num(ScrChild *c, double signum) {
   SCR_IF_ISLAND(c, return scr_child_island_ops->kill(c->island, NULL, signum));
+  if (!isfinite(signum) || signum != trunc(signum)) {
+    char recv[48];
+    scr_num_received(signum, recv);
+    size_t len = strlen(recv);
+    char *msg = malloc(16 + len + 1);
+    if (!msg) scr_child_oom();
+    snprintf(msg, 16 + len + 1, "Unknown signal: %s", recv);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+    free(msg);
+    return false;
+  }
   return scr_child_kill_signo(c, (int)signum);
+}
+
+/* child.kill's checked-dynamic form: Node's sanitizeKillSignal decides at
+ * the call — undefined is SIGTERM, a name or an integer is the signal, and
+ * every other value throws ERR_UNKNOWN_SIGNAL with the value inspected, as
+ * Node's message shows. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  if (signal->kind == SCR_DYN_UNDEF) {
+    ScrStr *name = scr_str_new("SIGTERM", 7);
+    bool killed = scr_child_kill(c, name);
+    scr_str_release(name);
+    return killed;
+  }
+  if (signal->kind == SCR_DYN_STR) return scr_child_kill(c, signal->v.str);
+  if (signal->kind == SCR_DYN_NUM) return scr_child_kill_num(c, signal->v.num);
+  ScrStr *shown = NULL;
+  const char *text;
+  if (signal->kind == SCR_DYN_NULL) text = "null";
+  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
+  else {
+    /* Node's message inspects the value; the killDyn feature rule links
+     * the inspect unit for the programs that can reach this. */
+    shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
+    text = shown->data;
+  }
+  size_t len = strlen(text);
+  char *msg = malloc(16 + len + 1);
+  if (!msg) scr_child_oom();
+  snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
+  free(msg);
+  scr_str_release(shown);
+  return false;
 }
 
 /* ChildProcess[Symbol.dispose](): Node sends SIGTERM only while `killed`
@@ -10501,13 +10593,7 @@ static ScrDyn *scr_child_dyn_invoke(
   if (!strcmp(method, "kill")) {
     const ScrDyn *signal = argc ? args[0] : scr_dyn_undefined();
     bool killed;
-    if (signal->kind == SCR_DYN_NUM) killed = scr_child_kill_num(child, signal->v.num);
-    else if (signal->kind == SCR_DYN_STR) killed = scr_child_kill(child, signal->v.str);
-    else if (signal->kind == SCR_DYN_UNDEF) {
-      ScrStr *name = scr_str_new("SIGTERM", 7);
-      killed = scr_child_kill(child, name);
-      scr_str_release(name);
-    } else { scr_dyn_arg_type_fail("signal", "of type string or number", signal); return NULL; }
+    killed = scr_child_kill_dyn(child, signal);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(killed);
   }
   bool remove = !strcmp(method, "removeListener") || !strcmp(method, "off");

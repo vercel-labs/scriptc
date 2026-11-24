@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-kill-signals.cjs"
+ ],
+ "diags": []
+}

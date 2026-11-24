@@ -2463,6 +2463,9 @@ const RUNTIME_FEATURE_RULES = {
       ...DH_LIB_FNS,
       ...BUILTIN_CLASS_LIB_FNS,
       ...UTIL_CALLABLE_LIB_FNS,
+      // child.kill's checked-dynamic signal renders an invalid value in
+      // Node's ERR_UNKNOWN_SIGNAL message with inspect.
+      "child.killDyn",
     ],
     prefixes: ["insp.", "console.", "test."],
     libCall: (node) => node.fn === "rl.terminal" && !isDynUndefined(node.args[3]!),

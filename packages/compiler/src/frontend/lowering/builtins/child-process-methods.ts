@@ -11,6 +11,7 @@ import {
   CHILDSTREAM_T,
   CHILDWRITER_T,
   DYN,
+  F64,
   type IrExpr,
   type IrType,
   STRING,
@@ -358,18 +359,21 @@ export function lowerChildMethodCall(
       const dflt: IrExpr = { kind: "strLit", value: "SIGTERM", type: STRING, loc };
       return { kind: "libCall", fn: "child.kill", args: [receiver, dflt], type: BOOL, loc };
     }
-    const sig = lowerer.lowerExpr(sigNode);
-    if (sig.type.kind === "f64") {
+    const sigType = lowerer.mapTypeOf(lowerer.typeOf(sigNode));
+    if (sigType?.kind === "f64") {
+      const sig = lowerer.lowerExprExpecting(sigNode, F64);
       return { kind: "libCall", fn: "child.killNum", args: [receiver, sig], type: BOOL, loc };
     }
-    if (sig.type.kind === "string") {
+    if (sigType?.kind === "string") {
+      const sig = lowerer.lowerExprExpecting(sigNode, STRING);
       return { kind: "libCall", fn: "child.kill", args: [receiver, sig], type: BOOL, loc };
     }
-    lowerer.noLowering(
-      `child.kill with a '${lowerer.fmt(sig.type)}' signal`,
-      sigNode,
-      "pass a signal name string or number (narrow unions first)",
-    );
+    // Node's sanitizeKillSignal decides at the call: undefined is SIGTERM,
+    // a name or an integer is the signal, and every other value throws
+    // ERR_UNKNOWN_SIGNAL with the value inspected. The value rides the
+    // checked-dynamic lane so one runtime check covers them all.
+    const sig = lowerer.lowerExprExpecting(sigNode, DYN);
+    return { kind: "libCall", fn: "child.killDyn", args: [receiver, sig], type: BOOL, loc };
   }
   // child.unref(): drops the child from the event loop's keep-alive set
   // (the process may exit while the child runs — Node's semantics; the

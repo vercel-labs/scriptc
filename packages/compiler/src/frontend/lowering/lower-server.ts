@@ -3889,13 +3889,24 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
-  if ((name === "getProtocol" || name === "getCipher") && args.length === 0) {
+  if (
+    (name === "getProtocol" || name === "getCipher" || name === "getEphemeralKeyInfo") &&
+    args.length === 0
+  ) {
     // TLSSocket.getProtocol(): "TLSv1.2"/"TLSv1.3" or null;
-    // getCipher(): { name, standardName, version }.
+    // getCipher(): { name, standardName, version }; getEphemeralKeyInfo():
+    // the negotiated group ({ type: 'ECDH', name, size } on TLS 1.2,
+    // { type: 'TLSGroup', name } on TLS 1.3) or null.
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const fn: IrLibFn =
+      name === "getProtocol"
+        ? "tls.sockGetProtocol"
+        : name === "getCipher"
+          ? "tls.sockGetCipher"
+          : "tls.sockEphemeralKeyInfo";
     const value: IrExpr = {
       kind: "libCall",
-      fn: name === "getProtocol" ? "tls.sockGetProtocol" : "tls.sockGetCipher",
+      fn,
       args: [receiver],
       type: DYN,
       loc,

@@ -18,4 +18,8 @@ export const tlsNeverThrow: readonly IrLibFn[] = [
   // TLS server's list: no program code runs at the add.
   "tls.sockOnKeylog",
   "tls.serverOnKeylog",
+  // scr_tls_sock_ephemeral_key_info builds the group the handshake
+  // negotiated from values copied out of the engine, or null; it runs no
+  // program code.
+  "tls.sockEphemeralKeyInfo",
 ];

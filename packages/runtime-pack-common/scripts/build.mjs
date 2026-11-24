@@ -478,6 +478,9 @@ async function build() {
               unit.source === "scr_webcrypto_aes.c"
                 ? ["-I", join(mbedtls, "include")]
                 : []),
+              // scr_tls.c reads the negotiated key-exchange group from the
+              // engine's private handshake params (ssl_misc.h).
+              ...(unit.source === "scr_tls.c" ? ["-I", join(mbedtls, "library")] : []),
               ...(unit.source === "scr_zlib.c" || unit.source === "scr_fetch.c"
                 ? ["-I", zlib]
                 : []),

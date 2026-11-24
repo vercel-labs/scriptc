@@ -61,6 +61,8 @@ ScrNetSocket *scr_tls_connect_path(ScrStr *path /*borrowed*/, const struct ScrDy
 bool scr_tls_sock_authorized(ScrNetSocket *s);
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s); /* +1 or NULL */
 ScrDyn *scr_tls_sock_get_protocol(ScrNetSocket *s);  /* +1: string or null */
+/* getEphemeralKeyInfo(): { type: 'ECDH', name, size } or null; +1. */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s);
 /* The certificates behind getPeerCertificate, getCertificate and their
  * X509Certificate forms (scr_tls_x509.c reads them). */
 bool scr_tls_sock_has_handle(ScrNetSocket *s);

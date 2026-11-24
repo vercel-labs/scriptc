@@ -62,11 +62,15 @@ function absoluteCommand(command: string): string {
 // 2026-10-27) to 712 s (2026-11-07), about 145 s a week, and the same tree
 // takes up to 1.66 times as long on one machine as on another. Of 244 plain
 // builds on 2026-11-07 the median took 1009 s and the slowest tenth 1447 s
-// or more, and eight were stopped at the 1800 s every step is allowed. Its
-// own limit is twice that, which the fastest build reaches after about ten
-// more weeks of the same growth on the slowest machine; the limit is the
-// place to look when it does. CI builds the seed in a job of its own
-// (bootstrap_seed) and never runs this step.
+// or more. Its own limit is twice the 1800 s a step once had, which the
+// fastest build reaches after about ten more weeks of the same growth on the
+// slowest machine; the limit is the place to look when it does. CI builds the
+// seed in a job of its own (bootstrap_seed) and never runs this step.
+//
+// Every step of the rebuild contracts gets this limit too, because they build
+// that compiler again: on 2026-11-23 1.66 times the 1289 s a green plain
+// rebuild took crossed the old 1800 s, and two merge queue batches stopped a
+// healthy build at 30 minutes (jobs 138079687529 and 138080138230).
 const seedBuildTimeoutMs = sanitize ? 5_400_000 : 3_600_000;
 
 test(
@@ -83,7 +87,7 @@ test(
       join(directory, name + (process.platform === "win32" ? ".exe" : ""));
     const options = {
       cwd: root,
-      timeout: sanitize ? 5_400_000 : 1_800_000,
+      timeout: seedBuildTimeoutMs,
       maxBuffer: 16 * 1024 * 1024,
     };
     try {
@@ -210,11 +214,16 @@ test(
           const failure = error as Error & {
             code?: string | number;
             signal?: string;
+            killed?: boolean;
             stdout?: string;
             stderr?: string;
           };
+          // A step this harness stops reports only "signal=SIGTERM", which
+          // reads like the compiler died; name the limit that fired instead.
+          const timedOut =
+            failure.killed === true ? `\ntimed out after ${options.timeout / 1000}s` : "";
           throw new Error(
-            `${failure.message}\ncode=${failure.code} signal=${failure.signal}\n${failure.stderr ?? ""}\n${failure.stdout ?? ""}`,
+            `${failure.message}\ncode=${failure.code} signal=${failure.signal}${timedOut}\n${failure.stderr ?? ""}\n${failure.stdout ?? ""}`,
             { cause: error },
           );
         });

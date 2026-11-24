@@ -929,7 +929,9 @@ jobs:
     # for LLVM optimization alongside the compiler that produces its input.
     runs-on: ubuntu-24.04
     # Longest green phase 2026-11-07..21: plain commands 12 minutes, rebuild
-    # 34; sanitized commands 22, rebuild-frontend 46, rebuild-emit 67.
+    # 34; sanitized commands 22, rebuild-frontend 46, rebuild-emit 67. The
+    # plain rebuild gets 90 so its self-build keeps the growth room its step
+    # limit (the seed build's 60 minutes) assumes, plus the ~15-minute tail.
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -939,7 +941,7 @@ jobs:
         # emits, links and probes the next generation from the seed's IR.
         include:
           - { flavor: plain, phase: commands, timeout: 30 }
-          - { flavor: plain, phase: rebuild, timeout: 70 }
+          - { flavor: plain, phase: rebuild, timeout: 90 }
           - { flavor: san, phase: commands, timeout: 45 }
           - { flavor: san, phase: rebuild-frontend, timeout: 90 }
           - { flavor: san, phase: rebuild-emit, timeout: 130 }

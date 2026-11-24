@@ -85,7 +85,12 @@ import {
   prepareNativeLibrary,
 } from "./prepare.js";
 import { usesLoweredProgram } from "../executable/lowered.js";
-import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
+import {
+  readUnchangedBuild,
+  recordUnchangedBuild,
+  unchangedBuildKey,
+  unchangedPackInputs,
+} from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import {
@@ -930,11 +935,7 @@ export class NativeCompiler {
           translationUnitPath: llvmPath,
           irPath: irPath ?? null,
           beside,
-          packInputs: [
-            ...pack.selected.runtime,
-            ...pack.selected.archives,
-            ...(features.intl === true ? (pack.selected.data ?? []) : []),
-          ].map((artifact) => join(pack.root, artifact.path)),
+          packInputs: unchangedPackInputs(pack, features, optimization),
           ...(profileMatch === undefined ? {} : { profileMatch }),
         });
       }

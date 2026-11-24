@@ -7050,6 +7050,83 @@ static bool scr_loop_run_checkpoint(void) {
  * branch re-tests it after listeners ran). */
 static bool scr_loop_has_reffed_work(void);
 
+/* The check phase: immediates queued before it starts run FIFO; ones a
+ * callback queues wait for the next call (Node's once-per-turn rule, so a
+ * setImmediate chain cannot starve the loop). Cleared slots skip. Ticks and
+ * microtasks drain after each callback, like Node's checkpoint after every
+ * macrotask; the caller reaches it on a drained checkpoint.
+ *
+ * Answers 0 to continue, 1 when unhandled rejections were reported (the
+ * caller keeps its rejection result), 2 when a failure ends the loop, and 3
+ * when the pass was handed over to Node. *ran reports whether it ran. */
+static int scr_loop_run_check_phase(const ScrPromise *top_level, bool *ran) {
+  *ran = false;
+  if (scr_ready_len != 0 || scr_nt_head != NULL || scr_nunhandled != 0 || scr_rjh_pending() ||
+      scr_pending_immediates == 0)
+    return 0;
+  /* The slots of the immediates that ran are reused first. An earlier phase
+   * left one pending whenever a callback queued the next, as a chain of
+   * immediates does at every turn; once the fired part is at least as long
+   * as the pending tail, the tail moves to the front, in its order (a slot
+   * moves at most once per slot fired), and the slots it leaves are cleared.
+   * Here and not at the phase's end, which a callback that throws never
+   * reaches: a chain whose callbacks all throw would grow the array by a
+   * slot for each of them. */
+  if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
+    size_t pending = scr_nimmediates - scr_immediates_head;
+    memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
+    memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
+    scr_nimmediates = pending;
+    scr_immediates_head = 0;
+  }
+  size_t end = scr_nimmediates;
+#ifdef SCR_NODE_ISLANDS
+  scr_check_end = end; /* a switch inside this phase finishes it first */
+  SCR_PASS_PHASE(SCR_PASS_CHECK);
+#endif
+  while (scr_immediates_head < end) {
+    size_t i = scr_immediates_head++;
+    ScrClosure *cb = scr_immediates[i].cb;
+    if (cb == NULL) continue; /* cleared */
+    scr_immediates[i].cb = NULL; /* fired: clear/ref/unref on this id no-op now */
+    if (scr_pending_immediates > 0) scr_pending_immediates--;
+    if (scr_immediates[i].reffed) {
+      scr_immediates[i].reffed = false;
+      if (scr_reffed_immediates > 0) scr_reffed_immediates--;
+    }
+    scr_immediate_firing = scr_immediates[i].id;
+    ScrAsyncIds *async_ids = scr_immediates[i].async_ids; /* one-shot */
+    scr_immediates[i].async_ids = NULL;
+    ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_async_fire_end(async_ids, async_prev, true);
+    scr_immediate_firing = 0;
+    scr_closure_release(cb);
+    if (scr_exc_pending()) return 2; /* uncaught throw: main handles it */
+    if (SCR_PASS_HANDED_OVER()) return 3;
+    if (!scr_loop_run_checkpoint()) return 2;
+    if (SCR_PASS_HANDED_OVER()) return 3;
+    /* Node's runNextTicks between immediates also reports the rejections the
+     * callback left before the next one runs; a listener's jobs drain before
+     * the next report. */
+    while ((scr_nunhandled > 0 || scr_rjh_pending()) &&
+           (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
+      if (!scr_drain_rejection_handled()) return 2;
+      if (SCR_PASS_HANDED_OVER()) return 3;
+      if (scr_report_unhandled_rejections()) return 1;
+      if (SCR_PASS_HANDED_OVER()) return 3;
+      if (!scr_loop_run_checkpoint()) return 2;
+      if (SCR_PASS_HANDED_OVER()) return 3;
+    }
+    if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
+  }
+#ifdef SCR_NODE_ISLANDS
+  scr_check_end = 0;
+#endif
+  *ran = true;
+  return 0;
+}
+
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -7066,7 +7143,6 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * tick or a promise job of the previous callback) do not defer anything:
    * Node runs those in the next check phase, after the timers. */
   bool in_dispatch = false;
-  bool deferred_since_timers = false;
   uint64_t immediate_generation_before_dispatch = scr_immediate_generation;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
@@ -7328,19 +7404,22 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
     /* A dispatch in this pass stands in for the previous poll phase: an
      * immediate it queued belongs to the check phase that follows the poll,
-     * so this turn runs that check before the timers phase (one turn later,
-     * Node's next iteration). Pending immediates are guaranteed here, which
-     * keeps the poll below from sleeping and lets the check phase run. */
+     * so this turn runs that check before the timers phase. */
     bool defer_timers = in_dispatch && scr_pending_immediates > 0 &&
-                        scr_immediate_generation != immediate_generation_before_dispatch &&
-                        !deferred_since_timers;
+                        scr_immediate_generation != immediate_generation_before_dispatch;
     in_dispatch = false;
-    /* One deferral at a time: the check phase that follows this poll dispatch
-     * runs next, and the turn after it runs the timers phase whatever the
-     * dispatch does. A ready poll (a busy socket, a TLS handshake per pass)
-     * therefore cannot keep pushing the timers phase back — at most every
-     * other turn defers, and every due timer fires within one turn. */
-    deferred_since_timers = defer_timers;
+    /* A poll callback queued an immediate: this turn runs the check phase
+     * before its timers phase, Node's poll-to-check order, so the immediate
+     * never follows the timer scheduled beside it. The timers phase still
+     * runs in the same turn, so a ready poll cannot starve it, and every
+     * dispatch gets its own check. */
+    bool check_ran = false;
+    if (defer_timers) {
+      int check = scr_loop_run_check_phase(top_level, &check_ran);
+      if (check == 1) rejection_failed = true;
+      else if (check == 2) return false;
+      else if (check == 3) return rejection_failed;
+    }
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -7602,9 +7681,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     scr_sa_loop_waiting(false);
 #endif
-    if (!defer_timers && scr_ntimers > 0 && scr_timers[0].deadline_ms <= now)
-      SCR_PASS_PHASE(SCR_PASS_TIMERS);
-    while (!defer_timers && scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
+    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) SCR_PASS_PHASE(SCR_PASS_TIMERS);
+    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
        * An interval entry is OUT of the heap while its callback runs;
@@ -7662,78 +7740,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
         break;
     }
-    /* The check phase: immediates queued BEFORE this phase started run
-     * now, FIFO; ones a callback queues wait for the next turn (the end
-     * snapshot — Node's once-per-turn rule, so a setImmediate chain can't
-     * starve the loop). Cleared slots (cb NULL) skip. Ticks, then
-     * microtasks, drain after each callback, like Node's checkpoint after
-     * every macrotask; pending ticks or a woken fiber restart the turn
-     * first (the timer loop's break above), so the phase only runs on a
-     * drained checkpoint. */
-    bool check_ran = false;
-    if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && !scr_rjh_pending() &&
-        scr_pending_immediates > 0) {
-      /* The slots of the immediates that ran are reused first. An earlier
-       * phase left one pending whenever a callback queued the next, as a
-       * chain of immediates does at every turn; once the fired part is at
-       * least as long as the pending tail, the tail moves to the front, in
-       * its order (a slot moves at most once per slot fired), and the slots
-       * it leaves are cleared. Here and not at the phase's end, which a
-       * callback that throws never reaches: a chain whose callbacks all
-       * throw would grow the array by a slot for each of them. */
-      if (scr_immediates_head >= scr_nimmediates - scr_immediates_head) {
-        size_t pending = scr_nimmediates - scr_immediates_head;
-        memmove(scr_immediates, scr_immediates + scr_immediates_head, pending * sizeof *scr_immediates);
-        memset(scr_immediates + pending, 0, scr_immediates_head * sizeof *scr_immediates);
-        scr_nimmediates = pending;
-        scr_immediates_head = 0;
-      }
-      size_t end = scr_nimmediates;
-#ifdef SCR_NODE_ISLANDS
-      scr_check_end = end; /* a switch inside this phase finishes it first */
-      SCR_PASS_PHASE(SCR_PASS_CHECK);
-#endif
-      while (scr_immediates_head < end) {
-        size_t i = scr_immediates_head++;
-        ScrClosure *cb = scr_immediates[i].cb;
-        if (cb == NULL) continue; /* cleared */
-        scr_immediates[i].cb = NULL; /* fired: clear/ref/unref on this id no-op now */
-        if (scr_pending_immediates > 0) scr_pending_immediates--;
-        if (scr_immediates[i].reffed) {
-          scr_immediates[i].reffed = false;
-          if (scr_reffed_immediates > 0) scr_reffed_immediates--;
-        }
-        scr_immediate_firing = scr_immediates[i].id;
-        ScrAsyncIds *async_ids = scr_immediates[i].async_ids; /* one-shot */
-        scr_immediates[i].async_ids = NULL;
-        ScrAsyncExecState async_prev = scr_async_fire_begin(async_ids);
-        ((void (*)(ScrClosure *))cb->fn)(cb);
-        scr_async_fire_end(async_ids, async_prev, true);
-        scr_immediate_firing = 0;
-        scr_closure_release(cb);
-        if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
-        if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-        if (!scr_loop_run_checkpoint()) return false;
-        if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-        /* Node's runNextTicks between immediates also reports the
-         * rejections the callback left before the next one runs; a
-         * listener's jobs drain before the next report. */
-        while ((scr_nunhandled > 0 || scr_rjh_pending()) &&
-               (top_level == NULL || top_level->state != SCR_PROM_REJECTED)) {
-          if (!scr_drain_rejection_handled()) return false;
-          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-          if (scr_report_unhandled_rejections()) return true;
-          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-          if (!scr_loop_run_checkpoint()) return false;
-          if (SCR_PASS_HANDED_OVER()) return rejection_failed;
-        }
-        if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
-      }
-#ifdef SCR_NODE_ISLANDS
-      scr_check_end = 0;
-#endif
-      check_ran = true;
+    if (!defer_timers) {
+      int check = scr_loop_run_check_phase(top_level, &check_ran);
+      if (check == 1) rejection_failed = true;
+      else if (check == 2) return false;
+      else if (check == 3) return rejection_failed;
     }
+
     /* No immediate is pending: every slot is fired or cleared, and the
      * queue starts over at its first slot. In every turn and not only after
      * a phase, which runs only while an immediate is pending: a turn that

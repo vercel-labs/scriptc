@@ -2095,7 +2095,8 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       if (k->kind != SCR_DYN_STR) continue;
       ScrStr *name = k->v.str;
       if ((name->len == 10 && memcmp(name->data, "objectMode", 10) == 0) ||
-          (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0)) {
+          (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0) ||
+          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0)) {
         continue;
       }
       char m[200];
@@ -2123,19 +2124,58 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       hwm = v;
     }
   }
+  /* from.js's `encoding` option is the readable state's decoder: the
+   * constructor validates it up front (Unknown encoding throws), and the
+   * chunks the iterator yields decode as setEncoding() would. */
+  ScrStr *encoding = NULL;      /* canonical, +1 */
+  ScrStr *encoding_name = NULL; /* the spelling when it differs, +1 */
+  if (opts && opts->kind == SCR_DYN_OBJ && !duplex) {
+    ScrDyn *enc = scr_dyn_obj_get(opts, "encoding", 8);
+    if (enc) {
+      scr_stream_check_encoding_option(enc);
+      if (scr_exc_pending()) {
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      ScrStr *raw = enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str)
+                                             : scr_dyn_string_coerce_js(enc);
+      if (!raw) {
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      encoding = scr_bytes_normalize_encoding(raw);
+      if (!encoding) {
+        scr_str_release(raw);
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      if (enc->kind == SCR_DYN_STR && !scr_str_eq(raw, encoding))
+        encoding_name = scr_str_retain(raw);
+      scr_str_release(raw);
+    }
+  }
+  ScrStream *fout;
   if (iter) {
     double flags = (object_mode ? 0 : SCR_FROM_BYTE_MODE) | (duplex ? SCR_FROM_DUPLEX : 0) |
                    (hwm_kind == SCR_FROM_HWM_SET       ? SCR_FROM_HAS_HWM
                     : hwm_kind == SCR_FROM_HWM_DEFAULT ? SCR_FROM_DEFAULT_HWM
                                                        : 0);
-    return scr_stream_from_dyn_iter(iter, kind == 2, flags, hwm);
+    fout = scr_stream_from_dyn_iter(iter, kind == 2, flags, hwm);
+  } else {
+    ScrFromSrc *f = calloc(1, sizeof *f);
+    if (!f) scr_stream_oom();
+    f->rc = 1;
+    f->dyn = scr_dyn_retain(src);
+    f->single = single;
+    fout = scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false, duplex);
   }
-  ScrFromSrc *f = calloc(1, sizeof *f);
-  if (!f) scr_stream_oom();
-  f->rc = 1;
-  f->dyn = scr_dyn_retain(src);
-  f->single = single;
-  return scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false, duplex);
+  if (fout && encoding) {
+    scr_stream_release(scr_stream_set_encoding(fout, encoding));
+    if (encoding_name) scr_stream_release(scr_stream_set_encoding_name(fout, encoding_name));
+  }
+  scr_str_release(encoding);
+  scr_str_release(encoding_name);
+  return fout;
 }
 
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {

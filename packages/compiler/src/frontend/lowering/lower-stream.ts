@@ -2800,9 +2800,69 @@ function lowerFromSource(
   // SCR_FROM_DUPLEX
   const duplexFlag = duplex ? 32 : 0;
   const js = isJsSourceFile(ts.getSourceFileOfNode(call));
+  // from.js's options: objectMode and highWaterMark become flags, and
+  // encoding is the readable state's decoder — set on the stream the
+  // builder answers, as the constructors chain setEncoding. A literal Node
+  // does not know is its runtime ERR_UNKNOWN_ENCODING (the arguments still
+  // evaluate first, as at a call).
+  const parsedOptions = optsNode
+    ? fromOptions(lowerer, optsNode)
+    : {
+        flags: 0,
+        hwm: null,
+        encoding: null,
+        encodingName: null,
+        badEncoding: null,
+        dynamicEncoding: false,
+      };
+  if (parsedOptions && parsedOptions.badEncoding !== null) {
+    return throwAfterCallArguments(
+      lowerer,
+      call as ts.CallExpression,
+      nodeThrowExpr(
+        1,
+        "ERR_UNKNOWN_ENCODING",
+        `Unknown encoding: ${parsedOptions.badEncoding}`,
+        type,
+        loc,
+      ),
+      loc,
+    );
+  }
+  const withEncoding = (built: IrExpr): IrExpr => {
+    if (!parsedOptions || duplex || parsedOptions.encoding === null) return built;
+    let out: IrExpr = {
+      kind: "libCall",
+      fn: "readable.setEncoding",
+      args: [built, strLit(parsedOptions.encoding, loc)],
+      type: built.type,
+      loc,
+    };
+    if (parsedOptions.encodingName !== null) {
+      out = {
+        kind: "libCall",
+        fn: "readable.encodingName",
+        args: [out, strLit(parsedOptions.encodingName, loc)],
+        type: built.type,
+        loc,
+      };
+    }
+    return out;
+  };
   // A web ReadableStream is async iterable: from.js reads its iterator.
   // Duplex.from takes _duplexify({ readable: Readable.fromWeb(body) }).
   const webElem = srcNode ? staticReadableStreamElementType(lowerer, srcNode) : null;
+  // A non-literal encoding value: a JavaScript source takes it through the
+  // runtime (which validates it); a typed program keeps the literal-only
+  // surface, since its builders take the canonical name.
+  if (parsedOptions?.dynamicEncoding === true && !js) {
+    lowerer.noLowering(
+      "the Readable.from option 'encoding' with this encoding",
+      optsNode ?? call,
+      "a literal encoding name is the typed surface",
+    );
+  }
+  const dynamicEncoding = js && parsedOptions?.dynamicEncoding === true;
   if (srcNode && webElem !== null && duplex) {
     const fromWeb: IrExpr = {
       kind: "libCall",
@@ -2818,10 +2878,10 @@ function lowerFromSource(
     };
     return { kind: "libCall", fn: "stream.duplexifyReadable", args: [fromWeb], type, loc };
   }
-  if (srcNode && webElem !== null) {
+  if (srcNode && webElem !== null && !dynamicEncoding) {
     const source = lowerWebStreamSource(lowerer, srcNode, webElem, loc);
     const helpers = source ? fromGenHelpers(lowerer, source.out, loc) : null;
-    const opts = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+    const opts = parsedOptions ? { flags: parsedOptions.flags, hwm: parsedOptions.hwm } : null;
     if (!source || !helpers || !opts || !fromGenChunk(lowerer, webElem)) {
       lowerer.noLowering(
         `Readable.from over a web ReadableStream of '${lowerer.fmt(webElem)}'`,
@@ -2836,20 +2896,20 @@ function lowerFromSource(
       type: source!.out,
       loc,
     };
-    return {
+    return withEncoding({
       kind: "libCall",
       fn: "readable.fromAsyncGen",
       args: [gen, ...helpers!, numLit(opts!.flags, loc), hwm],
       type,
       loc,
-    };
+    });
   }
   const srcT = srcNode ? lowerer.mapTypeOf(lowerer.typeOf(srcNode)) : null;
   const typedElem = (t: IrType | null | undefined): "string" | "bytes" | null =>
     t?.kind === "string" ? "string" : t?.kind === "bytes" && t.elem === "u8" ? "bytes" : null;
   const single = typedElem(srcT);
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
-  const opts0 = optsNode ? fromOptions(lowerer, optsNode) : { flags: 0, hwm: null };
+  const opts0 = parsedOptions ? { flags: parsedOptions.flags, hwm: parsedOptions.hwm } : null;
   const opts = opts0 ? { ...opts0, flags: opts0.flags | duplexFlag } : opts0;
   // The source as an instance of `t`, the class the checker gives it. The
   // value can be held another way: a JavaScript source infers the class of
@@ -2871,7 +2931,7 @@ function lowerFromSource(
   const genT = srcT?.kind === "generator" ? srcT : (genMethod?.gen ?? null);
   // A compiled generator: the runtime pulls it through interned helpers.
   const genRecv =
-    srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
+    srcNode && genT && opts && !dynamicEncoding && fromGenChunk(lowerer, genT.yieldT)
       ? genMethod && srcT?.kind === "object"
         ? sourceInstance(srcNode, srcT)
         : lowerer.lowerExpr(srcNode)
@@ -2885,13 +2945,13 @@ function lowerFromSource(
     const helpers = fromGenHelpers(lowerer, genT, loc);
     if (helpers) {
       const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
-      return {
+      return withEncoding({
         kind: "libCall",
         fn: genT.async ? "readable.fromAsyncGen" : "readable.fromGen",
         args: [gen, ...helpers, numLit(opts.flags, loc), hwm],
         type,
         loc,
-      };
+      });
     }
   }
   // from.js prefers Symbol.asyncIterator: a class declaring one takes the
@@ -2902,7 +2962,12 @@ function lowerFromSource(
     lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
   const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
   const citRecv =
-    srcNode && srcT?.kind === "object" && cit && opts && fromGenChunk(lowerer, cit.valueT)
+    srcNode &&
+    srcT?.kind === "object" &&
+    cit &&
+    opts &&
+    !dynamicEncoding &&
+    fromGenChunk(lowerer, cit.valueT)
       ? sourceInstance(srcNode, srcT)
       : null;
   if (citRecv && cit && opts) {
@@ -2912,7 +2977,7 @@ function lowerFromSource(
     // declare no return() or throw(), so destroy calls neither.
     const recv = citRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
-    return {
+    return withEncoding({
       kind: "libCall",
       fn: "readable.fromIter",
       args: [
@@ -2922,38 +2987,43 @@ function lowerFromSource(
       ],
       type,
       loc,
-    };
+    });
   }
   const acit = srcT?.kind === "object" && asyncOpen ? classAsyncIteratorOf(lowerer, srcT) : null;
   const acitRecv =
-    srcNode && srcT?.kind === "object" && acit && opts && fromGenChunk(lowerer, acit.valueT)
+    srcNode &&
+    srcT?.kind === "object" &&
+    acit &&
+    opts &&
+    !dynamicEncoding &&
+    fromGenChunk(lowerer, acit.valueT)
       ? sourceInstance(srcNode, srcT)
       : null;
   if (acitRecv && acit && opts) {
     const recv = acitRecv;
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
-    return {
+    return withEncoding({
       kind: "libCall",
       fn: "readable.fromAsyncIter",
       args: [classAsyncIteratorObject(lowerer, acit, recv, loc), numLit(opts.flags, loc), hwm],
       type,
       loc,
-    };
+    });
   }
-  if (srcNode && (single || elem) && opts) {
+  if (srcNode && (single || elem) && opts && !dynamicEncoding) {
     const v = lowerer.lowerExpr(srcNode);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     const arr: IrExpr = single ? { kind: "arrayLit", elems: [v], type: arrayOf(v.type), loc } : v;
     // SCR_FROM_STRINGS 1, SCR_FROM_SINGLE 2 (scr_runtime.h); the options
     // add SCR_FROM_BYTE_MODE 4 and SCR_FROM_HAS_HWM 8.
     const flags = ((single ?? elem) === "string" ? 1 : 0) | (single ? 2 : 0) | opts.flags;
-    return {
+    return withEncoding({
       kind: "libCall",
       fn: "readable.fromArr",
       args: [arr, numLit(flags, loc), hwm],
       type,
       loc,
-    };
+    });
   }
   const anySrc =
     srcT?.kind === "dyn" ||
@@ -3390,10 +3460,23 @@ function classAsyncIteratorObject(
 function fromOptions(
   lowerer: Lowerer,
   node: ts.Expression,
-): { flags: number; hwm: ts.Expression | null } | null {
+): {
+  flags: number;
+  hwm: ts.Expression | null;
+  encoding: string | null;
+  encodingName: string | null;
+  badEncoding: string | null;
+  /** A non-literal encoding value: a JavaScript source's checked-dynamic
+   * form takes the option and validates it at run time. */
+  dynamicEncoding: boolean;
+} | null {
   if (!ts.isObjectLiteralExpression(node)) return null;
   let flags = 0;
   let hwm: ts.Expression | null = null;
+  let encoding: string | null = null;
+  let encodingName: string | null = null;
+  let badEncoding: string | null = null;
+  let dynamicEncoding = false;
   for (const prop of node.properties.nodes) {
     if (
       !ts.isPropertyAssignment(prop) ||
@@ -3410,11 +3493,26 @@ function fromOptions(
       if (lowerer.mapTypeOf(lowerer.typeOf(value))?.kind !== "f64") return null;
       flags |= 8;
       hwm = value;
+    } else if (prop.name.text === "encoding") {
+      // The readable state's decoder: a literal Node knows folds to its
+      // canonical name; a literal it does not know is the constructor's
+      // RUNTIME ERR_UNKNOWN_ENCODING, not a compile fence.
+      const t = lowerer.typeOf(value);
+      if (!t.isStringLiteralType()) {
+        dynamicEncoding = true;
+        continue;
+      }
+      if (knownBufEncoding(t.value) === undefined) {
+        badEncoding = t.value;
+        continue;
+      }
+      encoding = knownBufEncoding(t.value)!;
+      if (t.value !== encoding) encodingName = t.value;
     } else {
       return null;
     }
   }
-  return { flags, hwm };
+  return { flags, hwm, encoding, encodingName, badEncoding, dynamicEncoding };
 }
 
 /** `const Writable = stream.Writable` — a runtime stream CLASS bound

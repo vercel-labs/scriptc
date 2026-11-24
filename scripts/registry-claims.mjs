@@ -15,8 +15,11 @@
  *   node scripts/registry-claims.mjs --check   only collisions with this branch;
  *                                              exits 1 when there is one
  *
- * A pull request whose diff cannot be read is named in the output, and the
- * run exits 2 (unless it found a collision), since its claims are missing. */
+ * A pull request whose diff cannot be read is named in the output. Without
+ * --check the run exits 2 (unless it found a collision), since its claims are
+ * missing; --check still fails only on a collision with this branch, so a
+ * large unrelated PR cannot redden the mandatory gate. GitHub's 300-file diff
+ * limit is worked around with the pull request files API. */
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
@@ -139,19 +142,60 @@ const claimant = (key) => stacks.get(key) ?? stacks.set(key, { names: [], claims
 const queue = [...prs];
 // Pull requests whose diff could not be read: their claims are missing.
 const unread = [];
+
+/** A pull request's unified diff. GitHub refuses to render a diff over 300
+ * files (HTTP 406), and the mandatory gate must not fail on unrelated large
+ * PRs; the files API has no such cap, so rebuild the added lines claimsOf
+ * reads from each file's patch. Returns null when neither source answers. */
+async function diffOf(pr) {
+  try {
+    return (await run("gh", ["pr", "diff", String(pr.number)], { maxBuffer: 1 << 30 })).stdout;
+  } catch (error) {
+    const reason = String(error.stderr || error.message)
+      .trim()
+      .split("\n")[0];
+    if (!/exceeded the maximum number of files/.test(reason)) {
+      unread.push(`#${pr.number} (${reason})`);
+      return null;
+    }
+    try {
+      const listed = await run(
+        "gh",
+        [
+          "api",
+          `repos/${repository}/pulls/${pr.number}/files`,
+          "--paginate",
+          "--jq",
+          ".[] | {filename, patch}",
+        ],
+        { maxBuffer: 1 << 30 },
+      );
+      let diff = "";
+      for (const line of listed.stdout.split("\n")) {
+        if (line.trim() === "") continue;
+        const file = JSON.parse(line);
+        diff += `+++ b/${file.filename}\n`;
+        for (const patchLine of String(file.patch ?? "").split("\n")) {
+          // Hunk headers carry the `export const ...` section context that
+          // tells a reserved codes.ts row from this change's claim.
+          if (patchLine.startsWith("+") || patchLine.startsWith("@@")) diff += `${patchLine}\n`;
+        }
+      }
+      return diff;
+    } catch (filesError) {
+      const filesReason = String(filesError.stderr || filesError.message)
+        .trim()
+        .split("\n")[0];
+      unread.push(`#${pr.number} (${reason}; ${filesReason})`);
+      return null;
+    }
+  }
+}
+
 await Promise.all(
   Array.from({ length: 8 }, async () => {
     for (let pr = queue.shift(); pr; pr = queue.shift()) {
-      const diff = await run("gh", ["pr", "diff", String(pr.number)], { maxBuffer: 1 << 30 }).then(
-        (r) => r.stdout,
-        (error) => {
-          const reason = String(error.stderr || error.message)
-            .trim()
-            .split("\n")[0];
-          unread.push(`#${pr.number} (${reason})`);
-          return null;
-        },
-      );
+      const diff = await diffOf(pr);
       const stack = claimant(stackOf(pr));
       stack.names.push({ number: pr.number, title: pr.title });
       if (diff !== null) stack.claims.push(...claimsOf(diff));
@@ -238,4 +282,8 @@ if (collisions === 0)
   console.log(
     `${check ? "no collisions with this branch" : "no collisions"}${unread.length > 0 ? " among the diffs read" : ""}`,
   );
-process.exitCode = check && collisions > 0 ? 1 : unread.length > 0 ? 2 : 0;
+// In --check the missing claims are a warning, not a failure: an open PR
+// whose diff neither source could read must not turn the mandatory gate red
+// on unrelated PRs and main pushes. The full report still exits 2 so a local
+// run is never silently incomplete.
+process.exitCode = check && collisions > 0 ? 1 : !check && unread.length > 0 ? 2 : 0;

@@ -182,42 +182,6 @@
         "ci:cpus:8"
       ]
     },
-    "//#ci:lane:checker-identity:release": {
-      "dependsOn": [
-        "ci:setup:build"
-      ],
-      "inputs": [
-        "packages/compiler/src/**",
-        "packages/compiler/package.json",
-        "scripts/checker-identity.mjs",
-        "tests/corpus/**",
-        "vitest.config.ts"
-      ],
-      "outputs": [],
-      "tags": [
-        "ci",
-        "ci:os:ubuntu",
-        "ci:cpus:8"
-      ]
-    },
-    "//#ci:lane:checker-identity:dev": {
-      "dependsOn": [
-        "ci:setup:build"
-      ],
-      "inputs": [
-        "packages/compiler/src/**",
-        "packages/compiler/package.json",
-        "scripts/checker-identity.mjs",
-        "tests/corpus/**",
-        "vitest.config.ts"
-      ],
-      "outputs": [],
-      "tags": [
-        "ci",
-        "ci:os:ubuntu",
-        "ci:cpus:8"
-      ]
-    },
     "//#ci:lane:linux-host-clang": {
       "dependsOn": [
         "ci:setup:build",
@@ -7321,6 +7285,78 @@
         "packages/runtime-wasm32-wasi/**",
         "packages/runtime/src/**",
         "native/**"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:release:1": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:release:2": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:dev:1": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:checker-identity:dev:2": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "scripts/checker-identity.mjs",
+        "tests/corpus/**",
+        "vitest.config.ts"
       ],
       "outputs": [],
       "tags": [

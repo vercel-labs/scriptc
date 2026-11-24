@@ -258,10 +258,15 @@ switch (lane) {
   // checker_identity: every corpus program compiles to the same IR and
   // diagnostics with tsgo and with tsc-ts.
   case "checker-identity": {
-    const optimization = args[0];
+    const [optimization, shard] = args;
     if (optimization !== "release" && optimization !== "dev")
       throw new Error("checker-identity needs release or dev");
-    pnpm(["test:checker-identity", "--optimization", optimization]);
+    pnpm([
+      "test:checker-identity",
+      "--optimization",
+      optimization,
+      ...(shard === undefined ? [] : ["--shard", shard]),
+    ]);
     break;
   }
 

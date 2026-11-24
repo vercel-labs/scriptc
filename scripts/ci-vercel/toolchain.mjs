@@ -137,7 +137,26 @@ async function download({ name, url, sha256: expected }) {
 
 function untar(archive, directory) {
   mkdirSync(directory, { recursive: true });
-  execFileSync("tar", ["-xf", archive, "-C", directory], { stdio: "inherit" });
+  const compression = archive.endsWith(".xz") ? "-xJf" : archive.endsWith(".gz") ? "-xzf" : "-xf";
+  execFileSync(
+    "tar",
+    [
+      compression,
+      archive,
+      "-C",
+      directory,
+      "--no-same-owner",
+      // A checkpoint names the extraction's progress, so a slow archive shows it is advancing rather than hung.
+      "--checkpoint=50000",
+      "--checkpoint-action=echo=extracting",
+      "--totals",
+    ],
+    {
+      stdio: "inherit",
+      // Multi-threaded xz for an archive compressed in independent blocks.
+      env: { ...process.env, XZ_OPT: "-T0", XZ_DEFAULTS: "-T0" },
+    },
+  );
 }
 
 /** Extracts the single Ninja executable from the wheel, without a zip tool. */
@@ -220,21 +239,32 @@ function copyFromDeb(directory, from, to) {
   copyFileSync(join(directory, from), to);
 }
 
+function step(label, started) {
+  console.log(`[toolchain] ${label}: ${((Date.now() - started) / 1000).toFixed(1)}s`);
+}
+
 async function main() {
+  const started = Date.now();
   // Nothing already under .ci/ is an input: the checkout may carry files there, and the archives it could carry
   // are only accepted when their SHA-256 matches the pin.
   rmSync(toolchain, { recursive: true, force: true });
   rmSync(downloads, { recursive: true, force: true });
   mkdirSync(downloads, { recursive: true });
+  let at = Date.now();
   const archives = new Map();
   for (const source of sources) archives.set(source.name, await download(source));
+  step("downloads complete", at);
 
   const staging = join(ci, "toolchain-unpacked");
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(toolchain, { recursive: true });
 
+  at = Date.now();
   untar(archives.get(llvmArchive), staging);
   place(join(staging, "LLVM-22.1.8-Linux-X64"), join(toolchain, "llvm-22.1.8"));
+  step("LLVM extracted", at);
+
+  at = Date.now();
   untar(archives.get("zig-x86_64-linux-0.16.0.tar.xz"), staging);
   place(join(staging, "zig-x86_64-linux-0.16.0"), join(toolchain, "zig"));
   untar(archives.get("cmake-3.31.6-linux-x86_64.tar.gz"), staging);
@@ -243,10 +273,12 @@ async function main() {
     archives.get("ninja-1.13.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"),
     join(toolchain, "ninja"),
   );
+  step("Zig, CMake and Ninja installed", at);
 
   // The static LLVM helper links -lz and -lzstd. The image has the runtime libraries but no development files, so
   // the pinned Ubuntu packages supply the static archives and headers; run-lane puts the sysroot on the compilers'
   // LIBRARY_PATH and CPATH.
+  at = Date.now();
   const sysroot = join(toolchain, "sysroot");
   const zlib = extractDeb(
     archives.get("zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb"),
@@ -268,6 +300,7 @@ async function main() {
     ["usr/include/zstd_errors.h", "include/zstd_errors.h"],
   ])
     copyFromDeb(zstd, from, join(sysroot, to));
+  step("zlib and zstd sysroot installed", at);
 
   for (const path of [
     "llvm-22.1.8/bin/llvm-config",
@@ -285,7 +318,9 @@ async function main() {
 
   rmSync(staging, { recursive: true, force: true });
   writeFileSync(join(toolchain, ".revision"), `${revision}\n`);
-  console.log(`.ci/toolchain installed (revision ${revision})`);
+  console.log(
+    `.ci/toolchain installed (revision ${revision}) in ${((Date.now() - started) / 1000).toFixed(1)}s`,
+  );
 }
 
 await main();

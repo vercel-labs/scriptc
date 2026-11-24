@@ -1,3 +1,4 @@
+// @requires-wasi-runtime-pack: needs @scriptc/runtime-wasm32-wasi/runtime-pack.json.
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";

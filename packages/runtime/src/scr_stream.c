@@ -2095,7 +2095,8 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       if (k->kind != SCR_DYN_STR) continue;
       ScrStr *name = k->v.str;
       if ((name->len == 10 && memcmp(name->data, "objectMode", 10) == 0) ||
-          (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0)) {
+          (name->len == 13 && memcmp(name->data, "highWaterMark", 13) == 0) ||
+          (name->len == 8 && memcmp(name->data, "encoding", 8) == 0)) {
         continue;
       }
       char m[200];
@@ -2123,19 +2124,60 @@ static ScrStream *scr_from_dyn_ex(ScrDyn *src, ScrDyn *opts, bool duplex) {
       hwm = v;
     }
   }
+  /* from.js's `encoding` option is the readable state's decoder: the
+   * constructor validates it up front (Unknown encoding throws), and the
+   * chunks the iterator yields decode as setEncoding() would. */
+  ScrStr *encoding = NULL;      /* canonical, +1 */
+  ScrStr *encoding_name = NULL; /* the spelling when it differs, +1 */
+  if (opts && opts->kind == SCR_DYN_OBJ && !duplex) {
+    ScrDyn *enc = scr_dyn_obj_get(opts, "encoding", 8);
+    /* An explicitly falsy value (undefined, null, "", false, 0, NaN) leaves
+     * the readable undecoded, as the state constructor's option does. */
+    if (enc && scr_dyn_truthy(enc)) {
+      scr_stream_check_encoding_option(enc);
+      if (scr_exc_pending()) {
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      ScrStr *raw = enc->kind == SCR_DYN_STR ? scr_str_retain(enc->v.str)
+                                             : scr_dyn_string_coerce_js(enc);
+      if (!raw) {
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      encoding = scr_bytes_normalize_encoding(raw);
+      if (!encoding) {
+        scr_str_release(raw);
+        if (iter) scr_dyn_release(iter);
+        return NULL;
+      }
+      if (enc->kind == SCR_DYN_STR && !scr_str_eq(raw, encoding))
+        encoding_name = scr_str_retain(raw);
+      scr_str_release(raw);
+    }
+  }
+  ScrStream *fout;
   if (iter) {
     double flags = (object_mode ? 0 : SCR_FROM_BYTE_MODE) | (duplex ? SCR_FROM_DUPLEX : 0) |
                    (hwm_kind == SCR_FROM_HWM_SET       ? SCR_FROM_HAS_HWM
                     : hwm_kind == SCR_FROM_HWM_DEFAULT ? SCR_FROM_DEFAULT_HWM
                                                        : 0);
-    return scr_stream_from_dyn_iter(iter, kind == 2, flags, hwm);
+    fout = scr_stream_from_dyn_iter(iter, kind == 2, flags, hwm);
+  } else {
+    ScrFromSrc *f = calloc(1, sizeof *f);
+    if (!f) scr_stream_oom();
+    f->rc = 1;
+    f->dyn = scr_dyn_retain(src);
+    f->single = single;
+    fout = scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false, duplex);
   }
-  ScrFromSrc *f = calloc(1, sizeof *f);
-  if (!f) scr_stream_oom();
-  f->rc = 1;
-  f->dyn = scr_dyn_retain(src);
-  f->single = single;
-  return scr_from_stream(f, &scr_from_read_dyn_inv, object_mode, hwm_kind, hwm, false, duplex);
+  if (fout && encoding) {
+    scr_stream_release(scr_stream_set_encoding(fout, encoding));
+    if (encoding_name) scr_stream_release(scr_stream_set_encoding_name(fout, encoding_name));
+  }
+  scr_str_release(encoding);
+  scr_str_release(encoding_name);
+  return fout;
 }
 
 ScrStream *scr_stream_from_dyn(ScrDyn *src, ScrDyn *opts) {
@@ -7710,6 +7752,30 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
   return scr_stream_retain(s);
 }
 
+/* Readable.from's `encoding` option reached at run time (an initializer that
+ * is not an effect-free literal): an explicitly falsy value leaves the
+ * readable undecoded, as the state constructor's option does; a truthy value
+ * validates like the constructor (ERR_UNKNOWN_ENCODING thrown) and installs
+ * the decoder with its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const ScrDyn *v) {
+  if (!v || !scr_dyn_truthy(v)) return scr_stream_retain(s);
+  scr_stream_check_encoding_option(v);
+  if (scr_exc_pending()) return scr_stream_retain(s);
+  ScrStr *raw = v->kind == SCR_DYN_STR ? scr_str_retain(v->v.str)
+                                       : scr_dyn_string_coerce_js(v);
+  if (!raw) return scr_stream_retain(s);
+  ScrStr *canonical = scr_bytes_normalize_encoding(raw);
+  if (!canonical) {
+    scr_str_release(raw);
+    return scr_stream_retain(s);
+  }
+  scr_stream_release(scr_stream_set_encoding(s, canonical));
+  if (!scr_str_eq(raw, canonical)) scr_stream_release(scr_stream_set_encoding_name(s, raw));
+  scr_str_release(canonical);
+  scr_str_release(raw);
+  return scr_stream_retain(s);
+}
+
 bool scr_stream_emits_close(ScrStream *s) { return s != NULL && s->st != NULL && s->st->emit_close; }
 
 ScrStream *scr_stream_pause(ScrStream *s) {
@@ -9761,6 +9827,63 @@ ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
   ScrStream *stream = scr_stream_of_handle(value);
   if (!stream) stream = scr_stream_boxed(value);
   if (stream) return stream;
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
+  return NULL;
+}
+
+/* A consumer's source failed before any stream existed (a locked web
+ * ReadableStream: its iteration method throws). The stream answers that
+ * error on its first read, so the consumer's promise rejects with it:
+ * Node's consumers iterate inside an async function, and the same throw
+ * rejects their promise instead of throwing at the call. */
+static void scr_sc_failure_read(ScrClosure *cb, ScrStream *s, double size) {
+  (void)size;
+  ScrError *err = scr_box_get_ref(cb->caps[0]); /* +1 */
+  if (!err) return;
+  scr_stream_release(scr_stream_destroy(s, err)); /* borrows the error */
+  scr_error_release(err);
+}
+
+/* The failed source: the pending exception as the stream's error (an
+ * Error value as itself, another truthy thrown value carried by an Error
+ * that boxes back to it — Node hands the thrown value on). +1. */
+static ScrStream *scr_sc_failed_readable(void) {
+  ScrCaught *c = scr_exc_take();
+  ScrDyn *d = scr_caught_to_dyn(c);
+  ScrError *err = d ? scr_errdyn_err_of(d) : NULL;
+  if (d && !err && scr_dyn_truthy(d)) err = scr_error_from_dyn(d);
+  if (d) scr_dyn_release(d);
+  scr_caught_release(c);
+  if (!err) {
+    static const char msg[] = "the stream is not async iterable";
+    ScrStr *text = scr_str_new(msg, sizeof msg - 1);
+    err = scr_error_new(SCR_ERR_TYPE, text);
+  }
+  ScrClosure *read = scr_closure_new((void *)&scr_sc_failure_read, 1);
+  read->caps[0] = scr_box_new_obj(scr_error_retain_v, scr_error_release_v, NULL);
+  scr_box_set_ref(read->caps[0], err); /* the box takes the reference */
+  return scr_stream_new_readable(-1, true, true, read, &scr_sc_failure_read, NULL, NULL);
+}
+
+/* The readable a stream/consumers call reads (the sc.source libCall): a
+ * native stream as itself (+1), and a web ReadableStream as the Readable
+ * Readable.from builds over it, since Node's consumers iterate their
+ * argument and a web stream is async-iterable. Every other value keeps the
+ * compiled program's not-supported message. */
+ScrStream *scr_stream_consumer_source(const ScrDyn *value, const ScrStr *message) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) return stream;
+  if (value->kind == SCR_DYN_HANDLE) {
+    int tag = value->v.handle.tag;
+    if (tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WS_READABLE) {
+      ScrStream *from = scr_stream_from_dyn((ScrDyn *)value, NULL);
+      if (from) return from;
+      /* The conversion threw (a locked stream's iterator method): the
+       * consumer's promise rejects with that error. */
+      if (scr_exc_pending()) return scr_sc_failed_readable();
+    }
+  }
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
   return NULL;
 }

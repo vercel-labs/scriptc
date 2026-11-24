@@ -145,6 +145,10 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* The readable a stream/consumers call reads (+1): a native stream, or a
+ * web ReadableStream as Readable.from builds one (Node's consumers iterate
+ * their argument); NULL with `message` thrown for every other value. */
+ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *message);
 /* Whether pipeline() keeps a checked-dynamic first stage as an iterable
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
@@ -371,6 +375,11 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0
  * payload slots; see scr_stream_emit_data), lengths count JS string
  * units. Borrows the canonical encoding name; receiver +1. */
 ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc);
+/* Readable.from's `encoding` option value at run time: an explicitly falsy
+ * value leaves the readable undecoded; a truthy one validates like the state
+ * constructor (ERR_UNKNOWN_ENCODING thrown) and installs the decoder with
+ * its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const struct ScrDyn *v);
 /* readableEncoding: NULL (null) without a decoder, else the `encoding`
  * option as the program spelled it, or the decoder's canonical name after
  * setEncoding(). +1. scr_stream_set_encoding_name records an option's

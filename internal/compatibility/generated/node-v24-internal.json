@@ -103915,6 +103915,8 @@
           "tests/corpus/tls-export-keying-material-context-types.ts",
           "tests/corpus/tls-export-keying-material-context.ts",
           "tests/corpus/tls-export-keying-material.ts",
+          "tests/corpus/tls-get-tls-ticket-dyn.mjs",
+          "tests/corpus/tls-get-tls-ticket.ts",
           "tests/corpus/tls-handshake-events.ts",
           "tests/corpus/tls-keylog.ts",
           "tests/corpus/tls-server-class.ts",
@@ -105357,8 +105359,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.tlsSocket.getTLSTicket",
+        "tests": [
+          "tests/corpus/tls-get-tls-ticket.ts",
+          "tests/corpus/tls-get-tls-ticket-dyn.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -117586,6 +117592,9 @@
           "tests/corpus/webcrypto-rsa-oaep.ts",
           "tests/corpus/webcrypto-sha3-digest.ts",
           "tests/corpus/webcrypto-turboshake.ts",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
           "tests/corpus/webcrypto-x25519-key-agreement.ts",
           "tests/fixtures/node-types/webcrypto-hmac.ts",
           "tests/fixtures/node-types/webcrypto-keys.ts",
@@ -122102,6 +122111,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122151,6 +122163,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122200,6 +122215,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122249,6 +122267,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122344,6 +122365,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122393,6 +122417,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122471,6 +122498,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122520,6 +122550,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122569,6 +122602,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122618,6 +122654,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122667,6 +122706,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122716,6 +122758,9 @@
           "tests/corpus/webcrypto-get-public-key-arguments.mjs",
           "tests/corpus/7130-webcrypto-wrap-key.ts",
           "tests/corpus/7131-webcrypto-wrap-key-errors.mjs",
+          "tests/corpus/webcrypto-wrap-asymmetric.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep.ts",
+          "tests/corpus/webcrypto-wrap-rsa-oaep-edges.mjs",
           "tests/corpus/7132-jose-pbes2/main.mjs",
           "tests/corpus/7128-webcrypto-derive.ts",
           "tests/corpus/7129-webcrypto-derive-errors.mjs",
@@ -122766,6 +122811,7 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/compat-stream-consumers-bytes.mjs",
           "tests/corpus/compat-stream-consumers-bytes.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs",
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
@@ -122926,10 +122972,11 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.blob",
         "tests": [
-          "tests/corpus/stream-consumers.ts"
+          "tests/corpus/stream-consumers.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -122980,11 +123027,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.streamConsumers.bytes",
         "tests": [
           "tests/corpus/compat-stream-consumers-bytes.mjs",
-          "tests/corpus/compat-stream-consumers-bytes.ts"
+          "tests/corpus/compat-stream-consumers-bytes.ts",
+          "tests/corpus/compat-stream-consumers-web.mjs"
         ]
       },
       "anchorSource": "exact"

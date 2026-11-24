@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedInputHashes } from "../../scripts/seed-inputs.mjs";
 
 const repository = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -13,7 +14,12 @@ test("bootstrap artifacts require a complete seed from the same lane and checkou
   try {
     // Metadata names the seed's directory relative to the checkout, so two tasks that restore the seed at the same
     // place in the tree agree on it without embedding an absolute path (or a commit).
-    const metadata = { schema: 2, sanitize: true, directory: relative(repository, directory) };
+    const metadata = {
+      schema: 3,
+      sanitize: true,
+      directory: relative(repository, directory),
+      inputs: seedInputHashes(repository),
+    };
     writeFileSync(join(directory, "bootstrap-seed.json"), JSON.stringify(metadata));
     expect(() => verifyBootstrapSeed(directory, true)).toThrow("missing");
     for (const path of [
@@ -37,6 +43,21 @@ test("bootstrap artifacts require a complete seed from the same lane and checkou
       JSON.stringify({ ...metadata, directory: "/different" }),
     );
     expect(() => verifyBootstrapSeed(directory, true)).toThrow("identity");
+    // A seed built with different build or staging code is rejected, even at the same lane and directory.
+    const inputs = metadata.inputs;
+    const first = Object.keys(inputs)[0]!;
+    writeFileSync(
+      join(directory, "bootstrap-seed.json"),
+      JSON.stringify({ ...metadata, inputs: { ...inputs, [first]: "0".repeat(64) } }),
+    );
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("build inputs");
+    const fewer = { ...inputs };
+    delete fewer[first];
+    writeFileSync(
+      join(directory, "bootstrap-seed.json"),
+      JSON.stringify({ ...metadata, inputs: fewer }),
+    );
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("build inputs");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

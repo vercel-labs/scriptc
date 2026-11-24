@@ -2499,6 +2499,10 @@ struct ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr
 /* stream.unboxDynStage in those programs (scr_stream_unbox_dyn_stage's
  * contract, also taking constructor-function streams). */
 struct ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message);
+/* stream/consumers' source (the sc.source libCall) in those programs:
+ * scr_stream_consumer_source's contract, also taking constructor-function
+ * streams. */
+struct ScrStream *scr_dyn_builtin_stream_consumer_source(const ScrDyn *value, const ScrStr *message);
 /* stream.dynNative in those programs: scr_stream_dyn_native's contract,
  * also taking constructor-function streams that keep the runtime's write
  * and end (+1 or NULL). */

@@ -163,7 +163,7 @@ void scr_tls_ca_install(void) {
     return;
   }
 #endif
-  const char *path = getenv("NODE_EXTRA_CA_CERTS");
+  const char *path = scr_getenv("NODE_EXTRA_CA_CERTS");
   if (path != NULL && path[0] != '\0') {
     scr_ca_extra_buf = scr_ca_read_file(path, &scr_ca_extra_len);
   }

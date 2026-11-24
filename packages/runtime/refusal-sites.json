@@ -2431,6 +2431,12 @@
  },
  {
   "file": "scr_stream.c",
+  "function": "scr_stream_consumer_source",
+  "message": "",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_stream.c",
   "function": "scr_stream_unbox_dyn_stage",
   "message": "",
   "code": "SC2020"

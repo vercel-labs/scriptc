@@ -16619,7 +16619,7 @@ static void scr_dyn_inferred_fact_fail(const char *site, const ScrDynPath *path,
   for (size_t i = 0; i < pkg_len; i++) scr_jb_putc(&b, site[i]);
   scr_jb_puts(&b, "\": {\"shapes\": false}}} in package.json, to compile the package without it.");
   /* Validation mode: every hit is logged, also when the program catches it. */
-  const char *log = getenv("SCRIPTC_SHAPE_CHECK_LOG");
+  const char *log = scr_getenv("SCRIPTC_SHAPE_CHECK_LOG");
   if (log && *log) {
     FILE *f = fopen(log, "a");
     if (f) {

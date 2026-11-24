@@ -6553,6 +6553,7 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "writable.endEcb" ||
         e.fn === "readable.setEncoding" ||
+        e.fn === "readable.setEncodingOption" ||
         e.fn === "readable.pushEncoding" ||
         e.fn === "readable.encodingName" ||
         e.fn === "stream.objectMode" ||

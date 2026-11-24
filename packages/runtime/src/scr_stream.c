@@ -7752,6 +7752,30 @@ ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc) {
   return scr_stream_retain(s);
 }
 
+/* Readable.from's `encoding` option reached at run time (an initializer that
+ * is not an effect-free literal): an explicitly falsy value leaves the
+ * readable undecoded, as the state constructor's option does; a truthy value
+ * validates like the constructor (ERR_UNKNOWN_ENCODING thrown) and installs
+ * the decoder with its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const ScrDyn *v) {
+  if (!v || !scr_dyn_truthy(v)) return scr_stream_retain(s);
+  scr_stream_check_encoding_option(v);
+  if (scr_exc_pending()) return scr_stream_retain(s);
+  ScrStr *raw = v->kind == SCR_DYN_STR ? scr_str_retain(v->v.str)
+                                       : scr_dyn_string_coerce_js(v);
+  if (!raw) return scr_stream_retain(s);
+  ScrStr *canonical = scr_bytes_normalize_encoding(raw);
+  if (!canonical) {
+    scr_str_release(raw);
+    return scr_stream_retain(s);
+  }
+  scr_stream_release(scr_stream_set_encoding(s, canonical));
+  if (!scr_str_eq(raw, canonical)) scr_stream_release(scr_stream_set_encoding_name(s, raw));
+  scr_str_release(canonical);
+  scr_str_release(raw);
+  return scr_stream_retain(s);
+}
+
 bool scr_stream_emits_close(ScrStream *s) { return s != NULL && s->st != NULL && s->st->emit_close; }
 
 ScrStream *scr_stream_pause(ScrStream *s) {

@@ -371,6 +371,11 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0
  * payload slots; see scr_stream_emit_data), lengths count JS string
  * units. Borrows the canonical encoding name; receiver +1. */
 ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc);
+/* Readable.from's `encoding` option value at run time: an explicitly falsy
+ * value leaves the readable undecoded; a truthy one validates like the state
+ * constructor (ERR_UNKNOWN_ENCODING thrown) and installs the decoder with
+ * its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const struct ScrDyn *v);
 /* readableEncoding: NULL (null) without a decoder, else the `encoding`
  * option as the program spelled it, or the decoder's canonical name after
  * setEncoding(). +1. scr_stream_set_encoding_name records an option's

@@ -2813,7 +2813,7 @@ function lowerFromSource(
         encoding: null,
         encodingName: null,
         badEncoding: null,
-        dynamicEncoding: false,
+        encodingExpr: null,
       };
   if (parsedOptions && parsedOptions.badEncoding !== null) {
     return throwAfterCallArguments(
@@ -2830,7 +2830,20 @@ function lowerFromSource(
     );
   }
   const withEncoding = (built: IrExpr): IrExpr => {
-    if (!parsedOptions || duplex || parsedOptions.encoding === null) return built;
+    if (!parsedOptions || duplex) return built;
+    if (parsedOptions.encoding === null && parsedOptions.encodingExpr !== null) {
+      // An initializer that is not an effect-free literal: the argument
+      // evaluates after the source the builder takes (the call's order),
+      // once, and the runtime treats it as the state constructor would.
+      return {
+        kind: "libCall",
+        fn: "readable.setEncodingOption",
+        args: [built, lowerer.lowerExprExpecting(parsedOptions.encodingExpr, DYN)],
+        type: built.type,
+        loc,
+      };
+    }
+    if (parsedOptions.encoding === null) return built;
     let out: IrExpr = {
       kind: "libCall",
       fn: "readable.setEncoding",
@@ -2852,17 +2865,6 @@ function lowerFromSource(
   // A web ReadableStream is async iterable: from.js reads its iterator.
   // Duplex.from takes _duplexify({ readable: Readable.fromWeb(body) }).
   const webElem = srcNode ? staticReadableStreamElementType(lowerer, srcNode) : null;
-  // A non-literal encoding value: a JavaScript source takes it through the
-  // runtime (which validates it); a typed program keeps the literal-only
-  // surface, since its builders take the canonical name.
-  if (parsedOptions?.dynamicEncoding === true && !js) {
-    lowerer.noLowering(
-      "the Readable.from option 'encoding' with this encoding",
-      optsNode ?? call,
-      "a literal encoding name is the typed surface",
-    );
-  }
-  const dynamicEncoding = js && parsedOptions?.dynamicEncoding === true;
   if (srcNode && webElem !== null && duplex) {
     const fromWeb: IrExpr = {
       kind: "libCall",
@@ -2878,7 +2880,7 @@ function lowerFromSource(
     };
     return { kind: "libCall", fn: "stream.duplexifyReadable", args: [fromWeb], type, loc };
   }
-  if (srcNode && webElem !== null && !dynamicEncoding) {
+  if (srcNode && webElem !== null) {
     const source = lowerWebStreamSource(lowerer, srcNode, webElem, loc);
     const helpers = source ? fromGenHelpers(lowerer, source.out, loc) : null;
     const opts = parsedOptions ? { flags: parsedOptions.flags, hwm: parsedOptions.hwm } : null;
@@ -2931,7 +2933,7 @@ function lowerFromSource(
   const genT = srcT?.kind === "generator" ? srcT : (genMethod?.gen ?? null);
   // A compiled generator: the runtime pulls it through interned helpers.
   const genRecv =
-    srcNode && genT && opts && !dynamicEncoding && fromGenChunk(lowerer, genT.yieldT)
+    srcNode && genT && opts && fromGenChunk(lowerer, genT.yieldT)
       ? genMethod && srcT?.kind === "object"
         ? sourceInstance(srcNode, srcT)
         : lowerer.lowerExpr(srcNode)
@@ -2962,12 +2964,7 @@ function lowerFromSource(
     lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator") !== null;
   const cit = srcT?.kind === "object" && !asyncOpen ? classIteratorOf(lowerer, srcT) : null;
   const citRecv =
-    srcNode &&
-    srcT?.kind === "object" &&
-    cit &&
-    opts &&
-    !dynamicEncoding &&
-    fromGenChunk(lowerer, cit.valueT)
+    srcNode && srcT?.kind === "object" && cit && opts && fromGenChunk(lowerer, cit.valueT)
       ? sourceInstance(srcNode, srcT)
       : null;
   if (citRecv && cit && opts) {
@@ -2991,12 +2988,7 @@ function lowerFromSource(
   }
   const acit = srcT?.kind === "object" && asyncOpen ? classAsyncIteratorOf(lowerer, srcT) : null;
   const acitRecv =
-    srcNode &&
-    srcT?.kind === "object" &&
-    acit &&
-    opts &&
-    !dynamicEncoding &&
-    fromGenChunk(lowerer, acit.valueT)
+    srcNode && srcT?.kind === "object" && acit && opts && fromGenChunk(lowerer, acit.valueT)
       ? sourceInstance(srcNode, srcT)
       : null;
   if (acitRecv && acit && opts) {
@@ -3010,7 +3002,7 @@ function lowerFromSource(
       loc,
     });
   }
-  if (srcNode && (single || elem) && opts && !dynamicEncoding) {
+  if (srcNode && (single || elem) && opts) {
     const v = lowerer.lowerExpr(srcNode);
     const hwm = opts.hwm ? lowerer.lowerExprExpecting(opts.hwm, F64) : numLit(0, loc);
     const arr: IrExpr = single ? { kind: "arrayLit", elems: [v], type: arrayOf(v.type), loc } : v;
@@ -3457,6 +3449,37 @@ function classAsyncIteratorObject(
 /** Readable.from's typed options: an object literal of `objectMode`
  * (a boolean literal) and `highWaterMark` (a number), as SCR_FROM_* flag
  * bits and the hwm expression; null for any other shape. */
+/**
+ * The compile-time value of an `encoding` initializer that is effect-free to
+ * read: a string literal (or a parenthesized one), a falsy literal
+ * (`undefined`, `null`, `false`, `0`, `""`), or a `const` bound to one of
+ * those. Null for every other expression: it must be evaluated.
+ */
+function encodingLiteralOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): { value: string } | { falsy: true } | null {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isIdentifier(e) && e.text === "undefined") return { falsy: true };
+  if (e.kind === ts.SyntaxKind.NullKeyword || e.kind === ts.SyntaxKind.FalseKeyword)
+    return { falsy: true };
+  if (ts.isNumericLiteral(e) && Number(e.text) === 0) return { falsy: true };
+  if (ts.isStringLiteralLike(e)) return e.text === "" ? { falsy: true } : { value: e.text };
+  if (ts.isIdentifier(e)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(e);
+    const declaration = symbol?.valueDeclaration;
+    if (
+      declaration &&
+      ts.isVariableDeclaration(declaration) &&
+      declaration.initializer &&
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+    )
+      return encodingLiteralOf(lowerer, declaration.initializer);
+  }
+  return null;
+}
+
 function fromOptions(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -3466,9 +3489,9 @@ function fromOptions(
   encoding: string | null;
   encodingName: string | null;
   badEncoding: string | null;
-  /** A non-literal encoding value: a JavaScript source's checked-dynamic
-   * form takes the option and validates it at run time. */
-  dynamicEncoding: boolean;
+  /** An encoding initializer that is not an effect-free literal: it is
+   * evaluated once at the call and checked by the runtime. */
+  encodingExpr: ts.Expression | null;
 } | null {
   if (!ts.isObjectLiteralExpression(node)) return null;
   let flags = 0;
@@ -3476,7 +3499,7 @@ function fromOptions(
   let encoding: string | null = null;
   let encodingName: string | null = null;
   let badEncoding: string | null = null;
-  let dynamicEncoding = false;
+  let encodingExpr: ts.Expression | null = null;
   for (const prop of node.properties.nodes) {
     if (
       !ts.isPropertyAssignment(prop) ||
@@ -3494,36 +3517,29 @@ function fromOptions(
       flags |= 8;
       hwm = value;
     } else if (prop.name.text === "encoding") {
-      // The readable state's decoder: a literal Node knows folds to its
-      // canonical name; a literal it does not know is the constructor's
-      // RUNTIME ERR_UNKNOWN_ENCODING, not a compile fence. An explicitly
-      // falsy value (undefined, null, "", false, 0) leaves the readable
-      // undecoded, as the state constructor's option does.
-      const t = lowerer.typeOf(value);
-      const falsy =
-        value.kind === ts.SyntaxKind.NullKeyword ||
-        value.kind === ts.SyntaxKind.FalseKeyword ||
-        (ts.isNumericLiteral(value) && Number(value.text) === 0) ||
-        (ts.isIdentifier(value) &&
-          value.text === "undefined" &&
-          (t.flags & ts.TypeFlags.Undefined) !== 0) ||
-        (t.isStringLiteralType() && t.value === "");
-      if (falsy) continue;
-      if (!t.isStringLiteralType()) {
-        dynamicEncoding = true;
+      // The readable state's decoder: an effect-free literal folds to its
+      // canonical name (a literal Node does not know is the constructor's
+      // RUNTIME ERR_UNKNOWN_ENCODING); an explicitly falsy one leaves the
+      // readable undecoded. Any other expression is evaluated once at the
+      // call — its effects and throws are Node's — and checked at run time.
+      const literal = encodingLiteralOf(lowerer, value);
+      if (literal === null) {
+        encodingExpr = value;
         continue;
       }
-      if (knownBufEncoding(t.value) === undefined) {
-        badEncoding = t.value;
+      if ("falsy" in literal) continue;
+      const canonical = knownBufEncoding(literal.value);
+      if (canonical === undefined) {
+        badEncoding = literal.value;
         continue;
       }
-      encoding = knownBufEncoding(t.value)!;
-      if (t.value !== encoding) encodingName = t.value;
+      encoding = canonical;
+      if (literal.value !== canonical) encodingName = literal.value;
     } else {
       return null;
     }
   }
-  return { flags, hwm, encoding, encodingName, badEncoding, dynamicEncoding };
+  return { flags, hwm, encoding, encodingName, badEncoding, encodingExpr };
 }
 
 /** `const Writable = stream.Writable` — a runtime stream CLASS bound

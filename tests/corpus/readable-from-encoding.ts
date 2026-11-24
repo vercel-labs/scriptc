@@ -37,3 +37,33 @@ try {
   const e = error as { code?: string; message: string };
   console.log(`typed bad ${e.code} ${e.message}`);
 }
+
+// An initializer whose type is a literal is still evaluated: its side
+// effects run once, in the call's argument order (the source first), and
+// its throws reach the caller.
+const log: string[] = [];
+const pick = (): "utf8" => {
+  log.push("pick");
+  return "utf8";
+};
+const boom = (): "utf8" => {
+  log.push("boom");
+  throw new Error("bad encoding");
+};
+const source = (): Buffer[] => {
+  log.push("source");
+  return [Buffer.from("ab")];
+};
+await show("typed effect", Readable.from(source(), { encoding: pick() }));
+console.log("typed effects", log.join(","));
+
+try {
+  Readable.from([Buffer.from("ab")], { encoding: boom() });
+  console.log("typed throw lost");
+} catch (error) {
+  console.log(`typed throw kept ${(error as Error).message} ${log.join(",")}`);
+}
+
+// A const bound to a literal folds without a runtime check.
+const spelled = "hex";
+await show("typed const", Readable.from([Buffer.from("ab")], { encoding: spelled }));

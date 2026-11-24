@@ -31,6 +31,12 @@
 
 #include <fcntl.h>
 
+/* Windows has no FIFOs and its CRT has no O_NONBLOCK; the flag is a no-op
+ * there (the open of a regular file behaves the same). */
+#ifndef O_NONBLOCK
+#define O_NONBLOCK 0
+#endif
+
 typedef enum {
   SCR_U8_READY,
   SCR_U8_WRITE,
@@ -58,8 +64,8 @@ typedef struct ScrUtf8Stream {
   size_t rc;
   double fd; /* Node keeps the number after close (#fd is not reset) */
   ScrStr *file;
-  ScrDyn *mode_value; /* options.mode as given (+1), for the getter */
-  double open_mode;   /* parseFileMode's result (0o666 by default) */
+  ScrDyn *mode_value; /* options.mode as given (+1): the getter's value, and
+                       * what each open parses (Node parses at the open) */
   bool append, fsync, mkdir, sync;
   bool writing;      /* a write completion is deferred */
   bool closed;       /* the close began (Node's #destroyed) */
@@ -70,7 +76,10 @@ typedef struct ScrUtf8Stream {
   size_t max_length, min_length, hwm;
   double periodic_flush;
   uint8_t *buf;
-  size_t len, cap;
+  size_t len;  /* Node's #len: code units in utf8 mode, bytes in buffer mode,
+                * counting the flush that is in flight until it completes */
+  size_t fill; /* bytes actually buffered in buf */
+  size_t cap;
   size_t release_bytes; /* the flush a deferred completion reports */
   ScrU8FlushCb *flush_cbs;
   ScrU8Listener *listeners;
@@ -171,6 +180,7 @@ static void scr_u8_step_ready(ScrClosure *self);
 static void scr_u8_step_release(ScrClosure *self);
 static void scr_u8_step_close(ScrClosure *self);
 static void scr_u8_flush_cbs_run(ScrUtf8Stream *s);
+static bool scr_u8_parse_mode(const ScrDyn *value, double *out);
 
 static void scr_u8_defer(ScrUtf8Stream *s, void (*step)(ScrClosure *)) {
   ScrClosure *cb = scr_closure_new((void *)step, 1);
@@ -291,38 +301,38 @@ static ScrBytes *scr_u8_data(const ScrUtf8Stream *s, const ScrDyn *data) {
 
 static void scr_u8_append(ScrUtf8Stream *s, const uint8_t *data, size_t len) {
   if (len == 0) return;
-  if (s->len + len > s->cap) {
+  if (s->fill + len > s->cap) {
     size_t cap = s->cap ? s->cap : 256;
-    while (cap < s->len + len) cap *= 2;
+    while (cap < s->fill + len) cap *= 2;
     uint8_t *grown = realloc(s->buf, cap);
     if (grown == NULL) scr_u8_oom();
     s->buf = grown;
     s->cap = cap;
   }
-  memcpy(s->buf + s->len, data, len);
-  s->len += len;
+  memcpy(s->buf + s->fill, data, len);
+  s->fill += len;
 }
 
 /* The buffered bytes, written (and fsynced when asked) at the descriptor.
  * *written reports the bytes flushed. False with an exception pending. */
 static bool scr_u8_write_out(ScrUtf8Stream *s, size_t *written) {
   *written = 0;
-  if (s->len != 0) {
+  if (s->fill != 0) {
     if (s->closed || s->fd < 0) {
-      s->len = 0;
+      s->fill = 0;
       return false;
     }
     size_t at = 0;
-    while (at < s->len) {
-      double wrote = scr_fs_write_mem(s->fd, s->buf + at, s->len - at, -1);
+    while (at < s->fill) {
+      double wrote = scr_fs_write_mem(s->fd, s->buf + at, s->fill - at, -1);
       if (scr_exc_pending()) return false;
       if (!(wrote > 0)) {
-        s->len = 0;
+        s->fill = 0;
         return false;
       }
       at += (size_t)wrote;
     }
-    s->len = 0;
+    s->fill = 0;
     *written = at;
   }
   if (s->fsync && s->fd >= 0) {
@@ -359,6 +369,9 @@ static void scr_u8_flush_cbs_run(ScrUtf8Stream *s) {
  * drain. */
 static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
   s->writing = false;
+  /* The whole flush completed: the buffer accounting Node also keeps in
+   * #len drops to what a listener writes during the 'write' event. */
+  s->len = 0;
   ScrDyn *count = scr_dyn_new_num((double)written);
   scr_u8_emit(s, SCR_U8_WRITE, count);
   scr_dyn_release(count);
@@ -446,6 +459,7 @@ static void scr_u8_begin_close(ScrUtf8Stream *s) {
   if (s->closed) return;
   s->closed = true;
   s->len = 0;
+  s->fill = 0;
   if (s->fd >= 0 && s->fd != 1 && s->fd != 2) {
     scr_fs_close(s->fd);
     if (scr_exc_pending()) scr_exc_clear();
@@ -472,7 +486,12 @@ static ScrDyn *scr_u8_write(ScrUtf8Stream *s, const ScrDyn *data) {
   }
   ScrBytes *bytes = scr_u8_data(s, data);
   if (bytes == NULL) return NULL;
-  size_t total = s->len + bytes->len;
+  /* Node accounts a utf8 write by the string's UTF-16 length (its code
+   * units) and a buffer write by its byte length; the buffer itself holds
+   * the encoded bytes either way. The flush in flight still counts until
+   * its completion runs. */
+  size_t units = s->content_mode == 0 ? (size_t)scr_str_utf16_len(data->v.str) : bytes->len;
+  size_t total = s->len + units;
   if (s->max_length != 0 && total > s->max_length) {
     /* Node reports the refused value itself, at the call. */
     scr_u8_emit(s, SCR_U8_DROP, (ScrDyn *)data);
@@ -481,6 +500,7 @@ static ScrDyn *scr_u8_write(ScrUtf8Stream *s, const ScrDyn *data) {
   }
   scr_u8_append(s, bytes->data, bytes->len);
   scr_bytes_release(bytes);
+  s->len = total;
   if (!s->writing && s->len >= s->min_length) {
     scr_u8_actual_write(s);
     if (scr_exc_pending()) return NULL;
@@ -521,6 +541,7 @@ static ScrDyn *scr_u8_flush_sync(ScrUtf8Stream *s) {
   }
   size_t written = 0;
   if (!scr_u8_write_out(s, &written)) return NULL;
+  s->len = 0;
   return scr_dyn_retain(scr_dyn_undefined());
 }
 
@@ -580,39 +601,46 @@ static ScrDyn *scr_u8_reopen(ScrUtf8Stream *s, const ScrDyn *file) {
     return NULL;
   }
   if (s->ending) return scr_dyn_retain(scr_dyn_undefined());
-  if (s->file == NULL && (file == NULL || file->kind == SCR_DYN_UNDEF)) {
+  /* A stream that never had a path (one built on a descriptor) cannot
+   * reopen, even with a file argument — Node's check is on #file alone. */
+  if (s->file == NULL) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, no_file, sizeof no_file - 1, "ERR_OPERATION_FAILED");
     return NULL;
   }
+  bool given = file != NULL && file->kind != SCR_DYN_UNDEF && file->kind != SCR_DYN_NULL;
+  /* The target is the argument, or the file the stream already has (Node
+   * reopens #file when none is passed). */
+  ScrStr *path = given ? scr_dyn_string_coerce_js(file) : scr_str_retain(s->file);
+  if (path == NULL) return NULL;
   size_t written = 0;
-  if (!scr_u8_write_out(s, &written)) return NULL;
-  ScrStr *path = NULL;
-  if (file != NULL && file->kind != SCR_DYN_UNDEF && file->kind != SCR_DYN_NULL) {
-    path = scr_dyn_string_coerce_js(file);
-    if (path == NULL) return NULL;
+  if (!scr_u8_write_out(s, &written)) {
+    scr_str_release(path);
+    return NULL;
   }
+  s->len = 0;
+  if (!scr_fs_path_ok(path, "path")) {
+    scr_str_release(path);
+    return NULL;
+  }
+  double mode;
+  if (!scr_u8_parse_mode(s->mode_value, &mode)) {
+    scr_str_release(path);
+    return NULL;
+  }
+  /* Node takes the new path before it opens it, and opens before it lets
+   * the descriptor it replaces go: a failed open (or a mode rejected at
+   * the open) leaves the stream writing to the descriptor it already had,
+   * never to a closed one. */
+  scr_str_release(s->file);
+  s->file = path;
+  double fd = scr_fs_open_flags(path, O_WRONLY | O_CREAT | O_NONBLOCK | (s->append ? O_APPEND : O_TRUNC),
+                                mode);
+  if (scr_exc_pending()) return NULL;
   if (s->fd >= 0 && s->fd != 1 && s->fd != 2) {
     scr_fs_close(s->fd);
-    if (scr_exc_pending()) {
-      scr_str_release(path);
-      return NULL;
-    }
+    if (scr_exc_pending()) scr_exc_clear();
   }
-  if (path != NULL) {
-    if (!scr_fs_path_ok(path, "path")) {
-      scr_str_release(path);
-      return NULL;
-    }
-    double fd = scr_fs_open_flags(path, O_WRONLY | O_CREAT | O_NONBLOCK | (s->append ? O_APPEND : O_TRUNC),
-                                  s->open_mode);
-    if (scr_exc_pending()) {
-      scr_str_release(path);
-      return NULL;
-    }
-    scr_str_release(s->file);
-    s->file = path;
-    s->fd = fd;
-  }
+  s->fd = fd;
   scr_u8_queue_ready(s, s->sync);
   return scr_dyn_retain(scr_dyn_undefined());
 }
@@ -647,7 +675,6 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
   s->rc = 1;
   s->fd = -1;
   s->append = true;
-  s->open_mode = 438; /* 0o666 */
   /* Node's #hwm: writes answer false once the buffer reaches it. */
   s->hwm = 16387;
   bool descriptor_given = false;
@@ -708,7 +735,8 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
       scr_u8_release(s);
       return NULL;
     }
-    if (!scr_u8_parse_mode(s->mode_value, &s->open_mode)) {
+    double mode;
+    if (!scr_u8_parse_mode(s->mode_value, &mode)) {
       scr_u8_release(s);
       return NULL;
     }
@@ -728,7 +756,7 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
      * pool, so it opens once a writer arrives; the bytes and errors that
      * follow are otherwise the same. */
     double fd = scr_fs_open_flags(s->file, O_WRONLY | O_CREAT | O_NONBLOCK | (s->append ? O_APPEND : O_TRUNC),
-                                  s->open_mode);
+                                  mode);
     if (scr_exc_pending()) {
       scr_u8_release(s);
       return NULL;

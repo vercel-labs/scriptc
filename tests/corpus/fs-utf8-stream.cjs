@@ -142,6 +142,118 @@ function dropStream(dir) {
   });
   s.on("close", () => {
     console.log("drop file", JSON.stringify(fs.readFileSync(file, "utf8")));
+    limitsStream(dir);
+  });
+}
+
+// Buffer limits are Node's counts: UTF-16 code units for strings, and the
+// flush still in flight counts until its completion, so a write that would
+// push the buffer past maxLength is dropped even though its bytes already
+// left the buffer.
+function limitsStream(dir) {
+  const file = join(dir, "limits.log");
+  const events = [];
+  const s = new fs.Utf8Stream({ dest: file, maxLength: 10 });
+  s.on("drop", (data) => events.push("drop:" + JSON.stringify(data)));
+  s.on("write", (n) => events.push("write:" + n));
+  s.on("ready", () => {
+    console.log("limits ret", s.write("aaaa"), s.write("bbbbbbbb"));
+    setTimeout(() => {
+      events.push("size:" + fs.statSync(file).size);
+      s.end();
+    }, 60);
+  });
+  s.on("close", () => {
+    console.log("limits events", events.join(","));
+    utf8Units(dir);
+  });
+}
+
+// A string's length, not its encoded size, is what minLength measures.
+function utf8Units(dir) {
+  const file = join(dir, "wide.log");
+  const s = new fs.Utf8Stream({ dest: file, minLength: 4, sync: true });
+  s.on("ready", () => {
+    console.log("utf8 units", s.write("éé"), "size", fs.statSync(file).size);
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("utf8 units file", JSON.stringify(fs.readFileSync(file, "utf8")), "size", fs.statSync(file).size);
+    reopenGuard(dir);
+  });
+}
+
+// A stream built on a descriptor has no path, so reopen() refuses even a
+// file argument; a stream built on a path re-parses its mode at each open.
+function reopenGuard(dir) {
+  const base = join(dir, "base.log");
+  const s = new fs.Utf8Stream({ fd: fs.openSync(base, "w"), mode: "0600", sync: true });
+  s.on("ready", () => {
+    try {
+      s.reopen(join(dir, "perm.log"));
+      console.log("fd reopen ok");
+    } catch (err) {
+      console.log("fd reopen", err.code);
+    }
+    s.write("kept");
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("fd reopen file", JSON.stringify(fs.readFileSync(base, "utf8")));
+    modeReopen(dir);
+  });
+}
+
+function modeReopen(dir) {
+  const one = join(dir, "m1.log");
+  const two = join(dir, "m2.log");
+  const s = new fs.Utf8Stream({ dest: one, mode: "0600", sync: true });
+  let readies = 0;
+  s.on("ready", () => {
+    if (readies++ !== 0) return;
+    s.reopen(two);
+    s.write("perm");
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("reopen mode", (fs.statSync(two).mode & 0o777).toString(8), JSON.stringify(fs.readFileSync(two, "utf8")), s.file === two);
+    failedReopen(dir);
+  });
+}
+
+function failedReopen(dir) {
+  const keep = join(dir, "keep.log");
+  const s = new fs.Utf8Stream({ dest: keep, sync: true });
+  s.on("ready", () => {
+    try {
+      s.reopen(join(dir, "no-such-dir", "x.log"));
+      console.log("failed reopen ok");
+    } catch (err) {
+      console.log("failed reopen", err.code);
+    }
+    s.write("still");
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("failed reopen file", JSON.stringify(fs.readFileSync(keep, "utf8")));
+    sameFileReopen(dir);
+  });
+}
+
+// reopen() with no argument reopens the file the stream has.
+function sameFileReopen(dir) {
+  const file = join(dir, "again.log");
+  const s = new fs.Utf8Stream({ dest: file, sync: true });
+  let readies = 0;
+  s.on("ready", () => {
+    if (readies++ !== 0) return;
+    s.write("one");
+    s.reopen();
+    s.write("two");
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("same-file reopen", JSON.stringify(fs.readFileSync(file, "utf8")));
     reopenStream(dir);
   });
 }

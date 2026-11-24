@@ -1867,7 +1867,7 @@
  },
  {
   "file": "scr_tls.c",
-  "function": "scr_tls_versions_dyn",
+  "function": "scr_tls_versions_record",
   "message": "TLS 1.0/1.1 methods have no lowering — configure TLSv1.2/TLSv1.3 instead",
   "code": "SC2020"
  },

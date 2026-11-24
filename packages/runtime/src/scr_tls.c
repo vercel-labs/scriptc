@@ -456,7 +456,7 @@ static bool scr_tls_conf_versions(mbedtls_ssl_config *conf, int min, int max) {
  * an explicit minVersion or maxVersion, then each version. The range lands
  * in *min / *max (Node's defaults TLSv1.2 and TLSv1.3). False with the
  * exception pending. */
-static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const char *api) {
+static bool scr_tls_versions_record(const ScrDyn *opts, int *min, int *max, const char *api) {
   const ScrDyn *vmin = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "minVersion", 10) : NULL;
   const ScrDyn *vmax = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "maxVersion", 10) : NULL;
   const ScrDyn *proto = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "secureProtocol", 14) : NULL;
@@ -547,6 +547,18 @@ static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const c
     }
   }
   return scr_tls_version_dyn(vmin, "minimum", 12, min) && scr_tls_version_dyn(vmax, "maximum", 13, max);
+}
+
+/* A typed reference (a record kept as its capsule, or a class instance)
+ * carries the same members; the checks read its materialized plain view. */
+static bool scr_tls_versions_dyn(const ScrDyn *opts, int *min, int *max, const char *api) {
+  if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF)
+    return scr_tls_versions_record(opts, min, max, api);
+  ScrDyn *plain = scr_dyn_typed_ref_materialize(opts);
+  if (plain == NULL) return false;
+  bool ok = scr_tls_versions_record(plain, min, max, api);
+  scr_dyn_release(plain);
+  return ok;
 }
 
 typedef struct ScrTlsSrv {

@@ -25,6 +25,9 @@ const BASE = {
 test("profiles are accepted for optimized executables", () => {
   expect(nativeProfileRefusal(BASE)).toBeNull();
   expect(nativeProfileRefusal({ ...BASE, profileGenerate: "/p/%p.profraw" })).toBeNull();
+  expect(
+    nativeProfileRefusal({ ...BASE, platform: "darwin", profileGenerate: "/p/%p.profraw" }),
+  ).toBeNull();
   expect(nativeProfileRefusal({ ...BASE, profileUse: "/p/a.profdata" })).toBeNull();
   expect(
     nativeProfileRefusal({ ...BASE, optimization: "release", profileUse: "/p/a.profdata" }),

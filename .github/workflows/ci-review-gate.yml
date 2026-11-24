@@ -1,25 +1,11 @@
 name: CI review gate
 
-# A pull request's expensive CI tier runs once both Vercel reviews pass on its head (scripts/ci-review-gate.mjs).
-# Pull request runs of CI run only the fast tier; this workflow dispatches the expensive tier on the pull request's
-# branch, where it runs in the pull request's concurrency group and cache scope. It never runs pull request code:
-# it checks out the default branch's gate script. check_run and workflow_run events start only the default branch's
-# copy of this file.
+# A pull request runs the fast tier by default; the ci:full label asks for the full suite in the pull request's
+# own run. This workflow keeps a way to start a pull request's full tier by hand, on its branch, in the pull
+# request's concurrency group and cache scope, without touching its labels. It never runs pull request code: it
+# checks out the default branch's gate script.
 on:
-  # Vercel Agent Review or Vercel Security Review completed.
-  check_run:
-    types: [completed]
-  # The override: labeling a pull request ci:full starts its expensive tier at once, and its later pull request
-  # runs run every lane while the label stays.
-  # A push to a pull request cancels the expensive tier still running on its older head.
-  pull_request:
-    types: [labeled, synchronize]
-  # A passing expensive tier re-runs the pull request run's required test check. workflow_run matches by name, so
-  # the gate also checks the run's workflow file and repository: only CI's own dispatched runs count.
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-  # Start a pull request's expensive tier by hand, whatever the reviews say.
+  # Start a pull request's full tier by hand.
   workflow_dispatch:
     inputs:
       pr:
@@ -27,37 +13,28 @@ on:
         required: true
         type: string
       # A fork's own CI run is never trusted (it runs the fork's workflow files). A maintainer who has checked it,
-      # workflow files included, records ci/full on the commit they checked with this. The sha names that commit:
-      # approval covers it alone, so a push that lands before the gate runs leaves the new head unapproved.
+      # workflow files included, records the commit as passed with this. The sha names that commit: approval covers
+      # it alone, so a push that lands before the gate runs leaves the new head unapproved.
       sha:
         description: For a fork's pull request with fork_attest, the full sha of the commit whose CI run you checked
         type: string
       fork_attest:
-        description: For a fork's pull request, record ci/full as passed on sha (after checking its CI run and workflow files)
+        description: For a fork's pull request, record the check as passed on sha (after checking its CI run and workflow files)
         type: boolean
         default: false
 
 permissions:
   contents: read
 
-# One gate at a time per pull request, so the two reviews' completions cannot both dispatch.
+# One dispatch at a time per pull request.
 concurrency:
-  group: ci-review-gate-${{ github.event.check_run.pull_requests[0].number || github.event.pull_request.number || inputs.pr || github.run_id }}
+  group: ci-review-gate-${{ inputs.pr || github.run_id }}
   cancel-in-progress: false
 
 jobs:
   gate:
     name: Start the expensive CI tier
-    if: >-
-      (github.event_name == 'check_run' && github.event.check_run.app.slug == 'vercel' &&
-      (github.event.check_run.name == 'Vercel Agent Review' || github.event.check_run.name == 'Vercel Security Review')) ||
-      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository &&
-      (github.event.action == 'synchronize' || github.event.label.name == 'ci:full')) ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'workflow_dispatch' &&
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.path == '.github/workflows/ci.yml' &&
-      github.event.workflow_run.head_repository.full_name == github.repository) ||
-      github.event_name == 'workflow_dispatch'
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

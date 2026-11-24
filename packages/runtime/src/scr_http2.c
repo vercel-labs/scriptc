@@ -5300,6 +5300,52 @@ static const ScrDynHandleOps scr_h2_dynh_session_ops = {
   &scr_h2_dynh_session_invoke, &scr_h2_dynh_session_get, &scr_h2_dynh_session_set, NULL,
 };
 
+/* Http2ServerResponse.statusMessage is always "" and a read or write emits
+ * Node's one-time UnsupportedWarning (RFC 7540 has no reason phrase). The
+ * report runs on the next tick, as process.emitWarning's listeners do. */
+static void scr_h2_status_msg_warn_tick(ScrClosure *cb) {
+  (void)cb;
+  static const char text[] = "Status message is not supported by HTTP/2 (RFC7540 8.1.2.4)";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  if (scr_warning_emit_hook) {
+    scr_warning_emit_hook("UnsupportedWarning", NULL, message);
+  } else {
+    scr_stdout_settle();
+    fflush(stdout);
+#ifdef _WIN32
+    long pid = (long)_getpid();
+#else
+    long pid = (long)getpid();
+#endif
+    fprintf(stderr, "(node:%ld) UnsupportedWarning: %.*s\n", pid, (int)message->len,
+            message->data);
+    if (!scr_warning_trace_hint_shown) {
+      scr_warning_trace_hint_shown = true;
+      fputs("(Use `node --trace-warnings ...` to show where the warning was created)\n", stderr);
+    }
+  }
+  scr_str_release(message);
+}
+
+static SCR_TL bool scr_h2_status_msg_warned = false;
+
+static void scr_h2_status_msg_schedule(void) {
+  if (scr_h2_status_msg_warned) return;
+  scr_h2_status_msg_warned = true;
+  scr_next_tick(scr_closure_new((void *)&scr_h2_status_msg_warn_tick, 0));
+}
+
+void scr_http2_status_message_unsupported(ScrHttpRes *res, const ScrDyn *value) {
+  (void)res;
+  (void)value;
+  scr_h2_status_msg_schedule();
+}
+
+void scr_http2_status_message_read(ScrHttpRes *res) {
+  (void)res;
+  scr_h2_status_msg_schedule();
+}
+
 void scr_http2_dyn_install(void) {
   scr_dyn_handle_install(SCR_DYNH_H2_STREAM, &scr_h2_dynh_stream_ops);
   scr_dyn_handle_install(SCR_DYNH_H2_SESSION, &scr_h2_dynh_session_ops);

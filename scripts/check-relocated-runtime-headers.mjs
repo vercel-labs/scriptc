@@ -22,7 +22,15 @@
 //
 // usage: node scripts/check-relocated-runtime-headers.mjs [--require-compiler]
 import { spawn } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  globSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,15 +58,26 @@ const vendor = {
   mlkem: join(vendorRoot, "mlkem-native"),
 };
 
-/** ICU is not vendored: scr_intl.c compiles in the linux-x64-gnu pack from
- * the fetched release, or against an installed pack's headers. Check it when
- * those headers are here; the other checks never need ICU. */
+/** ICU is not vendored. The caches hold a fetched release as
+ * `<cache>/icu4c-<version>-source/source/{common,i18n}` (the runtime-pack
+ * build's node_modules cache and the compiler's vendor cache); an installed
+ * pack holds the headers scr_intl.c includes under
+ * `artifacts/vendor/icu/include/unicode`. Returns { dirs, where } or null. */
 function icuIncludeDirs() {
-  const fetched = join(repoRoot, "node_modules/.cache/scriptc-icu-sources/source");
-  if (existsSync(join(fetched, "common/unicode/utypes.h")))
-    return [join(fetched, "common"), join(fetched, "i18n")];
-  const installed = join(repoRoot, "packages/runtime-linux-x64-gnu/artifacts/vendor/icu/include");
-  if (existsSync(installed)) return [installed];
+  const vendorCache = process.env["SCRIPTC_TEST_VENDOR_CACHE_DIR"];
+  const sourceTrees = [
+    ...globSync(join(repoRoot, "node_modules/.cache/scriptc-icu-sources/icu4c-*-source/source")),
+    ...globSync(join(repoRoot, "packages/runtime/vendor/.cache/icu4c-*-source/source")),
+    ...(vendorCache === undefined ? [] : globSync(join(vendorCache, "icu4c-*-source/source"))),
+  ];
+  for (const source of sourceTrees.sort()) {
+    if (existsSync(join(source, "common/unicode/utypes.h")))
+      return { dirs: [join(source, "common"), join(source, "i18n")], where: source };
+  }
+  const includeRoots = globSync(join(repoRoot, "packages/runtime-*/artifacts/vendor/icu/include"));
+  for (const include of includeRoots.sort()) {
+    if (existsSync(join(include, "unicode/ubrk.h"))) return { dirs: [include], where: include };
+  }
   return null;
 }
 
@@ -82,7 +101,7 @@ function packGroups(sources, icu) {
     ["scr_zstd.c", { name: "zstd", includes: [join(vendor.zstd, "lib")] }],
     ["scr_sqlite.c", { name: "sqlite", includes: [vendor.sqlite] }],
   ]);
-  if (icu !== null) special.set("scr_intl.c", { name: "icu", includes: icu });
+  if (icu !== null) special.set("scr_intl.c", { name: "icu", includes: icu.dirs });
   const groups = new Map([["default", []]]);
   for (const source of sources) {
     const group = special.get(source);
@@ -114,7 +133,7 @@ function unionIncludes(icu) {
     vendor.sqlite,
     vendor.mlkem,
     join(vendor.mlkem, "src"),
-    ...(icu ?? []),
+    ...(icu?.dirs ?? []),
   ];
 }
 
@@ -179,6 +198,12 @@ async function main() {
   }
 
   const icu = icuIncludeDirs();
+  // Say so when scr_intl.c is skipped: a cache path that stops matching the
+  // fetcher's layout must not silently reduce the check to the other sources.
+  if (icu === null)
+    console.log(
+      "relocated runtime headers: no ICU source cache or installed pack headers found; scr_intl.c is not checked",
+    );
   const scratch = mkdtempSync(join(tmpdir(), "scriptc-relocated-headers-"));
   try {
     // The relocation itself: the shipped layout is lib/runtime-sources/

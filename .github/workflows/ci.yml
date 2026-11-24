@@ -218,9 +218,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # registry-claims --check diffs the branch against its merge base.
-          # A pull request needs the history; pushes and merge queue groups
-          # need only their own tree.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # A pull request and a dispatched tier on its branch (workflow_dispatch
+          # with a pr input, or a manual run) need the history; a push to main
+          # shares the fetched tip, and the merge queue's shallow synthetic head
+          # compares against itself. The values are strings: an expression's 0
+          # is falsy, so `&& 0 || 1` would always answer 1.
+          fetch-depth: ${{ (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') && '0' || '1' }}
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
         with:
           version: 11.1.3

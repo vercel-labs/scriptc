@@ -20,6 +20,7 @@
 import { execFile, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
+import { branchKey, stackHead } from "./registry-stacks.mjs";
 
 const run = promisify(execFile);
 const check = process.argv.includes("--check");
@@ -102,7 +103,7 @@ const prs = JSON.parse(
       "--limit",
       "300",
       "--json",
-      "number,title,headRefName,baseRefName",
+      "number,title,headRefName,baseRefName,headRepository",
     ])
   ).stdout,
 );
@@ -110,13 +111,28 @@ const head = git("rev-parse", "--abbrev-ref", "HEAD").trim();
 const here = `this branch (${head})`;
 
 // A stack of pull requests (each based on the previous one's branch) is one
-// claimant: a later PR's diff only shows what it adds to its base.
-const byHead = new Map(prs.map((pr) => [pr.headRefName, pr]));
-const stackOf = (pr) => {
-  while (byHead.has(pr.baseRefName) && byHead.get(pr.baseRefName) !== pr)
-    pr = byHead.get(pr.baseRefName);
-  return pr.headRefName;
+// claimant: a later PR's diff only shows what it adds to its base. A branch
+// key pairs the repository with the branch, and the walk is bounded and
+// cycle-aware (scripts/registry-stacks.mjs): a fork contributor's branch
+// named like a same-repository branch cannot join the two stacks, and a
+// branch graph with a cycle terminates instead of hanging this gate.
+const repository = (() => {
+  if (process.env["GITHUB_REPOSITORY"]) return process.env["GITHUB_REPOSITORY"];
+  try {
+    const url = git("remote", "get-url", "origin").trim();
+    return /github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/.exec(url)?.[1] ?? "";
+  } catch {
+    return "";
+  }
+})();
+const localPr = {
+  number: Infinity,
+  headRefName: head,
+  baseRefName: "main",
+  headRepository: { nameWithOwner: repository },
 };
+const byHead = new Map(prs.map((pr) => [branchKey(pr, "head", repository), pr]));
+const stackOf = (pr) => stackHead(prs, pr, repository).key;
 const stacks = new Map();
 const claimant = (key) => stacks.get(key) ?? stacks.set(key, { names: [], claims: [] }).get(key);
 
@@ -143,7 +159,8 @@ await Promise.all(
   }),
 );
 // This branch is its own PR's claimant when it has one open.
-const mine = claimant(byHead.has(head) ? stackOf(byHead.get(head)) : head);
+const myPr = byHead.get(branchKey(localPr, "head", repository));
+const mine = claimant(myPr === undefined ? branchKey(localPr, "head", repository) : stackOf(myPr));
 mine.names.push({ number: Infinity, title: here });
 // Committed and uncommitted changes since the branch left origin/main, and
 // untracked files as wholly added. A merge queue group's synthetic head has

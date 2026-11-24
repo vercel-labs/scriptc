@@ -38,6 +38,14 @@ const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 // so this is about five minutes of wall time.
 export const FAST_TEST_BUDGET_MS = 20 * 60_000;
 
+// Each selected file pays its start-up and collection before its tests, which the measured per-file costs do not
+// include. The module graph can relate one shared compiler change to hundreds of small files: a 529-file related
+// set spent this budget and still ran for 35 minutes. Charge the overhead, and cap the set; the rest waits for
+// the full tier.
+export const FILE_OVERHEAD_MS = 2_000;
+export const MAX_TEST_FILES = 60;
+export const MAX_CORPUS_PROGRAMS = 80;
+
 // The curated smoke slice's own budget. It is smaller than the fast tier's:
 // a fallback, not the tier.
 export const SMOKE_BUDGET_MS = 3 * 60_000;
@@ -123,6 +131,8 @@ const MODULE_ALIASES = {
   fetch: ["http", "https", "undici"],
   tcp: ["net"],
   dgram: ["dgram"],
+  // WebCrypto is the crypto module's Web Crypto API; scr_webcrypto*.c serves node:crypto.
+  webcrypto: ["crypto"],
 };
 
 /** Every Node module name a changed file's path tokens can name. */
@@ -218,13 +228,21 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   const selected = [];
   const deferred = [];
   let total = 0;
+  let charged = 0;
   for (const file of [...staticSelection].sort(
     (a, b) => weigh(a) - weigh(b) || a.localeCompare(b),
   )) {
-    if (excluded.has(file) || total + weigh(file) > budget) deferred.push(file);
+    const cost = weigh(file);
+    if (
+      excluded.has(file) ||
+      selected.length >= MAX_TEST_FILES ||
+      charged + cost + FILE_OVERHEAD_MS > budget
+    )
+      deferred.push(file);
     else {
       selected.push(file);
-      total += weigh(file);
+      total += cost;
+      charged += cost + FILE_OVERHEAD_MS;
     }
   }
 
@@ -246,7 +264,8 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   for (const program of [...corpusSet].sort(
     (a, b) => corpusWeigh(a) - corpusWeigh(b) || a.localeCompare(b),
   )) {
-    if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
+    if (corpus.length >= MAX_CORPUS_PROGRAMS || corpusTotal + corpusWeigh(program) > corpusBudget)
+      deferredCorpus.push(program);
     else {
       corpus.push(program);
       corpusTotal += corpusWeigh(program);
@@ -263,7 +282,8 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   if (selected.length === 0 && corpus.length === 0) {
     smoke = true;
     for (const program of SMOKE_CORPUS) {
-      if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
+      if (corpus.length >= MAX_CORPUS_PROGRAMS || corpusTotal + corpusWeigh(program) > corpusBudget)
+        deferredCorpus.push(program);
       else {
         corpus.push(program);
         corpusTotal += corpusWeigh(program);

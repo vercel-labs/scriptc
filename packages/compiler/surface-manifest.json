@@ -504,6 +504,20 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.cluster.SCHED_NONE",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_NONE",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
+      "id": "node-builtin.cluster.SCHED_RR",
+      "kind": "node-builtin",
+      "name": "cluster.SCHED_RR",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.cluster.isMaster",
       "kind": "node-builtin",
       "name": "cluster.isMaster",
@@ -827,7 +841,7 @@
       "name": "crypto.setFips",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) in a non-FIPS build — getFips() answers 0 here"
+      "note": "a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here"
     },
     {
       "id": "node-builtin.crypto.sign",

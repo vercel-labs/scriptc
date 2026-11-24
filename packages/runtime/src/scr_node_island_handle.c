@@ -1051,7 +1051,7 @@ bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
   r->rc++;
   s->id = r->id;
   s->flags = r->flags;
-  if (getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
+  if (scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
     fprintf(stderr, "[node-islands] stub identity split (id %u)\n", r->id);
   return true;
 }
@@ -1102,7 +1102,7 @@ static bool nh_lazy_create(ScrNodeRef *ref) {
   scr_dyn_release(real);
   for (int i = 0; i < 7; i++) scr_dyn_release(lazy[i]);
   free(lazy);
-  if (getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
+  if (scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
     fprintf(stderr, "[node-islands] created native subclass (id %u)\n", ref->id);
   return true;
 }

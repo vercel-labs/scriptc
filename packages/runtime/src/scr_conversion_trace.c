@@ -30,7 +30,7 @@ void scr_conversion_trace(const char *where) {
    * the same time share nothing: each reads the environment once. */
   static SCR_TL int tracing = -1;
   if (tracing < 0) {
-    const char *t = getenv("SCRIPTC_CONVERSION_TRACE");
+    const char *t = scr_getenv("SCRIPTC_CONVERSION_TRACE");
     tracing = t != NULL && *t != 0 && strcmp(t, "0") != 0;
   }
   if (!tracing) return;

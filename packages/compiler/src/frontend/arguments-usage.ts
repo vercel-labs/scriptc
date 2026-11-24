@@ -88,7 +88,13 @@ function isDeclarationWrite(id: ts.Identifier): boolean {
  * never observes the aliasing, and element reads cannot observe it while
  * nothing writes an element or a parameter. The object itself must not
  * escape, since another holder could write through it. */
-export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): boolean {
+export function argumentsAliasingUnobservable(
+  fn: ts.SignatureDeclaration,
+  /** A use that only READS the object without letting another holder keep
+   * it (Function.prototype.apply's argumentsList): the receiver cannot
+   * write through it, so aliasing with the parameters stays unobservable. */
+  isReadOnlyUse?: (id: ts.Identifier) => boolean,
+): boolean {
   if (fn.body === undefined) return false;
   let elementReads = false;
   let escapes = false;
@@ -106,6 +112,14 @@ export function argumentsAliasingUnobservable(fn: ts.SignatureDeclaration): bool
     )
       return undefined;
     if (ts.isElementAccessExpression(parent) && parent.expression === node && !isWritten(parent)) {
+      elementReads = true;
+      return undefined;
+    }
+    if (isReadOnlyUse?.(node)) {
+      // A forwarding use reads every element (apply walks the list), so it
+      // counts like an indexed read: the parameter-write check below must
+      // still run, because a mapped arguments object would carry a written
+      // parameter's new value into the callee and the copy would not.
       elementReads = true;
       return undefined;
     }

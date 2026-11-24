@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-spawnsync-pid.cjs"
+ ],
+ "diags": []
+}

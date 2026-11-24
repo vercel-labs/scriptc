@@ -25,6 +25,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
 } from "../../../ir/ir.js";
 import { isPureReadShape, optionMember } from "./arguments.js";
@@ -83,7 +84,11 @@ export function lowerExecSyncCall(
   }
   // The shell command itself is /bin/sh; the "command" string rides as
   // the argv[1] the display formatter reads.
-  const cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
+  let cmdArg: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : cmd;
+  // execFileSync's `shell: true`: Node joins the file and its arguments
+  // and hands the string to /bin/sh, and reports DEP0190 once when there
+  // are arguments to concatenate.
+  let shellEnabled = false;
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   const emptyPairs: IrExpr = { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
@@ -412,16 +417,17 @@ export function lowerExecSyncCall(
             evaluated(lowerer.lowerExpr(m.value));
           } else {
             const t = lowerer.typeOf(m.value);
-            if (
-              t.flags & ts.TypeFlags.BooleanLiteral &&
-              lowerer.checker.typeToString(t) === "false"
-            ) {
+            const literal =
+              t.flags & ts.TypeFlags.BooleanLiteral ? lowerer.checker.typeToString(t) : null;
+            if (literal === "false") {
               // execFileSync's default — a no-op.
+            } else if (literal === "true") {
+              shellEnabled = true;
             } else {
               lowerer.noLowering(
-                "execFileSync with shell enabled",
+                "execFileSync with a runtime shell option",
                 m.value,
-                "use execSync for shell execution",
+                "the supported form is shell: true or shell: false",
               );
             }
           }
@@ -434,6 +440,69 @@ export function lowerExecSyncCall(
           );
       }
     }
+  }
+
+  // execFileSync(file, args, { shell: true }): Node's normalizeSpawnArguments
+  // joins file and args with single spaces (unescaped) and runs the string
+  // through /bin/sh -c, which is exactly execSync's launch. The runtime's
+  // shell-command helper reports DEP0190 once when args is non-empty. The
+  // args expression evaluates once into a hidden local so both reads see it.
+  if (shellEnabled) {
+    // JavaScript evaluates file(), then args(), then the options. The
+    // launch's first argument evaluates the file into a local (and answers
+    // the shell's path), so the SECOND argument's args() runs after it.
+    const heldFile = lowerer.declareHiddenLocal("%cpShellFile", cmd.type);
+    const fileRef = varRef(heldFile.id, cmd.type, loc);
+    const held = lowerer.declareHiddenLocal("%cpShellArgs", argvExpr.type);
+    const argsRef = varRef(held.id, argvExpr.type, loc);
+    const joined: IrExpr = {
+      kind: "libCall",
+      fn: "child.shellCommand",
+      args: [fileRef, argsRef],
+      type: STRING,
+      loc,
+    };
+    // Node validates the FILE and the arguments before it joins them, so the
+    // user's file (held by the first launch slot) and args are checked here,
+    // not the /bin/sh launch's command. An empty file must be Node's
+    // ERR_INVALID_ARG_VALUE, not an argument run as the command.
+    const fileArgsCheck: IrStmt = {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "cp.checkArgs",
+        args: [
+          numLit(0, loc),
+          fileRef,
+          argsRef,
+          { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
+          { kind: "strLit", value: "", type: STRING, loc },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+    const command: IrExpr = {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: held.id, init: argvExpr, loc }, fileArgsCheck],
+      result: joined,
+      type: STRING,
+      loc,
+    };
+    cmdArg = {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: heldFile.id, init: cmd, loc }],
+      result: { kind: "strLit", value: "/bin/sh", type: STRING, loc },
+      type: STRING,
+      loc,
+    };
+    argvExpr = {
+      kind: "arrayLit",
+      elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, command],
+      type: arrayOf(STRING),
+      loc,
+    };
   }
 
   // The STRING form (an encoding option names a Buffer encoding) decodes
@@ -450,7 +519,7 @@ export function lowerExecSyncCall(
         args: [
           cmdArg,
           argvExpr,
-          boolLit(shell, loc),
+          boolLit(shell || shellEnabled, loc),
           input,
           hasInput,
           cwd,

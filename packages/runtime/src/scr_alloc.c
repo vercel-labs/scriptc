@@ -303,6 +303,9 @@ static void scr_sa_pf_populate(char *lo, char *hi) {
 #include <unistd.h>
 #define SCR_SA_PF_HEAP 1
 #define SCR_SA_PF_HEAP_MIN ((size_t)32 << 20)
+/* SCR_SA_PREFAULT_HEAP, decided by scr_sa_pf_on before the helper's lock:
+ * 0 unknown, 1 off, 2 on. */
+static _Atomic(int) scr_sa_pf_heap_off;
 #define SCR_SA_PF_TOP_PAD ((size_t)16 << 20)
 #define SCR_SA_PF_POLL_NS 1000000L
 #define SCR_SA_PF_POLLS 64u
@@ -394,7 +397,13 @@ static void scr_sa_pf_forget(char *lo, char *hi) {
 static bool scr_sa_pf_on(void) {
   int s = atomic_load_explicit(&scr_sa_pf_state, memory_order_relaxed);
   if (s == 0) {
-    const char *v = getenv("SCR_SA_PREFAULT");
+    const char *v = scr_getenv("SCR_SA_PREFAULT");
+#ifdef SCR_SA_PF_HEAP
+    /* Both reads happen before the helper's lock. A locked environment read
+     * can allocate, and no allocator lock may be held across one. */
+    const char *heap = scr_getenv("SCR_SA_PREFAULT_HEAP");
+    atomic_store_explicit(&scr_sa_pf_heap_off, heap && heap[0] == '0' ? 1 : 2, memory_order_relaxed);
+#endif
     s = v && v[0] == '0' ? -1 : 1;
     atomic_store_explicit(&scr_sa_pf_state, s, memory_order_relaxed);
   }
@@ -446,12 +455,13 @@ static void scr_sa_prefault(char *lo, char *hi) {
     scr_sa_pf_atfork = true;
 #ifdef SCR_SA_PF_HEAP
     /* Nobody waits on the condition yet: give it the monotonic clock for
-     * the helper's polls (no polls without it). */
-    const char *v = getenv("SCR_SA_PREFAULT_HEAP");
+     * the helper's polls (no polls without it). scr_sa_pf_on read the
+     * variable before this lock: no environment read happens here. */
+    bool heap_off = atomic_load_explicit(&scr_sa_pf_heap_off, memory_order_relaxed) == 1;
     long page = sysconf(_SC_PAGESIZE);
     char thp = scr_sa_thp_mode();
     pthread_condattr_t ca;
-    if (!(v && v[0] == '0') && thp != 'm' && page > 0 && pthread_condattr_init(&ca) == 0) {
+    if (!heap_off && thp != 'm' && page > 0 && pthread_condattr_init(&ca) == 0) {
       if (pthread_condattr_setclock(&ca, CLOCK_MONOTONIC) == 0) {
         pthread_cond_destroy(&scr_sa_pf_cond);
         pthread_cond_init(&scr_sa_pf_cond, &ca);
@@ -688,7 +698,7 @@ static void scr_sa_thread_heap_note(void *p, size_t n) {
   if (mode == 2) return;
   if (mode == 0) {
     int undecided = 0;
-    const char *tunables = getenv("GLIBC_TUNABLES");
+    const char *tunables = scr_getenv("GLIBC_TUNABLES");
     FILE *f = fopen("/proc/sys/vm/overcommit_memory", "r");
     int overcommit = f ? fgetc(f) : '0';
     if (f) fclose(f);
@@ -1807,8 +1817,8 @@ static void scr_sa_trim(void) {
   for (unsigned c = 0; c < SCR_SA_NLARGE && free_bytes < SCR_SA_TRIM_MIN; c++)
     for (ScrSaBlock *b = scr_sa_large[scr_sa_arena].free[c]; b && free_bytes < SCR_SA_TRIM_MIN; b = b->next)
       free_bytes += scr_sa_large_size(c);
-  const char *stats = getenv("SCR_SA_STATS");
-  const char *off = getenv("SCR_SA_TRIM");
+  const char *stats = scr_getenv("SCR_SA_STATS");
+  const char *off = scr_getenv("SCR_SA_TRIM");
   bool trim = free_bytes >= SCR_SA_TRIM_MIN && !(off && off[0] == '0');
   memset(scr_sa_trim_stats, 0, sizeof scr_sa_trim_stats);
   if (!trim && stats && stats[0] == '1')
@@ -1922,7 +1932,7 @@ static ScrSaKeep *scr_sa_parked_keep[SCR_SA_ARENAS]; /* of discards that wait */
 
 /* SCR_SA_DISCARD: 0 off, 1 on (the default), 2 poison. */
 static int scr_sa_discard_mode(void) {
-  const char *mode = getenv("SCR_SA_DISCARD");
+  const char *mode = scr_getenv("SCR_SA_DISCARD");
   if (!mode) return 1;
   if (strcmp(mode, "0") == 0) return 0;
   return strcmp(mode, "poison") == 0 ? 2 : 1;
@@ -2205,7 +2215,7 @@ static void scr_sa_discard(ScrSaKeep *k) {
 #if defined(__GLIBC__)
   if (sys_blocks) (void)malloc_trim(0);
 #endif
-  const char *stats = getenv("SCR_SA_STATS");
+  const char *stats = scr_getenv("SCR_SA_STATS");
   if (stats && stats[0] == '1')
     fprintf(stderr, "scr_sa: discard arena %d returned %zu MB, %zu system blocks (%zu MB)\n", scr_sa_arena,
             returned >> 20, sys_blocks, sys_bytes >> 20);
@@ -2340,7 +2350,7 @@ static _Atomic(long) scr_sa_delay_grown_ms; /* 0 until a discard proved too earl
 static _Atomic(long) scr_sa_discarded_ms;   /* when the helper last discarded; 0: not since */
 
 static long scr_sa_env_ms(const char *name, long fallback) {
-  const char *value = getenv(name);
+  const char *value = scr_getenv(name);
   if (!value) return fallback;
   long ms = strtol(value, NULL, 10);
   return ms < 0 ? 0 : ms;
@@ -2825,6 +2835,13 @@ __attribute__((noinline)) void *scr_sa_slow_ref(size_t n, bool zero) {
   return p;
 }
 
+#ifdef SCR_SA_TEST
+/* Set by the allocator checks: the next run move fails the way a kernel
+ * before 6.17 fails a fixed move that spans mappings (the destination is
+ * unmapped). Consumed once. */
+bool scr_sa_test_fail_move;
+#endif
+
 #if defined(__linux__) && defined(MREMAP_FIXED)
 /* Grows the run p of `have` bytes to a run of n bytes (n > SCR_SA_LARGE_MAX)
  * by moving its pages to a new run, as the system allocator grows a mapped
@@ -2839,7 +2856,26 @@ static void *scr_sa_run_move(void *p, size_t have, size_t n) {
     return NULL;
   char *q = scr_sa_run_take((n + SCR_SA_CHUNK - 1) >> SCR_SA_CHUNK_SHIFT, n, false);
   if (!q) return NULL;
-  if (mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+#ifdef SCR_SA_TEST
+  bool move_failed = scr_sa_test_fail_move;
+  scr_sa_test_fail_move = false;
+  if (move_failed) {
+    /* The test hook stands in for a kernel before 6.17, whose failed fixed
+     * move has already unmapped the destination range. */
+    (void)munmap(q, have);
+  }
+#endif
+  if (
+#ifdef SCR_SA_TEST
+      move_failed ||
+#endif
+      mremap(p, have, have, MREMAP_MAYMOVE | MREMAP_FIXED, q) != q) {
+    /* A failed fixed move has unmapped the destination already (the kernel
+     * unmaps it before doing the move; before 6.17 a move that spans
+     * mappings fails there), so map the new run again before copying into
+     * it. */
+    if (mmap(q, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED | MAP_NORESERVE, -1, 0) != q)
+      scr_trap("scriptc: out of memory\n");
     memcpy(q, p, have);
     scr_sa_run_free(p);
     return q;
@@ -3477,7 +3513,7 @@ static void scr_plr_thread_end(void *unused) {
   __atomic_fetch_sub(&scr_plr_held, returned, __ATOMIC_RELAXED);
   __atomic_fetch_sub(&scr_plr_waste, scr_plr_mine_waste, __ATOMIC_RELAXED);
   scr_plr_mine_waste = 0;
-  const char *stats = getenv("SCR_SA_STATS");
+  const char *stats = scr_getenv("SCR_SA_STATS");
   if (stats && stats[0] == '1') fprintf(stderr, stats_line, returned >> 20);
 }
 

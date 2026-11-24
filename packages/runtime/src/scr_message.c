@@ -1,10 +1,24 @@
 #include "scr_message.h"
 #include "scr_mailbox.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 const ScrMessagePortOps *scr_message_port_ops = NULL;
+
+/* SCRIPTC_PUBLISH_TRACE is a diagnostic switch checked on every publish. An
+ * environment read takes the process lock, so read it once per process, like
+ * SCRIPTC_PUBLISH below. */
+static atomic_int scr_message_publish_trace = -1;
+static bool scr_message_trace_publish(void) {
+  int traced = atomic_load_explicit(&scr_message_publish_trace, memory_order_relaxed);
+  if (traced < 0) {
+    traced = scr_getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+    atomic_store_explicit(&scr_message_publish_trace, traced, memory_order_relaxed);
+  }
+  return traced != 0;
+}
 
 typedef struct {
   const char *key;
@@ -24,6 +38,13 @@ typedef struct {
   ScrDyn *(*materialize)(void *);
   void (*commit)(void *, const ScrDyn *);
   bool traced;
+  /* The capsule's native operation table and which kind it is (a live
+   * array, a declared-field record, a class instance or a bag class). The
+   * tables are compiler-emitted process-lifetime statics, so the receiver
+   * binds the sender's table onto its own fresh capsule; the materialized
+   * views stay local to each receiver. */
+  const void *ops;
+  unsigned char ops_kind; /* 0 none, 1 array, 2 record, 3 class, 4 bag class */
 } ScrMessageTyped;
 
 typedef struct {
@@ -433,8 +454,14 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
       input->v.typed_ref.ptr, input->v.typed_ref.retain, input->v.typed_ref.release,
       input->v.typed_ref.type_key, input->v.typed_ref.type_key_len, input->v.typed_ref.materialize,
       input->v.typed_ref.commit, input->v.typed_ref.traced,
+      input->v.typed_ref.array,
+      (unsigned char)(input->v.typed_ref.record    ? 2
+                      : input->v.typed_ref.klass   ? 3
+                      : input->v.typed_ref.bag_class ? 4
+                      : input->v.typed_ref.array   ? 1
+                                                   : 0),
     };
-    if (getenv("SCRIPTC_PUBLISH_TRACE"))
+    if (scr_message_trace_publish())
       fprintf(stderr, "scriptc: published %.*s shared by reference\n", (int)input->v.typed_ref.type_key_len,
               input->v.typed_ref.type_key);
     return id;
@@ -752,7 +779,7 @@ static int scr_publish_enabled = -1;
 
 static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
   if (scr_publish_enabled < 0) {
-    const char *env = getenv("SCRIPTC_PUBLISH");
+    const char *env = scr_getenv("SCRIPTC_PUBLISH");
     scr_publish_enabled = !(env && env[0] == '0');
   }
   if (!scr_publish_enabled || (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR)) return NULL;
@@ -790,10 +817,10 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
     message->readable = true;
     message->nodes[0].kind = SCR_MESSAGE_PUBLISHED;
     message->nodes[0].v.published = (ScrDyn *)value;
-    if (getenv("SCRIPTC_PUBLISH_TRACE"))
+    if (scr_message_trace_publish())
       fprintf(stderr, "scriptc: published %zu nodes zero-copy%s\n", p.count,
               value->rc == SIZE_MAX && !p.count ? " (already published)" : "");
-  } else if (getenv("SCRIPTC_PUBLISH_TRACE")) {
+  } else if (scr_message_trace_publish()) {
     fprintf(stderr, "scriptc: graph not deeply frozen plain data; cloned\n");
   }
   free(p.nodes);
@@ -1098,9 +1125,31 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
     case SCR_MESSAGE_PUBLISHED: values[i] = scr_dyn_retain(node->v.published); break;
     case SCR_MESSAGE_TYPED_REF: {
       const ScrMessageTyped *typed = node->v.typed;
-      values[i] = (typed->traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
+      ScrDyn *capsule = (typed->traced ? scr_dyn_new_typed_ref_traced : scr_dyn_new_typed_ref)(
           typed->ptr, typed->retain, typed->release, typed->type_key, typed->type_key_len,
           typed->materialize, typed->commit);
+      /* The sender's native operation table is process-lifetime: bind it to
+       * this receiver's capsule so member operations answer as they do on
+       * the sender (the materialized view is built here, fresh). */
+      if (capsule != NULL) {
+        switch (typed->ops_kind) {
+        case 1:
+          scr_dyn_typed_ref_bind_array(capsule, (const ScrDynTypedArrayOps *)typed->ops);
+          break;
+        case 2:
+          scr_dyn_typed_ref_bind_record(capsule, (const ScrDynTypedRecordOps *)typed->ops);
+          break;
+        case 3:
+          scr_dyn_typed_ref_bind_class(capsule, (const ScrDynTypedClassOps *)typed->ops);
+          break;
+        case 4:
+          scr_dyn_typed_ref_bind_bag_class(capsule, (const ScrDynTypedBagClassOps *)typed->ops);
+          break;
+        default:
+          break;
+        }
+      }
+      values[i] = capsule;
       break;
     }
     case SCR_MESSAGE_PORT:

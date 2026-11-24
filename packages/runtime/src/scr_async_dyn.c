@@ -2285,7 +2285,7 @@ static bool scr_warning_is_deprecation(const ScrDyn *w) {
  * program's `process.env`, so an assignment at run time changes nothing
  * here, as in Node. */
 static bool scr_warnings_silenced(void) {
-  const char *value = getenv("NODE_NO_WARNINGS");
+  const char *value = scr_getenv("NODE_NO_WARNINGS");
   return value != NULL && value[0] == '1';
 }
 
@@ -2676,6 +2676,7 @@ void scr_punycode_warn(bool immediate, bool report) {
   scr_str_release(code);
   scr_str_release(message);
 }
+
 
 static void scr_timer_this_fire(ScrClosure *self) {
   ScrClosure *cb = scr_box_get_ref(self->caps[0]);

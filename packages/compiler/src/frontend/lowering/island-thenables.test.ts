@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { DYN, VOID, type IrExpr, type IrFunction, type IrStmt, type SrcLoc } from "../../ir/ir.js";
+import { FunctionCensus } from "./function-census.js";
 import { adoptIslandThenables } from "./island-thenables.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 
@@ -36,7 +37,11 @@ test("a program with Node islands adopts island thenables at every dynamic await
     fn(ENTRY_NAME, [use, use]),
     fn("helper", [{ kind: "exprStmt", expr: resolve, loc }]),
   ];
-  adoptIslandThenables({ usesNodeIsland: true } as unknown as Lowerer, functions);
+  adoptIslandThenables(
+    { usesNodeIsland: true } as unknown as Lowerer,
+    functions,
+    new FunctionCensus(),
+  );
   expect(first.args[0]).toMatchObject({
     kind: "libCall",
     fn: "nodeIsland.adoptThenable",
@@ -64,7 +69,11 @@ test("a program with Node islands resolves a dynamic Promise.resolve through the
   ]);
   const untouched = fn("helper", [{ kind: "exprStmt", expr: empty as IrExpr, loc }]);
   const untouchedBody = untouched.body;
-  adoptIslandThenables({ usesNodeIsland: true } as unknown as Lowerer, [withResolve, untouched]);
+  adoptIslandThenables(
+    { usesNodeIsland: true } as unknown as Lowerer,
+    [withResolve, untouched],
+    new FunctionCensus(),
+  );
   expect(withResolve.body).toEqual([
     {
       kind: "exprStmt",
@@ -84,14 +93,20 @@ test("a program with Node islands resolves a dynamic Promise.resolve through the
   expect(resolve).toMatchObject({ kind: "intrinsic", name: "promise.resolve" });
   expect(untouched.body).toBe(untouchedBody);
   const kept = fn(ENTRY_NAME, [{ kind: "exprStmt", expr: resolve, loc }]);
-  adoptIslandThenables({ usesNodeIsland: false } as unknown as Lowerer, [kept]);
+  adoptIslandThenables(
+    { usesNodeIsland: false } as unknown as Lowerer,
+    [kept],
+    new FunctionCensus(),
+  );
   expect(kept.body[0]).toMatchObject({ expr: { kind: "intrinsic", name: "promise.resolve" } });
 });
 
 test("a program without Node islands keeps the plain dynamic await", () => {
   const call = awaitDyn();
-  adoptIslandThenables({ usesNodeIsland: false } as unknown as Lowerer, [
-    fn(ENTRY_NAME, [{ kind: "exprStmt", expr: call, loc }]),
-  ]);
+  adoptIslandThenables(
+    { usesNodeIsland: false } as unknown as Lowerer,
+    [fn(ENTRY_NAME, [{ kind: "exprStmt", expr: call, loc }])],
+    new FunctionCensus(),
+  );
   expect(call.args[0]).toMatchObject({ kind: "varRef" });
 });

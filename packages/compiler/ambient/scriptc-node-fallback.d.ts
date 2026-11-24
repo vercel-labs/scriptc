@@ -530,6 +530,13 @@ declare var process: {
     pause(): void;
     resume(): void;
     isPaused(): boolean;
+    /* Node's handle refcount: unref() lets the process exit with a
+     * consumer still registered, and ref() (the default) makes a consumer
+     * keep it alive again. Data still arrives while other work holds the
+     * loop, as in Node. Node returns `this` for chaining; this call is
+     * statement-position only. */
+    ref(): void;
+    unref(): void;
     read(size?: number): Buffer | null;
     readonly readableLength: number;
     destroy(): void;
@@ -1104,8 +1111,18 @@ interface SubtleCrypto {
     format: KeyFormat,
     wrappedKey: BufferSource,
     unwrappingKey: CryptoKey,
-    unwrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
-    unwrappedKeyAlgorithm: AlgorithmIdentifier | HmacImportParams,
+    unwrapAlgorithm:
+      | AlgorithmIdentifier
+      | AesGcmParams
+      | AesCbcParams
+      | AesCtrParams
+      | RsaOaepParams,
+    unwrappedKeyAlgorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;
@@ -1119,7 +1136,7 @@ interface SubtleCrypto {
     format: KeyFormat,
     key: CryptoKey,
     wrappingKey: CryptoKey,
-    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
+    wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
   ): Promise<ArrayBuffer>;
 }
 interface Crypto {

@@ -2218,19 +2218,39 @@ export function unsupportedNativeApiDiag(
   };
 }
 
-export function unsupportedPackageImportDiag(pkg: string, loc: SrcLoc): ScrDiagnostic {
+/** The package a refusal should name. TypeScript resolves a runtime import to
+ * the declaration package that types it (`@types/ms` for `ms`, and
+ * `@types/scope__name` for `@scope/name`); the refusal is about the runtime
+ * package the program loads, so name that one. */
+export function runtimePackageName(pkg: string): string {
+  if (!pkg.startsWith("@types/")) return pkg;
+  const bare = pkg.slice("@types/".length);
+  return bare.includes("__") ? "@" + bare.replace("__", "/") : bare;
+}
+
+export function unsupportedPackageImportDiag(
+  pkg: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return npmStaticRefusalDiag(
-    pkg,
+    runtimePackageName(pkg),
     "its implementation is not part of the compiled module graph",
     loc,
+    hint,
   );
 }
 
-export function unsupportedPackageValueDiag(pkg: string, loc: SrcLoc): ScrDiagnostic {
+export function unsupportedPackageValueDiag(
+  pkg: string,
+  loc: SrcLoc,
+  hint?: string,
+): ScrDiagnostic {
   return npmStaticRefusalDiag(
-    pkg,
+    runtimePackageName(pkg),
     "its implementation is not part of the compiled module graph",
     loc,
+    hint,
   );
 }
 

@@ -1,18 +1,28 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const metadataName = "bootstrap-seed.json";
 
-/** Artifacts are scoped to one workflow revision and instrumentation lane.
- * The directory must stay fixed: FFI manifests and IR include absolute paths. */
-export function verifyBootstrapSeed(directory, revision, sanitize) {
-  const expected = { schema: 1, revision, sanitize, directory: resolve(directory) };
+/** A seed's identity: its instrumentation lane and the directory it was built in, relative to the checkout. The
+ * directory is relative rather than absolute so the seed can be restored by another task that puts it in the same
+ * place; the FFI manifests and IR inside still name absolute paths, so the two tasks must run at the same path. */
+function seedMetadata(directory, sanitize) {
+  return {
+    schema: 2,
+    sanitize,
+    directory: relative(root, resolve(directory)).split(sep).join("/"),
+  };
+}
+
+/** Artifacts are scoped to one instrumentation lane and one relative directory. */
+export function verifyBootstrapSeed(directory, sanitize) {
+  const expected = seedMetadata(directory, sanitize);
   const metadata = JSON.parse(readFileSync(join(directory, metadataName), "utf8"));
-  if (!revision || Object.entries(expected).some(([key, value]) => metadata[key] !== value)) {
-    throw new Error("bootstrap seed identity does not match this checkout, lane, or directory");
+  if (Object.entries(expected).some(([key, value]) => metadata[key] !== value)) {
+    throw new Error("bootstrap seed identity does not match this lane or directory");
   }
   for (const path of [
     "distribution/bin/scriptc",
@@ -40,9 +50,7 @@ export function seedBuildEnvironment(sanitize) {
 
 async function main() {
   const directory = process.env.SCRIPTC_BOOTSTRAP_SEED_DIRECTORY;
-  const revision = process.env.GITHUB_SHA;
-  if (!directory || !revision)
-    throw new Error("bootstrap seed directory and revision are required");
+  if (!directory) throw new Error("bootstrap seed directory is required");
   if (process.platform !== "linux" || process.arch !== "x64") {
     throw new Error("shared bootstrap seeds require the Linux x64 CI host");
   }
@@ -65,14 +73,9 @@ async function main() {
   );
   writeFileSync(
     join(directory, metadataName),
-    JSON.stringify({
-      schema: 1,
-      revision,
-      sanitize,
-      directory: resolve(directory),
-    }) + "\n",
+    JSON.stringify(seedMetadata(directory, sanitize)) + "\n",
   );
-  verifyBootstrapSeed(directory, revision, sanitize);
+  verifyBootstrapSeed(directory, sanitize);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href)

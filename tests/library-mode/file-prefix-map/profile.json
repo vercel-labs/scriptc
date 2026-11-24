@@ -1,0 +1,34 @@
+{
+  "profile_format": 1,
+  "name": "conformance-file-prefix-map",
+  "entry": "stage/lib.ts",
+  "emission": "llvm",
+  "optimization": "dev",
+  "file_prefix_map": {
+    "stage": "src"
+  },
+  "abi": {
+    "prefix": "kv_",
+    "init_symbol": "kv_init",
+    "sink_register_symbol": "kv_set_panic_sink",
+    "collect_symbol": "kv_collect",
+    "result_reset_symbol": null
+  },
+  "exports": [
+    {
+      "export": "add",
+      "symbol": "kv_add",
+      "params": [
+        "f64",
+        "f64"
+      ],
+      "returns": "f64"
+    },
+    {
+      "export": "trace",
+      "symbol": "kv_trace",
+      "params": [],
+      "returns": "string"
+    }
+  ]
+}

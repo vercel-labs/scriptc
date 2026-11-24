@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { SourceLocations } from "./source-locations.js";
+import { type FilePrefixMap, shownFile, SourceLocations } from "./source-locations.js";
 
 test("source offsets use their own file, UTF-16 columns, and JS line separators", () => {
   const text = "one\r\ntwo\rthree\nfour\u2028five\u2029😀six";
@@ -53,4 +53,23 @@ test("a file the build carries no text for is read once through the loader", () 
   });
   expect(carried.position({ file: "main.ts", start: 4, end: 7 })?.line).toBe(2);
   expect(reads).toEqual(["late.ts", "gone.ts"]);
+});
+
+test("a file prefix map renames whole folders, the first match once", () => {
+  const map: FilePrefixMap = [
+    ["/work/stage/lib", "/work/lib"],
+    ["/work/stage", "/work/app"],
+    ["/work/app", "/work/other"],
+  ];
+  expect(shownFile("/work/stage/lib/a.ts", map)).toBe("/work/lib/a.ts");
+  expect(shownFile("/work/stage/a.ts", map)).toBe("/work/app/a.ts");
+  expect(shownFile("/work/stages/a.ts", map)).toBe("/work/stages/a.ts");
+
+  // Offsets are read from the source's own text and shown under its new name.
+  const sources = new SourceLocations(new Map([["/work/stage/a.ts", "one\ntwo"]]), undefined, map);
+  expect(sources.position({ file: "/work/stage/a.ts", start: 4, end: 7 })).toEqual({
+    file: "/work/app/a.ts",
+    line: 2,
+    column: 1,
+  });
 });

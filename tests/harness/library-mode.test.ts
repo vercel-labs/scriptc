@@ -76,7 +76,7 @@
  *                           non-function value as what it is)
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compileLibrary } from "@scriptc/compiler";
@@ -377,6 +377,45 @@ version: sdk-1.0
     expect(run.stdout).toBe("run: 5\nrun: 6\n");
     expect(run.stderr).toBe("");
   });
+
+  /* ── file_prefix_map: staged sources take their originals' names ─────── */
+
+  test.each(["dev", "release"])(
+    "file_prefix_map renames folders in a %s library's debug info and stack frames",
+    async (optimization) => {
+      // The map resolves against the profile's directory, so the profile
+      // stays beside its sources instead of moving to the build directory.
+      const root = join(cacheDir, `file-prefix-map-${emission}-${optimization}`);
+      rmSync(root, { recursive: true, force: true });
+      cpSync(join(fixtureRoot, "file-prefix-map"), root, { recursive: true });
+      const profilePath = join(root, "profile.json");
+      const profile = JSON.parse(readFileSync(profilePath, "utf8")) as object;
+      const build = async (file_prefix_map: Record<string, string>) => {
+        writeFileSync(profilePath, JSON.stringify({ ...profile, optimization, file_prefix_map }));
+        const result = await compileLibrary({ profilePath, outDir: root });
+        if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+        const ll = readFileSync(result.llvmPath, "utf8");
+        return {
+          files: [...ll.matchAll(/DIFile\(filename: "([^"]+)", directory: "([^"]+)"/g)].map(
+            (file) => `${file[2]!.slice(root.length + 1)}/${file[1]!}`,
+          ),
+          frames: [...ll.matchAll(/ at trace \((.+?\.ts)/g)].map((frame) =>
+            frame[1]!.slice(root.length + 1),
+          ),
+        };
+      };
+      const debug = (folder: string) =>
+        optimization === "dev" ? [`${folder}/lib.ts`, `${folder}/math.ts`] : [];
+      for (const folder of ["src", "other"]) {
+        const { files, frames } = await build({ stage: folder });
+        expect(files.sort()).toEqual(debug(folder));
+        expect(new Set(frames)).toEqual(new Set([`${folder}/lib.ts`]));
+      }
+      const { files, frames } = await build({});
+      expect(files.sort()).toEqual(debug("stage"));
+      expect(new Set(frames)).toEqual(new Set(["stage/lib.ts"]));
+    },
+  );
 
   /* ── cstring: NUL-terminated text in, out, and through callbacks ─────── */
 

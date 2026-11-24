@@ -15,6 +15,10 @@
  *     "entry": "src/lib.ts",                  // ONE module, profile-relative
  *     "emission": "llvm",                // pins the emission; no fallback
  *     "optimization": "release" | "dev" | "speed", // optional; default release
+ *     "file_prefix_map": { "stage/src": "src" }, // optional: folders debug
+ *                                         // info and stack frames name
+ *                                         // in place of the compiled
+ *                                         // ones, profile-relative
  *     "abi": {
  *       "prefix": "<prefix>_",
  *       "init_symbol": "<prefix>_init",
@@ -249,8 +253,9 @@
  * else). Only the INTERIOR of `determinism` keeps a reserved-and-ignored
  * surface beyond the three ask-5 keys. */
 import { isNativeOptimization, type NativeOptimization } from "../backend/optimization.js";
+import type { FilePrefixMap } from "../backend/source-locations.js";
 import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { libProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   resolveLibraryFences,
@@ -408,6 +413,10 @@ export interface LibraryProfile {
   /** Native optimizer posture. release preserves the production -O2 archive;
    * dev uses -O0 for fast iterative embedding builds. */
   optimization: NativeOptimization;
+  /** Absolute source folders and the folders debug info and stack frames
+   * name in their place: an embedder that compiles staged copies of its
+   * sources points debuggers and traces at the originals. */
+  filePrefixMap: FilePrefixMap;
   /** Explicit source-inference attempts, including packages without declarations. */
   npmStatic: string[];
   prefix: string;
@@ -558,6 +567,7 @@ export function loadLibraryProfile(
           "entry",
           "emission",
           "optimization",
+          "file_prefix_map",
           "npm_static",
           "abi",
           "exports",
@@ -608,6 +618,25 @@ export function loadLibraryProfile(
         `'optimization' must be "release", "dev", or "speed", got '${optimization}'`,
       );
     }
+    const prefixMapRaw = p["file_prefix_map"] ?? {};
+    if (
+      prefixMapRaw === null ||
+      typeof prefixMapRaw !== "object" ||
+      Array.isArray(prefixMapRaw) ||
+      Object.entries(prefixMapRaw).some(
+        ([from, to]) => from === "" || typeof to !== "string" || to === "",
+      )
+    ) {
+      throw new ProfileError(
+        "'file_prefix_map' must map source folders to the folders debug info and stack frames name",
+      );
+    }
+    // Sources are named with forward slashes on every platform.
+    const folder = (path: string): string =>
+      resolve(dirname(profilePath), path).replaceAll(sep, "/");
+    const filePrefixMap = Object.entries(prefixMapRaw as Record<string, string>).map(
+      ([from, to]) => [folder(from), folder(to)] as const,
+    );
     const abi = p["abi"];
     if (abi === null || typeof abi !== "object" || Array.isArray(abi)) {
       throw new ProfileError("'abi' must be an object");
@@ -1046,6 +1075,7 @@ export function loadLibraryProfile(
         entry,
         emission,
         optimization,
+        filePrefixMap,
         npmStatic,
         prefix,
         initSymbol,

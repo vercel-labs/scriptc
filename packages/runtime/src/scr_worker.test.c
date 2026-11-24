@@ -166,6 +166,14 @@ int main(void) {
    * on the lock they are already inside. */
   scr_context_env_process_lock();
   scr_context_env_process_lock();
+  /* An enumeration allocates under the lock, and the allocator reads its
+   * tunables through the accessor; the accessor itself must use the reentrant
+   * lock rather than acquire the mutex again. */
+  ScrArr *pairs_under_lock = scr_env_pairs();
+  assert(pairs_under_lock != NULL);
+  scr_arr_release(pairs_under_lock);
+  const char *path_atom = scr_context_getenv("PATH");
+  (void)path_atom;
   scr_context_env_process_unlock();
   scr_context_env_process_unlock();
   /* The shared-environment race the corpus program exercises: 20k writes

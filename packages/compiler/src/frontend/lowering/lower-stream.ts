@@ -2938,6 +2938,34 @@ function lowerFromSource(
   const elem = srcT?.kind === "array" ? typedElem(srcT.elem) : null;
   const opts0 = parsedOptions ? { flags: parsedOptions.flags, hwm: parsedOptions.hwm } : null;
   const opts = opts0 ? { ...opts0, flags: opts0.flags | duplexFlag } : opts0;
+  // A readable stream is the async iterable from.js pumps into a fresh
+  // object-mode stream (highWaterMark 1). The iterator's return() only stops
+  // the iteration, so the source keeps its own life-cycle, as in Node.
+  const streamInfo = srcT?.kind === "object" ? lowerer.classes.get(srcT.className) : undefined;
+  const streamSides = streamSidesOf(lowerer, streamInfo);
+  if (srcNode && (streamSides === "r" || streamSides === "rw") && opts) {
+    const sourceValue = lowerer.lowerExpr(srcNode);
+    return withEncoding(
+      orderedBuild(sourceValue, (ref) => {
+        const iter: IrExpr = {
+          kind: "libCall",
+          fn: "readable.iterator",
+          args: [ref, boolLit(false, loc)],
+          type: DYN,
+          loc,
+        };
+        // SCR_FROM_HAS_HWM (8): the source's chunks as object-mode entries
+        // with Node's highWaterMark of 1.
+        return {
+          kind: "libCall",
+          fn: "readable.fromAsyncIter",
+          args: [iter, numLit(8, loc), numLit(1, loc)],
+          type,
+          loc,
+        };
+      }),
+    );
+  }
   // The source as an instance of `t`, the class the checker gives it. The
   // value can be held another way: a JavaScript source infers the class of
   // `this.inner.make()` while the call goes through an untyped member and

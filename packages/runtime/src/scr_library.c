@@ -77,8 +77,15 @@ void scr_library_set_sink(ScrLibSinkFn fn, void *ctx) {
  * instead of an accessor call per field. A typed host callback runs
  * synchronously inside one ABI entry; like the sink, poison, arena, and
  * current-entry symbol, this state belongs to the localized /
- * thread-instanced library copy rather than the process. */
-SCR_TL ScrLibHostState scr_library_host_state;
+ * thread-instanced library copy rather than the process.
+ *
+ * The initializer is load-bearing: without it this is a tentative
+ * definition, which a -fcommon build emits as a COMMON symbol. A COMMON
+ * is not a section definition, so localization leaves it global and two
+ * archives linked into one process would share one instance. The
+ * explicit zero fill makes it a real definition that is demoted with the
+ * rest of this archive's runtime. */
+SCR_TL ScrLibHostState scr_library_host_state = {0};
 _Static_assert(offsetof(ScrLibHostState, ctxs) ==
                    SCR_LIB_MAX_CALLBACKS * sizeof(ScrLibCbFn),
                "ScrLibHostState.ctxs offset is the generated type's ctx array field");

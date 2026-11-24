@@ -6,6 +6,10 @@ import { SCR_LIB_MAX_CALLBACKS, libHostStateDecl, libHostStateType } from "./lib
 // the same capacity, the same field order, and the same storage class the
 // archive compiles the object with.
 const header = readFileSync(new URL("../../../../runtime/src/scr_core.h", import.meta.url), "utf8");
+const librarySource = readFileSync(
+  new URL("../../../../runtime/src/scr_library.c", import.meta.url),
+  "utf8",
+).replace(/\/\*[\s\S]*?\*\//g, "");
 
 test("the generated slot capacity is the runtime's", () => {
   const match = /#define SCR_LIB_MAX_CALLBACKS (\d+)/.exec(header);
@@ -40,4 +44,12 @@ test("only a thread-instanced library declares the state thread-local", () => {
   expect(libHostStateDecl(true)).toBe(
     "@scr_library_host_state = external thread_local global %ScrLibHostState",
   );
+});
+
+test("the runtime state is a definition, so localization demotes it", () => {
+  // A tentative definition becomes a COMMON symbol under -fcommon, and
+  // localization leaves commons global: two localized archives in one
+  // process would then share one registration table and one depth counter.
+  // The explicit initializer keeps it a section definition.
+  expect(librarySource).toMatch(/SCR_TL ScrLibHostState scr_library_host_state\s*=\s*\{\s*0\s*\};/);
 });

@@ -66,6 +66,11 @@ typedef struct {
   ScrPromise *(*generate_key)(const ScrDyn *args);
   ScrPromise *(*import_key)(const ScrDyn *args);
   ScrPromise *(*export_key)(const ScrDyn *args);
+  /* The synchronous halves wrapKey and unwrapKey use: exportKey(format, key)
+   * and importKey(format, keyData, algorithm, extractable, keyUsages), both
+   * +1 or NULL with the DOMException pending. */
+  ScrDyn *(*export_sync)(ScrDyn *format, ScrDyn *key);
+  ScrDyn *(*import_sync)(const ScrDyn *args);
   ScrPromise *(*sign)(const ScrDyn *args);
   ScrPromise *(*verify)(const ScrDyn *args);
   ScrPromise *(*encrypt)(const ScrDyn *args);

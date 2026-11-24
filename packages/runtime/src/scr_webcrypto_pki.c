@@ -832,6 +832,20 @@ static ScrPromise *sw_export_key(const ScrDyn *args) {
   return scr_promise_settled_ref(value, &scr_dyn_retain_v, &scr_dyn_release_v, NULL);
 }
 
+/* The synchronous halves wrapKey and unwrapKey use: exportKey over the
+ * method's own format and key arguments, and importKey over the argument
+ * vector unwrapKey rebuilds. +1, or NULL with the DOMException pending. */
+static ScrDyn *sw_export_sync(ScrDyn *format, ScrDyn *key) {
+  ScrDyn *args = scr_dyn_new_arr();
+  scr_dyn_arr_push(args, scr_dyn_retain(format));
+  scr_dyn_arr_push(args, scr_dyn_retain(key));
+  ScrDyn *out = sw_export(args);
+  scr_dyn_release(args);
+  return out;
+}
+
+static ScrDyn *sw_import_sync(const ScrDyn *args) { return sw_import(args); }
+
 /* ── RSA-OAEP encrypt and decrypt ─────────────────────────────────────── */
 
 /* The deferred ArrayBuffer of a computed output, or the one
@@ -1271,6 +1285,8 @@ static const ScrWcAsymmetric sw_table = {
     .generate_key = sw_generate_key,
     .import_key = sw_import_key,
     .export_key = sw_export_key,
+    .export_sync = sw_export_sync,
+    .import_sync = sw_import_sync,
     .sign = sw_sign,
     .verify = sw_verify,
     .encrypt = sw_encrypt,

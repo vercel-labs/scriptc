@@ -175,7 +175,9 @@ step("listen(class bag)", (next) => {
 
 // A record whose path is a pipe: address answers the path, before and
 // after close, and a client's record dials it.
-const pipePath = "/tmp/scriptc-net-typed-option-records.sock";
+/* one bind path per process: the differential and llvm-differential
+ * suites run this program at the same time in one job */
+const pipePath = `/tmp/scriptc-net-typed-option-records-${process.pid}.sock`;
 interface Pipe {
   path: string;
 }

@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
 import type { Program, SourceFile } from "../ts7/adapter.js";
-import { F64, type IrFunction, type IrGlobal, type IrModule, type IrStmt } from "../../ir/ir.js";
+import {
+  F64,
+  type IrExpr,
+  type IrFunction,
+  type IrGlobal,
+  type IrModule,
+  type IrStmt,
+} from "../../ir/ir.js";
 import { checkCycleBindingAccesses } from "./cycle-initialization.js";
 import { Lowerer } from "./lowerer.js";
 
@@ -60,4 +67,61 @@ test("a function that names no flagged binding keeps its nodes", () => {
   const returned = (reading.body[0] as IrStmt & { value: { kind: string } }).value;
   expect(returned.kind).toBe("seqExpr");
   expect(other.body[0]).toBe(otherNode);
+});
+
+/** A flagged class whose static members are reached through `owners`. */
+const classFlag = (
+  className: string,
+  owners: readonly string[],
+  reference: { file: string; start: number; end: number; name: string },
+) => ({
+  global: {} as IrGlobal,
+  flagId: `%g.class.${className}%initialized`,
+  name: className,
+  module: {} as SourceFile,
+  settled: new Set<SourceFile>(),
+  cycle: true,
+  className,
+  staticOwners: owners,
+  references: [
+    {
+      loc: { file: reference.file, start: reference.start, end: reference.end },
+      name: reference.name,
+    },
+  ],
+});
+
+test("an inherited static call is checked against the class its reference names", () => {
+  const subject = lowerer();
+  const aLoc = { file: "cycle.ts", start: 10, end: 12 };
+  const bLoc = { file: "cycle.ts", start: 20, end: 22 };
+  subject.classInitFlags.set("A", classFlag("A", ["Base", "A"], { ...aLoc, name: "A" }));
+  subject.classInitFlags.set("B", classFlag("B", ["Base", "B"], { ...bLoc, name: "B" }));
+  const call: IrExpr = {
+    kind: "call",
+    callee: "%Base.static:value",
+    args: [],
+    type: F64,
+    loc: aLoc,
+  };
+  const fn: IrFunction = {
+    name: "%main",
+    params: [],
+    returnType: F64,
+    locals: [],
+    body: [{ kind: "exprStmt", expr: call, loc: aLoc }],
+    loc: aLoc,
+  };
+  checkCycleBindingAccesses(subject, { functions: [fn] } as unknown as IrModule);
+  // Both A and B list `Base` as a static owner; the call is the source
+  // reference to A, so A's flag must be the one checked.
+  const rewritten = (fn.body[0] as IrStmt & { expr: IrExpr }).expr;
+  expect(rewritten.kind).toBe("seqExpr");
+  const tdzCheck = (rewritten as Extract<IrExpr, { kind: "seqExpr" }>).stmts[0] as IrStmt & {
+    expr: Extract<IrExpr, { kind: "intrinsic" }>;
+  };
+  expect(tdzCheck.expr.args[0]).toMatchObject({
+    kind: "varRef",
+    localId: "%g.class.A%initialized",
+  });
 });

@@ -2905,37 +2905,59 @@ function lowerNetServerMethodCall(
       // CONNECT and an Http2ServerResponse for valid traditional/extended
       // HTTP/2 CONNECT, so portless's union-typed listener selects the
       // protocol arm with `instanceof net.Socket`.
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
       const sockParamOk = (t: IrType): boolean => {
         if (t.kind === "netSocket") return true;
         if (t.kind !== "union") return false;
         const def = lowerer.unions.get(t.unionId);
         return !!def && def.arms.some((a) => a.kind === "netSocket");
       };
+      /* The h2 arm of the socket slot carries no head bytes, so a listener
+       * that serves that arm declares `head` as `Buffer | undefined`; the
+       * adapter builds the matching union arm. */
+      const headUnionOk = (t: IrType): boolean => {
+        if (t.kind !== "union") return false;
+        const def = lowerer.unions.get(t.unionId);
+        return (
+          !!def &&
+          def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
+          def.arms.some((a) => a.kind === "undefinedT")
+        );
+      };
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's payload, like the request
+       * handler does: the socket (or the h2 compatibility response, which
+       * the h2 server's CONNECT hands over instead) and the head arrive as
+       * dynamic values, so one listener serves both arms. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "connect listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? sockParamOk(p)
+              : (p.kind === "bytes" && p.elem === "u8") || headUnionOk(p),
+        "use (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, DYN, DYN],
+          rejectValueReturn: true,
+        },
+      );
+      /* A listener that serves the h2 arm (the union socket slot) must not
+       * declare a bare Buffer head: the h2 arm has none, so the slot would
+       * be left without a value. */
       if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && !sockParamOk(p1)) ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
+        cb.type.kind === "func" &&
+        cb.type.params[1]?.kind === "union" &&
+        cb.type.params[2] !== undefined &&
+        cb.type.params[2]!.kind === "bytes"
       ) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "connect listeners whose parameters are not (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
+          "connect listeners whose third parameter is a bare Buffer on the h2 arm (declare it as `Buffer | undefined`)",
         );
       }
       return {
@@ -2952,33 +2974,26 @@ function lowerNetServerMethodCall(
       // socket over raw with the bytes read past the head, and destroys
       // the socket when no listener exists. Registration works on every
       // server kind (a parserless net server never fires it, like Node).
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
-      if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && p1.kind !== "netSocket") ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners whose parameters are not (req: IncomingMessage, socket: Socket, head: Buffer)",
-        );
-      }
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's (req, socket, head)
+       * payload, like the request handler does. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "upgrade listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? p.kind === "netSocket"
+              : p.kind === "bytes" && p.elem === "u8",
+        "use (req: IncomingMessage, socket: Socket, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, NETSOCKET_T, BYTES_U8],
+          rejectValueReturn: true,
+        },
+      );
       return {
         kind: "libCall",
         fn: "http.serverOnUpgrade",

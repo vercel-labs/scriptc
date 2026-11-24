@@ -500,6 +500,7 @@ static int scr_exec_kill_signal(ScrStr *kill_signal, bool *ok);
  * does anything. */
 static void scr_child_abort_dispose(ScrChild *c);
 static void scr_child_abort_fire(ScrChild *c);
+static ScrDyn *scr_child_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc);
 
 #ifdef _WIN32
 /* ── Windows arm: real children via CreateProcessW ────────────────────
@@ -2064,6 +2065,9 @@ struct ScrChild {
   ScrChildErrEntry *err_cbs;
   size_t n_err, cap_err;
   ScrClosure *exec_cb;
+  /* exec/execFile's callback ran (the exit path or an abort): Node's
+   * exithandler guard, so a killed child's close does not call it twice. */
+  bool exec_fired;
   ScrExecFileFn exec_fn;
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
@@ -3323,7 +3327,8 @@ static ScrError *scr_exec_file_error(ScrChild *c, ScrStr *stderr_value) {
 }
 
 static void scr_exec_file_fire(ScrChild *c) {
-  if (c->exec_cb == NULL || c->exec_fn == NULL) return;
+  if (c->exec_fired || c->exec_cb == NULL || c->exec_fn == NULL) return;
+  c->exec_fired = true;
   ScrStr *out = scr_child_stream_capture_value(c->out_stream);
   ScrStr *err = scr_child_stream_capture_value(c->err_stream);
   ScrError *error = scr_exec_file_error(c, err);
@@ -4070,7 +4075,13 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * callback has been moved in, so a throw path releases it first. */
 ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
-                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal,
+                             const ScrDyn *signal, bool has_signal, ScrAbortAddFn add) {
+  /* The abort subscription is the POSIX arm's today: the signal rides the
+   * ABI on both platforms and is unused here. */
+  (void)signal;
+  (void)has_signal;
+  (void)add;
   /* Consume the armed maxBuffer before the first throw path: a rejected
    * option must not leave its limit for the next unrelated capture. */
   double max_buffer = scr_child_max_take();
@@ -5516,6 +5527,9 @@ struct ScrChild {
   ScrChildErrEntry *err_cbs;
   size_t n_err, cap_err;
   ScrClosure *exec_cb;
+  /* exec/execFile's callback ran (the exit path or an abort): Node's
+   * exithandler guard, so a killed child's close does not call it twice. */
+  bool exec_fired;
   ScrExecFileFn exec_fn;
   ScrStr *exec_display;
   ScrStr *exec_file; /* the spawned file and its arguments (+1 each), for */
@@ -7432,7 +7446,8 @@ static ScrError *scr_exec_file_error(ScrChild *c, ScrStr *stderr_value) {
 }
 
 static void scr_exec_file_fire(ScrChild *c) {
-  if (c->exec_cb == NULL || c->exec_fn == NULL) return;
+  if (c->exec_fired || c->exec_cb == NULL || c->exec_fn == NULL) return;
+  c->exec_fired = true;
   ScrStr *out = scr_child_stream_capture_value(c->out_stream);
   ScrStr *err = scr_child_stream_capture_value(c->err_stream);
   ScrError *error = scr_exec_file_error(c, err);
@@ -8477,7 +8492,8 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * callback has been moved in, so a throw path releases it first. */
 ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
-                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal) {
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal,
+                             const ScrDyn *signal, bool has_signal, ScrAbortAddFn add) {
   /* Consume the armed maxBuffer before the first throw path: a rejected
    * option must not leave its limit for the next unrelated capture. */
   double max_buffer = scr_child_max_take();
@@ -8498,6 +8514,15 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
     free(msg);
     return NULL;
   }
+  /* Node's spawn validates options.signal after the execFile options: an
+   * AbortSignal instance, or the property TypeError. */
+  bool has_abort = has_signal;
+  if (has_abort && (signal == NULL || signal->kind != SCR_DYN_HANDLE ||
+                    signal->v.handle.tag != SCR_DYNH_ABORT_SIGNAL)) {
+    scr_closure_release(cb);
+    scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", signal);
+    return NULL;
+  }
   ScrChild *c = scr_spawn_opts(cmd, args, 3, 3, 3, 0, 0, false, false, has_env,
                                env_pairs, cwd);
   c->exec_cb = cb;
@@ -8515,6 +8540,28 @@ ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/
   if (delay > 0) {
     c->deadline_ms = scr_now_ms() + delay;
     c->deadline_signo = signo;
+  }
+  /* Node's spawn subscribes to options.signal: an already-aborted signal
+   * fires on the next tick (after 'spawn'), another fires its abort
+   * listener; exec's callback receives the AbortError in place of exit. */
+  if (has_abort) {
+    c->abort_signal = scr_dyn_retain(signal);
+    ScrStr *key = scr_str_new("aborted", 7);
+    ScrDyn *aborted = scr_dyn_handle_key_get(signal, key);
+    scr_str_release(key);
+    bool pre = aborted != NULL && scr_dyn_truthy(aborted);
+    scr_dyn_release(aborted);
+    if (pre) {
+      c->abort_pre = true;
+    } else if (add != NULL) {
+      ScrClosure *clo = scr_closure_new((void *)&scr_child_abort_thunk, 1);
+      clo->caps[0] = scr_box_new_obj(&scr_child_retain_v, &scr_child_release_v, NULL);
+      scr_box_set_ref(clo->caps[0], scr_child_retain(c));
+      ScrDyn *listener =
+          scr_dyn_new_func(clo, &scr_child_abort_thunk, 0, "()", "onAbortListener");
+      c->abort_dispose = add(signal, listener);
+      scr_dyn_release(listener);
+    }
   }
   return c;
 }
@@ -8660,6 +8707,18 @@ static void scr_child_emit_error_obj(ScrChild *c, ScrError *err) {
 /* abortChildProcess: child.kill(killSignal), then 'error' with Node's
  * AbortError whose cause is signal.reason — only when the kill reached a
  * live child (kill() answers false once the process is gone). */
+/* An aborted exec/execFile call: Node's errorhandler hands the callback
+ * the AbortError with empty captures and the exit path never calls it
+ * again. The callback (the maxBuffer wrapper included) is invoked once. */
+static void scr_exec_abort_deliver(ScrChild *c, ScrDyn *reason) {
+  if (c->exec_fired || c->exec_cb == NULL || c->exec_fn == NULL) return;
+  c->exec_fired = true;
+  ScrError *error = scr_error_abort(reason);
+  ScrStr *out = scr_str_new("", 0);
+  ScrStr *err = scr_str_new("", 0);
+  c->exec_fn(c->exec_cb, error, out, err); /* error/out/err move */
+}
+
 static void scr_child_abort_fire(ScrChild *c) {
   if (c->abort_fired || c->settled) return;
   c->abort_fired = true;
@@ -8670,6 +8729,13 @@ static void scr_child_abort_fire(ScrChild *c) {
     ScrStr *key = scr_str_new("reason", 6);
     reason = scr_dyn_handle_key_get(c->abort_signal, key);
     scr_str_release(key);
+  }
+  if (c->exec_fn != NULL) {
+    /* exec/execFile: the callback carries the AbortError (Node's
+     * errorhandler); there is no 'error' event listener to emit to. */
+    scr_exec_abort_deliver(c, reason);
+    scr_dyn_release(reason);
+    return;
   }
   ScrError *error = scr_error_abort(reason);
   scr_dyn_release(reason);

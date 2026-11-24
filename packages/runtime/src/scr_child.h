@@ -275,7 +275,8 @@ ScrChild *scr_exec_file_cwd(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
  * exec/execFile kill(); the callback still reports the exit's own status. */
 ScrChild *scr_exec_file_opts(ScrStr *cmd, ScrArr *args, ScrClosure *cb /*moves*/,
                              ScrExecFileFn fn, bool shell, ScrStr *cwd, bool has_env,
-                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal);
+                             ScrArr *env_pairs, double timeout_ms, ScrStr *kill_signal,
+                             const ScrDyn *signal, bool has_signal, ScrAbortAddFn add);
 ScrChild *scr_child_retain(ScrChild *c);
 void scr_child_release(ScrChild *c);
 void *scr_child_retain_v(void *p);

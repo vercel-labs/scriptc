@@ -12067,6 +12067,8 @@
           "tests/corpus/child-channel-control/main.ts",
           "tests/corpus/child-detached-session.mjs",
           "tests/corpus/child-exec-env-timeout.cjs",
+          "tests/corpus/child-exec-signal.cjs",
+          "tests/corpus/child-exec-signal.ts",
           "tests/corpus/child-exec-sync-buffer.ts",
           "tests/corpus/child-exec-sync-encodings.ts",
           "tests/corpus/child-execfile-env-timeout.ts",
@@ -12273,7 +12275,9 @@
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
           "tests/corpus/child-shell-file-validation.cjs",
-          "tests/corpus/child-spawnsync-pid.cjs"
+          "tests/corpus/child-spawnsync-pid.cjs",
+          "tests/corpus/child-exec-signal.cjs",
+          "tests/corpus/child-exec-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12394,7 +12398,9 @@
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
           "tests/corpus/child-shell-file-validation.cjs",
-          "tests/corpus/child-spawnsync-pid.cjs"
+          "tests/corpus/child-spawnsync-pid.cjs",
+          "tests/corpus/child-exec-signal.cjs",
+          "tests/corpus/child-exec-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12439,7 +12445,9 @@
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
           "tests/corpus/child-shell-file-validation.cjs",
-          "tests/corpus/child-spawnsync-pid.cjs"
+          "tests/corpus/child-spawnsync-pid.cjs",
+          "tests/corpus/child-exec-signal.cjs",
+          "tests/corpus/child-exec-signal.ts"
         ]
       },
       "anchorSource": "exact"
@@ -12484,7 +12492,9 @@
           "tests/corpus/child-shell-separate-args.cjs",
           "tests/corpus/child-shell-separate-args.ts",
           "tests/corpus/child-shell-file-validation.cjs",
-          "tests/corpus/child-spawnsync-pid.cjs"
+          "tests/corpus/child-spawnsync-pid.cjs",
+          "tests/corpus/child-exec-signal.cjs",
+          "tests/corpus/child-exec-signal.ts"
         ]
       },
       "anchorSource": "exact"

@@ -2329,6 +2329,7 @@ export function lowerExecFileCall(
   let envPairs: IrExpr | null = null;
   let timeout: IrExpr | null = null;
   let killSignal: IrExpr | null = null;
+  let signal: IrExpr | null = null;
   let maxBuffer: IrExpr | null = null;
   // The options that are evaluated, as written: `cwd` is the launch's
   // fifth argument.
@@ -2400,6 +2401,12 @@ export function lowerExecFileCall(
           killSignal = { kind: "strLit", value: t.value, type: STRING, loc };
           optionSteps.push(8);
         }
+      } else if (member.name === "signal") {
+        // Node validates the value at the launch (an AbortSignal instance)
+        // and aborts the call through it; the value rides the checked-
+        // dynamic lane so one runtime check covers every spelling.
+        signal = lowerer.lowerExprExpecting(member.value, DYN);
+        optionSteps.push(9);
       } else if (member.name === "windowsHide" || member.name === "windowsVerbatimArguments") {
         // Windows-only presentation and quoting: Node reads neither on
         // POSIX. This form binds no member values, so a value whose
@@ -2420,7 +2427,7 @@ export function lowerExecFileCall(
         lowerer.noLowering(
           `${what} option '${member.name}'`,
           property,
-          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
+          "encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form",
         );
       }
     }
@@ -2548,7 +2555,7 @@ export function lowerExecFileCall(
   // The source evaluates the file or command, the argument list, the
   // options as written, and the callback last.
   const sourceOrder: ChildEvalStep[] = [0, 1, ...optionSteps, 2];
-  if (envPairs !== null || timeout !== null || killSignal !== null) {
+  if (envPairs !== null || timeout !== null || killSignal !== null || signal !== null) {
     // The full option shape (the SCR_CHILD_CP_OPTIONS build): env REPLACES
     // the environment (the flag says whether it is present at all),
     // timeoutMs 0 means no deadline, and "" is the SIGTERM default.
@@ -2562,6 +2569,8 @@ export function lowerExecFileCall(
       envPairs ?? { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
       timeout ?? numLit(0, loc),
       killSignal ?? strLit("", loc),
+      signal ?? dynUndefinedExpr(loc),
+      boolLit(signal !== null, loc),
     ];
     return withChildArgsCheck(
       lowerer,

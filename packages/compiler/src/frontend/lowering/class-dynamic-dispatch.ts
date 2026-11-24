@@ -7891,10 +7891,16 @@ export class ClassDynamicDispatch {
         for (; start + CHUNK <= end; start += CHUNK) {
           const statements = fn.body.slice(start, start + CHUNK);
           const loc = statements[0]!.loc;
-          const params: IrParam[] = [
-            { localId: "target", name: "target", type: DYN },
-            { localId: "key", name: "key", type: DYN },
-          ];
+          // The helper's own parameters, and every read-only local the
+          // branches name: a descriptor or delete helper's branches name
+          // `target` and `key`, but an Object.assign or defineProperties
+          // guard's name the source and the value it writes as well; the
+          // chunk must receive all of them.
+          const params = this.fenceChunkParams(fn, statements);
+          if (params === null) {
+            rebuilt.push(...statements);
+            continue;
+          }
           const name = `%staticFieldFence.${this.staticFenceChunks++}`;
           const chunk: IrFunction = {
             name,
@@ -7915,7 +7921,7 @@ export class ClassDynamicDispatch {
             expr: {
               kind: "call",
               callee: name,
-              args: [varRef("target", DYN, loc), varRef("key", DYN, loc)],
+              args: params.map((param) => varRef(param.localId, param.type, loc)),
               type: VOID,
               loc,
             },
@@ -7927,6 +7933,63 @@ export class ClassDynamicDispatch {
       }
       if (rebuilt !== null) fn.body = rebuilt;
     }
+  }
+
+  /** The parameters a fence chunk needs for `statements`: the helper's own
+   * parameters and the read-only locals the branches read, or null when the
+   * statements write one of those locals, break out of the helper, or return
+   * early — cases the chunk cannot carry. */
+  private fenceChunkParams(fn: IrFunction, statements: readonly IrStmt[]): IrParam[] | null {
+    const used = new Set<string>();
+    const declared = new Set<string>();
+    const written = new Set<string>();
+    let transfers = false;
+    everyStmtList([...statements], {
+      expr: (expression) => {
+        if (expression.kind === "varRef") used.add(expression.localId);
+        else if (expression.kind === "incDec" || expression.kind === "assignExpr") {
+          used.add(expression.localId);
+          written.add(expression.localId);
+        } else if (expression.kind === "closure")
+          for (const captured of expression.captures) used.add(captured);
+        return true;
+      },
+      stmt: (statement) => {
+        switch (statement.kind) {
+          case "varDecl":
+          case "forOf":
+            declared.add(statement.localId);
+            break;
+          case "assign":
+            written.add(statement.localId);
+            break;
+          case "rethrow":
+            used.add(statement.localId);
+            break;
+          case "break":
+          case "continue":
+          case "return":
+            transfers = true;
+            break;
+        }
+        return true;
+      },
+    });
+    if (transfers) return null;
+    const params = new Map(fn.params.map((param) => [param.localId, param]));
+    const localById = new Map(fn.locals.map((local) => [local.id, local]));
+    const extras: IrParam[] = [];
+    for (const id of used) {
+      if (params.has(id) || declared.has(id)) continue;
+      const local = localById.get(id);
+      // An id this function does not declare is a global (the static-table
+      // ready flag and the field globals the branches read), which every
+      // function names the same way.
+      if (local === undefined) continue;
+      if (local.mutable || local.boxed === true || written.has(id)) return null;
+      extras.push({ localId: local.id, name: local.name, type: local.type });
+    }
+    return [...fn.params, ...extras];
   }
 
   /** The chunk functions splitStaticFieldBranches has made. */

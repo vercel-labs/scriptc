@@ -54,3 +54,38 @@ test("a class family's static-field fences stay in bounded functions", async () 
     rmSync(directory, { recursive: true, force: true });
   }
 }, 120_000);
+
+// Object.assign and Object.defineProperties on a class value guard the static
+// fields they could write with the same kind of run, but their helpers name a
+// source and a value as well as the target and key. A chunk receives the
+// helper's own parameters and every read-only local its branches read, so a
+// long run still splits (it used to name `target`/`key` and fail to compile).
+test("long guard runs in the assign helpers compile", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-fence-params-"));
+  try {
+    const fields = Array.from({ length: 300 }, (_, index) => `  static f${index} = ${index};`).join(
+      "\n",
+    );
+    const entry = join(directory, "main.ts");
+    writeFileSync(
+      entry,
+      `class Base {\n${fields}\n}\n` +
+        `class Sub extends Base { static g = 1; }\n` +
+        `const boxed: any = Base;\n` +
+        `Object.assign(boxed, {});\n` +
+        `Object.defineProperties(boxed, {});\n` +
+        `console.log("ok", typeof boxed);\n`,
+    );
+    const ir = join(directory, "main.ir");
+    const result = await compile(entry, {
+      outDir: directory,
+      outPath: ir,
+      outputKind: "ir",
+    });
+    expect(result.ok ? [] : result.diagnostics.map((d) => `${d.code}: ${d.message}`)).toEqual([]);
+    const text = readFileSync(ir, "utf8");
+    expect(text.includes("%staticFieldFence."), "the guard runs are chunked").toBe(true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}, 120_000);

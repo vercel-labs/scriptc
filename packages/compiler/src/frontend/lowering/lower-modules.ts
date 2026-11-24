@@ -602,6 +602,10 @@ export function appendDynamicImportModules(
  * signatures are cheap and calls resolve against them; only BODY lowering
  * is reachability-gated. */
 export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
+  // A new collection may register more globals than the last; alias answers
+  // memoized against the old set are stale until it finishes.
+  lowerer.globalsCollected = false;
+  lowerer.aliasStorageBySymbol.clear();
   const computed = new Set<ts.ClassDeclaration>();
   for (const fp of parts)
     for (const decl of fp.classDecls) {
@@ -727,6 +731,7 @@ export function collectProgram(lowerer: Lowerer, parts: FileParts[]): void {
   }
   markCycleEarlyBindings(lowerer);
   markRequireEarlyBindings(lowerer);
+  lowerer.globalsCollected = true;
 }
 
 export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {

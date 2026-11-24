@@ -84,3 +84,7 @@ tmp-*/
 
 # the island start-up benchmark's fixture packages are committed on purpose
 !benchmarks/startup/islands/node_modules/
+
+# Vercel CI bootstrapping toolchain and turbo cache
+.ci/
+.turbo/

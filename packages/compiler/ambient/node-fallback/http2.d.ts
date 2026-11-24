@@ -63,7 +63,9 @@ declare module "http2" {
     statusCode: number;
     statusMessage: string;
     setHeader(name: string, value: number | string | readonly string[]): void;
-    getHeader(name: string): string | undefined;
+    /* Node answers the value as set (a number, string or string[]), and the
+     * ":status" a writeHead stores is a number. */
+    getHeader(name: string): string | number | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): import("http").OutgoingHttpHeaders;

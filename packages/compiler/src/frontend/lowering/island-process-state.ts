@@ -8,6 +8,7 @@
  * process's, and Node is told to drop its cached `process.cwd()`. */
 import type { IrExpr, IrFunction, IrLibFn } from "../../ir/ir.js";
 import { everyStmt } from "../../ir/traverse.js";
+import type { FunctionCensus } from "./function-census.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** The runtime's exit-code calls and their island counterparts. Both
@@ -26,17 +27,30 @@ const EXIT_CODE_CALLS: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>
 /** Routes the exit-code calls and process.chdir through the island unit,
  * over the final functions, in place. Programs without islands are left as
  * they are. */
-export function shareIslandProcessState(lowerer: Lowerer, functions: IrFunction[]): void {
+export function shareIslandProcessState(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (!lowerer.usesNodeIsland) return;
-  const visitor = {
-    expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall") {
-        const island = EXIT_CODE_CALLS.get(e.fn);
-        if (island !== undefined) e.fn = island;
-      }
-      return true;
-    },
-    stmt: (): boolean => true,
-  };
-  for (const fn of functions) for (const s of fn.body) everyStmt(s, visitor);
+  for (const fn of functions) {
+    let routed = false;
+    const visitor = {
+      expr: (e: IrExpr): boolean => {
+        if (e.kind === "libCall") {
+          const island = EXIT_CODE_CALLS.get(e.fn);
+          if (island !== undefined) {
+            e.fn = island;
+            routed = true;
+          }
+        }
+        return true;
+      },
+      stmt: (): boolean => true,
+    };
+    for (const s of fn.body) everyStmt(s, visitor);
+    // The routing above changes a libCall's entry point inside a statement
+    // list that stays the same array.
+    if (routed) census.forget(fn);
+  }
 }

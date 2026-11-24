@@ -1112,7 +1112,12 @@ interface SubtleCrypto {
     wrappedKey: BufferSource,
     unwrappingKey: CryptoKey,
     unwrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams,
-    unwrappedKeyAlgorithm: AlgorithmIdentifier | HmacImportParams,
+    unwrappedKeyAlgorithm:
+      | AlgorithmIdentifier
+      | HmacImportParams
+      | KmacImportParams
+      | EcKeyImportParams
+      | RsaHashedImportParams,
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKey>;

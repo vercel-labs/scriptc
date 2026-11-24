@@ -15525,7 +15525,9 @@ export class Lowerer {
       shareBuiltinValueIdentities(this, functions),
     );
     this.timedPass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
-    this.timedPass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
+    this.timedPass("finalizeFunctionSourceText", () =>
+      finalizeFunctionSourceText(this, functions, census),
+    );
     if (this.diags.length === 0)
       this.timedPass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
     this.timedPass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
@@ -15534,20 +15536,23 @@ export class Lowerer {
     this.timedPass("trackClassFieldCreation", () =>
       trackClassFieldCreation(this, functions, census),
     );
-    this.timedPass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
+    this.timedPass("boxClassInstancesExactly", () =>
+      boxClassInstancesExactly(this, functions, census),
+    );
     this.timedPass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
     this.timedPass("guardClassAttributeWrites", () =>
       guardClassAttributeWrites(this, functions, census),
     );
     this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
     this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
-    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions));
-    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
-    this.timedPass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
-    // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
-    // rewrite nodes inside unchanged statement lists, so the census of every
-    // function they touched no longer describes its body.
-    census.clear();
+    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions, census));
+    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions, census));
+    this.timedPass("shareIslandProcessState", () =>
+      shareIslandProcessState(this, functions, census),
+    );
+    // Those three rewrite nodes inside unchanged statement lists. Each
+    // forgets the census of every function it changed in place, so the passes
+    // below rescan those functions only instead of the whole module.
     this.timedPass("installBufferValue", () => installBufferValue(functions, census));
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
@@ -15716,7 +15721,11 @@ export class Lowerer {
       // A hidden local that a later expression of another statement reads
       // again (a branch reading what its condition saved) is owned by the
       // statement list around both, not by the expression that declared it.
-      for (const fn of module.functions) ownEscapingLocals(fn);
+      for (const fn of module.functions) {
+        // A hidden local is declared inside an expression sequence.
+        if (!census.hasExpr(fn, "seqExpr")) continue;
+        ownEscapingLocals(fn);
+      }
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     // Before the origin table is compacted: the claims index the lowering's.
@@ -15735,7 +15744,7 @@ export class Lowerer {
         fmt: (type) => this.fmt(type),
       });
     }
-    if (module?.declOrigins !== undefined) compactDeclOrigins(module);
+    if (module?.declOrigins !== undefined) compactDeclOrigins(module, census);
     if (module)
       this.timedPass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
     if (module) bindCompletionCallbacks(module);

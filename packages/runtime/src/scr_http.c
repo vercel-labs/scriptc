@@ -1128,6 +1128,10 @@ struct ScrHttpRes {
   bool head_sent;
   bool chunked;
   bool finished;
+  /* Node's kOutHeaders exists once a header was set or appended: a later
+   * writeHead(status, headers) merges into it; without it the writeHead
+   * headers go to the wire only. */
+  bool header_map_created;
   /* writableHighWaterMark as it was when the response was created: the
    * server's value (or the current default for an h2 response), kept after
    * the connection detaches. */
@@ -1329,27 +1333,38 @@ void scr_http_res_status_msg_set(ScrHttpRes *r, ScrStr *msg /*borrowed*/) {
  * an array (one line per element). Each line records its kind; an array
  * is its consecutive same-name LIST lines. */
 enum { SCR_HTTP_HV_STR = 0, SCR_HTTP_HV_NUM = 1, SCR_HTTP_HV_LIST = 2 };
+/* A bit in hkinds for a line the readable header map does not answer: the
+ * headers a bare writeHead(status, headers) writes straight to the head
+ * (Node keeps no map for them unless a header was set beforehand). */
+#define SCR_HTTP_HV_WIRE_ONLY 0x80
 
 /* getHeader(name)'s first line, as a string (+1), or NULL. */
 ScrStr *scr_http_res_get_header(ScrHttpRes *r, ScrStr *name) {
   for (size_t i = 0; i < r->nheaders; i++) {
-    if (scr_http_name_eq(r->hnames[i], name)) return scr_str_retain(r->hvalues[i]);
+    if ((r->hkinds[i] & SCR_HTTP_HV_WIRE_ONLY) == 0 && scr_http_name_eq(r->hnames[i], name))
+      return scr_str_retain(r->hvalues[i]);
   }
   return NULL;
 }
 
 /* The checked-dynamic value of one header line group: a number, a string,
  * or an array of the group's strings (+1). */
+static bool scr_http_header_visible(const uint8_t *kinds, size_t i) {
+  return kinds == NULL || (kinds[i] & SCR_HTTP_HV_WIRE_ONLY) == 0;
+}
+
 static ScrDyn *scr_http_out_value(ScrStr *const *names, ScrStr *const *values, const uint8_t *kinds,
                                   size_t count, size_t first) {
   size_t n = 0;
-  for (size_t i = first; i < count; i++) n += scr_http_name_eq(names[i], names[first]);
-  uint8_t kind = kinds ? kinds[first] : SCR_HTTP_HV_STR;
+  for (size_t i = first; i < count; i++)
+    n += scr_http_header_visible(kinds, i) && scr_http_name_eq(names[i], names[first]);
+  uint8_t kind = kinds ? (uint8_t)(kinds[first] & 0x7f) : SCR_HTTP_HV_STR;
   if (n == 1 && kind == SCR_HTTP_HV_NUM) return scr_dyn_new_num(strtod(values[first]->data, NULL));
   if (n == 1 && kind == SCR_HTTP_HV_STR) return scr_dyn_new_str(values[first]);
   ScrDyn *list = scr_dyn_new_arr();
   for (size_t i = first; i < count; i++) {
-    if (scr_http_name_eq(names[i], names[first])) scr_dyn_arr_push(list, scr_dyn_new_str(values[i]));
+    if (scr_http_header_visible(kinds, i) && scr_http_name_eq(names[i], names[first]))
+      scr_dyn_arr_push(list, scr_dyn_new_str(values[i]));
   }
   return list;
 }
@@ -1358,7 +1373,7 @@ static ScrDyn *scr_http_out_value(ScrStr *const *names, ScrStr *const *values, c
  * undefined value when the header is absent. */
 ScrDyn *scr_http_res_get_header_dyn(ScrHttpRes *r, ScrStr *name) {
   for (size_t i = 0; i < r->nheaders; i++) {
-    if (scr_http_name_eq(r->hnames[i], name))
+    if (scr_http_header_visible(r->hkinds, i) && scr_http_name_eq(r->hnames[i], name))
       return scr_http_out_value(r->hnames, r->hvalues, r->hkinds, r->nheaders, i);
   }
   return scr_dyn_retain(scr_dyn_undefined());
@@ -1366,11 +1381,14 @@ ScrDyn *scr_http_res_get_header_dyn(ScrHttpRes *r, ScrStr *name) {
 
 /* Outgoing header snapshots omit the automatically serialized fields. The
  * names API lowercases keys while the raw variant preserves their casing. */
-static ScrArr *scr_http_out_header_names(ScrStr **names, size_t count, bool raw) {
+static ScrArr *scr_http_out_header_names(ScrStr **names, const uint8_t *kinds, size_t count,
+                                         bool raw) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, count);
   for (size_t i = 0; i < count; i++) {
+    if (!scr_http_header_visible(kinds, i)) continue;
     bool seen = false;
-    for (size_t j = 0; j < i && !seen; j++) seen = scr_http_name_eq(names[j], names[i]);
+    for (size_t j = 0; j < i && !seen; j++)
+      seen = scr_http_header_visible(kinds, j) && scr_http_name_eq(names[j], names[i]);
     if (seen) continue;
     if (raw) {
       scr_arr_push_ref(out, scr_str_retain(names[i]));
@@ -1390,8 +1408,10 @@ static ScrDyn *scr_http_out_headers(ScrStr **names, ScrStr **values, const uint8
                                     size_t count) {
   ScrDyn *out = scr_dyn_new_obj();
   for (size_t i = 0; i < count; i++) {
+    if (!scr_http_header_visible(kinds, i)) continue;
     bool seen = false;
-    for (size_t j = 0; j < i && !seen; j++) seen = scr_http_name_eq(names[j], names[i]);
+    for (size_t j = 0; j < i && !seen; j++)
+      seen = scr_http_header_visible(kinds, j) && scr_http_name_eq(names[j], names[i]);
     if (seen) continue;
     ScrStr *lower = scr_str_new(names[i]->data, names[i]->len);
     for (size_t j = 0; j < lower->len; j++)
@@ -1403,11 +1423,11 @@ static ScrDyn *scr_http_out_headers(ScrStr **names, ScrStr **values, const uint8
 }
 
 ScrArr *scr_http_res_get_header_names(ScrHttpRes *r) {
-  return scr_http_out_header_names(r->hnames, r->nheaders, false);
+  return scr_http_out_header_names(r->hnames, r->hkinds, r->nheaders, false);
 }
 
 ScrArr *scr_http_res_get_raw_header_names(ScrHttpRes *r) {
-  return scr_http_out_header_names(r->hnames, r->nheaders, true);
+  return scr_http_out_header_names(r->hnames, r->hkinds, r->nheaders, true);
 }
 
 ScrDyn *scr_http_res_get_headers(ScrHttpRes *r) {
@@ -1536,6 +1556,7 @@ static void scr_http_res_append_header(ScrHttpRes *r, ScrStr *name /*borrowed*/,
                                         ScrStr *value /*borrowed*/) {
   if (!scr_http_res_headers_unsent(r, "append") || !scr_http_res_header_valid(r, name, value)) return;
   scr_http_res_insert_header(r, r->nheaders, name, value, SCR_HTTP_HV_STR);
+  r->header_map_created = true;
 }
 
 /* setHeader(name, string): replace-by-name (case-insensitive), Node's
@@ -1543,6 +1564,7 @@ static void scr_http_res_append_header(ScrHttpRes *r, ScrStr *name /*borrowed*/,
 void scr_http_res_set_header(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrStr *value /*borrowed*/) {
   if (!scr_http_res_headers_unsent(r, "set") || !scr_http_res_header_valid(r, name, value)) return;
   scr_http_res_insert_header(r, scr_http_res_drop_named(r, name), name, value, SCR_HTTP_HV_STR);
+  r->header_map_created = true;
 }
 
 /* One element of an outgoing header value: a string, a number (String(n))
@@ -1609,7 +1631,10 @@ void scr_http_res_set_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, ScrDy
     valid = text != NULL && scr_http_res_header_valid(r, name, text);
     scr_str_release(text);
   }
-  if (valid) scr_http_res_insert_value(r, scr_http_res_drop_named(r, name), name, value, false);
+  if (valid) {
+    scr_http_res_insert_value(r, scr_http_res_drop_named(r, name), name, value, false);
+    r->header_map_created = true;
+  }
   scr_dyn_release(value);
 }
 
@@ -1641,6 +1666,7 @@ void scr_http_res_append_header_dyn(ScrHttpRes *r, ScrStr *name /*borrowed*/, Sc
   }
   if (last == SIZE_MAX) scr_http_res_insert_value(r, r->nheaders, name, value, false);
   else scr_http_res_insert_value(r, last + 1, r->hnames[last], value, true);
+  r->header_map_created = true;
   scr_dyn_release(value);
 }
 
@@ -3051,7 +3077,23 @@ static bool scr_http_res_write_head_ready(ScrHttpRes *r, double status) {
 void scr_http_res_write_head(ScrHttpRes *r, double status) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   r->status = (int)status;
-  if (r->h2_stream != NULL || scr_http_res_has_header(r, "expect")) {
+  if (r->h2_stream != NULL) {
+    scr_http_res_send_head(r, -1);
+    /* Node's h2 compatibility writeHead stores the status in the readable
+     * header map as ":status" (a number); the wire takes it from the
+     * respond status instead, and this line is added after the head is out
+     * so it never reaches the encoder. */
+    if (scr_exc_pending()) return;
+    char buf[16];
+    int n = snprintf(buf, sizeof buf, "%d", (int)status);
+    ScrStr *name = scr_str_new(":status", 7);
+    ScrStr *value = scr_str_new(buf, (size_t)n);
+    scr_http_res_insert_header(r, r->nheaders, name, value, SCR_HTTP_HV_NUM);
+    scr_str_release(name);
+    scr_str_release(value);
+    return;
+  }
+  if (scr_http_res_has_header(r, "expect")) {
     scr_http_res_send_head(r, -1); /* Node: an explicit writeHead means chunked unless CL was set */
     return;
   }
@@ -3075,6 +3117,27 @@ void scr_http_res_write_head(ScrHttpRes *r, double status) {
  * ToString, arrays one line per element), then the head goes out.
  * undefined/null headers are the plain head; other kinds throw the
  * ERR_INVALID_ARG_TYPE-flavored fence. */
+/* Headers a bare writeHead writes are wire-only: Node keeps no readable map
+ * for them unless a header was set beforehand. The h2 compatibility
+ * response has no such state (its writeHead sets each header), so only an
+ * HTTP/1 response marks them. */
+static void scr_http_res_mark_wire_only(ScrHttpRes *r) {
+  for (size_t i = 0; i < r->nheaders; i++) r->hkinds[i] |= SCR_HTTP_HV_WIRE_ONLY;
+}
+
+/* A writeHead that throws stores nothing in Node when no header map existed
+ * before it (a setHeader or appendHeader keeps what it merged). Drops the
+ * lines this call inserted past `before`, and the map-created flag if this
+ * call was what set it. */
+static void scr_http_res_rollback_headers(ScrHttpRes *r, size_t before, bool map_existed) {
+  while (r->nheaders > before) {
+    size_t i = --r->nheaders;
+    scr_str_release(r->hnames[i]);
+    scr_str_release(r->hvalues[i]);
+  }
+  if (!map_existed) r->header_map_created = false;
+}
+
 void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *headers) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   if (headers->kind == SCR_DYN_UNDEF || headers->kind == SCR_DYN_NULL) {
@@ -3085,6 +3148,9 @@ void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *hea
     scr_dyn_arg_type_fail("headers", "an instance of Object", headers);
     return;
   }
+  bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
+  size_t before = r->nheaders;
   for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
     const ScrDyn *v = e.value;
@@ -3097,23 +3163,36 @@ void scr_http_res_write_head_dyn(ScrHttpRes *r, double status, const ScrDyn *hea
       scr_http_res_set_header_dyn(r, name, (ScrDyn *)v);
     }
     scr_str_release(name);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) {
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
+      return;
+    }
   }
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 void scr_http_res_write_head_n(ScrHttpRes *r, double status, ScrArr *names, ScrArr *values) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   size_t n = (size_t)scr_arr_len(names);
+  bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
+  size_t before = r->nheaders;
   for (size_t i = 0; i < n; i++) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(names, (double)i);
     ScrStr *value = (ScrStr *)scr_arr_get_ref(values, (double)i);
     scr_http_res_set_header(r, name, value);
     scr_str_release(name);
     scr_str_release(value);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) {
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
+      return;
+    }
   }
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* writeHead(status, record): the flat [k0, v0, k1, v1, ...] pairs the
@@ -3135,6 +3214,9 @@ void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /
     scr_dyn_release(list);
     return;
   }
+  bool merge_into_map = r->header_map_created;
+  bool wire_only = !merge_into_map && r->h2_stream == NULL;
+  size_t before = r->nheaders;
   for (size_t i = 0; i + 1 < n; i += 2) {
     ScrStr *name = (ScrStr *)scr_arr_get_ref(pairs, (double)i);
     ScrStr *value = (ScrStr *)scr_arr_get_ref(pairs, (double)(i + 1));
@@ -3158,9 +3240,14 @@ void scr_http_res_write_head_pairs(ScrHttpRes *r, double status, ScrArr *pairs /
     else scr_http_res_set_header(r, name, value);
     scr_str_release(name);
     scr_str_release(value);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) {
+      if (wire_only) scr_http_res_rollback_headers(r, before, merge_into_map);
+      return;
+    }
   }
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* writeHead(status, object): Node's two paths. Without earlier headers the
@@ -3173,7 +3260,9 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
                                     ScrArr *values /*borrowed*/) {
   if (!scr_http_res_write_head_ready(r, status)) return;
   size_t n = (size_t)scr_arr_len(names);
-  bool progressive = r->nheaders > 0;
+  bool progressive = r->header_map_created;
+  bool wire_only = !progressive && r->h2_stream == NULL;
+  size_t before = r->nheaders;
   if (progressive) {
     for (size_t i = 0; i < n; i++) {
       ScrStr *name = (ScrStr *)scr_arr_get_ref(names, (double)i);
@@ -3219,9 +3308,14 @@ void scr_http_res_write_head_object(ScrHttpRes *r, double status, ScrArr *names 
     }
     scr_str_release(name);
     scr_dyn_release(value);
-    if (scr_exc_pending()) return;
+    if (scr_exc_pending()) {
+      if (wire_only) scr_http_res_rollback_headers(r, before, progressive);
+      return;
+    }
   }
+  if (wire_only) scr_http_res_mark_wire_only(r);
   scr_http_res_write_head(r, status);
+  if (wire_only && scr_exc_pending()) scr_http_res_rollback_headers(r, before, false);
 }
 
 /* res.destroy(): tears the connection down NOW (mid-stream RST is the
@@ -5657,8 +5751,8 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
     scr_dyn_release(materialized);
     return out;
   }
-  const char *raw = getenv(lower);
-  if (raw == NULL || raw[0] == '\0') raw = getenv(upper);
+  const char *raw = scr_getenv(lower);
+  if (raw == NULL || raw[0] == '\0') raw = scr_getenv(upper);
   return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
 }
 
@@ -5683,7 +5777,7 @@ void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
 static void scr_http_proxy_env_default(void) {
   if (scr_http_proxy_env_checked || scr_http_proxy_env_explicit) return;
   scr_http_proxy_env_checked = true;
-  const char *use = getenv("NODE_USE_ENV_PROXY");
+  const char *use = scr_getenv("NODE_USE_ENV_PROXY");
   if (use == NULL || strcmp(use, "1") != 0) return;
   scr_http_proxy_env_apply(NULL);
   scr_http_proxy_env.from_process = true;
@@ -6649,11 +6743,11 @@ bool scr_http_client_has_header_named(ScrHttpClientReq *c, ScrStr *name) {
 }
 
 ScrArr *scr_http_client_get_header_names(ScrHttpClientReq *c) {
-  return scr_http_out_header_names(c->hnames, c->nheaders, false);
+  return scr_http_out_header_names(c->hnames, NULL, c->nheaders, false);
 }
 
 ScrArr *scr_http_client_get_raw_header_names(ScrHttpClientReq *c) {
-  return scr_http_out_header_names(c->hnames, c->nheaders, true);
+  return scr_http_out_header_names(c->hnames, NULL, c->nheaders, true);
 }
 
 ScrDyn *scr_http_client_get_headers(ScrHttpClientReq *c) {

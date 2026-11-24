@@ -75,6 +75,12 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
  * no leak checker leave them NULL. */
 void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
 void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((weak));
+/* The allocator's view of an address: where its allocation starts, and its
+ * size. An abandoned fiber's leak-scan roots are named through these
+ * (scr_lsan_keep_fiber_values). Weak like the leak-region hooks: a
+ * sanitizer runtime without an allocator interface leaves them NULL. */
+const void *__sanitizer_get_allocated_begin(const void *p) __attribute__((weak));
+size_t __sanitizer_get_allocated_size(const volatile void *p) __attribute__((weak));
 #endif
 #endif
 
@@ -1494,6 +1500,180 @@ static void scr_fiber_keep_abandoned(ScrFiber *fiber) {
     scr_abandoned_cap = cap;
   }
   scr_abandoned_fibers[scr_abandoned_len++] = fiber;
+}
+
+/* ── leak-scan roots of an abandoned fiber ──────────────────────────────
+ * A suspended fiber's stack, and a stackless generator's coroutine frame,
+ * stay referenced for the process's life on purpose (see above). But
+ * LeakSanitizer's reachability scan follows plain pointers only: a dynamic
+ * value a live frame keeps through an object's layout slot would be
+ * reported although the frame owns it, because a slot holds the cell word,
+ * not the pointer. Before abandoning the fiber, name every dynamic value
+ * the frame reaches for the scan (scr_lsan_immortal), walking the dynamic
+ * edges the scan cannot follow. Scans the saved stack, the coroutine frame
+ * and the fiber record, follows plain pointers into heap blocks, and stops
+ * after a fixed budget: an abandoned frame is small, and the budget bounds
+ * a pathological chain. Sanitizer lane only. */
+typedef struct {
+  const char *p;
+  size_t words;
+} ScrLsanRange;
+
+typedef struct {
+  const void **seen; /* allocation begins and dynamic values processed */
+  size_t seen_cap, seen_len;
+  ScrLsanRange *range;
+  size_t nrange, cap_range;
+  ScrDyn **dyn;
+  size_t ndyn, cap_dyn;
+  size_t budget; /* words left to scan */
+} ScrLsanScan;
+
+static void scr_lsan_seen_grow(ScrLsanScan *s) {
+  size_t cap = s->seen_cap ? s->seen_cap * 2 : 64;
+  const void **old = s->seen;
+  size_t old_cap = s->seen_cap;
+  const void **grown = calloc(cap, sizeof *grown);
+  if (!grown) scr_oom();
+  for (size_t i = 0; i < old_cap; i++) {
+    const void *v = old[i];
+    if (!v) continue;
+    size_t j = ((uintptr_t)v >> 4) & (cap - 1);
+    while (grown[j]) j = (j + 1) & (cap - 1);
+    grown[j] = v;
+  }
+  free(old);
+  s->seen = grown;
+  s->seen_cap = cap;
+}
+
+/* Adds `p` to the processed set; false when it was already there. */
+static bool scr_lsan_seen(ScrLsanScan *s, const void *p) {
+  if ((s->seen_len + 1) * 2 > s->seen_cap) scr_lsan_seen_grow(s);
+  size_t mask = s->seen_cap - 1;
+  size_t i = ((uintptr_t)p >> 4) & mask;
+  while (s->seen[i]) {
+    if (s->seen[i] == p) return false;
+    i = (i + 1) & mask;
+  }
+  s->seen[i] = p;
+  s->seen_len++;
+  return true;
+}
+
+static void scr_lsan_push_range(ScrLsanScan *s, const void *p, size_t bytes) {
+  if (!p || bytes < sizeof(void *)) return;
+  if (s->nrange == s->cap_range) {
+    size_t cap = s->cap_range ? s->cap_range * 2 : 32;
+    ScrLsanRange *grown = realloc(s->range, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    s->range = grown;
+    s->cap_range = cap;
+  }
+  s->range[s->nrange].p = p;
+  s->range[s->nrange].words = bytes / sizeof(void *);
+  s->nrange++;
+}
+
+static void scr_lsan_push_dyn(ScrLsanScan *s, ScrDyn *d) {
+  if (!d || !scr_lsan_seen(s, d)) return;
+  if (s->ndyn == s->cap_dyn) {
+    size_t cap = s->cap_dyn ? s->cap_dyn * 2 : 32;
+    ScrDyn **grown = realloc(s->dyn, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    s->dyn = grown;
+    s->cap_dyn = cap;
+  }
+  s->dyn[s->ndyn++] = d;
+}
+
+/* A word that lies exactly one cycle header into an allocation of at least
+ * a dynamic value's size, whose header names the dynamic-value type and
+ * whose own type fields look like one: a plain scan cannot mistake program
+ * data for a dynamic value. */
+static bool scr_lsan_is_dyn(const void *w, size_t bytes) {
+  if (bytes < sizeof(ScrCycHdr) + sizeof(ScrDyn)) return false;
+  const ScrCycHdr *h = scr_cyc_hdr((void *)w);
+  if (h->id == 0 || (uint32_t)h->id >= SCR_CYC_MAX_TYPES) return false;
+  if (scr_cyc_types[h->id].kind != SCR_CYC_KIND_DYN) return false;
+  const ScrDyn *d = w;
+  return (unsigned)d->kind <= (unsigned)SCR_DYN_PROXY && d->rc != 0;
+}
+
+static void scr_lsan_scan(ScrLsanScan *s) {
+  for (;;) {
+    if (s->nrange && s->budget) {
+      ScrLsanRange range = s->range[--s->nrange];
+      const uintptr_t *word = (const uintptr_t *)range.p;
+      for (size_t i = 0; i < range.words && s->budget; i++, s->budget--) {
+        uintptr_t w = word[i];
+        if (!w) continue;
+        const void *begin = __sanitizer_get_allocated_begin((const void *)w);
+        if (!begin) continue;
+        size_t bytes = __sanitizer_get_allocated_size(begin);
+        if ((const char *)w == (const char *)begin + sizeof(ScrCycHdr)) {
+          if (scr_lsan_is_dyn((const void *)w, bytes)) scr_lsan_push_dyn(s, (ScrDyn *)w);
+          continue;
+        }
+        if ((const char *)w == (const char *)begin && scr_lsan_seen(s, begin))
+          scr_lsan_push_range(s, begin, bytes);
+      }
+      continue;
+    }
+    if (!s->ndyn) break;
+    ScrDyn *d = s->dyn[--s->ndyn];
+    scr_lsan_immortal(d);
+    /* Its own words carry plain pointers to native blocks (a handle's
+     * record, a closure, a container's items and entries) that may in turn
+     * hold dynamic values: scan them like any other allocation. */
+    {
+      const void *begin = __sanitizer_get_allocated_begin(d);
+      if (begin) scr_lsan_push_range(s, begin, __sanitizer_get_allocated_size(begin));
+    }
+    switch (d->kind) {
+    case SCR_DYN_ARR:
+      for (size_t i = 0; i < d->v.arr.len; i++)
+        if (!d->v.arr.presence || d->v.arr.presence[i])
+          scr_lsan_push_dyn(s, d->v.arr.items[i]);
+      scr_lsan_push_dyn(s, d->v.arr.properties);
+      break;
+    case SCR_DYN_OBJ:
+      for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+        ScrDynProp e = scr_dyn_obj_prop_at(d, i);
+        if (e.accessor) {
+          scr_lsan_push_dyn(s, e.getter);
+          scr_lsan_push_dyn(s, e.setter);
+        } else scr_lsan_push_dyn(s, e.value);
+      }
+      break;
+    case SCR_DYN_TYPED_REF: scr_lsan_push_dyn(s, d->v.typed_ref.materialized); break;
+    case SCR_DYN_PROXY:
+      scr_lsan_push_dyn(s, d->v.proxy.target);
+      scr_lsan_push_dyn(s, d->v.proxy.handler);
+      break;
+    default: break;
+    }
+    scr_lsan_push_dyn(s, d->prototype);
+    scr_lsan_push_dyn(s, d->symbol_properties);
+    scr_lsan_push_dyn(s, d->symbol_keys);
+  }
+}
+
+static void scr_lsan_keep_fiber_values(ScrFiber *fiber) {
+  if (!__sanitizer_get_allocated_begin || !__sanitizer_get_allocated_size) return;
+  ScrLsanScan s;
+  memset(&s, 0, sizeof s);
+  s.budget = (size_t)1 << 22; /* 32 MiB of frame/heap words */
+  scr_lsan_push_range(&s, fiber, sizeof *fiber);
+  if (fiber->coro) {
+    const void *begin = __sanitizer_get_allocated_begin(fiber->coro);
+    if (begin) scr_lsan_push_range(&s, begin, __sanitizer_get_allocated_size(begin));
+  }
+  scr_lsan_push_range(&s, fiber->stack, SCR_FIBER_STACK);
+  scr_lsan_scan(&s);
+  free(s.seen);
+  free(s.range);
+  free(s.dyn);
 }
 
 static SCR_TL ScrFiber *scr_stackless_fibers;
@@ -8438,6 +8618,9 @@ void scr_gen_release(ScrGen *g) {
       g->fiber->gen = NULL;
 #ifdef SCR_ASAN_FIBERS
       scr_fiber_keep_abandoned(g->fiber);
+      /* The frame keeps its dynamic values: name them for the leak scan,
+       * which cannot follow a layout slot's cell word. */
+      scr_lsan_keep_fiber_values(g->fiber);
 #endif
     }
   }

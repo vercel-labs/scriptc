@@ -10341,21 +10341,27 @@ void scr_http_res_end_args(ScrHttpRes *r, const ScrDyn *chunk, const ScrDyn *enc
   }
 }
 
-/* A write callback for a message that can no longer accept writes completes
- * with Node's write-after-end error: the callback takes the error, while the
- * 'error' event is the no-callback form's report. */
-static void scr_http_client_late_write_cb_nt(ScrClosure *cb) {
-  ScrClosure *listener = scr_box_get_ref(cb->caps[0]);
-  if (listener == NULL) return;
-  ScrStr *text = scr_str_new("write after end", 15);
+/* Fires a stream callback with Node's error (code and message), the way the
+ * generated error-listener adapters deliver one. */
+static void scr_http_client_fire_error_cb(ScrClosure *listener, const char *code,
+                                          const char *message) {
+  ScrStr *text = scr_str_new(message, strlen(message));
   ScrError *err = scr_error_new(SCR_ERR_ERROR, text);
-  scr_error_set_code(err, "ERR_STREAM_WRITE_AFTER_END");
+  scr_error_set_code(err, code);
   ScrError *saved = scr_event_error_payload;
   scr_event_error_payload = err;
   scr_dyn_listener_fire_err(listener, text);
   scr_event_error_payload = saved;
   scr_error_release(err);
   scr_str_release(text);
+}
+
+/* A write callback for a message that can no longer accept writes completes
+ * with Node's write-after-end error. */
+static void scr_http_client_late_write_cb_nt(ScrClosure *cb) {
+  ScrClosure *listener = scr_box_get_ref(cb->caps[0]);
+  if (listener == NULL) return;
+  scr_http_client_fire_error_cb(listener, "ERR_STREAM_WRITE_AFTER_END", "write after end");
   scr_closure_release(listener);
 }
 
@@ -10373,11 +10379,12 @@ bool scr_http_client_write_args(ScrHttpClientReq *c, const ScrDyn *chunk, const 
   /* a message that already ended (or settled) accepts no more writes; the
    * callback still completes, and it never joins a list that will not fire */
   if (c->ended || c->destroyed || c->close_emitted || c->writable_finished) {
-    if (callback->kind == SCR_DYN_FUNC) {
-      scr_http_client_late_write_cb(callback);
-    } else if (c->ended && !c->destroyed && !c->close_emitted) {
+    if (callback->kind == SCR_DYN_FUNC) scr_http_client_late_write_cb(callback);
+    /* Node reports a write after end on the message's 'error' list while it
+     * still holds its socket, with or without a callback; a finished
+     * message answers the callback alone. */
+    if (c->ended && !c->writable_finished && !c->destroyed && !c->close_emitted)
       scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_WAE, scr_http_client_retain(c));
-    }
     return false;
   }
   bool failed = false;
@@ -10405,11 +10412,12 @@ void scr_http_client_end_args(ScrHttpClientReq *c, const ScrDyn *chunk, const Sc
   /* a late end(): the request already finished, so its callback completes
    * now instead of joining a list that will never fire */
   if (c->writable_finished || c->close_emitted || c->destroyed) {
-    /* Node answers a late end() callback synchronously, before the caller's
-     * next statement runs */
+    /* Node answers a late end() callback synchronously, with its
+     * already-finished error (the caller's next statement still sees it) */
     if (callback->kind == SCR_DYN_FUNC) {
-      ScrClosure *cb = scr_dyn_listener_closure0(callback);
-      scr_dyn_listener_fire0(cb);
+      ScrClosure *cb = scr_dyn_listener_closure_err(callback);
+      scr_http_client_fire_error_cb(cb, "ERR_STREAM_ALREADY_FINISHED",
+                                    "Cannot call end after a stream was finished");
       scr_closure_release(cb);
     }
     return;

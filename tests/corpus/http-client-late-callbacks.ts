@@ -1,30 +1,38 @@
-// A completed request answers callbacks that arrive late: end()'s callback
-// runs at once (Node's synchronous answer), and a write's callback completes
-// with Node's write-after-end error instead of joining a list that never
-// fires (the callback takes the error; the 'error' event is the no-callback
-// form's report).
+// Callbacks that arrive after a request ended settle the way Node settles
+// them: a write made right after end() reports Node's write-after-end error
+// on the message's 'error' list (the callback receives it too), and a
+// callback registered once the request has finished is answered at once —
+// end()'s with ERR_STREAM_ALREADY_FINISHED, a write's with
+// ERR_STREAM_WRITE_AFTER_END and no 'error' event.
 import * as http from "node:http";
 import * as net from "node:net";
 
+const show = (err?: NodeJS.ErrnoException): string =>
+  err === undefined ? "none" : err.code + " " + JSON.stringify(err.message);
+
 const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
   req.resume();
-  res.end("ok");
+  setTimeout(() => res.end("ok"), 50);
 });
 
 server.listen(0, "127.0.0.1", () => {
   const port = (server.address() as net.AddressInfo).port;
   const req = http.request({ port, host: "127.0.0.1", path: "/" });
+  req.on("error", (err: NodeJS.ErrnoException) => console.log("req error", show(err)));
+  req.end(() => console.log("end cb"));
+  // the request ended, its socket is still attached
+  const early = req.write("x", (err?: NodeJS.ErrnoException) => console.log("write cb", show(err)));
+  console.log("write ret", early);
   req.on("response", (res: http.IncomingMessage) => {
     res.resume();
     res.on("end", () => {
-      req.end(() => console.log("late end cb"));
-      const accepted = req.write("x", (err?: Error) =>
-        console.log("late write cb", (err as NodeJS.ErrnoException | undefined)?.code),
+      console.log("-- after response (finished) --");
+      req.end((err?: NodeJS.ErrnoException) => console.log("late end cb", show(err)));
+      const late = req.write("y", (err?: NodeJS.ErrnoException) =>
+        console.log("late write cb", show(err)),
       );
-      console.log("late write ret", accepted);
-      setTimeout(() => server.close(), 100);
+      console.log("late write ret", late);
+      setTimeout(() => server.close(), 150);
     });
   });
-  req.on("error", (err: NodeJS.ErrnoException) => console.log("req error", err.code));
-  req.end(() => console.log("end cb"));
 });

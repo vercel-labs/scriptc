@@ -15,6 +15,7 @@ import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { varRef } from "../../../ir/build.js";
 import {
+  DATE_T,
   DYN,
   F64,
   type IrExpr,
@@ -466,7 +467,7 @@ export function lowerDateToLocale(
   lowerer: Lowerer,
   call: ts.CallExpression,
   name: string,
-  date: IrExpr,
+  date: IrExpr | { dynSource: IrExpr },
 ): IrExpr {
   const loc = locOf(call);
   const args = call.arguments.nodes;
@@ -474,8 +475,35 @@ export function lowerDateToLocale(
   if (args.length > 2) lowerer.noLowering(`${what} with ${args.length} arguments`, call);
   // The receiver is evaluated first, then the arguments, and the method
   // reads the Date's time value after them: an argument that changes the
-  // Date changes what is formatted.
-  const receiver = lowerer.declareHiddenLocal("%localeDate", date.type);
+  // Date changes what is formatted. A checked-dynamic receiver (a Date a
+  // JavaScript file made) is held as the dynamic value until then — its
+  // typed view snapshots the time when it is built, so building it before
+  // the arguments would format the timestamp they may have changed.
+  const stmts: IrStmt[] = [];
+  const after: IrStmt[] = [];
+  let receiver: IrExpr;
+  if ("kind" in date) {
+    const held = lowerer.declareHiddenLocal("%localeDate", date.type);
+    stmts.push({ kind: "varDecl", localId: held.id, init: date, loc });
+    receiver = varRef(held.id, date.type, loc);
+  } else {
+    const source = lowerer.declareHiddenLocal("%localeReceiver", DYN);
+    stmts.push({ kind: "varDecl", localId: source.id, init: date.dynSource, loc });
+    const typed = lowerer.declareHiddenLocal("%localeDate", DATE_T);
+    after.push({
+      kind: "varDecl",
+      localId: typed.id,
+      init: {
+        kind: "libCall",
+        fn: "date.checkedValue",
+        args: [varRef(source.id, DYN, loc)],
+        type: DATE_T,
+        loc,
+      },
+      loc,
+    });
+    receiver = varRef(typed.id, DATE_T, loc);
+  }
   const held = lowerer.declareHiddenLocal("%localeOptions", DYN);
   const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, "DateTimeFormat");
@@ -483,9 +511,10 @@ export function lowerDateToLocale(
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: receiver.id, init: date, loc },
+      ...stmts,
       ...locale.effects,
       { kind: "varDecl", localId: held.id, init: options, loc },
+      ...after,
     ],
     result: {
       kind: "libCall",
@@ -494,7 +523,7 @@ export function lowerDateToLocale(
         {
           kind: "libCall",
           fn: "date.getTime",
-          args: [varRef(receiver.id, date.type, loc)],
+          args: [receiver],
           type: F64,
           loc,
         },

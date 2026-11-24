@@ -355,12 +355,13 @@ jobs:
           path: ${{ runner.temp }}/native-darwin-arm64.tar.gz
           retention-days: 1
 
-  # The merge queue's plain shards, and a full run's plain and sanitized shards. A push to main runs neither: the
-  # queue already tested the tree it landed. The queue's list comes from scripts/ci/queue-tests.mjs (queue_plan),
-  # the seam a later change swaps for a selected subset and a smoke corpus.
+  # The merge queue's plain shards, the push to main's sanitized shards, and a full run's both flavors. The queue
+  # already ran the plain suite on the tree it landed, so a push runs none of it again and runs only the sanitized
+  # flavor the queue leaves out. The queue's list comes from scripts/ci/queue-tests.mjs (queue_plan), the seam a
+  # later change swaps for a selected subset and a smoke corpus.
   tests:
     needs: [validation_scope, lanes, queue_plan, native_linux]
-    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.post != 'true' }}
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (Linux, ${{ matrix.flavor }}, ${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }})
     # The full suite runs on Linux x64, whose hosted runners start without the
     # macOS queue. tests_macos keeps the darwin clang/libc oracles.
@@ -371,9 +372,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The queue runs the plain flavor only; its shards come from queue_plan. A full run runs both flavors over
-        # all thirty slices, of which the plain flavor keeps twenty.
-        flavor: ${{ needs.lanes.outputs.queue == 'true' && fromJSON('["plain"]') || fromJSON('["plain", "san"]') }}
+        # The queue runs the plain flavor only; its shards come from queue_plan. A push to main runs the sanitized
+        # flavor only, which is what the queue leaves out. A full run runs both over all thirty slices, of which the
+        # plain flavor keeps twenty.
+        flavor: ${{ needs.lanes.outputs.queue == 'true' && fromJSON('["plain"]') || needs.lanes.outputs.post == 'true' && fromJSON('["san"]') || fromJSON('["plain", "san"]') }}
         # The sanitized shards are this lane's long pole: with twenty slices
         # they run 33 to 43 minutes of tests each, against the plain lane's
         # 20. Thirty slices cut each sanitized shard's share of the corpus to
@@ -1750,9 +1752,10 @@ jobs:
                   require ts7_baselines "${{ needs.ts7_baselines.result }}"
                   ;;
                 post)
-                  # A push to main runs the global lanes the queue leaves out. The queue already tested the plain
-                  # suite on the tree it landed, so no plain shard is required here.
+                  # A push to main runs the global lanes the queue leaves out: the sanitized shards and everything
+                  # below, but no plain shard, which the queue ran on the tree it landed.
                   require native_linux "${{ needs.native_linux.result }}"
+                  require tests "${{ needs.tests.result }}"
                   require effects "${{ needs.effects.result }}"
                   require island_conformance "${{ needs.island_conformance.result }}"
                   require three_nodes_san "${{ needs.three_nodes_san.result }}"

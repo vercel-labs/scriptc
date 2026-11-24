@@ -70,8 +70,9 @@ test("the queue's test matrix comes from the plan and runs the plain flavor only
   const tests = workflow.jobs.tests!;
   expect(tests.needs).toContain("queue_plan");
   const matrix = tests.strategy!.matrix!;
-  expect(matrix.flavor).toBe(
-    "${{ needs.lanes.outputs.queue == 'true' && fromJSON('[\"plain\"]') || fromJSON('[\"plain\", \"san\"]') }}",
-  );
+  // The queue runs the plain flavor; a push to main runs the sanitized one the queue leaves out; a full run both.
+  expect(matrix.flavor).toContain("needs.lanes.outputs.queue == 'true' && fromJSON('[\"plain\"]')");
+  expect(matrix.flavor).toContain("needs.lanes.outputs.post == 'true' && fromJSON('[\"san\"]')");
+  expect(matrix.flavor).toContain('fromJSON(\'["plain", "san"]\')');
   expect(matrix.shard).toContain("needs.queue_plan.outputs.plain_shards");
 });

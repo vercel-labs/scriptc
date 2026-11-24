@@ -298,10 +298,12 @@ test("the queue runs the fast gate, and a push to main runs the global lanes it 
   ];
   for (const name of postOnly)
     expect(workflow.jobs[name]!.if, name).toContain("needs.lanes.outputs.queue != 'true'");
-  // The merge queue runs the plain flavor only, with the shard list the plan job reports.
+  // The merge queue runs the plain flavor only, with the shard list the plan job reports; a push to main runs the
+  // sanitized flavor the queue leaves out.
   const tests = workflow.jobs.tests!;
-  expect(tests.if).toContain("needs.lanes.outputs.post != 'true'");
+  expect(tests.if).not.toContain("post != 'true'");
   expect(tests.strategy!.matrix!.flavor).toContain("needs.lanes.outputs.queue == 'true'");
+  expect(tests.strategy!.matrix!.flavor).toContain("needs.lanes.outputs.post == 'true'");
   expect(tests.strategy!.matrix!.shard).toContain("needs.queue_plan.outputs.plain_shards");
   expect(tests.needs).toContain("queue_plan");
   // The full parity sweep is off in the queue; the baseline completeness pass is on.
@@ -350,6 +352,7 @@ const postJobs = new Set([
   "queue_plan",
   "code_quality",
   "native_linux",
+  "tests",
   "effects",
   "island_conformance",
   "three_nodes_san",
@@ -523,7 +526,7 @@ test("the merge queue's required check passes on the fast gate alone", () => {
   expect(runGate("true", { effects: "failure" }, queue, "full", "queue").status).toBe(0);
 });
 
-test("a push to main requires the global lanes, and not the plain shards", () => {
+test("a push to main requires the global lanes, including the sanitized shards", () => {
   const post = {
     linux: "true",
     macos: "false",
@@ -537,6 +540,7 @@ test("a push to main requires the global lanes, and not the plain shards", () =>
   expect(runGate("true", {}, post, "full", "post").status).toBe(0);
   for (const job of [
     "native_linux",
+    "tests",
     "effects",
     "island_conformance",
     "bootstrap_seed",
@@ -549,8 +553,6 @@ test("a push to main requires the global lanes, and not the plain shards", () =>
     "tests_macos_smoke",
   ])
     expect(runGate("true", { [job]: "failure" }, post, "full", "post").status, job).toBe(1);
-  // The queue tested the plain suite the push landed, so its skip is expected.
-  expect(runGate("true", { tests: "failure" }, post, "full", "post").status).toBe(0);
   expect(runGate("true", { tests_macos_smoke: "skipped" }, post, "full", "post").status).toBe(1);
 });
 

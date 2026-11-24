@@ -23,12 +23,19 @@ import {
   type SrcLoc,
   STRING,
   UNDEFINED_T,
+  VOID,
 } from "../../../ir/ir.js";
 
 export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
 
+/** The string the lowering passes for the default locale (an absent or
+ * undefined locales argument). A locale the program supplies is validated
+ * by the runtime, and an empty one is Node's RangeError like any other
+ * invalid tag. */
+export const INTL_DEFAULT_LOCALE = "\u0001scriptc-default-locale";
+
 export const INTL_FORMATTER_HINT =
-  'what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node\'s RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported';
+  "what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or any locale string the program holds (ICU canonicalizes it; an invalid tag throws Node's RangeError); lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported";
 
 /** The formatter interface of the standard library that `type` names, or
  * null. */
@@ -53,13 +60,37 @@ function isUndefinedArgument(lowerer: Lowerer, arg: ts.Expression): boolean {
  * runtime canonicalizes the tag with ICU and refuses a structurally invalid
  * one with Node's RangeError; lists of locales are locale negotiation and
  * stay refused. */
+/** Node's RangeError for a tag that cannot be a locale, raised where the
+ * argument stands: the call never returns, so the locale slot keeps the
+ * default tag. */
+function invalidLocale(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "icu.invalidLocale", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: { kind: "strLit", value: INTL_DEFAULT_LOCALE, type: STRING, loc },
+    type: STRING,
+    loc,
+  };
+}
+
 function intlLocale(
   lowerer: Lowerer,
   arg: ts.Expression | undefined,
   what: string,
   loc: SrcLoc,
 ): { locale: IrExpr; effects: IrStmt[] } {
-  const defaultLocale: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  const defaultLocale: IrExpr = {
+    kind: "strLit",
+    value: INTL_DEFAULT_LOCALE,
+    type: STRING,
+    loc,
+  };
   if (arg === undefined) return { locale: defaultLocale, effects: [] };
   if (ts.isSpreadElement(arg)) lowerer.noLowering(`${what} with a spread argument`, arg);
   if (isUndefinedArgument(lowerer, arg)) {
@@ -75,14 +106,21 @@ function intlLocale(
       ],
     };
   }
-  if (ts.isStringLiteralLike(arg))
-    return { locale: { kind: "strLit", value: arg.text, type: STRING, loc: locOf(arg) }, effects: [] };
+  if (ts.isStringLiteralLike(arg)) {
+    // An empty tag is not a locale: Node throws its RangeError when the
+    // formatter is built, at this point in the argument order.
+    if (arg.text === "") return { locale: invalidLocale(lowerer, locOf(arg)), effects: [] };
+    return {
+      locale: { kind: "strLit", value: arg.text, type: STRING, loc: locOf(arg) },
+      effects: [],
+    };
+  }
   const value = lowerer.lowerExpr(arg);
   if (value.type.kind === "array")
     lowerer.noLowering(
       `${what} with a locale list`,
       arg,
-      'choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string',
+      "choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string",
     );
   const text = lowerer.coerceInto(arg, value, STRING);
   if (text.type.kind !== "string")
@@ -91,7 +129,14 @@ function intlLocale(
       arg,
       "the locales argument is converted to a string, as Node does; a value this compilation cannot spell as one stays refused",
     );
-  return { locale: text, effects: [] };
+  // The tag is read where the argument stands in the evaluation order
+  // (before the options and, for a Date method, before the time value),
+  // so it evaluates into its own local there rather than at the call.
+  const held = lowerer.declareHiddenLocal("%localeText", STRING);
+  return {
+    locale: varRef(held.id, STRING, loc),
+    effects: [{ kind: "varDecl", localId: held.id, init: text, loc }],
+  };
 }
 
 /** The Intl.DateTimeFormat options the runtime refuses when it reads them
@@ -393,11 +438,7 @@ export function lowerNumberToLocaleString(
     result: {
       kind: "libCall",
       fn: "icu.numToLocaleString",
-      args: [
-        varRef(receiver.id, F64, loc),
-        locale.locale,
-        options,
-      ],
+      args: [varRef(receiver.id, F64, loc), locale.locale, options],
       type: STRING,
       loc,
     },

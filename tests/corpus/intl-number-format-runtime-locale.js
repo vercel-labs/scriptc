@@ -20,3 +20,8 @@ try {
 } catch (error) {
   console.log("underscore", error.name, error.message);
 }
+
+// The locale argument evaluates where it stands: a locale expression that
+// moves the Date is seen by the formatter's own time read.
+const stamped = new Date(0);
+console.log("order", stamped.toLocaleDateString((stamped.setTime(86400000), "en-US")));

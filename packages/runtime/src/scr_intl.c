@@ -807,12 +807,23 @@ static void scr_intl_refuse(const char *what) {
  * tag (an absent or undefined locales argument), else the tag's. The
  * compiler passes only tags it accepts. False with the missing-data Error
  * pending. */
+/* The tag the frontend passes for the default locale: an absent or
+ * undefined locales argument. Any tag the program supplies is validated,
+ * so an empty string is the RangeError like any other invalid tag. */
+#define SCR_INTL_DEFAULT_TAG "\x01scriptc-default-locale"
+static bool scr_intl_is_default_tag(const ScrStr *tag) {
+  size_t len = strlen(SCR_INTL_DEFAULT_TAG);
+  return tag->len == len && memcmp(tag->data, SCR_INTL_DEFAULT_TAG, len) == 0;
+}
+
+void scr_intl_invalid_locale(void) { scr_intl_bad_locale(); }
+
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();
     return false;
   }
-  if (tag == NULL || tag->len == 0) {
+  if (tag == NULL || scr_intl_is_default_tag(tag)) {
     snprintf(out, size, "%s", scr_intl_locale);
     return true;
   }

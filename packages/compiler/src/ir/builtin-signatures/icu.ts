@@ -1,4 +1,4 @@
-import { DATE_T, DYN, F64, STRING } from "../ir.js";
+import { DATE_T, DYN, F64, STRING, VOID } from "../ir.js";
 import { defineLibFnSignatures } from "./shared.js";
 
 /** The icu builtin call slots. */
@@ -23,6 +23,9 @@ export const icuSignatures = defineLibFnSignatures({
    * (undefined when absent), which the runtime reads by ECMA-402's steps:
    * Node's reads, conversions and errors. The result is a NumberFormat
    * handle (+1). */
+  /** A locales argument that cannot be a language tag (the empty string):
+   * raises Node's RangeError where the argument stands. Never returns. */
+  "icu.invalidLocale": { argTypes: [], result: VOID },
   "icu.numberFormatNew": { argTypes: [STRING, DYN], result: DYN },
   /** `nf.format(x)` over a number: the formatter's text (+1); a TypeError
    * when the value is not a NumberFormat. */

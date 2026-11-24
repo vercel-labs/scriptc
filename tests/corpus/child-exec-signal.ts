@@ -19,3 +19,14 @@ execFile("sleep", ["5"], { encoding: "utf8", signal: pre.signal }, (error, stdou
     setTimeout(() => partial.abort(), 200);
   });
 });
+
+// A typed child's 'error' listener hears the abort after the callback.
+setTimeout(() => {
+  const watched = new AbortController();
+  const child = exec("sleep 5", { encoding: "utf8", signal: watched.signal }, (error, stdout, stderr) => {
+    console.log("typed-listen-callback", error?.name, (error as { code?: string } | null)?.code, JSON.stringify(stdout), JSON.stringify(stderr));
+  });
+  child.on("error", (error: Error & { code?: string }) => console.log("typed-listen-error", error.name, error.code));
+  child.on("exit", (code: number | null, signal: string | null) => console.log("typed-listen-exit", code, signal));
+  setTimeout(() => watched.abort(), 100);
+}, 1200);

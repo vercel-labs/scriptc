@@ -8723,14 +8723,28 @@ static ScrStr *scr_exec_capture_text(ScrChildStream *s) {
 /* An aborted exec/execFile call: Node's errorhandler hands the callback the
  * AbortError along with the stdout and stderr collected so far, and the exit
  * path never calls it again. The callback (the maxBuffer wrapper included)
- * is invoked once. */
+ * is invoked once. Node sets the error's cmd before handing it over. */
 static void scr_exec_abort_deliver(ScrChild *c, ScrDyn *reason) {
   if (c->exec_fired || c->exec_cb == NULL || c->exec_fn == NULL) return;
   c->exec_fired = true;
   ScrError *error = scr_error_abort(reason);
+  scr_child_error_cmd(error, c->exec_display->data);
   ScrStr *out = scr_exec_capture_text(c->out_stream);
   ScrStr *err = scr_exec_capture_text(c->err_stream);
   c->exec_fn(c->exec_cb, error, out, err); /* error/out/err move */
+}
+
+/* The program's own 'error' listeners hear an aborted exec/execFile call
+ * too, after the callback (Node's abortChildProcess emits on the
+ * ChildProcess, and exec's internal listener — the callback — runs first).
+ * Having no listener is not an unhandled 'error' on this path: that
+ * listener always exists here, it is the callback that already ran. */
+static void scr_exec_abort_emit(ScrChild *c, ScrDyn *reason) {
+  if (c->n_err == 0 || scr_exc_pending()) return;
+  ScrError *error = scr_error_abort(reason);
+  scr_child_error_cmd(error, c->exec_display->data);
+  scr_child_emit_error_obj(c, error);
+  scr_error_release(error);
 }
 
 static void scr_child_abort_fire(ScrChild *c) {
@@ -8746,8 +8760,9 @@ static void scr_child_abort_fire(ScrChild *c) {
   }
   if (c->exec_fn != NULL) {
     /* exec/execFile: the callback carries the AbortError (Node's
-     * errorhandler); there is no 'error' event listener to emit to. */
+     * errorhandler), and the child's 'error' listeners hear it after. */
     scr_exec_abort_deliver(c, reason);
+    scr_exec_abort_emit(c, reason);
     scr_dyn_release(reason);
     return;
   }

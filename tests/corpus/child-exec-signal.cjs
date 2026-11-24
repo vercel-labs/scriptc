@@ -84,3 +84,26 @@ setTimeout(() => {
   });
   setTimeout(() => partial.abort(), 300);
 }, 1000);
+
+// The child's own 'error' listener hears the abort after the callback, with
+// Node's AbortError fields and cmd, and the exit event then reports the
+// signal the abort sent. execFile takes the same path; the cases are
+// sequential so their order is fixed.
+setTimeout(() => {
+  const listened = new AbortController();
+  const lc = cp.exec("printf heard; sleep 5", { encoding: "utf8", signal: listened.signal }, (e, o, r) => {
+    show("listen-callback", e, o, r);
+    console.log("listen-callback-cmd", e && e.cmd, e && e.cause && e.cause.message);
+  });
+  lc.on("error", (e) => console.log("listen-error", e.name, e.code, e.cmd, e.cause && e.cause.message));
+  lc.on("exit", (code, sig) => {
+    console.log("listen-exit", code, sig);
+    const fileSig = new AbortController();
+    const fc = cp.execFile("sleep", ["5"], { encoding: "utf8", signal: fileSig.signal }, (e, o, r) =>
+      show("listen-file-callback", e, o, r),
+    );
+    fc.on("error", (e) => console.log("listen-file-error", e.name, e.code));
+    setTimeout(() => fileSig.abort(), 100);
+  });
+  setTimeout(() => listened.abort(new Error("why")), 200);
+}, 3000);

@@ -42,6 +42,7 @@ const lanes = ["linux", "macos", "effects", "bootstrap", "profile", "islands"];
 const everything = [
   /^\.github\//,
   /^scripts\/ci-/,
+  /^scripts\/ci\//,
   /^scripts\/bootstrap-seed\.mjs$/,
   /^package\.json$/,
   /^pnpm-lock\.yaml$/,

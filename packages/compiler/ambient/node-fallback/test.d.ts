@@ -249,13 +249,13 @@ declare module "node:test" {
     getter<MockedObject extends object, MethodName extends keyof MockedObject>(
       object: MockedObject,
       methodName: MethodName,
-      implementation: (...args: any[]) => MockedObject[MethodName],
+      implementation?: ((...args: any[]) => MockedObject[MethodName]) | undefined,
       options?: MockFunctionOptions,
     ): Mock<() => MockedObject[MethodName]>;
     setter<MockedObject extends object, MethodName extends keyof MockedObject>(
       object: MockedObject,
       methodName: MethodName,
-      implementation: (value: MockedObject[MethodName]) => void,
+      implementation?: ((value: MockedObject[MethodName]) => void) | undefined,
       options?: MockFunctionOptions,
     ): Mock<(value: MockedObject[MethodName]) => void>;
     reset(): void;

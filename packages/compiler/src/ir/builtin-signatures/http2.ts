@@ -197,4 +197,11 @@ export const http2Signatures = defineLibFnSignatures({
   // the string[] a headers object holds for set-cookie.
   "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },
   "http2.streamSession": { argTypes: [HTTP2STREAM_T], result: HTTP2SESSION_T },
+  // Http2ServerResponse.statusMessage writes: evaluate the value, warn once.
+  "http2.statusMessageUnsupported": { argTypes: [HTTPRES_T, DYN], result: VOID },
+  "http2.statusMessageRead": { argTypes: [HTTPRES_T], result: VOID },
+  "http2.streamEndAfterHeaders": { argTypes: [HTTP2STREAM_T], result: BOOL },
+  "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
+  "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
+  "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
 });

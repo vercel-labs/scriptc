@@ -63,6 +63,15 @@ export const dynSignatures = defineLibFnSignatures({
    * or whose key is shorter than four bytes. The table switches on it and
    * keeps its exact key guards (frontend/lowering/class-dynamic-dispatch.ts). */
   "dyn.classHash": { argTypes: [DYN], result: F64 },
+  /** A generated class table's case selector: the case number of the
+   * class key the receiver's capsule matches under the exact test
+   * `dyn.typedRefIs` applies, or 0 when it matches none. The second
+   * argument is a string literal listing the table, one `<case> <key>`
+   * line per class; classes whose branches are the same statements share
+   * a case number (frontend/lowering/class-dynamic-dispatch.ts). The
+   * backend switches on the key's dyn.classHash and confirms the one class
+   * of that hash with a key-pointer compare (backend/llvm/lib-dispatch.ts). */
+  "dyn.classCase": { argTypes: [DYN, STRING], result: F64 },
   /** The index of a table of class values (`dyn.classIs` branches: `x
    * instanceof C`, `new C()` and static members of an untyped
    * constructor): a function value's signature key folded to one of
@@ -320,6 +329,16 @@ export const dynSignatures = defineLibFnSignatures({
    * Symbol(Symbol.iterator))"). The frontend picks by position. */
   "dyn.packPushSpreadIter": { argTypes: [DYN, DYN], result: VOID },
   "dyn.reflectApply": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** Reflect.construct(target, argumentsList[, newTarget]): constructs
+   * `target` with the list's elements, using `newTarget`'s prototype when
+   * the third ARGUMENT is present (an explicit undefined is Node's
+   * IsConstructor TypeError, not the absent case, so the trailing bool is
+   * the call's arity). A distinct newTarget over an ordinary function runs
+   * the target over a receiver built from newTarget's prototype; the forms
+   * the runtime cannot build honestly (a class or builtin target with a
+   * distinct newTarget) throw the "not supported yet" Error rather than
+   * diverge. May throw Node's TypeErrors. */
+  "dyn.reflectConstruct": { argTypes: [DYN, DYN, DYN, BOOL], result: DYN },
   "dyn.reflectGet": { argTypes: [DYN, DYN, DYN], result: DYN },
   /** `using` / `await using` with a dyn value (scr_json.c): usingMethod
    * runs the declaration's checks and answers what usingDispose calls at

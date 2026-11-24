@@ -234,6 +234,37 @@ console.log(read(p), read(t), read(dyn(new Gauge())), read({ x: 1 }), tag(t));
   }
 });
 
+test("property reads answer the fields of a class-case table's classes inline", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-case-"));
+  try {
+    const entry = join(dir, "main.js");
+    const outPath = join(dir, "main.ir.json");
+    const classes = Array.from({ length: 12 }, (_, i) => `C${i}`);
+    await writeFile(
+      entry,
+      [
+        ...classes.map((name) => `class ${name} {\n  constructor(x) { this.x = x; }\n}`),
+        "function dyn(v) { return v; }",
+        "function read(o) { return o.x; }",
+        ...classes.map((name, i) => `var p${i} = dyn(new ${name}(${i}));`),
+        `console.log(${classes.map((_, i) => `read(p${i})`).join(", ")}, read({ x: 1 }));`,
+      ].join("\n"),
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    expect(validateModule(mod)).toEqual([]);
+    const llvm = emitLlvmModule(mod);
+    // The helper selects most of the classes from a table; the site still
+    // loads each class's field after its own key compare.
+    expect(llvm).toMatch(/^class\.case\.hashed\d*:/m);
+    expect(body(llvm, "read").match(/^icc\.m\d+:/gm)).toHaveLength(classes.length);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("method calls on class instances call the method inline", async () => {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-js-ic-capsule-call-"));
   try {

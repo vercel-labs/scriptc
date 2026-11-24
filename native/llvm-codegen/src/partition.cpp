@@ -567,7 +567,8 @@ bool dominatedPartitions(ArrayRef<uint64_t> FunctionBytes) {
 
 std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
                                                       unsigned Count,
-                                                      bool SkipDominated) {
+                                                      bool SkipDominated,
+                                                      unsigned Jobs) {
   if (Count < 2)
     return std::nullopt;
   std::vector<StringRef> Header, Types, Attributes, NamedMetadata;
@@ -1027,7 +1028,12 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Line(Text.drop_front(Text.find(" = ")));
     }
   };
-  DefaultThreadPool Pool(hardware_concurrency());
+  ThreadPoolStrategy Strategy = hardware_concurrency();
+  if (Jobs != 0) {
+    Strategy.ThreadsRequested = Jobs;
+    Strategy.Limit = true;
+  }
+  DefaultThreadPool Pool(Strategy);
   for (unsigned P = 0; P < Count; ++P)
     Pool.async([&Assemble, P] { Assemble(P); });
   Pool.wait();

@@ -1,4 +1,4 @@
-import { BYTES_U8, SPAWNRES_T, STRING, VOID } from "../ir.js";
+import { BYTES_U8, F64, SPAWNRES_T, STRING, VOID } from "../ir.js";
 import { defineLibFnSignatures } from "./shared.js";
 
 /** The spawnRes builtin call slots. */
@@ -17,6 +17,9 @@ export const spawnResSignatures = defineLibFnSignatures({
   // spawnRes.signal's result is the interned `string | null` union —
   // same pattern.
   "spawnRes.signal": { argTypes: [SPAWNRES_T], result: VOID },
+  /** Node's spawnSync-result `pid`: the child's id, 0 when the spawn
+   * itself failed. */
+  "spawnRes.pid": { argTypes: [SPAWNRES_T], result: F64 },
   "spawnRes.stdout": { argTypes: [SPAWNRES_T], result: STRING },
   "spawnRes.stderr": { argTypes: [SPAWNRES_T], result: STRING },
   /* The Buffer captures (spawnSync without an encoding option): the same

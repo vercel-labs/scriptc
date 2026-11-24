@@ -19,10 +19,21 @@ const steps = [
   (next) => {
     const fd = fs.openSync(file, "r");
     console.log("close without callback", fs.close(fd));
-    fs.fstat(fd, (error) => {
-      console.log("after close", error && error.code);
-      next();
-    });
+    // Node hands the callback-less close to the thread pool, so the descriptor
+    // is not necessarily closed by the next statement, and how close and the
+    // read that follows race is up to the host. Wait for the close to land
+    // before reading the descriptor, so the answer does not depend on that.
+    const observe = () => {
+      try {
+        fs.fstatSync(fd);
+      } catch (error) {
+        console.log("after close", error.code);
+        next();
+        return;
+      }
+      setTimeout(observe, 1);
+    };
+    observe();
   },
   (next) => {
     const fd = fs.openSync(file, "r");

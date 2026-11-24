@@ -73,6 +73,9 @@ interface ClassReference {
 /** The static field storage of a flag without a class. */
 const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
 
+/** The flags of a callee that names no flagged static owner. */
+const NO_STATIC_FLAGS: readonly CycleInitFlag[] = [];
+
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
@@ -909,17 +912,26 @@ function rewriteFunction(
   // Calls and static-method reads are the common nodes: index the flagged
   // classes by the callee they name, once, instead of scanning every class
   // per node (`%<owner>.static:<name>` and the dispatch helper's instanceof
-  // call). The scan costs O(nodes × classes) on a large program.
-  const staticOwnerFlag = new Map<string, CycleInitFlag>();
+  // call). The scan costs O(nodes × classes) on a large program. A static
+  // method a subclass inherits is named by every flagged class whose owner
+  // list holds the base, so the index keeps all of them in class order:
+  // which one covers a reference depends on the reference's location.
+  const staticOwnerFlags = new Map<string, CycleInitFlag[]>();
   const instanceofFlag = new Map<string, CycleInitFlag>();
   for (const [className, flag] of classes) {
-    for (const owner of flag.staticOwners ?? []) staticOwnerFlag.set(owner, flag);
+    for (const owner of flag.staticOwners ?? []) {
+      const flags = staticOwnerFlags.get(owner);
+      if (flags === undefined) staticOwnerFlags.set(owner, [flag]);
+      else flags.push(flag);
+    }
     instanceofFlag.set(`%dyn.class.instanceof:${className}`, flag);
   }
-  const staticFlagOf = (fnName: string): CycleInitFlag | undefined => {
-    if (!fnName.startsWith("%")) return undefined;
+  const staticFlagsOf = (fnName: string): readonly CycleInitFlag[] => {
+    if (!fnName.startsWith("%")) return NO_STATIC_FLAGS;
     const marker = fnName.indexOf(".static:");
-    return marker > 1 ? staticOwnerFlag.get(fnName.slice(1, marker)) : undefined;
+    return marker > 1
+      ? (staticOwnerFlags.get(fnName.slice(1, marker)) ?? NO_STATIC_FLAGS)
+      : NO_STATIC_FLAGS;
   };
   // A generic class's instantiations (`Box%<hex>`) are the class values
   // that construction and `instanceof` name; the binding the program reads
@@ -946,13 +958,15 @@ function rewriteFunction(
         return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
       }
       case "call": {
-        const flag = instanceofFlag.get(e.callee) ?? staticFlagOf(e.callee);
-        return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
+        const instance = instanceofFlag.get(e.callee);
+        if (instance !== undefined && coversReference(instance, e.loc)) return instance;
+        for (const flag of staticFlagsOf(e.callee)) if (coversReference(flag, e.loc)) return flag;
+        return undefined;
       }
       case "closure": {
         // A static method read as a value (`const f = K.m`) reads K.
-        const flag = staticFlagOf(e.fnName);
-        return flag !== undefined && coversReference(flag, e.loc) ? flag : undefined;
+        for (const flag of staticFlagsOf(e.fnName)) if (coversReference(flag, e.loc)) return flag;
+        return undefined;
       }
       default:
         return undefined;

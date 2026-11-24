@@ -3357,20 +3357,22 @@ ScrDyn *scr_http2_stream_sent_trailers(ScrH2Stream *st) {
 
 /* Http2Stream.state: Node's read-only snapshot of the stream machine. */
 ScrDyn *scr_http2_stream_state(ScrH2Stream *st) {
-  ScrDyn *obj = scr_dyn_new_obj();
-  double state = 2; /* NGHTTP2_STREAM_STATE_OPEN */
-  /* A client request created before its session connected is still IDLE
-   * until the connection initializes it (Node's state 1). */
+  /* A client request the session has not initialized yet is still IDLE
+   * until the connection sets it up (Node's state 1); the fields it never
+   * set read zero there. One object per call: nothing is allocated before
+   * this branch is chosen. */
   if (st->sess->client && !st->ready_state) {
     ScrDyn *idle = scr_dyn_new_obj();
     scr_dyn_obj_set(idle, "state", 5, scr_dyn_new_num(1));
-    scr_dyn_obj_set(idle, "weight", 6, scr_dyn_new_num(16));
+    scr_dyn_obj_set(idle, "weight", 6, scr_dyn_new_num(0));
     scr_dyn_obj_set(idle, "sumDependencyWeight", 18, scr_dyn_new_num(0));
     scr_dyn_obj_set(idle, "localClose", 10, scr_dyn_new_num(0));
     scr_dyn_obj_set(idle, "remoteClose", 11, scr_dyn_new_num(0));
-    scr_dyn_obj_set(idle, "localWindowSize", 15, scr_dyn_new_num(65535));
+    scr_dyn_obj_set(idle, "localWindowSize", 15, scr_dyn_new_num(0));
     return idle;
   }
+  ScrDyn *obj = scr_dyn_new_obj();
+  double state = 2; /* NGHTTP2_STREAM_STATE_OPEN */
   if (st->state == SCR_H2_S_CLOSED_LOCAL) state = 5;      /* HALF_CLOSED_LOCAL */
   else if (st->state == SCR_H2_S_CLOSED_REMOTE) state = 6; /* HALF_CLOSED_REMOTE */
   else if (st->state == SCR_H2_S_CLOSED) state = 7;        /* CLOSED */

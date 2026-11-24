@@ -173,7 +173,7 @@ SCR_COLD static void ni_fatal(const char *message) {
 static bool ni_tracing(void) {
   static int tracing = -1;
   if (tracing < 0) {
-    const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+    const char *trace = scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE");
     tracing = trace != NULL && strstr(trace, "boot") != NULL;
   }
   return tracing == 1;
@@ -198,7 +198,7 @@ static bool ni_secure(void) {
  * Both must resolve to absolute paths. */
 static const char *ni_pack_dir(void) {
   bool secure = ni_secure();
-  const char *override = secure ? NULL : getenv("SCRIPTC_LIBNODE");
+  const char *override = secure ? NULL : scr_getenv("SCRIPTC_LIBNODE");
   if (override != NULL && override[0] != '\0' && override[0] != '/')
     ni_fatal("scriptc: SCRIPTC_LIBNODE must be an absolute path to a libnode pack directory\n");
   const char *dir = override != NULL && override[0] != '\0' ? override : ni_libnode;
@@ -917,8 +917,8 @@ static bool ni_root_installed = false;
  * anyone else. Everything the runtime keeps for a program's island lives in
  * this one directory (the tree, and Node's compile cache for it). */
 static int ni_islands_dir(char base[4096]) {
-  const char *xdg = getenv("XDG_CACHE_HOME");
-  const char *home = getenv("HOME");
+  const char *xdg = scr_getenv("XDG_CACHE_HOME");
+  const char *home = scr_getenv("HOME");
   int n;
   if (xdg != NULL && xdg[0] == '/')
     n = snprintf(base, 4096, "%s", xdg);
@@ -1105,7 +1105,7 @@ void scr_ni_tree_lost_file(const char *code, size_t code_len, const char *messag
 
 /* The tree in a private directory of this run, removed at exit. */
 static bool ni_temporary_root(void) {
-  const char *tmp = getenv("TMPDIR");
+  const char *tmp = scr_getenv("TMPDIR");
   if (tmp == NULL || tmp[0] != '/') tmp = "/tmp";
   int n = snprintf(ni_temp_root, sizeof ni_temp_root, "%s/scriptc-node-islands-XXXXXX", tmp);
   if (n <= 0 || (size_t)n >= sizeof ni_temp_root || mkdtemp(ni_temp_root) == NULL) return false;
@@ -1171,7 +1171,7 @@ static bool ni_compile_cache_on = false;
 static bool ni_cache_tracing(void) {
   static int tracing = -1;
   if (tracing < 0) {
-    const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+    const char *trace = scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE");
     tracing = trace != NULL && strstr(trace, "compile-cache") != NULL;
   }
   return tracing == 1;
@@ -1187,8 +1187,8 @@ static void ni_compile_cache_none(const char *why) {
  * when the tree is not installed there (beside the executable): the
  * directory is then opened only if the runtime's own cache is wanted. */
 static void ni_compile_cache_open(int islands, const char *base) {
-  const char *user = getenv("NODE_COMPILE_CACHE");
-  if (getenv("NODE_DISABLE_COMPILE_CACHE") != NULL) {
+  const char *user = scr_getenv("NODE_COMPILE_CACHE");
+  if (scr_getenv("NODE_DISABLE_COMPILE_CACHE") != NULL) {
     ni_compile_cache_none("NODE_DISABLE_COMPILE_CACHE is set");
     return;
   }
@@ -2200,7 +2200,7 @@ static void ni_stop_atexit(void) {
 #endif
   /* SCRIPTC_NODE_ISLANDS_TRACE=handles: the import table at exit (leak
    * tests: acyclic island objects the program dropped are released). */
-  const char *trace = getenv("SCRIPTC_NODE_ISLANDS_TRACE");
+  const char *trace = scr_getenv("SCRIPTC_NODE_ISLANDS_TRACE");
   if (trace != NULL && strcmp(trace, "handles") == 0) {
     scr_stdout_settle();
     fflush(stdout);

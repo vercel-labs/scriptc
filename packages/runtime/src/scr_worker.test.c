@@ -1,9 +1,11 @@
 #undef NDEBUG
 #include "scr_worker.h"
 #include <assert.h>
+#include <pthread.h>
 #include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <string.h>
 
 enum { WORKERS = 4, MESSAGES = 16 };
 static atomic_bool start;
@@ -11,6 +13,28 @@ static SCR_TL unsigned timer_calls;
 static SCR_TL unsigned cleanup_calls;
 
 static void check_cleanup(void) { cleanup_calls++; }
+
+/* Two threads write, read and enumerate the process environment at once
+ * (the SHARE_ENV shape): every access serializes on the process lock, and a
+ * write never leaves a reader a torn or freed value. */
+static atomic_bool race_stop;
+static ScrStr *race_name, *race_value;
+
+static void *race_reader(void *unused) {
+  (void)unused;
+  unsigned long seen = 0;
+  while (!atomic_load_explicit(&race_stop, memory_order_relaxed)) {
+    // Enumeration takes the process lock and walks environ: the crashed
+    // shape. (A get opens the reader's per-thread value ring, whose cleanup
+    // is a scriptc context's, so this raw pthread stays with the walk.)
+    ScrArr *pairs = scr_env_pairs();
+    if (pairs) {
+      seen += pairs->len;
+      scr_arr_release(pairs);
+    }
+  }
+  return (void *)seen;
+}
 
 static void timer(ScrClosure *closure) {
   (void)closure;
@@ -137,6 +161,28 @@ int main(void) {
   for (unsigned i = 0; i < WORKERS; i++) scr_worker_thread_release(workers[i]);
   scr_mailbox_release(mailbox);
   assert(timer_calls == 0 && cleanup_calls == 0 && scr_context_is_main());
+  /* The process-environment lock is reentrant for its owner: a locked read
+   * allocates, and the allocator's own environment reads must not deadlock
+   * on the lock they are already inside. */
+  scr_context_env_process_lock();
+  scr_context_env_process_lock();
+  scr_context_env_process_unlock();
+  scr_context_env_process_unlock();
+  /* The shared-environment race the corpus program exercises: 20k writes
+   * with a reader enumerating alongside. */
+  race_name = scr_str_new("SCRIPTC_TEST_RACE", 17);
+  race_value = scr_str_new("value", 5);
+  pthread_t race_thread;
+  assert(pthread_create(&race_thread, NULL, race_reader, NULL) == 0);
+  for (int i = 0; i < 20000; i++) scr_env_set(race_name, race_value);
+  atomic_store_explicit(&race_stop, true, memory_order_relaxed);
+  assert(pthread_join(race_thread, NULL) == 0);
+  ScrStr *race_final = scr_env_get(race_name);
+  assert(race_final && race_final->len == 5 && memcmp(race_final->data, "value", 5) == 0);
+  scr_str_release(race_final);
+  scr_env_unset(race_name);
+  scr_str_release(race_name);
+  scr_str_release(race_value);
   scr_context_cleanup();
   puts("worker threads isolate heaps, exchange messages and publish ordered exits");
 }

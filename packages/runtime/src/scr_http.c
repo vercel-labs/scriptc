@@ -5657,8 +5657,8 @@ static ScrStr *scr_http_proxy_env_value(const ScrDyn *env, const char *upper,
     scr_dyn_release(materialized);
     return out;
   }
-  const char *raw = getenv(lower);
-  if (raw == NULL || raw[0] == '\0') raw = getenv(upper);
+  const char *raw = scr_getenv(lower);
+  if (raw == NULL || raw[0] == '\0') raw = scr_getenv(upper);
   return raw != NULL ? scr_str_new(raw, strlen(raw)) : NULL;
 }
 
@@ -5683,7 +5683,7 @@ void scr_http_set_global_proxy_from_env(const ScrDyn *env /*borrowed*/) {
 static void scr_http_proxy_env_default(void) {
   if (scr_http_proxy_env_checked || scr_http_proxy_env_explicit) return;
   scr_http_proxy_env_checked = true;
-  const char *use = getenv("NODE_USE_ENV_PROXY");
+  const char *use = scr_getenv("NODE_USE_ENV_PROXY");
   if (use == NULL || strcmp(use, "1") != 0) return;
   scr_http_proxy_env_apply(NULL);
   scr_http_proxy_env.from_process = true;

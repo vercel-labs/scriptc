@@ -60,7 +60,7 @@ bool scr_exit_frees(void) {
   }
   static int forced = -1; /* the main thread reads it, once */
   if (forced < 0) {
-    const char *value = getenv("SCRIPTC_EXIT_FREE");
+    const char *value = scr_getenv("SCRIPTC_EXIT_FREE");
     forced = value != NULL && value[0] == '1';
   }
   return forced != 0;

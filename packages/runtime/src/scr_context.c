@@ -191,8 +191,18 @@ static const char *scr_context_env_copy_track(char *copy) {
   return copy;
 }
 
-void scr_context_env_process_lock(void) { pthread_mutex_lock(&scr_context_process_env_lock); }
-void scr_context_env_process_unlock(void) { pthread_mutex_unlock(&scr_context_process_env_lock); }
+/* The lock is reentrant for its owner: a locked read builds ScrStr/ScrArr
+ * values, and the allocator reads environment tunables from an allocation
+ * path, which must not deadlock on the lock it is already inside. The depth
+ * is the thread's own; other threads still serialize on the mutex. */
+static SCR_TL unsigned scr_context_process_env_depth;
+
+void scr_context_env_process_lock(void) {
+  if (scr_context_process_env_depth++ == 0) pthread_mutex_lock(&scr_context_process_env_lock);
+}
+void scr_context_env_process_unlock(void) {
+  if (--scr_context_process_env_depth == 0) pthread_mutex_unlock(&scr_context_process_env_lock);
+}
 
 const char *scr_context_getenv(const char *name) {
   ScrContextEnv *environment = scr_context_environment;

@@ -58,16 +58,18 @@ test("the effect tasks hash the branch and pull request they sample for", () => 
     );
 });
 
-test("the TS7 parity task hashes the fixtures whose baselines it checks", () => {
-  const inputs = turbo.tasks["//#ci:lane:ts7-parity"]!.inputs!;
-  for (const fixtures of [
-    "tests/corpus/**",
-    "tests/diagnostics/**",
-    "tests/fixtures/**",
-    "packages/compiler/test/ts7/**",
-    "scripts/ts7-order-fixtures.mjs",
-  ])
-    expect(inputs, fixtures).toContain(fixtures);
+test("the TS7 parity tasks hash the fixtures whose baselines they check", () => {
+  for (const name of ["//#ci:lane:ts7-parity:1", "//#ci:lane:ts7-parity:2"]) {
+    const inputs = turbo.tasks[name]!.inputs!;
+    for (const fixtures of [
+      "tests/corpus/**",
+      "tests/diagnostics/**",
+      "tests/fixtures/**",
+      "packages/compiler/test/ts7/**",
+      "scripts/ts7-order-fixtures.mjs",
+    ])
+      expect(inputs, `${name}: ${fixtures}`).toContain(fixtures);
+  }
 });
 
 test("the toolchain task rebuilds from the pinned archives instead of trusting a checkout's tree", () => {
@@ -170,4 +172,19 @@ test("the checker identity lane is sharded and the toolchain reports its steps",
   expect(toolchainSource).toContain("XZ_OPT");
   expect(toolchainSource).toContain("checkpoint");
   expect(toolchainSource).toContain("[toolchain]");
+});
+
+test("the TypeScript 7 parity sweep is sharded and the toolchain downloads recover", () => {
+  // The full sweep outgrew the task deadline; two stable shards keep each task under it. The toolchain downloads
+  // now have a stall watchdog, per-request retries, mirror fallbacks and progress bytes.
+  expect(
+    Object.keys(turbo.tasks).filter((name) => name.startsWith("//#ci:lane:ts7-parity:")),
+  ).toHaveLength(2);
+  for (const name of ["//#ci:lane:ts7-parity:1", "//#ci:lane:ts7-parity:2"])
+    expect(turbo.tasks[name]!.inputs, name).toContain("scripts/ts7-shard.mjs");
+  expect(toolchainSource).toContain("AbortController");
+  expect(toolchainSource).toContain("no data for");
+  expect(toolchainSource).toContain("download ${attempt}/3");
+  expect(toolchainSource).toContain("MB in");
+  expect((toolchainSource.match(/urls: \[/g) ?? []).length).toBeGreaterThanOrEqual(6);
 });

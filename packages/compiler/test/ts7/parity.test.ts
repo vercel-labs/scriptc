@@ -42,6 +42,7 @@ import {
 } from "./harness.js";
 import type { TwoWorlds } from "./harness.js";
 import { ALL_BATTERIES } from "./fixtures.js";
+import { parseShard, shardItems } from "../../../../scripts/ts7-shard.mjs";
 import { TypeFormatFlags } from "../../src/frontend/ts7/enums.js";
 
 /** Both printers elide part of a large type by default, at different
@@ -53,7 +54,8 @@ const NO_TRUNCATION_7 = TypeFormatFlags.NoTruncation;
 
 const host = new Ts7Host();
 const worldsByName = new Map<string, TwoWorlds>();
-for (const battery of ALL_BATTERIES) {
+const batteries = shardItems(ALL_BATTERIES, parseShard(process.env["SCRIPTC_TS7_SHARD"]));
+for (const battery of batteries) {
   worldsByName.set(battery.name, buildTwoWorlds(battery.sources, host));
 }
 afterAll(() => {
@@ -169,7 +171,7 @@ function isFixtureSymbol(w: TwoWorlds, symbol: ts5.Symbol): boolean {
   return (symbol.declarations ?? []).some((d) => w.files.includes(d.getSourceFile().fileName));
 }
 
-for (const battery of ALL_BATTERIES) {
+for (const battery of batteries) {
   const { name } = battery;
   const w = (): TwoWorlds => worldsByName.get(name)!;
 

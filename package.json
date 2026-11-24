@@ -46,7 +46,6 @@
     "ci:setup:libnode": "node scripts/ci-vercel/run-lane.mjs libnode",
     "ci:lane:code-quality": "node scripts/ci-vercel/run-lane.mjs code-quality",
     "ci:lane:coverage": "node scripts/ci-vercel/run-lane.mjs coverage",
-    "ci:lane:ts7-parity": "node scripts/ci-vercel/run-lane.mjs ts7-parity",
     "ci:lane:linux-host-clang": "node scripts/ci-vercel/run-lane.mjs linux-host-clang",
     "ci:lane:effects:plain:sample": "node scripts/ci-vercel/run-lane.mjs effects-sample plain",
     "ci:lane:effects:san:sample": "node scripts/ci-vercel/run-lane.mjs effects-sample san",
@@ -330,7 +329,9 @@
     "ci:lane:checker-identity:release:1": "node scripts/ci-vercel/run-lane.mjs checker-identity release 1/2",
     "ci:lane:checker-identity:release:2": "node scripts/ci-vercel/run-lane.mjs checker-identity release 2/2",
     "ci:lane:checker-identity:dev:1": "node scripts/ci-vercel/run-lane.mjs checker-identity dev 1/2",
-    "ci:lane:checker-identity:dev:2": "node scripts/ci-vercel/run-lane.mjs checker-identity dev 2/2"
+    "ci:lane:checker-identity:dev:2": "node scripts/ci-vercel/run-lane.mjs checker-identity dev 2/2",
+    "ci:lane:ts7-parity:1": "node scripts/ci-vercel/run-lane.mjs ts7-parity 1/2",
+    "ci:lane:ts7-parity:2": "node scripts/ci-vercel/run-lane.mjs ts7-parity 2/2"
   },
   "devDependencies": {
     "@scriptc/experimental": "workspace:*",

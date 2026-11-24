@@ -2311,6 +2311,10 @@ static SCR_TL size_t scr_nimmediates = 0, scr_immediates_head = 0, scr_immediate
  * loop's no-sleep signal and liveness count respectively. */
 static SCR_TL size_t scr_pending_immediates = 0;
 static SCR_TL size_t scr_reffed_immediates = 0;
+/* Bumped by every setImmediate, so the loop can tell immediates a poll
+ * dispatch queued from ones the checkpoint queued before it, whatever was
+ * cleared in between. */
+static SCR_TL uint64_t scr_immediate_generation = 0;
 
 double scr_set_immediate(ScrClosure *cb) {
 #ifdef SCR_NODE_ISLANDS
@@ -2335,6 +2339,7 @@ double scr_set_immediate(ScrClosure *cb) {
   im->async_ids = async_ids;
   scr_pending_immediates++;
   scr_reffed_immediates++;
+  scr_immediate_generation++;
   return (double)id;
 }
 
@@ -7053,6 +7058,15 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * scheduled during the body exactly once, at startup — differentially
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
+  /* Node runs the check phase (immediates) right after the poll callbacks
+   * that queued them, before the next timers phase. This pass dispatches
+   * the previous poll's callbacks at its top, so a turn that follows such a
+   * dispatch defers its timers one pass when the dispatch queued an
+   * immediate. Immediates queued by the checkpoint before the dispatch (a
+   * tick or a promise job of the previous callback) do not defer anything:
+   * Node runs those in the next check phase, after the timers. */
+  bool in_dispatch = false;
+  uint64_t immediate_generation_before_dispatch = scr_immediate_generation;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
@@ -7110,6 +7124,12 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * Node drains nextTicks and microtasks after each native callback before
      * invoking the next ready callback. */
     SCR_PASS_PHASE(SCR_PASS_IO);
+    /* The checkpoint above is the previous callback's; what the dispatch
+     * stations queue from here on is poll work. A pass restarted by a
+     * station keeps the snapshot (its checkpoint drains the dispatch's own
+     * ticks and microtasks, whose immediates are poll work too). */
+    if (!in_dispatch) immediate_generation_before_dispatch = scr_immediate_generation;
+    in_dispatch = true;
     if (scr_fs_renames_pending()) {
       bool dispatched = scr_fs_renames_dispatch();
       if (scr_exc_pending()) return false;
@@ -7305,6 +7325,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * fiber) stays part of the turn that queued them. scr_perf_loop_mark
      * installs the counter in the programs that read the metrics. */
     if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
+    /* A dispatch in this pass stands in for the previous poll phase: an
+     * immediate it queued belongs to the check phase that follows the poll,
+     * so this turn runs that check before the timers phase (one turn later,
+     * Node's next iteration). Pending immediates are guaranteed here, which
+     * keeps the poll below from sleeping and lets the check phase run. */
+    bool defer_timers = in_dispatch && scr_pending_immediates > 0 &&
+                        scr_immediate_generation != immediate_generation_before_dispatch;
+    in_dispatch = false;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -7566,8 +7594,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #ifdef SCR_WORKERS
     scr_sa_loop_waiting(false);
 #endif
-    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) SCR_PASS_PHASE(SCR_PASS_TIMERS);
-    while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
+    if (!defer_timers && scr_ntimers > 0 && scr_timers[0].deadline_ms <= now)
+      SCR_PASS_PHASE(SCR_PASS_TIMERS);
+    while (!defer_timers && scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
        * An interval entry is OUT of the heap while its callback runs;

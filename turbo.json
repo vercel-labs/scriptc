@@ -48,6 +48,7 @@
     },
     "//#ci:setup:native:musl": {
       "dependsOn": [
+        "ci:setup:llvm-helper",
         "ci:setup:toolchain"
       ],
       "inputs": [
@@ -73,6 +74,7 @@
     },
     "//#ci:setup:native:wasi": {
       "dependsOn": [
+        "ci:setup:llvm-helper",
         "ci:setup:toolchain"
       ],
       "inputs": [
@@ -601,6 +603,7 @@
     },
     "//#ci:setup:runtime-pack": {
       "dependsOn": [
+        "ci:setup:llvm-helper",
         "ci:setup:toolchain"
       ],
       "inputs": [

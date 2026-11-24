@@ -123,3 +123,15 @@ test("every Vercel task has a package script that runs it", () => {
     );
   }
 });
+
+test("every runtime pack builds after the host LLVM helper", () => {
+  // The pack's speed units and their profile are emitted through the host glibc helper. Without it the build falls
+  // back to unoptimized bitcode and caches a pack that lacks the profiled speed flavor, so each pack task must be
+  // ordered after the helper's output.
+  for (const name of [
+    "//#ci:setup:runtime-pack",
+    "//#ci:setup:native:musl",
+    "//#ci:setup:native:wasi",
+  ])
+    expect(turbo.tasks[name]!.dependsOn, name).toContain("ci:setup:llvm-helper");
+});

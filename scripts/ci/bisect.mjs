@@ -10,10 +10,25 @@
 //   node scripts/ci/bisect.mjs narrow --commits commits.json --low <n> --high <n> --results results.json
 //   node scripts/ci/bisect.mjs collect --reports <dir>            (summarise failure reports for a log)
 // `commits.json` lists shas oldest first; `results.json` lists { "sha": "...", "pass": true } probes.
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 export const DEFAULT_WIDTH = 8;
+
+/**
+ * The commits a search probes: only the first-parent chain from the base to the failed head. A push that keeps
+ * history (a merge) brings the pull request's own commits along as second parents; those snapshots were never the
+ * reviewed, merged tip, so they are never probed.
+ */
+export function firstParentCommits(base, head, cwd = process.cwd()) {
+  return execFileSync("git", ["rev-list", "--first-parent", "--reverse", `${base}..${head}`], {
+    cwd,
+    encoding: "utf8",
+  })
+    .split("\n")
+    .filter((sha) => sha !== "");
+}
 
 /** A test's identity in the reports: its file and the full test name within it. */
 export function specKey(spec) {
@@ -119,6 +134,10 @@ function main() {
   const command = args[0];
   if (command === "collect") {
     console.log(JSON.stringify(collectSpecs(reportsUnder(option("--reports"))), null, 2));
+    return;
+  }
+  if (command === "commits") {
+    console.log(JSON.stringify(firstParentCommits(option("--base"), option("--head"))));
     return;
   }
   if (command === "plan") {

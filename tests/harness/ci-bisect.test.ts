@@ -8,6 +8,7 @@ import {
   chooseProbes,
   collectSpecs,
   confirmed,
+  firstParentCommits,
   narrow,
   resolution,
   stillFailing,
@@ -21,6 +22,45 @@ import {
 } from "../../scripts/ci/bisect-candidate.mjs";
 
 const sha = (index: number) => `${index}`.padStart(40, "a");
+
+test("only first-parent main commits are probes, never an intermediate pull request commit", () => {
+  const directory = mkdtempSync(join(tmpdir(), "ci-bisect-first-parent-"));
+  try {
+    const git = (...args: string[]) => {
+      const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
+      expect(result.status, `${args.join(" ")}: ${result.stderr}`).toBe(0);
+      return result.stdout.trim();
+    };
+    git("init", "-q", "-b", "main");
+    git("config", "user.name", "t");
+    git("config", "user.email", "t@t");
+    const commit = (file: string, message: string) => {
+      writeFileSync(join(directory, file), message);
+      git("add", file);
+      git("commit", "-q", "-m", message);
+      return git("rev-parse", "HEAD");
+    };
+    const base = commit("base", "base");
+    git("checkout", "-q", "-b", "feature");
+    const pullRequestCommit = commit("pr", "pull request");
+    git("checkout", "-q", "main");
+    const mergedMain = commit("main", "main work");
+    git("merge", "--no-ff", "-q", "-m", "merge feature", "feature");
+    const mergeCommit = git("rev-parse", "HEAD");
+    const tip = commit("tip", "tip");
+    expect(firstParentCommits(base, tip, directory)).toEqual([mergedMain, mergeCommit, tip]);
+    expect(firstParentCommits(base, tip, directory)).not.toContain(pullRequestCommit);
+    // Every commit is still reachable, so a plain rev-list would have probed the pull request snapshot.
+    expect(
+      spawnSync("git", ["rev-list", "--reverse", `${base}..${tip}`], {
+        cwd: directory,
+        encoding: "utf8",
+      }).stdout,
+    ).toContain(pullRequestCommit);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("the failing tests of a run come from its failure reports, once per flavor", () => {
   const specs = collectSpecs([
@@ -333,6 +373,8 @@ test("the probe action runs the reported tests and keeps their result", () => {
     'cp scripts/ci/bisect-candidate.mjs "$RUNNER_TEMP/bisect-candidate.mjs"',
   );
   expect(action).toContain('--root "$GITHUB_WORKSPACE"');
+  // The probe checkout keeps the token out of the workspace the tests run in.
+  expect(action).toContain("persist-credentials: false");
   expect(action).toContain("--expect");
   expect(action).toContain('--out "$RUNNER_TEMP/result.json"');
   expect(action).toContain("actions/upload-artifact@");

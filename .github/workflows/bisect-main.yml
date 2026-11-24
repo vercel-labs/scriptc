@@ -148,11 +148,12 @@ jobs:
           fi
           node scripts/ci/bisect.mjs collect --reports failure-reports > "$RUNNER_TEMP/specs.json"
           [ "$(jq length "$RUNNER_TEMP/specs.json")" -gt 0 ] || fail "the failure reports name no failing test"
-          git rev-list --reverse "$BASE..$RED" > "$RUNNER_TEMP/commits.txt"
-          COUNT=$(grep -c . "$RUNNER_TEMP/commits.txt" || true)
-          [ "$COUNT" -gt 0 ] || fail "main has no commit after green-main"
-          [ "$COUNT" -le 128 ] || fail "green-main..main holds $COUNT commits, more than one search should cover"
-          jq -R . < "$RUNNER_TEMP/commits.txt" | jq -s . > "$RUNNER_TEMP/commits.json"
+          # Only the first-parent chain: a history-preserving push brings the pull request's own commits along as
+          # second parents, and those snapshots were never the reviewed, merged tip. They are never probed.
+          node scripts/ci/bisect.mjs commits --base "$BASE" --head "$RED" > "$RUNNER_TEMP/commits.json"
+          COUNT=$(jq length "$RUNNER_TEMP/commits.json")
+          [ "$COUNT" -gt 0 ] || fail "main has no first-parent commit after the baseline"
+          [ "$COUNT" -le 128 ] || fail "the first-parent range holds $COUNT commits, more than one search should cover"
           node scripts/ci/bisect.mjs plan --commits "$RUNNER_TEMP/commits.json" --base "$BASE" --head "$RED" \
             --width "$WIDTH" > "$RUNNER_TEMP/plan.json"
           echo "proceed=true" >> "$GITHUB_OUTPUT"

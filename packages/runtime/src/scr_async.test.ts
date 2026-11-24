@@ -136,7 +136,10 @@ test("due timers run by deadline, then by creation, before the turn's immediates
 
 test("a timer armed during a turn runs after that turn's immediates", async () => {
   const result = await execFileAsync(bin, ["turnorder"]);
-  expect(result.stdout).toBe("a timer armed during a turn runs after that turn's immediates\n");
+  expect(result.stdout).toBe(
+    "a timer armed during a turn runs after that turn's immediates\n" +
+      "a timer armed by an I/O callback runs after that turn's immediates\n",
+  );
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 

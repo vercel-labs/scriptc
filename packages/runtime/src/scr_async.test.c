@@ -165,6 +165,31 @@ static void timer_armed_during_turn_waits_for_next_timers_phase(void) {
   puts("a timer armed during a turn runs after that turn's immediates");
 }
 
+/* The 5615 shape: an I/O callback arms an immediate and a zero-delay timer.
+ * Node's check phase runs the immediate first ("oic"); the timer is due by
+ * the time the loop reaches its timers phase, so only a snapshot taken
+ * BEFORE the I/O dispatch keeps it out of that phase ("oci" without it). */
+static bool io_armed_once;
+static bool io_pending(void) { return !io_armed_once; }
+static void io_arms_immediate_and_due_timer(void) {
+  if (io_armed_once) return;
+  io_armed_once = true;
+  turn_note('o');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void timer_armed_by_io_callback_waits_for_next_timers_phase(void) {
+  turn_count = 0;
+  io_armed_once = false;
+  scr_loop_set_net(io_pending, io_arms_immediate_and_due_timer, NULL);
+  assert(!scr_loop_run(NULL));
+  scr_loop_set_net(NULL, NULL, NULL);
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "oic", 3) == 0);
+  puts("a timer armed by an I/O callback runs after that turn's immediates");
+}
+
 /* The immediate queue's storage. Whatever a program does with its immediates,
  * the queue holds a slot for each one that is waiting and reuses the slots of
  * those that ran or were cleared: its capacity follows the largest number
@@ -669,6 +694,7 @@ int main(int argc, char **argv) {
   }
   if (argc > 1 && strcmp(argv[1], "turnorder") == 0) {
     timer_armed_during_turn_waits_for_next_timers_phase();
+    timer_armed_by_io_callback_waits_for_next_timers_phase();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {

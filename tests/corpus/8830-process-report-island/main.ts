@@ -24,15 +24,22 @@ console.log("compact", typeof process.report.compact);
 console.log("excludeEnv", typeof process.report.excludeEnv);
 // writeReport writes the report to the named file and answers that name;
 // the report content is machine-specific, so only the round trip is shown.
-// The name carries the pid: the two corpus suites run this program side by
-// side in one checkout, and a fixed relative name made them unlink each
-// other's report (ENOENT in one of the pair).
-const reportName = `report-out-${process.pid}.json`;
-const written = process.report.writeReport(reportName);
+// The name is fixed because Node prints its stderr lines ("Writing Node.js
+// report to file: ..." and "Node.js report completed") with it, and the
+// oracle and native binary must agree. The two corpus suites run this
+// program side by side in one checkout, so the other run may delete the
+// report first: tolerate the missing file instead of crashing, which is the
+// race a pid-suffixed name would have avoided only by changing stderr.
+const written = process.report.writeReport("report-out.json");
 // unlinkSync answers undefined; it cannot be compared (SC1043), so its
 // result is shown through typeof instead.
-const removed = unlinkSync(written);
-console.log("written", written === reportName, typeof removed);
+let removed: unknown;
+try {
+  removed = unlinkSync(written);
+} catch {
+  removed = undefined;
+}
+console.log("written", written === "report-out.json", typeof removed);
 const prelude = process.report.getReport() as { header?: unknown };
 console.log("prelude", typeof prelude.header === "object");
 const hadEnv = process.report.excludeEnv;

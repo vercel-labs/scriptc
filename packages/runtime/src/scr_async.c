@@ -7053,6 +7053,19 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * scheduled during the body exactly once, at startup — differentially
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
+  /* Timers armed during a turn belong to the NEXT turn's timers phase, not
+   * this one: Node's loop fixes the timers phase's set when it enters it, so
+   * a setTimeout(fn, 0) that an I/O callback arms cannot overtake the
+   * setImmediate that callback arms after it. Without the cutoff the clock
+   * decided the order — when the turn crossed a millisecond boundary the
+   * zero-delay timer was already due and ran first (observed with
+   * 5615-next-tick-callback-phases.ts under ASan). The snapshot is taken at
+   * the START of the turn, before the I/O callbacks that may arm timers, and
+   * refreshed at the turn's end. It lives across this loop's `continue`s
+   * (a pass restarted before the turn's phases is still the same turn), and
+   * one scr_loop_run_pass call runs many turns, so it cannot be captured once
+   * per call — that would strand every timer armed in an earlier turn. */
+  unsigned long timer_seq_at_turn_start = scr_timer_seq;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
@@ -7323,18 +7336,6 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      *   can't wake for every pending child; the ~1ms polling cap is the
      *   fallback.
      * - timers only: plain nanosleep to the deadline. */
-    /* Timers armed during this turn belong to the NEXT turn's timers phase,
-     * not this one: Node's loop decides the timers phase's set when it enters
-     * it, so a setTimeout(fn, 0) that an I/O callback arms cannot overtake
-     * the setImmediate that callback arms after it. Without the cutoff the
-     * clock decided the order — when the turn crossed a millisecond boundary
-     * the zero-delay timer was already due and ran first (observed with
-     * 5615-next-tick-callback-phases.ts under ASan). Timers armed before
-     * this turn keep their Node order: due ones run before its immediates.
-     * The cutoff is per turn, not per pass: one scr_loop_run_pass call runs
-     * many turns, and a pass-wide cutoff would strand every timer armed in
-     * an earlier turn of the same call. */
-    const unsigned long timer_seq_at_turn_start = scr_timer_seq;
     double now = scr_now_ms();
     double due = scr_ntimers > 0 ? scr_timers[0].deadline_ms : now + SCR_IO_POLL_MS;
     /* The earliest exec/execFile timeout wakes the loop exactly there. */
@@ -7733,6 +7734,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       scr_loop_io_open = true;
       scr_loop_io_batches = 0;
     }
+    /* This turn is complete: everything armed during it (I/O callbacks,
+     * timer callbacks, the check phase) is eligible for the next one. */
+    timer_seq_at_turn_start = scr_timer_seq;
   }
   return rejection_failed;
 }

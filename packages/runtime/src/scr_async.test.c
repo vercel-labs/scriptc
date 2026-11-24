@@ -190,6 +190,26 @@ static void timer_armed_by_io_callback_waits_for_next_timers_phase(void) {
   puts("a timer armed by an I/O callback runs after that turn's immediates");
 }
 
+/* The startup checkpoint's ticks and microtasks are queued work when the
+ * timers phase begins: a due timer a process.nextTick callback arms runs
+ * before that turn's immediates ("nci"). Capturing the cutoff before the
+ * checkpoint would push it behind them ("nic") — Node runs the timer in the
+ * timers phase that follows the startup checkpoint. */
+static void tick_arms_immediate_and_due_timer(void) {
+  turn_note('n');
+  (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
+  push_due_timer(timer_created_third, scr_now_ms() - 1);
+}
+
+static void tick_armed_timer_runs_before_turn_immediates(void) {
+  turn_count = 0;
+  scr_next_tick(scr_closure_new((void *)tick_arms_immediate_and_due_timer, 0));
+  assert(!scr_loop_run(NULL));
+  assert(!scr_exc_pending());
+  assert(turn_count == 3 && memcmp(turn_order, "nci", 3) == 0);
+  puts("a timer armed by a startup tick runs before that turn's immediates");
+}
+
 /* The immediate queue's storage. Whatever a program does with its immediates,
  * the queue holds a slot for each one that is waiting and reuses the slots of
  * those that ran or were cleared: its capacity follows the largest number
@@ -695,6 +715,7 @@ int main(int argc, char **argv) {
   if (argc > 1 && strcmp(argv[1], "turnorder") == 0) {
     timer_armed_during_turn_waits_for_next_timers_phase();
     timer_armed_by_io_callback_waits_for_next_timers_phase();
+    tick_armed_timer_runs_before_turn_immediates();
     return 0;
   }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {

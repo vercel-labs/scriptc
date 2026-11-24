@@ -40,6 +40,11 @@ const baseEnv = {
     process.env.PATH,
   ].join(":"),
   LLVM_DIR: join(toolchain, "llvm-22.1.8/lib/cmake/llvm"),
+  // The static LLVM helper links -lz and -lzstd; the toolchain task puts their static archives and headers here.
+  LIBRARY_PATH: [join(toolchain, "sysroot/lib"), process.env.LIBRARY_PATH]
+    .filter(Boolean)
+    .join(":"),
+  CPATH: [join(toolchain, "sysroot/include"), process.env.CPATH].filter(Boolean).join(":"),
 };
 
 function run(command, args, env = {}) {

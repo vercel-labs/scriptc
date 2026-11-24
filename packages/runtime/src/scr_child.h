@@ -412,6 +412,9 @@ bool scr_child_kill_num(ScrChild *c, double signum);
  * SIGTERM; a name or an integer is the signal; anything else throws
  * ERR_UNKNOWN_SIGNAL). */
 bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal);
+/* The dynamic dispatcher's route to the same sanitizer, without the inspect
+ * unit's renderer (a program that never selected inspect must still link). */
+bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal);
 /* ChildProcess[Symbol.dispose](): sends SIGTERM while `killed` is false,
  * Node's dispose method; answers nothing. */
 void scr_child_dispose(ScrChild *c);

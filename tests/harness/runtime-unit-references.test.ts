@@ -76,8 +76,9 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
   ],
   "scr_ecdh.c -> scr_async_dyn.c": ["scr_emit_warning"],
   // child.kill's checked-dynamic signal renders an invalid value through
-  // inspect; only the child.killDyn call reaches it, and that call's rule
-  // selects scr_inspect.c with it.
+  // inspect; only the compiler's child.killDyn call reaches that entry, and
+  // that call's rule selects scr_inspect.c with it (the dynamic dispatcher
+  // uses the lite entry, which holds no reference to the unit).
   "scr_child.c -> scr_inspect.c": ["scr_insp_dyn_s"],
   "scr_event_target.c -> scr_async_dyn.c": ["scr_dyn_new_promise", "scr_promise_resolve_dyn"],
   // events.on reads a receiver's pause()/resume() through scr_dyn_invoke:

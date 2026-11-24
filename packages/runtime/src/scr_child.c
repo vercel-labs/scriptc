@@ -3433,32 +3433,72 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
 /* child.kill's checked-dynamic form: Node's sanitizeKillSignal decides at
  * the call — undefined is SIGTERM, a name or an integer is the signal, and
  * every other value throws ERR_UNKNOWN_SIGNAL with the value inspected. */
-bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
-  if (signal->kind == SCR_DYN_UNDEF) {
-    ScrStr *name = scr_str_new("SIGTERM", 7);
-    bool killed = scr_child_kill(c, name);
-    scr_str_release(name);
-    return killed;
-  }
-  if (signal->kind == SCR_DYN_STR) return scr_child_kill(c, signal->v.str);
-  if (signal->kind == SCR_DYN_NUM) return scr_child_kill_num(c, signal->v.num);
-  ScrStr *shown = NULL;
-  const char *text;
-  if (signal->kind == SCR_DYN_NULL) text = "null";
-  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
-  else {
-    /* Node's message inspects the value; the killDyn feature rule links
-     * the inspect unit for the programs that can reach this. */
-    shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
-    text = shown->data;
-  }
-  size_t len = strlen(text);
+/* Throws Node's ERR_UNKNOWN_SIGNAL for a rendered value. */
+static void scr_child_kill_dyn_throw(const char *text, size_t len) {
   char *msg = malloc(16 + len + 1);
   if (!msg) scr_child_oom();
   snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
   free(msg);
+}
+
+/* child.kill's checked-dynamic form: Node's sanitizeKillSignal decides at
+ * the call — undefined is SIGTERM, a name or an integer is the signal, and
+ * every other value throws ERR_UNKNOWN_SIGNAL with the value rendered.
+ * Returns true when the value needs the caller's renderer (the two entry
+ * points below differ only in which renderer they link); false when the
+ * call was handled, with *killed holding the answer. */
+static bool scr_child_kill_dyn_head(ScrChild *c, const ScrDyn *signal, bool *killed) {
+  if (signal->kind == SCR_DYN_UNDEF) {
+    ScrStr *name = scr_str_new("SIGTERM", 7);
+    *killed = scr_child_kill(c, name);
+    scr_str_release(name);
+    return false;
+  }
+  if (signal->kind == SCR_DYN_STR) {
+    *killed = scr_child_kill(c, signal->v.str);
+    return false;
+  }
+  if (signal->kind == SCR_DYN_NUM) {
+    *killed = scr_child_kill_num(c, signal->v.num);
+    return false;
+  }
+  const char *text = NULL;
+  if (signal->kind == SCR_DYN_NULL) text = "null";
+  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
+  if (text == NULL) return true;
+  scr_child_kill_dyn_throw(text, strlen(text));
+  *killed = false;
+  return false;
+}
+
+/* The compiler's killDyn call: the feature rule links the inspect unit with
+ * it, so the message is Node's inspect rendering. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  ScrStr *shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
+  scr_child_kill_dyn_throw(shown->data, shown->len);
   scr_str_release(shown);
+  return false;
+}
+
+/* The dynamic dispatcher's route, which holds no reference to the inspect
+ * unit: a program that never selected it still links, and the shared
+ * inspect-lite renderer draws the message (exact for null, booleans,
+ * numbers, strings and the empty shapes). */
+bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  ScrStr *shown = scr_insp_dyn_s_hook ? scr_insp_dyn_s_hook((ScrDyn *)signal, 0) : NULL;
+  if (shown != NULL) {
+    scr_child_kill_dyn_throw(shown->data, shown->len);
+    scr_str_release(shown);
+    return false;
+  }
+  char rendered[160];
+  const char *text = scr_dyn_inspect_lite(signal, rendered, sizeof rendered);
+  scr_child_kill_dyn_throw(text, strlen(text));
   return false;
 }
 
@@ -7606,32 +7646,72 @@ bool scr_child_kill_num(ScrChild *c, double signum) {
  * the call — undefined is SIGTERM, a name or an integer is the signal, and
  * every other value throws ERR_UNKNOWN_SIGNAL with the value inspected, as
  * Node's message shows. */
-bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
-  if (signal->kind == SCR_DYN_UNDEF) {
-    ScrStr *name = scr_str_new("SIGTERM", 7);
-    bool killed = scr_child_kill(c, name);
-    scr_str_release(name);
-    return killed;
-  }
-  if (signal->kind == SCR_DYN_STR) return scr_child_kill(c, signal->v.str);
-  if (signal->kind == SCR_DYN_NUM) return scr_child_kill_num(c, signal->v.num);
-  ScrStr *shown = NULL;
-  const char *text;
-  if (signal->kind == SCR_DYN_NULL) text = "null";
-  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
-  else {
-    /* Node's message inspects the value; the killDyn feature rule links
-     * the inspect unit for the programs that can reach this. */
-    shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
-    text = shown->data;
-  }
-  size_t len = strlen(text);
+/* Throws Node's ERR_UNKNOWN_SIGNAL for a rendered value. */
+static void scr_child_kill_dyn_throw(const char *text, size_t len) {
   char *msg = malloc(16 + len + 1);
   if (!msg) scr_child_oom();
   snprintf(msg, 16 + len + 1, "Unknown signal: %s", text);
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, 16 + len, "ERR_UNKNOWN_SIGNAL");
   free(msg);
+}
+
+/* child.kill's checked-dynamic form: Node's sanitizeKillSignal decides at
+ * the call — undefined is SIGTERM, a name or an integer is the signal, and
+ * every other value throws ERR_UNKNOWN_SIGNAL with the value rendered.
+ * Returns true when the value needs the caller's renderer (the two entry
+ * points below differ only in which renderer they link); false when the
+ * call was handled, with *killed holding the answer. */
+static bool scr_child_kill_dyn_head(ScrChild *c, const ScrDyn *signal, bool *killed) {
+  if (signal->kind == SCR_DYN_UNDEF) {
+    ScrStr *name = scr_str_new("SIGTERM", 7);
+    *killed = scr_child_kill(c, name);
+    scr_str_release(name);
+    return false;
+  }
+  if (signal->kind == SCR_DYN_STR) {
+    *killed = scr_child_kill(c, signal->v.str);
+    return false;
+  }
+  if (signal->kind == SCR_DYN_NUM) {
+    *killed = scr_child_kill_num(c, signal->v.num);
+    return false;
+  }
+  const char *text = NULL;
+  if (signal->kind == SCR_DYN_NULL) text = "null";
+  else if (signal->kind == SCR_DYN_BOOL) text = signal->v.b ? "true" : "false";
+  if (text == NULL) return true;
+  scr_child_kill_dyn_throw(text, strlen(text));
+  *killed = false;
+  return false;
+}
+
+/* The compiler's killDyn call: the feature rule links the inspect unit with
+ * it, so the message is Node's inspect rendering. */
+bool scr_child_kill_dyn(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  ScrStr *shown = scr_insp_dyn_s((ScrDyn *)signal, 0);
+  scr_child_kill_dyn_throw(shown->data, shown->len);
   scr_str_release(shown);
+  return false;
+}
+
+/* The dynamic dispatcher's route, which holds no reference to the inspect
+ * unit: a program that never selected it still links, and the shared
+ * inspect-lite renderer draws the message (exact for null, booleans,
+ * numbers, strings and the empty shapes). */
+bool scr_child_kill_dyn_lite(ScrChild *c, const ScrDyn *signal) {
+  bool killed = false;
+  if (!scr_child_kill_dyn_head(c, signal, &killed)) return killed;
+  ScrStr *shown = scr_insp_dyn_s_hook ? scr_insp_dyn_s_hook((ScrDyn *)signal, 0) : NULL;
+  if (shown != NULL) {
+    scr_child_kill_dyn_throw(shown->data, shown->len);
+    scr_str_release(shown);
+    return false;
+  }
+  char rendered[160];
+  const char *text = scr_dyn_inspect_lite(signal, rendered, sizeof rendered);
+  scr_child_kill_dyn_throw(text, strlen(text));
   return false;
 }
 
@@ -10593,7 +10673,7 @@ static ScrDyn *scr_child_dyn_invoke(
   if (!strcmp(method, "kill")) {
     const ScrDyn *signal = argc ? args[0] : scr_dyn_undefined();
     bool killed;
-    killed = scr_child_kill_dyn(child, signal);
+    killed = scr_child_kill_dyn_lite(child, signal);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(killed);
   }
   bool remove = !strcmp(method, "removeListener") || !strcmp(method, "off");

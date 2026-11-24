@@ -5447,6 +5447,15 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
 /* util.format's %s over a dyn value: strings pass VERBATIM (Node's
  * `typeof arg === 'string' ? arg : inspect(arg)` — the %s depth is 0,
  * the rest-args depth 2); everything else inspects at the given depth. */
+#if !defined(SCR_LIB)
+/* Executable builds only: the thread-instanced library probe links this unit
+ * alone, without the executable core the renderer calls into, so the hook
+ * stays unset there and its users fall back to the shared lite renderer. */
+__attribute__((constructor)) static void scr_insp_install_hook(void) {
+  scr_insp_dyn_s_hook = &scr_insp_dyn_s;
+}
+#endif
+
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   if (d->kind == SCR_DYN_STR) return scr_str_retain(d->v.str);
   return scr_insp_dyn(d, 0, depth);

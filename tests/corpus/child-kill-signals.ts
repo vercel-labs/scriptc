@@ -31,3 +31,19 @@ async function main(): Promise<void> {
 }
 
 main();
+
+// A non-integer number is a thrown Node error even in the statically typed
+// numeric path (child.killNum), so the surrounding catch runs.
+try {
+  const child = spawn("sleep", ["2"]);
+  try {
+    child.kill(9.5);
+  } catch (error) {
+    const e = error as { code?: string; message: string };
+    console.log("caught", e.code, JSON.stringify(e.message));
+  }
+  child.kill("SIGKILL");
+  child.on("exit", () => {});
+} catch (error) {
+  console.log("outer", error);
+}

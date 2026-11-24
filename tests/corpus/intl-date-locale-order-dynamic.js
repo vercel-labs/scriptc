@@ -11,3 +11,15 @@ console.log(
     hour12: false
   })
 );
+
+// An empty tag is Node's RangeError, raised when the formatter is built —
+// after every argument expression has evaluated — and an invalid Date still
+// answers "Invalid Date" first.
+let evaluated = 0;
+try {
+  new Intl.NumberFormat("", (evaluated++, {}));
+  console.log("empty", "no throw");
+} catch (error) {
+  console.log("empty", error.name, evaluated);
+}
+console.log("invalid-date", new Date(NaN).toLocaleDateString(""));

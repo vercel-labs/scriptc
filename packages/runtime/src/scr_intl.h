@@ -52,9 +52,6 @@ ScrDyn *scr_intl_segmenter_word_new(ScrStr *locale);
  * is a NumberFormat handle. The `_dyn` form takes the argument as a
  * checked-dynamic value (a number, or undefined). +1 results; NULL with the
  * exception pending. */
-/* Raises Node's RangeError for a locales argument that cannot be a
- * language tag; never returns. */
-void scr_intl_invalid_locale(void);
 ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options);
 ScrStr *scr_intl_number_format_format(ScrDyn *format, double x);
 ScrStr *scr_intl_number_format_format_dyn(ScrDyn *format, ScrDyn *value);

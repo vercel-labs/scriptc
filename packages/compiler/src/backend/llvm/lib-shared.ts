@@ -74,7 +74,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "icu.i18nSupport": "scr_intl_i18n_support",
   "icu.dateLocaleString": "scr_intl_date_locale_string",
   "icu.dateLocaleTimeString": "scr_intl_date_locale_time_string",
-  "icu.invalidLocale": "scr_intl_invalid_locale",
   "icu.numberFormatNew": "scr_intl_number_format_new",
   "icu.numberFormatFormat": "scr_intl_number_format_format",
   "icu.numberFormatFormatDyn": "scr_intl_number_format_format_dyn",

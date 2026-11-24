@@ -167,9 +167,11 @@ test("literal and runtime locale strings compile; a locale list is refused", asy
   ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a locale list'/);
 });
 
-test("an empty locale tag raises Node's RangeError where the argument stands", async () => {
+test("an empty locale tag is passed to the runtime, which raises Node's RangeError", async () => {
+  // The argument expressions all evaluate first; the runtime validates the
+  // tag when the formatter is built, as Node does.
   expect(await intlCalls(`console.log(new Intl.NumberFormat("").format(1)); export {};`)).toContain(
-    "icu.invalidLocale",
+    "icu.numberFormatNew",
   );
 });
 

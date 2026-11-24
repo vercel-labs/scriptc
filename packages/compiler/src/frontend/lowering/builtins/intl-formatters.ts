@@ -24,7 +24,6 @@ import {
   type SrcLoc,
   STRING,
   UNDEFINED_T,
-  VOID,
 } from "../../../ir/ir.js";
 
 export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
@@ -61,25 +60,6 @@ function isUndefinedArgument(lowerer: Lowerer, arg: ts.Expression): boolean {
  * runtime canonicalizes the tag with ICU and refuses a structurally invalid
  * one with Node's RangeError; lists of locales are locale negotiation and
  * stay refused. */
-/** Node's RangeError for a tag that cannot be a locale, raised where the
- * argument stands: the call never returns, so the locale slot keeps the
- * default tag. */
-function invalidLocale(lowerer: Lowerer, loc: SrcLoc): IrExpr {
-  return {
-    kind: "seqExpr",
-    stmts: [
-      {
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "icu.invalidLocale", args: [], type: VOID, loc },
-        loc,
-      },
-    ],
-    result: { kind: "strLit", value: INTL_DEFAULT_LOCALE, type: STRING, loc },
-    type: STRING,
-    loc,
-  };
-}
-
 function intlLocale(
   lowerer: Lowerer,
   arg: ts.Expression | undefined,
@@ -107,15 +87,11 @@ function intlLocale(
       ],
     };
   }
-  if (ts.isStringLiteralLike(arg)) {
-    // An empty tag is not a locale: Node throws its RangeError when the
-    // formatter is built, at this point in the argument order.
-    if (arg.text === "") return { locale: invalidLocale(lowerer, locOf(arg)), effects: [] };
+  if (ts.isStringLiteralLike(arg))
     return {
       locale: { kind: "strLit", value: arg.text, type: STRING, loc: locOf(arg) },
       effects: [],
     };
-  }
   const value = lowerer.lowerExpr(arg);
   if (value.type.kind === "array")
     lowerer.noLowering(

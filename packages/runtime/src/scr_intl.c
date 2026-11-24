@@ -816,8 +816,6 @@ static bool scr_intl_is_default_tag(const ScrStr *tag) {
   return tag->len == len && memcmp(tag->data, SCR_INTL_DEFAULT_TAG, len) == 0;
 }
 
-void scr_intl_invalid_locale(void) { scr_intl_bad_locale(); }
-
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();

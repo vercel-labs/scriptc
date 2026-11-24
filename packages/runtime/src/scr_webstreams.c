@@ -2107,14 +2107,22 @@ static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2)
  * truthy (Node's fetch tees a body's stream this way). The argument check
  * raises Node's TypeError from the call itself; +1. */
 ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
-  if (!stream || stream->kind != SCR_DYN_HANDLE ||
-      (stream->v.handle.tag != SCR_DYNH_WS_READABLE && stream->v.handle.tag != SCR_DYNH_WEB_STREAM)) {
+  /* The stream this class's tee runs on: a web stream this unit made, or a
+   * fetch body's handle through the web view the fetch unit makes for it.
+   * A fetch body's pointer is that unit's stream, never a WsReadable, so
+   * only a handle of this class reaches the tee below. */
+  ScrDyn *receiver = NULL;
+  if (stream == NULL || !scr_dyn_handle_class_receiver(SCR_DYNH_WS_READABLE, stream, &receiver) ||
+      receiver == NULL) {
+    if (scr_exc_pending()) return NULL; /* the view's own failure */
     scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
     return NULL;
   }
   bool clone2 = clone != NULL && clone->kind != SCR_DYN_UNDEF && scr_dyn_truthy(clone);
   WsReadable *a, *b;
-  if (!ws_readable_tee_ex(stream->v.handle.ptr, clone2, &a, &b)) return NULL;
+  bool ok = ws_readable_tee_ex(receiver->v.handle.ptr, clone2, &a, &b);
+  scr_dyn_release(receiver); /* the tee's reader holds the stream */
+  if (!ok) return NULL;
   ScrDyn *pair = scr_dyn_new_arr();
   scr_dyn_arr_push(pair, ws_stream_box(a));
   scr_dyn_arr_push(pair, ws_stream_box(b));

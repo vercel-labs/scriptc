@@ -61,3 +61,36 @@ try {
 } catch (error) {
   console.log("locked", error.name, error.message);
 }
+
+// A fetch Response body is a web stream handle too: teeing it reads the
+// body's content through the fetch stream's web view, with delayed and
+// empty content, the cloned flag over its chunks, and Node's state error
+// for a body that already has a reader.
+const delayed = new ReadableStream({
+  start(controller) {
+    setTimeout(() => {
+      controller.enqueue("late");
+      controller.close();
+    }, 10);
+  },
+});
+const delayedPair = ReadableStreamTee(new Response(delayed).body);
+console.log(
+  "body-delayed",
+  (await delayedPair[0].getReader().read()).value,
+  (await delayedPair[1].getReader().read()).value,
+);
+const emptyBody = ReadableStreamTee(new Response(new ReadableStream({ start(c) { c.close(); } })).body);
+console.log("body-empty", (await emptyBody[0].getReader().read()).done, (await emptyBody[1].getReader().read()).done);
+const bodyChunks = new ReadableStream({ start(c) { c.enqueue({ n: 1 }); c.close(); } });
+const bodyCloned = web.ReadableStreamTee(new Response(bodyChunks).body, true);
+const bodyFirst = (await bodyCloned[0].getReader().read()).value;
+const bodySecond = (await bodyCloned[1].getReader().read()).value;
+console.log("body-cloned", bodyFirst === bodySecond, JSON.stringify(bodySecond));
+const lockedBody = new Response(new ReadableStream({ start(c) { c.enqueue("x"); c.close(); } })).body;
+lockedBody.getReader();
+try {
+  ReadableStreamTee(lockedBody);
+} catch (error) {
+  console.log("body-locked", error.name, error.message);
+}

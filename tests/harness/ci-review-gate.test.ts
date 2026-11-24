@@ -2,7 +2,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
-import { FAST_TEST_BUDGET_MS, fastTests, moduleTokens } from "../../scripts/ci-fast-tests.mjs";
+import {
+  FAST_TEST_BUDGET_MS,
+  SMOKE_CORPUS,
+  fastTests,
+  moduleTokens,
+} from "../../scripts/ci-fast-tests.mjs";
 import {
   decide,
   forkAttestation,
@@ -185,12 +190,6 @@ test("only CI's own dispatched runs count, and a fork's run never becomes ci/ful
   });
   expect(forkAttestation(pr(), repo, true, "ctate", sha)).toBeNull();
   expect(forkAttestation({ ...fork, state: "closed" }, repo, true, "ctate", sha)).toBeNull();
-  const gate = gateWorkflow.jobs["gate"]!.if!;
-  expect(gate).toContain("github.event.workflow_run.path == '.github/workflows/ci.yml'");
-  expect(gate).toContain(
-    "github.event.workflow_run.head_repository.full_name == github.repository",
-  );
-  expect(gate).not.toContain("github.event.workflow_run.event == 'pull_request'");
 });
 
 test("fork_attest approves only the exact commit the maintainer checked", () => {
@@ -212,18 +211,15 @@ test("fork_attest approves only the exact commit the maintainer checked", () => 
   expect(dispatch["fork_attest"]!.description).toContain("sha");
 });
 
-test("the gate workflow triggers on the reviews, the label, fork runs and by hand, and runs no pull request code", () => {
-  expect(gateWorkflow.on["check_run"]).toEqual({ types: ["completed"] });
-  expect(gateWorkflow.on["pull_request"]).toEqual({ types: ["labeled", "synchronize"] });
-  expect(gateWorkflow.jobs["gate"]!.if).toContain(
-    "github.event.workflow_run.event == 'workflow_dispatch'",
-  );
-  expect(gateWorkflow.on["workflow_run"]).toEqual({ workflows: ["CI"], types: ["completed"] });
+test("the gate workflow dispatches a pull request's full tier only by hand, and runs no pull request code", () => {
+  // Reviews and labels no longer dispatch anything: a pull request runs the fast tier, and the ci:full label
+  // runs the full suite in the pull request's own run.
+  expect(Object.keys(gateWorkflow.on!)).toEqual(["workflow_dispatch"]);
+  expect(gateWorkflow.jobs["gate"]!.if).toBe("${{ github.event_name == 'workflow_dispatch' }}");
   expect(gateWorkflow.on["workflow_dispatch"]).toBeDefined();
   expect(gateWorkflow.permissions).toEqual({ contents: "read" });
   expect(gateWorkflow.concurrency["cancel-in-progress"]).toBe(false);
   const job = gateWorkflow.jobs["gate"]!;
-  expect(job.if).toContain("github.event.check_run.app.slug == 'vercel'");
   expect(job.permissions).toEqual({
     contents: "read",
     actions: "write",
@@ -236,6 +232,35 @@ test("the gate workflow triggers on the reviews, the label, fork runs and by han
   expect(checkout.with!["ref"]).toBe("${{ github.event.repository.default_branch }}");
   expect(checkout.with!["persist-credentials"]).toBe(false);
   expect(job.steps.filter((step) => step.run)).toHaveLength(1);
+});
+
+test("the fast tier also runs the smoke set when asked, without duplicating a selected program", () => {
+  const testFiles = ["packages/compiler/test/emit-call.test.ts"];
+  const costs = { "packages/compiler/test/emit-call.test.ts": 1000 };
+  const base = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    { forceSmoke: true },
+  );
+  expect(base.selected).toEqual(["packages/compiler/test/emit-call.test.ts"]);
+  expect(base.smoke).toBe(true);
+  expect(base.corpus).toEqual(SMOKE_CORPUS);
+  // A program the maps already placed is not run twice.
+  const program = SMOKE_CORPUS[0]!;
+  const indexed = fastTests(
+    ["packages/runtime/src/scr_http.c"],
+    testFiles,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    {
+      forceSmoke: true,
+      corpusIndex: new Map([["http", [program]]]),
+      corpusCosts: { [program]: 1000 },
+    },
+  );
+  expect(indexed.corpus.filter((entry) => entry === program)).toHaveLength(1);
 });
 
 test("the fast tier runs the changed tests and the tests named after changed sources, within its budget", () => {
@@ -399,28 +424,24 @@ test("a push cancels the expensive tier still running on the pull request's olde
       newHead,
     ).map((stale) => stale.id),
   ).toEqual([1, 2]);
-  expect(gateWorkflow.jobs["gate"]!.if).toContain("github.event.action == 'synchronize'");
 });
 
-test("a re-run of the fast tier does not turn a reported ci/full back to pending", () => {
-  const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as Workflow;
-  const report = ci.jobs["test"]!.steps.find((step) => step.run?.includes("context=ci/full"))!.run!;
-  const keep = report.indexOf('if [ "$reported" = success ] || [ "$reported" = failure ]; then');
-  expect(report.indexOf('if [ "$state" = pending ]; then')).toBeGreaterThan(-1);
-  expect(keep).toBeGreaterThan(report.indexOf('if [ "$state" = pending ]; then'));
-  expect(keep).toBeLessThan(report.indexOf("gh api --method POST"));
-});
-
-test("the fast tier alone cannot turn the required test check green", () => {
+test("a pull request runs the fast tier and passes the required check without the expensive tier", () => {
   const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as Workflow;
   const steps = ci.jobs["test"]!.steps as { name?: string; if?: string; run?: string }[];
-  const require = steps.at(-1)!;
-  expect(require.name).toBe("Require the expensive tier (ci/full)");
-  expect(require.if).toBe("needs.validation_scope.outputs.tier == 'fast'");
-  expect(require.run).toContain('if [ "$reported" != success ]; then');
-  expect(require.run).toContain("exit 1");
-  // It runs after the lanes passed and after ci/full is reported.
-  expect(steps.findIndex((step) => step.name === "Report ci/full")).toBeLessThan(steps.length - 1);
+  // No status is required beside the check, and no step waits for a dispatched tier.
+  expect(ci.jobs["test"]!.permissions).toEqual({ contents: "read" });
+  expect(steps.some((step) => step.name === "Require the expensive tier (ci/full)")).toBe(false);
+  expect(steps.some((step) => step.run?.includes("context=ci/full"))).toBe(false);
+  const gate = steps.find((step) => step.run?.includes('case "$MODE"'))!.run!;
+  expect(gate).toContain('test "${{ needs.code_quality.result }}" = success');
+  expect(gate).toContain("lane fast_tests");
+  // A pull request is fast unless the ci:full label asks for the full suite, and labeling starts a run.
+  const scope = ci.jobs["validation_scope"]!.steps.find((step) => step.id === "scope")!.run!;
+  expect(scope).toContain("fullLabel");
+  expect(scope).toContain("? 'fast'");
+  const pull = ci.on!["pull_request"] as { types?: string[] };
+  expect(pull.types).toEqual(["opened", "synchronize", "reopened", "labeled"]);
 });
 
 test("a passing expensive tier re-runs the pull request run's test check on the same commit", () => {

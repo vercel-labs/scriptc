@@ -1,5 +1,11 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
-import { revertBody, revertBranch, revertTitle } from "../../scripts/ci/revert-pr.mjs";
+import {
+  revertArguments,
+  revertBody,
+  revertBranch,
+  revertTitle,
+} from "../../scripts/ci/revert-pr.mjs";
 
 const culprit = "0123456789abcdef0123456789abcdef01234567";
 const green = "1111111111111111111111111111111111111111";
@@ -40,4 +46,16 @@ test("the body is short and names the failing test, the green commit and the red
   expect(body).toContain("differential corpus > 4123-open.ts");
   // Short: a handful of lines, not a transcript.
   expect(body.trim().split("\n").length).toBeLessThanOrEqual(8);
+});
+
+test("a merge commit is reverted against its mainline parent", () => {
+  expect(revertArguments(culprit, 1)).toEqual(["revert", "--no-edit", culprit]);
+  expect(revertArguments(culprit, 0)).toEqual(["revert", "--no-edit", culprit]);
+  // Without -m 1 git refuses to revert a merge at all; the first parent is main's mainline.
+  expect(revertArguments(culprit, 2)).toEqual(["revert", "--no-edit", "-m", "1", culprit]);
+  expect(revertArguments(culprit, 3)).toEqual(["revert", "--no-edit", "-m", "1", culprit]);
+  // The script reads the culprit's parents rather than assuming a single-parent commit.
+  const script = readFileSync(new URL("../../scripts/ci/revert-pr.mjs", import.meta.url), "utf8");
+  expect(script).toContain("rev-list");
+  expect(script).toContain("--parents");
 });

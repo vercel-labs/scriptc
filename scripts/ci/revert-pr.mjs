@@ -9,6 +9,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+/** The `git revert` arguments for a commit: a merge commit needs its mainline parent, the first one. */
+export function revertArguments(sha, parentCount = 1) {
+  return parentCount > 1 ? ["revert", "--no-edit", "-m", "1", sha] : ["revert", "--no-edit", sha];
+}
+
 /** The branch the revert is pushed to: one per culprit, so a retried run finds the same one. */
 export function revertBranch(sha) {
   return `ci/revert-${sha.slice(0, 9)}`;
@@ -52,10 +57,17 @@ function main() {
     if (dryRun) console.log(`${command} ${argv.join(" ")}`);
     else execFileSync(command, argv, { encoding: "utf8", stdio: "inherit" });
   };
+  // A merge commit needs its mainline parent; without it git refuses to revert.
+  const parents = execFileSync("git", ["rev-list", "--parents", "-n", "1", culprit], {
+    encoding: "utf8",
+  })
+    .trim()
+    .split(/\s+/)
+    .slice(1);
   // The revert lands on top of the red commit, on a branch of its own. A conflict leaves the branch unpushed.
   run("git", ["checkout", "-B", branch, red]);
   try {
-    run("git", ["revert", "--no-edit", culprit]);
+    run("git", revertArguments(culprit, parents.length));
   } catch {
     console.log(
       "::error::The revert conflicts with newer commits; open an issue instead of pushing.",

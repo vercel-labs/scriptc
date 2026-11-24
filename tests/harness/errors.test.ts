@@ -3847,7 +3847,7 @@ await attempt("unwrap an ecdsa key", () =>
         "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
         "x448 bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
-        "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
+        "rsa-oaep wrap InvalidAccessError 15 Key algorithm mismatch\n" +
         "wrap an ecdsa key OperationError 0 The operation failed for an operation-specific reason\n" +
         "wrap with an ecdsa key InvalidAccessError 15 Key algorithm mismatch\n" +
         "unwrap an ecdsa key OperationError 0 The operation failed for an operation-specific reason\n",

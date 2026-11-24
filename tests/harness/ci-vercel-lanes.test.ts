@@ -135,3 +135,14 @@ test("every runtime pack builds after the host LLVM helper", () => {
   ])
     expect(turbo.tasks[name]!.dependsOn, name).toContain("ci:setup:llvm-helper");
 });
+
+test("the checker identity lane is sharded and the toolchain reports its steps", () => {
+  // The whole-corpus checker run took more than the runner's deadline on its own; two shards keep each task under
+  // it. The toolchain prints a line per phase, so a slow archive shows which phase is slow.
+  expect(
+    Object.keys(turbo.tasks).filter((name) => name.startsWith("//#ci:lane:checker-identity:")),
+  ).toHaveLength(4);
+  expect(toolchainSource).toContain("XZ_OPT");
+  expect(toolchainSource).toContain("checkpoint");
+  expect(toolchainSource).toContain("[toolchain]");
+});

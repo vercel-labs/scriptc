@@ -103,9 +103,23 @@ static const char *const scr_sqlite_limit_names[] = {
 #define SCR_SQLITE_LIMIT_COUNT \
   ((size_t)(sizeof scr_sqlite_limit_names / sizeof scr_sqlite_limit_names[0]))
 
+/* The database's registry entry for one live statement. The entry does not
+ * own the statement: it answers NULL once the statement is gone, so a
+ * statement the program dropped is finalized and collected while the
+ * database lives, and the database's close still finds exactly the
+ * statements that are still live. The database holds one reference to
+ * every entry in its list and the statement holds one to its own entry,
+ * so clearing an entry never touches the database (the collector frees a
+ * database and its statements in no particular order). */
+typedef struct ScrSqliteStmtSlot {
+  size_t rc;
+  struct ScrSqliteStmt *stmt;
+} ScrSqliteStmtSlot;
+
 struct ScrSqliteStmt {
   size_t rc;
   ScrSqliteDb *db; /* owned */
+  ScrSqliteStmtSlot *slot; /* owned; NULL once the statement is untracked */
   sqlite3_stmt *stmt; /* NULL once finalized */
   bool big_ints, return_arrays, allow_bare, allow_unknown;
   /* The bare-name -> full-name map allow_bare builds on first use (Node
@@ -143,9 +157,10 @@ struct ScrSqliteDb {
     int value;
     bool set;
   } limits[SCR_SQLITE_LIMIT_COUNT];
-  /* Live statements: raw, non-owning (a statement owns a reference to its
-   * database, never the other way around). */
-  ScrSqliteStmt **stmts;
+  /* Live statements: registry entries (see ScrSqliteStmtSlot), non-owning
+   * (a statement owns a reference to its database, never the other way
+   * around). An entry whose statement was collected is NULL. */
+  ScrSqliteStmtSlot **stmts;
   size_t stmt_n, stmt_cap;
   /* CallbackDepthGuard: user callbacks (an authorizer, user functions,
    * aggregates) may not close or re-enter the database in barred ways. */
@@ -715,22 +730,67 @@ static void scr_sqlite_stmt_finalize(ScrSqliteStmt *s) {
   scr_sqlite_stmt_clear_bare(s);
 }
 
-/* Removes `s` from its database's live-statement list. */
-static void scr_sqlite_db_detach(ScrSqliteDb *db, ScrSqliteStmt *s) {
-  for (size_t i = 0; i < db->stmt_n; i++) {
-    if (db->stmts[i] == s) {
-      db->stmts[i] = db->stmts[db->stmt_n - 1];
-      db->stmt_n--;
-      return;
-    }
-  }
+static ScrSqliteStmtSlot *scr_sqlite_slot_new(ScrSqliteStmt *s) {
+  ScrSqliteStmtSlot *slot = malloc(sizeof *slot);
+  if (slot == NULL) scr_sqlite_oom();
+  slot->rc = 2; /* the database's list and the statement */
+  slot->stmt = s;
+  return slot;
 }
 
-/* Drops the database's reference to a live statement it tracked. */
+static void scr_sqlite_slot_release(ScrSqliteStmtSlot *slot) {
+  if (slot == NULL || --slot->rc > 0) return;
+  free(slot);
+}
+
+/* Removes `s`'s entry from its database's list, answering it (+1: the
+ * reference the list held) or NULL when it was not listed. */
+static ScrSqliteStmtSlot *scr_sqlite_db_detach(ScrSqliteDb *db, ScrSqliteStmt *s) {
+  for (size_t i = 0; i < db->stmt_n; i++) {
+    if (db->stmts[i] == s->slot) {
+      ScrSqliteStmtSlot *slot = db->stmts[i];
+      db->stmts[i] = db->stmts[db->stmt_n - 1];
+      db->stmt_n--;
+      return slot;
+    }
+  }
+  return NULL;
+}
+
+/* A collected statement lets go of its entry: it answers NULL from now on,
+ * and neither side touches the other (the collector frees a database and
+ * its statements in no particular order). The entry stays in the list as
+ * an empty slot until the database's own teardown. */
+static void scr_sqlite_stmt_untrack_slot(ScrSqliteStmt *s) {
+  ScrSqliteStmtSlot *slot = s->slot;
+  if (slot == NULL) return;
+  slot->stmt = NULL;
+  s->slot = NULL;
+  scr_sqlite_slot_release(slot);
+}
+
+/* The database drops its entry for a statement being released while the
+ * database is reachable. */
 static void scr_sqlite_db_untrack(ScrSqliteDb *db, ScrSqliteStmt *s) {
-  size_t before = db->stmt_n;
-  scr_sqlite_db_detach(db, s);
-  if (db->stmt_n != before) scr_sqlite_stmt_release(s);
+  ScrSqliteStmtSlot *slot = scr_sqlite_db_detach(db, s);
+  if (slot == NULL) return;
+  slot->stmt = NULL;
+  s->slot = NULL;
+  scr_sqlite_slot_release(slot); /* the statement's reference */
+  scr_sqlite_slot_release(slot); /* the database's reference */
+}
+
+/* Drops the database's list and the references it held. The entries may
+ * outlive it through their statements, which clear themselves. */
+static void scr_sqlite_db_slots_free(ScrSqliteDb *db) {
+  for (size_t i = 0; i < db->stmt_n; i++) {
+    if (db->stmts[i] != NULL) db->stmts[i]->stmt = NULL;
+    scr_sqlite_slot_release(db->stmts[i]);
+  }
+  free(db->stmts);
+  db->stmts = NULL;
+  db->stmt_n = 0;
+  db->stmt_cap = 0;
 }
 
 /* The collector's teardown of a statement: no traced child is released
@@ -740,18 +800,24 @@ static void scr_sqlite_stmt_gcfree(void *p) {
   ScrSqliteStmt *s = p;
   if (s->stmt != NULL) sqlite3_finalize(s->stmt);
   s->stmt = NULL;
+  /* The entry answers NULL from now on; the database's list may already
+   * be gone, so only the entry is touched. */
+  scr_sqlite_stmt_untrack_slot(s);
   scr_sqlite_stmt_clear_bare(s);
   scr_cyc_free(s);
 }
 
 /* A statement freed without collection: release its children, then the
- * block. The database keeps a reference to every live statement, so a
- * tracked statement cannot reach this point; the detach is defensive. */
+ * block. The database is reachable here (the statement holds a reference
+ * to it), so its entry is removed rather than left empty. */
 static void scr_sqlite_stmt_destroy(ScrSqliteStmt *s) {
   ScrSqliteDb *db = s->db;
-  if (s->stmt != NULL) {
-    scr_sqlite_db_untrack(db, s);
-    scr_sqlite_stmt_finalize(s);
+  if (s->stmt != NULL) scr_sqlite_stmt_finalize(s);
+  if (s->slot != NULL) {
+    if (db != &scr_sqlite_closed_db)
+      scr_sqlite_db_untrack(db, s);
+    else
+      scr_sqlite_stmt_untrack_slot(s);
   }
   scr_dyn_release(s->expandos);
   s->expandos = NULL;
@@ -763,15 +829,11 @@ static void scr_sqlite_stmt_release(void *h) {
   ScrSqliteStmt *s = h;
   if (s == NULL) return;
   if (--s->rc > 0) {
-    /* A tracked statement's only remaining reference can be the
-     * database's own: the program, a cache and every iterator have let it
-     * go, so nothing can reach it again. Finalize it and drop that
-     * reference instead of keeping the prepared query until the database
-     * closes. */
-    if (s->rc == 1 && s->stmt != NULL && s->db != &scr_sqlite_closed_db)
-      scr_sqlite_db_untrack(s->db, s); /* releases the database's reference */
-    else
-      scr_cyc_released(s);
+    /* The database's live-statement entry does not own the statement, so
+     * every reference still counted is a real one (a program, a cache, an
+     * iterator, or a cycle among them): the collector reclaims the group
+     * when the count settles. */
+    scr_cyc_released(s);
     return;
   }
   scr_cyc_dead(s);
@@ -2364,7 +2426,7 @@ static void scr_sqlite_db_gcfree(void *p) {
     db->conn = NULL;
   }
   scr_str_release(db->path);
-  free(db->stmts);
+  scr_sqlite_db_slots_free(db);
   free(db->sessions);
   scr_cyc_free(db);
 }
@@ -2410,7 +2472,9 @@ static void scr_sqlite_db_trace(void *p, ScrTraceVisit visit, void *ctx) {
   visit(db->limits_object, ctx);
   visit(db->expandos, ctx);
   visit(db->authorizer, ctx);
-  for (size_t i = 0; i < db->stmt_n; i++) visit(db->stmts[i], ctx);
+  /* The statement registry is non-owning: a statement the program dropped
+   * is finalized and collected while the database stays alive, and a
+   * statement in a cycle is reclaimed with its cycle. */
   for (size_t i = 0; i < db->session_n; i++) visit(db->sessions[i], ctx);
 }
 
@@ -2421,21 +2485,24 @@ static ScrDyn *scr_sqlite_uint8_copy(const void *data, size_t size);
  * the connection (what deserialize does before replacing the database). */
 static void scr_sqlite_db_close_statements(ScrSqliteDb *db) {
   while (db->stmt_n > 0) {
-    ScrSqliteStmt *s = db->stmts[db->stmt_n - 1];
+    ScrSqliteStmtSlot *slot = db->stmts[db->stmt_n - 1];
     db->stmts[db->stmt_n - 1] = NULL;
     db->stmt_n--;
-    scr_sqlite_stmt_finalize(s);
-    /* The database owned the statement and the statement owned the
-     * database: a program that stores a statement on the database object
-     * would leave that pair uncollectable. A closed statement needs no
-     * database, so its reference becomes the closed stand-in. */
-    if (s->db != &scr_sqlite_closed_db) {
-      scr_sqlite_db_release(s->db);
-      s->db = &scr_sqlite_closed_db;
+    ScrSqliteStmt *s = slot->stmt;
+    if (s != NULL) {
+      scr_sqlite_stmt_finalize(s);
+      /* A closed statement needs no database, so its reference becomes the
+       * closed stand-in; a program that still holds the statement keeps
+       * it. */
+      if (s->db != &scr_sqlite_closed_db) {
+        scr_sqlite_db_release(s->db);
+        s->db = &scr_sqlite_closed_db;
+      }
+      slot->stmt = NULL;
+      s->slot = NULL;
+      scr_sqlite_slot_release(slot); /* the statement's reference */
     }
-    /* The database's own reference to the statement goes too; a program
-     * that still holds the statement keeps it. */
-    scr_sqlite_stmt_release(s);
+    scr_sqlite_slot_release(slot); /* the database's reference */
   }
 }
 
@@ -2443,21 +2510,24 @@ static void scr_sqlite_db_close_statements(ScrSqliteDb *db) {
  * close the connection. */
 static bool scr_sqlite_db_close_all(ScrSqliteDb *db) {
   while (db->stmt_n > 0) {
-    ScrSqliteStmt *s = db->stmts[db->stmt_n - 1];
+    ScrSqliteStmtSlot *slot = db->stmts[db->stmt_n - 1];
     db->stmts[db->stmt_n - 1] = NULL;
     db->stmt_n--;
-    scr_sqlite_stmt_finalize(s);
-    /* The database owned the statement and the statement owned the
-     * database: a program that stores a statement on the database object
-     * would leave that pair uncollectable. A closed statement needs no
-     * database, so its reference becomes the closed stand-in. */
-    if (s->db != &scr_sqlite_closed_db) {
-      scr_sqlite_db_release(s->db);
-      s->db = &scr_sqlite_closed_db;
+    ScrSqliteStmt *s = slot->stmt;
+    if (s != NULL) {
+      scr_sqlite_stmt_finalize(s);
+      /* A closed statement needs no database, so its reference becomes the
+       * closed stand-in; a program that still holds the statement keeps
+       * it. */
+      if (s->db != &scr_sqlite_closed_db) {
+        scr_sqlite_db_release(s->db);
+        s->db = &scr_sqlite_closed_db;
+      }
+      slot->stmt = NULL;
+      s->slot = NULL;
+      scr_sqlite_slot_release(slot); /* the statement's reference */
     }
-    /* The database's own reference to the statement goes too; a program
-     * that still holds the statement keeps it. */
-    scr_sqlite_stmt_release(s);
+    scr_sqlite_slot_release(slot); /* the database's reference */
   }
   scr_sqlite_db_delete_sessions(db);
   if (db->conn != NULL) {
@@ -2588,15 +2658,27 @@ static ScrSqliteDb *scr_sqlite_db_of(const ScrDyn *box) {
 
 /* Tracks a freshly created statement on its database. */
 static void scr_sqlite_db_track(ScrSqliteDb *db, ScrSqliteStmt *s) {
-  scr_sqlite_stmt_retain(s);
   if (db->stmt_n == db->stmt_cap) {
+    /* A slot a collected statement emptied serves again before the list
+     * grows: its only remaining reference is the database's own. */
+    for (size_t i = 0; i < db->stmt_n; i++) {
+      ScrSqliteStmtSlot *empty = db->stmts[i];
+      if (empty != NULL && empty->stmt == NULL) {
+        empty->stmt = s;
+        empty->rc++; /* the statement's reference */
+        s->slot = empty;
+        return;
+      }
+    }
     size_t cap = db->stmt_cap != 0 ? db->stmt_cap * 2 : 8;
     void *grown = realloc(db->stmts, cap * sizeof *db->stmts);
     if (grown == NULL) scr_sqlite_oom();
     db->stmts = grown;
     db->stmt_cap = cap;
   }
-  db->stmts[db->stmt_n++] = s;
+  ScrSqliteStmtSlot *slot = scr_sqlite_slot_new(s);
+  db->stmts[db->stmt_n++] = slot;
+  s->slot = slot;
 }
 
 /* Prepares `sql` with the prepare options (Node's DatabaseSync::Prepare). */
@@ -4785,7 +4867,7 @@ ScrDyn *scr_sqlite_db_new(ScrDyn *path, ScrDyn *options) {
 #define SCR_SQLITE_DB_FAIL()         \
   do {                               \
     scr_str_release(db->path);       \
-    free(db->stmts);                 \
+    scr_sqlite_db_slots_free(db);    \
     scr_cyc_free(db);                \
     return NULL;                     \
   } while (0)
@@ -4848,7 +4930,7 @@ ScrDyn *scr_sqlite_db_new(ScrDyn *path, ScrDyn *options) {
 
   if (db->open_option && !scr_sqlite_db_open_connection(db)) {
     scr_str_release(db->path);
-    free(db->stmts);
+    scr_sqlite_db_slots_free(db);
     free(db->sessions);
     scr_cyc_free(db);
     return NULL;

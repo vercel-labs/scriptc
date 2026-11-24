@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
-import { FAST_TEST_BUDGET_MS, fastTests } from "../../scripts/ci-fast-tests.mjs";
+import { FAST_TEST_BUDGET_MS, fastTests, moduleTokens } from "../../scripts/ci-fast-tests.mjs";
 import {
   decide,
   forkAttestation,
@@ -335,7 +335,7 @@ test("a runtime or compiler change maps to the corpus programs that import its m
   expect(fallback.corpus.length).toBeGreaterThan(0);
 });
 
-test("vitest-related files are not selected twice and count as a non-empty signal", () => {
+test("vitest-related files are selected once, within the same budget as everything else", () => {
   const testFiles = ["packages/compiler/test/emit-call.test.ts"];
   const selection = fastTests(
     ["packages/compiler/src/backend/emit-call.ts"],
@@ -345,8 +345,44 @@ test("vitest-related files are not selected twice and count as a non-empty signa
     { related: ["packages/compiler/test/emit-call.test.ts"] },
   );
   expect(selection.related).toEqual(["packages/compiler/test/emit-call.test.ts"]);
-  expect(selection.selected).toEqual([]);
+  expect(selection.selected).toEqual(["packages/compiler/test/emit-call.test.ts"]);
   expect(selection.smoke).toBe(false);
+});
+
+test("a shared source's large related set is cut at the budget, not run through", () => {
+  // A compiler module imported by hundreds of tests: the module graph names
+  // them all, and the budget must still hold.
+  const related = Array.from(
+    { length: 100 },
+    (_, index) => `packages/compiler/test/related-${index}.test.ts`,
+  );
+  const costs = Object.fromEntries(related.map((file) => [file, 60_000]));
+  const selection = fastTests(
+    ["packages/compiler/src/backend/emit-call.ts"],
+    related,
+    costs,
+    FAST_TEST_BUDGET_MS,
+    { related },
+  );
+  expect(selection.total).toBeLessThanOrEqual(FAST_TEST_BUDGET_MS);
+  expect(selection.selected).toHaveLength(20);
+  expect(selection.deferred).toHaveLength(80);
+  expect(selection.related).toEqual(selection.selected);
+});
+
+test("object-prototype names in a path are module tokens, not inherited aliases", () => {
+  expect([...moduleTokens("packages/compiler/src/backend/constructor.ts")]).toContain(
+    "constructor",
+  );
+  expect([...moduleTokens("packages/compiler/src/backend/toString.ts")]).toContain("tostring");
+  // And a constructor-named change selects the smoke slice rather than throwing.
+  const selection = fastTests(
+    ["packages/compiler/src/backend/constructor.ts"],
+    [],
+    {},
+    FAST_TEST_BUDGET_MS,
+  );
+  expect(selection.smoke).toBe(true);
 });
 
 test("a push cancels the expensive tier still running on the pull request's older head", () => {

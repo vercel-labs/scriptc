@@ -3,8 +3,10 @@
 //
 // Four selections, all change-driven and none of them ever empty:
 //
-//   1. vitest related   for changed TypeScript sources: the tests the module
-//                       graph says import them, run directly by vitest.
+//   1. module graph     for changed TypeScript sources: the test files Vitest
+//                       relates to them (listed, not run, by `vitest list`
+//                       against a generated `related` config), selected
+//                       within the same 20-minute single-worker budget.
 //   2. stem matches     the test files named after the changed sources, the
 //                       cheap historical rule, kept for C and runtime files.
 //   3. corpus map       changed runtime C and compiler sources mapped to the
@@ -21,10 +23,9 @@
 //
 // usage: node scripts/ci-fast-tests.mjs --base <sha> --head <sha> [--dry-run]
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, globSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, globSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   fileExclusions,
   memoryHeavyFiles,
@@ -121,8 +122,13 @@ export function moduleTokens(file) {
       .filter((token) => token.length > 1),
   );
   const modules = new Set();
-  for (const token of tokens)
-    for (const module of MODULE_ALIASES[token] ?? [token]) modules.add(module);
+  for (const token of tokens) {
+    // Object.prototype's names (`constructor`, `toString`, ...) are not
+    // aliases: MODULE_ALIASES[token] would answer the inherited function and
+    // `for...of` would throw on a compiler file named e.g. constructor.ts.
+    const alias = Object.hasOwn(MODULE_ALIASES, token) ? MODULE_ALIASES[token] : [token];
+    for (const module of alias) modules.add(module);
+  }
   return modules;
 }
 
@@ -162,9 +168,11 @@ export function corpusModuleIndex(corpusDir) {
  * `testFiles` lists every test file in the repository; `costs` maps a test
  * file to its single-worker milliseconds (a file without a measurement
  * weighs as much as the median measured one). `related` are the test files
- * vitest related already ran for this change. `corpusIndex` maps a Node
- * module to the corpus programs importing it, and `corpusCosts` maps a
- * corpus program to its single-worker milliseconds.
+ * the module graph says import the changed sources; they compete for the
+ * same budget as everything else, so a change to a shared compiler module
+ * (which relates to hundreds of files) cannot outrun the budget. `corpusIndex`
+ * maps a Node module to the corpus programs importing it, and `corpusCosts`
+ * maps a corpus program to its single-worker milliseconds.
  */
 export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_MS, options = {}) {
   const {
@@ -178,9 +186,8 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     const key = stem(file);
     byStem.set(key, [...(byStem.get(key) ?? []), file]);
   }
-  const alreadyRun = new Set(related);
-  const relatedFiles = related.filter((file) => !expensiveOnly.has(file));
-  const staticSelection = new Set();
+  const relatedCandidates = new Set(related.filter((file) => testFiles.includes(file)));
+  const staticSelection = new Set(relatedCandidates);
   for (const file of changed) {
     if (isTest(file)) {
       if (testFiles.includes(file)) staticSelection.add(file);
@@ -189,7 +196,6 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     if (!/^(packages|scripts|tests\/harness)\//.test(file)) continue;
     for (const test of byStem.get(stem(file)) ?? []) staticSelection.add(test);
   }
-  for (const file of alreadyRun) staticSelection.delete(file);
 
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
@@ -232,10 +238,14 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
     }
   }
 
-  // Never select zero tests. If related and both maps found nothing, run the
-  // smoke slice: real corpus programs, on a 3-minute budget.
+  // The related files that made it inside the budget (all of them are in
+  // `selected`); reported apart so the log says where each file came from.
+  const relatedSelected = selected.filter((file) => relatedCandidates.has(file));
+
+  // Never select zero tests. If the related graph and both maps found
+  // nothing, run the smoke slice: real corpus programs, on a 3-minute budget.
   let smoke = false;
-  if (relatedFiles.length === 0 && selected.length === 0 && corpus.length === 0) {
+  if (selected.length === 0 && corpus.length === 0) {
     smoke = true;
     for (const program of SMOKE_CORPUS) {
       if (corpusTotal + corpusWeigh(program) > corpusBudget) deferredCorpus.push(program);
@@ -247,7 +257,7 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   }
 
   return {
-    related: relatedFiles,
+    related: relatedSelected,
     selected,
     deferred,
     corpus,
@@ -258,32 +268,61 @@ export function fastTests(changed, testFiles, costs, budget = FAST_TEST_BUDGET_M
   };
 }
 
-/** Runs `vitest related` for the changed TS files, excluding the expensive
- * suites so the fast tier cannot pull one in through the import graph. The
- * JSON reporter names the files it ran; those are not selected again. */
-function runRelated(changedTs) {
+/** The test files Vitest's module graph relates to the changed TS sources.
+ *
+ * Runs `vitest list` — collection only, no test bodies — against a generated
+ * config whose `related` names the changes, rather than `vitest related`,
+ * which would RUN every related file before the budget could consider it. A
+ * change to a shared compiler module relates to hundreds of files; the list
+ * is handed back to the caller, which selects within the fast tier's
+ * 20-minute single-worker budget. The expensive suites are excluded so the
+ * import graph cannot pull one in. */
+function relatedTestFiles(changedTs) {
   if (changedTs.length === 0) return { status: 0, files: [] };
-  const outputFile = join(tmpdir(), `scriptc-fast-related-${process.pid}.json`);
-  const args = [
-    "exec",
-    "vitest",
-    "related",
-    "--run",
-    "--passWithNoTests",
-    "--reporter=json",
-    `--outputFile=${outputFile}`,
-    ...[...expensiveOnly].flatMap((file) => [`--exclude=${file}`]),
-    ...changedTs,
-  ];
-  const result = spawnSync("pnpm", args, { cwd: repoRoot, stdio: "inherit" });
-  let files = [];
+  const cacheDir = join(repoRoot, "node_modules/.cache");
+  mkdirSync(cacheDir, { recursive: true });
+  const configPath = join(cacheDir, `scriptc-fast-related-${process.pid}.mts`);
+  const outputPath = join(cacheDir, `scriptc-fast-related-${process.pid}.json`);
+  const baseConfig = pathToFileURL(join(repoRoot, "vitest.config.ts")).href;
+  writeFileSync(
+    configPath,
+    `import base from ${JSON.stringify(baseConfig)};\n` +
+      `export default { ...base, related: JSON.parse(process.env["FAST_RELATED_FILES"] ?? "[]") };\n`,
+  );
   try {
-    const report = JSON.parse(readFileSync(outputFile, "utf8"));
-    files = (report.testResults ?? []).map((entry) => relative(repoRoot, entry.name));
-  } catch {
-    /* a crashed run reports through its status below */
+    const result = spawnSync(
+      "pnpm",
+      [
+        "exec",
+        "vitest",
+        "list",
+        "--filesOnly",
+        `--json=${outputPath}`,
+        "-c",
+        configPath,
+        ...[...expensiveOnly].flatMap((file) => [`--exclude=${file}`]),
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: { ...process.env, FAST_RELATED_FILES: JSON.stringify(changedTs) },
+      },
+    );
+    if (result.status !== 0) {
+      process.stderr.write(result.stderr ?? "");
+      return { status: result.status ?? 1, files: [] };
+    }
+    try {
+      const listed = JSON.parse(readFileSync(outputPath, "utf8"));
+      const files = listed.map((entry) => relative(repoRoot, entry.file).replaceAll("\\", "/"));
+      return { status: 0, files };
+    } catch {
+      return { status: 1, files: [] };
+    }
+  } finally {
+    rmSync(configPath, { force: true });
+    rmSync(outputPath, { force: true });
   }
-  return { status: result.status ?? 1, files };
 }
 
 async function main() {
@@ -311,22 +350,23 @@ async function main() {
   const changedTs = changed.filter(
     (file) => /\.[cm]?tsx?$/.test(file) && !isTest(file) && !file.endsWith(".d.ts"),
   );
-  const relatedRun = dryRun ? { status: 0, files: [] } : runRelated(changedTs);
+  const relatedRun = dryRun ? { status: 0, files: [] } : relatedTestFiles(changedTs);
   const selection = fastTests(changed, testFiles, testCosts.plain, FAST_TEST_BUDGET_MS, {
     related: relatedRun.files,
     corpusIndex,
     corpusCosts,
   });
 
-  const ranRelated = selection.related.length;
+  const relatedSet = new Set(selection.related);
   console.log(
     `${changed.length} changed files; ` +
-      `${ranRelated} related + ${selection.selected.length} stem/vitest test files ` +
-      `(~${Math.round((selection.total + selection.corpusTotal) / 60_000)} single-worker minutes) ` +
+      `${selection.related.length} related + ${selection.selected.length - relatedSet.size} stem ` +
+      `test files (~${Math.round((selection.total + selection.corpusTotal) / 60_000)} single-worker minutes) ` +
       `and ${selection.corpus.length} corpus programs${selection.smoke ? " (smoke fallback)" : ""}`,
   );
   for (const file of selection.related) console.log(`  related  ${file}`);
-  for (const file of selection.selected) console.log(`  test     ${file}`);
+  for (const file of selection.selected)
+    if (!relatedSet.has(file)) console.log(`  test     ${file}`);
   for (const program of selection.corpus) console.log(`  corpus   ${program}`);
   if (selection.deferred.length > 0) {
     console.log(`Left to the expensive tier (expensive suites or over the budget):`);

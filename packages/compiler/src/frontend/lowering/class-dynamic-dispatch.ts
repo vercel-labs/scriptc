@@ -2116,6 +2116,10 @@ export class ClassDynamicDispatch {
    * finalize regroups (groupStaticFieldBranches) and then forgets. A branch
    * another pass copied is no longer listed and keeps its flat form. */
   private readonly staticFieldBranches = new Map<IrStmt, StaticFieldBranch>();
+  /** The branches fenceStaticFieldKeys adds: they read only the helper's
+   * `target` and `key` parameters, so a long run of them can move into a
+   * chunk function unchanged (splitStaticFieldBranches). */
+  private readonly fenceBranches = new Set<IrStmt>();
 
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
@@ -2640,6 +2644,7 @@ export class ClassDynamicDispatch {
               loc,
             };
             this.staticFieldBranches.set(branch, { value: target, keyClass, actual, ready: true });
+            this.fenceBranches.add(branch);
             helper.body.splice(at, 0, branch);
             changed = true;
           }
@@ -7784,6 +7789,7 @@ export class ClassDynamicDispatch {
     }
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
+    if (lowerer) this.splitStaticFieldBranches(lowerer);
     if (lowerer) this.groupStaticFieldBranchRuns(lowerer);
     if (lowerer) this.indexClassBranches(lowerer);
     if (lowerer) this.settleMethodsIntact(lowerer);
@@ -7848,6 +7854,83 @@ export class ClassDynamicDispatch {
       ];
     }
   }
+
+  /** Long runs of static-field fence branches are split into chunk functions
+   * called in order. One helper with a branch per (boxed class, held class,
+   * field) leaves the native frame dominated by LLVM's spill slots for the
+   * branches' operands — about 24 bytes per branch, tens of KiB for a large
+   * class family — even though the branches themselves are small. A chunk of
+   * at most CHUNK branches has a bounded frame, and the calls run one after
+   * another rather than nested, so the helper's stack use no longer grows with
+   * the program's class fields. The statements, their order, their tests and
+   * their messages are unchanged; groupStaticFieldBranchRuns then regroups the
+   * branches inside each chunk. */
+  private splitStaticFieldBranches(lowerer: Lowerer): void {
+    const CHUNK = 256;
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn) || this.fenceBranches.size === 0) continue;
+      seen.add(fn);
+      let rebuilt: IrStmt[] | null = null;
+      let i = 0;
+      while (i < fn.body.length) {
+        if (!this.fenceBranches.has(fn.body[i]!)) {
+          rebuilt?.push(fn.body[i]!);
+          i++;
+          continue;
+        }
+        let end = i;
+        while (end < fn.body.length && this.fenceBranches.has(fn.body[end]!)) end++;
+        if (end - i <= CHUNK) {
+          rebuilt?.push(...fn.body.slice(i, end));
+          i = end;
+          continue;
+        }
+        rebuilt ??= fn.body.slice(0, i);
+        let start = i;
+        for (; start + CHUNK <= end; start += CHUNK) {
+          const statements = fn.body.slice(start, start + CHUNK);
+          const loc = statements[0]!.loc;
+          const params: IrParam[] = [
+            { localId: "target", name: "target", type: DYN },
+            { localId: "key", name: "key", type: DYN },
+          ];
+          const name = `%staticFieldFence.${this.staticFenceChunks++}`;
+          const chunk: IrFunction = {
+            name,
+            params,
+            returnType: VOID,
+            locals: params.map((param) => ({
+              id: param.localId,
+              name: param.name,
+              type: param.type,
+              mutable: false,
+            })),
+            body: statements,
+            loc,
+          };
+          lowerer.liftedFns.push(chunk);
+          rebuilt.push({
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: name,
+              args: [varRef("target", DYN, loc), varRef("key", DYN, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          });
+        }
+        rebuilt.push(...fn.body.slice(start, end));
+        i = end;
+      }
+      if (rebuilt !== null) fn.body = rebuilt;
+    }
+  }
+
+  /** The chunk functions splitStaticFieldBranches has made. */
+  private staticFenceChunks = 0;
 
   /** Regroups the static-field branches of each generated helper by the
    * class value they test (groupStaticFieldBranches). */

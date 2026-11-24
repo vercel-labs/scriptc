@@ -7344,6 +7344,33 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     if (scr_nt_head != NULL) continue;
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* never wait once Node's loop does */
+    /* The turn begins here, before the check phase an earlier poll dispatch
+     * may owe: the turn's phases and their callbacks read the counter as
+     * libuv's loop_count reports it, and a pass restarted before this point
+     * (ticks, a woken fiber) stays part of the turn that queued them.
+     * scr_perf_loop_mark installs the counter in the programs that read the
+     * metrics. */
+    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
+    /* A dispatch in this pass stands in for the previous poll phase: an
+     * immediate it queued belongs to the check phase that follows the poll,
+     * so this turn runs that check before the timers phase. */
+    bool defer_timers = in_dispatch && scr_pending_immediates > 0 &&
+                        scr_immediate_generation != immediate_generation_before_dispatch;
+    in_dispatch = false;
+    /* A poll callback queued an immediate: this turn runs the check phase
+     * before its timers phase, Node's poll-to-check order, so the immediate
+     * never follows the timer scheduled beside it. The timers phase still
+     * runs in the same turn, so a ready poll cannot starve it, and every
+     * dispatch gets its own check. The check runs before the wait's
+     * readiness snapshot below, because an immediate may start new I/O that
+     * the wait must poll for. */
+    bool check_ran = false;
+    if (defer_timers) {
+      int check = scr_loop_run_check_phase(top_level, &check_ran);
+      if (check == 1) return true; /* fatal: the caller ends the loop */
+      else if (check == 2) return false;
+      else if (check == 3) return rejection_failed;
+    }
     bool kids = scr_loop_children != NULL && scr_loop_children->pending();
     bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
     /* exec/execFile's timeout: the deadline keeps the loop alive and wakes
@@ -7395,30 +7422,6 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (SCR_PASS_HANDED_OVER()) return rejection_failed;
       if (!scr_loop_has_reffed_work()) break;
       continue;
-    }
-    /* One loop turn begins here: the turn's remaining phases (timers, poll,
-     * check) and their callbacks read the counter as libuv's loop_count
-     * reports it, and a pass restarted before this point (ticks, a woken
-     * fiber) stays part of the turn that queued them. scr_perf_loop_mark
-     * installs the counter in the programs that read the metrics. */
-    if (scr_loop_metrics_turn_fn != NULL) scr_loop_metrics_turn_fn();
-    /* A dispatch in this pass stands in for the previous poll phase: an
-     * immediate it queued belongs to the check phase that follows the poll,
-     * so this turn runs that check before the timers phase. */
-    bool defer_timers = in_dispatch && scr_pending_immediates > 0 &&
-                        scr_immediate_generation != immediate_generation_before_dispatch;
-    in_dispatch = false;
-    /* A poll callback queued an immediate: this turn runs the check phase
-     * before its timers phase, Node's poll-to-check order, so the immediate
-     * never follows the timer scheduled beside it. The timers phase still
-     * runs in the same turn, so a ready poll cannot starve it, and every
-     * dispatch gets its own check. */
-    bool check_ran = false;
-    if (defer_timers) {
-      int check = scr_loop_run_check_phase(top_level, &check_ran);
-      if (check == 1) rejection_failed = true;
-      else if (check == 2) return false;
-      else if (check == 3) return rejection_failed;
     }
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
@@ -7742,7 +7745,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     }
     if (!defer_timers) {
       int check = scr_loop_run_check_phase(top_level, &check_ran);
-      if (check == 1) rejection_failed = true;
+      if (check == 1) return true; /* fatal: the caller ends the loop */
       else if (check == 2) return false;
       else if (check == 3) return rejection_failed;
     }

@@ -123,6 +123,15 @@ try {
   for (const [label, ca] of [
     ["bad-then-good", bad + caText],
     ["good-then-bad", caText + bad],
+    // A ca array is added one entry at a time, so a malformed entry does
+    // not hide the anchors in the entries after it.
+    ["array-bad-then-good", [bad, caText]],
+    ["array-good-then-bad", [caText, bad]],
+    ["array-buffer-bad-then-good", [Buffer.from(bad), Buffer.from(caText)]],
+    ["array-buffer-good-then-bad", [Buffer.from(caText), Buffer.from(bad)]],
+    ["array-empty-then-good", ["", caText]],
+    ["array-good-then-empty", [caText, ""]],
+    ["array-only-empty", [""]],
   ]) {
     const server = tls.createServer({ cert, key }, (socket) => socket.end("ok"));
     server.on("tlsClientError", () => {});

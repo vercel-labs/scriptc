@@ -198,10 +198,11 @@ static const char *scr_tls_find_bytes(const char *hay, size_t hay_len, const cha
   return NULL;
 }
 
-/* A CA bundle: OpenSSL reads the PEM blocks in order and stops at the first
- * one it cannot parse, keeping the blocks before it. mbedTLS skips a bad
- * block and keeps parsing later ones, so the blocks are fed one at a time. */
-static int scr_tls_parse_ca_bundle(mbedtls_x509_crt *crt, const char *pem, size_t len) {
+/* A CA bundle entry: OpenSSL reads the PEM blocks in order and stops at the
+ * first one it cannot parse, keeping the blocks before it. mbedTLS skips a
+ * bad block and keeps parsing later ones, so the blocks are fed one at a
+ * time. */
+static int scr_tls_parse_ca_segment(mbedtls_x509_crt *crt, const char *pem, size_t len) {
   static const char begin[] = "-----BEGIN CERTIFICATE-----";
   static const char end[] = "-----END CERTIFICATE-----";
   const char *at = pem;
@@ -220,6 +221,43 @@ static int scr_tls_parse_ca_bundle(mbedtls_x509_crt *crt, const char *pem, size_
   }
   if (any) return 0;
   return scr_tls_parse_crt(crt, pem, len); /* a bare DER certificate */
+}
+
+/* CA array entries are added separately by Node: a malformed entry must not
+ * stop the entries after it, while one entry's string still stops at its
+ * first malformed block (scr_tls_parse_ca_segment). A `ca` array is read
+ * into a framed buffer — magic, entry count, then each entry's length and
+ * bytes — so the boundaries survive the trip through one ScrBytes. Framing
+ * that does not consume the buffer exactly is not ours and is read as one
+ * bundle. */
+#define SCR_TLS_CA_ARRAY_MAGIC "\x01" "SCRIPTC_CA_ARRAY" "\x01"
+#define SCR_TLS_CA_ARRAY_MAGIC_LEN (sizeof SCR_TLS_CA_ARRAY_MAGIC - 1)
+#define SCR_TLS_CA_ARRAY_LEN_BYTES 8u
+static int scr_tls_parse_ca_bundle(mbedtls_x509_crt *crt, const char *pem, size_t len) {
+  if (len >= SCR_TLS_CA_ARRAY_MAGIC_LEN + SCR_TLS_CA_ARRAY_LEN_BYTES &&
+      memcmp(pem, SCR_TLS_CA_ARRAY_MAGIC, SCR_TLS_CA_ARRAY_MAGIC_LEN) == 0) {
+    const char *p = pem + SCR_TLS_CA_ARRAY_MAGIC_LEN;
+    const char *limit = pem + len;
+    uint64_t count;
+    memcpy(&count, p, SCR_TLS_CA_ARRAY_LEN_BYTES);
+    p += SCR_TLS_CA_ARRAY_LEN_BYTES;
+    bool any = false, framed = true;
+    int last_error = 0;
+    for (uint64_t i = 0; i < count; i++) {
+      if ((size_t)(limit - p) < SCR_TLS_CA_ARRAY_LEN_BYTES) { framed = false; break; }
+      uint64_t n;
+      memcpy(&n, p, SCR_TLS_CA_ARRAY_LEN_BYTES);
+      p += SCR_TLS_CA_ARRAY_LEN_BYTES;
+      if (n > (uint64_t)(limit - p)) { framed = false; break; }
+      int r = scr_tls_parse_ca_segment(crt, p, (size_t)n);
+      if (r == 0) any = true;
+      else if (last_error == 0) last_error = r;
+      p += n;
+    }
+    if (framed && p == limit)
+      return any ? 0 : last_error != 0 ? last_error : MBEDTLS_ERR_X509_CERT_UNKNOWN_FORMAT;
+  }
+  return scr_tls_parse_ca_segment(crt, pem, len);
 }
 
 static int scr_tls_parse_key(mbedtls_pk_context *pk, const char *pem, size_t len) {
@@ -2951,6 +2989,41 @@ static ScrBytes *scr_tls_pem_dyn(const ScrDyn *v, const char *what, bool concat)
   return NULL;
 }
 
+/* A ca array: each entry is kept separate in the framed buffer above. */
+static ScrBytes *scr_tls_ca_array_dyn(const ScrDyn *ca, const char *what) {
+  size_t count = ca->v.arr.len;
+  size_t total = SCR_TLS_CA_ARRAY_MAGIC_LEN + SCR_TLS_CA_ARRAY_LEN_BYTES;
+  for (size_t i = 0; i < count; i++) {
+    const ScrDyn *e = ca->v.arr.items[i];
+    size_t n;
+    if (e->kind == SCR_DYN_STR) n = e->v.str->len;
+    else if (scr_dyn_bytes_is(e, SCR_BYTES_U8)) n = e->v.bytes->len;
+    else {
+      scr_dyn_arg_type_fail(what, "of type string or an instance of Buffer or Uint8Array", e);
+      return NULL;
+    }
+    if (n > SIZE_MAX - total - SCR_TLS_CA_ARRAY_LEN_BYTES) scr_tls_oom();
+    total += SCR_TLS_CA_ARRAY_LEN_BYTES + n;
+  }
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)total);
+  memcpy(b->data, SCR_TLS_CA_ARRAY_MAGIC, SCR_TLS_CA_ARRAY_MAGIC_LEN);
+  size_t off = SCR_TLS_CA_ARRAY_MAGIC_LEN;
+  uint64_t n64 = (uint64_t)count;
+  memcpy(b->data + off, &n64, SCR_TLS_CA_ARRAY_LEN_BYTES);
+  off += SCR_TLS_CA_ARRAY_LEN_BYTES;
+  for (size_t i = 0; i < count; i++) {
+    const ScrDyn *e = ca->v.arr.items[i];
+    size_t n = e->kind == SCR_DYN_STR ? e->v.str->len : e->v.bytes->len;
+    n64 = (uint64_t)n;
+    memcpy(b->data + off, &n64, SCR_TLS_CA_ARRAY_LEN_BYTES);
+    off += SCR_TLS_CA_ARRAY_LEN_BYTES;
+    if (e->kind == SCR_DYN_STR) memcpy(b->data + off, e->v.str->data, n);
+    else scr_bytes_read(e->v.bytes, 0, b->data + off, n);
+    off += n;
+  }
+  return b;
+}
+
 /* A `ca` option from a runtime value: NULL for none (an empty string,
  * which Node reads as no ca), empty bytes for an empty Buffer or array
  * (an empty trust store), else the PEM bundle (+1). False with the
@@ -2963,6 +3036,9 @@ static bool scr_tls_ca_dyn(const ScrDyn *v, const char *what, ScrBytes **out) {
   bool ok = true;
   if (ca->kind == SCR_DYN_ARR && ca->v.arr.len == 0) {
     *out = scr_bytes_new(SCR_BYTES_U8, 0);
+  } else if (ca->kind == SCR_DYN_ARR) {
+    *out = scr_tls_ca_array_dyn(ca, what);
+    ok = *out != NULL;
   } else if (ca->kind != SCR_DYN_STR || ca->v.str->len > 0) {
     *out = scr_tls_pem_dyn(ca, what, true);
     ok = *out != NULL;

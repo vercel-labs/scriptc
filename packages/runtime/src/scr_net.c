@@ -5080,6 +5080,20 @@ void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to) {
 
 bool scr_net_sock_dial_pending(ScrNetSocket *s) { return s->dial_deferred; }
 
+/* Whether the peer has closed its side already: the FIN may sit in the kernel
+ * unread (a pooled keep-alive socket whose I/O has not run yet), so a plain
+ * socket is peeked. A TLS socket answers from its own EOF bookkeeping only. */
+bool scr_net_sock_peer_closed(ScrNetSocket *s) {
+  if (s == NULL) return true;
+  if (s->rd_eof || s->close_emitted || s->emit_close) return true;
+  if (s->fd < 0 || s->connecting || s->tops != NULL) return false;
+  char c;
+  ssize_t n = recv(s->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+  if (n == 0) return true; /* orderly FIN queued */
+  if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) return true;
+  return false;
+}
+
 void scr_net_sock_dial_start(ScrNetSocket *s) {
   if (!s->dial_deferred || s->close_emitted || s->emit_close || s->fd >= 0) return;
   s->dial_deferred = false;

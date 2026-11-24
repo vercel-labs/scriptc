@@ -99,6 +99,10 @@ export function emitNativeObject(options: {
   partitionCache?: string;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** Runtime-pack import bitcode: the helper may inline or specialize the
+   * runtime bodies the program declares calls to (native/llvm-codegen's
+   * runtime-import.h). */
+  importBitcode?: readonly string[];
   verified?: NativeHelperVerification;
 }): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
@@ -123,6 +127,7 @@ export function emitNativeObject(options: {
     ...(options.partitionCache === undefined || outputs.length < 2
       ? []
       : ["--cache-dir", options.partitionCache]),
+    ...(options.importBitcode ?? []).flatMap((path) => ["--import-bitcode", path]),
     ...nativeProfileHelperArgs(options.profile),
   ]);
   for (const output of outputs) requireNativeArtifact(output);

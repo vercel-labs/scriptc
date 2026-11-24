@@ -11,8 +11,9 @@ const run = promisify(execFile);
  * globals and emits the object. With the target's committed runtime profile,
  * the runtime compiler emits the bitcode unoptimized and the helper also
  * optimizes it with the profile (build.mjs), so one LLVM reads and writes
- * every profile. Runtime packs ship objects only: program builds do not
- * import runtime bitcode.
+ * every profile. The speed flavor also ships pruned import bitcode for the
+ * units whose helpers a program builds inline (IMPORT_BITCODE_UNITS in
+ * build.mjs); program builds pass it back with `--import-bitcode`.
  *
  * Every host helper supports every scriptc target, so packs keep building
  * on their usual hosts. Without a runnable host helper (or with
@@ -101,17 +102,21 @@ export async function buildRuntimeUnit({
   compileBitcode,
   helperArgs = [],
   object,
+  /** Where to write the unit's pruned import bitcode, when the pack ships it. */
+  bitcode = null,
   triple,
   tag,
   sections,
 }) {
   const optimized = object.replace(/\.o$/, ".opt.bc");
+  const optionalBitcode = helper.features.includes("runtime-unit-optional-bitcode");
+  if (bitcode !== null && !optionalBitcode)
+    throw new Error(`runtime-unit: the helper cannot write import bitcode on request`);
   // Helpers older than "runtime-unit-optional-bitcode" always write it.
-  const bitcode = helper.features.includes("runtime-unit-optional-bitcode")
-    ? null
-    : object.replace(/\.o$/, ".import.bc");
+  const legacyBitcode = optionalBitcode ? null : object.replace(/\.o$/, ".import.bc");
   // A runtime compiler failure is a real build error and surfaces as one.
   await compileBitcode(optimized);
+  let failed = false;
   try {
     const { stdout } = await run(helper.path, [
       "runtime-unit",
@@ -119,6 +124,7 @@ export async function buildRuntimeUnit({
       optimized,
       "--object",
       object,
+      ...(legacyBitcode === null ? [] : ["--bitcode", legacyBitcode]),
       ...(bitcode === null ? [] : ["--bitcode", bitcode]),
       "--target",
       triple,
@@ -137,9 +143,11 @@ export async function buildRuntimeUnit({
       `runtime-unit: ${tag}: compiling the object directly (${helperFailure(error)})\n`,
     );
     await rm(object, { force: true });
+    failed = true;
     return false;
   } finally {
     await rm(optimized, { force: true });
-    if (bitcode !== null) await rm(bitcode, { force: true });
+    if (legacyBitcode !== null) await rm(legacyBitcode, { force: true });
+    if (failed && bitcode !== null) await rm(bitcode, { force: true });
   }
 }

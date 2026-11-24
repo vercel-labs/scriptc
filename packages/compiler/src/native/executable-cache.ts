@@ -447,6 +447,7 @@ export function openNativeExecutableCache(
       const selection = pack.select();
       return [
         ...selection.selected.runtime,
+        ...selection.selected.bitcode,
         ...selection.selected.archives,
         ...selection.licenses,
       ].map((artifact) => join(selection.root, artifact.path));

@@ -132,6 +132,8 @@ export interface NativeCodegenOptions {
   partitions?: number;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** Runtime-pack import bitcode (native/llvm-codegen's runtime-import.h). */
+  importBitcode?: readonly string[];
 }
 
 /** Writes LLVM text in large batches; see `writeTextParts`. */
@@ -355,7 +357,7 @@ function cacheKey(
   else
     for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
       hash.update(part);
-  return hash
+  hash
     .update("\0")
     .update(JSON.stringify(target))
     .update("\0")
@@ -369,8 +371,12 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
-    .digest("hex");
+    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`);
+  for (const path of options.importBitcode ?? []) {
+    hash.update("\0import\0");
+    updateHashFromFile(hash, path);
+  }
+  return hash.digest("hex");
 }
 
 function artifactMode(): number {
@@ -540,6 +546,7 @@ export async function emitNativeArtifact(
       "--source-path",
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
+      ...(options.importBitcode ?? []).flatMap((path) => ["--import-bitcode", path]),
       ...nativeProfileHelperArgs(options.profile),
     ]);
     for (const stage of stages) {

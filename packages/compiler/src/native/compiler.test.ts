@@ -47,6 +47,7 @@ const runtimePack = vi.hoisted(() => ({
     manifestText: "",
     selected: {
       runtime: [] as { path: string }[],
+      bitcode: [] as { path: string }[],
       archives: [] as { path: string }[],
       data: [] as { path: string }[],
       systemLibraries: [] as string[],
@@ -66,7 +67,7 @@ afterEach(() => {
     ...runtimePack.selection,
     root: "/nonexistent",
     licenses: [],
-    selected: { runtime: [], archives: [], data: [], systemLibraries: [] },
+    selected: { runtime: [], bitcode: [], archives: [], data: [], systemLibraries: [] },
   };
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -517,6 +518,7 @@ test.skipIf(process.platform === "win32")(
       root: packRoot,
       selected: {
         runtime: [],
+        bitcode: [],
         archives: [{ path: "libruntime.a" }],
         data: [],
         systemLibraries: [],

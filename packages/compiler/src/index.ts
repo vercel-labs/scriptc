@@ -138,6 +138,7 @@ import {
   loadRuntimePack,
   type RuntimePackSelection,
 } from "./backend/runtime-pack.js";
+import { stageImportBitcode } from "./backend/native/import-bitcode.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
 import {
   nativeProfileKey,
@@ -995,6 +996,7 @@ interface NativeProgramObject {
 
 async function emitNativeProgramObject(
   entryPath: string,
+  features: EarlyExecutableNativeFeatures,
   opts: CompileRequestOptions,
   llvm: LlvmInput,
   profile: NativeProfileOptions | undefined,
@@ -1008,6 +1010,30 @@ async function emitNativeProgramObject(
   // The validated program-object artifact is a single object by contract.
   const target = nativeCodegenTarget();
   const single = opts.nativeProgramObject === true || target === null;
+  // A speed build's pack ships pruned import bitcode for the hot runtime
+  // leaves (scr_map, scr_string, scr_array), which the helper may inline
+  // into the program's own code. The selection is the link's: the same
+  // features, flavor and static-link override name the same variants.
+  let importBitcode: string[] = [];
+  let importBitcodeDir: string | null = null;
+  if (target !== null && opts.optimization === "speed" && opts.sanitize !== true) {
+    const pack = await loadRuntimePack({
+      target,
+      features: opts.staticLink === true ? { ...features, staticLink: true } : features,
+      optimization: "speed",
+    });
+    // The helper reads only private copies made from bytes that matched the
+    // manifest: a bitcode file swapped after selection cannot change the
+    // executable while the manifest and the linked objects still match.
+    if (pack.selectedBitcodeArtifacts.length > 0) {
+      importBitcodeDir = await mkdtemp(join(tmpdir(), "scriptc-import-bitcode-"));
+      importBitcode = await stageImportBitcode(
+        pack.root,
+        pack.selectedBitcodeArtifacts,
+        importBitcodeDir,
+      );
+    }
+  }
   const partitions = nativeBuildPartitions(llvmInputBytes(llvm), {
     singleObject: single,
     cpuDispatch: opts.cpuDispatch === true,
@@ -1023,6 +1049,7 @@ async function emitNativeProgramObject(
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
+      ...(importBitcode.length === 0 ? {} : { importBitcode }),
     });
     // A divided module's count depends on the host's thread count, which chose
     // it, so the executable cache entry records the count a later build
@@ -1038,6 +1065,9 @@ async function emitNativeProgramObject(
   } catch (error) {
     await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
     throw error;
+  } finally {
+    if (importBitcodeDir !== null)
+      await rm(importBitcodeDir, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -2346,6 +2376,7 @@ async function compileTracked(
         try {
           nativeProgramObject = await emitNativeProgramObject(
             entryPath,
+            earlyHit.native,
             opts,
             // A large program's LLVM exceeds the engine's string limit as one
             // string; the emitter takes it in parts, as on a cold build.
@@ -2506,7 +2537,13 @@ async function compileTracked(
         );
       }
       try {
-        nativeProgramObject = await emitNativeProgramObject(entryPath, opts, llvmSource, profile);
+        nativeProgramObject = await emitNativeProgramObject(
+          entryPath,
+          nativeFeatures,
+          opts,
+          llvmSource,
+          profile,
+        );
         timing("native-object");
         await recordEarlyExecutableNativeBuild(cacheRoot, executableCacheOptions).catch(
           () => undefined,

@@ -192,6 +192,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           flavor: "dev",
           selected: {
             runtime: [],
+            bitcode: [],
             archives: [artifact, mlkemArtifact],
             data: [],
             systemLibraries: [],
@@ -297,6 +298,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           flavor: "dev",
           selected: {
             runtime: [variants[0]!],
+            bitcode: [],
             archives: [],
             data: [],
             systemLibraries: [],
@@ -379,6 +381,7 @@ test.skipIf(
         flavor: "dev",
         selected: {
           runtime: [variant],
+          bitcode: [],
           archives: [],
           data: [],
           systemLibraries: [],

@@ -85,7 +85,12 @@ import {
   prepareNativeLibrary,
 } from "./prepare.js";
 import { usesLoweredProgram } from "../executable/lowered.js";
-import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
+import {
+  readUnchangedBuild,
+  recordUnchangedBuild,
+  unchangedBuildKey,
+  unchangedPackInputs,
+} from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import {
@@ -94,6 +99,7 @@ import {
   rewriteHugeTextExecutable,
 } from "../backend/huge-text.js";
 import { openNativeExecutableCache } from "./executable-cache.js";
+import { stageImportBitcodeSync } from "../backend/native/import-bitcode.js";
 import { LinkerJobs } from "./linker-job.js";
 import { nativeFileIdentity } from "./file-identity.js";
 import {
@@ -330,6 +336,7 @@ export class NativeCompiler {
     partitions = 1,
     profile?: NativeProfileOptions,
     llvmDigest: () => string = () => fileDigest(input),
+    importBitcode: readonly string[] = [],
   ): NativeObjects {
     const toolchain = this.toolchain;
     const outputs = nativePartitionPaths(output, partitions);
@@ -377,6 +384,9 @@ export class NativeCompiler {
             version: toolchain.compilerVersion,
             ...(partitions > 1 ? { partitions } : {}),
             ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
+            ...(importBitcode.length === 0
+              ? {}
+              : { importBitcode: importBitcode.map((path) => fileDigest(path)) }),
           }),
         );
         const cached = outputs.map((_, index) =>
@@ -422,6 +432,7 @@ export class NativeCompiler {
       partitions,
       ...(partitionCache === null ? {} : { partitionCache }),
       ...(profile === undefined ? {} : { profile }),
+      ...(importBitcode.length === 0 ? {} : { importBitcode }),
     });
     if (this.cache !== null && key !== null) {
       try {
@@ -461,6 +472,7 @@ export class NativeCompiler {
     library: boolean,
     profile?: NativeProfileOptions,
     llvmDigest?: () => string,
+    importBitcode: readonly string[] = [],
   ): NativeObjects {
     // Library archives merge dev shards relocatably; executables link the
     // helper's program partitions directly.
@@ -482,6 +494,7 @@ export class NativeCompiler {
         partitions,
         profile,
         llvmDigest,
+        importBitcode,
       );
     }
     const objects: string[] = [];
@@ -704,6 +717,22 @@ export class NativeCompiler {
           ]);
           requireNativeArtifact(object);
         } else if (outputKind === "exe") {
+          // The speed flavor ships pruned import bitcode for the hot runtime
+          // leaves: the helper may inline them into the program's own code.
+          // Release and dev units ship none, so those postures link what they
+          // always did.
+          // A swapped bitcode file could change the executable while the
+          // manifest and the linked objects still match, so the helper reads
+          // only private copies made from bytes that matched the manifest.
+          const pack = optimization === "speed" ? selectPack() : null;
+          const importBitcode =
+            pack === null
+              ? []
+              : stageImportBitcodeSync(
+                  pack.root,
+                  pack.selected.bitcode,
+                  join(stage, "runtime-bitcode"),
+                );
           const objects = this.emitProgramObject(
             llvmInput,
             object,
@@ -713,6 +742,7 @@ export class NativeCompiler {
             false,
             profile,
             digestLlvm,
+            importBitcode,
           );
           programObjects = objects.paths;
           profileMatch = objects.profileMatch;
@@ -905,11 +935,7 @@ export class NativeCompiler {
           translationUnitPath: llvmPath,
           irPath: irPath ?? null,
           beside,
-          packInputs: [
-            ...pack.selected.runtime,
-            ...pack.selected.archives,
-            ...(features.intl === true ? (pack.selected.data ?? []) : []),
-          ].map((artifact) => join(pack.root, artifact.path)),
+          packInputs: unchangedPackInputs(pack, features, optimization),
           ...(profileMatch === undefined ? {} : { profileMatch }),
         });
       }

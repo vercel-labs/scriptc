@@ -108,8 +108,10 @@ interface StoredSelection {
    * it would make a later build link the release runtime objects silently.
    * 4 keys the selection by the runtime ABI identity too: a selection
    * recorded for another ABI could otherwise answer a compiler whose ABI
-   * differs from the manifest's without validating that manifest. */
-  schema: 4;
+   * differs from the manifest's without validating that manifest.
+   * 5 adds the selected units' import bitcode: a selection from before it
+   * would make a later speed build compile without `--import-bitcode`. */
+  schema: 5;
   licenses: RuntimePackManifest["licenses"];
   selected: RuntimePackArtifacts;
   speedFallback: string | null;
@@ -198,7 +200,7 @@ export function selectNativeRuntimePack(
         sameIdentity(fileIdentity(manifestPath), identities[1]!)
       ) {
         const entry: StoredSelection = {
-          schema: 4,
+          schema: 5,
           licenses: manifest.licenses,
           selected,
           speedFallback,
@@ -231,13 +233,14 @@ function readStoredSelection(text: string | null): StoredSelection | null {
   if (value === null || typeof value !== "object") return null;
   const entry = value as Partial<StoredSelection>;
   if (
-    entry.schema !== 4 ||
+    entry.schema !== 5 ||
     !Array.isArray(entry.licenses) ||
     (entry.speedFallback !== null && typeof entry.speedFallback !== "string") ||
     entry.selected === undefined ||
     entry.selected === null ||
     typeof entry.selected !== "object" ||
     !Array.isArray(entry.selected.runtime) ||
+    !Array.isArray(entry.selected.bitcode) ||
     !Array.isArray(entry.selected.archives) ||
     !Array.isArray(entry.selected.data) ||
     !Array.isArray(entry.selected.systemLibraries)

@@ -1,5 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
+import type { NativeOptimization } from "../backend/optimization.js";
+import type { RuntimePackArtifacts } from "../backend/runtime-pack-core.js";
 import type { CompileRequestOptions } from "../compile-types.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import {
@@ -226,6 +228,28 @@ export function unchangedBuildKey(inputs: UnchangedBuildInputs): string | null {
   } catch {
     return null;
   }
+}
+
+/** The pack's files an executable build consumed: the linked objects, the
+ * speed flavor's import bitcode (which only a speed build reads and the
+ * helper imports bodies from), the archives, and the run-time data an Intl
+ * program installs. A change or deletion of any of them must miss the
+ * unchanged-build record; only identities tell, since a pack is edited in
+ * place. */
+export function unchangedPackInputs(
+  pack: {
+    root: string;
+    selected: Pick<RuntimePackArtifacts, "runtime" | "bitcode" | "archives" | "data">;
+  },
+  features: { intl?: boolean },
+  optimization: NativeOptimization,
+): string[] {
+  return [
+    ...pack.selected.runtime,
+    ...(optimization === "speed" ? pack.selected.bitcode : []),
+    ...pack.selected.archives,
+    ...(features.intl === true ? pack.selected.data : []),
+  ].map((artifact) => join(pack.root, artifact.path));
 }
 
 /** The record of an unchanged build under `key`, when the executable and the

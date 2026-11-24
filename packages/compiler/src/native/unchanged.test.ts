@@ -17,6 +17,7 @@ import {
   readUnchangedBuild,
   recordUnchangedBuild,
   unchangedBuildKey,
+  unchangedPackInputs,
   type UnchangedBuildInputs,
 } from "./unchanged.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -301,3 +302,41 @@ test.skipIf(process.platform === "win32")(
     ).toBeNull();
   },
 );
+
+test("a speed build records the pack's import bitcode as an input", () => {
+  const artifact = (path: string) => ({ path, sha256: "a".repeat(64), size: 1 });
+  const selected = {
+    runtime: [artifact("objects/scr_map.o")],
+    bitcode: [artifact("bitcode/scr_map.import.bc")],
+    archives: [],
+    data: [],
+  };
+  expect(unchangedPackInputs({ root: "/pack", selected }, {}, "speed")).toEqual([
+    "/pack/objects/scr_map.o",
+    "/pack/bitcode/scr_map.import.bc",
+  ]);
+  // Release and dev builds import no bitcode, so their record does not name it.
+  expect(unchangedPackInputs({ root: "/pack", selected }, {}, "release")).toEqual([
+    "/pack/objects/scr_map.o",
+  ]);
+});
+
+test("a changed or deleted import bitcode file misses the unchanged record", () => {
+  const directory = temporary();
+  const bitcode = join(directory, "scr_map.import.bc");
+  writeFileSync(bitcode, "first bitcode");
+  const first = build(directory, [], [bitcode]);
+  expect(readUnchangedBuild(first.cache, "key", {})).not.toBeNull();
+
+  // Same size, different bytes: only the recorded identity tells.
+  const time = statSync(bitcode).mtime;
+  writeFileSync(bitcode, "other bitcode");
+  utimesSync(bitcode, time, time);
+  expect(readUnchangedBuild(first.cache, "key", {})).toBeNull();
+
+  writeFileSync(bitcode, "first bitcode");
+  const second = build(directory, [], [bitcode]);
+  expect(readUnchangedBuild(second.cache, "key", {})).not.toBeNull();
+  rmSync(bitcode);
+  expect(readUnchangedBuild(second.cache, "key", {})).toBeNull();
+});

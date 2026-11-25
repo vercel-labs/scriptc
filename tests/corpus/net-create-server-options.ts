@@ -78,4 +78,56 @@ steps.push(() => {
   });
 });
 
+steps.push(() => {
+  // the empty options object is Node's default option set, not a handler
+  const server = net.createServer({});
+  server.listen(0, "127.0.0.1", () => {
+    say("empty-options", "listening");
+    server.close(() => run());
+  });
+});
+
+steps.push(() => {
+  // an explicitly annotated ServerOpts value is the options form
+  const options: net.ServerOpts = { allowHalfOpen: true, highWaterMark: 512 };
+  const server = net.createServer(options, (socket) => {
+    const dyn = socket as any;
+    say("annotated-options", socket.allowHalfOpen, dyn.readableHighWaterMark, dyn.writableHighWaterMark);
+    socket.on("data", () => {});
+    socket.on("error", () => {});
+    socket.on("end", () => {
+      socket.write("annotated-write", (err) => {
+        say("annotated-write", err === null || err === undefined ? "ok" : String((err as { code?: string }).code));
+        socket.destroy();
+        server.close(() => run());
+      });
+    });
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    const client = net.connect(port, "127.0.0.1");
+    client.on("connect", () => client.end("y"));
+    client.on("data", () => {});
+    client.on("error", () => {});
+  });
+});
+
+steps.push(() => {
+  // a function value at run time is the connection listener
+  const handler: any = (socket: net.Socket) => {
+    say("dyn-handler", "called");
+    socket.destroy();
+  };
+  const server = net.createServer(handler);
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    const client = net.connect(port, "127.0.0.1");
+    client.on("error", () => {});
+    client.on("close", () => {
+      server.close(() => run());
+    });
+  });
+});
+
 run();
+

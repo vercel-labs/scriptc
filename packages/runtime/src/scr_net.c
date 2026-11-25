@@ -2351,6 +2351,7 @@ ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, Scr
 
 static bool scr_net_dyn_truthy(const ScrDyn *v);
 static bool scr_net_validate_number_dyn(const ScrDyn *v, const char *name);
+static void scr_net_dynh_fire_conn(ScrClosure *cb, ScrNetSocket *sock /* +1 */);
 
 /* net.createServer(options[, listener]): Node's ServerOpts read the way
  * its Server constructor reads them — allowHalfOpen, pauseOnConnect,
@@ -2366,6 +2367,16 @@ ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
   ScrDyn *owned = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
   const ScrDyn *o = owned != NULL ? owned : v;
   ScrNetServer *s = NULL;
+  if (o->kind == SCR_DYN_FUNC) {
+    /* Node: a function argument IS the connection listener — the options
+     * record is not read, and a listener passed beside it is replaced. */
+    s = scr_net_server_new();
+    if (handler != NULL) scr_closure_release(handler);
+    scr_net_ls_add(&s->conn_ls, scr_dyn_listener_closure_fn(o, (void *)&scr_net_dynh_fire_conn),
+                   (void *)&scr_net_dynh_fire_conn, false);
+    scr_dyn_release(owned);
+    return s;
+  }
   if (o->kind == SCR_DYN_UNDEF || o->kind == SCR_DYN_NULL) {
     /* createServer() and createServer(null): the default option set */
   } else if (o->kind != SCR_DYN_OBJ && o->kind != SCR_DYN_ARR) {

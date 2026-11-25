@@ -1176,29 +1176,27 @@ export function lowerNetModuleCall(
       return { kind: "libCall", fn: "net.createServer", args: [], type: NETSERVER_T, loc };
     }
     if (args.length === 1) {
-      // createServer(options): a typed options record (ServerOpts) crosses
-      // as a checked-dynamic value; Node reads allowHalfOpen,
-      // pauseOnConnect, noDelay, keepAlive, keepAliveInitialDelay,
-      // highWaterMark and blockList from it at construction.
+      // createServer(options): any non-function argument is Node's options
+      // argument — an object literal (including the empty `{}`), a record,
+      // an annotated ServerOpts value (checked-dynamic), or null/undefined —
+      // and crosses as a checked-dynamic value the runtime reads
+      // allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+      // keepAliveInitialDelay, highWaterMark and blockList from. A value
+      // that is a function at run time is the connection listener
+      // (Node's `typeof options === 'function'` rule).
       const optionsType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-      if (optionsType !== null && optionsType.kind === "record") {
-        const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
-        return {
-          kind: "libCall",
-          fn: "net.createServerOpts",
-          args: [options],
-          type: NETSERVER_T,
-          loc,
-        };
-      }
-      // A provably-non-object, non-function argument (the invalid-input
-      // probes: createServer('path'), createServer(0)): Node throws
-      // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
-      // result — the checked-dynamic lane's concise arrows box it, and
-      // the throw means it never materializes.
-      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-        const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-        if (t !== null && (t.kind === "string" || t.kind === "f64" || t.kind === "bool")) {
+      if (optionsType === null || optionsType.kind !== "func") {
+        // A provably-primitive argument (the invalid-input probes:
+        // createServer('path'), createServer(0)) throws Node's
+        // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
+        // result — the checked-dynamic lane's concise arrows box it, and
+        // the throw means it never materializes.
+        const primitive =
+          optionsType !== null &&
+          (optionsType.kind === "string" ||
+            optionsType.kind === "f64" ||
+            optionsType.kind === "bool");
+        if (primitive && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
           const raw = lowerer.lowerExpr(args[0]!);
           return {
             kind: "libCall",
@@ -1212,6 +1210,14 @@ export function lowerNetModuleCall(
             loc,
           };
         }
+        const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+        return {
+          kind: "libCall",
+          fn: "net.createServerOpts",
+          args: [options],
+          type: NETSERVER_T,
+          loc,
+        };
       }
       const { cb } = lowerCallbackArg(
         lowerer,

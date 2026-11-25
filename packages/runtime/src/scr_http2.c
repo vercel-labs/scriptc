@@ -4386,6 +4386,31 @@ static void scr_h2_on_established(void *ctx) {
   }
 }
 
+/* http2.performServerHandshake(socket[, options]): adopt an already
+ * connected socket (ALPN h2 on TLS, prior knowledge on cleartext) as a
+ * server session. The session has no owning server, so only the session's
+ * own 'stream' listeners see its streams. */
+ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+  if (sock == NULL || scr_net_sock_destroyed(sock)) {
+    static const char text[] = "The \"socket\" argument must be an instance of net.Socket";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  scr_http2_install();
+  ScrH2Session *sess = scr_h2_session_new(false);
+  sess->sock = scr_net_sock_retain(sock);
+  /* the socket may still own the parser's connection from an upgrade or
+   * CONNECT handover: take it over and release that context */
+  scr_net_sock_adopt_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
+                                    sess, &scr_h2_session_ctx_free);
+  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_h2_send_settings(sess);
+  /* Node resumes the socket it takes over: a paused one would never read the
+   * preface */
+  scr_net_sock_release(scr_net_sock_resume(sock));
+  return scr_http2_session_retain(sess); /* the socket's ctx holds its own */
+}
+
 /* http2.connect(authority[, listener]): an http authority dials h2c
  * prior knowledge — the preface and SETTINGS go out immediately (the
  * socket buffers until the dial lands). An httpS authority dials the

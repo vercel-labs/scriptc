@@ -81,6 +81,9 @@ void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, b
  * Buffer, NULL without a resumable session yet). */
 ScrDyn *scr_tls_sock_servername(ScrNetSocket *s);
 ScrDyn *scr_tls_sock_get_session(ScrNetSocket *s);
+/* tlsSocket.getTLSTicket(): the received session ticket as a +1 Buffer, or
+ * undefined (a server socket, or a client without one yet). */
+ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s);
 /* tlsSocket.disableRenegotiation(): renegotiation is off by default. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s);
 /* The checked-dynamic pair: which == 0 answers servername, 1 getSession
@@ -93,6 +96,9 @@ ScrBytes *scr_tls_sock_export_keying_material(ScrNetSocket *s, const struct ScrD
                                               const struct ScrDyn *context, bool has_context);
 bool scr_tls_server_is_dyn(const struct ScrDyn *v);
 void scr_tls_sock_on_session(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+/* TLSSocket / tls.Server 'keylog': Node's NSS key-log lines as Buffers. */
+void scr_tls_sock_on_keylog(ScrNetSocket *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_tls_server_on_keylog(ScrNetServer *server, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* The 'secure' event: fires when the handshake completes (after the
  * secureConnect listeners on a client); released unread on a plain socket
  * or after the handshake. */

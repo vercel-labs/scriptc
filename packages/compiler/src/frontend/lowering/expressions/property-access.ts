@@ -131,6 +131,7 @@ import {
   cjsConditionalAliasMemberReadOf,
   cjsExportValueByName,
   cjsModuleLacksExport,
+  cjsWholeExportValueOf,
   hasWholeExportValue,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
@@ -1397,6 +1398,23 @@ export function lowerPropertyAccessExpr(
       if (inBody || ts.tokenStartOfNode(expr) > whole.stmt.end) {
         return lowerer.classValueRef(lowerer.lowerClassExpressionInfo(whole.classExpr), expr);
       }
+    }
+  }
+  // `module.exports` READ in a CommonJS file whose whole export is a single
+  // value (`module.exports = function …`): after the assignment the read
+  // answers that value, exactly what `module.exports.default =
+  // module.exports` stores on the function. Reads above the assignment
+  // keep their fences (Node still has the original exports object there).
+  if (
+    !expr.questionDotToken &&
+    isModuleExportsAccess(expr) &&
+    isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)
+  ) {
+    const sf = ts.getSourceFileOfNode(expr);
+    const whole = cjsWholeExportValueOf(sf);
+    if (whole !== null && ts.tokenStartOfNode(expr) > whole.assign.end) {
+      const value = wholeExportValue(lowerer, sf, expr);
+      if (value !== null) return value;
     }
   }
   // Replacing `module.exports` leaves `exports` on its original object.
@@ -3557,6 +3575,12 @@ export function lowerIntrinsicProperty(
     // {encoding: "utf8"} options argument the checker types them Buffer,
     // which is re-fenced here (the call site already said so).
     const loc = locOf(expr);
+    if (name === "pid") {
+      // Node's result.pid: the child's id, a plain number (0 when the
+      // spawn itself failed) — the declared @types/node member.
+      const receiver = lowerer.lowerExpr(expr.expression);
+      return { kind: "libCall", fn: "spawnRes.pid", args: [receiver], type: F64, loc };
+    }
     if (name === "status") {
       // Always the interned `number | null` union; a checker-NARROWED
       // read (`missing.status === null ? ... : ${missing.status}`)

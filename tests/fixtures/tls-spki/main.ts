@@ -58,7 +58,7 @@ function clientCase(
   ca: Buffer,
   reject: boolean,
   cert: Buffer,
-  maxVersion?: string,
+  maxVersion?: tls.SecureVersion,
   servername = "localhost",
   key: Buffer = leafKey,
 ): Promise<void> {
@@ -101,6 +101,9 @@ function serverCase(name: string, reject: boolean): Promise<void> {
       srv.close(() => done());
     };
     const srv = tls.createServer({ key: leafKey, cert: chain, ca: root, requestCert: true, rejectUnauthorized: reject }, (sock) => {
+      // a client that stops reading after the reply can reset the connection;
+      // the server-side event is not part of what this fixture pins
+      sock.on("error", () => {});
       console.log("server", name, "authorized", sock.authorized, "error", sock.authorizationError);
       sock.end();
       finish();

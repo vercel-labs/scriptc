@@ -1,5 +1,6 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { writeFileSync } from "node:fs";
+import { unshareAcrossFunctions } from "../../ir/unshare.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -21,6 +22,7 @@ import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js
 import { isDeclBoundaryTypeNode } from "../decl-projection.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { timingProcessMetrics } from "../../timing.js";
 import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
@@ -840,6 +842,11 @@ import {
 } from "./lower-server.js";
 import { lowerDgramDnsModuleCall, lowerDgramMethodCall } from "./lower-dgram.js";
 import {
+  clusterMemberValue,
+  lowerClusterMethodCall,
+  lowerClusterModuleCall,
+} from "./lower-cluster.js";
+import {
   lowerNodeTestModuleCall,
   lowerTestDirectCall,
   lowerTestMethodCall,
@@ -930,6 +937,7 @@ import {
   uniqueSymbolKeyOf,
   matchCallbackParamGroupsOf,
   isArrayIterationCallback,
+  unitEffectStatements,
 } from "./lower-exprs.js";
 import {
   finishOptionalChain,
@@ -1870,6 +1878,7 @@ function lowerToIrWithIslands(
       phase,
       phase_ms: Math.round((now - phaseLast) * 10) / 10,
       total_ms: Math.round((now - phaseStarted) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -2290,6 +2299,7 @@ function lowerToIrWithIslands(
     process.stderr.write(
       `scriptc lowering ${JSON.stringify({
         phase: "async-protocol-flows",
+        ...timingProcessMetrics(),
         scan_ms: asyncProtocols.elapsedMs,
         sites: asyncProtocols.sites,
         marked: asyncProtocols.markedCount,
@@ -5474,6 +5484,12 @@ export class Lowerer {
    * property exports — different object, same declaration — so globalOf
    * falls back through the shared node (collectGlobals registers both). */
   readonly globalsByDeclNode = new Map<ts.Node, IrGlobal>();
+  /** Whether collectProgram has finished registering this pass's globals.
+   * Until it has, aliasStorageSymbolOf asks afresh. */
+  globalsCollected = false;
+  /** aliasStorageSymbolOf's answer per alias symbol for the post-collection
+   * phase; see that method for why collection-time answers are not kept. */
+  readonly aliasStorageBySymbol = new Map<ts.Symbol, ts.Symbol | null>();
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
@@ -5731,6 +5747,10 @@ export class Lowerer {
    * function when a record replays the unit. */
   readonly functionSourceLocs = new Map<string, SrcLoc>();
   readonly forkTargetIdByPath = new Map<string, number>();
+  /** Set when the program names node:cluster: %main then calls
+   * cluster.init and always uses the fork-target dispatch (target -1 is
+   * the entry, the module a worker restarts). */
+  clusterUsed = false;
   /** Namespace ModuleBlocks this program lowers, filled by splitFiles:
    * "flattened" — an instantiated namespace whose body joined the file's
    * parts (members resolve statically); "typeOnly" — a skipped
@@ -6153,6 +6173,10 @@ export class Lowerer {
    * lowered in. A helper used only by other shared helpers takes their
    * location; one with no use takes the entry file's start. */
   private settleSharedHelperLocations(functions: readonly IrFunction[]): void {
+    // A node one function shares with another would carry this rewrite into the
+    // other; give each function its own nodes first, so a record-decoded copy
+    // (whose nodes are already its own) settles the same way.
+    unshareAcrossFunctions(functions);
     const interned = new Set<string>([...this.sharedHelperNames, ...this.classMethodValueHelpers]);
     for (const table of [
       this.equalityHelpers,
@@ -6174,7 +6198,12 @@ export class Lowerer {
       this.coercions.widthNarrows,
     ])
       for (const name of table.values()) interned.add(name);
-    for (const fn of [...this.liftedFns, ...this.implicitFns])
+    // A unit's own function can be a shared helper too: a class method value
+    // is interned by name and held in loweredUnits, and a record-decoded copy
+    // is a different object from the one shareHelper saw. Add the objects the
+    // caller keeps, not only the lifted ones, so the location rewrite lands on
+    // the functions this build emits.
+    for (const fn of [...functions, ...this.liftedFns, ...this.implicitFns])
       if (interned.has(fn.name)) this.sharedHelpers.add(fn);
     if (this.sharedHelpers.size === 0) return;
     const shared = new Map([...this.sharedHelpers].map((fn) => [fn.name, fn]));
@@ -6847,6 +6876,13 @@ export class Lowerer {
     // program's declarations and of the two collections above, emptied
     // whenever either grows.
     "islandAliasBindings",
+    // Whether collectProgram has finished registering this pass's globals:
+    // a phase setting fixed before the first body unit lowers.
+    "globalsCollected",
+    // aliasStorageSymbolOf's answer per alias symbol for the post-collection
+    // phase. A replayed unit skips body lowering, its only caller, and a new
+    // collection or a late global registration clears the memo.
+    "aliasStorageBySymbol",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides
@@ -6988,6 +7024,13 @@ export class Lowerer {
         "writesOntoChildren",
         () => this.writesOntoChildren,
         () => (this.writesOntoChildren = true),
+      ),
+      // node:cluster: %main calls cluster.init and always uses the fork
+      // dispatch when the program names the module (buildMain).
+      flag(
+        "clusterUsed",
+        () => this.clusterUsed,
+        () => (this.clusterUsed = true),
       ),
       flag(
         "regexGroupResults",
@@ -8854,6 +8897,7 @@ export class Lowerer {
       const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
       if (global !== undefined) {
         this.globalsBySymbol.set(symbol, global);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
     }
@@ -8876,6 +8920,7 @@ export class Lowerer {
       const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
       if (conditionalSlot !== null) {
         this.globalsBySymbol.set(symbol, conditionalSlot);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
@@ -8945,15 +8990,25 @@ export class Lowerer {
    * module, and the lowering compiles the JavaScript. A declaration bridge
    * (`export * from "../types"`) re-exports a declaration another module
    * implements, so the import the reference came through answers too. Null
-   * when no compiled module implements the symbol. */
+   * when no compiled module implements the symbol.
+   *
+   * The import's own module answers first. A declaration can re-export a
+   * name from another package's declaration (`@types/react/jsx-runtime`'s
+   * `export { Fragment } from "./"`) while the JavaScript Node loads defines
+   * its own binding of that name (react-jsx-runtime's
+   * `exports.Fragment = REACT_FRAGMENT_TYPE`). The declaration's own twin is
+   * then a different module, whose storage the importer's module may not
+   * have initialized yet, so it is only the fallback. */
   declarationTwinExportSymbolOf(symbol: ts.Symbol, alias: ts.Symbol | null): ts.Symbol | null {
-    const direct = this.declarationTwinDirectSymbolOf(symbol);
-    if (direct !== null || alias === null) return direct;
-    const cached = this.declarationTwinRouted.get(alias);
-    if (cached !== undefined) return cached;
-    const routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
-    this.declarationTwinRouted.set(alias, routed);
-    return routed;
+    if (alias !== null) {
+      let routed = this.declarationTwinRouted.get(alias);
+      if (routed === undefined) {
+        routed = this.declarationTwinRoutedSymbolOf(symbol, alias);
+        this.declarationTwinRouted.set(alias, routed);
+      }
+      if (routed !== null) return routed;
+    }
+    return this.declarationTwinDirectSymbolOf(symbol);
   }
 
   private declarationTwinSymbols = new Map<ts.Symbol, ts.Symbol | null>();
@@ -9033,7 +9088,28 @@ export class Lowerer {
     const name = ts.isImportClause(imported)
       ? "default"
       : (imported.propertyName ?? imported.name).text;
-    return this.moduleExportSymbolOf(dep, name, symbol);
+    const exported = this.moduleExportSymbolOf(dep, name, symbol);
+    if (exported !== null && !this.declaredOnlyInDeclarationFiles(exported)) return exported;
+    // `module.exports = require("./impl.cjs")`: the checker types the
+    // require from impl's own declaration, which can again name a third
+    // module's declaration. The binding is the one impl defines, when the
+    // modules the export forwards to agree on it.
+    let forwarded: ts.Symbol | null = null;
+    for (const mod of cjsReexportedModules(this.program, dep).slice(1)) {
+      if (mod.isDeclarationFile) continue;
+      const own = this.moduleExportSymbolOf(mod, name, symbol);
+      if (own === null || this.declaredOnlyInDeclarationFiles(own)) continue;
+      if (forwarded !== null && forwarded !== own) return null;
+      forwarded = own;
+    }
+    return forwarded;
+  }
+
+  private declaredOnlyInDeclarationFiles(symbol: ts.Symbol): boolean {
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile)
+    );
   }
 
   private moduleExportSymbolOf(
@@ -9119,23 +9195,36 @@ export class Lowerer {
    * member global), or null. Alias chains through CommonJS re-exports keep
    * the exporter's stored value at every hop; see resolveValueSymbol. */
   aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    // Once collection has run, an alias chain's storage hop is an answer
+    // about the immutable program, and the lowering asks about the same
+    // import alias once per reference to it. Collection itself registers
+    // globals as it goes, so answers taken there are not kept.
+    const memoize = this.globalsCollected && !this.collecting;
+    if (memoize) {
+      const cached = this.aliasStorageBySymbol.get(symbol);
+      if (cached !== undefined) return cached;
+    }
+    let result: ts.Symbol | null = null;
     let hop = symbol;
     const seen = new Set<ts.Symbol>();
     for (let depth = 0; depth < 32; depth++) {
-      if (seen.has(hop)) return null;
+      if (seen.has(hop)) break;
       seen.add(hop);
       // The checker's immediate-target query is an alias-only operation.
-      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) break;
       const next = this.checker.getImmediateAliasedSymbol(hop);
-      if (!next || seen.has(next)) return null;
+      if (!next || seen.has(next)) break;
       if (
         this.globalsBySymbol.has(next) ||
         next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
-      )
-        return next;
+      ) {
+        result = next;
+        break;
+      }
       hop = next;
     }
-    return null;
+    if (memoize) this.aliasStorageBySymbol.set(symbol, result);
+    return result;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native
@@ -12427,6 +12516,73 @@ export class Lowerer {
       }
       return out;
     };
+    /** The array a pattern-position literal builds when one of its
+     * positions spreads a VARIABLE-length array: its length is a run-time
+     * fact, so the pattern's contextual tuple cannot hold it and the literal
+     * is lowered as the array it is. The element type joins the literal's
+     * positions and its spread sources' elements; null when the initializer
+     * is not such a literal (or holds a position this analysis cannot
+     * describe). */
+    const spreadLiteralType = (init: ts.Expression): IrType | null => {
+      const leaves: ts.ArrayLiteralExpression[] = [];
+      let variableSpread = false;
+      const walk = (e: ts.Expression): boolean => {
+        let x = e;
+        while (ts.isParenthesizedExpression(x)) x = x.expression;
+        if (ts.isConditionalExpression(x)) return walk(x.whenTrue) && walk(x.whenFalse);
+        if (!ts.isArrayLiteralExpression(x)) return false;
+        leaves.push(x);
+        for (const el of x.elements.nodes)
+          if (ts.isSpreadElement(el) && !this.checker.isTupleType(this.typeOf(el.expression)))
+            variableSpread = true;
+        return true;
+      };
+      if (!walk(init) || !variableSpread) return null;
+      const arms: IrType[] = [];
+      const note = (t: IrType | null, arm = false): void => {
+        if (t === null) return;
+        if (t.kind === "union") {
+          for (const inner of this.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+          return;
+        }
+        const part: IrType = t.kind === "void" ? UNDEFINED_T : t;
+        // A position that is itself the unit value says nothing about the
+        // element type; a unit ARM of the source's element type is a value
+        // the positions can hold.
+        if (isUnitType(part) && !arm) return;
+        if (!arms.some((a) => typeEquals(a, part))) arms.push(part);
+      };
+      for (const lit of leaves) {
+        for (const el of lit.elements.nodes) {
+          if (ts.isOmittedExpression(el)) continue;
+          if (!ts.isSpreadElement(el)) {
+            note(this.mapTypeOf(this.typeOf(el)));
+            continue;
+          }
+          const spread = this.mapTypeOf(this.typeOf(el.expression));
+          if (spread === null) continue;
+          if (spread.kind === "array") {
+            note(spread.elem);
+            continue;
+          }
+          if (spread.kind === "string") {
+            note(STRING);
+            continue;
+          }
+          const spreadShape =
+            spread.kind === "record" ? this.shapes.get(spread.shapeId) : undefined;
+          if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
+        }
+      }
+      if (arms.every(isUnitType)) return null;
+      const elem: IrType =
+        arms.length === 1 ? arms[0]! : { kind: "union", unionId: this.unions.intern(arms) };
+      // The widening this analysis records arms the element type; one it
+      // cannot arm has no missing position to describe.
+      const widened =
+        elem.kind === "union" ? this.withUndefinedArmOf(elem) : this.withUndefinedArm(elem);
+      return widened ? arrayOf(elem) : null;
+    };
     const scanPattern = (name: ts.BindingName, init: ts.Expression): boolean => {
       if (ts.isObjectBindingPattern(name)) {
         // `const { 0: a, 1: b, length } = parts` reads positions like the
@@ -12451,7 +12607,8 @@ export class Lowerer {
         return scanPositions(positions, init, arrayType);
       }
       if (!ts.isArrayBindingPattern(name)) return false;
-      const sourceType = this.mapTypeOf(this.typeOf(init));
+      let sourceType = this.mapTypeOf(this.typeOf(init));
+      if (sourceType?.kind !== "array") sourceType = spreadLiteralType(init);
       if (sourceType?.kind !== "array") return false;
       return scanPositions(
         name.elements.nodes.filter((el): el is ts.BindingElement => !ts.isOmittedExpression(el)),
@@ -15300,6 +15457,7 @@ export class Lowerer {
     const event: Record<string, unknown> = {
       phase,
       phase_ms: Math.round((performance.now() - started) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -15367,7 +15525,9 @@ export class Lowerer {
       shareBuiltinValueIdentities(this, functions),
     );
     this.timedPass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
-    this.timedPass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
+    this.timedPass("finalizeFunctionSourceText", () =>
+      finalizeFunctionSourceText(this, functions, census),
+    );
     if (this.diags.length === 0)
       this.timedPass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
     this.timedPass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
@@ -15376,20 +15536,23 @@ export class Lowerer {
     this.timedPass("trackClassFieldCreation", () =>
       trackClassFieldCreation(this, functions, census),
     );
-    this.timedPass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
+    this.timedPass("boxClassInstancesExactly", () =>
+      boxClassInstancesExactly(this, functions, census),
+    );
     this.timedPass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
     this.timedPass("guardClassAttributeWrites", () =>
       guardClassAttributeWrites(this, functions, census),
     );
     this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
     this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
-    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions));
-    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
-    this.timedPass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
-    // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
-    // rewrite nodes inside unchanged statement lists, so the census of every
-    // function they touched no longer describes its body.
-    census.clear();
+    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions, census));
+    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions, census));
+    this.timedPass("shareIslandProcessState", () =>
+      shareIslandProcessState(this, functions, census),
+    );
+    // Those three rewrite nodes inside unchanged statement lists. Each
+    // forgets the census of every function it changed in place, so the passes
+    // below rescan those functions only instead of the whole module.
     this.timedPass("installBufferValue", () => installBufferValue(functions, census));
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
@@ -15558,7 +15721,11 @@ export class Lowerer {
       // A hidden local that a later expression of another statement reads
       // again (a branch reading what its condition saved) is owned by the
       // statement list around both, not by the expression that declared it.
-      for (const fn of module.functions) ownEscapingLocals(fn);
+      for (const fn of module.functions) {
+        // A hidden local is declared inside an expression sequence.
+        if (!census.hasExpr(fn, "seqExpr")) continue;
+        ownEscapingLocals(fn);
+      }
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     // Before the origin table is compacted: the claims index the lowering's.
@@ -15577,7 +15744,7 @@ export class Lowerer {
         fmt: (type) => this.fmt(type),
       });
     }
-    if (module?.declOrigins !== undefined) compactDeclOrigins(module);
+    if (module?.declOrigins !== undefined) compactDeclOrigins(module, census);
     if (module)
       this.timedPass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
     if (module) bindCompletionCallbacks(module);
@@ -16633,12 +16800,12 @@ export class Lowerer {
       reuse.finish();
       if (process.env["SCRIPTC_TIMING"] === "1")
         process.stderr.write(
-          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...reuse.stats })}\n`,
+          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...timingProcessMetrics(), ...reuse.stats })}\n`,
         );
     }
     if (recorded !== null && process.env["SCRIPTC_TIMING"] === "1")
       process.stderr.write(
-        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...recorded })}\n`,
+        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...timingProcessMetrics(), ...recorded })}\n`,
       );
     const orderedUnits = unitsInOrder();
     this.settleGenericDemandPriorities();
@@ -17109,10 +17276,13 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Values are looked at from the first statement
-    // lowered, so a diagnostic made before the program writes its first
-    // constructor value is marked only when its own statement met one; the
-    // mark counts only if the program turns out to hold a constructor.
+    // (held-constructors.ts): lowerExpr raises constructorTouches for every
+    // value it lowers that holds one, and the type mapper for every mapping
+    // that reaches a constructor's function type, in any pass. Both count
+    // from the first statement lowered, since lowering order is not
+    // evaluation order, so a diagnostic made before the program writes its
+    // first constructor value is marked only when its own statement met one;
+    // the mark counts only if the program turns out to hold a constructor.
     if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
@@ -19110,7 +19280,7 @@ export class Lowerer {
     // destination's representation (a bare unit literal has none).
     if (
       expr.kind === "seqExpr" &&
-      expr.result.kind === "unitLit" &&
+      isUnitType(expr.result.type) &&
       !typeEquals(expr.type, expected)
     ) {
       const result = this.coerceToExpected(expr.result, expected);
@@ -19800,6 +19970,32 @@ export class Lowerer {
         return { kind: "call", callee: checkedHelper, args: [expr], type: expected, loc: expr.loc };
       }
       return expr;
+    }
+    if (isUnitType(expr.type) && expr.kind === "seqExpr") {
+      // An undefined-typed sequence (an effectful `void` operand) flowing
+      // into an undefined-armed union: the wrap holds the unit literal, and
+      // the sequence's effects run before it.
+      const tag = this.armTag(expected.unionId, expr.type);
+      if (tag >= 0) {
+        const literal: IrExpr = {
+          kind: "unitLit",
+          unit: expr.type.kind === "nullT" ? "null" : "undefined",
+          type: expr.type,
+          loc: expr.loc,
+        };
+        const wrapped: IrExpr = {
+          kind: "unionWrap",
+          unionId: expected.unionId,
+          tag,
+          value: literal,
+          type: expected,
+          loc: expr.loc,
+        };
+        const effects = unitEffectStatements(expr);
+        return effects.length === 0
+          ? wrapped
+          : { kind: "seqExpr", stmts: effects, result: wrapped, type: expected, loc: expr.loc };
+      }
     }
     if (expr.type.kind === "void") {
       // A void CALL RESULT flowing into a union with an undefined arm
@@ -21803,6 +21999,15 @@ export class Lowerer {
         e = this.returnedPromiseAwait(e);
       }
       if (e.kind === "unitLit") return { kind: "return", value: null, loc };
+      // `return void f()`: the sequence runs its effect and JS returns
+      // undefined, so its statements become the tail of the block (a
+      // nested sequence's result keeps its own effects too).
+      if (e.kind === "seqExpr" && e.type.kind === "undefinedT")
+        return {
+          kind: "block",
+          body: [...unitEffectStatements(e), { kind: "return", value: null, loc }],
+          loc,
+        };
       // `return c ? f() : g()` over void calls: a void conditional has no
       // value representation, so its branch selection becomes control flow.
       if (e.kind === "ternary" && e.type.kind === "void") {
@@ -25463,6 +25668,13 @@ export class Lowerer {
       const value = lowerWorkerMetadata(this, bi.member, loc);
       if (value) return value;
     }
+    // node:cluster's values are runtime reads (a compiled program can be
+    // a primary or a worker): isPrimary/isWorker/isMaster, the scheduling
+    // policy, settings, workers and the process's own worker handle.
+    if (bi.module === "cluster") {
+      const value = clusterMemberValue(this, bi.member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, bi.module, bi.member);
     if (c !== undefined) return builtinConstLit(c, loc);
     // module.builtinModules through a namespace binding — the baked Node v24
@@ -25853,6 +26065,10 @@ export class Lowerer {
    * answers JavaScript-only class/global spellings a box never needs). */
   lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
     const bi = { module, member };
+    if (module === "cluster") {
+      const value = clusterMemberValue(this, member, loc);
+      if (value) return value;
+    }
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
@@ -26268,6 +26484,28 @@ export class Lowerer {
     loc: SrcLoc,
   ): IrExpr | null {
     return lowerDgramDnsModuleCall(this, expr, bi, loc);
+  }
+
+  // The cluster spoke (lower-cluster.ts): the module's value reads, its
+  // function calls, and the cluster object's event registration. Worker
+  // members are checked-dynamic calls onto the runtime handle.
+  lowerClusterModuleCall(
+    expr: ts.CallExpression,
+    bi: { module: string; member: string },
+    loc: SrcLoc,
+  ): IrExpr | null {
+    return lowerClusterModuleCall(this, expr, bi, loc);
+  }
+
+  lowerClusterMethodCall(
+    call: ts.CallExpression,
+    access: ts.PropertyAccessExpression,
+  ): IrExpr | null {
+    return lowerClusterMethodCall(this, call, access);
+  }
+
+  clusterMemberValue(member: string, loc: SrcLoc): IrExpr | null {
+    return clusterMemberValue(this, member, loc);
   }
 
   lowerDgramMethodCall(

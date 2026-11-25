@@ -79,8 +79,13 @@ test("a missing native helper keeps the reinstall hint", () => {
 });
 
 /** A runtime pack with one runtime object and a license, and a store that
- * keeps entries in memory. */
-async function packFixture() {
+ * keeps entries in memory. `abi` is the identity its manifest declares. */
+async function packFixture(
+  abi: { version: number; marker: string } = {
+    version: RUNTIME_ABI_VERSION,
+    marker: RUNTIME_ABI_MARKER,
+  },
+) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-store-"));
   dirs.push(root);
   const target = MACOS_ARM64_TARGET;
@@ -119,7 +124,7 @@ async function packFixture() {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
+    runtime_abi: abi,
     compiler: { command: "clang", identity: "fixture clang", target: target.llvmTriple },
     macros: {
       executable: [],
@@ -180,6 +185,53 @@ test("a stored selection answers while the pack's files keep their identities", 
   // Writing the manifest again, with the same text, gives it a new identity.
   writeFileSync(join(f.root, "runtime-pack.json"), f.manifestText);
   expect(f.select().selected.systemLibraries).toEqual(["System"]);
+});
+
+test("a stored selection from another runtime ABI is validated again instead of reused", async () => {
+  // The pack's files do not change when the compiler is upgraded, so only
+  // the ABI identity separates the two builds' selections. A selection the
+  // older compiler recorded must not answer the newer one, which then reads
+  // the manifest and refuses it.
+  const abi = { version: 0, marker: "scr_runtime_abi_v0" };
+  const f = await packFixture(abi);
+  const store: RuntimePackStore = {
+    read: (key) => f.entries.get(key) ?? null,
+    write: (key, text) => void f.entries.set(key, text),
+  };
+  const select = (pack: typeof selectNativeRuntimePack) =>
+    pack(
+      f.root,
+      MACOS_ARM64_TARGET,
+      compilerReleaseVersion(),
+      {} as NativeLinkFeatures,
+      "release",
+      "executable",
+      store,
+    );
+  vi.resetModules();
+  vi.doMock("./runtime-abi.js", () => ({
+    RUNTIME_ABI_VERSION: abi.version,
+    RUNTIME_ABI_MARKER: abi.marker,
+    EXTERNAL_OBJECT_ABI_STABILITY: "experimental",
+  }));
+  try {
+    const older = await import("./runtime-pack-native.js");
+    expect(select(older.selectNativeRuntimePack).manifest).toBeDefined();
+  } finally {
+    vi.doUnmock("./runtime-abi.js");
+    vi.resetModules();
+  }
+  expect(f.entries.size).toBe(1);
+  const current = await import("./runtime-pack-native.js");
+  let error: unknown;
+  try {
+    select(current.selectNativeRuntimePack);
+  } catch (caught) {
+    error = caught;
+  }
+  // The fresh module's own RuntimePackError class, not this instance's.
+  expect(error).toBeInstanceOf(Error);
+  expect((error as { code?: string }).code).toBe("invalid");
 });
 
 test.each(["replaced", "rewritten in place"])(

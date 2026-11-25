@@ -70,6 +70,7 @@ const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
   "dyn.classHash",
+  "dyn.classCase",
   "dyn.classValueHash",
   "dyn.classIs",
   "dyn.nativeSetIs",
@@ -85,9 +86,10 @@ const DYN_KIND_TESTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
 
 const DYN_HELPER_PREFIX = "%dyn.";
 
-/** `%dyn.class.property.12` → `%dyn.class.property`. */
+/** `%dyn.class.property.12` or `%dyn.class.property.1a2b3c4d5e6f` (a
+ * keyed name, stable-names.ts) → `%dyn.class.property`. */
 function dynHelperFamily(name: string): string {
-  return name.replace(/(\.\d+)+$/, "");
+  return name.replace(/(\.(?:\d+|[0-9a-f]{12}))+$/, "");
 }
 
 /** The dynamic operation an expression performs, named for reports

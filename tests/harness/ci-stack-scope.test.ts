@@ -10,13 +10,13 @@ type Job = {
   if?: string;
   permissions?: Record<string, string>;
   outputs?: Record<string, string>;
-  steps?: { run?: string; uses?: string }[];
+  steps?: { id?: string; name?: string; if?: string; run?: string; uses?: string }[];
 };
 const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
 ) as { jobs: Record<string, Job> };
 const scopeJob = workflow.jobs.validation_scope!;
-const scopeScript = scopeJob.steps!.find((step) => step.run)!.run!;
+const scopeScript = scopeJob.steps!.find((step) => step.id === "scope")!.run!;
 // Validation jobs that run only nightly and on manual runs, outside the
 // required check (the shape overlay over the real-package suites).
 const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
@@ -37,6 +37,10 @@ const stacked = (base: string, position = 3) => ({
 const upper = stacked("feature/lower");
 
 function runScope(eventName: string, event: unknown) {
+  return runScopeOutputs(eventName, event).replace(/^tier=.*\n/m, "");
+}
+
+function runScopeOutputs(eventName: string, event: unknown, sha = "", gatePresent = "true") {
   const directory = mkdtempSync(join(tmpdir(), "ci-stack-scope-"));
   try {
     const eventPath = join(directory, "event.json");
@@ -51,6 +55,8 @@ function runScope(eventName: string, event: unknown) {
         GITHUB_EVENT_NAME: eventName,
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_OUTPUT: outputPath,
+        GITHUB_SHA: sha,
+        GATE_PRESENT: gatePresent,
       },
     });
     expect(result.error).toBeUndefined();
@@ -170,49 +176,136 @@ test.each(["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "NONE", "unkn
 test("scope selection treats branch metadata as data, without executing it", () => {
   expect(runScope("pull_request", stacked("feature/$(exit 1)\n'\"; exit 1"))).toBe("full=false\n");
   expect(scopeScript).not.toContain("${{");
-  expect(scopeJob.permissions).toEqual({});
+  expect(scopeJob.permissions).toEqual({ contents: "read" });
   expect(scopeJob.steps).toHaveLength(1);
-  expect(scopeJob.steps![0]!.uses).toBeUndefined();
   expect(scopeScript).not.toContain("scripts/ci-stack-scope");
 });
 
 const full = "needs.validation_scope.outputs.full == 'true'";
-const laneOf = (name: string) =>
-  /needs\.lanes\.outputs\.(\w+) == 'true'/.exec(workflow.jobs[name]!.if ?? "")?.[1];
+const laneNames = [
+  "linux",
+  "macos",
+  "effects",
+  "bootstrap",
+  "profile",
+  "islands",
+  "macos_smoke",
+  "fast",
+];
+const laneOf = (name: string) => {
+  const condition = workflow.jobs[name]!.if ?? "";
+  return laneNames.find((lane) => condition.includes(`needs.lanes.outputs.${lane} == 'true'`));
+};
+
+test("a pull request runs the fast tier unless the ci:full label asks for the full suite", () => {
+  const ordinary = {
+    repository: { full_name: repository, default_branch: "main" },
+    pull_request: {
+      author_association: "MEMBER",
+      head: { repo: { full_name: repository } },
+      base: { ref: "main", repo: { full_name: repository } },
+      labels: [{ name: "enhancement" }],
+    },
+  };
+  expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
+  // The ci:full label asks for the full suite in the pull request's own run.
+  const labeled = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
+  };
+  expect(runScopeOutputs("pull_request", labeled)).toBe("full=true\ntier=full\n");
+  // A fork's pull request runs the fast tier too: nothing is dispatched on its branch.
+  const fork = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, head: { repo: { full_name: "someone/scriptc" } } },
+  };
+  expect(runScopeOutputs("pull_request", fork)).toBe("full=true\ntier=fast\n");
+  for (const eventName of ["push", "merge_group", "schedule"])
+    expect(runScopeOutputs(eventName, { repository: ordinary.repository }), eventName).toBe(
+      "full=true\ntier=full\n",
+    );
+  // A hand-dispatched full tier names the commit it runs on, and does nothing once the branch moved on.
+  const gated = { repository: ordinary.repository, inputs: { pr: "12", sha: "abc", scope: "all" } };
+  expect(runScopeOutputs("workflow_dispatch", gated, "abc")).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("workflow_dispatch", gated, "def")).toBe("full=false\ntier=superseded\n");
+  const manual = { repository: ordinary.repository, inputs: { pr: "", sha: "", scope: "all" } };
+  expect(runScopeOutputs("workflow_dispatch", manual, "def")).toBe("full=true\ntier=full\n");
+});
+
+test("a superseded dispatch passes the required check and reports no status", () => {
+  const superseded = runGate("false", {}, undefined, "superseded");
+  expect(superseded.status).toBe(0);
+  expect(superseded.stdout).toContain("its new head runs its own CI");
+  // The required check writes no commit status of its own.
+  expect(workflow.jobs.test!.steps!.some((step) => step.name === "Report ci/full")).toBe(false);
+});
 
 test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
   for (const name of nightlyJobs) {
     expect(workflow.jobs[name], name).toBeDefined();
     expect(workflow.jobs[name]!.if, name).toBe(
-      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}",
+      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '' }}",
     );
     expect(workflow.jobs.test!.needs, name).not.toContain(name);
   }
 });
 
-test("every expensive CI job is gated and included in the required test check", () => {
+test("every CI job is gated and included in the required test check", () => {
   for (const name of heavyJobs) {
     const job = workflow.jobs[name]!;
     expect(job.needs, name).toContain("validation_scope");
-    const lane = laneOf(name);
-    // The lane selector itself and ungated jobs follow the stack scope alone; lane jobs also need their lane.
-    if (lane === undefined) expect(job.if, name).toBe(`\${{ ${full} }}`);
-    else {
-      expect(job.if, name).toBe(`\${{ ${full} && needs.lanes.outputs.${lane} == 'true' }}`);
-      expect(job.needs, name).toContain("lanes");
-      expect(
-        ["linux", "macos", "effects", "bootstrap", "profile", "islands", "macos_smoke"],
-        name,
-      ).toContain(lane);
-    }
+    expect(job.if, name).toBeDefined();
+    // The stack scope gates every lane job; the queue and post guards decide the tier on top of it.
+    expect(job.if, name).toContain(full);
     expect(workflow.jobs.test!.needs, name).toContain(name);
   }
   expect(workflow.jobs.lanes!.if).toBe(`\${{ ${full} }}`);
+  expect(workflow.jobs.queue_plan!.if).toBe(`\${{ ${full} }}`);
   expect(workflow.jobs.code_quality!.if).toBeUndefined();
   expect(workflow.jobs.test!.needs).toContain("validation_scope");
   expect(workflow.jobs.test!.needs).toContain("code_quality");
   // A skipped required job reports success, so aggregate even on cancellation.
   expect(workflow.jobs.test!.if).toBe("${{ always() }}");
+});
+
+test("the queue runs the fast gate, and a push to main runs the global lanes it leaves out", () => {
+  // Every job whose lane the queue no longer runs is switched off there; the plain shards, their build and the
+  // checks above them are what is left.
+  const postOnly = [
+    "tests_macos_smoke",
+    "effects",
+    "island_conformance",
+    "coverage",
+    "three_nodes_san",
+    "native_frontend_san",
+    "bootstrap_seed",
+    "native_profile",
+    "bootstrap",
+    "linux_host_clang",
+    "checker_identity",
+    "llvm_artifacts_linux_x64",
+    "llvm_artifacts_linux_x64_musl",
+    "llvm_artifacts_linux_x64_wasi",
+    "windows_cli",
+    "llvm_artifacts_windows_x64",
+    "mobile_runtime_packs",
+  ];
+  for (const name of postOnly)
+    expect(workflow.jobs[name]!.if, name).toContain("needs.lanes.outputs.queue != 'true'");
+  // The merge queue runs the plain flavor only, with the shard list the plan job reports; a push to main runs the
+  // sanitized flavor the queue leaves out.
+  const tests = workflow.jobs.tests!;
+  expect(tests.if).not.toContain("post != 'true'");
+  expect(tests.strategy!.matrix!.flavor).toContain("needs.lanes.outputs.queue == 'true'");
+  expect(tests.strategy!.matrix!.flavor).toContain("needs.lanes.outputs.post == 'true'");
+  expect(tests.strategy!.matrix!.shard).toContain("needs.queue_plan.outputs.plain_shards");
+  expect(tests.needs).toContain("queue_plan");
+  // The full parity sweep is off in the queue; the baseline completeness pass runs in code_quality, which every
+  // tier needs.
+  expect(workflow.jobs.ts7_parity!.if).toContain("needs.lanes.outputs.queue != 'true'");
+  expect(workflow.jobs.code_quality!.steps!.map((step) => step.run)).toContain(
+    "pnpm test:ts7 --baselines-only",
+  );
 });
 
 test("a lane the base revision's selector does not name leaves its job off", () => {
@@ -226,15 +319,55 @@ test("a lane the base revision's selector does not name leaves its job off", () 
   expect(Object.keys(outputs).sort()).toEqual([
     "bootstrap",
     "effects",
+    "fast",
     "islands",
     "linux",
     "macos",
     "macos_smoke",
+    "post",
     "profile",
+    "queue",
   ]);
   for (const [lane, output] of Object.entries(outputs))
     expect(output, lane).toBe(`\${{ steps.lanes.outputs.${lane} || 'false' }}`);
 });
+
+// The jobs each tier requires. Everything else is skipped there, and a skip is not a failure unless the job is
+// in that tier's set.
+const queueJobs = new Set([
+  "validation_scope",
+  "lanes",
+  "queue_plan",
+  "code_quality",
+  "native_linux",
+  "tests",
+]);
+const postJobs = new Set([
+  "validation_scope",
+  "lanes",
+  "queue_plan",
+  "code_quality",
+  "native_linux",
+  "tests",
+  "effects",
+  "island_conformance",
+  "three_nodes_san",
+  "coverage",
+  "native_frontend_san",
+  "bootstrap_seed",
+  "native_profile",
+  "bootstrap",
+  "linux_host_clang",
+  "ts7_parity",
+  "checker_identity",
+  "llvm_artifacts_linux_x64",
+  "llvm_artifacts_linux_x64_musl",
+  "llvm_artifacts_linux_x64_wasi",
+  "tests_macos_smoke",
+  "windows_cli",
+  "llvm_artifacts_windows_x64",
+  "mobile_runtime_packs",
+]);
 
 function runGate(
   full: string,
@@ -245,17 +378,34 @@ function runGate(
     effects: "true",
     bootstrap: "true",
     macos_smoke: "true",
+    fast: "true",
   },
+  tier = "full",
+  mode: "full" | "queue" | "post" = "full",
 ) {
+  const tierOutputs =
+    mode === "queue"
+      ? { queue: "true", post: "false" }
+      : mode === "post"
+        ? { queue: "false", post: "true" }
+        : { queue: "false", post: "false" };
   const needs = Object.fromEntries(
     (workflow.jobs.test!.needs as string[]).map((name) => {
       const lane = laneOf(name);
       const skipped =
-        (full === "false" && heavyJobs.includes(name)) ||
-        (lane !== undefined && lanes[lane] === "false");
+        full === "false"
+          ? heavyJobs.includes(name)
+          : mode === "queue"
+            ? !queueJobs.has(name)
+            : mode === "post"
+              ? !postJobs.has(name)
+              : lane !== undefined && lanes[lane] === "false";
       return [
         name,
-        { result: results[name] ?? (skipped ? "skipped" : "success"), outputs: { full, ...lanes } },
+        {
+          result: results[name] ?? (skipped ? "skipped" : "success"),
+          outputs: { full, tier, ...lanes, ...tierOutputs },
+        },
       ];
     }),
   );
@@ -271,6 +421,28 @@ function runGate(
   expect(script).not.toContain("${{");
   return spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { encoding: "utf8" });
 }
+
+test("the fast tier needs no gate on the default branch, and other events never take it", () => {
+  const ordinary = {
+    repository: { full_name: repository, default_branch: "main" },
+    pull_request: {
+      author_association: "MEMBER",
+      head: { repo: { full_name: repository } },
+      base: { ref: "main", repo: { full_name: repository } },
+      labels: [],
+    },
+  };
+  expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
+  // The label asks for the full suite in the pull request's own run.
+  const labeled = {
+    ...ordinary,
+    pull_request: { ...ordinary.pull_request, labels: [{ name: "ci:full" }] },
+  };
+  expect(runScopeOutputs("pull_request", labeled)).toBe("full=true\ntier=full\n");
+  expect(runScopeOutputs("push", { repository: ordinary.repository })).toBe(
+    "full=true\ntier=full\n",
+  );
+});
 
 test("the required test check passes only after full validation", () => {
   expect(runGate("true").status).toBe(0);
@@ -306,10 +478,74 @@ test("the required test check passes only after full validation", () => {
   ).toBe(1);
 });
 
+test("the fast tier passes the required check on its own jobs, with every lane off", () => {
+  const fastTier = {
+    linux: "false",
+    macos: "false",
+    effects: "false",
+    bootstrap: "false",
+    profile: "false",
+    islands: "false",
+    fast: "true",
+  };
+  expect(runGate("true", {}, fastTier, "fast").status).toBe(0);
+  for (const result of ["failure", "cancelled", "skipped"])
+    expect(runGate("true", { fast_tests: result }, fastTier, "fast").status, result).toBe(1);
+});
+
 test("full validation rejects any failed, cancelled or skipped expensive job", () => {
+  // The queue's baseline pass is off in a full run, so its skip there is expected.
   for (const job of heavyJobs)
     for (const result of ["failure", "cancelled", "skipped"])
       expect(runGate("true", { [job]: result }).status, `${job}: ${result}`).toBe(1);
+});
+
+test("the merge queue's required check passes on the fast gate alone", () => {
+  const queue = {
+    linux: "true",
+    macos: "false",
+    effects: "false",
+    bootstrap: "false",
+    profile: "false",
+    islands: "false",
+    macos_smoke: "false",
+    fast: "false",
+  };
+  expect(runGate("true", {}, queue, "full", "queue").status).toBe(0);
+  for (const job of ["queue_plan", "native_linux", "tests"])
+    expect(runGate("true", { [job]: "failure" }, queue, "full", "queue").status, job).toBe(1);
+  // A job the queue leaves to the post-merge run is skipped there, and a skip is not a failure.
+  expect(runGate("true", { effects: "failure" }, queue, "full", "queue").status).toBe(0);
+});
+
+test("a push to main requires the global lanes, including the sanitized shards", () => {
+  const post = {
+    linux: "true",
+    macos: "false",
+    effects: "true",
+    bootstrap: "true",
+    profile: "true",
+    islands: "true",
+    macos_smoke: "true",
+    fast: "false",
+  };
+  expect(runGate("true", {}, post, "full", "post").status).toBe(0);
+  for (const job of [
+    "native_linux",
+    "tests",
+    "effects",
+    "island_conformance",
+    "bootstrap_seed",
+    "bootstrap",
+    "native_profile",
+    "checker_identity",
+    "ts7_parity",
+    "windows_cli",
+    "mobile_runtime_packs",
+    "tests_macos_smoke",
+  ])
+    expect(runGate("true", { [job]: "failure" }, post, "full", "post").status, job).toBe(1);
+  expect(runGate("true", { tests_macos_smoke: "skipped" }, post, "full", "post").status).toBe(1);
 });
 
 test("both scopes require successful planning and code quality", () => {

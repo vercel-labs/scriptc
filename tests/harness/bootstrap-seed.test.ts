@@ -1,16 +1,27 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedInputHashes } from "../../scripts/seed-inputs.mjs";
 
-test("bootstrap artifacts require a complete seed from the same revision, lane, and path", () => {
+const repository = fileURLToPath(new URL("../../", import.meta.url));
+
+test("bootstrap artifacts require a complete seed from the same lane and checkout-relative path", () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-seed-contract-"));
   try {
-    const metadata = { schema: 1, revision: "revision", sanitize: true, directory };
+    // Metadata names the seed's directory relative to the checkout, so two tasks that restore the seed at the same
+    // place in the tree agree on it without embedding an absolute path (or a commit).
+    const metadata = {
+      schema: 3,
+      sanitize: true,
+      directory: relative(repository, directory),
+      inputs: seedInputHashes(repository),
+    };
     writeFileSync(join(directory, "bootstrap-seed.json"), JSON.stringify(metadata));
-    expect(() => verifyBootstrapSeed(directory, "revision", true)).toThrow("missing");
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("missing");
     for (const path of [
       "distribution/bin/scriptc",
       "distribution/bin/scriptc.json",
@@ -22,15 +33,31 @@ test("bootstrap artifacts require a complete seed from the same revision, lane, 
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, "fixture");
     }
-    expect(() => verifyBootstrapSeed(directory, "revision", true)).not.toThrow();
-    expect(() => verifyBootstrapSeed(directory, "other", true)).toThrow("identity");
-    expect(() => verifyBootstrapSeed(directory, "revision", false)).toThrow("identity");
-    expect(() => verifyBootstrapSeed(directory, undefined, true)).toThrow("identity");
+    expect(() => verifyBootstrapSeed(directory, true)).not.toThrow();
+    expect(() => verifyBootstrapSeed(directory, false)).toThrow("identity");
+    const stored = JSON.parse(readFileSync(join(directory, "bootstrap-seed.json"), "utf8"));
+    expect(stored.directory).toBe(relative(repository, directory));
+    expect(String(stored.directory).startsWith("/")).toBe(false);
     writeFileSync(
       join(directory, "bootstrap-seed.json"),
       JSON.stringify({ ...metadata, directory: "/different" }),
     );
-    expect(() => verifyBootstrapSeed(directory, "revision", true)).toThrow("identity");
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("identity");
+    // A seed built with different build or staging code is rejected, even at the same lane and directory.
+    const inputs = metadata.inputs;
+    const first = Object.keys(inputs)[0]!;
+    writeFileSync(
+      join(directory, "bootstrap-seed.json"),
+      JSON.stringify({ ...metadata, inputs: { ...inputs, [first]: "0".repeat(64) } }),
+    );
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("build inputs");
+    const fewer = { ...inputs };
+    delete fewer[first];
+    writeFileSync(
+      join(directory, "bootstrap-seed.json"),
+      JSON.stringify({ ...metadata, inputs: fewer }),
+    );
+    expect(() => verifyBootstrapSeed(directory, true)).toThrow("build inputs");
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

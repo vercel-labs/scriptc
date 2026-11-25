@@ -1390,6 +1390,23 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   });
 }
 
+/** `arguments` as the argumentsList of `fn.apply(thisArg, arguments)` where
+ * `apply` resolves to the standard library's Function.prototype.apply: the
+ * call reads the list's length and elements and never writes through it,
+ * so the object never escapes to another holder. */
+function applyArgumentsListUse(lowerer: Lowerer, id: ts.Identifier): boolean {
+  const call = id.parent;
+  if (!ts.isCallExpression(call) || call.arguments.nodes.length !== 2) return false;
+  if (call.arguments.nodes[1] !== id) return false;
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return false;
+  if (callee.name.text !== "apply") return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  const declarations = symbol?.declarations;
+  if (declarations === undefined || declarations.length === 0) return false;
+  return declarations.every((d) => lowerer.isStdlibFile(d.getSourceFile()));
+}
+
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
@@ -1449,7 +1466,7 @@ function appendArgumentsParameter(
       !classMethod &&
       !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program) &&
       !unmappedArguments(node) &&
-      !argumentsAliasingUnobservable(node)
+      !argumentsAliasingUnobservable(node, (id) => applyArgumentsListUse(lowerer, id))
     ) {
       lowerer.unsupported(
         "SC1090",

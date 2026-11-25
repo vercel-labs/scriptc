@@ -36,7 +36,9 @@ function symbols(args: string[], binary: string): string[] {
 
 test.for(["release", "speed"] as const)(
   "a zigcc glibc %s build imports memset, memcpy, memcmp and bcmp from libc",
-  { timeout: 600_000 },
+  // A build spawns zig cc; a transient linker failure that leaves no output
+  // (the fast tier saw one under load) is retried once.
+  { retry: 1, timeout: 600_000 },
   async (optimization, context) => {
     if (!hasZig || !linuxX64) context.skip();
     const dir = await mkdtemp("/tmp/scriptc-zig-glibc-");

@@ -438,9 +438,12 @@ void scr_lib_init(int argc, char **argv) {
   scr_lib_argc = argc;
   scr_lib_argv = argv;
   if (argc >= 2 && strncmp(argv[1], "--scriptc-fork=", 15) == 0) {
-    unsigned long long target = 0, read_handle = 0, write_handle = 0;
+    /* The target is signed: -1 selects the program's own entry, the module
+     * node:cluster restarts its workers with (scr_cluster.c). */
+    long long target = 0;
+    unsigned long long read_handle = 0, write_handle = 0;
     char tail = '\0';
-    if (sscanf(argv[1] + 15, "%llu,%llu,%llu%c", &target, &read_handle,
+    if (sscanf(argv[1] + 15, "%lld,%llu,%llu%c", &target, &read_handle,
                &write_handle, &tail) == 3) {
       scr_lib_has_fork = true;
       scr_lib_fork_target_id = (double)target;
@@ -3388,6 +3391,11 @@ void scr_process_exit_dyn(const ScrDyn *code) {
  * attribute monotonic stamp — the binary's own start, which is what
  * "the current Node.js process" means for a compiled program). */
 #ifdef _WIN32
+/* Node's performance.now() and process.uptime() read libuv's hrtime, which is
+ * QueryPerformanceCounter on Windows. GetTickCount64 moves in steps of the
+ * system timer (15.6 ms by default), so a frame loop paced by
+ * performance.now(), or an animation timed by it, advanced in those steps. */
+static double scr_uptime_now_ms(void) { return (double)scr_hrtime_ns() / 1e6; }
 #if (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
 /* The uptime anchor belongs to the host PROCESS, not to a library
  * instance. InitOnce keeps the lazy Windows spelling race-free when
@@ -3399,7 +3407,7 @@ static BOOL CALLBACK scr_uptime_anchor_once(PINIT_ONCE once, PVOID param,
   (void)once;
   (void)param;
   (void)ctx;
-  scr_uptime_t0_ms = (double)GetTickCount64();
+  scr_uptime_t0_ms = scr_uptime_now_ms();
   return TRUE;
 }
 static void scr_uptime_anchor_init(void) {
@@ -3407,9 +3415,8 @@ static void scr_uptime_anchor_init(void) {
 }
 #else
 static SCR_TL double scr_uptime_t0_ms;
-static void scr_uptime_anchor_init(void) { scr_uptime_t0_ms = (double)GetTickCount64(); }
+static void scr_uptime_anchor_init(void) { scr_uptime_t0_ms = scr_uptime_now_ms(); }
 #endif
-static double scr_uptime_now_ms(void) { return (double)GetTickCount64(); }
 #else
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -17015,7 +17022,7 @@ static const ScrTzNames *scr_tz_detect(void) {
   /* WASI's libc keeps every local time in UTC. */
   return scr_tz_find(scr_tz_utc);
 #else
-  const char *tz = getenv(scr_tz_env_name);
+  const char *tz = scr_getenv(scr_tz_env_name);
   if (tz && scr_tz_valid_id(tz)) {
     if (tz[0] == ':') tz++;
     return scr_tz_find(scr_tz_skip_prefix(tz));

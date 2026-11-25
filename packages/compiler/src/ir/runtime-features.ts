@@ -502,7 +502,10 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   // The stream/consumers promise settles through the chunk list and
   // scr_blob.c's Blob constructor (blob()), so each consumer links the
-  // checked-dynamic async unit that carries the blob unit with it.
+  // checked-dynamic async unit that carries the blob unit with it. The
+  // source of a consumer over an untyped value reads a web ReadableStream
+  // through Readable.from's iterator.
+  "sc.source",
   "sc.text",
   "sc.json",
   "sc.buffer",
@@ -977,6 +980,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",
@@ -1819,6 +1824,25 @@ const RUNTIME_FEATURE_RULES = {
       "cp.execFileCwd",
       "cp.execFileOpts",
       "cp.spawnArmed",
+    ],
+  }),
+  /** node:cluster's module surface: scr_cluster.c, a unit of its own so a
+   * program that never names cluster links nothing of it. The unit also
+   * carries the %main cluster.init call and the worker-mode dispatch. */
+  cluster: rule({
+    fns: [
+      "cluster.init",
+      "cluster.isPrimary",
+      "cluster.isWorker",
+      "cluster.schedulingPolicy",
+      "cluster.fork",
+      "cluster.setup",
+      "cluster.disconnect",
+      "cluster.settings",
+      "cluster.workers",
+      "cluster.worker",
+      "cluster.on",
+      "cluster.off",
     ],
   }),
   /** A spawnSync capture read as a Buffer (spawnSync without an encoding
@@ -3016,6 +3040,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     childLifecycle: false,
     processFeatures: false,
     childOptionExt: false,
+    cluster: false,
     spawnCaptureBytes: false,
     childErrorFields: false,
     childStreamFlow: false,

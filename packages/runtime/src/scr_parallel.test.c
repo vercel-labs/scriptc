@@ -18,6 +18,16 @@ _Noreturn void scr_trap(const char *msg) {
   abort();
 }
 
+#ifdef SCR_WORKERS
+/* The parallel unit reads SCRIPTC_THREADS through the locked environment
+ * accessor. This harness links no script context; the thread-count contract
+ * under test does not involve the environment, so answer through the
+ * platform getenv and leave the lock a no-op. */
+const char *scr_context_getenv(const char *name) { return getenv(name); }
+void scr_context_env_process_lock(void) {}
+void scr_context_env_process_unlock(void) {}
+#endif
+
 static atomic_bool pending;
 static char last_message[160];
 

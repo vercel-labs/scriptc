@@ -196,7 +196,7 @@ function second(collection: any): number {
 console.log(first(new Countdown()), second(new Countdown()));
 `,
   );
-  const helpers = module.functions.filter((fn) => /^%dyn\.class\.call\.\d+$/.test(fn.name));
+  const helpers = module.functions.filter((fn) => /^%dyn\.class\.call\.[0-9a-f]+$/.test(fn.name));
   expect(helpers).toHaveLength(1);
   // Each site still names its own iterable in the error it raises.
   expect(helpers[0]!.params.at(-2)).toMatchObject({ type: { kind: "string" } });

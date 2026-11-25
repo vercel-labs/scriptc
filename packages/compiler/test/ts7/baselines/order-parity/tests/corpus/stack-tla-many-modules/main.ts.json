@@ -1,0 +1,15 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stack-tla-many-modules/leaf.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain7.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain6.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain5.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain4.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain3.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain2.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain1.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/chain0.ts",
+  "<repo>/tests/corpus/stack-tla-many-modules/main.ts"
+ ],
+ "diags": []
+}

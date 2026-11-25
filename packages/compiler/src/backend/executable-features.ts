@@ -88,6 +88,7 @@ export function executableLinkFeatures(
     // (scr_node_island_child.c): a program with both islands and child_process.
     ...(features.nodeIsland && features.childProcess ? { islandChild: true } : {}),
     ...(features.childOptionExt ? { childOptionExt: true } : {}),
+    ...(features.cluster ? { cluster: true } : {}),
     ...(features.spawnCaptureBytes ? { spawnCaptureBytes: true } : {}),
     ...(features.childErrorFields ? { childErrorFields: true } : {}),
     ...(features.childStreamFlow ? { childStreamFlow: true } : {}),

@@ -1884,6 +1884,11 @@ extern ScrDyn *(*scr_dyn_function_proto_hook)(void);
  * which owns it; NULL when the program links no standard-library prototype
  * unit (it cannot name Date.prototype then). */
 extern ScrDyn *(*scr_dyn_date_proto_hook)(void);
+/* ArrayBuffer.prototype as a value (+1), installed by
+ * scr_dyn_stdlib_prototype.c, which owns it; NULL when the program links no
+ * standard-library prototype unit (it cannot name ArrayBuffer.prototype
+ * then). */
+extern ScrDyn *(*scr_dyn_array_buffer_proto_hook)(void);
 /* Object.getPrototypeOf's answer for a primitive: its wrapper prototype
  * where the program has one, else the per-kind cached ordinary object. +1. */
 ScrDyn *scr_dyn_primitive_prototype(double kind);

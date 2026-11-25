@@ -3889,6 +3889,10 @@ bool scr_dyn_perf_handle_is(const ScrDyn *value, double which) {
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);
+static ScrDyn *scr_dyn_proxy_trap(const ScrDyn *proxy, const char *name);
+static ScrDyn *scr_dyn_proxy_call(const ScrDyn *proxy, ScrDyn *trap, ScrDyn *const *args,
+                                   size_t argc);
+static void scr_dyn_proxy_invariant(void);
 
 ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
                           const char *what) = NULL;
@@ -3900,6 +3904,7 @@ ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind) = NULL;
 ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value) = NULL;
 ScrDyn *(*scr_dyn_function_proto_hook)(void) = NULL;
 ScrDyn *(*scr_dyn_date_proto_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_array_buffer_proto_hook)(void) = NULL;
 /* The per-kind prototype of a primitive the program has no wrapper unit
  * for (and of a promise): an ordinary object, so the edge answers an object
  * as Node does. Kinds: 0 String, 1 Number, 2 Boolean, 3 BigInt, 4 Symbol,
@@ -3942,6 +3947,37 @@ ScrDyn *scr_dyn_primitive_prototype(double kind) {
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
+  if (object->kind == SCR_DYN_PROXY) {
+    /* A trap-less Proxy forwards [[GetPrototypeOf]] to its target; a
+     * getPrototypeOf trap answers the result, which must be an object or
+     * null, and a non-extensible target fixes it. */
+    ScrDyn *trap = scr_dyn_proxy_trap(object, "getPrototypeOf");
+    if (scr_exc_pending()) return NULL;
+    ScrDyn *target = object->v.proxy.target;
+    if (trap == NULL) return scr_dyn_get_prototype(target);
+    ScrDyn *args[] = {target};
+    ScrDyn *result = scr_dyn_proxy_call(object, trap, args, 1);
+    if (result == NULL) return NULL;
+    if (result->kind != SCR_DYN_OBJ && result->kind != SCR_DYN_NULL) {
+      static const char message[] =
+          "'getPrototypeOf' on proxy: trap returned neither object nor null";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      scr_dyn_release(result);
+      return NULL;
+    }
+    if ((target->kind == SCR_DYN_OBJ || target->kind == SCR_DYN_ARR) && target->non_extensible) {
+      ScrDyn *expected = scr_dyn_get_prototype(target);
+      bool same = expected != NULL &&
+          (expected->kind == SCR_DYN_NULL ? result->kind == SCR_DYN_NULL : expected == result);
+      scr_dyn_release(expected);
+      if (!same) {
+        scr_dyn_release(result);
+        scr_dyn_proxy_invariant();
+        return NULL;
+      }
+    }
+    return result;
+  }
   /* A program class instance whose prototype Object.setPrototypeOf
    * replaced: the replacement (the class's own prototype is answered by
    * the compiled class dispatch, which declines this instance). */
@@ -4016,6 +4052,10 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     if (object->v.handle.tag == SCR_DYNH_DATE && scr_dyn_date_proto_hook) {
       ScrDyn *date = scr_dyn_date_proto_hook();
       if (date) return date;
+    }
+    if (object->v.handle.tag == SCR_DYNH_ARRAY_BUFFER && scr_dyn_array_buffer_proto_hook) {
+      ScrDyn *buffer = scr_dyn_array_buffer_proto_hook();
+      if (buffer) return buffer;
     }
     if (scr_dyn_collection_proto_hook) {
       ScrDyn *collection = scr_dyn_collection_proto_hook(object);
@@ -10545,11 +10585,22 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
   /* `prototype` comes before the static members, as in V8's own-key order
    * (length, name, prototype, then the statics). */
   ScrDyn *table = scr_dyn_fn_table(function);
-  scr_dyn_obj_set(table, "prototype", 9, prototype);
-  ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
-  entry->writable = false;
-  entry->enumerable = false;
-  entry->configurable = false;
+  /* A program may have frozen the constructor (or made it non-extensible)
+   * before this unit builds its prototype: the write would throw, and the
+   * entry would not be there to describe. The unit's own object still
+   * answers that constructor's prototype reads; the shared table keeps the
+   * property it had there. */
+  ScrDynEntry *existing = scr_dyn_find_entry(table, "prototype", 9);
+  bool writable = existing != NULL ? (existing->writable || existing->configurable)
+                                   : !table->non_extensible;
+  if (writable) scr_dyn_obj_set(table, "prototype", 9, prototype);
+  else scr_dyn_release(prototype);
+  ScrDynEntry *entry = writable ? scr_dyn_find_entry(table, "prototype", 9) : NULL;
+  if (entry != NULL) {
+    entry->writable = false;
+    entry->enumerable = false;
+    entry->configurable = false;
+  }
   if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   scr_dyn_release(table);
 }

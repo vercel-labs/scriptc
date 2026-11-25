@@ -28,7 +28,5 @@
     "build:native": "node scripts/build.mjs",
     "prepack": "node ../libnode-common/scripts/verify.mjs ."
   },
-  "publishConfig": {
-    "access": "public"
-  }
+  "private": true
 }

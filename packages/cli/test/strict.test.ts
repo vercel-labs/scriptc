@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -18,10 +18,11 @@ const quietFixture = join(repoRoot, "tests/coverage-fixtures/dynamic-tier/quiet.
 
 type Result = { code: number; stdout: string; stderr: string };
 
-async function run(argv: string[], cacheRoot: string): Promise<Result> {
+async function run(argv: string[], cacheRoot: string, cwd?: string): Promise<Result> {
   try {
     const { stdout, stderr } = await execFileAsync(process.execPath, argv, {
       env: { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot },
+      ...(cwd === undefined ? {} : { cwd }),
       maxBuffer: 4 * 1024 * 1024,
     });
     return { code: 0, stdout, stderr };
@@ -33,6 +34,10 @@ async function run(argv: string[], cacheRoot: string): Promise<Result> {
 
 const cli = (args: string[], cacheRoot: string): Promise<Result> =>
   run(["--import", tsxLoader, cliEntry, ...args], cacheRoot);
+
+/** The launcher's fast path, from `cwd` so the nearest package.json applies. */
+const launcherCli = (args: string[], cacheRoot: string, cwd: string): Promise<Result> =>
+  run([launcher, ...args], cacheRoot, cwd);
 
 const COPY = `interface Narrow { a: number }
 interface Wide { a: number; b: string }
@@ -154,6 +159,92 @@ test("build --strict fails on a copy, accepts an allow comment, and a cached bui
     const replay = await run([launcher, "build", entry, "-o", outPath, "--strict"], cache);
     expect(replay.code).toBe(1);
     expect(replay.stderr).toContain("error SC6001");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("a cached replay takes strict from the nearest package.json only", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-nearest-"));
+  try {
+    const app = join(dir, "app");
+    await mkdir(app, { recursive: true });
+    // The ancestor enables strict; the nearest manifest has no scriptc key,
+    // so the project it names is not strict.
+    await writeFile(join(dir, "package.json"), '{"scriptc":{"strict":true}}');
+    await writeFile(join(app, "package.json"), '{"name":"app"}');
+    await writeFile(join(app, "hot.js"), await readFile(hotFixture, "utf8"));
+    const cache = join(dir, "cache");
+    const first = await launcherCli(["coverage", "hot.js"], cache, app);
+    expect(first.code).toBe(0);
+    expect(first.stdout).not.toContain("blockers:");
+    const second = await launcherCli(["coverage", "hot.js"], cache, app);
+    expect(second.code).toBe(0);
+    expect(second.stdout).not.toContain("blockers:");
+    expect(second.stdout).toContain("untyped and likely hot");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("a cached coverage --strict keeps the promoted errors and the exit code", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-cached-"));
+  try {
+    await writeFile(join(dir, "hot.js"), await readFile(hotFixture, "utf8"));
+    const cache = join(dir, "cache");
+    const first = await launcherCli(["coverage", "hot.js", "--strict"], cache, dir);
+    expect(first.code).toBe(1);
+    expect(first.stdout).toContain("blockers:");
+    expect(first.stdout).toContain("SC6101");
+    const replay = await launcherCli(["coverage", "hot.js", "--strict"], cache, dir);
+    expect(replay.code).toBe(1);
+    expect(replay.stdout).toContain("blockers:");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("a cached replay refuses a suppression flag under the project's strict setting", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-cached-flag-"));
+  try {
+    await writeFile(join(dir, "package.json"), '{"name":"app","scriptc":{"strict":true}}');
+    await writeFile(join(dir, "hot.js"), await readFile(hotFixture, "utf8"));
+    const cache = join(dir, "cache");
+    expect((await launcherCli(["coverage", "hot.js"], cache, dir)).code).toBe(1);
+    const refused = await launcherCli(
+      ["coverage", "hot.js", "--no-dynamic-tier-warning"],
+      cache,
+      dir,
+    );
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain(
+      "--strict checks the warning --no-dynamic-tier-warning leaves out",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("coverage --strict fails on a marked user module island, also from the cache", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-user-module-"));
+  try {
+    await writeFile(
+      join(dir, "package.json"),
+      '{"name":"app","type":"module","scriptc":{"nodeIslands":{"modules":["plugin.js"]}}}',
+    );
+    await writeFile(
+      join(dir, "main.ts"),
+      'import { value } from "./plugin.js";\nconsole.log(value);\n',
+    );
+    await writeFile(join(dir, "plugin.js"), "export const value = 21 * 2;\n");
+    const cache = join(dir, "cache");
+    const first = await launcherCli(["coverage", "main.ts", "--strict"], cache, dir);
+    expect(first.code).toBe(1);
+    expect(first.stdout).toContain("SC8001");
+    expect(first.stdout).toContain("user module");
+    const replay = await launcherCli(["coverage", "main.ts", "--strict"], cache, dir);
+    expect(replay.code).toBe(1);
+    expect(replay.stdout).toContain("SC8001");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -622,13 +622,22 @@ async function main(args: string[], host: CliHost): Promise<number> {
       coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
     let strictFailed = false;
     if (strict) {
-      const islandDiags = (coverage.nodeIslands?.islands ?? []).map((island) =>
-        strictIslandError(
-          island.importedFrom[0] ?? { file: input, start: 0, end: 0 },
-          [island.package],
-          island.reason,
+      const islandDiags = [
+        ...(coverage.nodeIslands?.islands ?? []).map((island) =>
+          strictIslandError(
+            island.importedFrom[0] ?? { file: input, start: 0, end: 0 },
+            [island.package],
+            island.reason,
+          ),
         ),
-      );
+        ...(coverage.nodeIslands?.userModules ?? []).map((module) =>
+          strictIslandError(
+            { file: module.file, start: 0, end: 0 },
+            [module.file],
+            `user module, marked by ${module.source}`,
+          ),
+        ),
+      ];
       const promoted = strictErrors(
         [...(coverage.divergences ?? []), ...(coverage.performance ?? []), ...islandDiags],
         sourceTexts,

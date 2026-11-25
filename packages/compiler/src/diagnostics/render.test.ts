@@ -26,6 +26,22 @@ test("a short line renders whole", () => {
   );
 });
 
+test("an explicit error severity wins over an island note code", () => {
+  const text = "import { kit } from 'copy-kit';";
+  const start = text.indexOf("copy-kit");
+  const loc = { file: "m.ts", start, end: start + 8 };
+  const first = (d: ScrDiagnostic): string => renderDiagnostic(d, { text }).split("\n")[0] ?? "";
+  expect(
+    first({
+      code: "SC8001",
+      severity: "error",
+      message: "strict mode does not allow Node islands: copy-kit",
+      loc,
+    }),
+  ).toContain(" - error SC8001:");
+  expect(first({ code: "SC8001", message: "would run in Node", loc })).toContain(" - note SC8001:");
+});
+
 test("a long line renders a window around the column", () => {
   const line = "x".repeat(1000) + "bad" + "y".repeat(1000);
   const text = "first\n" + line + "\nlast";

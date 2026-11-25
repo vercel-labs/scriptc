@@ -11,10 +11,6 @@ server.on("stream", (stream) => {
   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
 });
 const client = http2.connect("http://127.0.0.1:1");
-client.setTimeout(1000);
-client.unref();
-client.goaway(0);
-client.on("timeout", () => {});
 const request = client.request({ ":path": "/" });
 request.on("push", () => {});
 request.on("ready", () => {});

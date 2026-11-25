@@ -2854,6 +2854,13 @@ typedef struct ScrDynHandleClass {
    * replace. NULL = ScrDynHandleOps.invoke. */
   ScrDyn *(*method_invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                            const char *what);
+  /* Whether Node's instances of this class own no properties (the WebIDL
+   * stream classes): getOwnPropertyNames answers an empty list and for-in
+   * visits the class prototype's members alone. False leaves the class's
+   * own-property reflection unmodelled, which keeps the named refusal: a
+   * class whose instances do own properties (node:dns Resolver's
+   * enumerable `_handle`) must model them here before reflection answers. */
+  bool no_own_properties;
 } ScrDynHandleClass;
 
 /* Installs a tag's ops with the class its handles belong to; both outlive
@@ -2908,6 +2915,12 @@ typedef struct ScrDynHandleClassOps {
    * handle whose class declares none; an alias tag answers its class's
    * table. */
   const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
+  /* Whether the handle's class declares that its instances own no
+   * properties (ScrDynHandleClass.no_own_properties): the one answer
+   * own-property reflection takes from the class. False for a class whose
+   * instances own properties it does not model, so the reflection keeps
+   * its refusal instead of answering an incomplete list. */
+  bool (*owns_nothing)(const ScrDyn *handle);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

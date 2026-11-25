@@ -5196,6 +5196,7 @@ static const char *const ws_readable_order[] = {"locked", "cancel", "getReader",
 
 static const ScrDynHandleClass ws_readable_class = {
     "ReadableStream", 0, ws_readable_construct, ws_readable_accessors, ws_readable_statics, ws_readable_order, ws_readable_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamDefaultReader */
@@ -5277,6 +5278,7 @@ static const char *const ws_reader_order[] = {"read", "releaseLock", "closed", "
 
 static const ScrDynHandleClass ws_reader_class = {
     "ReadableStreamDefaultReader", 1, ws_reader_construct, ws_reader_accessors, NULL, ws_reader_order, ws_reader_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamBYOBReader */
@@ -5339,6 +5341,7 @@ static const char *const ws_byob_reader_order[] = {"read", "releaseLock", "close
 static const ScrDynHandleClass ws_byob_reader_class = {
     "ReadableStreamBYOBReader", 1, ws_byob_reader_construct, ws_reader_accessors, NULL, ws_byob_reader_order,
     ws_byob_reader_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamDefaultController */
@@ -5407,6 +5410,7 @@ static const char *const ws_rcontroller_order[] = {"desiredSize", "close", "enqu
 
 static const ScrDynHandleClass ws_rcontroller_class = {
     "ReadableStreamDefaultController", 0, NULL, ws_rcontroller_accessors, NULL, ws_rcontroller_order, ws_rcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ReadableByteStreamController */
@@ -5420,6 +5424,7 @@ static const char *const ws_byob_controller_order[] = {"byobRequest", "desiredSi
 static const ScrDynHandleClass ws_byob_controller_class = {
     "ReadableByteStreamController", 0, NULL, ws_byob_controller_accessors, NULL, ws_byob_controller_order,
     ws_rcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamBYOBRequest */
@@ -5526,6 +5531,7 @@ static const char *const ws_byob_request_order[] = {"view", "respond", "respondW
 static const ScrDynHandleClass ws_byob_request_class = {
     "ReadableStreamBYOBRequest", 0, NULL, ws_byob_request_accessors, NULL, ws_byob_request_order,
     ws_byob_request_method,
+    .no_own_properties = true,
 };
 
 /* WritableStream */
@@ -5571,6 +5577,7 @@ static const char *const ws_writable_order[] = {"locked", "abort", "close", "get
 
 static const ScrDynHandleClass ws_writable_class = {
     "WritableStream", 0, ws_writable_construct, ws_writable_accessors, NULL, ws_writable_order, ws_writable_method,
+    .no_own_properties = true,
 };
 
 /* WritableStreamDefaultWriter */
@@ -5643,6 +5650,7 @@ static const char *const ws_writer_order[] = {"closed", "desiredSize", "ready", 
 
 static const ScrDynHandleClass ws_writer_class = {
     "WritableStreamDefaultWriter", 1, ws_writer_construct, ws_writer_accessors, NULL, ws_writer_order, ws_writer_method,
+    .no_own_properties = true,
 };
 
 /* WritableStreamDefaultController */
@@ -5672,6 +5680,7 @@ static const char *const ws_wcontroller_order[] = {"signal", "error", NULL};
 
 static const ScrDynHandleClass ws_wcontroller_class = {
     "WritableStreamDefaultController", 0, NULL, ws_wcontroller_accessors, NULL, ws_wcontroller_order, ws_wcontroller_method,
+    .no_own_properties = true,
 };
 
 /* TransformStream */
@@ -5706,6 +5715,7 @@ WS_MEMBER_INVOKE(ws_transform)
 
 static const ScrDynHandleClass ws_transform_class = {
     "TransformStream", 0, ws_transform_construct, ws_transform_accessors, NULL, NULL, ws_transform_method,
+    .no_own_properties = true,
 };
 
 /* TransformStreamDefaultController */
@@ -5746,6 +5756,7 @@ static const char *const ws_tcontroller_order[] = {"desiredSize", "enqueue", "er
 
 static const ScrDynHandleClass ws_tcontroller_class = {
     "TransformStreamDefaultController", 0, NULL, ws_tcontroller_accessors, NULL, ws_tcontroller_order, ws_tcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ── TextEncoderStream and TextDecoderStream (webstreams/encoding.js) */
@@ -6027,10 +6038,12 @@ WS_MEMBER_INVOKE(ws_text)
 
 static const ScrDynHandleClass ws_text_encoder_class = {
     "TextEncoderStream", 0, ws_text_encoder_construct, ws_text_encoder_accessors, NULL, NULL, ws_text_method,
+    .no_own_properties = true,
 };
 
 static const ScrDynHandleClass ws_text_decoder_class = {
     "TextDecoderStream", 0, ws_text_decoder_construct, ws_text_decoder_accessors, NULL, NULL, ws_text_method,
+    .no_own_properties = true,
 };
 
 /* ── queuing strategies ────────────────────────────────────────────── */
@@ -6144,10 +6157,12 @@ static const ScrDynHandleAccessor ws_strategy_accessors[] = {{"highWaterMark", f
 
 static const ScrDynHandleClass ws_count_strategy_class = {
     "CountQueuingStrategy", 1, ws_count_strategy_construct, ws_strategy_accessors, NULL, NULL,
+    .no_own_properties = true,
 };
 
 static const ScrDynHandleClass ws_byte_strategy_class = {
     "ByteLengthQueuingStrategy", 1, ws_byte_strategy_construct, ws_strategy_accessors, NULL, NULL,
+    .no_own_properties = true,
 };
 
 /* ── installation and the compiler's entry points ─────────────────── */

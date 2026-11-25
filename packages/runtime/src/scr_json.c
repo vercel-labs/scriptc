@@ -21210,17 +21210,15 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL)
     return scr_dyn_new_arr();
-  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
-    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(value);
-    if (proto != NULL) {
-      scr_dyn_release(proto);
-      /* A class instance owns no properties of its own: the class's members
-       * live on its prototype, and a property a program added is answered
-       * by the handle table above. */
-      return scr_dyn_new_arr();
-    }
-    if (scr_exc_pending()) return NULL;
-  }
+  /* A class instance whose class declares it owns no properties of its
+   * own (a web stream): the class's members live on its prototype, and a
+   * property a program added is answered by the handle table above. Any
+   * other class's instances may own properties this runtime does not
+   * model (node:dns Resolver's enumerable `_handle`), so its reflection
+   * keeps the refusal below rather than answer an incomplete list. */
+  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops &&
+      scr_dyn_handle_class_ops->owns_nothing != NULL && scr_dyn_handle_class_ops->owns_nothing(value))
+    return scr_dyn_new_arr();
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -21749,9 +21747,12 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     scr_dyn_release(view);
     return keys;
   }
-  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
-    /* A handle owns no enumerable properties: for-in visits the enumerable
-     * accessors of its class's prototype, as it does on Node's instances. */
+  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops &&
+      scr_dyn_handle_class_ops->owns_nothing != NULL && scr_dyn_handle_class_ops->owns_nothing(v)) {
+    /* Such an instance owns no enumerable properties: for-in visits the
+     * enumerable accessors of its class's prototype, as it does on Node's
+     * instances. A class whose instances own properties keeps the
+     * refusal below. */
     ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(v);
     if (proto != NULL) {
       ScrDyn *keys = scr_dyn_for_in_keys(proto);

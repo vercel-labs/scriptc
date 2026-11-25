@@ -1774,6 +1774,20 @@ function markModuleInitFences(lowerer: Lowerer, fences: readonly ScrDiagnostic[]
 /** A pass's result a replacing pass drops to before it lowers: the replacing
  * pass overwrites it before anything reads it, so the replaced pass's IR
  * does not stay reachable through the end of the pipeline. */
+/** A refused construct that escaped its local recovery after recording its
+ * diagnostic: report the recorded diagnostics instead of letting the
+ * message-less PoisonError become an internal SC3004. Null when the error is
+ * not a lowerer poison or nothing was recorded. */
+export function lowerFailureFromPoison(error: unknown, lowerer: Lowerer): LowerResult | null {
+  if (!(error instanceof PoisonError) || lowerer.diags.length === 0) return null;
+  return {
+    module: null,
+    diagnostics: [...lowerer.diags],
+    runtimeFences: [],
+    stats: lowerer.stats,
+  };
+}
+
 function releasedLowerResult(): LowerResult {
   return {
     module: null,
@@ -2056,12 +2070,21 @@ function lowerToIrWithIslands(
     reachable = emitted.reachable;
     result = emitted.result;
   } catch (e) {
-    if (!(e instanceof StreamFlagsAbort)) throw e;
-    // The pass asked for a stream mode, so the stream pass below replaces
-    // its reachable set, result and Lowerer before any of them is read.
-    pushDownAborted = true;
-    reachable = new Set();
-    result = { module: null, diagnostics: [], runtimeFences: [], stats: pushDownEmit.stats };
+    const recovered = lowerFailureFromPoison(e, pushDownEmit);
+    if (recovered !== null) {
+      // A refusal escaped the statement-local recovery after its diagnostic
+      // was recorded: the build fails with that diagnostic, as every other
+      // refused construct does.
+      reachable = new Set();
+      result = recovered;
+    } else {
+      if (!(e instanceof StreamFlagsAbort)) throw e;
+      // The pass asked for a stream mode, so the stream pass below replaces
+      // its reachable set, result and Lowerer before any of them is read.
+      pushDownAborted = true;
+      reachable = new Set();
+      result = { module: null, diagnostics: [], runtimeFences: [], stats: pushDownEmit.stats };
+    }
   }
   let resultLowerer: Lowerer = pushDownEmit;
   timing("reachable-emit", {
@@ -2175,7 +2198,14 @@ function lowerToIrWithIslands(
       });
       for (const d of extraModuleCycleDiags) pass.pushDiag(d);
       for (const d of ffiValidation.diagnostics) pass.pushDiag(d);
-      const emitted = pass.emitReachable(options.libRoots);
+      let emitted: ReturnType<Lowerer["emitReachable"]>;
+      try {
+        emitted = pass.emitReachable(options.libRoots);
+      } catch (e) {
+        const recovered = lowerFailureFromPoison(e, pass);
+        if (recovered === null) throw e;
+        emitted = { reachable: new Set(), result: recovered };
+      }
       // The whole-slot comparison alone judges build errors, as it always
       // has; a comparison that involves held constructors also counts the
       // refusals deferred to run time.
@@ -2270,6 +2300,13 @@ function lowerToIrWithIslands(
       reachable = generalEmitted.reachable;
       result = generalEmitted.result;
     } catch (e) {
+      const recovered = lowerFailureFromPoison(e, general);
+      if (recovered !== null) {
+        reachable = new Set();
+        result = recovered;
+        timing(phase, { reachable: 0 });
+        return general;
+      }
       if (!(e instanceof StreamFlagsAbort)) throw e;
       timing(phase, { reachable: 0, aborted: "stream-flags" });
       return general;

@@ -2057,8 +2057,8 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
     return u16 < s->len ? u16 : s->len;
   }
   scr_sidx_materialize_identity_prefix(s, e);
-  ScrSidxPoint near = scr_sidx_near_u16(s, e, u16);
-  return scr_sidx_walk_from(s, e, near.cu, near.cb, u16, mid, true);
+  ScrSidxPoint anchor = scr_sidx_near_u16(s, e, u16);
+  return scr_sidx_walk_from(s, e, anchor.cu, anchor.cb, u16, mid, true);
 }
 
 static size_t scr_byte_to_u16_walk(const ScrStr *s, ScrSidx *e, size_t byte_off);
@@ -2094,8 +2094,8 @@ static __attribute__((noinline)) size_t scr_byte_to_u16_walk(const ScrStr *s, Sc
    * do not rebuild points that scr_sidx_finish() deliberately discarded. */
   if (s->ascii || e->u16len == s->len) return byte_off;
   scr_sidx_materialize_identity_prefix(s, e);
-  ScrSidxPoint near = scr_sidx_near_byte(s, e, byte_off);
-  size_t cu = near.cu, cb = near.cb;
+  ScrSidxPoint anchor = scr_sidx_near_byte(s, e, byte_off);
+  size_t cu = anchor.cu, cb = anchor.cb;
   /* Unlike unit-to-byte conversion, both endpoints are already exact byte
    * boundaries. Count the whole span with the shared word-wise classifier. */
   if (cb > byte_off)

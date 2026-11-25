@@ -3766,6 +3766,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -3902,6 +3906,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       scr_children_unwatched--;
@@ -7974,6 +7983,10 @@ static void scr_child_settle_in(ScrChild *c) {
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->out_stream);
     if (!scr_exc_pending()) scr_child_stream_drain_now(c->err_stream);
     if (!scr_exc_pending()) scr_ipc_settle(c->ipc);
+    /* The IPC drain can observe the channel's EOF and emit 'disconnect';
+     * its handler may queue a nextTick (Node drains it before the exit
+     * callback this settle is about to deliver). */
+    if (!scr_exc_pending() && scr_loop_has_ready()) (void)scr_loop_drain_checkpoint();
   }
   if (!scr_exc_pending()) {
     scr_child_writer_child_settled(c->in_stream);
@@ -8160,6 +8173,11 @@ void scr_children_poll(void) {
   ScrChild **link = &scr_children;
   while (*link) {
     ScrChild *c = *link;
+    /* Node drains the checkpoint after every callback: a tick a callback
+     * in this pass queued (an IPC 'disconnect' handler's late send) runs
+     * before this pass delivers a terminal event. Defer the sweep; the
+     * loop drains the queue and polls again. */
+    if (scr_loop_has_ready()) return;
     bool settle = false;
     if (c->state == SCR_CHILD_SPAWN_FAILED) {
       settle = true;
@@ -9736,16 +9754,71 @@ static void scr_ipc_add_send(ScrIpc *ipc, ScrClosure *cb, ScrIpcSendFn fn) {
   ipc->send_cbs[ipc->n_send++] = (ScrIpcSendEntry){cb, fn, scr_als_capture()};
 }
 
+/* A send on a channel that is already closed. Node's send checks
+ * `connected` before touching the channel and, when it is false, answers
+ * false and calls the callback on the NEXT TICK with
+ * ERR_IPC_CHANNEL_CLOSED — the write queue never sees it. Queuing the
+ * completion behind a channel-service pass instead (the open channel's
+ * path) delays it past the disconnect handler's checkpoint, so a child's
+ * 'exit' can overtake it (cluster-primary-worker-messages.cjs). */
+typedef struct {
+  ScrClosure *cb;
+  ScrIpcSendFn fn;
+  ScrError *error; /* +1, the callback takes it */
+  ScrAlsCtx *ctx;
+} ScrIpcClosedSend;
+
+static SCR_TL ScrIpcClosedSend *scr_ipc_closed_sends = NULL;
+static SCR_TL size_t scr_ipc_closed_n = 0;
+
+/* One tick delivers one send's completion: Node's send queues a
+ * process.nextTick per callback, so a user nextTick scheduled between two
+ * sends runs between those callbacks. Draining the whole queue in the
+ * first send's tick would put both callbacks ahead of that user tick. */
+static void scr_ipc_closed_send_tick(void) {
+  if (scr_ipc_closed_n == 0) return;
+  ScrIpcClosedSend entry = scr_ipc_closed_sends[0];
+  memmove(scr_ipc_closed_sends, scr_ipc_closed_sends + 1,
+          (scr_ipc_closed_n - 1) * sizeof *scr_ipc_closed_sends);
+  scr_ipc_closed_n--;
+  if (!scr_exc_pending()) {
+    ScrAlsCtx *prev = scr_als_dispatch_enter(entry.ctx);
+    entry.fn(entry.cb, entry.error); /* takes the error */
+    scr_als_dispatch_leave(prev);
+  } else {
+    scr_error_release(entry.error);
+  }
+  scr_closure_release(entry.cb);
+  scr_als_ctx_release(entry.ctx);
+  if (scr_ipc_closed_n == 0) {
+    free(scr_ipc_closed_sends);
+    scr_ipc_closed_sends = NULL;
+  }
+}
+
+static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
+                                      ScrIpcSendFn fn) {
+  ScrIpcClosedSend *items =
+      realloc(scr_ipc_closed_sends, (scr_ipc_closed_n + 1) * sizeof *items);
+  if (!items) scr_trap("out of memory");
+  scr_ipc_closed_sends = items;
+  ScrStr *message = send_error != NULL
+                        ? scr_str_retain(send_error)
+                        : scr_str_new("Channel closed", sizeof("Channel closed") - 1);
+  ScrError *error = scr_error_new(0, message);
+  scr_str_release(message);
+  scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
+  items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* One tick per send, FIFO among the ticks the program queues itself. */
+  scr_next_tick_raw(&scr_ipc_closed_send_tick);
+}
+
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,
                          ScrIpcSendFn fn) {
   if (!ipc || !ipc->connected) {
     if (cb) {
       if (ipc) {
-        scr_ipc_add_send(ipc, cb, fn);
-        if (ipc->send_error == NULL) {
-          ipc->send_error = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
-        }
-        scr_ipc_register(ipc);
+        scr_ipc_queue_closed_send(ipc->send_error, cb, fn);
       } else {
         ScrStr *message = scr_str_new("Channel closed", sizeof("Channel closed") - 1);
         ScrError *error = scr_error_new(0, message);
@@ -9967,20 +10040,32 @@ static void scr_ipc_service_one(ScrIpc *ipc) {
   if (!scr_exc_pending()) scr_ipc_fire_disconnect(ipc);
 }
 
+/* Unlink a channel by identity. A callback serviced in this pass can fork
+ * a replacement worker, whose channel is pushed at the head of scr_ipcs;
+ * writing the slot the iteration read would drop that new channel — its
+ * 'online', messages and close would never be serviced, and the
+ * registry's reference would leak. */
+static void scr_ipc_unregister(ScrIpc *ipc) {
+  for (ScrIpc **link = &scr_ipcs; *link != NULL; link = &(*link)->next) {
+    if (*link != ipc) continue;
+    *link = ipc->next;
+    ipc->next = NULL;
+    ipc->registered = false;
+    scr_ipc_release(ipc); /* service-registry reference */
+    return;
+  }
+}
+
 static void scr_ipc_service(void) {
-  ScrIpc **link = &scr_ipcs;
-  while (*link) {
-    ScrIpc *ipc = *link;
+  /* The callback may append at the head, so hold the next channel rather
+   * than a list slot across it. */
+  ScrIpc *ipc = scr_ipcs;
+  while (ipc != NULL) {
+    ScrIpc *next = ipc->next;
     scr_ipc_service_one(ipc);
-    if (ipc->disconnect_emitted && ipc->n_send == 0) {
-      *link = ipc->next;
-      ipc->next = NULL;
-      ipc->registered = false;
-      scr_ipc_release(ipc); /* service-registry reference */
-    } else {
-      link = &ipc->next;
-    }
+    if (ipc->disconnect_emitted && ipc->n_send == 0) scr_ipc_unregister(ipc);
     if (scr_exc_pending()) return;
+    ipc = next;
   }
 }
 

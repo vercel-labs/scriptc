@@ -7041,6 +7041,21 @@ static bool scr_loop_run_checkpoint(void) {
   return true;
 }
 
+/* A checkpoint for a dispatch station that batches several event callbacks
+ * in one C call (scr_children_poll's reap sweep). Node drains the
+ * nextTick/microtask queue after every callback it invokes from C++, so a
+ * tick one callback queued — the late send a child's 'disconnect' handler
+ * arms — runs before the station's next callback, that child's 'exit'.
+ * Hosted (Node owns the queues), no drain happens here: Node's own
+ * checkpoint already does it. */
+bool scr_loop_drain_checkpoint(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return true;
+#endif
+  if (!scr_loop_started) return true;
+  return scr_loop_run_checkpoint();
+}
+
 /* Defined beside the death rule at the end of the pass (the 'beforeExit'
  * branch re-tests it after listeners ran). */
 static bool scr_loop_has_reffed_work(void);

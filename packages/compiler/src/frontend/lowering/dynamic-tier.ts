@@ -424,6 +424,7 @@ export function dynamicTierWarning(
     report.hot.map((f) => ({
       name: displayName(lowerer, f),
       where: where(f.loc),
+      loc: f.loc,
       cause: f.cause,
       hot: f.hot,
     })),

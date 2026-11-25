@@ -53,16 +53,21 @@ test("strictErrors promotes codes and honors the allow comment", () => {
   ]);
 });
 
-test("an island error is promoted and can be allowed on its line", () => {
-  const text = "import { kit } from 'copy-kit'; // scriptc-allow SC8001";
-  const sourceTexts = new Map([["main.ts", text]]);
-  const island: ScrDiagnostic = {
-    code: "SC8001",
-    severity: "error",
-    message: "strict mode does not allow Node islands: copy-kit",
-    loc: { file: "main.ts", start: 0, end: 1 },
+test("an island error is allowed only on its own import line", () => {
+  const islandAt = (text: string): ScrDiagnostic => {
+    const start = text.indexOf("import");
+    return {
+      code: "SC8001",
+      severity: "error",
+      message: "strict mode does not allow Node islands: copy-kit",
+      loc: { file: "main.ts", start, end: start + 1 },
+    };
   };
-  expect(strictErrors([island], sourceTexts)).toEqual([]);
-  const denied = strictErrors([island], new Map([["main.ts", "import { kit } from 'copy-kit';"]]));
-  expect(denied.map((d) => [d.code, d.severity])).toEqual([["SC8001", "error"]]);
+  const importLine = "import { kit } from 'copy-kit';";
+  // A comment on the line above does not opt the island out.
+  const above = ["// scriptc-allow SC8001", importLine].join("\n");
+  expect(strictErrors([islandAt(above)], new Map([["main.ts", above]]))).toHaveLength(1);
+  // On the import line it does.
+  const onLine = `${importLine} // scriptc-allow SC8001`;
+  expect(strictErrors([islandAt(onLine)], new Map([["main.ts", onLine]]))).toEqual([]);
 });

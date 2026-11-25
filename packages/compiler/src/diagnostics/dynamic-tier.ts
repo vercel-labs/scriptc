@@ -57,6 +57,8 @@ export interface DynamicTierEntry {
   name: string;
   /** `file:line`, relative to the entry's directory. */
   where: string;
+  /** The function's declaration, for strict mode's per-line allow. */
+  loc: SrcLoc;
   cause: UntypedCause;
   hot: HotReason;
 }
@@ -93,6 +95,7 @@ export function dynamicTierDiag(
     message: lines.join("\n"),
     loc,
     hint: "add types to compile these statically; see scriptc coverage --explain-dynamic",
+    dynamicTier: { entries: [...entries], packages: [...packages] },
   };
 }
 

@@ -245,6 +245,49 @@ test("coverage --strict fails on a marked user module island, also from the cach
     const replay = await launcherCli(["coverage", "main.ts", "--strict"], cache, dir);
     expect(replay.code).toBe(1);
     expect(replay.stdout).toContain("SC8001");
+
+    // An allow comment on the island module's own line opts it out.
+    await writeFile(
+      join(dir, "plugin.js"),
+      "// scriptc-allow SC8001\nexport const value = 21 * 2;\n",
+    );
+    const allowed = await launcherCli(
+      ["coverage", "main.ts", "--strict"],
+      join(dir, "ok-cache"),
+      dir,
+    );
+    expect(allowed.code).toBe(0);
+    expect(allowed.stdout).toContain("Node islands");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("an allow comment on one hot function leaves the others strict errors", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-strict-per-function-"));
+  try {
+    const original = await readFile(hotFixture, "utf8");
+    const withAllows = (names: readonly string[]): string =>
+      original
+        .split("\n")
+        .map((line) =>
+          names.some((name) => line.includes(`function ${name}(`))
+            ? `${line} // scriptc-allow SC6101`
+            : line,
+        )
+        .join("\n");
+    const entry = join(dir, "hot.js");
+    await writeFile(entry, withAllows(["centroid"]));
+    const cache = join(dir, "cache");
+    const partial = await launcherCli(["coverage", "hot.js", "--strict"], cache, dir);
+    expect(partial.code).toBe(1);
+    expect(partial.stdout).toContain("spread (");
+    expect(partial.stdout).not.toContain("centroid (");
+
+    await writeFile(entry, withAllows(["centroid", "spread", "distance"]));
+    const all = await launcherCli(["coverage", "hot.js", "--strict"], join(dir, "all-cache"), dir);
+    expect(all.code).toBe(0);
+    expect(all.stdout).toContain("untyped and likely hot");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

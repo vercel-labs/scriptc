@@ -14,12 +14,11 @@
  */
 import type { ScrDiagnostic } from "./diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
-import { isPerformanceCode } from "./dynamic-tier.js";
+import { dynamicTierDiag, isPerformanceCode } from "./dynamic-tier.js";
 
-/** Whether strict mode promotes `code` to an error. Node islands are added
- * by the caller, which has the island report and its import sites. */
+/** Whether strict mode promotes `code` to an error. */
 export function isStrictCode(code: string): boolean {
-  return code === "SC6001" || isPerformanceCode(code);
+  return code === "SC6001" || isPerformanceCode(code) || code === "SC8001";
 }
 
 /** The text of the line `offset` is on. */
@@ -79,8 +78,16 @@ export function strictIslandError(
   };
 }
 
+/** Whether an allow comment for `code` sits on `loc`'s line. */
+function allows(code: string, loc: SrcLoc, sourceTexts: ReadonlyMap<string, string>): boolean {
+  const text = sourceTexts.get(loc.file);
+  return text !== undefined && allowedCodesAt(text, loc.start).has(code);
+}
+
 /** The strict errors among `diagnostics`: promoted codes with no allow
- * comment on their line. */
+ * comment on their line. SC6101 names several functions in one diagnostic,
+ * so each function's own line is asked; an allow comment on one function
+ * leaves the others as errors. */
 export function strictErrors(
   diagnostics: readonly ScrDiagnostic[],
   sourceTexts: ReadonlyMap<string, string>,
@@ -88,8 +95,24 @@ export function strictErrors(
   const errors: ScrDiagnostic[] = [];
   for (const diag of diagnostics) {
     if (!isStrictCode(diag.code) && diag.severity !== "error") continue;
-    const text = sourceTexts.get(diag.loc.file);
-    if (text !== undefined && allowedCodesAt(text, diag.loc.start).has(diag.code)) continue;
+    const aggregate = diag.code === "SC6101" ? diag.dynamicTier : undefined;
+    if (aggregate !== undefined) {
+      const kept = aggregate.entries.filter((entry) => !allows(diag.code, entry.loc, sourceTexts));
+      if (kept.length < aggregate.entries.length) {
+        if (kept.length === 0) {
+          // No line can allow the untyped npm package code an aggregate may
+          // also name: keep the finding then.
+          if (aggregate.packages.length === 0) continue;
+        } else {
+          const rebuilt = dynamicTierDiag(kept, aggregate.packages, kept[0]!.loc);
+          if (rebuilt !== null) {
+            errors.push({ ...rebuilt, severity: "error" });
+            continue;
+          }
+        }
+      }
+    }
+    if (allows(diag.code, diag.loc, sourceTexts)) continue;
     errors.push({ ...diag, severity: "error" });
   }
   return errors;

@@ -224,8 +224,12 @@ async function tryFastPath(): Promise<number | null> {
       dynamicTier: values["dynamic-tier-warning"] !== false,
     });
     const islands = hit.islands;
+    // A stored SC8001 note carries the import site, so its allow comment
+    // applies; the entry-line fallback only covers a hit without notes.
     const islandDiags =
-      islands === undefined || islands.packages.length + islands.modules.length === 0
+      islands === undefined ||
+      islands.packages.length + islands.modules.length === 0 ||
+      warnings.some((warning) => warning.code === "SC8001")
         ? []
         : [
             startup.strictIslandError({ file: input, start: 0, end: 0 }, [

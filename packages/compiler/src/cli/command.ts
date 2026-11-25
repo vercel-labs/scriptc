@@ -783,9 +783,13 @@ async function main(args: string[], host: CliHost): Promise<number> {
     });
     if (strict) {
       const texts = result.sourceTexts ?? new Map<string, string>();
+      // The build's own SC8001 notes carry each island's import site, so
+      // the allow comment works at the import that makes the island.
       const islands = result.islands;
       const islandDiags =
-        islands === undefined || islands.packages.length + islands.modules.length === 0
+        islands === undefined ||
+        islands.packages.length + islands.modules.length === 0 ||
+        warnings.some((warning) => warning.code === "SC8001")
           ? []
           : [
               strictIslandError({ file: input, start: 0, end: 0 }, [

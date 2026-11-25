@@ -780,6 +780,11 @@ typedef struct ScrH2SrvCtx {
    * registered before it and run before the (req, res) pair is built. */
   bool compat_placed;
   size_t compat_pos;
+  /* The server's live sessions, each +1: server.close() closes them all
+   * (Node's closeAllSessions), and each leaves the list when its socket
+   * closes. */
+  ScrH2Session **sessions;
+  size_t nsessions, sessions_cap;
 } ScrH2SrvCtx;
 
 /* The SETTINGS the API observes (session.localSettings/remoteSettings —
@@ -833,7 +838,11 @@ struct ScrH2Session {
   bool connect_queued;  /* client 'connect' emit pending */
   bool preface_done;    /* server: magic received; client: always true */
   bool goaway_sent, goaway_recv;
+  bool goaway_final_sent; /* the graceful close's second GOAWAY went out */
   uint32_t goaway_code;
+  /* The first GOAWAY's last-stream id: RFC 9113 6.8 forbids increasing it
+   * in a later GOAWAY, so the shutdown notice repeats it (nghttp2). */
+  uint32_t goaway_last_stream_id;
   ScrNetSocket *sock;   /* +1; dropped (NULLed) when the socket closes */
   ScrH2SrvCtx *srv;     /* +1; NULL on client sessions */
   /* frame reassembly */
@@ -938,7 +947,49 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
   scr_net_ls_drop(&ctx->check_continue_ls);
+  for (size_t i = 0; i < ctx->nsessions; i++) scr_http2_session_release(ctx->sessions[i]);
+  free(ctx->sessions);
   free(ctx);
+}
+
+/* Track a server session (`s` moves a +1 in) and drop it again when its
+ * socket closes: the list ref is what keeps the server's sessions alive
+ * until then, and removing it breaks the ctx<->session cycle. */
+static void scr_h2_srv_track_session(ScrH2SrvCtx *srv, ScrH2Session *s) {
+  if (srv->nsessions == srv->sessions_cap) {
+    srv->sessions_cap = srv->sessions_cap ? srv->sessions_cap * 2 : 4;
+    srv->sessions = realloc(srv->sessions, srv->sessions_cap * sizeof *srv->sessions);
+    if (!srv->sessions) scr_h2_oom();
+  }
+  srv->sessions[srv->nsessions++] = scr_http2_session_retain(s);
+}
+
+static void scr_h2_srv_untrack_session(ScrH2SrvCtx *srv, ScrH2Session *s) {
+  for (size_t i = 0; i < srv->nsessions; i++) {
+    if (srv->sessions[i] == s) {
+      memmove(srv->sessions + i, srv->sessions + i + 1,
+              (srv->nsessions - i - 1) * sizeof *srv->sessions);
+      srv->nsessions--;
+      scr_http2_session_release(s);
+      return;
+    }
+  }
+}
+
+/* server.close(): close every live session the way Node's closeAllSessions
+ * does — each sends its GOAWAY and finishes once its streams drain. */
+static void scr_h2_srv_close_sessions(void *ctx) {
+  ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
+  if (srv == NULL || srv->proto != SCR_NET_PROTO_H2 || srv->nsessions == 0) return;
+  size_t n = srv->nsessions;
+  ScrH2Session **snap = malloc(n * sizeof *snap);
+  if (!snap) scr_h2_oom();
+  for (size_t i = 0; i < n; i++) snap[i] = scr_http2_session_retain(srv->sessions[i]);
+  for (size_t i = 0; i < n; i++) {
+    scr_http2_session_close(snap[i], NULL);
+    scr_http2_session_release(snap[i]);
+  }
+  free(snap);
 }
 
 static void scr_h2_stream_drop_lists(ScrH2Stream *st) {
@@ -1006,7 +1057,10 @@ static void scr_h2_session_free(ScrH2Session *s) {
   free(s->hblock.data);
   free(s->authority);
   scr_h2_dyntab_free(&s->dec_table);
-  if (s->srv) scr_h2_srv_ctx_release(s->srv);
+  if (s->srv) {
+    scr_h2_srv_untrack_session(s->srv, s);
+    scr_h2_srv_ctx_release(s->srv);
+  }
   if (s->sock) scr_net_sock_release(s->sock);
   scr_als_ctx_release(s->als);
   free(s);
@@ -1150,15 +1204,26 @@ static void scr_h2_send_window_update(ScrH2Session *s, int32_t stream_id, uint32
   scr_h2_send_frame(s, SCR_H2_F_WINDOW_UPDATE, 0, stream_id, p, 4);
 }
 
-static void scr_h2_send_goaway(ScrH2Session *s, uint32_t code) {
-  if (s->goaway_sent) return;
+static void scr_h2_send_goaway_inner(ScrH2Session *s, uint32_t code, bool again) {
+  if (s->goaway_sent && !again) return;
+  /* RFC 9113 6.8: a GOAWAY's last stream identifier MUST NOT increase
+   * across frames. A peer can open a stream the server has not answered yet
+   * between the close's first GOAWAY and the shutdown notice; that stream is
+   * refused, not advertised as processed, so the notice repeats the first
+   * frame's id (nghttp2's last_proc_stream_id behavior). */
+  uint32_t last =
+      s->goaway_sent ? s->goaway_last_stream_id : (uint32_t)s->last_recv_stream_id;
   s->goaway_sent = true;
-  uint32_t last = (uint32_t)s->last_recv_stream_id;
+  s->goaway_last_stream_id = last;
   uint8_t p[8] = {
     (uint8_t)(last >> 24) & 0x7f, (uint8_t)(last >> 16), (uint8_t)(last >> 8), (uint8_t)last,
     (uint8_t)(code >> 24), (uint8_t)(code >> 16), (uint8_t)(code >> 8), (uint8_t)code,
   };
   scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, p, 8);
+}
+
+static void scr_h2_send_goaway(ScrH2Session *s, uint32_t code) {
+  scr_h2_send_goaway_inner(s, code, false);
 }
 
 /* A header block as HEADERS (+ CONTINUATIONs past the peer's max frame). */
@@ -1600,7 +1665,15 @@ static void scr_h2_session_queue_close(ScrH2Session *s) {
  * the peer answers FIN, the socket closes, the session settles. */
 static void scr_h2_session_maybe_finish_close(ScrH2Session *s) {
   if (!s->closed || s->destroyed || s->nstreams > 0) return;
-  if (scr_h2_sock_alive(s)) scr_net_sock_end(s->sock);
+  if (scr_h2_sock_alive(s)) {
+    /* A graceful close's last act is a second GOAWAY (nghttp2's shutdown
+     * notice): the peer hears 'goaway' for it as well, then the FIN. */
+    if (!s->goaway_final_sent) {
+      s->goaway_final_sent = true;
+      scr_h2_send_goaway_inner(s, 0, true);
+    }
+    scr_net_sock_end(s->sock);
+  }
 }
 
 static bool scr_h2_stream_local_closed(ScrH2Stream *st);
@@ -2032,8 +2105,12 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       scr_http2_session_destroy(s);
       return false;
     }
-    /* NO_ERROR: no new streams; the session winds down as streams drain */
-    s->closed = true;
+    /* NO_ERROR: Node's session.close() answers with its own GOAWAY and
+     * winds down as the streams drain. */
+    if (!s->closed) {
+      s->closed = true;
+      if (!s->goaway_sent && scr_h2_sock_alive(s)) scr_h2_send_goaway(s, 0);
+    }
     scr_h2_session_maybe_finish_close(s);
     break;
   }
@@ -2161,6 +2238,8 @@ static void scr_h2_on_closed(void *ctx) {
 static void scr_h2_on_closed_in(void *ctx) {
   ScrH2Session *s = ctx;
   s->destroyed = true;
+  /* the socket is gone: the server no longer owns a live session */
+  if (s->srv != NULL) scr_h2_srv_untrack_session(s->srv, s);
   scr_h2_session_abort_streams(s, 8 /* NGHTTP2_CANCEL */);
   scr_h2_session_queue_close(s);
   if (s->sock) {
@@ -4167,6 +4246,7 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
   ScrH2Session *sess = scr_h2_session_new(false); /* in the listen() context */
   sess->srv = scr_h2_srv_ctx_retain(srv);
+  scr_h2_srv_track_session(srv, sess);
   sess->sock = scr_net_sock_retain(sock);
   sess->next_stream_id = 2; /* server-initiated ids are even (push, unused) */
   sess->local_settings.enable_connect_protocol = srv->enable_connect_protocol;
@@ -4206,6 +4286,7 @@ ScrNetServer *scr_http2_create_server(void) {
   scr_net_server_set_native_conn(s, &scr_h2_on_plain_connection, ctx, &scr_h2_srv_ctx_free_v);
   scr_net_server_set_http_ctx(s, ctx);
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
+  scr_net_server_set_proto_close(s, &scr_h2_srv_close_sessions);
   return s;
 }
 
@@ -4246,6 +4327,7 @@ ScrNetServer *scr_http2_create_secure_server(const char *cert, size_t cert_len,
   ctx->enable_connect_protocol = enable_connect_protocol;
   scr_net_server_set_http_ctx(s, ctx); /* borrowed alias: 'stream'/'session' registration */
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
+  scr_net_server_set_proto_close(s, &scr_h2_srv_close_sessions);
   /* the TLS wrap owns the ctx reference (+1 moved in) and dispatches
    * established h2 connections back into scr_h2_on_connection */
   scr_tls_server_wrap_h2(s, cert, cert_len, key, key_len, &scr_h2_on_connection, ctx,
@@ -4269,6 +4351,7 @@ ScrNetServer *scr_http2_create_secure_server_allow_http1(
   ctx->enable_connect_protocol = enable_connect_protocol;
   scr_net_server_set_http_ctx(s, ctx);
   scr_net_server_set_proto_settle(s, &scr_h2_srv_ctx_settle);
+  scr_net_server_set_proto_close(s, &scr_h2_srv_close_sessions);
   if (handler != NULL) scr_h2_request_hook(ctx, handler, (void *)fn, false);
   scr_tls_server_wrap_h2(s, cert, cert_len, key, key_len, &scr_h2_on_connection, ctx,
                           &scr_h2_srv_ctx_free_v, sni_cb, sni_answer_fn);

@@ -585,6 +585,11 @@ struct ScrNetServer {
    * cycle through edges the collector cannot trace (box → dyn → handle →
    * ctx → closure → box). Takes http_ctx; NULL = no hook. */
   void (*proto_settle)(void *http_ctx);
+  /* The protocol's close hook: called with http_ctx when the server stops
+   * listening, before its idle connections are torn down. The h2 server
+   * closes every live session there (GOAWAY, then streams drain), which
+   * is Node's closeAllSessions. */
+  void (*proto_close)(void *http_ctx);
   /* wrapper.close = fn — the portless close-proxy idiom: when set,
    * server.close() invokes THIS closure (a compiler-emitted zero-arg
    * wrapper around the user override) instead of closing; the override
@@ -2708,6 +2713,9 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
     s->close_seq = ++scr_net_close_seq;
   }
   s->closing = true; /* the sweep fires 'close' once nconns drains */
+  /* Node's http2 server close runs closeAllSessions BEFORE its idle
+   * connection sweep, so every live session gets its GOAWAY. */
+  if (s->proto_close != NULL && s->http_ctx != NULL) s->proto_close(s->http_ctx);
   /* a server that never listened is not registered yet: Node still emits
    * its 'close' (and runs close callbacks) */
   scr_net_server_register(s);
@@ -8725,6 +8733,10 @@ void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *)) {
 
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *)) {
   s->proto_settle = fn;
+}
+
+void scr_net_server_set_proto_close(ScrNetServer *s, void (*fn)(void *)) {
+  s->proto_close = fn;
 }
 
 bool scr_net_server_settled(ScrNetServer *s) { return s->close_emitted; }

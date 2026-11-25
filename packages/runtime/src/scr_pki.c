@@ -7665,6 +7665,76 @@ void scr_pki_mlkem_expected_private(void) {
                     "Invalid key object type public, expected private.");
 }
 
+static bool sp_mlkem_known_level(int level) {
+  return level == 512 || level == 768 || level == 1024;
+}
+
+/* WebCrypto's ML-KEM key material (scr_webcrypto_pki.c): a fresh pair, a key
+ * from the raw public key or the 64-byte seed, and those encodings back. */
+int scr_pki_mlkem_level(const ScrPkiKey *key) {
+  return key && key->mlkem ? key->mlkem_level : 0;
+}
+
+size_t scr_pki_mlkem_public_len(int level) {
+  return sp_mlkem_known_level(level) ? sp_mlkem_pk_bytes(level) : 0;
+}
+
+ScrPkiKey *scr_pki_mlkem_generate(int level) {
+  if (!sp_mlkem_known_level(level) || !scr_pki_mlkem_core) return NULL;
+  SpKey *k = sp_key_alloc(true);
+  k->mlkem = true;
+  k->mlkem_level = level;
+  sp_random(NULL, k->mlkem_seed, 64);
+  if (!scr_pki_mlkem_core->keypair_derand(level, k->mlkem_pk, k->mlkem_sk, k->mlkem_seed)) {
+    sp_key_release(k);
+    return NULL;
+  }
+  return k;
+}
+
+ScrPkiKey *scr_pki_mlkem_from_raw(int level, bool public_key, const uint8_t *bytes, size_t len) {
+  if (!sp_mlkem_known_level(level) || !scr_pki_mlkem_core || !bytes) return NULL;
+  SpKey *k = sp_key_alloc(!public_key);
+  k->mlkem = true;
+  k->mlkem_level = level;
+  bool ok = false;
+  if (public_key) {
+    size_t n = sp_mlkem_pk_bytes(level);
+    ok = len == n;
+    if (ok) {
+      memcpy(k->mlkem_pk, bytes, n);
+      ok = sp_mlkem_pk_canonical(level, k->mlkem_pk);
+    }
+  } else {
+    /* The private encoding is the 64-byte FIPS 203 seed. */
+    ok = len == 64;
+    if (ok) {
+      memcpy(k->mlkem_seed, bytes, 64);
+      ok = scr_pki_mlkem_core->keypair_derand(level, k->mlkem_pk, k->mlkem_sk, k->mlkem_seed);
+    }
+  }
+  if (!ok) {
+    sp_key_release(k);
+    return NULL;
+  }
+  return k;
+}
+
+ScrBytes *scr_pki_mlkem_raw_public(const ScrPkiKey *key) {
+  if (!key || !key->mlkem) return NULL;
+  size_t n = sp_mlkem_pk_bytes(key->mlkem_level);
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  memcpy(out->data, key->mlkem_pk, n);
+  return out;
+}
+
+ScrBytes *scr_pki_mlkem_raw_seed(const ScrPkiKey *key) {
+  if (!key || !key->mlkem || !key->private_key) return NULL;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, 64);
+  memcpy(out->data, key->mlkem_seed, 64);
+  return out;
+}
+
 ScrDyn *scr_pki_mlkem_encapsulate(const ScrPkiKey *key) {
   size_t ct_len = sp_mlkem_ct_bytes(key->mlkem_level);
   unsigned char seed[32], shared[32];

@@ -1179,6 +1179,9 @@ const WEBCRYPTO_ASYMMETRIC_NAMES: ReadonlySet<string> = new Set([
   "rsassa-pkcs1-v1_5",
   "x25519",
   "x448",
+  "ml-kem-512",
+  "ml-kem-768",
+  "ml-kem-1024",
 ]);
 
 /** Whether a string literal in the module names Ed25519, without regard

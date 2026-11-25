@@ -1860,6 +1860,12 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // and convert the keyUsages sequence.
   "webcrypto.keyObjectToCryptoKey",
   "webcrypto.keyObjectFrom",
+  // The KEM methods convert their algorithms and keyUsages sequence and
+  // import the shared secret through the secret-key import path.
+  "webcrypto.encapsulateBits",
+  "webcrypto.encapsulateKey",
+  "webcrypto.decapsulateBits",
+  "webcrypto.decapsulateKey",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",

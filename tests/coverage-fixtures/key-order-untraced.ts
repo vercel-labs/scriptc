@@ -109,3 +109,15 @@ interface Tip {
 const seed: Tip = { id: "x" };
 const tipped: Tip = { ...seed, high: 9, low: 1 };
 console.log(Object.keys(tipped).join(","));
+
+// A delete takes back a key the literal wrote: the clone's override appends
+// it after the keys the value has left, so the type's order cannot be
+// followed and the type is reported.
+interface Strand {
+  id: string;
+  a?: number;
+}
+const strand: Strand = { a: 1, id: "x" };
+delete strand.a;
+const knotted: Strand = { ...strand, a: 2 };
+console.log(JSON.stringify(knotted));

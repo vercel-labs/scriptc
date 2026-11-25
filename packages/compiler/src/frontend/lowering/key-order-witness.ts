@@ -1080,8 +1080,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         f.site ??= e.loc;
         f.clones = true;
         const source = bindingOf(e.source);
-        const sourceShapeId =
-          e.source.type.kind === "record" ? e.source.type.shapeId : undefined;
+        const sourceShapeId = e.source.type.kind === "record" ? e.source.type.shapeId : undefined;
         for (const o of e.overrides)
           f.writes.push({
             field: o.name,
@@ -1495,8 +1494,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       if (e.kind === "jsonStringify" && e.value.kind === "varRef" && e.value.localId === id)
         allowed.add(e.value);
       if (e.kind === "libCall" && e.fn.startsWith("insp."))
-        for (const arg of e.args)
-          if (arg.kind === "varRef" && arg.localId === id) allowed.add(arg);
+        for (const arg of e.args) if (arg.kind === "varRef" && arg.localId === id) allowed.add(arg);
       everyExprChild(e, expr, stmt);
       return contained;
     };
@@ -1567,16 +1565,16 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (!contained) return null;
     return literalKeysOf(init.value, seen);
   };
-  /** The keys a same-shape clone's source value can have, or null when the
-   * source is not a literal-constructed binding this pass can read. */
+  /** The keys a same-shape clone's source value has, or null when the
+   * source is not a literal-constructed binding this pass can read. Any
+   * write or delete through the binding, including a delete that removes a
+   * key the literal wrote, makes the keys at the clone depend on the path,
+   * so the clone gets no static order. */
   const cloneSourceKeys = (id: string, w: WriteSite): Set<string> | null => {
     if (w.kind !== "clone" || w.source === null || w.source === undefined) return null;
     if (w.sourceShapeId !== id) return null;
-    const keys = bindingKeys(w.source, new Set());
-    if (keys === null) return null;
-    for (const other of facts.get(id)?.writes ?? [])
-      if (other.binding === w.source && other.kind !== "delete") keys.add(other.field);
-    return keys;
+    for (const other of facts.get(id)?.writes ?? []) if (other.binding === w.source) return null;
+    return bindingKeys(w.source, new Set());
   };
   /** Edges every value of the shape satisfies whatever its sources'
    * orders are, or "unknown" when late writes make the order depend on
@@ -1884,9 +1882,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (first === undefined || first.kind !== "spread" || first.shapeId !== id) return false;
     if (first.maybeAbsent || (f.runtime && !orderedSpreads.has(segments))) return false;
     if (segments.length === 1) return true;
-    return (
-      segments.every((s) => s.kind !== "opaque") && table.every((k) => !maybeAbsent(id, k))
-    );
+    return segments.every((s) => s.kind !== "opaque") && table.every((k) => !maybeAbsent(id, k));
   };
   /** One shape's order given its sources' current orders. */
   const resolveOne = (

@@ -89,8 +89,36 @@ test("a copy passed to a function that returns it or keeps it is a warning", () 
   const kept = facts(
     `${TYPES}const w: W = { a: 1, b: "x" };\nconst kept: N[] = [];\nfunction keep(n: N): void { kept.push(n); }\nkeep(w); kept[0]!.a = 2; console.log(w.a);`,
   );
-  expect(kept.facts).toEqual([{ kind: "width", depth: "value", aliasable: true, observed: "write" }]);
+  expect(kept.facts).toEqual([
+    { kind: "width", depth: "value", aliasable: true, observed: "write" },
+  ]);
   expect(kept.warnings).toHaveLength(1);
+});
+
+test("a callee that can run other code keeps the copy warning", () => {
+  // A callback can mutate the original between the copy and the reads.
+  const callback = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N, cb: () => void): number { cb(); return n.a; }\nconsole.log(read(w, () => { w.a = 9; }));`,
+  );
+  expect(callback.facts.map((f) => f.observed)).toEqual(["write"]);
+
+  // A later argument runs after the copy and can mutate the original.
+  const later = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N, extra: number): number { return n.a + extra; }\nconsole.log(read(w, (w.a = 9)));`,
+  );
+  expect(later.facts.map((f) => f.observed)).toEqual(["write"]);
+
+  // An await lets the caller run while the callee holds its copy.
+  const suspended = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nasync function read(n: N): Promise<number> { await null; return n.a; }\nread(w);\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
+  );
+  expect(suspended.facts.map((f) => f.observed)).toEqual(["write"]);
+
+  // A generator's body runs at next(), after the caller can run again.
+  const deferred = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction* read(n: N): Generator<number> { return n.a; }\nread(w);\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
+  );
+  expect(deferred.facts.map((f) => f.observed)).toEqual(["write"]);
 });
 
 test("a write to either layout makes the copy a warning, wherever the copy went", () => {

@@ -15,7 +15,8 @@ const fixtures = join(repoRoot, "tests/coverage-fixtures/dynamic-tier");
 
 const HEADER =
   "warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code.";
-const HINT = "  hint: add types to compile these statically; see scriptc coverage --explain-dynamic";
+const HINT =
+  "  hint: add types to compile these statically; see scriptc coverage --explain-dynamic";
 const CLOSING =
   "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
 

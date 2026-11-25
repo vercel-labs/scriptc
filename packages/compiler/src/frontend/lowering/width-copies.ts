@@ -19,11 +19,11 @@
  *   type by identity, or lets either reach code this scan cannot follow.
  *   The observation is a fact about the whole program, not about one
  *   binding, so no flow of the copy can escape it. One flow needs no such
- *   fact: a copy passed directly as an argument of a call, where the
- *   callee only reads that parameter and never writes it, compares it by
- *   identity, or lets it out, has no other name and no observer, so the
- *   callee cannot tell it from the object it copied (see
- *   Observations.readsOnly).
+ *   fact: a copy passed as a call's last argument to a function that only
+ *   reads that parameter, never writes it, compares it by identity, or
+ *   lets it out, and whose body neither calls out nor suspends, has no
+ *   other name and no observer, so the callee cannot tell it from the
+ *   object it copied (see Observations.readsOnly).
  *
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
@@ -149,7 +149,7 @@ interface CopyEffect {
 interface CopySite extends Omit<WidthCopyFact, "observed"> {
   /** The call that receives the conversion as one of its arguments, when
    * it is a direct argument: the callee and the argument's position. */
-  via?: { callee: string; arg: number };
+  via?: { callee: string; arg: number; last: boolean; returns: IrType["kind"] };
 }
 
 function copyKindOf(name: string): WidthCopyKind | null {
@@ -311,7 +311,10 @@ class CopyScan {
   private readonly byName = new Map<string, IrFunction>();
   private readonly out: CopySite[] = [];
   /** The call each direct argument expression is passed to. */
-  private readonly argOwner = new Map<IrExpr, { callee: string; arg: number }>();
+  private readonly argOwner = new Map<
+    IrExpr,
+    { callee: string; arg: number; last: boolean; returns: IrType["kind"] }
+  >();
 
   constructor(
     private readonly helpers: ReadonlyMap<string, IrFunction>,
@@ -450,7 +453,13 @@ class CopyScan {
       if (e.kind === "call" && !this.helpers.has(e.callee))
         for (let i = 0; i < e.args.length; i++) {
           const arg = e.args[i];
-          if (arg !== undefined) this.argOwner.set(arg, { callee: e.callee, arg: i });
+          if (arg !== undefined)
+            this.argOwner.set(arg, {
+              callee: e.callee,
+              arg: i,
+              last: i === e.args.length - 1,
+              returns: e.type.kind,
+            });
         }
       const outer = slot;
       slot = slotOf(e);
@@ -849,8 +858,21 @@ class Observations {
     return null;
   }
 
-  /** Whether the call `via` only reads the parameter a copy lands in. */
-  private argumentReadOnly(via: { callee: string; arg: number }): boolean {
+  /** Whether the call `via` only reads the parameter a copy lands in, with
+   * no chance for the program to mutate the original between the copy and
+   * the reads: the copy is the call's last argument (no later argument can
+   * run code), the callee is not a generator (its body runs at `next()`,
+   * after the caller can run again), and its body neither calls out nor
+   * suspends (see readsOnly). */
+  private argumentReadOnly(via: {
+    callee: string;
+    arg: number;
+    last: boolean;
+    returns: IrType["kind"];
+  }): boolean {
+    // A promise or generator result means the body ran, or will run, after
+    // the caller can run again: its parameter may be a stale copy.
+    if (!via.last || via.returns === "promise" || via.returns === "generator") return false;
     const fn = this.functions.get(via.callee);
     const param = fn?.params[via.arg];
     if (fn === undefined || param === undefined) return false;
@@ -869,6 +891,26 @@ class Observations {
     let escapes = false;
     const expr = (e: IrExpr): boolean => {
       if (escapes) return false;
+      // A call runs code this scan cannot see, and an await or a generator
+      // resume suspends the callee so the caller can run again. Either can
+      // mutate the original object while the callee holds its copy.
+      switch (e.kind) {
+        case "call":
+        case "callValue":
+        case "new":
+        case "libCall":
+        case "intrinsic":
+        case "ffiCall":
+        case "dynCall":
+        case "dynInvoke":
+        case "awaitExpr":
+        case "awaitUnionExpr":
+        case "genResume":
+          escapes = true;
+          return false;
+        default:
+          break;
+      }
       if (e.kind === "varRef" && e.localId === id) {
         if (!isValueType(e.type)) tainted.add(e);
         return true;

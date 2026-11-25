@@ -5,7 +5,7 @@ Empty record layouts are also snapshots because they have no property storage.
 The report is made when the program writes a field or element of either type, compares values of the converted type by identity (including `includes`, `indexOf`, and Set or Map keys), or passes either type to code scriptc cannot follow.
 It is made from the compiled program, so a program that builds without it does not lose such a write or comparison.
 It judges types rather than the path one value takes, so it can name a conversion whose copy the program never tells from the original.
-A copy passed directly as an argument to a function that only reads that parameter (it never writes it, compares it by identity or lets it out) is not reported: the callee cannot tell the copy from the object.
+A copy passed as a function's last argument, to a function that only reads that parameter (it never writes it, compares it by identity or lets it out), is not reported: no code can run between the copy and the reads, and the callee can neither call out nor suspend, so it cannot see a mutation of the original.
 A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
 The same holds for an array converted to an array of another element type and for a tuple converted to an array.
 A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.
@@ -42,7 +42,7 @@ When the object literals of one record type create its keys in different orders,
 A type keeps the declaration order of its first type, and `SC6002` reports object literals whose order differs where the program observes it, when one of its values gets its keys from a spread whose source order is not known, from a spread that also sets an optional key the source lacks, or from a copy of a value scriptc cannot trace, or when the type's values can take more than 16 orders.
 `SC6014` reports such a type once, at a construction its order depends on, when the program observes the type's key order, although the objects the program builds may still list their keys as in Node.js.
 A literal that only spreads a value of its own record type, such as `const copy = { ...value }`, takes that value's key order and adds none of its own, so it does not make the type untraceable.
-A spread that also sets optional keys follows the source's keys and appends the keys the source lacks in the order the spread writes them, when the source is a value built by a literal and never passed to code that could write it.
+A spread that also sets optional keys follows the source's keys and appends the keys the source lacks in the order the spread writes them, when the source is a value built by a literal, nothing writes or deletes a key through it, and it never passes to code that could.
 `Object.assign` adds its source's properties to a record in the order the source object created them, and `SC6014` reports a call that adds two or more optional properties from a value converted at run time.
 
 A record converted from a checked value, such as `const rows: { score: number }[] = JSON.parse(text)`, keeps the properties its type does not declare.

@@ -20,10 +20,8 @@ const scopeScript = scopeJob.steps!.find((step) => step.id === "scope")!.run!;
 // Validation jobs that run only nightly and on manual runs, outside the
 // required check (the shape overlay over the real-package suites).
 const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
-// The tag job follows the required check and is not part of it.
 const heavyJobs = Object.keys(workflow.jobs).filter(
-  (name) =>
-    !["validation_scope", "code_quality", "test", "green_main", ...nightlyJobs].includes(name),
+  (name) => !["validation_scope", "code_quality", "test", ...nightlyJobs].includes(name),
 );
 
 const repository = "vercel-labs/scriptc";
@@ -245,8 +243,9 @@ test("a superseded dispatch passes the required check and reports no status", ()
 test("nightly validation jobs run only on schedule or manual runs, outside the required check", () => {
   for (const name of nightlyJobs) {
     expect(workflow.jobs[name], name).toBeDefined();
+    // A post-merge call (only_lane) starts from a schedule or manual caller too, and runs none of them.
     expect(workflow.jobs[name]!.if, name).toBe(
-      "${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '' }}",
+      "${{ !inputs.only_lane && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.pr == '') }}",
     );
     expect(workflow.jobs.test!.needs, name).not.toContain(name);
   }

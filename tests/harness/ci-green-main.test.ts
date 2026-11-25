@@ -14,8 +14,10 @@ import {
 } from "../../scripts/ci/green-main.mjs";
 
 const workflow = load(
-  readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  readFileSync(new URL("../../.github/workflows/green-main.yml", import.meta.url), "utf8"),
 ) as {
+  on: { workflow_run: { workflows: string[]; types: string[]; branches: string[] } };
+  concurrency: { group: string; "cancel-in-progress": unknown };
   jobs: Record<
     string,
     {
@@ -112,14 +114,25 @@ test("every request writes the green-main tag and nothing else", () => {
 });
 
 test("a passing push to main moves the tag; a failing or non-push run never does", () => {
+  // A CI run on main that completes starts this workflow; only a green push run moves the tag.
+  expect(workflow.on.workflow_run).toEqual({
+    workflows: ["CI"],
+    types: ["completed"],
+    branches: ["main"],
+  });
   const job = workflow.jobs.green_main!;
   expect(job.name).toBe("tag green-main");
-  expect(job.needs).toEqual(["test"]);
-  expect(job.if).toBe("${{ github.event_name == 'push' && needs.test.result == 'success' }}");
-  // The one permission is the tag write; the job is not part of the required check.
+  expect(job.if).toBe(
+    "github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success'",
+  );
+  // The one permission is the tag write.
   expect(job.permissions).toEqual({ contents: "write" });
-  expect(workflow.jobs.test!.needs).not.toContain("green_main");
+  // Tag moves run one at a time: a rerun of an older push must not race a newer one.
+  expect(workflow.concurrency).toEqual({ group: "green-main", "cancel-in-progress": false });
   const step = job.steps!.find((candidate) => candidate.run?.includes("green-main.mjs"))!;
   expect(step.run).toBe('node scripts/ci/green-main.mjs "$SHA"');
-  expect(step.env).toEqual({ GH_TOKEN: "${{ github.token }}", SHA: "${{ github.sha }}" });
+  expect(step.env).toEqual({
+    GH_TOKEN: "${{ github.token }}",
+    SHA: "${{ github.event.workflow_run.head_sha }}",
+  });
 });

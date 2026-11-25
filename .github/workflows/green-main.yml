@@ -1,0 +1,47 @@
+name: Tag green-main
+
+# A passing CI push to main moves the green-main tag to that commit (scripts/ci/green-main.mjs): the newest main
+# commit whose full verification passed, which releases, baselines and pre-warmed images may cut from.
+#
+# It lives beside CI rather than in it because CI is a reusable workflow the post-merge lanes call read-only: for a
+# reusable call, the caller job's permissions are the ceiling for the entire called graph, and GitHub validates
+# every job it contains against that ceiling at startup, whether or not the job runs. A contents: write job inside
+# ci.yml would make every read-only call invalid.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+# One tag move at a time: a rerun of an older push must not race a newer one, and the script only moves the tag
+# forward.
+concurrency:
+  group: green-main
+  cancel-in-progress: false
+
+jobs:
+  green_main:
+    # A push's CI run moves the tag; a pull request's or merge queue's never does, and a failing run leaves it.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success'
+    name: tag green-main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A rerun of an older push needs the newer commits to tell whether the tag already names one.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Move the green-main tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: node scripts/ci/green-main.mjs "$SHA"

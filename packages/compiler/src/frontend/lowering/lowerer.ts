@@ -21081,9 +21081,18 @@ export class Lowerer {
       // holds, so the collection's key identity survives (the popup store's
       // untyped layer array feeding a Set of layer records). Any other
       // conversion copies, which would change the key.
+      // Only a target the checked conversion can represent adopts a key:
+      // a record with an accessor slot has no checked extraction, and
+      // adopting it would reach the IR validator's internal error instead
+      // of the refusal below.
       if (
         value.kind !== "dynCheck" &&
         value.type.kind === "dyn" &&
+        canDynCheckTo(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        ) &&
         adoptsAtTypedSlot(
           expected,
           (id) => this.shapes.get(id),

@@ -542,6 +542,15 @@ function runtimeTestName(
   loc: SrcLoc,
 ): IrExpr {
   const body = lowerBodyArg(lowerer, fnNode, what, true);
+  /* The name is read through the function's dynamic view, and a body that
+   * takes the TestContext has none: refuse by name rather than failing
+   * inside the lowering. */
+  if (body.cb.type.kind === "func" && body.cb.type.params.some((p) => p.kind === "testCtx"))
+    lowerer.noLowering(
+      `${what} with a runtime function name, whose body takes the TestContext`,
+      fnNode,
+      "pass the test's name: a body that takes the TestContext cannot have its name read from the function yet",
+    );
   const fnLocal = lowerer.declareHiddenLocal("%testBody", body.cb.type);
   const nameLocal = lowerer.declareHiddenLocal("%testName", STRING);
   const fnValue = (): IrExpr => varRef(fnLocal.id, body.cb.type, loc);

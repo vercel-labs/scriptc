@@ -431,7 +431,28 @@ void scr_http_req_release(ScrHttpReq *r) {
 void *scr_http_req_retain_v(void *p) { return scr_http_req_retain((ScrHttpReq *)p); }
 void scr_http_req_release_v(void *p) { scr_http_req_release((ScrHttpReq *)p); }
 
-ScrStr *scr_http_req_url(ScrHttpReq *r) { return scr_str_retain(r->url); }
+ScrStr *scr_http_req_url(ScrHttpReq *r) {
+  /* The HTTP/1 request line always carries a target. An h2 compat CONNECT
+   * frame carries no :path and its url is Node's undefined (the
+   * http2.reqUrl read answers that arm); this accessor backs the plain
+   * string read, which only an unsound h2-to-http cast can reach. */
+  if (r->url == NULL) return scr_str_new("", 0);
+  return scr_str_retain(r->url);
+}
+
+/* Http2ServerRequest.url (+1, or NULL for Node's undefined): the frame's
+ * :path. The compat dispatch clears the seeded "/" when the block carried
+ * none, so this is the bare field. */
+ScrStr *scr_http_req_url_opt(ScrHttpReq *r) {
+  return r->url != NULL ? scr_str_retain(r->url) : NULL;
+}
+
+/* The compat request's url is the frame's :path: a block without one
+ * (CONNECT; an extended CONNECT carries :path) reads undefined. */
+void scr_http_req_clear_url(ScrHttpReq *r) {
+  scr_str_release(r->url);
+  r->url = NULL;
+}
 ScrStr *scr_http_req_method(ScrHttpReq *r) { return scr_str_retain(r->method); }
 
 /* Case-insensitive equality of HTTP field names. Incoming names happen to
@@ -10365,6 +10386,7 @@ static ScrDyn *scr_http_dynh_req_get(void *h, const char *key, size_t key_len) {
   ScrHttpReq *r = (ScrHttpReq *)h;
   (void)key_len;
   if (strcmp(key, "url") == 0) {
+    if (r->url == NULL) return scr_dyn_undefined(); /* h2 CONNECT: no :path */
     ScrStr *s = scr_http_req_url(r);
     ScrDyn *d = scr_dyn_new_str(s);
     scr_str_release(s);

@@ -193,6 +193,11 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
   // Http2ServerRequest.complete: true once aborted, ended or closed.
   "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
+  /** Http2ServerRequest.url: the frame's :path, and Node's undefined when
+   * the block carries none (CONNECT). The VOID is the nullable-string
+   * sentinel (the interned `string | undefined` union; shape-checked in
+   * validate.ts like net.sockRemoteAddress). */
+  "http2.reqUrl": { argTypes: [HTTPREQ_T], result: VOID },
   // Every value a name has in a received [name, value, ...] pairs array:
   // the string[] a headers object holds for set-cookie.
   "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },

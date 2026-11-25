@@ -4078,6 +4078,7 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   /* The compat pair's own events follow the stream's context. */
   ScrAlsCtx *prev = scr_als_dispatch_enter(st->als);
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
+  bool path_seen = false;
   for (size_t i = 0; i < h->n; i++) {
     ScrStr *name = h->names[i];
     ScrStr *value = h->values[i];
@@ -4085,11 +4086,15 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
       scr_http_h2_req_line(req, value, NULL);
     } else if (name->len == 5 && memcmp(name->data, ":path", 5) == 0) {
       scr_http_h2_req_line(req, NULL, value);
+      path_seen = true;
     }
     /* EVERY pair — pseudo-headers included — lands in req.headers
      * (Node's compat shape: req.headers[':path'] answers). */
     scr_http_h2_req_header(req, name, value);
   }
+  /* Node's compat request takes url from the frame's :path, so a CONNECT
+   * block (which carries none; an extended CONNECT does) reads undefined. */
+  if (!path_seen) scr_http_req_clear_url(req);
   ScrHttpRes *res = scr_http_h2_res_new(s->sock, st);
   scr_als_dispatch_leave(prev);
   scr_http_res_set_req(res, req); /* res.req — the compat pair's backref */
@@ -4484,13 +4489,45 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
     return NULL;
   }
   if (!scr_h2_regular_names_valid(pairs)) return NULL; /* no stream was created */
-  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
-  s->next_stream_id += 2;
-  st->want_trailers = wait_trailers;
   ScrStr *method = scr_h2_pairs_pseudo(pairs, ":method");
   ScrStr *path = scr_h2_pairs_pseudo(pairs, ":path");
   ScrStr *scheme = scr_h2_pairs_pseudo(pairs, ":scheme");
   ScrStr *authority = scr_h2_pairs_pseudo(pairs, ":authority");
+  ScrStr *protocol = scr_h2_pairs_pseudo(pairs, ":protocol");
+  /* Node's prepareRequestHeadersObject: a CONNECT without :protocol (an
+   * extended CONNECT keeps the regular pseudo set) carries :authority and
+   * neither :scheme nor :path, and each violation is a synchronous throw
+   * before any stream exists. */
+  bool plain_connect = method != NULL && scr_h2_name_is(method, "CONNECT") && protocol == NULL;
+  if (plain_connect) {
+    const char *code = NULL;
+    const char *text = NULL;
+    size_t text_len = 0;
+    if (authority == NULL) {
+      code = "ERR_HTTP2_CONNECT_AUTHORITY";
+      text = ":authority header is required for CONNECT requests";
+      text_len = sizeof(":authority header is required for CONNECT requests") - 1;
+    } else if (scheme != NULL) {
+      code = "ERR_HTTP2_CONNECT_SCHEME";
+      text = "The :scheme header is forbidden for CONNECT requests";
+      text_len = sizeof("The :scheme header is forbidden for CONNECT requests") - 1;
+    } else if (path != NULL) {
+      code = "ERR_HTTP2_CONNECT_PATH";
+      text = "The :path header is forbidden for CONNECT requests";
+      text_len = sizeof("The :path header is forbidden for CONNECT requests") - 1;
+    }
+    if (code != NULL) {
+      scr_str_release(method);
+      scr_str_release(path);
+      scr_str_release(scheme);
+      scr_str_release(authority);
+      scr_throw_error_msg_code(SCR_ERR_ERROR, text, text_len, code);
+      return NULL;
+    }
+  }
+  ScrH2Stream *st = scr_h2_stream_new(s, s->next_stream_id);
+  s->next_stream_id += 2;
+  st->want_trailers = wait_trailers;
   ScrH2Buf block = {0};
   scr_h2_hpack_encode(&block, ":method", 7, method ? method->data : "GET", method ? method->len : 3);
   if (authority) {
@@ -4498,12 +4535,14 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   } else {
     scr_h2_hpack_encode(&block, ":authority", 10, s->authority ? s->authority : "", s->authority_len);
   }
-  /* the default :scheme follows the transport — https over TLS sessions
-   * (Node derives it from the connect authority the same way) */
-  const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
-  scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
-                      scheme ? scheme->len : strlen(dscheme));
-  scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  if (!plain_connect) {
+    /* the default :scheme follows the transport — https over TLS sessions
+     * (Node derives it from the connect authority the same way) */
+    const char *dscheme = s->sock != NULL && scr_net_sock_encrypted(s->sock) ? "https" : "http";
+    scr_h2_hpack_encode(&block, ":scheme", 7, scheme ? scheme->data : dscheme,
+                        scheme ? scheme->len : strlen(dscheme));
+    scr_h2_hpack_encode(&block, ":path", 5, path ? path->data : "/", path ? path->len : 1);
+  }
   scr_h2_encode_regulars(&block, pairs);
   bool end;
   if (end_stream < 0) {
@@ -4526,11 +4565,13 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
                               ? scr_str_retain(authority)
                               : scr_str_new(s->authority != NULL ? s->authority : "",
                                             s->authority_len));
-    scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
-    scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
-                                          : scr_str_new(def_scheme, strlen(def_scheme)));
-    scr_arr_push_ref(sent, scr_str_new(":path", 5));
-    scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    if (!plain_connect) {
+      scr_arr_push_ref(sent, scr_str_new(":scheme", 7));
+      scr_arr_push_ref(sent, scheme != NULL ? scr_str_retain(scheme)
+                                            : scr_str_new(def_scheme, strlen(def_scheme)));
+      scr_arr_push_ref(sent, scr_str_new(":path", 5));
+      scr_arr_push_ref(sent, path != NULL ? scr_str_retain(path) : scr_str_new("/", 1));
+    }
     size_t npairs = pairs != NULL ? (size_t)scr_arr_len(pairs) : 0;
     for (size_t i = 0; i < npairs; i++) scr_arr_push_ref(sent, scr_arr_get_ref(pairs, (double)i));
     if (st->sent_headers_dom != NULL) scr_dyn_release(st->sent_headers_dom);
@@ -4541,6 +4582,7 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
   if (path) scr_str_release(path);
   if (scheme) scr_str_release(scheme);
   if (authority) scr_str_release(authority);
+  if (protocol) scr_str_release(protocol);
   scr_h2_send_headers(s, st->id, &block, end);
   free(block.data);
   if (end) {

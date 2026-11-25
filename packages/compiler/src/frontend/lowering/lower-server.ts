@@ -3058,7 +3058,10 @@ function lowerNetServerMethodCall(
       // (req, socket): an HTTP/1.1 request past server.maxRequestsPerSocket.
       // The listeners run and the server answers 503 itself, so the
       // connection stays usable for the next (also dropped) request.
-      const cb = lowerer.lowerExpr(args[1]!);
+      const cb = adaptUntypedListener(lowerer, lowerer.lowerExpr(args[1]!), args[1]!, [
+        HTTPREQ_T,
+        NETSOCKET_T,
+      ]);
       if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
         lowerer.unsupported(
           "SC1090",
@@ -5423,6 +5426,19 @@ export function lowerServerProperty(
     }
     if (name === "url" || name === "method") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      const h2Request =
+        ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerRequest";
+      if (name === "url" && h2Request) {
+        // The compatibility request takes url from the frame's :path, so a
+        // CONNECT block (which carries none) reads Node's undefined.
+        return {
+          kind: "libCall",
+          fn: "http2.reqUrl",
+          args: [receiver],
+          type: lowerer.withUndefinedArm(STRING),
+          loc,
+        };
+      }
       const fn: IrLibFn = name === "url" ? "http.reqUrl" : "http.reqMethod";
       return { kind: "libCall", fn, args: [receiver], type: STRING, loc };
     }

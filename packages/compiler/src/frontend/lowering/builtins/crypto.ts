@@ -2049,6 +2049,16 @@ function lowerParsePKCS12(
           init: { kind: "libCall", fn: "crypto.pkcs12Count", args: [partsRef], type: F64, loc },
           loc,
         },
+        // The certificate loop index is initialized before any lookup reads
+        // it: the loop's own bundle lookup below overwrites `der`, but a
+        // declaration that read the index first would pass an uninitialized
+        // double into the runtime.
+        {
+          kind: "assign",
+          localId: indexId,
+          value: { kind: "numLit", value: 0, type: F64, loc },
+          loc,
+        },
         {
           kind: "varDecl",
           localId: leafId,
@@ -2077,12 +2087,6 @@ function lowerParsePKCS12(
           kind: "varDecl",
           localId: extrasId,
           init: { kind: "arrayLit", elems: [], type: extrasType, loc },
-          loc,
-        },
-        {
-          kind: "assign",
-          localId: indexId,
-          value: { kind: "numLit", value: 0, type: F64, loc },
           loc,
         },
         {

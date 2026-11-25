@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/resource-timing-absent-fields.ts"
+ ],
+ "diags": []
+}

@@ -23,6 +23,7 @@ export const perfNeverThrow: readonly IrLibFn[] = [
   "perf.histoPercentilesKey",
   "perf.histoPercentilesValue",
   "perf.histoBucketsKey",
+  "perf.entryResourceHas",
   "perf.histoBucketsValue",
   "perf.histoPercentilesValueBig",
   "perf.histoDispose",

@@ -3252,6 +3252,7 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "perf.resourceClear",
         "perf.resourceBufferSize",
         "perf.entryResourceNum",
+        "perf.entryResourceHas",
         "perf.entryResourceStr",
         "perf.entryName",
         "perf.entryType",

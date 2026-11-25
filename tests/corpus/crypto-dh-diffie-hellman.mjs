@@ -40,3 +40,42 @@ const [error, shared] = await new Promise((resolve) => {
   );
 });
 console.log("callback", error, Buffer.isBuffer(shared), shared.length, shared.equals(sharedA));
+
+// Node's provider rejects a zero private value and a peer public value
+// outside 2..p-2 before it derives. The DER below reuses the modp5
+// parameters with a chosen private or public integer.
+const derLength = (n) => {
+  if (n < 128) return Buffer.from([n]);
+  const bytes = [];
+  let value = n;
+  while (value > 0) {
+    bytes.unshift(value & 0xff);
+    value >>= 8;
+  }
+  return Buffer.from([0x80 | bytes.length, ...bytes]);
+};
+const tlv = (tag, content) => Buffer.concat([Buffer.from([tag]), derLength(content.length), content]);
+const derInt = (bytes) => {
+  let start = 0;
+  while (start < bytes.length - 1 && bytes[start] === 0) start++;
+  let value = bytes.subarray(start);
+  if (value[0] & 0x80) value = Buffer.concat([Buffer.from([0]), value]);
+  return tlv(0x02, value);
+};
+const prime = crypto.getDiffieHellman("modp5").getPrime();
+const params = tlv(0x30, Buffer.concat([derInt(prime), derInt(Buffer.from([2]))]));
+const algorithm = tlv(0x30, Buffer.concat([Buffer.from("06092a864886f70d010301", "hex"), params]));
+const publicKeyWith = (y) => tlv(0x30, Buffer.concat([algorithm, tlv(0x03, Buffer.concat([Buffer.from([0]), derInt(y)]))]));
+const privateKeyWith = (x) => tlv(0x30, Buffer.concat([tlv(0x02, Buffer.from([0])), algorithm, tlv(0x04, derInt(x))]));
+const belowOne = Buffer.from(prime);
+belowOne[belowOne.length - 1] -= 1;
+for (const [label, y] of [
+  ["zero", Buffer.from([0])],
+  ["one", Buffer.from([1])],
+  ["p-1", belowOne],
+]) {
+  const peer = crypto.createPublicKey({ key: publicKeyWith(y), format: "der", type: "spki" });
+  attempt(`peer ${label}`, () => crypto.diffieHellman({ privateKey: a.privateKey, publicKey: peer }));
+}
+const zeroSecret = crypto.createPrivateKey({ key: privateKeyWith(Buffer.from([0])), format: "der", type: "pkcs8" });
+attempt("private zero", () => crypto.diffieHellman({ privateKey: zeroSecret, publicKey: b.publicKey }));

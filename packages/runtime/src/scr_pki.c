@@ -7272,12 +7272,13 @@ static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
                        "ERR_OSSL_MISMATCHING_DOMAIN_PARAMETERS", props);
       return NULL;
     }
-    mbedtls_mpi p, g, x, y, z;
+    mbedtls_mpi p, g, x, y, z, pm1;
     mbedtls_mpi_init(&p);
     mbedtls_mpi_init(&g);
     mbedtls_mpi_init(&x);
     mbedtls_mpi_init(&y);
     mbedtls_mpi_init(&z);
+    mbedtls_mpi_init(&pm1);
     bool ok = mbedtls_mpi_read_binary(&p, priv->dh_p, priv->dh_p_len) == 0 &&
               mbedtls_mpi_read_binary(&g, priv->dh_g, priv->dh_g_len) == 0 &&
               mbedtls_mpi_read_binary(&x, priv->dh_x, priv->dh_x_len) == 0 &&
@@ -7286,6 +7287,24 @@ static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
     size_t n = mbedtls_mpi_size(&p);
     unsigned char *out = malloc(n ? n : 1);
     if (!out) scr_trap("scriptc: out of memory\n");
+    /* OpenSSL checks both values before it derives: a zero private value is
+     * the provider's invalid secret, and a peer value outside 2..p-2 is the
+     * derive failure Node reports as "Deriving bits failed". */
+    if (ok) {
+      if (mbedtls_mpi_cmp_int(&x, 0) == 0) {
+        sp_throw_openssl("02800080", "Diffie-Hellman routines", "invalid secret",
+                         "ERR_OSSL_DH_INVALID_SECRET", props);
+        ok = false;
+      } else {
+        bool peer_bad = mbedtls_mpi_cmp_int(&y, 1) <= 0 ||
+                        mbedtls_mpi_sub_int(&pm1, &p, 1) != 0 ||
+                        mbedtls_mpi_cmp_mpi(&y, &pm1) >= 0;
+        if (peer_bad) {
+          sp_throw(SCR_ERR_ERROR, NULL, "Deriving bits failed");
+          ok = false;
+        }
+      }
+    }
     ok = ok && mbedtls_mpi_exp_mod(&z, &y, &x, &p, NULL) == 0 &&
          mbedtls_mpi_write_binary(&z, out, n) == 0;
     mbedtls_mpi_free(&p);
@@ -7293,10 +7312,12 @@ static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
     mbedtls_mpi_free(&x);
     mbedtls_mpi_free(&y);
     mbedtls_mpi_free(&z);
+    mbedtls_mpi_free(&pm1);
     ScrDyn *secret = ok ? sp_dyn_buffer(out, n) : NULL;
     mbedtls_platform_zeroize(out, n);
     free(out);
-    if (!secret) sp_dh_failed(props);
+    /* A value the checks above refused already has its error pending. */
+    if (!secret && !scr_exc_pending()) sp_dh_failed(props);
     return secret;
   }
   if (sp_is_x448(priv) && sp_is_x448(pub)) {

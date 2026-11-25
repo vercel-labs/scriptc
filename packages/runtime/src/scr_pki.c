@@ -7224,7 +7224,8 @@ static const char sp_dh_public_types[] =
 
 /* Node's message names: a KeyObject's asymmetricKeyType. */
 static const char *sp_type_name(const SpKey *k) {
-  return sp_is_mlkem(k) ? sp_mlkem_name(k->mlkem_level)
+  return sp_is_dh(k)      ? "dh"
+         : sp_is_mlkem(k) ? sp_mlkem_name(k->mlkem_level)
          : sp_is_ed(k)   ? "ed25519"
          : sp_is_x448(k) ? "x448"
          : sp_is_x(k)   ? "x25519"
@@ -7263,6 +7264,41 @@ static void sp_dh_failed(bool props) {
 }
 
 static ScrDyn *sp_dh_compute(SpKey *priv, SpKey *pub, bool props) {
+  if (sp_is_dh(priv) && sp_is_dh(pub)) {
+    /* The secret is y^x mod p at the modulus width. */
+    if (priv->dh_p_len != pub->dh_p_len || memcmp(priv->dh_p, pub->dh_p, priv->dh_p_len) != 0 ||
+        priv->dh_g_len != pub->dh_g_len || memcmp(priv->dh_g, pub->dh_g, priv->dh_g_len) != 0) {
+      sp_throw_openssl("1C8000CB", "Provider routines", "mismatching domain parameters",
+                       "ERR_OSSL_MISMATCHING_DOMAIN_PARAMETERS", props);
+      return NULL;
+    }
+    mbedtls_mpi p, g, x, y, z;
+    mbedtls_mpi_init(&p);
+    mbedtls_mpi_init(&g);
+    mbedtls_mpi_init(&x);
+    mbedtls_mpi_init(&y);
+    mbedtls_mpi_init(&z);
+    bool ok = mbedtls_mpi_read_binary(&p, priv->dh_p, priv->dh_p_len) == 0 &&
+              mbedtls_mpi_read_binary(&g, priv->dh_g, priv->dh_g_len) == 0 &&
+              mbedtls_mpi_read_binary(&x, priv->dh_x, priv->dh_x_len) == 0 &&
+              mbedtls_mpi_read_binary(&y, pub->dh_y, pub->dh_y_len) == 0;
+    (void)g;
+    size_t n = mbedtls_mpi_size(&p);
+    unsigned char *out = malloc(n ? n : 1);
+    if (!out) scr_trap("scriptc: out of memory\n");
+    ok = ok && mbedtls_mpi_exp_mod(&z, &y, &x, &p, NULL) == 0 &&
+         mbedtls_mpi_write_binary(&z, out, n) == 0;
+    mbedtls_mpi_free(&p);
+    mbedtls_mpi_free(&g);
+    mbedtls_mpi_free(&x);
+    mbedtls_mpi_free(&y);
+    mbedtls_mpi_free(&z);
+    ScrDyn *secret = ok ? sp_dyn_buffer(out, n) : NULL;
+    mbedtls_platform_zeroize(out, n);
+    free(out);
+    if (!secret) sp_dh_failed(props);
+    return secret;
+  }
   if (sp_is_x448(priv) && sp_is_x448(pub)) {
     uint8_t out[56];
     if (!sp_x448(priv->x448_seed, pub->x448_pub, out)) {
@@ -7348,7 +7384,7 @@ ScrDyn *scr_crypto_diffie_hellman(ScrDyn *options, ScrDyn *callback) {
   SpKey *a = sp_key_of(private_value), *b = sp_key_of(public_value);
   if (a && b && a->private_key) {
     const char *ta = sp_type_name(a), *tb = sp_type_name(b);
-    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a))) {
+    if (strcmp(ta, tb) != 0 || (!sp_is_ec(a) && !sp_is_x(a) && !sp_is_x448(a) && !sp_is_dh(a))) {
       scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_INCOMPATIBLE_KEY",
                         "Incompatible key types for Diffie-Hellman: %s and %s", ta, tb);
       goto done;

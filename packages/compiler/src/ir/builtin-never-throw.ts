@@ -16,6 +16,7 @@ import { dynNeverThrow } from "./builtin-never-throw/dyn.js";
 import { emitterNeverThrow } from "./builtin-never-throw/emitter.js";
 import { errorNeverThrow } from "./builtin-never-throw/error.js";
 import { eventsNeverThrow } from "./builtin-never-throw/events.js";
+import { formdataNeverThrow } from "./builtin-never-throw/formdata.js";
 import { fsNeverThrow } from "./builtin-never-throw/fs.js";
 import { globalNeverThrow } from "./builtin-never-throw/global.js";
 import { httpNeverThrow } from "./builtin-never-throw/http.js";
@@ -77,6 +78,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...emitterNeverThrow,
   ...errorNeverThrow,
   ...eventsNeverThrow,
+  ...formdataNeverThrow,
   ...fsNeverThrow,
   ...globalNeverThrow,
   ...httpNeverThrow,

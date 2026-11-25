@@ -51,6 +51,7 @@ import { navigatorValue } from "./builtins/navigator.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
 import { globalFunctionValue, isUnloweredGlobal } from "./global-function-values.js";
 import { storedGlobalValue, unloweredGlobalValue } from "./node-value-reads.js";
+import { formDataClassValue } from "./builtins/formdata.js";
 import {
   WEB_STREAM_CLASSES,
   programNamesWebStreamClass,
@@ -244,6 +245,8 @@ export function jsSpecialGlobalValue(
   if (name === "fetch") return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
   if (name === "console")
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
+  // The global FormData answers the runtime's class object (scr_formdata.c).
+  if (name === "FormData") return formDataClassValue(loc);
   return globalFunctionValue(lowerer, name, loc, reportFences);
 }
 

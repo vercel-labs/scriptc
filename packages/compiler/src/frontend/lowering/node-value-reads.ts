@@ -1,3 +1,4 @@
+import { formDataClassValue } from "./builtins/formdata.js";
 /** What a JavaScript source reads for a Node value no lowering has a value
  * for: the one rule of node-values.ts, applied at the read.
  *
@@ -116,6 +117,9 @@ export function isConstructibleGlobalClass(name: string): boolean {
  * target has no worker threads, so there the value keeps the direct
  * construction's refusal (the SC2020 the read's refusing value throws). */
 function constructibleGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+  // The global FormData answers its runtime class value (scr_formdata.c),
+  // the same object the bare spelling reads.
+  if (name === "FormData") return formDataClassValue(loc);
   if (!CONSTRUCTIBLE_GLOBAL_CLASSES.has(name) || lowerer.targetPlatform === "wasi") return null;
   if (name === "MessageChannel") lowerer.usesWorkers = true;
   return {

@@ -1846,6 +1846,28 @@ declare var File: {
   ): File;
   readonly prototype: File;
 };
+type FormDataEntryValue = File | string;
+interface FormData {
+  append(name: string, value: string | Blob, fileName?: string): void;
+  delete(name: string): void;
+  get(name: string): FormDataEntryValue | null;
+  getAll(name: string): FormDataEntryValue[];
+  has(name: string): boolean;
+  set(name: string, value: string | Blob, fileName?: string): void;
+  forEach(
+    callbackfn: (value: FormDataEntryValue, key: string, iterable: FormData) => void,
+    thisArg?: unknown,
+  ): void;
+  entries(): IterableIterator<[string, FormDataEntryValue]>;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<FormDataEntryValue>;
+  [Symbol.iterator](): IterableIterator<[string, FormDataEntryValue]>;
+  readonly [Symbol.toStringTag]: string;
+}
+declare var FormData: {
+  new (): FormData;
+  readonly prototype: FormData;
+};
 interface Request {
   readonly method: string;
   readonly url: string;

@@ -684,6 +684,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_formdata.c",
+  "function": "fd_invoke",
+  "message": "FormData iteration is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_fs_cp.c",
   "function": "scr_fs_cp_run",
   "message": "fs.cp has no native lowering on Windows",

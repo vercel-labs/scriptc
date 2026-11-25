@@ -286,6 +286,8 @@ export const FETCH_AMBIENT_TYPES = [
   "QueuingStrategy",
   "Blob",
   "File",
+  "FormData",
+  "FormDataEntryValue",
   "BlobPropertyBag",
   "FilePropertyBag",
   "BlobOptions",

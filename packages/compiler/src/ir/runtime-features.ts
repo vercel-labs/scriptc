@@ -2374,6 +2374,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** The global FormData (scr_formdata.c): its constructor, the class value
+   * a computed global read answers, and its brand test. */
+  formData: rule({ fns: ["formdata.new", "formdata.class", "formdata.is"] }),
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */
   fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
@@ -2439,6 +2442,8 @@ const RUNTIME_FEATURE_RULES = {
       "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      // The FormData class value a computed global read answers.
+      "formdata.class",
       "webstream.from",
       // Readable.toWeb links the web stream unit, which renders a
       // non-iterable source (and a thrown member) through inspect.
@@ -3003,6 +3008,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     legacyTextDecoder: false,
     mime: false,
     sqlite: false,
+    formData: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,

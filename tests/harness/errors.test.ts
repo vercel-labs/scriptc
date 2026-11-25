@@ -4366,7 +4366,7 @@ console.log(Eager.prototype.constructor === Eager);
   test("the value refuses construction wherever it is constructed", async () => {
     const r = await compileAndRun(
       "host-global-construction",
-      `const Ctor = globalThis.FormData;
+      `const Ctor = globalThis.Navigator;
 try {
   new Ctor();
   console.log("constructed");
@@ -4381,7 +4381,7 @@ console.log("still running");
     // through the binding throws the same fence, blamed at the construction.
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toMatch(
-      /^Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
+      /^Error: 'Navigator' is a Node global that native code does not provide \[SC2020 at .*host-global-construction\.cjs:3\]\nstill running\n$/,
     );
     expect(r.stderr).toBe("");
   });
@@ -4408,19 +4408,19 @@ console.log("after");
   test("a method on the value's prototype refuses the read", async () => {
     const r = await compileAndRun(
       "host-global-prototype-member",
-      `console.log(typeof globalThis.FormData.prototype.constructor);
+      `console.log(typeof globalThis.Navigator.prototype.constructor);
 console.log("before");
-console.log(globalThis.FormData.prototype.append);
+console.log(globalThis.Navigator.prototype.hardwareConcurrency);
 console.log("after");
 `,
       "cjs",
     );
-    // The prototype carries `constructor`; `append` is one of the class's
-    // instance methods, which native code does not have.
+    // The prototype carries `constructor`; an instance member is one of the
+    // class's, which native code does not have.
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("function\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
+      /^Uncaught Error: 'Navigator' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-member\.cjs:3\]\n$/,
     );
   });
 
@@ -4447,10 +4447,10 @@ console.log("after");
   test("a method read through a constant holding the prototype refuses", async () => {
     const r = await compileAndRun(
       "host-global-prototype-alias",
-      `const body = globalThis.FormData.prototype;
+      `const body = globalThis.Navigator.prototype;
 console.log(typeof body.constructor);
 console.log("before");
-console.log(body.append);
+console.log(body.hardwareConcurrency);
 console.log("after");
 `,
       "cjs",
@@ -4458,7 +4458,7 @@ console.log("after");
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("function\nbefore\n");
     expect(r.stderr).toMatch(
-      /^Uncaught Error: 'FormData' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
+      /^Uncaught Error: 'Navigator' is a Node global that native code does not provide \[SC2020 at .*host-global-prototype-alias\.cjs:4\]\n$/,
     );
   });
 

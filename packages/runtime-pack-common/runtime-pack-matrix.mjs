@@ -205,6 +205,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
   ["scr_fs_web_stream.c", "fsWebStream"],
+  ["scr_fs_utf8_stream.c", "fsUtf8Stream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
   ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],

@@ -2378,6 +2378,8 @@ const RUNTIME_FEATURE_RULES = {
    * content as a byte-oriented web stream, its own gated unit. */
   fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** fs.Utf8Stream: Node's buffered file writer (scr_fs_utf8_stream.c). */
+  fsUtf8Stream: rule({ fns: ["fs.utf8StreamNew"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({
@@ -2990,6 +2992,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleCompileCache: false,
     fsBytesWrites: false,
     fsWatch: false,
+    fsUtf8Stream: false,
     fsWatchFile: false,
     fsWatchEvents: false,
     genBind: false,

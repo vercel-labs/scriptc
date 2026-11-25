@@ -24,6 +24,7 @@
 #ifndef SCR_RUNTIME_H
 #define SCR_RUNTIME_H
 
+#include "scr_fs_utf8_stream.h"
 #include "scr_core.h"
 #include "scr_rc.h"
 #include "scr_string.h"

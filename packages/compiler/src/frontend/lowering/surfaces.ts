@@ -2945,6 +2945,15 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       fns: ["fs.callbackValue", "fs.callbackCall", "fs.callbackGlob"],
       note: "native filesystem callbacks, including stored platform adapter functions",
     },
+    // fs.Utf8Stream lowers in lowerUtf8StreamNew, ahead of the module
+    // table (the ambient declaration's constructor value).
+    {
+      id: "node-builtin.fs.utf8Stream",
+      kind: "node-builtin",
+      name: "fs.Utf8Stream",
+      fns: ["fs.utf8StreamNew"],
+      note: "Node's buffered file writer: write/end/flush/flushSync/destroy/reopen, the ready/write/drop/drain/finish/close events, and its option and property surface",
+    },
     // fs.watchFile/fs.unwatchFile lower in lowerFsWatchFileCall, ahead of
     // the module table.
     {

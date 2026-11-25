@@ -12926,6 +12926,50 @@ function stdlibUrlClassOf(
   return null;
 }
 
+/** True when the callee names the fs module's Utf8Stream class — either
+ * `fs.Utf8Stream` or a named import of the same class. */
+function isUtf8StreamRef(lowerer: Lowerer, callee: ts.Expression): boolean {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const bi = ts.isIdentifier(e)
+    ? lowerer.builtinImportOf(e)
+    : ts.isPropertyAccessExpression(e) && !e.questionDotToken
+      ? lowerer.builtinMemberOf(e)
+      : null;
+  return bi !== null && bi.module === "fs" && bi.member === "Utf8Stream";
+}
+
+/** `new fs.Utf8Stream(options?)`: the buffered file writer as a
+ * checked-dynamic handle (scr_fs_utf8_stream.c). The options record crosses
+ * as one dyn value for the runtime's Node-order checks. */
+function lowerUtf8StreamNew(lowerer: Lowerer, expr: ts.NewExpression, loc: SrcLoc): IrExpr | null {
+  if (!isUtf8StreamRef(lowerer, expr.expression)) return null;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `new fs.Utf8Stream with ${args.length} arguments`,
+      expr,
+      "the constructor is new fs.Utf8Stream([options])",
+    );
+  }
+  let options: IrExpr = dynUndefinedExpr(loc);
+  if (args[0] !== undefined) {
+    const raw = lowerer.lowerExpr(args[0]);
+    if (raw.type.kind === "dyn") {
+      options = raw;
+    } else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+      options = { kind: "dynFrom", value: raw, type: DYN, loc };
+    } else {
+      lowerer.noLowering(
+        `new fs.Utf8Stream with a '${lowerer.fmt(raw.type)}' options value`,
+        args[0],
+        "the options are a plain object",
+      );
+    }
+  }
+  return { kind: "libCall", fn: "fs.utf8StreamNew", args: [options], type: DYN, loc };
+}
+
 export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
   // Constructing a Node 24 global the native runtime does not provide
@@ -12986,6 +13030,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const urlClass = stdlibUrlClassOf(lowerer, expr.expression);
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
+  }
+  // `new fs.Utf8Stream(options?)`: the fs module's buffered file writer.
+  {
+    const utf8 = lowerUtf8StreamNew(lowerer, expr, loc);
+    if (utf8) return utf8;
   }
   // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
   // members are the global classes of the same name in Node

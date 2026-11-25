@@ -1,31 +1,64 @@
 - **Concurrent tests:** with `{ concurrency }` above 1, subtests run on their own fibers, and results are reported in declaration order, as in Node.
   Concurrent bodies resume in Node's order around `beforeEach` hooks and nested suites.
   Other runner steps, such as `afterEach` and `after` hooks, take no microtask turns between bodies, so code that observes the interleaving of concurrent bodies across those steps can see a different order than Node.
-- **Snapshots:** `t.assert.snapshot` and `t.assert.fileSnapshot` compile, with Node's default serializer, `JSON.stringify(value, null, 2)`, or an `options.serializers` array literal.
+- **Snapshots:** `t.assert.snapshot` and `t.assert.fileSnapshot` compile, with Node's default serializer, `JSON.stringify(value, null, 2)`, or an `options.serializers` list (an array literal or an array-typed value whose entries are functions).
   A compiled test reads the snapshot file Node writes beside the entry file, `<entry file>.snapshot`, at the entry file's path when the program was compiled.
   Running the binary with Node's flag `--test-update-snapshots` as its first argument writes the snapshot files instead; as in Node, the flag is kept out of `process.argv` and appears in `process.execArgv`.
   Snapshot files are read in the form Node writes them, `` exports[`key`] = `value`; `` statements.
-  The `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` module functions throw `SC2020`.
+  `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` compile: the first takes an array of serializers (a literal or an array-typed value), and the second a `(path: string) => string` closure that Node runs once per test file, on the first snapshot, to name the file.
+- **Reporters:** the binary writes the spec report, so `--test-reporter=spec` is the only reporter it takes, and any other name ends the run before the tests start with `scriptc: unknown test reporter '<name>': only the spec reporter is supported`.
+  `--test-reporter-destination=stdout`, its default, sends the report to stdout, `stderr` sends it to stderr, and any other value names the file the binary writes the report to; the program's own output stays on stdout in every case.
+  As in Node, both options are leading arguments, in any order, kept out of `process.argv` and listed in `process.execArgv`.
+  A file destination that cannot be opened ends the run the same way, with `scriptc: cannot open test reporter destination '<path>': <reason>`.
 - **TestContext values:** `t.filePath` is the entry file's path when the program was compiled.
   `t.attempt` is `0`, since a test runs once.
   `t.passed` is `false` while the body runs and the test's outcome in its `afterEach` and `t.after` hooks.
   `t.workerId` is `Number(process.env.NODE_TEST_WORKER_ID) || undefined`, as in Node.
-  `t.tags` is `[]`, since the `tags` test option throws `SC2020`; the array is not frozen as Node's is.
-- **Suite and hook contexts:** a `describe` body may take its `SuiteContext`, which has `name`, `fullName`, `filePath`, `attempt`, `passed` and `diagnostic`.
+  `t.tags` is the test's flattened tag set: the `{ tags }` values of the test and of every suite above it, lowercased and de-duplicated in declaration order, as the frozen array Node caches on the test.
+  A `{ tags }` option takes an array literal of strings; an empty tag value throws Node's `ERR_INVALID_ARG_VALUE` at the registration site, and a tag equal to one already in the set (after lowercasing) is dropped, as in Node.
+  `t.log(message[, data])` prints its line at once, at the test's indentation, and the data payload rides the `test:log` event only.
+  `t.signal` is the test's `AbortSignal`: created on its first read, the same signal on every read, unaborted in the body and in its hooks, and aborted when the test times out, is cancelled, or finishes; a suite's `signal` is not aborted when the suite finishes, as in Node, and the abort unit is linked only for a program that reads one.
+  `t.error` is Node's `ERR_TEST_FAILURE` wrapper over the failure, its `cause` the value the test threw, or `null` while the test has not failed; it does not carry the `failureType` Node stamps on the wrapper, and `@types/node` does not declare the member, so a typed program reaches it through a cast.
+- **Callback form:** a test or hook written `(t, done) => …` finishes when it calls `done`.
+  `done()` with a falsy result passes, any truthy result fails the run with that value (an `Error` included), a second call while the run is in flight fails it with Node's `callback invoked multiple times` and wins over the first call's result, a body that also returns a promise fails with `passed a callback but also returned a Promise`, a synchronous throw before `done` fails the body, and `{ timeout }` bounds the wait for `done`, as in Node.
+  Node's reports of asynchronous activity after a test ended are not reproduced: the unhandled rejection a replaced `done(error)` leaves behind, or a late second `done` call, which Node reports as an uncaught exception.
+- **Aborting with a signal:** a test or a suite takes `{ signal }`, an `AbortSignal`; when it aborts, the run is cancelled with the signal's reason.
+  A test reports the reason and counts cancelled, a suite lists the reason in the failing section, and the suite's running test plus the tests queued behind it are cancelled with Node's parent-cancellation message.
+  A signal that already aborted cancels the run the same way, and the tests inside a pre-aborted suite never appear in the report, as in Node.
+- **Suite and hook contexts:** a `describe` body may take its `SuiteContext`, which has `name`, `fullName`, `filePath`, `attempt`, `passed`, `diagnostic` and `log`.
   Hooks may take their context, as in Node: the suite's for `before` and `after`, the test's for `beforeEach`, `afterEach`, `t.before` and `t.after`.
-  The `SuiteContext` `signal` and `log` members, and hook `done` callbacks, throw `SC2020`.
+  Tests and hooks take Node's callback form the same way: the second parameter is `done` (see the callback-form note above).
 - **Module-level hooks:** `before` hooks outside any suite run at their `before()` call, and the first top-level test waits for the async ones; `after` hooks outside any suite run after the last top-level test.
   Both get the root's context, named `<root>`.
   As in Node, a throwing root `before` fails each top-level test with its error, without running its body, and cancels the tests and suites inside each top-level suite.
   A throwing root `after` reports the entry file as a failed result, and the exit code is unchanged.
 - **Timeouts:** when a test's `{ timeout }` elapses, its running subtests are cancelled, as in Node.
-  Subtests do not take their parent's `timeout` as their own, where Node's do, and the subtests of a timed-out test with `{ concurrency }` above 1 run to completion before the test reports.
-  A body that keeps running after its timeout and calls `t.test` again runs that subtest, where Node reports it as not started.
+  A suite's `{ timeout }` is Node's shared deadline for its hooks and tests: a child still running when it elapses is cancelled with `test did not finish before its parent and was cancelled`, children that have not started are cancelled the same way, children still queued under `{ concurrency }` are cancelled without running, and the suite fails with `test timed out after <timeout>ms`.
+  The deadline belongs to the suite, so a suite running beside a timed one on its own fibers keeps its own.
+  A hook that outlives the deadline fails the suite with the same timeout error, though the test it was running for then reports the parent-cancellation message as a failure rather than as cancelled.
+  Subtests do not take their parent's `timeout` as their own, where Node's do; the subtests of a timed-out test with `{ concurrency }` above 1 run to completion before the test reports.
+  A body that keeps running after its test finished and calls `t.test` again fails that subtest with Node's `test could not be started because its parent finished`, as Node does for a subtest a leftover task registers.
+- **Subtests:** `t.test(...)` starts its subtest at the call site on the runner fiber and returns the settled promise `await` consumes, so an awaited subtest behaves as in Node.
+  An un-awaited subtest whose body awaits I/O or a timer holds the calling body until it settles, where Node resumes the calling body at its next statement once the subtest reaches its first `await`.
+- **Mock accessors:** `mock.getter` and `mock.setter` (and their `t.mock` twins) compile for an object held as a checked-dynamic value — an object literal with accessors, or an untyped object — with an explicit implementation: the mock becomes the property's accessor, reads and writes go through it, and `restore()` (or a `{ times }` budget) puts the original descriptor back.
+  The accessor is found along the prototype chain, as in Node, and a property without it — a data property, or only the other half of the pair — throws Node's `ERR_INVALID_ARG_VALUE` before the mock exists; a typed object whose type declares no such accessor is refused with that error named.
+  A static record's or a class instance's property has no interception point, so it is refused, and calling the original accessor through the mock (no implementation argument) is not lowered.
+- **Custom assertions:** `assert.register(name, fn)` from `node:test` adds `t.assert.<name>` for the rest of the program, from any module of the compiled program: the registered function runs with the call's arguments, the call's value is its return value (so an async assertion can be awaited, and its rejection fails the test), its throw fails the test like any assertion, and the call counts against `t.plan`.
+  The name must be a string literal, Node binds the `TestContext` as the function's `this`, which a compiled closure has no receiver for, and a name that overwrites an assert-module method (such as `ok`) keeps the built-in lowering.
+  A test calls the assertions registered when it first reads `t.assert`, as Node's assertion object does, so a registration made while a test runs reaches later tests and leaves the running call's captured state intact.
+- **Expecting failures:** `{ expectFailure: true }`, `{ expectFailure: false }` and `{ expectFailure: "reason" }` compile, as do `test.expectFailure(...)`, `it.expectFailure(...)`, `describe.expectFailure(...)`, `suite.expectFailure(...)` and the module-level `expectFailure(...)` export.
+  A flagged test or suite passes only if its own run throws, its result line carries `# EXPECTED FAILURE`, an unexpected pass fails with Node's `test was expected to fail but passed`, and descendants inherit the flag the way they inherit `todo`.
+  `skip` keeps its `SKIP` directive and `todo` keeps `TODO` and its counter, with the outcome flipped either way.
+  A flagged test cancelled before it runs, such as one after a failing root `before` hook or inside a suite whose body threw, displays the pass with the directive while counting as cancelled, and a suite failed by its own body or hook error lists that error in the failing section while one failed only by its descendants does not.
+  A string reason behaves as `true`; Node's matcher forms (a `RegExp`, a function, an object, an `Error`, or `{ label, match }`) throw `SC2020`.
 - **Thrown values:** a test that throws a value that is not an `Error` reports it in the failing section as `util.inspect` renders it, as Node does, for strings, numbers, booleans, objects, arrays, `null` and `undefined`.
   A thrown class instance that is not an `Error`, such as `throw new Point(1, 2)`, reports `[object Object]`, where Node prints `Point { x: 1, y: 2 }`.
 - **Test names:** a test without a name, or with an empty one, takes its function's name or `<anonymous>`, as in Node, when the function's name is known at compile time: a function expression, a function declaration, or a `const` bound to an arrow or anonymous function.
   A name computed at run time, with a function the program received as a parameter, is used as given, so an empty one stays empty where Node uses the function's name.
-  `test(fn)` and `test("", fn)` with such a function throw `SC2020`.
+  `test(fn)`, `test("", fn)`, `describe(fn)` and `suite(fn)` with such a function throw `SC2020`.
 - **Current context:** `getTestContext()` returns the context of the test, suite or hook whose code is running, as in Node: `undefined` at module top level, the root's context in module-level hooks, the suite's in a suite body and in the suite's hooks, and the test's in its body, in the code it awaits, and in the timers, immediates, `process.nextTick` and `queueMicrotask` callbacks it schedules.
   Node returns, for a suite, a `TestContext` that is a different object from the `SuiteContext` passed to the suite body and its `before` and `after` hooks; in a compiled program they are the same object, so comparing them with `===` gives `true`.
   Completion callbacks of callback-style I/O APIs, such as `fs.readFile`, get `undefined`, as AsyncLocalStorage stores do.
+- **Tracing:** the runner publishes Node's `tracing:node.test` events through `diagnostics_channel`: `start` when a test's run begins (a suite's when its body is collected; skipped, todo and fn-less tests included), `end` when a run finishes, and `error` with the thrown value.
+  Each message carries the test's `name`, `nesting`, `file` (the entry file's path when the program was compiled) and `type` (`test` or `suite`), and the implicit root publishes its own start and end once every test has finished.
+  A test's start and end share one context object, as in Node, and the error event is a fresh object over the same fields; a handler whose context parameter is typed as a structural record receives a converted copy, so type that parameter `object` to observe the shared identity.

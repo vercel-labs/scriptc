@@ -1,0 +1,1 @@
+{ "name": "island-calls-private-field", "private": true, "type": "module", "scriptc": { "packages": { "caller": "node" } } }

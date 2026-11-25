@@ -1,7 +1,7 @@
 // Accessor edges the compiler rejects (tsc-clean, outside the subset).
 
-// static members don't poison the class — their USES fence (the class
-// name has no value form)
+// a static accessor of a TypeScript class compiles: the read calls the
+// getter
 class Config {
   static get version(): number {
     return 1;
@@ -14,36 +14,20 @@ class Auto {
   accessor a: number = 1;
 }
 
-// a getter/setter pair must agree on ONE property type (tsc 5.1+ admits
-// unrelated annotated types; a property slot here has a single type)
-class Mixed {
-  get m(): number {
-    return 1;
-  }
-  set m(v: string) {
+// a setter override whose parameter narrows its base setter's: a write
+// through the base type can hand it a value its type excludes, the rule
+// for method parameters (a getter may narrow its base's type)
+class Pen {
+  set ink(v: string | null) {
     console.log(v);
   }
 }
-
-// accessor overrides keep the exact type — property covariance through a
-// vtable slot would be unsound, same rule as methods
-class Animal {
-  tag: string = "animal";
-}
-class Dog extends Animal {
-  breed: string = "lab";
-}
-class Kennel {
-  _a: Animal = new Animal();
-  get pet(): Animal {
-    return this._a;
+class Marker extends Pen {
+  set ink(v: string) {
+    console.log(v);
   }
 }
-class DogKennel extends Kennel {
-  get pet(): Dog {
-    return new Dog();
-  }
-}
+new Marker().ink = "blue";
 
 // reading a property that has only a setter: tsc types it, Node yields
 // undefined — unrepresentable in these property types
@@ -118,7 +102,7 @@ new S().probe();
 // them relevant; these references are what makes them count.
 new Config();
 new Auto();
-new Mixed();
-new DogKennel();
+// A refused accessor half does not reject its class: the construction
+// compiles, and the use of the half is what reports it.
 new WriteOnlyCell();
 new Computed();

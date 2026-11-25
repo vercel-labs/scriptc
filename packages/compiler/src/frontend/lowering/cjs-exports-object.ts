@@ -26,16 +26,31 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isJsSourceFile,
+  isEsModuleStamp,
   isModuleExportsAccess,
   isRequireStatement,
   locOf,
-  npmStaticDepSf7,
-  resolveImport,
 } from "../program.js";
-import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
+import {
+  cjsNamespaceTargetOf,
+  cjsWholeExportValueOf,
+  inlineProgramRequireOf,
+} from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
+import { cjsAccessorValue } from "./lower-exprs.js";
+import { requireBindingTdzCheck } from "./require-initialization.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
-import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
+import { moduleExportIgnoresThis } from "./module-member-this.js";
+import {
+  BOOL,
+  DYN,
+  STRING,
+  VOID,
+  type IrExpr,
+  type IrGlobal,
+  type IrStmt,
+  type SrcLoc,
+} from "../../ir/ir.js";
 
 /** True for the CommonJS wrapper's `exports` binding (not shadowed by any
  * source declaration) in a CommonJS JS file. */
@@ -55,6 +70,20 @@ export function isCjsExportsIdentifier(lowerer: Lowerer, node: ts.Expression): b
         ts.isImportSpecifier(d) ||
         ts.isNamespaceImport(d) ||
         ts.isImportEqualsDeclaration(d)),
+  );
+}
+
+/** `exports` in a CommonJS JavaScript file where the checker resolves no
+ * symbol for it (the module assigns no member of it, so nothing declares
+ * the name for the checker): still the module's exports object, which Node
+ * passes to every CommonJS module, never an undeclared name. The folds that
+ * answer `typeof <undeclared name>` with "undefined" ask this first. */
+export function isUnresolvedCjsExports(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return (
+    isCjsExportsIdentifier(lowerer, inner) &&
+    lowerer.checker.getSymbolAtLocation(inner) === undefined
   );
 }
 
@@ -91,11 +120,35 @@ export function cjsInFileExportGlobalOf(
     sym !== undefined && sym.flags & ts.SymbolFlags.Alias
       ? lowerer.checker.getAliasedSymbol(sym)
       : sym;
-  return (
+  const g =
     (sym ? lowerer.globalsBySymbol.get(sym) : undefined) ??
     (resolved ? lowerer.globalsBySymbol.get(resolved) : undefined) ??
-    null
+    null;
+  if (g === null || sym === undefined || !declaredOnlyOutside(sym, sf)) return g;
+  return replacementExportsAccess(access, sf) ? g : null;
+}
+
+/** True when every declaration of `sym` is in a file other than `sf`. */
+function declaredOnlyOutside(sym: ts.Symbol, sf: ts.SourceFile): boolean {
+  return (
+    sym.declarations.length > 0 && sym.declarations.every((d) => ts.getSourceFileOfNode(d) !== sf)
   );
+}
+
+/** Whether `access` reads `module.exports` after the module replaced it with
+ * another module's exports. The checker gives members of `module.exports` and
+ * `exports` the replacement's symbols everywhere in the file, but `exports`
+ * keeps the original object, and so does `module.exports` before the
+ * replacement runs. Only top-level code after the `module.exports = ...`
+ * statement is known to run after it. */
+function replacementExportsAccess(access: ts.PropertyAccessExpression, sf: ts.SourceFile): boolean {
+  if (!isModuleExportsAccess(access.expression)) return false;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null || ts.tokenStartOfNode(access) < whole.assign.end) return false;
+  for (let p: ts.Node | undefined = access.parent; p !== undefined && p !== sf; p = p.parent) {
+    if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) return false;
+  }
+  return true;
 }
 
 /** Whether `node` is an operand of an equality operator: only its identity
@@ -352,22 +405,6 @@ export function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
   return found;
 }
 
-/** A function declaration, or a variable initialized with a function or
- * arrow expression, that never reads `this`. */
-function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? sym.declarations : [];
-  const fn = decls.find(ts.isFunctionDeclaration);
-  if (fn !== undefined) return !functionUsesThis(fn);
-  const v = decls.find(ts.isVariableDeclaration);
-  let init = v?.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-  return (
-    init !== undefined &&
-    (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) &&
-    !functionUsesThis(init)
-  );
-}
-
 /** The ES-module half (a TypeScript module required from JavaScript, such
  * as a package shim): require() answers its namespace, so a call through
  * it binds `this` to the namespace. True when the export is a function
@@ -389,7 +426,7 @@ function esModuleExportIgnoresThis(
     if (decls.length === 0) return false;
     return decls.every(
       (d) =>
-        (ts.isFunctionDeclaration(d) && !functionUsesThis(d)) ||
+        (ts.isFunctionDeclaration(d) && moduleExportIgnoresThis(lowerer, d)) ||
         (ts.getSourceFileOfNode(d).isDeclarationFile && ts.isFunctionDeclaration(d)),
     );
   }
@@ -401,7 +438,7 @@ function esModuleExportIgnoresThis(
       !ts.isStringLiteral(stmt.moduleSpecifier)
     )
       continue;
-    const dep = resolveImport(lowerer.program, sf, stmt.moduleSpecifier.text);
+    const dep = lowerer.facts.importedModule(sf, stmt.moduleSpecifier.text);
     if (
       dep !== null &&
       !dep.isDeclarationFile &&
@@ -420,7 +457,48 @@ export function cjsExportCallIgnoresThis(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   name: string,
-  depth = 0,
+): boolean {
+  sf = cjsNamespaceTargetOf(lowerer, sf) ?? sf;
+  let proofs = lowerer.cjsReceiverProofs.get(sf);
+  const cached = proofs?.get(name);
+  if (cached !== undefined) return cached;
+  // Recursive searches are depth-bounded; cache only complete root queries.
+  const result = computeExportCallIgnoresThis(lowerer, sf, name, 0);
+  if (proofs === undefined) {
+    proofs = new Map();
+    lowerer.cjsReceiverProofs.set(sf, proofs);
+  }
+  proofs.set(name, result);
+  return result;
+}
+
+/** Whether every value `expr` can hold is something a call cannot invoke: a
+ * `void`/`undefined` write (the `exports.name = void 0` preamble of a
+ * tsc-emitted module), a primitive literal, or an object or array literal.
+ * A call that reaches one throws in Node before it can read its receiver,
+ * so the value says nothing about `this` being needed. */
+function holdsNoCallable(expr: ts.Expression): boolean {
+  let e = expr;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  return (
+    e.kind === ts.SyntaxKind.VoidExpression ||
+    e.kind === ts.SyntaxKind.NullKeyword ||
+    e.kind === ts.SyntaxKind.TrueKeyword ||
+    e.kind === ts.SyntaxKind.FalseKeyword ||
+    ts.isNumericLiteral(e) ||
+    ts.isStringLiteral(e) ||
+    ts.isNoSubstitutionTemplateLiteral(e) ||
+    ts.isRegularExpressionLiteral(e) ||
+    ts.isObjectLiteralExpression(e) ||
+    ts.isArrayLiteralExpression(e)
+  );
+}
+
+function computeExportCallIgnoresThis(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
 ): boolean {
   if (depth > 16) return false;
   if (!isJsSourceFile(sf)) return esModuleExportIgnoresThis(lowerer, sf, name, depth);
@@ -451,21 +529,34 @@ export function cjsExportCallIgnoresThis(
         continue;
       if (ts.isPropertyAssignment(prop)) values.push(prop.initializer);
       else if (ts.isShorthandPropertyAssignment(prop)) {
-        const value = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
-        if (!symbolIsThisFreeFunction(lowerer, value)) return false;
+        if (!moduleExportIgnoresThis(lowerer, prop.name)) return false;
         shorthandOnly = true;
       } else if (ts.isMethodDeclaration(prop)) methodEntry = prop;
     }
   }
-  if (methodEntry !== null) return values.length === 0 && !functionUsesThis(methodEntry);
+  if (methodEntry !== null)
+    return values.length === 0 && moduleExportIgnoresThis(lowerer, methodEntry);
   if (values.length === 0) return shorthandOnly;
   return values.every((v) => {
     let e = v;
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return !functionUsesThis(e);
-    if (ts.isIdentifier(e)) {
-      return symbolIsThisFreeFunction(lowerer, lowerer.checker.getSymbolAtLocation(e));
+    // A chain `exports.a = exports.b = value` stores `value` in both
+    // members; an assignment's own value is its right-hand side.
+    for (;;) {
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) break;
+      e = e.right;
     }
+    if (
+      ts.isFunctionExpression(e) ||
+      ts.isArrowFunction(e) ||
+      ts.isIdentifier(e) ||
+      ts.isCallExpression(e)
+    )
+      return moduleExportIgnoresThis(lowerer, e);
+    // A value no call can invoke (the `void 0` a tsc-emitted module opens
+    // each export with, a primitive, a plain object): reaching it throws
+    // whatever receiver the call would have had, so it cannot read `this`.
+    if (holdsNoCallable(e)) return true;
     // Another module's member (`exports.f = require("./lib").f`, or through
     // a module binding): that module's own export values decide.
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
@@ -474,7 +565,7 @@ export function cjsExportCallIgnoresThis(
           ? lowerer.cjsModuleBindingDepOf(e.expression)
           : null
         : lowerer.cjsModuleRefDepOf(e.expression);
-      return dep !== null && cjsExportCallIgnoresThis(lowerer, dep, e.name.text, depth + 1);
+      return dep !== null && computeExportCallIgnoresThis(lowerer, dep, e.name.text, depth + 1);
     }
     return false;
   });
@@ -506,8 +597,8 @@ export function cjsMemberAliasValueOf(lowerer: Lowerer, ref: ts.Identifier): ts.
     const spec = importDecl.moduleSpecifier.text;
     const from = ts.getSourceFileOfNode(importDecl);
     const dep =
-      resolveImport(lowerer.program, from, spec, "import") ??
-      npmStaticDepSf7(lowerer.program, from, spec, "import");
+      lowerer.facts.importedModule(from, spec, "import") ??
+      lowerer.facts.npmStaticModule(from, spec, "import");
     if (dep === null) return null;
     return memberAliasIn(lowerer, dep, (specifier.propertyName ?? specifier.name).text, 0);
   }
@@ -602,5 +693,271 @@ function rereadableMemberValue(
   // A function declaration is initialized when the module starts; any
   // other binding must be initialized before the write stores it.
   if (!ts.isFunctionDeclaration(decl) && decl.end > stmt.pos) return false;
-  return bindingNeverReassigned(lowerer, sym, decl);
+  return bindingNeverReassigned(lowerer.bindingScope(), sym, decl);
+}
+
+/* ── partial require() cycles ───────────────────────────────────────────
+ * Node hands a requiring module the still-evaluating module's exports
+ * object, as it stands: members assigned before the require are there,
+ * members assigned later are missing (a read of one is undefined, and
+ * while the module evaluates Node warns). The compiled static export
+ * globals cannot show that state, so a CommonJS module of such a cycle
+ * also keeps a live checked-dynamic exports object (%exportsThis): every
+ * export write lands in both, and reads through a module binding read the
+ * live object. */
+
+/** True for a CommonJS module of a require() cycle whose partially
+ * initialized exports object a member of the cycle can observe. */
+export function isPartialCjsCycleModule(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  return lowerer.program.analysis.partialCjsCycleMembers.has(sf);
+}
+
+/** The live exports object of a partial-cycle module, or null. */
+export function cjsPartialExportsObject(lowerer: Lowerer, sf: ts.SourceFile): IrGlobal | null {
+  if (!isPartialCjsCycleModule(lowerer, sf)) return null;
+  return lowerer.cjsExportsThis.get(sf) ?? null;
+}
+
+function partialObjectRef(obj: IrGlobal, loc: SrcLoc): IrExpr {
+  return { kind: "varRef", localId: obj.id, type: DYN, loc };
+}
+
+/** The statements that also write one export member into the module's live
+ * exports object, at the same position as the static export global write. */
+export function cjsPartialExportMirror(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  key: string,
+  value: IrExpr,
+  blame: ts.Node,
+  loc: SrcLoc,
+): IrStmt[] {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null) return [];
+  return [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          partialObjectRef(obj, loc),
+          { kind: "strLit", value: key, type: STRING, loc },
+          lowerer.coerceInto(blame, value, DYN),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** The statement that replaces the module's exports object with a fresh
+ * one (`module.exports = { … }`), exactly where Node replaces it. */
+export function cjsPartialExportsReplaceStmt(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  loc: SrcLoc,
+): IrStmt | null {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null) return null;
+  return {
+    kind: "assign",
+    localId: obj.id,
+    value: { kind: "dynObjLit", fields: [], type: DYN, loc },
+    loc,
+  };
+}
+
+/** A read of export `key` through a module binding of `dep`: the live
+ * exports object's property as a checked-dynamic value. While `dep` still
+ * evaluates and the member is missing, the read first reports Node's
+ * circular-dependency warning (the proxy Node puts on the exports object
+ * for the window). */
+export function cjsPartialExportRead(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  key: string,
+  blame: ts.Node,
+): IrExpr | null {
+  // A read through a `const m = require(…)` binding uses the exports object
+  // that require answered (Node's per-requirer identity), not the target's
+  // current object a later replacement installed.
+  const receiverIdent =
+    ts.isPropertyAccessExpression(blame) && ts.isIdentifier(blame.expression)
+      ? blame.expression
+      : null;
+  const receiverSym =
+    receiverIdent === null
+      ? undefined
+      : (lowerer.checker.getSymbolAtLocation(receiverIdent) ??
+        lowerer.resolveValueSymbol(receiverIdent) ??
+        undefined);
+  const captured =
+    receiverSym === undefined
+      ? undefined
+      : lowerer.cjsPartialRequireObjects.get(receiverSym)?.object;
+  const obj = captured ?? cjsPartialExportsObject(lowerer, dep);
+  if (obj === null || obj === undefined) return null;
+  const loc = locOf(blame);
+  const receiver = partialObjectRef(obj, loc);
+  const keyRef: IrExpr = { kind: "strLit", value: key, type: STRING, loc };
+  const read: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.bagGet",
+    args: [receiver, keyRef, partialObjectRef(obj, loc)],
+    type: DYN,
+    loc,
+  };
+  // The binding itself may still be uninitialized (another member called a
+  // function of this module before its require returned): Node's TDZ.
+  const receiverNode = ts.isPropertyAccessExpression(blame) ? blame.expression : null;
+  const tdz = receiverNode === null ? null : requireBindingTdzCheck(lowerer, receiverNode, loc);
+  // Node installs its warning proxy only on a plain exports object: a
+  // module whose top level stamps __esModule keeps the silent object.
+  const evaluatingId = dep.statements.nodes.some(
+    (stmt) => ts.isExpressionStatement(stmt) && isEsModuleStamp(stmt.expression),
+  )
+    ? undefined
+    : lowerer.moduleEvaluatingOf.get(dep);
+  if (evaluatingId === undefined)
+    return tdz === null ? read : { kind: "seqExpr", stmts: [tdz], result: read, type: DYN, loc };
+  const warning: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "process.emitWarningText",
+      args: [
+        {
+          kind: "strLit",
+          value: `Accessing non-existent property '${key}' of module exports inside circular dependency`,
+          type: STRING,
+          loc,
+        },
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+  const missing: IrStmt = {
+    kind: "if",
+    cond: {
+      kind: "unary",
+      op: "!",
+      operand: {
+        kind: "libCall",
+        fn: "dyn.in",
+        args: [partialObjectRef(obj, loc), keyRef],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    then: [warning],
+    else_: null,
+    loc,
+  };
+  // Node unsets the warning proxy when a module finishes loading with the
+  // object still installed as module.exports. A requirer that got the object
+  // mid-cycle keeps it when the module later REPLACES module.exports, and
+  // that stale object keeps warning for the rest of the process; identity
+  // against the module's current exports object decides that case.
+  let warn: IrExpr = { kind: "varRef", localId: evaluatingId, type: BOOL, loc };
+  const currentObj = captured === undefined ? null : lowerer.cjsExportsThis.get(dep);
+  if (captured !== undefined && currentObj !== null && currentObj !== undefined) {
+    warn = {
+      kind: "logical",
+      op: "||",
+      left: warn,
+      right: {
+        kind: "unary",
+        op: "!",
+        operand: {
+          kind: "libCall",
+          fn: "dyn.sameValue",
+          args: [partialObjectRef(obj, loc), partialObjectRef(currentObj, loc)],
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      ...(tdz === null ? [] : [tdz]),
+      { kind: "if", cond: warn, then: [missing], else_: null, loc },
+    ],
+    result: read,
+    type: DYN,
+    loc,
+  };
+}
+
+/** The statement that installs export `key`'s accessor descriptor on a
+ * partial-cycle module's live exports object (`module.exports = { get … }`):
+ * Node's exports object carries the getter/setter, so a read through a
+ * module binding runs it. Null for modules outside a partial cycle. */
+export function cjsPartialAccessorDefineStmt(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  key: string,
+  getter: ts.GetAccessorDeclaration | null,
+  setter: ts.SetAccessorDeclaration | null,
+  loc: SrcLoc,
+): IrStmt | null {
+  const obj = cjsPartialExportsObject(lowerer, sf);
+  if (obj === null || (getter === null && setter === null)) return null;
+  const fields: { key: IrExpr; value: IrExpr }[] = [];
+  const member = (
+    name: string,
+    accessor: ts.GetAccessorDeclaration | ts.SetAccessorDeclaration,
+  ) => {
+    const value = cjsAccessorValue(lowerer, accessor, loc);
+    if (value === null) return false;
+    fields.push({
+      key: { kind: "strLit", value: name, type: STRING, loc },
+      value: lowerer.coerceToExpected(value, DYN),
+    });
+    return true;
+  };
+  if (getter !== null && !member("get", getter)) return null;
+  if (setter !== null && !member("set", setter)) return null;
+  const truth = (): IrExpr => ({
+    kind: "dynFrom",
+    value: { kind: "boolLit", value: true, type: BOOL, loc },
+    type: DYN,
+    loc,
+  });
+  fields.push(
+    { key: { kind: "strLit", value: "enumerable", type: STRING, loc }, value: truth() },
+    { key: { kind: "strLit", value: "configurable", type: STRING, loc }, value: truth() },
+  );
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.defineProperty",
+      args: [
+        partialObjectRef(obj, loc),
+        {
+          kind: "dynFrom",
+          value: { kind: "strLit", value: key, type: STRING, loc },
+          type: DYN,
+          loc,
+        },
+        { kind: "dynObjLit", fields, type: DYN, loc },
+      ],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
 }

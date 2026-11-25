@@ -98,8 +98,26 @@ bool scr_mime_is(const struct ScrDyn *value, double kind);
  * the validation error pending. */
 struct ScrDyn *scr_util_debounce(struct ScrDyn *fn, struct ScrDyn *wait, struct ScrDyn *options);
 struct ScrDyn *scr_util_throttle(struct ScrDyn *fn, struct ScrDyn *limit, struct ScrDyn *interval, struct ScrDyn *options);
+/* util.markPromiseAsHandled(promise) (scr_util_mark_handled.c): marks the
+ * promise's rejection observed, or throws ERR_INVALID_ARG_TYPE. */
+void scr_util_mark_promise_as_handled(struct ScrDyn *promise);
+/* util.transferableAbortSignal(signal) and util.transferableAbortController()
+ * (scr_fetch.c, beside the abort handles): the same signal (+1), or the
+ * ERR_INVALID_ARG_TYPE throw, and an ordinary AbortController (+1). */
+struct ScrDyn *scr_util_transferable_abort_signal(struct ScrDyn *signal);
+struct ScrDyn *scr_util_transferable_abort_controller(void);
+/* util.setTraceSigInt(enable) (scr_util_trace_sigint.c): no observable
+ * effect in a compiled program; the argument is not read. */
+void scr_util_set_trace_sig_int(struct ScrDyn *enable);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
+/* util.promisify's custom protocol (scr_util_promisify_custom.c): the
+ * truthy original[util.promisify.custom] function (+1, marked with the
+ * key), the undefined value (+1) when the property is absent or falsy, and
+ * the wrapper's marking helper (answers the same wrapper, +1). Both answer
+ * NULL with a coded exception pending on failure. */
+struct ScrDyn *scr_util_promisify_custom(struct ScrDyn *original);
+struct ScrDyn *scr_util_promisify_mark(struct ScrDyn *wrapper, struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);
 
 /* Node/libuv system error utilities. Arguments are checked without coercion;

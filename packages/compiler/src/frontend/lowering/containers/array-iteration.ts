@@ -1,6 +1,7 @@
 import { varRef } from "../../../ir/build.js";
 import {
   BOOL,
+  DYN,
   F64,
   type IrExpr,
   type IrLocal,
@@ -12,23 +13,45 @@ import {
 
 /** The shared frame of helpers that call a prefix of (value, index, array).
  * Keep the local order stable; individual loops decide how to handle holes,
- * length snapshots, short-circuit returns and callback mutation. */
-export function arrayCallbackParams(arrayType: IrType, callbackType: IrType): IrParam[] {
-  return [
+ * length snapshots, short-circuit returns and callback mutation.
+ *
+ * `withThis` adds the thisArg slot (`t.0`, a checked-dynamic value) that a
+ * helper carrying the method's second argument passes as the callback's
+ * call-site receiver — the only shape in which a callback's `this` is the
+ * caller's thisArg rather than the ambient one. Helpers without it keep
+ * exactly the two-parameter frame they always had. */
+export function arrayCallbackParams(
+  arrayType: IrType,
+  callbackType: IrType,
+  withThis = false,
+): IrParam[] {
+  const params: IrParam[] = [
     { localId: "a.0", name: "a", type: arrayType },
     { localId: "f.0", name: "f", type: callbackType },
   ];
+  if (withThis) params.push({ localId: "t.0", name: "t", type: DYN });
+  return params;
 }
 
-export function arrayCallbackLocals(arrayType: IrType, callbackType: IrType): IrLocal[] {
-  return [
+export function arrayCallbackLocals(
+  arrayType: IrType,
+  callbackType: IrType,
+  withThis = false,
+): IrLocal[] {
+  const locals: IrLocal[] = [
     { id: "a.0", name: "a", type: arrayType, mutable: true },
     { id: "f.0", name: "f", type: callbackType, mutable: true },
     { id: "n.0", name: "n", type: F64, mutable: false },
     { id: "i.0", name: "i", type: F64, mutable: true },
   ];
+  if (withThis) locals.push({ id: "t.0", name: "t", type: DYN, mutable: false });
+  return locals;
 }
 
+/** `f(value, index, array)` with the helper's optional thisArg slot as the
+ * call-site receiver: `callValue`'s receiver is what the callee reads as
+ * `this` (the same ambient slot a method call fills), so a callback sees
+ * the caller's thisArg exactly as the specification passes it. */
 export function callArrayCallback(
   arrayType: IrType,
   callbackType: IrType,
@@ -36,11 +59,13 @@ export function callArrayCallback(
   arity: number,
   value: IrExpr,
   loc: SrcLoc,
+  withThis = false,
 ): IrExpr {
   return {
     kind: "callValue",
     callee: varRef("f.0", callbackType, loc),
     args: [value, varRef("i.0", F64, loc), varRef("a.0", arrayType, loc)].slice(0, arity),
+    ...(withThis ? { receiver: varRef("t.0", DYN, loc) as IrExpr } : {}),
     type: returnType,
     loc,
   };

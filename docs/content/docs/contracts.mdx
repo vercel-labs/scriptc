@@ -349,7 +349,7 @@ class Identifier extends SyntaxNode {
 }
 ```
 
-On Linux, except in builds with sanitizers, the instances also take less memory. An executable keeps them in one address range below 32 GiB that it reserves at startup (only the pages in use take memory), and a field typed `C`, `C | undefined` or `C | null`, where `C` is a program-lifetime class, stores the instance's address in 4 bytes instead of 8, as does each element of an array of such a type and each value of a `Map` with `string` keys and such a value type. In the example, `parent` takes 4 bytes.
+On Linux and macOS, except in builds with sanitizers, the instances also take less memory. An executable keeps them in one address range that it reserves at startup, below 32 GiB on Linux and from 1 TiB on macOS (only the pages in use take memory), and a field typed `C`, `C | undefined` or `C | null`, where `C` is a program-lifetime class, stores a reference to the instance in 4 bytes instead of an 8-byte address, as does each element of an array of such a type and each value of a `Map` with `string` keys and such a value type. In the example, `parent` takes 4 bytes.
 
 scriptc checks that the promise cannot change what the program computes (SC7008):
 
@@ -360,7 +360,7 @@ A class can be both `ProgramLifetime` and `Acyclic`. `Acyclic` is still checked 
 
 Instances can be published to other threads with `@scriptc/threads` like other class instances: `publish()` makes them immutable and shares them by reference, writes to a published instance throw the same `TypeError` as under Node.js, and instances that were not published stay writable and are cloned by `postMessage` and `workerData`.
 
-Static code has no `WeakRef`, a `FinalizationRegistry` never runs its cleanup callbacks, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
+Static code has no weak-reference cleanup: a `WeakRef` keeps its target alive and `deref()` always answers it, a `FinalizationRegistry` never runs its cleanup callbacks, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
 
 ### Lifetime regions
 
@@ -475,6 +475,10 @@ $ scriptc build reject.ts
     <tr>
       <td>SC7009</td>
       <td>An <code>InlineArray</code> field is not on a <code>ProgramLifetime</code> class, is written other than once from a constructor parameter, or is read in a way that could tell its reads apart.</td>
+    </tr>
+    <tr>
+      <td>SC7010</td>
+      <td>A <code>SingleOwner</code> class cannot be proved to give each instance one owner, or is declared in a library build. The message names the class and the expression that would hold an instance twice.</td>
     </tr>
   </tbody>
 </table>

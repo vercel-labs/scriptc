@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8832-inspect-untyped-regexp.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,8 @@
+js-void-initializer-column.js:7:41 - error SC1090: assigning to a 'const' binding is not supported yet
+
+  6 |   let before = void 0;
+  7 |   var value = void 0; const limit = 42; limit = 43;
+    |                                         ^~~~~
+  8 |   var after = void 0, more = void 0;
+
+  hint: Node throws a TypeError at the assignment (strict mode, and always in modules) (TypeScript reports TS2588 here.)

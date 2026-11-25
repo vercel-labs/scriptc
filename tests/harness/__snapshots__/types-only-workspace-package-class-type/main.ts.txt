@@ -1,0 +1,26 @@
+types-only-workspace-package-class-type/main.ts:9:15 - error SC2013: cannot compile npm package 'lending-types' statically: its implementation is not part of the compiled module graph
+
+   8 | const book: Book = { isbn: "0-1", title: "Tides" };
+   9 | function mark(stamp: Stamp): string {
+     |               ^~~~~
+  10 |   return stamp.ink + " " + stamp.press();
+
+  hint: use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback
+
+types-only-workspace-package-class-type/main.ts:12:7 - error SC2013: cannot compile npm package 'lending-types' statically: its implementation is not part of the compiled module graph
+
+  11 | }
+  12 | const stamp: Stamp = {
+     |       ^~~~~
+  13 |   ink: "red",
+
+  hint: use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback
+
+types-only-workspace-package-class-type/main.ts:18:25 - error SC2004: uses of 'mark' inherit the blocker on its declaration
+
+  17 | };
+  18 | console.log(book.title, mark(stamp));
+     |                         ^~~~
+  19 | 
+
+  hint: the declaration of 'mark' did not compile — fix the diagnostic reported there and these sites clear with it

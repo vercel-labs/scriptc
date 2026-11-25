@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8733-catch-typed-handler-param.ts"
+ ],
+ "diags": []
+}

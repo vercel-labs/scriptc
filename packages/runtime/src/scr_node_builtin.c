@@ -215,6 +215,14 @@ static ScrDyn *scr_global_get(void *handle, const char *key, size_t length) {
   (void)handle;
   ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, key, length) : NULL;
   if (own) return scr_dyn_retain(own);
+#ifdef SCR_GLOBAL_HOST_ABSENT
+  /* A Node global the native runtime does not implement (host-globals.ts):
+   * Node has the value, so a computed read must not answer undefined. The
+   * program's own properties above still shadow it. NULL is this ops table's
+   * "exception pending" answer (the builtin lookup below answers it the same
+   * way). */
+  if (scr_global_host_absent_check(key, length)) return NULL;
+#endif
   if ((length == 10 && memcmp(key, "globalThis", length) == 0) ||
       (length == 6 && memcmp(key, "global", length) == 0))
     return scr_dyn_retain(scr_global_box);
@@ -293,6 +301,31 @@ void scr_global_values_install(ScrDyn *lookup) {
   if (scr_global_values || lookup->kind != SCR_DYN_FUNC) return;
   scr_global_values = scr_dyn_retain(lookup);
   scr_atexit(scr_global_values_cleanup);
+}
+
+/* A JavaScript read of a name no declaration binds (+1): the global object's
+ * own property of that name (`globalThis.X = value` before the read, in any
+ * module), or Node's ReferenceError "<name> is not defined" when the global
+ * object has none (NULL, the exception pending). Borrows `name`. */
+ScrDyn *scr_global_binding_read(ScrStr *name) {
+  ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, name->data, name->len) : NULL;
+  if (own) return scr_dyn_retain(own);
+  scr_undef_global_read(name);
+  return NULL;
+}
+
+/* The value `typeof name` inspects for a name no declaration binds (+1): the
+ * global object's own property of that name, or undefined. Borrows `name`. */
+ScrDyn *scr_global_binding_value(ScrStr *name) {
+  ScrDyn *own = scr_global_own ? scr_dyn_obj_get(scr_global_own, name->data, name->len) : NULL;
+  return own ? scr_dyn_retain(own) : scr_dyn_undefined();
+}
+
+/* Whether the global object has an own property `name` the program created
+ * (`typeof name` for a name the global object also inherits). Borrows
+ * `name`. */
+bool scr_global_binding_has(ScrStr *name) {
+  return scr_global_own && scr_dyn_obj_get(scr_global_own, name->data, name->len) != NULL;
 }
 
 /* What `for (key in globalThis)` visits (+1): Node 24's enumerable global
@@ -625,9 +658,9 @@ ScrStr *scr_navigator_language(void) {
   if (!scr_navigator_lang) {
     /* ICU reads LC_ALL, then LC_MESSAGES, then LANG; a variable that is
      * set, even to the empty string, decides. */
-    const char *id = getenv("LC_ALL");
-    if (!id) id = getenv("LC_MESSAGES");
-    if (!id) id = getenv("LANG");
+    const char *id = scr_getenv("LC_ALL");
+    if (!id) id = scr_getenv("LC_MESSAGES");
+    if (!id) id = scr_getenv("LANG");
     ScrStr *tag = scr_navigator_tag(id);
     if (!tag) {
       scr_navigator_refuse("navigator.language for this locale");

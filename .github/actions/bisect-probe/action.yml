@@ -1,0 +1,119 @@
+name: Run the reported tests at one commit
+description: >-
+  Builds a commit and re-runs only the tests a failed post-merge run reported. The failed run's Linux native
+  packages are reused when the commit leaves their inputs alone; otherwise this builds them. The result lands in
+  result.json and is uploaded for the culprit search.
+inputs:
+  sha:
+    description: The commit to test.
+    required: true
+  red:
+    description: The commit the failing post-merge run tested; native packages are reusable when they match it.
+    required: true
+  specs:
+    description: JSON list of the tests to run ({ file, fullName, san }).
+    required: true
+  repeat:
+    description: How many times to run the tests.
+    required: false
+    default: "1"
+  expect:
+    description: >-
+      When set (pass or fail), the job fails unless all runs meet it: pass = three passes, fail = three test
+      failures and no infrastructure error. Probes leave it empty.
+    required: false
+    default: ""
+  run_id:
+    description: The failed CI run whose native packages may be reused.
+    required: true
+  artifact:
+    description: The artifact name for result.json; unique within the workflow run.
+    required: true
+runs:
+  using: composite
+  steps:
+    # The caller checks out the repository first, so this action and its runner can be read. The runner is copied
+    # out before the probe checkout: a commit from before the search existed does not carry it.
+    - shell: bash
+      run: cp scripts/ci/bisect-candidate.mjs "$RUNNER_TEMP/bisect-candidate.mjs"
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.sha }}
+        fetch-depth: 0
+        # The token stays out of the probed checkout: the tests run around it.
+        persist-credentials: false
+    - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      with:
+        version: 11.1.3
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+    # The failed run's packages came from its own commit. A commit that changes their inputs needs its own.
+    - id: native
+      shell: bash
+      run: |
+        if git diff --quiet "${{ inputs.red }}" HEAD -- \
+          native packages/llvm-linux-x64-gnu packages/runtime-linux-x64-gnu packages/runtime-pack-common \
+          packages/runtime/src packages/runtime/vendor; then
+          echo "reuse=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "reuse=false" >> "$GITHUB_OUTPUT"
+        fi
+    - uses: ./.github/actions/llvm-linux
+    - run: pnpm install --frozen-lockfile
+      shell: bash
+    - if: steps.native.outputs.reuse == 'true'
+      continue-on-error: true
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: native-linux-x64-gnu
+        path: ${{ runner.temp }}
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ github.token }}
+    # An expired artifact falls back to a build, as a commit that changes the inputs does.
+    - id: packages
+      shell: bash
+      run: |
+        if [ -f "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz" ]; then
+          tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+        fi
+    - if: steps.packages.outputs.ok != 'true'
+      uses: ./.github/actions/zig
+    - if: steps.packages.outputs.ok != 'true'
+      uses: ./.github/actions/native-packages
+      with:
+        target: linux-x64-gnu
+    - uses: ./.github/actions/icu-downloads
+    - run: pnpm build
+      shell: bash
+    - uses: ./.github/actions/libnode
+    # A probe's tests may fail: that is the probe's answer, kept in result.json rather than as a job failure.
+    - name: Run the reported tests
+      shell: bash
+      env:
+        SPECS: ${{ inputs.specs }}
+        REPEAT: ${{ inputs.repeat }}
+        EXPECT: ${{ inputs.expect }}
+      run: |
+        printf '%s' "$SPECS" > "$RUNNER_TEMP/specs.json"
+        candidate="$RUNNER_TEMP/bisect-candidate.mjs"
+        if [ -n "$EXPECT" ]; then
+          # A confirmation must hold: three failures on the culprit, three passes before it, never an infra error.
+          node "$candidate" --root "$GITHUB_WORKSPACE" --specs "$RUNNER_TEMP/specs.json" \
+            --repeat "$REPEAT" --expect "$EXPECT" --out "$RUNNER_TEMP/result.json"
+        else
+          # A probe's failure is its answer, kept in result.json rather than as a job failure.
+          node "$candidate" --root "$GITHUB_WORKSPACE" --specs "$RUNNER_TEMP/specs.json" \
+            --repeat "$REPEAT" --out "$RUNNER_TEMP/result.json" || true
+        fi
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      if: always()
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/result.json
+        if-no-files-found: error
+        retention-days: 7

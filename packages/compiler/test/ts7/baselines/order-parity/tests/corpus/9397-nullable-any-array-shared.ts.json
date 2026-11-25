@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9397-nullable-any-array-shared.ts"
+ ],
+ "diags": []
+}

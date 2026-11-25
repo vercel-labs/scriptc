@@ -4,8 +4,9 @@
  * good-code set (--shard=i/n for the bench and corpus programs, the self
  * program and the emitter fixtures in shard 1 or their own --set=self run),
  * each with --json. This script merges those reports: program verdicts and
- * failures are concatenated, and the compile-time verdicts and the "nothing
- * was compared" check are recomputed over every shard's rows. */
+ * failures are concatenated, and the compile-time verdicts, the "nothing
+ * was compared" check and the --allow-programs summary are recomputed over
+ * every shard's rows. */
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { mergeReports, programLines } from "./zero-cost-compare.mjs";
@@ -22,14 +23,15 @@ if (values.help || positionals.length === 0) {
   console.log(`Usage: node scripts/zero-cost-merge.mjs [--json=<file>] [--quiet] <shard.json>...
 
 Merges the --json reports of zero-cost gate shards and prints one summary:
-every program that is not identical, the compile-time verdicts and the
-failures. --quiet prints only the summary and failures. --json writes the
+every program that is not identical, the compile-time verdicts, what became
+of the programs --allow-programs lists, and the failures. --quiet prints
+only the summary and failures. --json writes the
 merged report. Exit status: 0 when the merged gate passes, 1 when it fails.`);
   process.exit(values.help ? 0 : 2);
 }
 
 const reports = positionals.map((file) => JSON.parse(readFileSync(file, "utf8")));
-const { report, timingLines } = mergeReports(reports);
+const { report, timingLines, allowLines } = mergeReports(reports);
 if (!values.quiet)
   for (const entry of report.programs)
     if (entry.verdict !== "identical") for (const line of programLines(entry)) console.log(line);
@@ -40,6 +42,8 @@ if (report.candidateSelf)
       ? `self       candidate compiler source builds with the candidate (${(report.candidateSelf.buildMs / 1000).toFixed(2)}s)`
       : "self       candidate compiler source FAILS to build with the candidate",
   );
+for (const line of report.candidateSelf?.budget?.lines ?? []) console.log(`self       ${line}`);
+for (const line of allowLines) console.log(line);
 const cached = report.programs.filter((p) => p.cachedBaseline).length;
 console.log(
   `zero-cost gate: ${report.verdict === "pass" ? "PASS" : "FAIL"} — ${Object.entries(report.counts)
@@ -47,6 +51,9 @@ console.log(
     .join(", ")} over ${report.shards} shards (longest ${(report.elapsedMs / 1000).toFixed(2)}s` +
     `${cached ? `, ${cached} baselines from the cache` : ""})`,
 );
-for (const failure of report.failures) console.log(`  ${failure}`);
 if (values.json) writeFileSync(values.json, JSON.stringify(report, null, 2) + "\n");
-process.exit(report.verdict === "pass" ? 0 : 1);
+// Exit once the output is written: a pipe can take a write asynchronously,
+// and process.exit drops what is still queued.
+process.stdout.write(report.failures.map((failure) => `  ${failure}\n`).join(""), () =>
+  process.exit(report.verdict === "pass" ? 0 : 1),
+);

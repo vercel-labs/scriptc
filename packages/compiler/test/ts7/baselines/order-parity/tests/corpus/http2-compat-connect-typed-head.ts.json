@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-compat-connect-typed-head.ts"
+ ],
+ "diags": []
+}

@@ -27,6 +27,7 @@
  * own code, which runs after its initializer. Shapes outside the
  * recognized forms answer a degrade reason. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { bareRequireSpecOf } from "./cjs-syntax.js";
 import { helperTokens } from "./helper-tokens.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
@@ -39,7 +40,6 @@ import {
   isWritten,
   references,
   strictPrologue,
-  unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
 import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
@@ -86,7 +86,7 @@ function esmHelperForm(
   sf: ts.SourceFile,
   ownNames: (name: string) => boolean,
 ): "keyed" | "arrow" | null {
-  const fn = unparen(init);
+  const fn = withoutParentheses(init);
   if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 2 || ts.isBlock(fn.body))
     return null;
   const [p0, p1] = fn.parameters.nodes;
@@ -101,7 +101,7 @@ function esmHelperForm(
   )
     return null;
   const [f, r] = [p0.name.text, p1.name.text];
-  const body = unparen(fn.body);
+  const body = withoutParentheses(fn.body);
   if (ts.isFunctionExpression(body)) {
     if (body.parameters.nodes.length !== 0 || body.asteriskToken || body.modifiers?.nodes.length)
       return null;
@@ -271,7 +271,7 @@ function exportTableOf(
   for (const prop of table.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) return null;
-    const getter = unparen(prop.initializer);
+    const getter = withoutParentheses(prop.initializer);
     if (!ts.isArrowFunction(getter) || getter.parameters.nodes.length !== 0) return null;
     if (ts.isBlock(getter.body)) return null;
     entries.push([prop.name.text, getter.body]);
@@ -336,7 +336,7 @@ export function lowerBundledEsmInits(
   const inits = new Map<string, InitBody>();
   for (const [name, t] of top) {
     if (!ts.isVariableDeclaration(t.node) || t.node.initializer === undefined) continue;
-    const call = unparen(t.node.initializer);
+    const call = withoutParentheses(t.node.initializer);
     if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) continue;
     const form = forms.get(call.expression.text);
     if (form === undefined) continue;
@@ -349,7 +349,7 @@ export function lowerBundledEsmInits(
       if (!ts.isMethodDeclaration(factory) || ts.isComputedPropertyName(factory.name))
         return { degrade: ESM_SHAPE_DEGRADE };
     } else {
-      factory = unparen(factory as ts.Expression);
+      factory = withoutParentheses(factory as ts.Expression);
       if (!ts.isArrowFunction(factory) && !ts.isFunctionExpression(factory))
         return { degrade: ESM_SHAPE_DEGRADE };
     }
@@ -422,7 +422,7 @@ export function lowerBundledEsmInits(
           countDeclarations(sf, name) !== 1
         )
           continue;
-        let rhs = unparen(el.right);
+        let rhs = withoutParentheses(el.right);
         let isNodeMode = false;
         let interop = false;
         if (
@@ -437,7 +437,7 @@ export function lowerBundledEsmInits(
             else if (mode.kind === ts.SyntaxKind.TrueKeyword) isNodeMode = true;
             else if (mode.kind !== ts.SyntaxKind.FalseKeyword) continue;
           }
-          rhs = unparen(arg);
+          rhs = withoutParentheses(arg);
           interop = true;
         }
         const spec = bareRequireSpecOf(rhs);
@@ -554,10 +554,10 @@ export function lowerBundledEsmInits(
   for (const [name, t] of top) {
     const d = t.node;
     if (!ts.isVariableDeclaration(d) || d.initializer === undefined) continue;
-    const fn = unparen(d.initializer);
+    const fn = withoutParentheses(d.initializer);
     if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 0 || ts.isBlock(fn.body))
       continue;
-    const memoize = unparen(fn.body);
+    const memoize = withoutParentheses(fn.body);
     if (
       !ts.isBinaryExpression(memoize) ||
       (memoize.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionEqualsToken &&
@@ -565,7 +565,7 @@ export function lowerBundledEsmInits(
       !ts.isIdentifier(memoize.left)
     )
       continue;
-    let w = unparen(memoize.right);
+    let w = withoutParentheses(memoize.right);
     let interop = false;
     let nodeMode = false;
     if (
@@ -581,11 +581,11 @@ export function lowerBundledEsmInits(
         else if (mode.kind !== ts.SyntaxKind.FalseKeyword) continue;
       }
       interop = true;
-      w = unparen(arg);
+      w = withoutParentheses(arg);
     }
     let initCall: ts.CallExpression | null = null;
     if (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.CommaToken) {
-      const left = unparen(w.left);
+      const left = withoutParentheses(w.left);
       if (
         !ts.isCallExpression(left) ||
         !ts.isIdentifier(left.expression) ||
@@ -594,7 +594,7 @@ export function lowerBundledEsmInits(
       )
         continue;
       initCall = left;
-      w = unparen(w.right);
+      w = withoutParentheses(w.right);
     }
     if (
       !ts.isCallExpression(w) ||
@@ -738,10 +738,10 @@ export function lowerBundledEsmInits(
       ts.isIdentifier(holder.arguments.nodes[0]!) &&
       (holder.arguments.nodes[0] as ts.Identifier).text === mainTarget
     ) {
-      const inner = unparen(ns);
+      const inner = withoutParentheses(ns);
       const init =
         ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.CommaToken
-          ? `${getTextOfNode(unparen(inner.left))}; `
+          ? `${getTextOfNode(withoutParentheses(inner.left))}; `
           : "";
       if (shadowed(holder, table.entries)) return { degrade: `its shipped JS ${why}` };
       const entries = table.entries
@@ -824,8 +824,9 @@ export function lowerBundledEsmInits(
       decl === undefined ||
       !ts.isVariableDeclaration(decl) ||
       decl.initializer === undefined ||
-      !ts.isObjectLiteralExpression(unparen(decl.initializer)) ||
-      (unparen(decl.initializer) as ts.ObjectLiteralExpression).properties.nodes.length !== 0 ||
+      !ts.isObjectLiteralExpression(withoutParentheses(decl.initializer)) ||
+      (withoutParentheses(decl.initializer) as ts.ObjectLiteralExpression).properties.nodes
+        .length !== 0 ||
       writes.has(target)
     )
       return { degrade: ESM_SHAPE_DEGRADE };
@@ -920,8 +921,8 @@ function hoistInitClasses(
         ts.isBinaryExpression(p) &&
         p.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken &&
         p.right === child &&
-        ts.isNumericLiteral(unparen(p.left)) &&
-        (unparen(p.left) as ts.NumericLiteral).text === "0"
+        ts.isNumericLiteral(withoutParentheses(p.left)) &&
+        (withoutParentheses(p.left) as ts.NumericLiteral).text === "0"
       )
         return true;
     }
@@ -936,7 +937,12 @@ function hoistInitClasses(
     const clause = cls.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword);
     if (clause === undefined) return true;
     const type = clause.types.nodes[0];
-    if (type === undefined || clause.types.nodes.length !== 1 || type.typeArguments !== undefined)
+    if (
+      type === undefined ||
+      !ts.isExpressionWithTypeArguments(type) ||
+      clause.types.nodes.length !== 1 ||
+      type.typeArguments !== undefined
+    )
       return false;
     let root: ts.Expression = type.expression;
     while (ts.isPropertyAccessExpression(root) && !root.questionDotToken) root = root.expression;
@@ -978,7 +984,7 @@ function hoistInitClasses(
       // The initializer ends its statement: the split pieces follow it
       // (`var A, B, init_x = __esm(…)` keeps A and B declared before).
       list.declarations.nodes[list.declarations.nodes.length - 1] !== declarator ||
-      unparen(declarator.initializer!) !== init.call
+      withoutParentheses(declarator.initializer!) !== init.call
     )
       continue;
     const strict = strictPrologue(stmts) ? '"use strict"; ' : "";

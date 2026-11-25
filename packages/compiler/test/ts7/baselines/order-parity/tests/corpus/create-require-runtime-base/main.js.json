@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/create-require-runtime-base/main.js"
+ ],
+ "diags": []
+}

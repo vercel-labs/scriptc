@@ -8,6 +8,12 @@ declare module "stream/web" {
   export const ReadableStreamDefaultController: typeof globalThis.ReadableStreamDefaultController;
   export type ReadableStreamDefaultController<T = unknown> =
     globalThis.ReadableStreamDefaultController<T>;
+  export const ReadableStreamBYOBReader: typeof globalThis.ReadableStreamBYOBReader;
+  export type ReadableStreamBYOBReader = globalThis.ReadableStreamBYOBReader;
+  export const ReadableStreamBYOBRequest: typeof globalThis.ReadableStreamBYOBRequest;
+  export type ReadableStreamBYOBRequest = globalThis.ReadableStreamBYOBRequest;
+  export const ReadableByteStreamController: typeof globalThis.ReadableByteStreamController;
+  export type ReadableByteStreamController = globalThis.ReadableByteStreamController;
   export const WritableStream: typeof globalThis.WritableStream;
   export type WritableStream<W = unknown> = globalThis.WritableStream<W>;
   export const WritableStreamDefaultWriter: typeof globalThis.WritableStreamDefaultWriter;
@@ -28,6 +34,14 @@ declare module "stream/web" {
   export const TextDecoderStream: typeof globalThis.TextDecoderStream;
   export type TextDecoderStream = globalThis.TextDecoderStream;
   export type UnderlyingSource<T = unknown> = globalThis.UnderlyingSource<T>;
+  export type UnderlyingByteSource = globalThis.UnderlyingByteSource;
+  export type ReadableStreamReaderMode = "byob";
+  export interface ReadableStreamGetReaderOptions {
+    mode?: ReadableStreamReaderMode;
+  }
+  export type ReadableStreamReader<T = unknown> =
+    | ReadableStreamDefaultReader<T>
+    | ReadableStreamBYOBReader;
   export type QueuingStrategy<T = unknown> = globalThis.QueuingStrategy<T>;
 }
 

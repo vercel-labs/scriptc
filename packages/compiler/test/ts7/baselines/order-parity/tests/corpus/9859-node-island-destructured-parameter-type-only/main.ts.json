@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9859-node-island-destructured-parameter-type-only/main.ts"
+ ],
+ "diags": []
+}

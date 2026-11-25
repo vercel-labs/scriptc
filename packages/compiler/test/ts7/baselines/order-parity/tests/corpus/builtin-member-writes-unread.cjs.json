@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-member-writes-unread.cjs"
+ ],
+ "diags": []
+}

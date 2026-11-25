@@ -36,6 +36,9 @@ export class CoercionState {
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.
   readonly checkedNarrows = new Set<string>();
+  // The re-tags that read a union-typed deferred-init field as its declared
+  // union, throwing for an unassigned slot (Lowerer.deferredFieldSlot).
+  readonly deferredRetags = new Set<string>();
   // The extracted arm of each checked (non-defaulting) extraction helper.
   readonly checkedNarrowArms = new Map<
     string,
@@ -49,6 +52,12 @@ export class CoercionState {
     }
   >();
   readonly retags = new Map<string, string>();
+  /** The factories of the general signature adapters (funcCoerceAdapter
+   * and its rest-packing form), each with the mode it was built in
+   * ("checked" or ""). Provenance for function-views.ts, which builds
+   * the same conversions with more parameters; it must not be inferred
+   * from the helper's name. */
+  readonly signatureAdapters = new Map<string, string>();
   readonly narrows = new Map<string, string>();
   readonly widthNarrows = new Map<string, string>();
   /** Unions widenReducedReturn produced: only these read through the

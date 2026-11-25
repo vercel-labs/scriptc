@@ -5,6 +5,7 @@
 export type Status =
   | "supported"
   | "partial"
+  | "island-served"
   | "refused"
   | "not-implemented"
   | "by-design"
@@ -12,6 +13,7 @@ export type Status =
   | "not-applicable";
 export type VerificationBasis =
   | "test-backed"
+  | "island-test-backed"
   | "explicit-refusal"
   | "verified-absence"
   | "declared-gap"
@@ -47,7 +49,7 @@ export type Snapshot = {
 export type TreeNode = { row: Row; children: TreeNode[] };
 export type VisibleNode = { node: TreeNode; level: number };
 
-export const statuses = ["supported", "partial", "not-implemented", "refused", "by-design", "unreviewed", "not-applicable"] as const;
+export const statuses = ["supported", "partial", "island-served", "not-implemented", "refused", "by-design", "unreviewed", "not-applicable"] as const;
 
 export function statusCounts(rows: Row[]): Record<Status, number> {
   return rows.reduce<Record<Status, number>>(
@@ -59,6 +61,7 @@ export function statusCounts(rows: Row[]): Record<Status, number> {
     {
       supported: 0,
       partial: 0,
+      "island-served": 0,
       refused: 0,
       "not-implemented": 0,
       "by-design": 0,

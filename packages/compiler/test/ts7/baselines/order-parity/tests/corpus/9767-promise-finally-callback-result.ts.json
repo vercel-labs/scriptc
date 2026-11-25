@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9767-promise-finally-callback-result.ts"
+ ],
+ "diags": []
+}

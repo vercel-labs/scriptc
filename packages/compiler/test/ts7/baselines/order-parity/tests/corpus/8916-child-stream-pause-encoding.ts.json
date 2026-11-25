@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8916-child-stream-pause-encoding.ts"
+ ],
+ "diags": []
+}

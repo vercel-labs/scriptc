@@ -56,6 +56,7 @@ import {
   isDynTypedRefType,
   isUnitType,
   typeEquals,
+  funcHiddenParamCount,
 } from "../../ir/ir.js";
 import { libFnSignatures } from "../../ir/builtin-signatures.js";
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "../../ir/intrinsic-signatures.js";
@@ -229,12 +230,18 @@ function enforceExprBoundary(lowerer: Lowerer, node: IrExpr): void {
     }
     if (e.callee.type.kind !== "func") return; // validator's ICE otherwise
     const params = e.callee.type.params;
-    if (e.args.length !== params.length) {
+    // A checked-dynamic variadic value hides one trailing dyn array after
+    // its declared parameters (the slot its lifted signature carries). That
+    // same array is the body's `arguments` when it reads one (argumentsAll),
+    // so the two never add up to two slots. A typed rest keeps its array in
+    // the parameters; only the actual-argument array is hidden then.
+    const hidden = funcHiddenParamCount(e.callee.type);
+    if (e.args.length !== params.length + hidden) {
       fence(
         lowerer,
         "SC1090",
         e.loc,
-        `calling a function value with ${e.args.length} argument${e.args.length === 1 ? "" : "s"} where its lowered signature takes ${params.length}`,
+        `calling a function value with ${e.args.length} argument${e.args.length === 1 ? "" : "s"} where its lowered signature takes ${params.length + hidden}`,
       );
     }
     e.args.forEach((a, i) => {
@@ -284,9 +291,12 @@ export function lowerSurplusCalls(lowerer: Lowerer, body: IrStmt[]): IrStmt[] {
     let needed = false;
     const inspectStmt = (node: IrStmt): boolean => everyStmtChild(node, inspectExpr, inspectStmt);
     const inspectExpr = (node: IrExpr): boolean => {
+      // A checked-dynamic variadic's trailing argument IS part of its
+      // lowered signature (the hidden rest array), not a surplus one.
       if (
         node.kind === "callValue" &&
         node.callee.type.kind === "func" &&
+        !(node.callee.type.rest === true && node.callee.type.restAbi === undefined) &&
         node.args.length > node.callee.type.params.length &&
         /\.(?:[cm]?js)$/.test(node.loc.file)
       )
@@ -306,7 +316,11 @@ export function lowerSurplusCalls(lowerer: Lowerer, body: IrStmt[]): IrStmt[] {
     const e = mapExprChildren(value, expr, stmt);
     if (e.kind !== "callValue" || e.callee.type.kind !== "func") return e;
     const params = e.callee.type.params;
-    if (e.args.length > params.length && /\.(?:[cm]?js)$/.test(e.loc.file)) {
+    if (
+      e.args.length > params.length &&
+      !(e.callee.type.rest === true && e.callee.type.restAbi === undefined) &&
+      /\.(?:[cm]?js)$/.test(e.loc.file)
+    ) {
       const callee = lowerer.declareHiddenLocal("%surplusCallee", e.callee.type);
       const stmts: IrStmt[] = [{ kind: "varDecl", localId: callee.id, init: e.callee, loc: e.loc }];
       let receiver = e.receiver;

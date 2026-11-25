@@ -61,6 +61,212 @@ function fixture(): IrModule {
   };
 }
 
+function retryFixture(): IrModule {
+  const mod = fixture();
+  const fn = mod.functions[0]!;
+  fn.locals.push({ id: "error", name: "error", type: { kind: "caught" }, mutable: true });
+  fn.body = [
+    ...fn.body.slice(0, 2),
+    {
+      kind: "tryCatch",
+      tryBody: fn.body.slice(2),
+      catchBody: [
+        {
+          kind: "assign",
+          localId: "guard",
+          value: { kind: "boolLit", value: false, type: BOOL, loc },
+          loc,
+        },
+        { kind: "rethrow", localId: "error", loc },
+      ],
+      catchLocalId: "error",
+      finallyBody: null,
+      loc,
+    },
+  ];
+  return mod;
+}
+
+function retryRegion(mod: IrModule): Extract<IrStmt, { kind: "tryCatch" }> {
+  const region = mod.functions[0]!.body[2]!;
+  if (region.kind !== "tryCatch") throw new Error("fixture");
+  return region;
+}
+
+test("retrying initializer bindings retain numeric facts and overwritten local slots", () => {
+  for (const metadata of [false, true]) {
+    const mod = retryFixture();
+    const fn = mod.functions[0]!;
+    const region = retryRegion(mod);
+    if (metadata)
+      region.catchBody!.unshift({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "module.fail",
+          args: [{ kind: "numLit", value: 0, type: F64, loc }],
+          type: VOID,
+          loc,
+        },
+        loc,
+      });
+    const bindings = findInitializerBindings(mod).get(fn.name)!;
+    expect(bindings.map((g) => g.id)).toEqual(["value"]);
+    expect(initializerLocalCandidates(fn, bindings)).toEqual(bindings);
+    const read = region.tryBody[1]!;
+    if (read.kind !== "exprStmt") throw new Error("fixture");
+    expect(analyzeIntegerRanges(withInitializerBindings(fn, bindings)).get(read.expr)).toEqual({
+      min: 17,
+      max: 17,
+    });
+  }
+});
+
+test("retry admission requires an isolated reset followed immediately by the same rethrow", () => {
+  for (const change of [
+    "finally",
+    "continuation",
+    "after-reset",
+    "wrong-rethrow",
+    "wrong-reset",
+    "early-reset",
+    "foreign-reset",
+    "foreign-read",
+    "capture",
+    "async",
+    "generator",
+    "library",
+  ] as const) {
+    const mod = retryFixture();
+    const fn = mod.functions[0]!;
+    const region = retryRegion(mod);
+    const reset = region.catchBody![0]!;
+    const read = region.tryBody[1]!;
+    if (change === "finally") region.finallyBody = [];
+    if (change === "continuation") fn.body.push(read);
+    if (change === "after-reset") region.catchBody!.splice(1, 0, read);
+    if (change === "wrong-rethrow") region.catchBody![1] = { kind: "return", value: null, loc };
+    if (change === "wrong-reset") region.catchBody![0] = fn.body[1]!;
+    if (change === "early-reset") region.tryBody.unshift(reset);
+    if (change === "foreign-reset") mod.functions.push({ ...fn, name: "reset", body: [reset] });
+    if (change === "foreign-read") mod.functions.push({ ...fn, name: "read", body: [read] });
+    if (change === "capture") fn.captures = [{ localId: "value", name: "value", type: F64 }];
+    if (change === "async") fn.async = true;
+    if (change === "generator")
+      fn.generator = { yieldT: F64, nextT: VOID, resultType: { kind: "record", shapeId: "r0" } };
+    if (change === "library")
+      mod.lib = {
+        profileName: "test",
+        prefix: "test",
+        initSymbol: "test_init",
+        sinkRegisterSymbol: "test_sink",
+        collectSymbol: null,
+        resultResetSymbol: null,
+        threadInstances: false,
+        exports: [],
+        trapOverlays: [],
+      };
+    expect(findInitializerBindings(mod).size, change).toBe(0);
+  }
+});
+
+test("retry locals cannot read a value left by a failed activation", () => {
+  for (const change of [
+    "before-store",
+    "self-rhs",
+    "increment",
+    "conditional",
+    "zero-loop",
+    "labeled",
+    "short-circuit",
+    "throwing-rhs-catch",
+    "throwing-rhs-finally",
+    "outer-catch",
+  ] as const) {
+    const mod = retryFixture();
+    const fn = mod.functions[0]!;
+    const region = retryRegion(mod);
+    const store = region.tryBody[0]!;
+    const read = region.tryBody[1]!;
+    if (store.kind !== "assign" || read.kind !== "exprStmt") throw new Error("fixture");
+    const yes = { kind: "boolLit", value: true, type: BOOL, loc } as const;
+    if (change === "before-store") region.tryBody.unshift(read);
+    if (change === "self-rhs") store.value = read.expr;
+    if (change === "increment")
+      region.tryBody.unshift({
+        kind: "exprStmt",
+        expr: { kind: "incDec", localId: "value", op: "+", prefix: true, type: F64, loc },
+        loc,
+      });
+    if (change === "conditional")
+      region.tryBody[0] = { kind: "if", cond: yes, then: [store], else_: null, loc };
+    if (change === "zero-loop")
+      region.tryBody[0] = { kind: "while", cond: { ...yes, value: false }, body: [store], loc };
+    if (change === "labeled")
+      region.tryBody[0] = {
+        kind: "block",
+        labels: ["skip"],
+        body: [{ kind: "break", label: "skip", loc }, store],
+        loc,
+      };
+    if (change === "short-circuit")
+      region.tryBody[0] = {
+        kind: "exprStmt",
+        expr: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "numLit", value: 0, type: F64, loc },
+          right: { kind: "assignExpr", localId: "value", value: store.value, type: F64, loc },
+          type: F64,
+          loc,
+        },
+        loc,
+      };
+    if (change === "throwing-rhs-catch" || change === "throwing-rhs-finally") {
+      store.value = { kind: "call", callee: "mayThrow", args: [], type: F64, loc };
+      region.tryBody = [
+        {
+          kind: "tryCatch",
+          tryBody: [store],
+          catchLocalId: null,
+          catchBody: change === "throwing-rhs-catch" ? [read] : null,
+          finallyBody: change === "throwing-rhs-finally" ? [read] : null,
+          loc,
+        },
+      ];
+    }
+    if (change === "outer-catch")
+      region.catchBody!.unshift({
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "module.fail", args: [read.expr], type: VOID, loc },
+        loc,
+      });
+    const bindings = findInitializerBindings(mod).get(fn.name)!;
+    expect(
+      bindings.map((g) => g.id),
+      change,
+    ).toEqual(["value"]);
+    expect(initializerLocalCandidates(fn, bindings), change).toEqual([]);
+    if (change === "before-store")
+      expect(analyzeIntegerRanges(withInitializerBindings(fn, bindings)).get(read.expr)).toBeNull();
+  }
+});
+
+test("unconditional block stores reset retry locals of any numeric value", () => {
+  for (const value of [0, -1, 2 ** 31, 0.5, -0, NaN]) {
+    const mod = retryFixture();
+    const fn = mod.functions[0]!;
+    const region = retryRegion(mod);
+    region.tryBody[0] = {
+      kind: "block",
+      body: [assign("value", value)],
+      loc,
+    };
+    const bindings = findInitializerBindings(mod).get(fn.name)!;
+    expect(initializerLocalCandidates(fn, bindings)).toEqual(bindings);
+  }
+});
+
 test("private initializer bindings supply numeric facts without rewriting storage or ABI", () => {
   const mod = fixture(),
     fn = mod.functions[0]!;
@@ -142,7 +348,7 @@ test("number bindings without an import-cycle flag may move into a local", () =>
     type: { kind: "bytes", elem: "u8" },
     mutable: true,
   };
-  const candidates = initializerLocalCandidates([...bindings, flagged, bytes]);
+  const candidates = initializerLocalCandidates(fn, [...bindings, flagged, bytes]);
   expect(candidates.map((g) => g.id)).toEqual(["value"]);
   // The view lists them as plain locals; parameters and body are unchanged.
   const view = withInitializerLocals(fn, candidates);

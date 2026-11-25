@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-property-define-untyped-helper/tag.cjs",
+  "<repo>/tests/corpus/child-property-define-untyped-helper/main.cjs"
+ ],
+ "diags": []
+}

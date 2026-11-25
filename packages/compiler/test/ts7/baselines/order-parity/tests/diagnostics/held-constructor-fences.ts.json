@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/held-constructor-fences.ts"
+ ],
+ "diags": []
+}

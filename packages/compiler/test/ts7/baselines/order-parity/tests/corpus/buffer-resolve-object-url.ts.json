@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/buffer-resolve-object-url.ts"
+ ],
+ "diags": []
+}

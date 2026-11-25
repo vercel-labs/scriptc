@@ -42,4 +42,29 @@ ScrStr *scr_intl_date_locale_time_string(double ms);
  * `isWordLike`, as Node's word segments do. +1 handle. */
 ScrDyn *scr_intl_segmenter_word_new(ScrStr *locale);
 
+/* Intl.NumberFormat: `new Intl.NumberFormat(locale, options)` (and the
+ * call without `new`), `format(x)` on its result, and
+ * Number.prototype.toLocaleString(locale, options), which constructs the
+ * same formatter for one call. `locale` is the BCP 47 tag the compiler
+ * accepted, or the empty string for the default locale; `options` is the
+ * options argument as a checked-dynamic value (undefined when absent), read
+ * by ECMA-402's steps: Node's reads, conversions and errors. The formatter
+ * is a NumberFormat handle. The `_dyn` form takes the argument as a
+ * checked-dynamic value (a number, or undefined). +1 results; NULL with the
+ * exception pending. */
+ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options);
+ScrStr *scr_intl_number_format_format(ScrDyn *format, double x);
+ScrStr *scr_intl_number_format_format_dyn(ScrDyn *format, ScrDyn *value);
+ScrStr *scr_intl_number_to_locale_string(double x, ScrStr *locale, ScrDyn *options);
+
+/* Intl.DateTimeFormat: the constructor, `format(ms)` on its result (a
+ * RangeError outside the time value range), and Date.prototype
+ * .toLocaleString / toLocaleDateString / toLocaleTimeString (`kind` 0, 1,
+ * 2) with a locale and options; an invalid date answers "Invalid Date"
+ * before any option is read. */
+ScrDyn *scr_intl_date_time_format_new(ScrStr *locale, ScrDyn *options);
+ScrStr *scr_intl_date_time_format_format(ScrDyn *format, double ms);
+ScrStr *scr_intl_date_time_format_format_dyn(ScrDyn *format, ScrDyn *value);
+ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *options);
+
 #endif /* SCR_INTL_H */

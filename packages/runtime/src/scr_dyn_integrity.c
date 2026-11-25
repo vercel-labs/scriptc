@@ -37,7 +37,22 @@ static void scr_dyn_integrity_query_fence(const ScrDyn *object, const char *what
   scr_str_release(message);
 }
 
+/* A program that adds own properties to handles installs the handle
+ * property table (scr_dyn_handle_props.c), which tracks the integrity state
+ * of every handle tag it accepts: its answer replaces the fence below. */
+#ifdef SCR_JS_OBJECT_MODEL
+static bool scr_dyn_integrity_answer(const ScrDyn *object, int op, bool *answer) {
+  if (object->kind != SCR_DYN_HANDLE || !scr_dyn_handle_props_hooks) return false;
+  ScrDyn *unused = NULL;
+  return scr_dyn_handle_props_hooks->integrity((ScrDyn *)object, op, &unused, answer);
+}
+#endif
+
 bool scr_dyn_is_extensible_query(ScrDyn *object) {
+#ifdef SCR_JS_OBJECT_MODEL
+  bool answer;
+  if (scr_dyn_integrity_answer(object, 3, &answer)) return answer;
+#endif
   if (scr_dyn_integrity_unmodeled(object)) {
     scr_dyn_integrity_query_fence(object, "Object.isExtensible");
     return false;
@@ -46,6 +61,10 @@ bool scr_dyn_is_extensible_query(ScrDyn *object) {
 }
 
 bool scr_dyn_is_sealed_query(const ScrDyn *object) {
+#ifdef SCR_JS_OBJECT_MODEL
+  bool answer;
+  if (scr_dyn_integrity_answer(object, 4, &answer)) return answer;
+#endif
   if (scr_dyn_integrity_unmodeled(object)) {
     scr_dyn_integrity_query_fence(object, "Object.isSealed");
     return false;

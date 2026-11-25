@@ -1,10 +1,10 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { compile, deserializeModule } from "../../index.js";
 import { validateModule } from "../../ir/validate.js";
-import { emitLlvmModule } from "./emitter.js";
+import { emitLlvmModule, type LlvmTargetOptions } from "./emitter.js";
 import { UnwindAbiViolation, bridgePlainUnwindCalls } from "./unwind-abi.js";
 
 async function moduleFor(source: string) {
@@ -187,14 +187,14 @@ test("without the option, and off Linux, emission keeps the pending-flag ABI", a
 
 test("bridgePlainUnwindCalls keeps the pending-flag contract at plain calls of raising functions", () => {
   const raising = [
-    "define internal ptr @sc_bf_raises(ptr %p) #0 { ; raises",
+    "define internal ptr @sc_bf_raises(ptr %p) align 64 #0 { ; raises",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const caller = [
-    "define internal ptr @sc_f_adapter(ptr %p0) #0 {",
+    "define internal ptr @sc_f_adapter(ptr %p0) align 64 #0 {",
     "entry:",
     "  %result = call ptr @sc_bf_raises(ptr %p0) ; borrowed result",
     "  br label %next",
@@ -211,21 +211,21 @@ test("bridgePlainUnwindCalls keeps the pending-flag contract at plain calls of r
   // The split block's successor now comes from its last part.
   expect(out).toContain("%v = phi ptr [ %result, %ub.ok.0 ]");
   expect(out).toMatch(
-    /define internal ptr @sc_f_adapter\(ptr %p0\) #0 personality ptr @__gcc_personality_v0 \{/,
+    /define internal ptr @sc_f_adapter\(ptr %p0\) align 64 #0 personality ptr @__gcc_personality_v0 \{/,
   );
   expect(out).toContain("declare i32 @__gcc_personality_v0(...)");
 });
 
 test("an invoked wrapper of a raising function resumes the unwind; its address must not escape", () => {
   const raising = [
-    "define internal double @sc_bf_body.i32(i32 %a) #0 {",
+    "define internal double @sc_bf_body.i32(i32 %a) align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const wrapper = [
-    "define internal double @sc_bf_body(double %a) #0 {",
+    "define internal double @sc_bf_body(double %a) align 64 #0 {",
     "entry:",
     "  %i = fptosi double %a to i32",
     "  %r = call double @sc_bf_body.i32(i32 %i)",
@@ -233,7 +233,7 @@ test("an invoked wrapper of a raising function resumes the unwind; its address m
     "}",
   ].join("\n");
   const caller = [
-    "define internal double @sc_bf_caller(double %a) #0 personality ptr @__gcc_personality_v0 {",
+    "define internal double @sc_bf_caller(double %a) align 64 #0 personality ptr @__gcc_personality_v0 {",
     "entry:",
     "  %r = invoke double @sc_bf_body(double %a) to label %ok unwind label %lp",
     "lp:",
@@ -268,21 +268,21 @@ test("an invoked wrapper of a raising function resumes the unwind; its address m
 
 test("an invoked function that never tests the pending flag needs no raise", () => {
   const raising = [
-    "define internal void @sc_bf_raises() #0 {",
+    "define internal void @sc_bf_raises() align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const leaf = [
-    "define internal double @sc_bf_leaf() #0 {",
+    "define internal double @sc_bf_leaf() align 64 #0 {",
     "entry:",
     "  ret double 1.0",
     "}",
   ].join("\n");
   const caller = (callee: string) =>
     [
-      "define internal double @sc_bf_caller() #0 personality ptr @__gcc_personality_v0 {",
+      "define internal double @sc_bf_caller() align 64 #0 personality ptr @__gcc_personality_v0 {",
       "entry:",
       `  %r = invoke double @${callee}() to label %ok unwind label %lp`,
       "lp:",
@@ -305,9 +305,53 @@ test("an invoked function that never tests the pending flag needs no raise", () 
   ).toThrow(UnwindAbiViolation);
 });
 
+test("an invoked function's source-frame push is not a pending-flag test", () => {
+  const raising = [
+    "define internal void @sc_bf_raises() align 64 #0 {",
+    "entry:",
+    "  call void @scr_unwind_raise()",
+    "  unreachable",
+    "}",
+  ].join("\n");
+  const framed = (body: string) =>
+    [
+      "define internal double @sc_bf_leaf() align 64 #0 {",
+      "entry:",
+      "  %source_frame.cell = load ptr, ptr @scr_exc_active",
+      "  %source_frame.chain = getelementptr inbounds i8, ptr %source_frame.cell, i64 56",
+      "  %source_frame.previous = load ptr, ptr %source_frame.chain",
+      body,
+      "  store ptr %source_frame.previous, ptr %source_frame.chain",
+      "  ret double 1.0",
+      "}",
+    ].join("\n");
+  const caller = [
+    "define internal double @sc_bf_caller() align 64 #0 personality ptr @__gcc_personality_v0 {",
+    "entry:",
+    "  %r = invoke double @sc_bf_leaf() to label %ok unwind label %lp",
+    "lp:",
+    "  %x = landingpad { ptr, i32 } cleanup",
+    "  call void @scr_unwind_raise()",
+    "  unreachable",
+    "ok:",
+    "  ret double %r",
+    "}",
+  ].join("\n");
+  // The push alone reads the active cell for its frame chain only.
+  expect(() =>
+    bridgePlainUnwindCalls([[raising, framed("  %n = add i32 0, 0"), caller].join("\n")]),
+  ).not.toThrow();
+  // Any other read of the active cell still counts as a pending-flag test.
+  expect(() =>
+    bridgePlainUnwindCalls([
+      [raising, framed("  %cell = load ptr, ptr @scr_exc_active"), caller].join("\n"),
+    ]),
+  ).toThrow(UnwindAbiViolation);
+});
+
 test("calls that cannot unwind are marked nounwind", () => {
   const raising = [
-    "define internal void @sc_bf_raises(ptr %b) #0 {",
+    "define internal void @sc_bf_raises(ptr %b) align 64 #0 {",
     "entry:",
     "  %n = call i64 @scr_bytes_length(ptr %b) ; length",
     "  call void @scr_bytes_release(ptr %b), !dbg !4",
@@ -317,7 +361,7 @@ test("calls that cannot unwind are marked nounwind", () => {
     "}",
   ].join("\n");
   const resuming = [
-    "define internal void @sc_bf_resumes(ptr %b) #0 personality ptr @__gcc_personality_v0 {",
+    "define internal void @sc_bf_resumes(ptr %b) align 64 #0 personality ptr @__gcc_personality_v0 {",
     "entry:",
     "  invoke void @sc_bf_raises(ptr %b) to label %ok unwind label %lp",
     "ok:",
@@ -341,20 +385,20 @@ test("calls that cannot unwind are marked nounwind", () => {
 
 test("functions without a plain call of a raising function change only their call lines", () => {
   const raising = [
-    "define internal void @sc_bf_raises() #0 {",
+    "define internal void @sc_bf_raises() align 64 #0 {",
     "entry:",
     "  call void @scr_unwind_raise()",
     "  unreachable",
     "}",
   ].join("\n");
   const other = [
-    "define internal void @sc_bf_raises.copy() #0 {",
+    "define internal void @sc_bf_raises.copy() align 64 #0 {",
     "entry:",
     "  ret void",
     "}",
   ].join("\n");
   const plain = [
-    "define internal double @sc_f_plain(ptr %p) #0 {",
+    "define internal double @sc_f_plain(ptr %p) align 64 #0 {",
     "entry: ; call sites below",
     "  %a = call double @sc_f_other(ptr %p)",
     "  %b = tail call double @sc_f_other(ptr %p) ; mentions @ and @sc_bf_raises.copy",
@@ -377,4 +421,97 @@ test("functions without a plain call of a raising function change only their cal
       plain.replace("store ptr @sc_bf_raises.copy", "store ptr @sc_bf_raises"),
     ]),
   ).toThrow(UnwindAbiViolation);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
+/** Emits `module` for Linux and answers the text with the phases its timing reported. */
+function emitTimed(
+  module: Parameters<typeof emitLlvmModule>[0],
+  options: LlvmTargetOptions = {},
+): { ir: string; phases: { phase: string; detail: Record<string, unknown> }[] } {
+  const phases: { phase: string; detail: Record<string, unknown> }[] = [];
+  const ir = emitLlvmModule(module, {
+    ...LINUX,
+    ...options,
+    timing: (phase, detail = {}) => phases.push({ phase, detail }),
+  });
+  return { ir, phases };
+}
+
+const ARRAY_SUBCLASS = `
+class Stack extends Array<number> {
+  pushes = 0;
+  add(value: number): this {
+    this.push(value);
+    this.pushes++;
+    return this;
+  }
+}
+const s = new Stack();
+s.add(1).add(2).add(3);
+const doubled = s.map((v) => v * 2);
+console.log(s.length, s.pushes, doubled instanceof Stack, doubled);
+`;
+
+test("the functions an Array subclass's descriptor holds keep the pending flag from the first emission", async () => {
+  const { ir, phases } = emitTimed(await moduleFor(ARRAY_SUBCLASS));
+  // The descriptor's field lister and species constructor are pointer
+  // targets: classified so, they need no second emission.
+  const descriptor = /^@[^\n ]*\.arrcls = internal constant [^\n]*$/m.exec(ir)![0];
+  const held = [...descriptor.matchAll(/ptr @(sc_b?f_[\w.$-]+)/g)].map((m) => m[1]!);
+  expect(held.length).toBe(2);
+  for (const symbol of held) {
+    const definition = ir
+      .split(/\n(?=define )/)
+      .find((def) => def.slice(0, def.indexOf("\n")).includes(`@${symbol}(`))!;
+    expect(definition).not.toContain("@scr_unwind_raise");
+    expect(definition).not.toContain("@scr_unwind_resume");
+  }
+  expect(phases.map((entry) => entry.phase)).toEqual([
+    "llvm-emit-rewrites",
+    "llvm-emit-int32",
+    "llvm-emit-analyses",
+  ]);
+});
+
+test("an emission that runs again reports it and gives the text one emission gives", async () => {
+  const module = await moduleFor(SOURCE);
+  const once = emitTimed(module);
+  expect(once.phases.map((entry) => entry.phase)).not.toContain("llvm-emit-unwind-retry");
+  // The first emission ends as if every unwinding-ABI function broke the
+  // ABI; the check compares the second with one emission that starts so.
+  vi.stubEnv("SCRIPTC_EMIT_UNWIND_FAIL", "1");
+  vi.stubEnv("SCRIPTC_EMIT_UNWIND_VERIFY", "1");
+  const again = emitTimed(module);
+  // The module passes run once; the emitter's analyses run for each emission.
+  expect(again.phases.map((entry) => entry.phase)).toEqual([
+    "llvm-emit-rewrites",
+    "llvm-emit-int32",
+    "llvm-emit-analyses",
+    "llvm-emit-unwind-retry",
+    "llvm-emit-analyses",
+  ]);
+  const retry = again.phases[3]!.detail;
+  expect(retry["retry"]).toBe(1);
+  const names = retry["names"] as string[];
+  expect(retry["functions"]).toBe(names.length);
+  expect(retry["unwinding"]).toBe(names.length);
+  expect(names.some((name) => name.endsWith("mid"))).toBe(true);
+  expect(again.ir).not.toContain("@scr_unwind_raise");
+  expect(again.ir).not.toBe(once.ir);
+  vi.unstubAllEnvs();
+  expect(emitTimed(module, { unwindExcluded: new Set(names) }).ir).toBe(again.ir);
+  // Every second function: the others stay on the unwinding ABI.
+  vi.stubEnv("SCRIPTC_EMIT_UNWIND_FAIL", "2");
+  vi.stubEnv("SCRIPTC_EMIT_UNWIND_VERIFY", "1");
+  const half = emitTimed(module);
+  const moved = half.phases.find((entry) => entry.phase === "llvm-emit-unwind-retry")!.detail;
+  expect(moved["functions"]).toBe(Math.ceil(names.length / 2));
+  vi.unstubAllEnvs();
+  expect(emitTimed(module, { unwindExcluded: new Set(moved["names"] as string[]) }).ir).toBe(
+    half.ir,
+  );
 });

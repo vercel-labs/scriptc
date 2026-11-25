@@ -1,0 +1,34 @@
+abstract-builtin-method-calls.ts:29:13 - error SC1090: calls of the built-in method 'toString' through an abstract re-declaration that no class implements are not supported yet
+
+  28 | const retimed = new (Retimed as any)(6) as Retimed;
+  29 | console.log(shown.toString());
+     |             ^~~~~~~~~~~~~~~~
+  30 | console.log(owns.hasOwnProperty("x"));
+
+abstract-builtin-method-calls.ts:30:13 - error SC1090: calls of the built-in method 'hasOwnProperty' through an abstract re-declaration that no class implements are not supported yet
+
+  29 | console.log(shown.toString());
+  30 | console.log(owns.hasOwnProperty("x"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~
+  31 | console.log(joined.join("-"));
+
+abstract-builtin-method-calls.ts:31:13 - error SC1090: calls of the built-in method 'join' through an abstract re-declaration that no class implements are not supported yet
+
+  30 | console.log(owns.hasOwnProperty("x"));
+  31 | console.log(joined.join("-"));
+     |             ^~~~~~~~~~~~~~~~
+  32 | console.log(timed.getTime());
+
+abstract-builtin-method-calls.ts:32:13 - error SC1090: calls of the built-in method 'getTime' through an abstract re-declaration that no class implements are not supported yet
+
+  31 | console.log(joined.join("-"));
+  32 | console.log(timed.getTime());
+     |             ^~~~~~~~~~~~~~~
+  33 | console.log(retimed.getTime());
+
+abstract-builtin-method-calls.ts:33:13 - error SC1090: calls of the built-in method 'getTime' through an abstract re-declaration that no class implements are not supported yet
+
+  32 | console.log(timed.getTime());
+  33 | console.log(retimed.getTime());
+     |             ^~~~~~~~~~~~~~~~~
+  34 | 

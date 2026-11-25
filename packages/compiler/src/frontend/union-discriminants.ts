@@ -15,7 +15,8 @@ export function discriminantField(shape: IrRecordShape | undefined, field: strin
     : null;
 }
 
-function matchesLiteral(type: IrType, value: UnionLiteral): boolean {
+/** Whether a field of IR type `type` stores the literal `value`. */
+export function matchesLiteral(type: IrType, value: UnionLiteral): boolean {
   if (type.kind === "string") return typeof value === "string";
   if (type.kind === "bool") return typeof value === "boolean";
   return type.kind === "f64" && typeof value === "number" && Number.isFinite(value);

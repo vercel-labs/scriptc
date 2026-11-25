@@ -1,0 +1,4 @@
+{
+    "node-builtin.worker_threads": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/native-worker-messages.ts", "tests/corpus/native-worker-references.ts"],
+    "node-builtin.worker_threads.SHARE_ENV": ["tests/corpus/worker-share-env.ts", "tests/corpus/worker-env-option.ts"]
+}

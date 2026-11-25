@@ -14,6 +14,7 @@
  * throw. The guards are cheap: one load and compare per site, which LLVM
  * folds where an identical test already dominates. */
 import { InternalCompilerError } from "../../errors.js";
+import type { BlockBuilder } from "./blocks.js";
 import { classMembershipIntervals, type LlClassMeta } from "./classes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { vAdapters } from "./shapes.js";
@@ -66,17 +67,21 @@ export function emitUnionNarrowGuard(
 }
 
 /** The i1 `instanceof` test of the borrowed object `objName`, statically a
- * `staticClassName`, against `targetClassName`'s preorder intervals. */
+ * `staticClassName`, against `targetClassName`'s preorder intervals. It is
+ * the one reading of an instance's own class: the `instanceOf` expression,
+ * the downcast guard and a checked conversion's test of the instance a
+ * capsule of an ancestor class holds (dyn.ts typedRefBranch, which passes
+ * its helper's own builder) all emit it. */
 export function emitClassMembership(
   host: LlvmEmitterContext,
   objName: string,
   staticClassName: string,
   targetClassName: string,
   comment: string,
+  B: BlockBuilder = host.B,
 ): string {
-  const B = host.B;
   const target = host.classMetaOf(targetClassName);
-  const pre = host.loadVtPre(objName, staticClassName);
+  const pre = host.loadVtPre(objName, staticClassName, B);
   let result: string | undefined;
   for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
     const ge = B.tmp(),

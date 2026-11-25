@@ -20,6 +20,7 @@ import {
   type NodeIslandsEnvelope,
   type TierUnitPosition,
   type TiersEnvelope,
+  type TypeClaimEnvelope,
 } from "../diagnostics/envelope.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import {
@@ -27,13 +28,21 @@ import {
   isDynamicSlotCode,
   type DynamicSlotEntry,
 } from "../diagnostics/dynamic-slots.js";
+import {
+  groupTypeClaims,
+  typeClaimLabel,
+  type TypeClaimGroup,
+  type TypeClaimSite,
+} from "../diagnostics/type-claims.js";
 import type { LowerStats } from "../frontend/lowering/lowerer.js";
+import type { NpmStaticStatus } from "../frontend/npm-static-status.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 import type {
   DemotionUnit,
   LocalizedFailureReport,
   TierReport,
 } from "../frontend/tier-analysis.js";
+import type { RuntimeOptionalNarrowing } from "../frontend/lowering/runtime-optional-report.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
 import {
   describe as describeReason,
@@ -56,6 +65,9 @@ export interface CoverageInput {
    * lowered in a throwaway analysis pass. Its blockers cannot fail a
    * build — the report shows them as a secondary, dimmed group. */
   unreached?: { stats: LowerStats; diagnostics: ScrDiagnostic[]; runtimeFences?: ScrDiagnostic[] };
+  /** `--coverage=reached`: the unreached remainder was not analyzed, so the
+   * report covers the entry path only and carries no unreached group. */
+  reachedOnly?: boolean;
   /** Compile-time-detectable behavior differences from Node (SC6xxx):
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
@@ -67,6 +79,10 @@ export interface CoverageInput {
   /** Localized failure: the checked dynamic slots (SC6104, also in
    * `performance`). `--fail-on=dynamic-slots` fails on them. */
   dynamicSlots?: DynamicSlotEntry[];
+  /** The checked conversions that trust a type no build can verify
+   * (diagnostics/type-claims.ts). Never blockers; `--fail-on=type-claims`
+   * fails on them. */
+  typeClaims?: TypeClaimSite[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -94,15 +110,10 @@ export interface CoverageInput {
   preflightFailed: boolean;
 }
 
-/** One dependency's native compilation outcome. */
-export interface NpmStaticStatus {
-  package: string;
-  status: "static" | "refused";
-  /** The first refusal reason for a refused package. */
-  detail?: string;
-  /** How to act on the refusal, when there is a specific remedy. */
-  hint?: string;
-}
+/** Declared in the frontend, which carries the statuses
+ * (frontend/npm-static-status.ts), and re-exported here for the coverage
+ * readers. */
+export type { NpmStaticStatus };
 
 const GREEN = "\x1b[32m";
 const YELLOW = "\x1b[33m";
@@ -157,6 +168,15 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push(`          ${c(DIM, `at ${shown}${more}`)}`);
       out.push(`          ${c(DIM, `hint: ${b.group.hint}`)}`);
     }
+  };
+  // `--coverage=reached` did not lower the unreached remainder, so its
+  // totals count the entry path's statements only. The footer says so,
+  // where the totals are read.
+  const renderReachedOnly = () => {
+    if (input.reachedOnly !== true) return;
+    out.push(
+      `  ${c(DIM, "note")}  unreached code was not analyzed; the totals count reached statements only and are not comparable with a full report`,
+    );
   };
   out.push(`${c(BOLD, "scriptc coverage")} ${DIMPath(input.file, opts.color ?? false)}`);
   out.push("");
@@ -223,7 +243,8 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     return out.join("\n");
   }
 
-  // Whole-program totals include reached and unreached statements.
+  // Whole-program totals include reached and unreached statements. A
+  // reached-only report has no unreached stats to add.
   const un = input.unreached;
   const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);
   const failed = input.stats.statementsFailed + (un?.stats.statementsFailed ?? 0);
@@ -418,6 +439,18 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     }
   };
 
+  // Type claims: checked conversions whose value is typed by something no
+  // build can verify. Never blockers (--fail-on=type-claims opts in).
+  const claims = groupTypeClaims(input.typeClaims ?? []);
+  const renderClaims = () => {
+    if (claims.length === 0) return;
+    out.push("");
+    renderTypeClaims(claims, input.typeClaims!.length, out, c, (loc) => {
+      const p = locator.position(loc.file, loc.start);
+      return where({ file: loc.file, ...p });
+    });
+  };
+
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
     out.push(`  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`);
@@ -425,7 +458,9 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push("");
       renderDivergences();
     }
+    renderClaims();
     renderPerformance();
+    renderReachedOnly();
     return out.join("\n");
   }
 
@@ -466,7 +501,9 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     out.push("");
     renderDivergences();
   }
+  renderClaims();
   renderPerformance();
+  renderReachedOnly();
   return out.join("\n");
 }
 
@@ -542,6 +579,7 @@ export type CoverageFailOn =
   | "divergences"
   | "dynamic"
   | "dynamic-slots"
+  | "type-claims"
   | "node-islands"
   | "eager-node-islands"
   | "island-gaps";
@@ -551,6 +589,7 @@ export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
   "divergences",
   "dynamic",
   "dynamic-slots",
+  "type-claims",
   "node-islands",
   "eager-node-islands",
   "island-gaps",
@@ -569,6 +608,7 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   if (failOn === "dynamic" && (input.performance ?? []).some((d) => !isDynamicSlotCode(d.code)))
     return false;
   if (failOn === "dynamic-slots" && (input.dynamicSlots?.length ?? 0) > 0) return false;
+  if (failOn === "type-claims" && (input.typeClaims?.length ?? 0) > 0) return false;
   // The Node island gates (report-only islands count: they are what a
   // build would choose). Every island evaluates eagerly until deferred
   // evaluation lands, so eager-node-islands equals node-islands for now.
@@ -622,6 +662,7 @@ export function coverageEnvelope(
     compilerVersion: opts.compilerVersion,
     command: "coverage",
     entry: input.file,
+    ...(input.reachedOnly === true ? { coverageMode: "reached" as const } : {}),
     success: coveragePasses(input, opts.failOn ?? "blockers"),
     phase: input.preflightFailed
       ? "preflight"
@@ -654,6 +695,9 @@ export function coverageEnvelope(
             dynamicOps: slot.operations ?? 0,
           })),
         }
+      : {}),
+    ...(input.typeClaims !== undefined && input.typeClaims.length > 0
+      ? { typeClaims: typeClaimsEnvelope(groupTypeClaims(input.typeClaims), locator) }
       : {}),
     ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
     ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
@@ -703,6 +747,19 @@ function tiersEnvelope(tiers: TierReport, locator: SourceLocator): TiersEnvelope
       ...at(r.loc),
     })),
     units: tiers.units.map((u) => ({ ...unit(u), requests: u.requests, sites: u.sites })),
+    runtimeOptional: tiers.runtimeOptional.map((slot) => ({
+      name: slot.name,
+      storage: slot.storage,
+      narrowed: slot.narrowed,
+      ...(slot.decisions.length > 0 ? { slot: at(slot.decisions[0]!.target) } : {}),
+      reads: slot.reads.map(at),
+      decisions: slot.decisions.map((d) => ({
+        kind: d.kind,
+        target: at(d.target),
+        ...(d.cause !== null ? { cause: at(d.cause) } : {}),
+        detail: d.detail,
+      })),
+    })),
     localizedFailure: {
       errors: tiers.localizedFailure.errors,
       typeFailures: tiers.localizedFailure.typeFailures,
@@ -748,6 +805,94 @@ function unitMatches(u: DemotionUnit, query: string): boolean {
     u.name.split(" ")[0] === query ||
     `${u.owner ?? ""}:${u.name}` === query
   );
+}
+
+function typeClaimsEnvelope(
+  groups: readonly TypeClaimGroup[],
+  locator: SourceLocator,
+): TypeClaimEnvelope[] {
+  const at = (loc: SrcLoc): SourcePosition => ({
+    file: loc.file,
+    ...locator.position(loc.file, loc.start),
+  });
+  return groups.map((g) => ({
+    kind: g.kind,
+    ...(g.declaration !== undefined
+      ? {
+          declaration: {
+            package: g.declaration.package,
+            version: g.declaration.version,
+            name: g.declaration.name,
+            ...(g.declaration.selector !== "" ? { selector: g.declaration.selector } : {}),
+            at: g.declaration.at,
+            declaredType: g.declaration.declaredType,
+          },
+        }
+      : {}),
+    ...(g.binding !== undefined ? { binding: { name: g.binding.name, ...at(g.binding.loc) } } : {}),
+    ...(g.package !== undefined
+      ? {
+          package: g.package,
+          declarations: (g.declarations ?? []).map((d) => ({
+            package: d.package,
+            version: d.version,
+            name: d.name,
+            ...(d.selector !== "" ? { selector: d.selector } : {}),
+            at: d.at,
+            declaredType: d.declaredType,
+            count: d.count,
+          })),
+        }
+      : {}),
+    ...(g.callbacks !== undefined ? { callbacks: g.callbacks } : {}),
+    ...(g.asserted !== undefined ? { asserted: g.asserted } : {}),
+    ...(g.nativeOnly !== undefined ? { nativeOnly: g.nativeOnly } : {}),
+    ...(g.swallowed !== undefined ? { swallowed: g.swallowed.map(at) } : {}),
+    claimed: g.claimed,
+    count: g.sites.length,
+    sites: g.sites.map(at),
+    fix: g.fix,
+  }));
+}
+
+const TYPE_CLAIMS_SHOWN = 12;
+
+/** The type claims: one row per claim, most trusted first, with where the
+ * program converts its values and what would make it safe. */
+function renderTypeClaims(
+  groups: readonly TypeClaimGroup[],
+  conversions: number,
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: SrcLoc) => string,
+): void {
+  out.push(
+    `  ${c(YELLOW, "trusts unverified types")}   ${counted(conversions, "checked conversion")} on ${counted(groups.length, "claim")} ${c(DIM, "(compiles; a value that contradicts its claimed type throws a TypeError at the conversion)")}`,
+  );
+  for (const g of groups.slice(0, TYPE_CLAIMS_SHOWN)) {
+    out.push(
+      `    ${c(YELLOW, `×${g.sites.length}`.padStart(4))}  ${capMessage(typeClaimLabel(g))}`,
+    );
+    const shown = g.sites.slice(0, SITES_SHOWN).map(where).join(", ");
+    const more = g.sites.length > SITES_SHOWN ? ` (+${g.sites.length - SITES_SHOWN} more)` : "";
+    out.push(`          ${c(DIM, `at ${shown}${more}`)}`);
+    const hidden = g.swallowed ?? [];
+    if (hidden.length > 0) {
+      const first = hidden.slice(0, SITES_SHOWN).map(where).join(", ");
+      const rest = hidden.length > SITES_SHOWN ? ` (+${hidden.length - SITES_SHOWN} more)` : "";
+      out.push(
+        `          ${c(YELLOW, "unseen if it fails")}${c(DIM, `: ${first}${rest} ${hidden.length === 1 ? "is" : "are"} in a try whose handler ignores the error, where Node.js keeps the value`)}`,
+      );
+    }
+    out.push(`          ${c(DIM, `fix: ${g.fix}`)}`);
+  }
+  if (groups.length > TYPE_CLAIMS_SHOWN) {
+    const rest = groups.slice(TYPE_CLAIMS_SHOWN);
+    const restSites = rest.reduce((n, g) => n + g.sites.length, 0);
+    out.push(
+      `    ${c(DIM, `and ${counted(rest.length, "more claim")} (${counted(restSites, "conversion")}); --print=diagnostics lists them all`)}`,
+    );
+  }
 }
 
 const DYNAMIC_SLOTS_SHOWN = 20;
@@ -810,6 +955,52 @@ function renderLocalizedFailure(
     );
 }
 
+const RUNTIME_OPTIONAL_SLOTS_SHOWN = 20;
+const RUNTIME_OPTIONAL_READS_SHOWN = 3;
+const RUNTIME_OPTIONAL_DECISIONS_SHOWN = 2;
+
+/** The runtime-optional storage section of --explain-dynamic (report-only):
+ * the bindings and parameters the indexed-read analysis widened past the
+ * checker's type, with the decisions that widened them and the reads at
+ * which the checker still types them at the declared type. Those reads are
+ * where the checker's narrowing does not reach the storage, so lowering
+ * extracts the payload with a checked narrowing. */
+function renderRuntimeOptionalStorage(
+  slots: readonly RuntimeOptionalNarrowing[],
+  out: string[],
+  c: (code: string, s: string) => string,
+  where: (loc: { file: string; start: number }) => string,
+): void {
+  if (slots.length === 0) return;
+  out.push("");
+  out.push(
+    `    ${slots.length} runtime-optional slot${slots.length === 1 ? "" : "s"} ${c(DIM, "(report-only: widened storage the checker still reads at its declared type)")}`,
+  );
+  for (const slot of slots.slice(0, RUNTIME_OPTIONAL_SLOTS_SHOWN)) {
+    const slotAt = slot.decisions[0] !== undefined ? `  ${where(slot.decisions[0].target)}` : "";
+    out.push(
+      `    ${slot.name}${slotAt}  ${c(DIM, `(${slot.storage}, read as ${slot.narrowed} at ${slot.reads.length} site${slot.reads.length === 1 ? "" : "s"})`)}`,
+    );
+    for (const decision of slot.decisions.slice(0, RUNTIME_OPTIONAL_DECISIONS_SHOWN)) {
+      const cause = decision.cause === null ? "" : ` from ${where(decision.cause)}`;
+      const detail = decision.detail === "" ? "" : ` ${decision.detail}`;
+      out.push(`      ${c(DIM, "<-")} ${decision.kind}${cause}${detail}`);
+    }
+    const moreDecisions = slot.decisions.length - RUNTIME_OPTIONAL_DECISIONS_SHOWN;
+    if (moreDecisions > 0)
+      out.push(
+        `      ${c(DIM, `<- ${moreDecisions} more decision${moreDecisions === 1 ? "" : "s"}`)}`,
+      );
+    const shown = slot.reads.slice(0, RUNTIME_OPTIONAL_READS_SHOWN).map(where).join(", ");
+    const more = slot.reads.length - RUNTIME_OPTIONAL_READS_SHOWN;
+    out.push(`      ${c(DIM, `-> read at ${shown}${more > 0 ? ` (+${more} more)` : ""}`)}`);
+  }
+  if (slots.length > RUNTIME_OPTIONAL_SLOTS_SHOWN)
+    out.push(
+      `    ${c(DIM, `${slots.length - RUNTIME_OPTIONAL_SLOTS_SHOWN} more (--print=diagnostics lists all)`)}`,
+    );
+}
+
 /** `scriptc coverage --explain-dynamic[=<unit>]`: the dynamic tier today
  * and the demotion chains the report-only analysis computed. With a query,
  * only units whose name matches it (`x`, `Point.x`, `parse:x`). */
@@ -851,6 +1042,7 @@ export function renderExplainDynamic(
     );
   }
   if (query === undefined) renderLocalizedFailure(tiers.localizedFailure, out, c, where);
+  if (query === undefined) renderRuntimeOptionalStorage(tiers.runtimeOptional, out, c, where);
   const units = tiers.units.filter((u) => query === undefined || unitMatches(u, query));
   if (query !== undefined && units.length === 0) {
     out.push(`    no demoted unit matches '${query}'`);
@@ -896,7 +1088,7 @@ function renderNodeIslands(
 ): void {
   const n = report.islands.length + report.userModules.length;
   out.push(
-    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; a build needs the libnode pack for its target; --node-islands=${report.policy})`)}`,
   );
   if (n === 0) out.push(`    ${c(DIM, "none")}`);
   const widest = Math.max(0, ...report.islands.map((i) => i.class.length));

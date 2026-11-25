@@ -1,6 +1,7 @@
-/* Code generation from strings: `eval(...)`, `new Function(...)` and
- * `Function(...)`. A compiled binary embeds no JavaScript engine, so scriptc
- * answers exactly as `node --disallow-code-generation-from-strings` does:
+/* Code generation from strings: `eval(...)`, `new Function(...)`,
+ * `Function(...)`, and `<function>.constructor(...)`. A compiled binary
+ * embeds no JavaScript engine, so scriptc answers exactly as
+ * `node --disallow-code-generation-from-strings` does:
  * every call throws the catchable EvalError "Code generation from strings
  * disallowed for this context". Packages that probe for code generation
  * (zod 4's `allowsEval`, template engines, CSP-aware JITs) then take their
@@ -10,8 +11,21 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { isJsSourceFile, locOf } from "../program.js";
-import { DYN, F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
-import { nodeThrowExpr } from "../../ir/build.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+  STRING,
+} from "../../ir/ir.js";
+import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
+import { tryLowerExpression } from "./expressions/try-lower-expression.js";
+import { v8CalleeText } from "./expressions/narrowing.js";
+import { dynArgumentPack, lowerSpreadArgsCall } from "./call-arguments.js";
+import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { ambientUndefReadType, contextualUndefReadType } from "./lower-namespaces.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
@@ -30,6 +44,10 @@ export function codeGenerationCalleeOf(
   if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.CommaToken) {
     return codeGenerationCalleeOf(lowerer, e.right) === "eval" ? "eval" : null;
   }
+  // `<function>.constructor` is the Function constructor itself (Node's
+  // Function.prototype.constructor), so calling or constructing it refuses
+  // like the global spelling.
+  if (functionConstructorReceiverOf(lowerer, e) !== null) return "Function";
   // Syntactic pre-check first: every call and construction asks, and only
   // these spellings can name the globals (aliases are stdlib-resolved
   // symbols, checked below only when the spelling could match).
@@ -38,6 +56,48 @@ export function codeGenerationCalleeOf(
   if (text !== "eval" && text !== "Function" && !hasCodeGenerationAlias(lowerer)) return null;
   const name = stdlibGlobalNameOf(lowerer, e);
   return name === "eval" || name === "Function" ? name : null;
+}
+
+/** The receiver of a `constructor` read that answers the Function
+ * constructor: `<function>.constructor` and `<function>["constructor"]`,
+ * when the receiver is a function value whose type keeps the inherited
+ * Function.prototype member. A function the program gives its own
+ * `constructor` property keeps its own value, and an optional chain can
+ * short-circuit before the read, so neither is code generation. */
+export function functionConstructorReceiverOf(
+  lowerer: Lowerer,
+  callee: ts.Expression,
+): ts.Expression | null {
+  let e = callee;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  const receiver =
+    ts.isPropertyAccessExpression(e) &&
+    e.questionDotToken === undefined &&
+    e.name.text === "constructor"
+      ? e.expression
+      : ts.isElementAccessExpression(e) &&
+          e.questionDotToken === undefined &&
+          ts.isStringLiteral(e.argumentExpression) &&
+          e.argumentExpression.text === "constructor"
+        ? e.expression
+        : null;
+  if (receiver === null) return null;
+  try {
+    const type = lowerer.checker.getNonNullableType(lowerer.typeOf(receiver));
+    const checker = lowerer.checker;
+    if (
+      checker.getCallSignatures(type).length === 0 &&
+      checker.getConstructSignatures(type).length === 0
+    )
+      return null;
+    const member = checker.getPropertyOfType(type, "constructor");
+    if (member !== undefined && !lowerer.isStdlibSymbol(member)) return null;
+    return receiver;
+  } catch {
+    // A checker query about a node that never lowered answers nothing; the
+    // read keeps its ordinary lowering.
+    return null;
+  }
 }
 
 /** Some stable binding aliases `eval` or `Function` (`const F = Function`,
@@ -68,7 +128,16 @@ function indirectEvalPrefix(callee: ts.Expression): ts.Expression[] {
  * --disallow-code-generation-from-strings: the callee's own operands, then
  * the arguments in order (converted to strings for the Function
  * constructor), then the EvalError. The result carries the use site's type
- * (the throw always fires, so the value is never observed). */
+ * (the throw always fires, so the value is never observed).
+ *
+ * `f.constructor(...)` on a function VALUE is the one spelling whose answer
+ * the program can change: a function it gave its own `constructor` property
+ * calls that one, and a nullish `f` throws the property-read TypeError
+ * before an argument runs. A type cannot prove either away (a callable
+ * return-type annotation hides the write, and the receiver may be
+ * undefined), so the read and the call go through the checked-dynamic
+ * property table, which decides on the value. Only values that cannot take
+ * that tier keep the static refusal below. */
 export function lowerCodeGenerationCall(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.NewExpression,
@@ -76,10 +145,32 @@ export function lowerCodeGenerationCall(
 ): IrExpr {
   const loc = locOf(expr);
   const stmts: IrStmt[] = [];
+  // `f.constructor(...)` evaluates `f` first (bracketed to find the callee).
+  const receiverNode = functionConstructorReceiverOf(lowerer, expr.expression);
+  if (receiverNode !== null) {
+    const receiver = lowerer.lowerExpr(receiverNode);
+    const dispatched = lowerConstructorMember(lowerer, expr, receiverNode, receiver);
+    if (dispatched !== null) return dispatched;
+    stmts.push({ kind: "exprStmt", expr: receiver, loc: locOf(receiverNode) });
+  }
   for (const operand of indirectEvalPrefix(expr.expression)) {
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(operand), loc: locOf(operand) });
   }
-  for (const arg of expr.arguments?.nodes ?? []) {
+  const argNodes = expr.arguments?.nodes ?? [];
+  if (kind === "Function" && argNodes.some((arg) => ts.isSpreadElement(arg))) {
+    const spread = lowerFunctionSpreadCall(lowerer, argNodes, loc);
+    if (spread !== null) {
+      const type = useSiteType(lowerer, expr);
+      return {
+        kind: "seqExpr",
+        stmts: [...stmts, { kind: "exprStmt", expr: spread, loc }],
+        result: nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, type, loc),
+        type,
+        loc,
+      };
+    }
+  }
+  for (const arg of argNodes) {
     if (ts.isSpreadElement(arg)) {
       lowerer.noLowering(
         `${kind === "eval" ? "eval" : "the Function constructor"} with spread arguments`,
@@ -108,6 +199,248 @@ export function lowerCodeGenerationCall(
   const type = useSiteType(lowerer, expr);
   const refusal = nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, type, loc);
   return stmts.length === 0 ? refusal : { kind: "seqExpr", stmts, result: refusal, type, loc };
+}
+
+/** `<function>.constructor(...)` and `new <function>.constructor(...)` on a
+ * value that crosses into the checked-dynamic tier: the property read
+ * decides at run time. The receiver is evaluated once into a hidden slot,
+ * the read happens before the arguments (so a nullish receiver throws Node's
+ * TypeError first), and the value the read answers is called, or
+ * constructed, as JavaScript calls or constructs it — a function's own
+ * `constructor` property wins. Null for a receiver whose dynamic form the
+ * runtime does not answer this way — a class object, a stdlib global, a type
+ * without a dynamic form — which keeps the static refusal. */
+function lowerConstructorMember(
+  lowerer: Lowerer,
+  expr: ts.CallExpression | ts.NewExpression,
+  receiverNode: ts.Expression,
+  receiver: IrExpr,
+): IrExpr | null {
+  if (stdlibGlobalNameOf(lowerer, receiverNode) !== null) return null;
+  if (!dynamicFunctionValueType(lowerer, receiver.type)) return null;
+  const loc = locOf(expr);
+  const slot = lowerer.declareHiddenLocal("%constructorReceiver", DYN);
+  const value: IrExpr = { kind: "varRef", localId: slot.id, type: DYN, loc };
+  const member: IrExpr = {
+    kind: "dynKeyGet",
+    value,
+    key: strLit("constructor", loc),
+    type: DYN,
+    loc,
+  };
+  const calleeName = v8CalleeText(expr.expression);
+  const argNodes = expr.arguments?.nodes ?? [];
+  let result: IrExpr;
+  if (ts.isCallExpression(expr)) {
+    if (argNodes.some((arg) => ts.isSpreadElement(arg))) {
+      const spread = lowerSpreadArgsCall(lowerer, expr, member, loc);
+      if (spread === null || spread.kind !== "dynCall") return null;
+      result = { ...spread, receiver: value, calleeName };
+    } else {
+      result = {
+        kind: "dynCall",
+        callee: member,
+        receiver: value,
+        calleeName,
+        args: argNodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      };
+    }
+  } else if (!argNodes.some((arg) => ts.isSpreadElement(arg))) {
+    result = checkedClassConstruction(
+      lowerer,
+      member,
+      argNodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      loc,
+      calleeName,
+    );
+  } else {
+    // A runtime-length spread determines the argument list before the
+    // construction check runs. The read still happens first, so a nullish
+    // receiver throws before any argument evaluates. The packed construction
+    // helper carries the classes' dispatch, so a value the program made
+    // `constructor` constructs the class it names instead of reaching the
+    // runtime's untyped constructor path.
+    const memberSlot = lowerer.declareHiddenLocal("%constructorMember", DYN);
+    const { stmts, pack } = dynArgumentPack(lowerer, argNodes, loc, { blame: expr });
+    result = {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: memberSlot.id, init: member, loc }, ...stmts],
+      result: checkedClassConstructionPacked(
+        lowerer,
+        varRef(memberSlot.id, DYN, loc),
+        pack(),
+        loc,
+        calleeName,
+      ),
+      type: DYN,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: slot.id,
+        init: lowerer.coerceToExpected(receiver, DYN),
+        loc: locOf(receiverNode),
+      },
+    ],
+    result,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A value the checked-dynamic property table answers `constructor` on as a
+ * function value: a boxed closure, or an undefined-armed union of them. */
+function dynamicFunctionValueType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "func" || type.kind === "dyn") return lowerer.dynConvertible(type);
+  if (type.kind !== "union") return false;
+  const def = lowerer.unions.get(type.unionId);
+  return (
+    def !== undefined &&
+    lowerer.dynConvertible(type) &&
+    def.arms.every(
+      (arm) =>
+        arm.kind === "func" ||
+        arm.kind === "dyn" ||
+        arm.kind === "undefinedT" ||
+        arm.kind === "nullT",
+    )
+  );
+}
+
+/** `new Function(...parts)` and `Function(a, ...rest)`: the arguments,
+ * spread operands flattened as any call of an untyped function flattens
+ * them, reach the constructor's value, which converts each to a string in
+ * order and throws. Null when an argument has no untyped form. */
+function lowerFunctionSpreadCall(
+  lowerer: Lowerer,
+  argNodes: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const args: IrExpr[] = [];
+  const spreads: { arg: number; what: string }[] = [];
+  for (const [index, arg] of argNodes.entries()) {
+    const node = ts.isSpreadElement(arg) ? arg.expression : arg;
+    const value = tryLowerExpression(lowerer, node);
+    if (value === null) return null;
+    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type)) return null;
+    args.push(lowerer.coerceToExpected(value, DYN));
+    if (ts.isSpreadElement(arg)) spreads.push({ arg: index, what: ts.getTextOfNode(node) });
+  }
+  return {
+    kind: "dynCall",
+    callee: functionConstructorValue(lowerer, loc),
+    calleeName: "Function",
+    args,
+    spreads,
+    type: DYN,
+    loc,
+  };
+}
+
+/** The Function constructor as a value that receives every argument: each
+ * converts to a string in order, with the conversion any single argument
+ * gets (an object's own toString runs, and its exception leaves before the
+ * refusal), then the EvalError. */
+function functionConstructorValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  // A `%dyn.` helper: generated code, which the likely-hot report leaves out.
+  const name = "%dyn.FunctionConstructor";
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const values = varRef("values", DYN, loc);
+    const index = varRef("index", F64, loc);
+    const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "first", name: "first", type: DYN },
+        { localId: "values", name: "values", type: DYN },
+      ],
+      locals: [
+        { id: "first", name: "first", type: DYN, mutable: false },
+        { id: "values", name: "values", type: DYN, mutable: false },
+        { id: "index", name: "index", type: F64, mutable: true },
+      ],
+      returnType: DYN,
+      body: [
+        { kind: "varDecl", localId: "index", init: number(0), loc },
+        {
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "dynCheck",
+              value: {
+                kind: "dynKeyGet",
+                value: values,
+                key: strLit("length", loc),
+                type: DYN,
+                loc,
+              },
+              type: F64,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          loc,
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "dyn.toStringCoerce",
+                args: [
+                  {
+                    kind: "dynKeyGet",
+                    value: values,
+                    key: lowerer.coerceToExpected(index, DYN),
+                    type: DYN,
+                    loc,
+                  },
+                ],
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: "index",
+              value: { kind: "bin", op: "+", left: index, right: number(1), type: F64, loc },
+              loc,
+            },
+          ],
+        },
+        {
+          kind: "exprStmt",
+          expr: nodeThrowExpr(6, "", CODE_GENERATION_DISALLOWED, F64, loc),
+          loc,
+        },
+        { kind: "return", value: dynUndefinedExpr(loc), loc },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: {
+      kind: "closure",
+      fnName: name,
+      captures: [],
+      type: { kind: "func", params: [DYN], ret: DYN, rest: true, argumentsAll: true },
+      loc,
+    },
+    fnName: "Function",
+    type: DYN,
+    loc,
+  };
 }
 
 function isPrimitiveIrType(t: IrType): boolean {

@@ -18,7 +18,9 @@ Install the CLI globally with npm:
 $ npm install -g scriptc
 ```
 
-npm installs the native compiler for your platform as an optional dependency, so keep optional dependencies and install scripts enabled. Check that it works:
+npm installs the native compiler for your platform as an optional dependency. An install script then copies that executable into the `scriptc` package and records where the compiler finds its helper files. The platform package alone does not install a working `scriptc` command, so keep optional dependencies and install scripts enabled. If npm blocks the install script, `scriptc` prints `scriptc: native installation is incomplete; enable install scripts and reinstall scriptc`; reinstall with install scripts enabled to fix it.
+
+Check that it works:
 
 ```console
 $ scriptc --version

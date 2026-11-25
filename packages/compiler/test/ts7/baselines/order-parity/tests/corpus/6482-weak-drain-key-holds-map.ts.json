@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6482-weak-drain-key-holds-map.ts"
+ ],
+ "diags": []
+}

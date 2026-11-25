@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "mbedtls/aes.h"
+#include "mbedtls/chachapoly.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/platform_util.h"
 
@@ -184,12 +185,212 @@ static ScrBytes *scr_wc_aes_kw(bool unwrap, const unsigned char *key, size_t key
   return out;
 }
 
+
+/* ── AES-OCB (RFC 7253) and ChaCha20-Poly1305 ──────────────────────────
+ * The two AEADs Node's WebCrypto also exposes: OCB over the mbedTLS AES
+ * block cipher, with its nonce, associated data and 64-, 96- or 128-bit
+ * tag, and ChaCha20-Poly1305 with mbedTLS's implementation. */
+
+static void ocb_double(unsigned char b[16]) {
+  int carry = b[0] >> 7;
+  for (int i = 0; i < 15; i++) b[i] = (unsigned char)((b[i] << 1) | (b[i + 1] >> 7));
+  b[15] = (unsigned char)(b[15] << 1);
+  if (carry) b[15] ^= 0x87;
+}
+
+static void ocb_enc(mbedtls_aes_context *aes, const unsigned char in[16],
+                    unsigned char out[16]) {
+  mbedtls_aes_crypt_ecb(aes, MBEDTLS_AES_ENCRYPT, in, out);
+}
+
+/* 128 bits of the 192-bit stretch starting at bit `offset` (0-based). */
+static void ocb_stretch_bits(const unsigned char stretch[24], unsigned offset,
+                             unsigned char out[16]) {
+  for (unsigned i = 0; i < 16; i++) {
+    unsigned bit = offset + 8 * i;
+    unsigned byte = bit / 8, shift = bit % 8;
+    unsigned char hi = stretch[byte];
+    unsigned char lo = byte + 1 < 24 ? stretch[byte + 1] : 0;
+    out[i] = (unsigned char)(shift == 0 ? hi : (hi << shift) | (lo >> (8 - shift)));
+  }
+}
+
+/* OCB's HASH over the associated data. */
+static void ocb_hash(mbedtls_aes_context *aes, const unsigned char l_star[16],
+                     const unsigned char l_dollar[16], const unsigned char *a, size_t alen,
+                     unsigned char sum[16]) {
+  unsigned char l[64][16];
+  memcpy(l[0], l_dollar, 16);
+  ocb_double(l[0]);
+  for (int i = 1; i < 64; i++) {
+    memcpy(l[i], l[i - 1], 16);
+    ocb_double(l[i]);
+  }
+  memset(sum, 0, 16);
+  unsigned char offset[16] = {0};
+  size_t m = alen / 16;
+  for (size_t i = 1; i <= m; i++) {
+    unsigned ntz = 0;
+    while (((i >> ntz) & 1) == 0) ntz++;
+    for (int j = 0; j < 16; j++) offset[j] ^= l[ntz][j];
+    unsigned char block[16], enc[16];
+    for (int j = 0; j < 16; j++) block[j] = a[(i - 1) * 16 + j] ^ offset[j];
+    ocb_enc(aes, block, enc);
+    for (int j = 0; j < 16; j++) sum[j] ^= enc[j];
+  }
+  size_t rest = alen % 16;
+  if (rest) {
+    for (int j = 0; j < 16; j++) offset[j] ^= l_star[j];
+    unsigned char block[16] = {0}, enc[16];
+    memcpy(block, a + m * 16, rest);
+    block[rest] = 0x80;
+    for (int j = 0; j < 16; j++) block[j] ^= offset[j];
+    ocb_enc(aes, block, enc);
+    for (int j = 0; j < 16; j++) sum[j] ^= enc[j];
+  }
+}
+
+static ScrBytes *scr_wc_aes_ocb(bool decrypt, const unsigned char *key, size_t key_len,
+                                const ScrWebCryptoAesParams *p, const unsigned char *in,
+                                size_t len) {
+  mbedtls_aes_context aes, dec;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_init(&dec);
+  ScrBytes *out = NULL;
+  unsigned char l_star[16] = {0}, l_dollar[16], l[64][16];
+  unsigned char nonce[16], ktop[16], stretch[24], offset[16], tag[16], sum[16];
+  size_t tag_len = p->tag_len;
+  if (p->iv_len < 1 || p->iv_len > 15 || (tag_len != 8 && tag_len != 12 && tag_len != 16) ||
+      (decrypt && len < tag_len))
+    goto done;
+  if (mbedtls_aes_setkey_enc(&aes, key, (unsigned)(key_len * 8)) != 0) goto done;
+  /* OCB decrypts a whole block with the inverse cipher, which needs its own
+   * (decryption) key schedule. */
+  if (decrypt && mbedtls_aes_setkey_dec(&dec, key, (unsigned)(key_len * 8)) != 0) goto done;
+  ocb_enc(&aes, l_star, l_star);
+  memcpy(l_dollar, l_star, 16);
+  ocb_double(l_dollar);
+  memcpy(l[0], l_dollar, 16);
+  ocb_double(l[0]);
+  for (int i = 1; i < 64; i++) {
+    memcpy(l[i], l[i - 1], 16);
+    ocb_double(l[i]);
+  }
+  /* Nonce = num2str(TAGLEN mod 128, 7) || zeros(120 - bitlen(N)) || 1 || N. */
+  memset(nonce, 0, 16);
+  nonce[0] = (unsigned char)(((tag_len * 8) % 128) << 1);
+  nonce[15 - p->iv_len] |= 0x01;
+  memcpy(nonce + 16 - p->iv_len, p->iv, p->iv_len);
+  unsigned bottom = nonce[15] & 0x3f;
+  unsigned char ktop_input[16];
+  memcpy(ktop_input, nonce, 16);
+  ktop_input[15] &= 0xc0;
+  ocb_enc(&aes, ktop_input, ktop);
+  memcpy(stretch, ktop, 16);
+  for (int i = 0; i < 8; i++) stretch[16 + i] = (unsigned char)(ktop[i] ^ ktop[i + 1]);
+  ocb_stretch_bits(stretch, bottom, offset);
+  ocb_hash(&aes, l_star, l_dollar, p->aad, p->aad_len, sum);
+
+  size_t body = decrypt ? len - tag_len : len;
+  size_t m = body / 16, rest = body % 16;
+  size_t out_len = decrypt ? body : body + tag_len;
+  out = scr_bytes_new(SCR_BYTES_U8, (double)out_len);
+  unsigned char checksum[16] = {0};
+  unsigned char off[16];
+  memcpy(off, offset, 16);
+  for (size_t i = 1; i <= m; i++) {
+    unsigned ntz = 0;
+    while (((i >> ntz) & 1) == 0) ntz++;
+    for (int j = 0; j < 16; j++) off[j] ^= l[ntz][j];
+    unsigned char block[16], enc[16];
+    if (decrypt) {
+      for (int j = 0; j < 16; j++) block[j] = in[(i - 1) * 16 + j] ^ off[j];
+      mbedtls_aes_crypt_ecb(&dec, MBEDTLS_AES_DECRYPT, block, enc);
+      for (int j = 0; j < 16; j++) out->data[(i - 1) * 16 + j] = enc[j] ^ off[j];
+      for (int j = 0; j < 16; j++) checksum[j] ^= out->data[(i - 1) * 16 + j];
+    } else {
+      for (int j = 0; j < 16; j++) block[j] = in[(i - 1) * 16 + j] ^ off[j];
+      ocb_enc(&aes, block, enc);
+      for (int j = 0; j < 16; j++) out->data[(i - 1) * 16 + j] = enc[j] ^ off[j];
+      for (int j = 0; j < 16; j++) checksum[j] ^= in[(i - 1) * 16 + j];
+    }
+  }
+  if (rest) {
+    for (int j = 0; j < 16; j++) off[j] ^= l_star[j];
+    unsigned char pad[16];
+    ocb_enc(&aes, off, pad);
+    for (size_t j = 0; j < rest; j++) {
+      if (decrypt) {
+        out->data[m * 16 + j] = (unsigned char)(in[m * 16 + j] ^ pad[j]);
+        checksum[j] ^= out->data[m * 16 + j];
+      } else {
+        out->data[m * 16 + j] = (unsigned char)(in[m * 16 + j] ^ pad[j]);
+        checksum[j] ^= in[m * 16 + j];
+      }
+    }
+    checksum[rest] ^= 0x80;
+  }
+  unsigned char tag_input[16];
+  for (int j = 0; j < 16; j++) tag_input[j] = (unsigned char)(checksum[j] ^ off[j] ^ l_dollar[j]);
+  ocb_enc(&aes, tag_input, tag);
+  for (int j = 0; j < 16; j++) tag[j] ^= sum[j];
+  if (decrypt) {
+    unsigned char diff = 0;
+    for (size_t j = 0; j < tag_len; j++) diff |= (unsigned char)(tag[j] ^ in[body + j]);
+    if (diff) {
+      scr_bytes_release(out);
+      out = NULL;
+    }
+  } else {
+    memcpy(out->data + body, tag, tag_len);
+  }
+done:
+  mbedtls_aes_free(&aes);
+  mbedtls_aes_free(&dec);
+  return out;
+}
+
+static ScrBytes *scr_wc_chacha_poly(bool decrypt, const unsigned char *key, size_t key_len,
+                                    const ScrWebCryptoAesParams *p, const unsigned char *in,
+                                    size_t len) {
+  if (key_len != 32 || p->iv_len != 12 || p->tag_len != 16 || (decrypt && len < 16)) return NULL;
+  size_t body = decrypt ? len - 16 : len;
+  ScrBytes *out = scr_bytes_new(SCR_BYTES_U8, (double)body);
+  mbedtls_chachapoly_context ctx;
+  mbedtls_chachapoly_init(&ctx);
+  int rc = mbedtls_chachapoly_setkey(&ctx, key);
+  if (rc == 0 && decrypt) {
+    rc = mbedtls_chachapoly_auth_decrypt(&ctx, body, p->iv, p->aad, p->aad_len, in + body, in,
+                                         out->data);
+  } else if (rc == 0) {
+    unsigned char tag[16];
+    rc = mbedtls_chachapoly_encrypt_and_tag(&ctx, body, p->iv, p->aad, p->aad_len, in, out->data,
+                                            tag);
+    if (rc == 0) {
+      ScrBytes *full = scr_bytes_new(SCR_BYTES_U8, (double)(body + 16));
+      memcpy(full->data, out->data, body);
+      memcpy(full->data + body, tag, 16);
+      scr_bytes_release(out);
+      out = full;
+    }
+  }
+  mbedtls_chachapoly_free(&ctx);
+  if (rc != 0) {
+    scr_bytes_release(out);
+    return NULL;
+  }
+  return out;
+}
+
 /* The cipher scr_webcrypto_cipher runs: +1 output bytes, or NULL when the
  * operation fails (Node's OperationError). */
 static ScrBytes *scr_wc_aes(const char *name, bool decrypt, const unsigned char *key,
                             size_t key_len, const ScrWebCryptoAesParams *p,
                             const unsigned char *in, size_t len) {
   if (strcmp(name, "AES-KW") == 0) return scr_wc_aes_kw(decrypt, key, key_len, in, len);
+  if (strcmp(name, "AES-OCB") == 0) return scr_wc_aes_ocb(decrypt, key, key_len, p, in, len);
+  if (strcmp(name, "ChaCha20-Poly1305") == 0)
+    return scr_wc_chacha_poly(decrypt, key, key_len, p, in, len);
   if (strcmp(name, "AES-GCM") == 0) return scr_wc_aes_gcm(decrypt, key, key_len, p, in, len);
   if (strcmp(name, "AES-CBC") == 0) return scr_wc_aes_cbc(decrypt, key, key_len, p, in, len);
   return scr_wc_aes_ctr(key, key_len, p, in, len);

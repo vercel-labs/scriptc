@@ -1,5 +1,5 @@
 // The translation units and defines of the vendored zlib (packages/runtime/vendor/zlib,
-// the copy Node v24.22.0 bundles in deps/zlib), chosen per target the way Node's
+// the copy Node v24.22.1 bundles in deps/zlib), chosen per target the way Node's
 // deps/zlib/zlib.gyp chooses them. The SIMD units carry their own target attributes
 // and check the CPU at run time, so every unit builds with the same flags. Compressed
 // output does not depend on these choices. packages/compiler/src/backend/vendor-inputs.ts

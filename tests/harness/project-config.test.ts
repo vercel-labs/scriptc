@@ -73,6 +73,29 @@ test("node-types: Headers, Request and Response members typed by undici-types ru
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a type derived from the undici-types Response class is the native handle", async () => {
+  const outDir = outDirFor("builtin-class-derived-types");
+  const entry = join(nodeTypesDir, "builtin-class-derived-types.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32"
+        ? "builtin-class-derived-types.exe"
+        : "builtin-class-derived-types",
+    ),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: fetch's string | URL | Request input and a custom fetch cast to typeof fetch", async () => {
   const outDir = outDirFor("fetch-input-unions");
   const entry = join(nodeTypesDir, "fetch-input-unions.ts");
@@ -100,12 +123,34 @@ for (const [name, title] of [
     "eventLoopUtilization and monitorEventLoopDelay follow @types/node's types",
   ],
   ["timeout-type", "NodeJS.Timeout fields, ref/unref/hasRef and clearInterval under @types/node"],
+  ["console-values", "console and its output methods as values under @types/node"],
   ["x509-methods", "X509Certificate's methods and the legacy object under @types/node"],
+  ["x509-issuer-certificate", "X509Certificate's issuerCertificate under @types/node"],
   ["tls-peer-certificates", "TLS socket certificate accessors under @types/node"],
   ["tls-client-certificates", "mutual TLS with client certificates under @types/node"],
   [
     "tls-server-contexts",
     "tls.Server addContext, setSecureContext and tlsClientError under @types/node",
+  ],
+  [
+    "process-stream-member-writes",
+    "write assigned through a stored NodeJS.WriteStream is seen by every writer and put back, under @types/node",
+  ],
+  [
+    "child-windows-only-options",
+    "Windows-only child options, a dynamic env value and a stream-typed stdin's end under @types/node",
+  ],
+  [
+    "child-sync-option-evaluation",
+    "option values a synchronous child launch does not read are evaluated in place under @types/node",
+  ],
+  [
+    "child-held-exit-listeners",
+    "a function passed by name as an exit or close listener keeps its number code under @types/node",
+  ],
+  [
+    "async-resource",
+    "AsyncResource's constructor, runInAsyncScope, bind and static bind under @types/node",
   ],
 ] as const) {
   test(`node-types: ${title}`, async () => {
@@ -227,6 +272,27 @@ test("node-types: dgram socket options under @types/node", async () => {
   const entry = join(nodeTypesDir, "dgram-options.ts");
   const result = await compile(entry, {
     outPath: join(outDir, process.platform === "win32" ? "dgram-options.exe" : "dgram-options"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: dgram.Socket members under @types/node", async () => {
+  const outDir = outDirFor("dgram-socket-members");
+  const entry = join(nodeTypesDir, "dgram-socket-members.ts");
+  const result = await compile(entry, {
+    outPath: join(
+      outDir,
+      process.platform === "win32" ? "dgram-socket-members.exe" : "dgram-socket-members",
+    ),
     outDir,
     sanitize,
   });
@@ -435,6 +501,22 @@ test("indexed-strict: the project's EXTRA strictness is honored — preflight fa
   expect(result.diagnostics.some((d) => d.message.includes("possibly 'undefined'"))).toBe(true);
 });
 
+test("spi-off-union-field: a union-typed field with an initializer compiles under strictPropertyInitialization OFF", async () => {
+  const outDir = outDirFor("spi-off-union-field");
+  const entry = join(fixture("spi-off-union-field"), "main.ts");
+  const result = await compile(entry, { outPath: join(outDir, "main"), outDir, sanitize });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  // The same program without the field initializer is fenced (see
+  // tests/fixtures/strictness/spi-off-union-field/main.ts and the
+  // diagnostics/spi-off fixture); Node is the oracle for this direction.
+  expect(native.stdout).toBe(node.stdout);
+});
+
 test("project paths: TS 7 checking and native module lowering share the configured aliases", async () => {
   const outDir = outDirFor("project-paths");
   const result = await compile(join(fixture("project-paths"), "main.ts"), {
@@ -629,6 +711,23 @@ test("node-types: RequestInit-derived options carry BodyInit and HeadersInit int
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: a FormData fetch body fences by name instead of stringifying", async () => {
+  const outDir = outDirFor("fetch-formdata-body-fences");
+  const result = await compile(join(nodeTypesDir, "fetch-formdata-body-fences.ts"), {
+    outPath: join(outDir, "fetch-formdata-body-fences"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  const rendered = renderDiagnostics(result.diagnostics, result.sourceTexts, {
+    color: false,
+  }).replaceAll(nodeTypesDir + "/", "");
+  await expect(rendered).toMatchFileSnapshot(
+    "__snapshots__/node-types-fetch-formdata-body-fences.txt",
+  );
+});
+
 test("node-types: stream subclasses extend the @types/node stream classes", async () => {
   const outDir = outDirFor("stream-subclass-hooks");
   const entry = join(nodeTypesDir, "stream-subclass-hooks.ts");
@@ -681,6 +780,27 @@ test("node-types: streams construct and child listeners take @types/node's param
   ]);
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: a held close listener declaring a number code throws for a signal's null", async () => {
+  const outDir = outDirFor("child-held-exit-listener-signal");
+  const entry = join(nodeTypesDir, "child-held-exit-listener-signal.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "child-held-exit-listener-signal"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const failure = await execFileAsync(result.binaryPath).then(
+    () => null,
+    (error: { stdout?: string; stderr?: string }) => error,
+  );
+  expect(failure).not.toBeNull();
+  expect(failure?.stdout).toBe("");
+  expect(failure?.stderr).toContain(
+    "TypeError: an 'exit' or 'close' listener declaring a number exit code received null",
+  );
 });
 
 test("node-types: promisified setTimeout and setImmediate lower as timers/promises", async () => {
@@ -805,6 +925,22 @@ test("node-types: exec's numeric ExecException.code remains a named fence", asyn
   for (const diagnostic of result.diagnostics) {
     expect(diagnostic.message).toContain("ExecException.code");
   }
+});
+
+test("node-types: subprocess.stdio is a named fence, also under .length", async () => {
+  // The declared 5-tuple's arity must not answer for Node's array, which
+  // has one entry per configured stdio slot.
+  const dir = outDirFor("node-child-stdio-fences");
+  const entry = join(nodeTypesDir, "child-stdio-fences.ts");
+  const result = await compile(entry, {
+    outPath: join(dir, "child-stdio-fences"),
+    outDir: dir,
+    sanitize,
+  });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC2020"]);
+  expect(result.diagnostics[0]!.message).toContain("ChildProcess.stdio");
 });
 
 test("node-types: fs functions take URL paths under @types/node's PathLike", async () => {
@@ -1154,6 +1290,42 @@ test("node-types: ECDH matches Node under @types/node", async () => {
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
 
+test("node-types: crypto.constants as an object matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-crypto-constants");
+  const entry = join(nodeTypesDir, "crypto-constants-object.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "crypto-constants-object"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("node-types: crypto.Certificate (SPKAC) matches Node under @types/node", async () => {
+  const outDir = outDirFor("node-spkac");
+  const entry = join(nodeTypesDir, "crypto-spkac-certificate.ts");
+  const result = await compile(entry, {
+    outPath: join(outDir, "crypto-spkac-certificate"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("node-types: DiffieHellman matches Node under @types/node", async () => {
   const outDir = outDirFor("node-dh");
   const entry = join(nodeTypesDir, "dh.ts");
@@ -1366,6 +1538,219 @@ test("no-types-node: a bare project outside the repo compiles on the fallback de
   expect(stdout).toBe("hi bare\n");
 });
 
+test("no-types-node: a digest takes every Buffer encoding on the fallback declarations", async () => {
+  // Node decodes a digest with Buffer.toString(encoding), so every Buffer
+  // encoding spells a string digest, not just @types/node's narrower
+  // BinaryToTextEncoding. The fallback declarations type the whole set
+  // (a project with @types/node gets that package's union instead), and
+  // the program's output must be the one Node produces for each spelling.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-digest-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `import { createHash, createHmac, hash, type Encoding } from "node:crypto";
+
+const data = "héllo \\u{1F600}";
+const encodings: Encoding[] = [
+  "hex", "base64", "base64url", "latin1", "binary", "utf8",
+  "utf-8", "ascii", "utf16le", "utf-16le", "ucs2", "ucs-2",
+];
+for (const encoding of encodings) {
+  const digests = [
+    createHash("sha256").update(data).digest(encoding),
+    createHmac("sha256", "key").update(data).digest(encoding),
+    hash("sha256", data, encoding),
+    hash("sha256", data, { outputEncoding: encoding }),
+  ];
+  for (const digest of digests) {
+    console.log(encoding, digest.length, Buffer.from(digest, "utf8").toString("hex"));
+  }
+}
+console.log(createHash("sha256").update(data).digest().length);
+console.log(hash("sha256", data, "buffer").length);
+`,
+  );
+  const outDir = outDirFor("bare-digest");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("no-types-node: fetch takes a Request and RequestInit cache and credentials on the fallback declarations", async () => {
+  // The fallback RequestInit carries Node's whole dictionary, and fetch
+  // takes a RequestInfo. The three members a vendored loader passes without
+  // @types/node (cache, credentials, priority) compile: cache and
+  // credentials convert and read back as Node reads them, and priority is
+  // accepted and ignored, as Node ignores it.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-fetch-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const request = new Request("data:text/plain,hello", {
+  method: "GET",
+  cache: "no-store",
+  credentials: "include",
+  priority: "high",
+});
+console.log(request.cache, request.credentials, request.mode, request.redirect);
+const response = await fetch(request);
+console.log(await response.text());
+const direct = await fetch("data:text/plain,world", { cache: "force-cache", credentials: "omit" });
+console.log(await direct.text());
+`,
+  );
+  const outDir = outDirFor("bare-fetch");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("no-types-node: the typed stdin stream surface resolves on the fallback declarations", async () => {
+  // The paused-mode stream members (readable events, read(size),
+  // readableLength, pause/resume/isPaused) are declared only in the
+  // shipped fallback; a project without @types/node types them from
+  // there. Compiled in a bare project, then run against the same empty
+  // closed stdin Node sees, the two must print the same lines.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-stdin-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `console.log("initial", process.stdin.isPaused(), process.stdin.readableLength, process.stdin.read());
+
+process.stdin.on("readable", () => {
+  const chunk: Uint8Array | null = process.stdin.read(4);
+  console.log("readable", chunk === null, process.stdin.readableLength, process.stdin.isPaused());
+});
+
+process.stdin.on("end", () => {
+  process.stdin.pause();
+  console.log("end", process.stdin.isPaused(), process.stdin.read() === null);
+  process.stdin.resume();
+  console.log("resumed", process.stdin.isPaused());
+});
+`,
+  );
+  const outDir = outDirFor("bare-stdin");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  // stdin must be CLOSED, not merely quiet: a 'readable' listener keeps
+  // Node and the native loop alive until EOF, so an open pipe would hang.
+  const runClosedStdin = (
+    cmd: string,
+    args: string[],
+  ): Promise<{ stdout: string; stderr: string }> =>
+    new Promise((resolve, reject) => {
+      const child = execFile(cmd, args, { encoding: "utf8" }, (err, stdout, stderr) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve({ stdout, stderr });
+      });
+      child.stdin?.end();
+    });
+  const [native, node] = await Promise.all([
+    runClosedStdin(result.binaryPath, []),
+    runClosedStdin(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(native.stdout).toContain("resumed true");
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
+test("no-types-node: uncaught exception listeners type on the fallback declarations", async () => {
+  // The monitor and handler families are declared only in the shipped
+  // fallback; a project without @types/node types them from there. The
+  // listener receives the thrown value, so the parameter is unknown. The
+  // program registers through on, once, off, and prependListener, then
+  // throws from a timer so both families observe it before exit.
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-bare-uncaught-"));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  writeFileSync(
+    join(dir, "main.ts"),
+    `const seen: string[] = [];
+process.on("exit", (code: number) => {
+  console.log("exit", code, seen.join(","));
+});
+const message = (err: unknown) => (err instanceof Error ? err.message : typeof err);
+const firstMonitor = (err: unknown, origin: string) => {
+  seen.push("prepend monitor " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtExceptionMonitor", firstMonitor);
+process.on("uncaughtExceptionMonitor", (err: unknown, origin: string) => {
+  seen.push("monitor " + message(err) + " " + origin);
+});
+const handler = (err: unknown, origin: string) => {
+  seen.push("handler " + message(err) + " " + origin);
+};
+process.on("uncaughtException", handler);
+process.off("uncaughtException", handler);
+const firstHandler = (err: unknown, origin: string) => {
+  seen.push("prepend handler " + message(err) + " " + origin);
+};
+process.prependListener("uncaughtException", firstHandler);
+process.once("uncaughtException", (err: unknown) => {
+  seen.push("once " + message(err));
+});
+setTimeout(() => {
+  throw new Error("kaboom");
+}, 0);
+`,
+  );
+  const outDir = outDirFor("bare-uncaught");
+  const result = await compile(join(dir, "main.ts"), {
+    outPath: join(outDir, "main"),
+    outDir,
+    sanitize,
+  });
+  expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+  if (!result.ok) return;
+  const [native, node] = await Promise.all([
+    execFileAsync(result.binaryPath),
+    execFileAsync(process.execPath, [
+      "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+      join(dir, "main.ts"),
+    ]),
+  ]);
+  expect(native.stdout).toBe(node.stdout);
+  expect(native.stdout).toContain("prepend monitor kaboom uncaughtException");
+  expect(comparableStderr(native.stderr)).toBe(node.stderr);
+});
+
 test("dot-parent: bare '.' and '..' imports build and run (the TS project dialect)", async () => {
   // The vercel-CLI spelling (`from '..'` for a parent directory's index):
   // scriptc-only — Node refuses directory imports when running raw TS as
@@ -1400,6 +1785,22 @@ test("node-types: terminal properties and filesystem error metadata match Node",
   expect(native.stdout).toBe(node.stdout);
   expect(comparableStderr(native.stderr)).toBe(node.stderr);
 });
+
+for (const name of ["terminal-method-answers.ts", "terminal-method-answers-untyped.mjs"]) {
+  test(`node-types: optional calls of a piped process stream's terminal methods answer undefined (${name})`, async () => {
+    const outDir = outDirFor(name);
+    const entry = join(nodeTypesDir, name);
+    const result = await compile(entry, { outPath: join(outDir, "answers"), outDir, sanitize });
+    expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
+    if (!result.ok) return;
+    const [native, node] = await Promise.all([
+      execFileAsync(result.binaryPath),
+      execFileAsync(process.execPath, ["--disable-warning=MODULE_TYPELESS_PACKAGE_JSON", entry]),
+    ]);
+    expect(native.stdout).toBe(node.stdout);
+    expect(comparableStderr(native.stderr)).toBe(node.stderr);
+  });
+}
 
 test("node-types: process.versions entries @types/node declares as strings read undefined when absent", async () => {
   const outDir = outDirFor("process-versions-absent");

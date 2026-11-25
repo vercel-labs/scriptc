@@ -105,13 +105,18 @@ function enclosingBody(node: ts.Node): ts.Node | null {
 export function markRequireEarlyBindings(lowerer: Lowerer): void {
   for (const sf of lowerer.moduleOrder) {
     if (sf.isDeclarationFile || !isCjsJsFile(sf, lowerer.program)) continue;
+    // A module of a partial require() cycle: any function it exports can be
+    // called mid-cycle (another member holds its partial exports), so every
+    // read of one of its require bindings may run before the require
+    // assigned it — Node's ReferenceError, checked at the read.
+    const always = lowerer.program.analysis.partialCjsCycleMembers.has(sf);
     const declared: { decl: ts.VariableDeclaration; stmt: ts.VariableStatement }[] = [];
     for (const stmt of sf.statements.nodes) {
       if (!ts.isVariableStatement(stmt)) continue;
       if ((stmt.declarationList.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) === 0) continue;
       for (const decl of stmt.declarationList.declarations.nodes) {
         if (decl.initializer === undefined || requireSpecOf(decl.initializer) === null) continue;
-        if (requireEarlyReference(lowerer.program, decl) === null) continue;
+        if (!always && requireEarlyReference(lowerer.program, decl) === null) continue;
         declared.push({ decl, stmt });
       }
     }
@@ -150,6 +155,11 @@ export function markRequireEarlyBindings(lowerer: Lowerer): void {
       if (boundNames(owner.decl.name).includes(id)) continue;
       // Code after the require runs after it, except inside functions.
       if (ts.tokenStartOfNode(id) >= owner.decl.end && !inDeferredPosition(id)) continue;
+      // A partial cycle registers the declaration's flag for the member
+      // reads its module-binding lowering checks itself (a generated
+      // helper that inherits the read's source position must not carry the
+      // check: only the read site does).
+      if (always) continue;
       const body = enclosingBody(id);
       lowerer.requireEarlyReferences.push({
         flag: owner.flag,
@@ -260,4 +270,41 @@ export function checkRequireBindingAccesses(lowerer: Lowerer, functions: IrFunct
       ),
     );
   }
+}
+
+/** The ReferenceError check for a read of the require() binding `receiver`
+ * (an identifier bound by a top-level `const/let x = require(…)`), or null
+ * when the binding has no flag. A partial require() cycle checks its module
+ * binding at the member read, which can run before the require returned
+ * (Node's TDZ), without borrowing a generated helper's code position. */
+export function requireBindingTdzCheck(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  loc: SrcLoc,
+): IrStmt | null {
+  let id: ts.Identifier | null = null;
+  if (ts.isIdentifier(receiver)) id = receiver;
+  if (id === null) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(id);
+  const decl = symbol?.declarations.find((d): d is ts.VariableDeclaration =>
+    ts.isVariableDeclaration(d),
+  );
+  if (decl === undefined) return null;
+  const flag = lowerer.requireInitFlags.get(decl);
+  if (flag === undefined) return null;
+  const name = flag.names.get(symbol!) ?? id.text;
+  return {
+    kind: "exprStmt",
+    expr: {
+      kind: "intrinsic",
+      name: "module.tdzCheck",
+      args: [
+        { kind: "varRef", localId: flag.flagId, type: BOOL, loc },
+        { kind: "strLit", value: name, type: STRING, loc },
+      ],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
 }

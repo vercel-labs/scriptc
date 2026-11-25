@@ -19,19 +19,19 @@ declare void @runtime(ptr)
 @hidden_value = internal global i64 7
 @public_value = constant i64 11
 
-define internal i64 @left() #0 {
+define internal i64 @left() align 64 #0 {
 entry:
   %v = load i64, ptr @hidden_value
   ret i64 %v
 }
 
-define internal i64 @right() #0 {
+define internal i64 @right() align 64 #0 {
 entry:
   %v = call i64 @left()
   ret i64 %v
 }
 
-define i64 @public_entry() #0 {
+define i64 @public_entry() align 64 #0 {
 entry:
   %a = call i64 @right()
   %b = load i64, ptr @public_value
@@ -50,7 +50,7 @@ test("splits generated LLVM functions and promotes only private cross-shard defi
   expect(splitLlvmProgram(SAMPLE)).toBeNull();
   const large = SAMPLE.replace(
     "define i64 @public_entry",
-    `${Array.from({ length: 80 }, (_, i) => `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`).join("\n")}\ndefine i64 @public_entry`,
+    `${Array.from({ length: 80 }, (_, i) => `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`).join("\n")}\ndefine i64 @public_entry`,
   );
   const actual = splitLlvmProgram(large, { minimumBytes: 0, targetBytes: 64 * 1024 });
   expect(actual).not.toBeNull();
@@ -70,8 +70,8 @@ test("splits generated LLVM functions and promotes only private cross-shard defi
   expect(
     actual!.shards.some(
       (shard) =>
-        !shard.source().includes("define hidden i64 @right() #0") &&
-        shard.source().includes("declare hidden i64 @right() #0"),
+        !shard.source().includes("define hidden i64 @right() align 64 #0") &&
+        shard.source().includes("declare hidden i64 @right() align 64 #0"),
     ),
   ).toBe(true);
 });
@@ -91,7 +91,7 @@ test("thread-local definitions and declarations preserve their storage model acr
 const PADDING = Array.from(
   { length: 80 },
   (_, i) =>
-    `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
+    `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
 ).join("\n");
 
 /** SAMPLE with more globals after @public_value and enough functions to
@@ -265,7 +265,7 @@ test("shared metadata bounds shard growth while preserving every definition", ()
   const body = names
     .map(
       (name) =>
-        `define internal i64 @${name}() #0 {\nentry:\n  ; ${"x".repeat(32 * 1024)}\n  ret i64 1\n}\n`,
+        `define internal i64 @${name}() align 64 #0 {\nentry:\n  ; ${"x".repeat(32 * 1024)}\n  ret i64 1\n}\n`,
     )
     .join("\n");
   const source =
@@ -288,7 +288,8 @@ test("shared metadata bounds shard growth while preserving every definition", ()
   expect(splitLlvmProgram(shared, { minimumBytes: 0 })).toBeNull();
 });
 
-test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+/** SAMPLE with a compilation unit and a subprogram for each definition. */
+function debugSample(): string {
   const debug = new LlvmDebugInfo(
     "/source/main.ts",
     new Map([["/source/main.ts", "console.log(1);\n"]]),
@@ -299,7 +300,7 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
     const scope = debug.function({ name, loc, params: [], locals: [], body: [], returnType: VOID });
     const location = debug.location(loc, scope);
     source = source.replace(
-      new RegExp(`(@${name}\\(\\) #0) \\{([\\s\\S]*?)\\n\\}`),
+      new RegExp(`(@${name}\\(\\) align 64 #0) \\{([\\s\\S]*?)\\n\\}`),
       (_, header: string, body: string) =>
         `${header} !dbg ${scope} {${body
           .split("\n")
@@ -307,7 +308,11 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
           .join("\n")}\n}`,
     );
   }
-  source += debug.render();
+  return source + debug.render();
+}
+
+test("debug metadata stays on definitions when splitting LLVM modules", async () => {
+  const source = debugSample();
   const split = splitLlvmProgram(source, { minimumBytes: 0 });
   expect(split).not.toBeNull();
   const dir = await mkdtemp(join(tmpdir(), "scriptc-debug-split-"));
@@ -324,11 +329,47 @@ test("debug metadata stays on definitions when splitting LLVM modules", async ()
   }
 });
 
+test("each shard names the compilation units it carries after itself", () => {
+  const split = splitLlvmProgram(debugSample(), { minimumBytes: 0 });
+  expect(split).not.toBeNull();
+  // The copy of the unit's file that the unit names, and its node number.
+  const named = (text: string): { file: string; node: string } | null => {
+    const unit = /^!\d+ = distinct !DICompileUnit\(.*?\bfile: !(\d+),/m.exec(text);
+    if (unit === null) return null;
+    const node = new RegExp(
+      `^!${unit[1]} = !DIFile\\(filename: "([^"]+)", directory: "([^"]+)"\\)$`,
+      "m",
+    );
+    const file = node.exec(text);
+    return file === null ? null : { file: file[1]!, node: unit[1]! };
+  };
+  for (const shard of split!.shards) {
+    const text = shard.source();
+    expect(/^!llvm\.dbg\.cu = !\{!\d+\}$/m.test(text), shard.name).toBe(true);
+    const unit = named(text);
+    expect(unit, shard.name).not.toBeNull();
+    // The unit points at a copy of its file whose name ends with the shard.
+    expect(text).toContain(
+      `!${unit!.node} = !DIFile(filename: "main.ts.scriptc-${shard.name}", directory: "/source")`,
+    );
+    // The copy takes a number no other node uses, so nothing else moves.
+    const ids = text.split("\n").map((line) => /^!(\d+) = /.exec(line)?.[1]);
+    expect(ids.filter((id) => id === unit!.node)).toHaveLength(1);
+    // Definitions still name the source the program was written in.
+    if (/^!\d+ = distinct !DISubprogram\(/m.test(text))
+      expect(text, shard.name).toContain('!DIFile(filename: "main.ts", directory: "/source")');
+  }
+  // Every object of the program is told apart by its units.
+  const names = split!.shards.map((shard) => named(shard.source())?.file);
+  expect(names.every((name) => name !== undefined)).toBe(true);
+  expect(new Set(names).size).toBe(names.length);
+});
+
 test("personality routines stay on definitions when splitting LLVM modules", async () => {
   // Functions with landing pads (Linux unwinding) carry a personality; every
   // other shard declares them, and a declaration must not repeat it.
   const source =
-    SAMPLE.replaceAll(") #0 {", ") #0 personality ptr @__gcc_personality_v0 {") +
+    SAMPLE.replaceAll(") align 64 #0 {", ") align 64 #0 personality ptr @__gcc_personality_v0 {") +
     "declare i32 @__gcc_personality_v0(...)\n";
   const split = splitLlvmProgram(source, { minimumBytes: 0 });
   expect(split).not.toBeNull();
@@ -355,7 +396,7 @@ test("dev libraries split at the measured 2MB crossover while executables retain
   const body = Array.from(
     { length: 700 },
     (_, i) =>
-      `define internal i64 @library_pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(3072)}\n  ret i64 ${i}\n}\n`,
+      `define internal i64 @library_pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(3072)}\n  ret i64 ${i}\n}\n`,
   ).join("\n");
   const source = SAMPLE.replace("define i64 @public_entry", `${body}\ndefine i64 @public_entry`);
   expect(Buffer.byteLength(source)).toBeGreaterThan(2 * 1024 * 1024);
@@ -371,7 +412,7 @@ test("every shard compiles and its merged object exposes only canonical public d
   const body = Array.from(
     { length: 120 },
     (_, i) =>
-      `define internal i64 @pad_${i}() #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
+      `define internal i64 @pad_${i}() align 64 #0 {\nentry:\n  ; ${"x".repeat(2048)}\n  ret i64 ${i}\n}\n`,
   ).join("\n");
   const split = splitLlvmProgram(
     SAMPLE.replace("define i64 @public_entry", `${body}\ndefine i64 @public_entry`),

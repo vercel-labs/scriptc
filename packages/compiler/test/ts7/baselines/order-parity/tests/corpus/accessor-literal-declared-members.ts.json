@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/accessor-literal-declared-members.ts"
+ ],
+ "diags": []
+}

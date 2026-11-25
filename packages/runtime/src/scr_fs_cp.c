@@ -915,10 +915,10 @@ static bool sync_copy_entry_link(const ScrFsCp *job, const ScrStr *entry, const 
       struct stat ast;
       bool fail = false;
       if (!job->dereference && stat(target->data, &ast) == 0 && S_ISDIR(ast.st_mode) && fs_inside_dir(target, current)) {
-        cp_native("ERR_FS_CP_EINVAL", "Cannot copy \"%s\" to a subdirectory of self \"%s\"", target->data, current->data);
+        cp_native("ERR_FS_CP_EINVAL", "Cannot copy %s to a subdirectory of self %s", target->data, current->data);
         fail = true;
       } else if (S_ISDIR(tst.st_mode) && fs_inside_dir(current, target)) {
-        cp_native("ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY", "cannot overwrite \"%s\" with \"%s\"", current->data, target->data);
+        cp_native("ERR_FS_CP_SYMLINK_TO_SUBDIRECTORY", "cannot overwrite %s with %s", current->data, target->data);
         fail = true;
       } else if (unlink(to->data) != 0) {
         scr_fs_throw_errno_exception(errno, "cp", dest_dir);

@@ -4,34 +4,11 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { analyze } from "../src/index.js";
 
-// These refusals protect native layouts: an asserted predicate cannot
-// establish which union arm was found, and a second Error.cause slot would
-// disagree with accesses through the Error base class.
+// These refusals protect native layouts: a second Error.cause slot would
+// disagree with accesses through the Error base class. (An asserted
+// predicate of `.find` is no longer one of them: the element it answers is
+// converted checked, see find-written-predicate.test.ts.)
 test.each([
-  [
-    "annotated find predicate",
-    `
-    const rows: (number | string)[] = ["wrong"];
-    console.log(rows.find((value): value is number => true));
-  `,
-    "inline callback with an inferred predicate",
-  ],
-  [
-    "annotated findLast predicate",
-    `
-    const rows: (number | string)[] = ["wrong"];
-    console.log(rows.findLast((value): value is number => true));
-  `,
-    "inline callback with an inferred predicate",
-  ],
-  [
-    "named find predicate",
-    `
-    function isNumber(value: number | string): value is number { return true; }
-    console.log((["wrong", 1] as (number | string)[]).find(isNumber));
-  `,
-    "inline callback with an inferred predicate",
-  ],
   [
     "cause field",
     `

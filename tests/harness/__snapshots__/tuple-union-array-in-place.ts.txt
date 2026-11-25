@@ -1,0 +1,20 @@
+tuple-union-array-in-place.ts:16:5 - error SC1090: '.forEach()' on a union of tuples and arrays read as 'string[]' used as a value (write the call as a statement, or narrow the value to one arm first) is not supported yet
+
+  15 |   total += String(
+  16 |     (stops as readonly string[]).forEach((stop) => {
+     |     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 |       total += stop.length;
+
+tuple-union-array-in-place.ts:20:19 - error SC1090: '.at()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.at()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+
+  19 |   ).length;
+  20 |   total += String((stops as readonly string[]).at(-1)).length;
+     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  21 |   total += (stops as readonly string[]).concat(['yard']).length;
+
+tuple-union-array-in-place.ts:21:12 - error SC1090: '.concat()' on a union of tuples and arrays read as 'string[]' (a tuple has no '.concat()' that reads it in place, and a copy of it would not show what the call's own code writes: narrow the value to one arm first, or loop over it with for...of) is not supported yet
+
+  20 |   total += String((stops as readonly string[]).at(-1)).length;
+  21 |   total += (stops as readonly string[]).concat(['yard']).length;
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | }

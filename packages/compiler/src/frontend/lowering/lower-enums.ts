@@ -1,7 +1,8 @@
 /* Enum lowering: TypeScript enums fold to their COMPILE-TIME CONSTANT
  * member values — exactly the numbers/strings tsc's own emit stores on the
  * enum object (and inlines for const enums), so every member read is a
- * literal and no runtime object ever materializes. What lowers:
+ * literal. The enum OBJECT is built only for an enum some code uses as a
+ * value (enum-objects.ts). What lowers:
  *   - `E.A` / `E["A"]` member reads (auto-incremented, explicit, and
  *     const-foldable initializers per tsc's own constant computation —
  *     the checker's getConstantValue is the single source of truth);
@@ -11,10 +12,12 @@
  *     members never do, and tsc types the read `string` — an index no
  *     member carries is Node's `undefined`, which that type cannot carry,
  *     so it fences instead of lying;
+ *   - `E[n]` with a RUNTIME number: the reverse lookup, answering the
+ *     member name or undefined by comparing against each member value;
  *   - the DECLARATION itself, to nothing — constant initializers have no
  *     observable evaluation, and the object's creation is unobservable
- *     unless the object is USED as a value, which fences per use site
- *     (lower-exprs' identifier chokepoint);
+ *     unless the object is USED as a value; then the statement of the
+ *     enum's last declaration builds it (enum-objects.ts);
  *   - ambient (`declare`) enums, const included: Node's transform emits
  *     nothing for the declaration (and does NOT inline ambient const
  *     members the way tsc's emit would — Node is the oracle, measured),
@@ -22,15 +25,16 @@
  *     catchable ReferenceError "<E> is not defined" at the access, the
  *     `declare const __VERSION__` stance exactly.
  * What fences: computed members (their initializers are runtime
- * expressions Node evaluates when the declaration executes), reverse
- * lookups through runtime indices, and the enum object as a value.
+ * expressions Node evaluates when the declaration executes), and the
+ * object of an enum that has no closed layout (enum-object-layout.ts).
  * The TYPE side lives in type-mapper.ts (enum types map to their underlying
  * primitives) — see mapType's EnumLike branch. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { locOf } from "../program.js";
-import { BOOL, F64, type IrExpr, STRING, UNDEFINED_T } from "../../ir/ir.js";
+import { BOOL, F64, type IrExpr, type IrStmt, STRING, UNDEFINED_T } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
+import { lowerEnumObjectInit } from "./enum-objects.js";
 
 /** The member's source-name text (identifiers and string-literal names —
  * the only name forms tsc allows on enum members). */
@@ -82,8 +86,15 @@ export function lowerEnumAccess(
     return null;
   }
   // Element access: tsgo answers no symbol at the access node itself, so
-  // both key forms resolve through the RECEIVER's enum symbol.
-  const recv = expr.expression;
+  // both key forms resolve through the RECEIVER's enum symbol: a bare name,
+  // or the member name of a qualified reference (`ns.E[0]`).
+  const recvExpr = expr.expression;
+  const recv =
+    ts.isPropertyAccessExpression(recvExpr) &&
+    !recvExpr.questionDotToken &&
+    effectFreeReceiver(recvExpr.expression)
+      ? recvExpr.name
+      : recvExpr;
   if (!ts.isIdentifier(recv)) return null;
   const recvSym = lowerer.resolveValueSymbol(recv);
   if (!recvSym || !(recvSym.flags & ts.SymbolFlags.Enum)) return null;
@@ -105,6 +116,42 @@ export function lowerEnumAccess(
     return null;
   }
   return lowerEnumReverseRead(lowerer, expr, recvSym, decls, key);
+}
+
+/** Whether `access` is an enum member read (`E.A`): a constant, never a
+ * field of the enum's object, whichever path asks. */
+export function isEnumMemberRead(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
+  if (lowerer.enumObjects.size === 0 || !ts.isIdentifier(access.name)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(access.name);
+  return symbol !== undefined && (symbol.flags & ts.SymbolFlags.EnumMember) !== 0;
+}
+
+/** Whether `E[key]` is a reverse lookup through a runtime number, which
+ * reads undefined for a value no member has (lowerEnumNumberRead). The
+ * storage analysis asks before any body lowers, so a binding initialized
+ * from such a read can hold the miss. */
+export function enumNumberReadMayMiss(lowerer: Lowerer, expr: ts.ElementAccessExpression): boolean {
+  const recvExpr = expr.expression;
+  const recv = ts.isPropertyAccessExpression(recvExpr) ? recvExpr.name : recvExpr;
+  if (!ts.isIdentifier(recv)) return false;
+  let symbol = lowerer.checker.getSymbolAtLocation(recv);
+  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
+    symbol = lowerer.checker.getAliasedSymbol(symbol);
+  if (symbol === undefined || !(symbol.flags & ts.SymbolFlags.Enum)) return false;
+  let key = expr.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (ts.isStringLiteralLike(key) || foldConstIndex(lowerer, key) !== null) return false;
+  return isNumberKeyType(lowerer.typeOf(key));
+}
+
+/** A key the checker types as a number: `number`, a numeric literal, or a
+ * union of those (a numeric enum's own type, `E[level]`). */
+function isNumberKeyType(type: ts.Type): boolean {
+  return (
+    (type.flags & ts.TypeFlags.NumberLike) !== 0 ||
+    (type.isUnionType() &&
+      ts.constituentTypes(type).every((t) => (t.flags & ts.TypeFlags.NumberLike) !== 0))
+  );
 }
 
 /** One member read, folded to its constant — or the ambient/computed
@@ -192,11 +239,14 @@ function lowerEnumReverseRead(
   ) {
     return lowerEnumKeyRead(lowerer, expr, decls, key);
   }
+  if (idx === null && isNumberKeyType(keyType)) {
+    return lowerEnumNumberRead(lowerer, expr, decls, key);
+  }
   if (idx === null) {
     lowerer.unsupported(
       "SC1090",
       expr,
-      `enum reverse lookups ('${enumName}[i]' where the index is a runtime value — only compile-time-constant indices lower)`,
+      `enum lookups through a key that is neither a number nor a string ('${enumName}[key]' — the key's type decides between the reverse and the member lookup)`,
     );
   }
   let name: string | null = null;
@@ -214,6 +264,71 @@ function lowerEnumReverseRead(
     );
   }
   return { kind: "strLit", value: name, type: STRING, loc };
+}
+
+/** `E[n]` with a RUNTIME number — the reverse lookup. The key's property
+ * name is the number's string form, which equals a reverse entry's exactly
+ * when the two numbers are equal (both zeros spell "0"; no member is NaN),
+ * and never a member name or an inherited one: neither can be a numeric
+ * spelling. So the key evaluates once and compares against each member
+ * value, the last member holding a value answering as in the object tsc's
+ * emit builds, and any other number reads undefined. */
+function lowerEnumNumberRead(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+  decls: readonly ts.EnumDeclaration[],
+  key: ts.Expression,
+): IrExpr {
+  const loc = locOf(expr);
+  const enumName = decls[0]!.name.text;
+  const names = new Map<number, string>();
+  for (const d of decls) {
+    for (const member of d.members.nodes) {
+      const value = lowerer.checker.getConstantValue(member);
+      if (value === undefined || (typeof value === "number" && Number.isNaN(value)))
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `'${enumName}[key]' over an enum with computed members`,
+        );
+      if (typeof value === "number") names.set(value === 0 ? 0 : value, memberNameText(member));
+    }
+  }
+  const resultType = lowerer.withUndefinedArm(STRING);
+  const keyValue = lowerer.coerceToExpected(lowerer.lowerExpr(key), F64);
+  const keyLocal = lowerer.declareHiddenLocal("%enumKey", F64);
+  const keyRef: IrExpr = { kind: "varRef", localId: keyLocal.id, type: F64, loc };
+  let result: IrExpr = lowerer.coerceToExpected(
+    { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+    resultType,
+  );
+  for (const [value, name] of [...names].reverse()) {
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: keyRef,
+        right: { kind: "numLit", value, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      then: lowerer.coerceToExpected(
+        { kind: "strLit", value: name, type: STRING, loc },
+        resultType,
+      ),
+      else_: result,
+      type: resultType,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: keyLocal.id, init: keyValue, loc }],
+    result,
+    type: resultType,
+    loc,
+  };
 }
 
 /** Object.prototype members every enum object inherits: a runtime key
@@ -349,11 +464,12 @@ function foldConstIndex(lowerer: Lowerer, e: ts.Expression): number | null {
  * type stripping drops them too). Runtime declarations whose members are
  * ALL compile-time constants also emit nothing: constant initializers have
  * no observable evaluation, member reads fold at their sites, and the
- * object's creation is only observable through object-valued uses — which
- * fence per site. A computed member's initializer is a runtime expression
+ * object's creation is only observable through object-valued uses: an
+ * enum with one builds its object here (enum-objects.ts). A computed
+ * member's initializer is a runtime expression
  * Node evaluates at the declaration — dropping it would be observable, so
  * the declaration fences on that member. */
-export function lowerEnumDeclaration(lowerer: Lowerer, stmt: ts.EnumDeclaration): null {
+export function lowerEnumDeclaration(lowerer: Lowerer, stmt: ts.EnumDeclaration): IrStmt[] | null {
   if (isAmbientEnumDecl(stmt)) return null;
   for (const member of stmt.members.nodes) {
     if (lowerer.checker.getConstantValue(member) === undefined) {
@@ -364,18 +480,5 @@ export function lowerEnumDeclaration(lowerer: Lowerer, stmt: ts.EnumDeclaration)
       );
     }
   }
-  return null;
-}
-
-/** The identifier chokepoint's enum arm: the enum OBJECT used as a VALUE
- * (passed around, iterated, stored). Member reads never reach here (the
- * access hook claims them); everything else is the object itself, which
- * has no lowering. Returns false when the symbol is not an enum. */
-export function fenceEnumObjectValue(lowerer: Lowerer, expr: ts.Identifier, sym: ts.Symbol): void {
-  if (!(sym.flags & ts.SymbolFlags.Enum)) return;
-  lowerer.unsupported(
-    "SC1090",
-    expr,
-    `enum objects as values ('${expr.text}' — member reads like '${expr.text}.A' compile to constants; the object itself has no runtime representation)`,
-  );
+  return lowerEnumObjectInit(lowerer, stmt);
 }

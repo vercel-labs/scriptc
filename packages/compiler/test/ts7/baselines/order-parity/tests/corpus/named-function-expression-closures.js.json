@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/named-function-expression-closures.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/delete-undeclared-key-copy-chain.ts"
+ ],
+ "diags": []
+}

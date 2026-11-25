@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/promise-like-slot-static-only.ts"
+ ],
+ "diags": []
+}

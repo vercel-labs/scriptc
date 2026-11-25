@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/decided-comparison-evaluates-operand.ts"
+ ],
+ "diags": []
+}

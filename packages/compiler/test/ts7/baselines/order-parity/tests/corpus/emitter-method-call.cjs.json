@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/emitter-method-call.cjs"
+ ],
+ "diags": []
+}

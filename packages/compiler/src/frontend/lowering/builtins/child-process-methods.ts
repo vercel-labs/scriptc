@@ -1,9 +1,10 @@
 import { boolLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { isChildSurfaceMember } from "../surfaces.js";
+import { isChildSurfaceMember, isChildWriterSurfaceMember } from "../surfaces.js";
 import { bufEncoding } from "../containers/bytes.js";
 import {
   BOOL,
@@ -18,13 +19,7 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { type IrLibFn } from "../../../ir/builtin-signatures.js";
-import {
-  ipcJsonMessage,
-  ipcSendCallback,
-  ipcMessageListener,
-  ipcDisconnectListener,
-} from "./ipc.js";
-import { stripTypeCasts } from "./arguments.js";
+import { ipcSendArguments, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { resultIsDiscarded } from "../call-position.js";
 
 export function lowerChildMethodCall(
@@ -40,23 +35,11 @@ export function lowerChildMethodCall(
   const name = access.name.text;
   const loc = locOf(call);
   if (name === "send") {
-    if (
-      call.arguments.nodes.length < 1 ||
-      call.arguments.nodes.length > 2 ||
-      call.arguments.nodes.some(ts.isSpreadElement)
-    ) {
-      lowerer.noLowering(
-        `child.send with ${call.arguments.nodes.length} arguments`,
-        call,
-        "send(message[, callback]) is supported; handle transfer and options are not",
-      );
-    }
     const receiver = lowerer.lowerExpr(access.expression);
-    const json = ipcJsonMessage(lowerer, call.arguments.nodes[0]!, loc);
-    if (call.arguments.nodes[1] === undefined) {
+    const { json, callback } = ipcSendArguments(lowerer, call, loc);
+    if (callback === null) {
       return { kind: "libCall", fn: "child.send", args: [receiver, json], type: BOOL, loc };
     }
-    const callback = ipcSendCallback(lowerer, call.arguments.nodes[1]);
     return {
       kind: "libCall",
       fn: "child.sendCb",
@@ -140,7 +123,7 @@ export function lowerChildMethodCall(
         loc,
       });
     }
-    const listenerNode = stripTypeCasts(call.arguments.nodes[1]!);
+    const listenerNode = withoutParenthesesTypeWrappers(call.arguments.nodes[1]!);
     if (
       isJsSourceFile(ts.getSourceFileOfNode(listenerNode)) &&
       (ts.isArrowFunction(listenerNode) || ts.isFunctionExpression(listenerNode)) &&
@@ -244,8 +227,17 @@ export function lowerChildMethodCall(
     }
     const param = listenerParams[0];
     if (event === "exit" || event === "close") {
+      // A function value that declares the exit code as `number` (a held
+      // listener: an inline one binds its narrowed parameters as
+      // checked-dynamic values above) keeps its type. The checker accepts
+      // it through the catch-all `on` overload; Node passes null when a
+      // signal ended the child, and the registration's adapter then throws
+      // a TypeError instead of calling the function with a number it does
+      // not have. The closure itself is what registers, so
+      // `removeListener` finds it by identity.
       const armsOk =
         param === undefined ||
+        param.kind === "f64" ||
         (param.kind === "union" &&
           (() => {
             const def = lowerer.unions.get(param.unionId);
@@ -257,7 +249,7 @@ export function lowerChildMethodCall(
         lowerer.unsupported(
           "SC1090",
           call.arguments.nodes[1]!,
-          `${event} listeners whose parameter is not 'number | null' (got '${lowerer.fmt(param!)}')`,
+          `${event} listeners whose parameter is not 'number | null' or 'number' (got '${lowerer.fmt(param!)}')`,
         );
       }
       // The optional SECOND parameter is Node's signal: the terminating
@@ -407,8 +399,9 @@ export function lowerChildMethodCall(
  * childStreamEncodedAt), or a `Buffer | string`-union chunk (the ngrok
  * appendOutput shape — the runtime only ever fires Buffers; the
  * compiler-emitted adapter wraps the chunk at the union's Buffer arm);
- * 'end' listeners take none.
- * Statement position only (Node returns the stream for chaining; here
+ * 'end' listeners take none. pause() / resume() / isPaused() are Node's
+ * flowing state on the handle.
+ * Listener registration is statement position only (Node returns the stream for chaining; here
  * the result is void). Chained receivers (`child.stdout?.on(...)`)
  * ride the optional-chain re-dispatch (chainBlocked). Everything else
  * @types/node declares on Readable fences member-qualified. Null for
@@ -506,11 +499,29 @@ export function lowerChildStreamMethodCall(
       loc,
     };
   }
+  // pause() / resume() / isPaused(): Node's flowing state, kept on the handle
+  // (the runtime's scr_child_flow.h), so a program that only pauses and
+  // resumes a child's output stays on the handle. pause() and resume()
+  // answer the receiver, as setEncoding does.
+  if ((name === "pause" || name === "resume") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, CHILDSTREAM_T);
+    return {
+      kind: "libCall",
+      fn: name === "pause" ? "stream.childPause" : "stream.childResume",
+      args: [receiver],
+      type: CHILDSTREAM_T,
+      loc,
+    };
+  }
+  if (name === "isPaused" && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExprExpecting(access.expression, CHILDSTREAM_T);
+    return { kind: "libCall", fn: "stream.childIsPaused", args: [receiver], type: BOOL, loc };
+  }
   requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `ReadableStream.${name}`,
     call,
-    'setEncoding(encoding) and on/once("data" | "end", cb) are the supported child-stream members',
+    'setEncoding(encoding), pause(), resume(), isPaused(), readableFlowing and on/once("data" | "end", cb) are the supported child-stream members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -526,7 +537,7 @@ export function lowerChildWriterMethodCall(
 ): IrExpr | null {
   if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "childWriter") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
+  if (!isChildWriterSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
 

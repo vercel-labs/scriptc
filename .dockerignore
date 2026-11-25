@@ -9,3 +9,7 @@
 !packages/compiler/package.json
 !packages/runtime/
 !packages/runtime/package.json
+!scripts/
+!scripts/install-zig.sh
+!scripts/toolchain.sha256
+!scripts/verify-toolchain.sh

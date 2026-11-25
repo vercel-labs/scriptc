@@ -34,8 +34,8 @@ class GenericOver extends PlainBase {
 }
 new GenericOver();
 
-// `this` in an object-literal generic method is the receiver object —
-// records don't model it.
+// A generic method lowers as a plain function; `this` in its body is the
+// receiver the call binds, so this form compiles.
 const withThis = {
   n: 1,
   m<T>(x: T): T {
@@ -45,9 +45,10 @@ const withThis = {
 };
 console.log(withThis.m(2));
 
-// Generic methods as VALUES: bound-method references stay fenced (class
-// receivers), and an unpinned object-literal reference keeps the
-// generic-value fence.
+// Generic methods as VALUES: a bound-method reference and an unpinned
+// object-literal reference both erase to the method's dynamic closure, so
+// neither reports here — the fences above are the receiver and override
+// rules, not the value form.
 class Inst {
   g<T>(x: T): T {
     return x;

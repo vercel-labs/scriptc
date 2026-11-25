@@ -104,7 +104,7 @@ suspended(["ab"]).then((t) => console.log(t));
 const body = (ll: string, name: string): string =>
   ll.match(
     new RegExp(
-      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{ ;([\\s\\S]*?)\\n\\}`,
+      `define internal [^\\n]+ @sc_(?:b)?f_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{ ;([\\s\\S]*?)\\n\\}`,
     ),
   )![1]!;
 
@@ -310,6 +310,35 @@ test("module numbers private to the initializer keep an i32 local there", async 
     // Debug builds keep the global for the variable view.
     const debug = emitLlvmModule(mod, { debugSources: new Map([[entry, moduleSource]]) });
     expect(debug).not.toMatch(/alloca i32 ; v\n/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("retrying initializers keep private fractions in a double local", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-f64-globals-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    const source = `
+let fraction = 0.5;
+for (let i = 0; i < 4; i++) fraction += 0.25;
+console.log(fraction);
+`;
+    await writeFile(entry, source);
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const ll = emitLlvmModule(mod);
+    expect(ll).toMatch(/alloca double ; module binding fraction\n/);
+    expect(ll).not.toMatch(/alloca i32 ; fraction\n/);
+    // Only the activation's entry reads the global; the loop uses the local.
+    expect([...ll.matchAll(/load double, ptr @sc_g_\w*_fraction\b/g)]).toHaveLength(1);
+    expect(ll).not.toMatch(/store double [^,]+, ptr @sc_g_\w*_fraction\b/);
+    const debug = emitLlvmModule(mod, { debugSources: new Map([[entry, source]]) });
+    expect(debug).not.toMatch(/alloca double ; module binding fraction\n/);
+    expect(debug).toMatch(/store double [^,]+, ptr @sc_g_\w*_fraction\b/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

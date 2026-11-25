@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-client-max-headers-count.ts"
+ ],
+ "diags": []
+}

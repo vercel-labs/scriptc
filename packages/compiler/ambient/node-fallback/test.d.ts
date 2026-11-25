@@ -23,9 +23,12 @@
  * t.diagnostic, and t.assert. mock/run/snapshot are DECLARED so real
  * suites typecheck but fence at their use sites (no lowering). */
 declare module "node:test" {
-  type TestFn = (t: TestContext) => void | Promise<void>;
+  /* Node's callback form: a test or hook that takes (context, done) finishes
+   * when it calls done. */
+  type DoneFn = (result?: unknown) => void;
+  type TestFn = (t: TestContext, done: DoneFn) => void | Promise<void>;
   type SuiteFn = (s: SuiteContext) => void;
-  type HookFn = (c: TestContext | SuiteContext) => void | Promise<void>;
+  type HookFn = (c: TestContext | SuiteContext, done: DoneFn) => void | Promise<void>;
   /* The describe/suite callback's context, and the before/after hook
    * context of a suite. */
   interface SuiteContext {
@@ -34,7 +37,14 @@ declare module "node:test" {
     readonly filePath: string | undefined;
     readonly attempt: number;
     readonly passed: boolean;
+    readonly signal: AbortSignal;
     diagnostic(message: string): void;
+    log(message: string, data?: unknown): void;
+  }
+  interface TestContextPlanOptions {
+    /* `true` waits indefinitely for the plan, `false` (the default) checks
+     * as soon as the body finishes, a number is the maximum wait. */
+    wait?: boolean | number | undefined;
   }
   interface TestOptions {
     skip?: boolean | string;
@@ -42,7 +52,18 @@ declare module "node:test" {
     only?: boolean;
     concurrency?: number | boolean;
     timeout?: number;
+    /* Aborts the run: the test (or the suite and the tests in it) is
+     * cancelled with the signal's reason. */
+    signal?: AbortSignal;
     plan?: number;
+    /* The test passes only if it throws; a reason string behaves as true.
+     * Node's matcher forms (RegExp, function, object, Error, { label, match })
+     * are not lowered. */
+    expectFailure?: boolean | string;
+    /* Labels carried by the test and its descendant suites' tests. Values
+     * must be non-empty strings; they are lowercased and de-duplicated, and
+     * a suite's tags are inherited by every test it contains. */
+    tags?: readonly string[];
   }
   interface TestContext {
     readonly name: string;
@@ -52,6 +73,11 @@ declare module "node:test" {
     readonly passed: boolean;
     readonly workerId: number | undefined;
     readonly tags: readonly string[];
+    /* Aborted when the test times out, is cancelled, or finishes. */
+    readonly signal: AbortSignal;
+    /* Node's ERR_TEST_FAILURE wrapper over the failure, its `cause` the
+     * value the test threw; null while the test has not failed. */
+    readonly error: Error | null;
     readonly assert: TestContextAssert;
     readonly mock: MockTracker;
     test(name?: string, fn?: TestFn): Promise<void>;
@@ -61,11 +87,18 @@ declare module "node:test" {
     skip(message?: string): void;
     todo(message?: string): void;
     diagnostic(message: string): void;
-    plan(count: number): void;
+    log(message: string, data?: unknown): void;
+    plan(count: number, options?: TestContextPlanOptions): void;
+    runOnly(shouldRunOnlyTests: boolean): void;
+    waitFor<T>(condition: () => T, options?: TestContextWaitForOptions): Promise<Awaited<T>>;
     after(fn: HookFn): void;
     before(fn: HookFn): void;
     beforeEach(fn: HookFn): void;
     afterEach(fn: HookFn): void;
+  }
+  interface TestContextWaitForOptions {
+    interval?: number | undefined;
+    timeout?: number | undefined;
   }
   interface AssertSnapshotOptions {
     readonly serializers?: ReadonlyArray<(value: any) => any> | undefined;
@@ -86,6 +119,8 @@ declare module "node:test" {
     throws(fn: () => unknown, expected?: unknown, message?: string): void;
     match(value: string, regExp: RegExp, message?: string): void;
     doesNotMatch(value: string, regExp: RegExp, message?: string): void;
+    /* A custom assertion registered through node:test's assert.register. */
+    [name: string]: (...args: any[]) => any;
   }
   /* The name, options and function are each optional, as in Node: a test
    * without a name takes the function's name, or "<anonymous>". */
@@ -102,6 +137,10 @@ declare module "node:test" {
     function todo(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
     function todo(options?: TestOptions, fn?: TestFn): Promise<void>;
     function todo(fn?: TestFn): Promise<void>;
+    function expectFailure(name?: string, fn?: TestFn): Promise<void>;
+    function expectFailure(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+    function expectFailure(options?: TestOptions, fn?: TestFn): Promise<void>;
+    function expectFailure(fn?: TestFn): Promise<void>;
     function only(name?: string, fn?: TestFn): Promise<void>;
     function only(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
     function only(options?: TestOptions, fn?: TestFn): Promise<void>;
@@ -125,12 +164,20 @@ declare module "node:test" {
     function only(name?: string, options?: TestOptions, fn?: SuiteFn): void;
     function only(options?: TestOptions, fn?: SuiteFn): void;
     function only(fn?: SuiteFn): void;
+    function expectFailure(name?: string, fn?: SuiteFn): void;
+    function expectFailure(name?: string, options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(options?: TestOptions, fn?: SuiteFn): void;
+    function expectFailure(fn?: SuiteFn): void;
   }
   const suite: typeof describe;
   function before(fn: HookFn): void;
   function after(fn: HookFn): void;
   function beforeEach(fn: HookFn): void;
   function afterEach(fn: HookFn): void;
+  function expectFailure(name?: string, fn?: TestFn): Promise<void>;
+  function expectFailure(name?: string, options?: TestOptions, fn?: TestFn): Promise<void>;
+  function expectFailure(options?: TestOptions, fn?: TestFn): Promise<void>;
+  function expectFailure(fn?: TestFn): Promise<void>;
   /* The mock function surface: mock.fn, mock.method and their t.mock
    * twins, the tracker's restoreAll and reset, and the calls log and the
    * implementation controls on fn.mock. */
@@ -159,16 +206,33 @@ declare module "node:test" {
   type FunctionPropertyNames<T> = {
     [K in keyof T]: T[K] extends Function ? K : never;
   }[keyof T];
+  interface MockMethodOptions extends MockFunctionOptions {
+    /* The property is treated as a getter (or a setter); the two are
+     * mutually exclusive. */
+    getter?: boolean;
+    setter?: boolean;
+  }
   interface MockTracker {
     fn<F extends Function = (...args: any[]) => undefined>(original?: F): Mock<F>;
+    /* The { times } option: the implementation serves that many calls and
+     * the next one runs the original. */
+    fn<F extends Function = (...args: any[]) => undefined>(
+      original: F | undefined,
+      options: MockFunctionOptions,
+    ): Mock<F>;
     fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
       original?: F,
       implementation?: Implementation,
     ): Mock<F | Implementation>;
+    fn<F extends Function = (...args: any[]) => undefined, Implementation extends Function = F>(
+      original: F | undefined,
+      implementation: Implementation | undefined,
+      options: MockFunctionOptions,
+    ): Mock<F | Implementation>;
     method<MockedObject extends object, MethodName extends FunctionPropertyNames<MockedObject>>(
       object: MockedObject,
       methodName: MethodName,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function ? Mock<MockedObject[MethodName]> : never;
     method<
       MockedObject extends object,
@@ -178,10 +242,22 @@ declare module "node:test" {
       object: MockedObject,
       methodName: MethodName,
       implementation: Implementation,
-      options?: MockFunctionOptions,
+      options?: MockMethodOptions,
     ): MockedObject[MethodName] extends Function
       ? Mock<MockedObject[MethodName] | Implementation>
       : never;
+    getter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation?: ((...args: any[]) => MockedObject[MethodName]) | undefined,
+      options?: MockFunctionOptions,
+    ): Mock<() => MockedObject[MethodName]>;
+    setter<MockedObject extends object, MethodName extends keyof MockedObject>(
+      object: MockedObject,
+      methodName: MethodName,
+      implementation?: ((value: MockedObject[MethodName]) => void) | undefined,
+      options?: MockFunctionOptions,
+    ): Mock<(value: MockedObject[MethodName]) => void>;
     reset(): void;
     restoreAll(): void;
     readonly timers: MockTimers;
@@ -205,9 +281,18 @@ declare module "node:test" {
   /* Declared for typechecking only — every use fences (no lowering).
    * `assert` is the module-level custom-assertion registry (v24's
    * `const { assert } = require('node:test')`), not TestContext.assert. */
-  const assert: { register(name: string, fn: (...args: unknown[]) => unknown): void };
+  const assert: {
+    register(name: string, fn: (this: TestContext, ...args: any[]) => any): void;
+  };
   function run(options?: unknown): unknown;
-  function snapshot(...args: unknown[]): unknown;
+  /* The module-level snapshot registry: setDefaultSnapshotSerializers
+   * covers the list every snapshot assertion without its own serializers
+   * uses, as Node's serializer chain does. setResolveSnapshotPath has no
+   * lowering yet. */
+  const snapshot: {
+    setDefaultSnapshotSerializers(serializers: ReadonlyArray<(value: any) => any>): void;
+    setResolveSnapshotPath(fn: (path: string) => string): void;
+  };
   export {
     test,
     it,
@@ -217,6 +302,7 @@ declare module "node:test" {
     after,
     beforeEach,
     afterEach,
+    expectFailure,
     mock,
     assert,
     getTestContext,
@@ -225,6 +311,7 @@ declare module "node:test" {
     TestContext,
     SuiteContext,
     TestOptions,
+    TestContextWaitForOptions,
     Mock,
     MockFunctionContext,
     MockFunctionCall,

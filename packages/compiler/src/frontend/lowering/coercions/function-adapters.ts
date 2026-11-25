@@ -1,10 +1,12 @@
 import { keyedHelperName } from "../stable-names.js";
-import { dynUndefinedExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { buildFunctionAdapter } from "./builders.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
+  BOOL,
   canAdaptDynFuncTo,
+  canBoxFuncIntoDyn,
   canDynCheckTo,
   DYN,
   F64,
@@ -14,6 +16,7 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
+import { buildUnionNarrow } from "../union-narrow.js";
 import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
 import { omittedArgFor } from "../call-arguments.js";
@@ -74,6 +77,69 @@ export function funcReturnWidthAdapter(
   return name;
 }
 
+/** Wrap a function whose result is a `Promise<module namespace>` (the lazy
+ * `() => import("./chunk.mjs")` loader) so its result becomes
+ * `Promise<unknown>`: each call forwards the arguments, then maps the
+ * promise through the module's lifted namespace mapper
+ * (moduleNamespacePromiseDynValue), which answers the same namespace object
+ * a bare namespace value boxes to. The boxed-function thunk cannot build
+ * that value itself (a namespace has no static dyn conversion), while the
+ * adapter's signature is boxable, so the value crosses into an untyped
+ * slot and the chunk still loads when the untyped code calls the loader.
+ * Interned per source type; the factory creates a fresh closure over the
+ * original. */
+export function namespacePromiseFnAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): { name: string; type: IrType & { kind: "func" } } | null {
+  if (fromT.ret.kind !== "promise" || fromT.ret.inner.kind !== "moduleNs") return null;
+  const target: IrType & { kind: "func" } = {
+    ...fromT,
+    ret: { kind: "promise", inner: DYN },
+  };
+  const key = `fn:nsPromise:${typeKey(fromT)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing !== undefined) return { name: existing, type: target };
+  const params: IrParam[] = fromT.params.map((type, i) => ({
+    localId: `p.${i}`,
+    name: `p${i}`,
+    type,
+  }));
+  const called: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: params.map((param) => ({
+      kind: "varRef",
+      localId: param.localId,
+      type: param.type,
+      loc,
+    })),
+    type: fromT.ret,
+    loc,
+  };
+  const mapped = lowerer.moduleNamespacePromiseDynValue(
+    called as IrExpr & { type: IrType & { kind: "promise" } },
+  );
+  if (mapped === null) return null;
+  const name = keyedHelperName(lowerer, "%fn.nsPromise", typeKey(fromT));
+  lowerer.valueHelpers.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(
+      name,
+      fromT,
+      target,
+      params,
+      [],
+      [{ kind: "return", value: mapped, loc }],
+      loc,
+    ),
+  );
+  return { name, type: target };
+}
+
 /** Probe mechanical value conversions without creating helpers.
  * Trap-only conversions are excluded: they cannot justify an adapter that
  * promises to accept the destination signature. */
@@ -125,7 +191,8 @@ export function omittableTrailingParam(lowerer: Lowerer, type: IrType): boolean 
 
 /** Whether all parameters and the result adapt without a trap-only path.
  * Rest signatures are excluded, except a typed-rest source in a slot with
- * fixed parameters (the rest packing adapter); extra destination
+ * fixed parameters (the rest packing adapter) and a checked-dynamic
+ * variadic source (variadicBoundaryFits); extra destination
  * parameters are ignored. A source with MORE parameters than the slot is
  * clean when every extra trailing one is omittable — the adapter passes
  * that absent value explicitly (funcCoerceAdapter's omittedParams), the
@@ -142,6 +209,7 @@ export function cleanFuncAdaptable(
   dst: IrType & { kind: "func" },
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (variadicBoundaryFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
   // the width conversions below include checked retags.
@@ -213,6 +281,7 @@ export function funcSlotAdaptable(
   loc: SrcLoc,
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (variadicBoundaryFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   for (let i = dst.params.length; i < src.params.length; i++) {
     const param = src.params[i]!;
@@ -224,7 +293,306 @@ export function funcSlotAdaptable(
   }
   if (dst.ret.kind === "void") return true;
   if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
+  // The result conversions funcCoerceAdapter performs without stranding: a
+  // Promise whose payload widens (`Promise<string>` into `Promise<string |
+  // undefined>`) and a record the slot's result is a structural width of.
+  if (
+    src.ret.kind === "promise" &&
+    dst.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(src.ret, dst.ret)
+  )
+    return true;
+  if (lowerer.widthLiftPlan(src.ret, dst.ret)) return true;
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
+}
+
+/** THE RULE for calling a variadic function through a fixed parameter list.
+ *
+ * A function that takes its arguments through a rest parameter, or reads
+ * `arguments`, observes every argument its caller passes: how many, and
+ * each one. The adapter below (variadicBoundaryAdapter) calls it with the
+ * parameters of the slot it is stored in. That is exact only where those
+ * parameters are the whole list the caller passes under JavaScript
+ * semantics:
+ *
+ * - A slot the program declares (a typed binding, parameter, result, field,
+ *   member or element, or a value a declaration types) is called with its
+ *   declared parameters and nothing else, so the adapter is exact there.
+ * - A slot the compiler made is not such a slot. A library method's loop
+ *   passes its callback the parameters the callback names, which is fewer
+ *   than the arguments JavaScript passes it (`xs.map(f)` passes three; the
+ *   helper's slot for a callback that names none is `() => T`). A variadic
+ *   function adapted to that slot would receive none of them, silently.
+ *
+ * So the adapter is taken only while a slot-directed conversion is in
+ * progress whose destination the checker types as that slot
+ * (Lowerer.callListDeclared, set by coerceInto), or where the caller states
+ * that its slot is a declared one (Lowerer.withDeclaredCallList). Every
+ * other conversion, the ones lowering makes for its own helper slots
+ * included, answers as it did before the adapter existed: the function
+ * keeps its variadic type, and the site refuses it by name or hands it
+ * every argument through the checked-dynamic call. This predicate is the
+ * one place that decides; funcCoerceAdapter, cleanFuncAdaptable and
+ * funcSlotAdaptable all ask it.
+ *
+ * Two checks over the finished IR complete the rule
+ * (variadic-functions.ts): a variadic function that reaches a native call
+ * of fixed arity unadapted is refused there by name, and a store is
+ * refused when the program hands a function of the slot's type to a caller
+ * that passes more than the type names.
+ *
+ * Two slots need neither condition, because the adapter is exact in them
+ * for every caller a slot can have (exactVariadicSlot): a slot of the
+ * function's own calling convention, where the caller's argument list
+ * passes through, and a slot with fixed parameters for a function that
+ * asks its argument list only whether an argument was passed at all (a
+ * primitive constructor held as a value). Their adapters carry another
+ * name prefix, so the store check does not count them.
+ *
+ * Why a checked-dynamic variadic function (`(...args) => R`, the hidden
+ * argument-array ABI) cannot serve a declared slot of another signature, or
+ * null when it can. Such a value has no native call form: every call of it,
+ * a direct one included, boxes the function and applies it to a runtime
+ * argument list. A slot of another signature therefore holds an adapter
+ * that makes that same boxed call with the slot's arguments
+ * (variadicBoundaryAdapter), under the checked function boundary's domain:
+ * the function boxes, the slot's parameters convert to untyped values, and
+ * its result is `void`, untyped, or checked from an untyped value.
+ *
+ * "count": the adapter passes one argument per fixed parameter of the slot,
+ * and a variadic function observes how many it receives. A call through a
+ * slot whose last fixed parameter is optional completes the omitted
+ * argument with undefined, where the JavaScript call passes nothing. A
+ * function type does not record which parameters are optional, so a last
+ * fixed parameter that can hold the completed undefined (omittableTrailingParam)
+ * blocks. "domain": a parameter or result type does not cross the
+ * boundary. */
+export function variadicBoundaryBlocker(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): "count" | "domain" | null {
+  const shape = (id: string) => lowerer.shapes.get(id);
+  const union = (id: string) => lowerer.unions.get(id);
+  if (!canBoxFuncIntoDyn(fromT, shape, union) || !canAdaptDynFuncTo(toT, shape, union))
+    return "domain";
+  // An all-arguments slot hands over every argument its caller passed, and
+  // an exact slot does not depend on how many the caller passes.
+  if (toT.argumentsAll === true || exactVariadicSlot(fromT, toT)) return null;
+  const fixed = toT.restAbi === "typed" ? toT.params.slice(0, -1) : toT.params;
+  const last = fixed.at(-1);
+  return last !== undefined && omittableTrailingParam(lowerer, last) ? "count" : null;
+}
+
+/** Whether the slot `toT` is one in which the adapter of the
+ * checked-dynamic variadic function type `fromT` is exact for every caller
+ * the slot can have, whoever declared the slot and wherever its content is
+ * handed on:
+ *
+ * - A slot of the function's own calling convention (`String` into the
+ *   joined function of `typeof String | typeof Number`, whose result is
+ *   wider): the caller's argument list passes through as it is. A function
+ *   that gives the argumentsPresence guarantee is never made from one that
+ *   does not.
+ * - A slot with fixed parameters, for a function that asks its argument
+ *   list only whether an argument was passed at all (argumentsPresence: the
+ *   primitive constructors; `String` into `(value: string, name: string) =>
+ *   unknown`). The slot supplies every parameter the function declares, so
+ *   a call through the slot that passes its first argument, and a call by a
+ *   caller that passes more than the slot lists (an array method's loop
+ *   passes its callback the parameters the callback's type names, where
+ *   JavaScript passes three), both show the function what the JavaScript
+ *   call shows it. A call that omits the first argument passes nothing
+ *   (`String()` is ""), and a function type does not record which
+ *   parameters are optional: a first parameter that can hold the completed
+ *   undefined (omittableTrailingParam) holds the same value for an omitted
+ *   argument and for `undefined`. The adapter cannot tell which it was, so
+ *   it throws a TypeError for that one value and serves every other
+ *   (variadicBoundaryAdapter). A slot whose first parameter is only ever
+ *   undefined is not exact, and neither is a slot with no parameter: a
+ *   later caller that passes an argument would be answered as a call with
+ *   none, so that slot is served under THE RULE's two conditions. */
+export function exactVariadicSlot(
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (toT.rest === true)
+    return (
+      toT.restAbi === undefined &&
+      toT.argumentsAll === fromT.argumentsAll &&
+      (toT.argumentsPresence !== true || fromT.argumentsPresence === true) &&
+      toT.params.length === fromT.params.length
+    );
+  if (fromT.argumentsPresence !== true || toT.params.length < fromT.params.length) return false;
+  const first = toT.params[0];
+  return first !== undefined && !typeEquals(first, UNDEFINED_T);
+}
+
+/** Whether a checked-dynamic variadic function value converts into a slot
+ * of another signature: the slot is exact for every caller
+ * (exactVariadicSlot), or its parameters are the whole list its callers
+ * pass (THE RULE above); and nothing blocks the adapter
+ * (variadicBoundaryBlocker). */
+export function variadicBoundaryFits(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (fromT.rest !== true || fromT.restAbi !== undefined || typeEquals(fromT, toT)) return false;
+  if (!exactVariadicSlot(fromT, toT) && !lowerer.callListDeclared()) return false;
+  return variadicBoundaryBlocker(lowerer, fromT, toT) === null;
+}
+
+/** The name prefix of every variadic adapter whose store is exact only
+ * under THE RULE, by which variadic-functions.ts finds the stores once
+ * lowering ends. */
+export const VARIADIC_ADAPTER_PREFIX = "%fn.variadic";
+
+/** The name prefix of a variadic adapter in an exact slot
+ * (exactVariadicSlot): no caller of such a store can see a difference, so
+ * the store check does not look for it. */
+export const EXACT_VARIADIC_ADAPTER_PREFIX = "%fn.exact";
+
+/** What the adapter throws when an exact slot with fixed parameters, whose
+ * first parameter can be omitted, is called with undefined there. */
+export const OMITTED_OR_UNDEFINED_ARGUMENT_MESSAGE =
+  "a constructor held as a function whose first parameter can be omitted was called without that argument or with undefined, and the function type cannot tell the two apart";
+
+/** The adapter for variadicBoundaryFits: call the boxed function with the
+ * slot's arguments as its argument list, under the receiver the slot was
+ * called with. The factory takes the function already boxed (adaptedFunction
+ * boxes it where the value is stored), which makes the closure a checked
+ * adapter: made untyped again it is the original function, so untyped code
+ * calls that with every argument it passes, and `===` and searches see the
+ * one function. Each argument becomes an untyped value through the slot
+ * conversion (coerceToExpected), which keeps an array's or a record's
+ * identity, so a write the function makes reaches the caller's object as
+ * it does in a direct call; the backend's own adapter from an untyped
+ * function to a typed signature copies them instead. A rest slot's array
+ * spreads into the list, so the function sees every argument the caller
+ * passed. The result is dropped for a `void` slot and checked into any
+ * other result type; a promise keeps its identity. In an exact slot with
+ * fixed parameters whose first parameter can be omitted, a call that
+ * leaves it undefined throws: it is an omitted argument or `undefined`,
+ * which the function answers differently (exactVariadicSlot). */
+function variadicBoundaryAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const exact = exactVariadicSlot(fromT, toT);
+  const key = `${exact ? "fnexact" : "fnvariadic"}:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(
+    lowerer,
+    exact ? EXACT_VARIADIC_ADAPTER_PREFIX : VARIADIC_ADAPTER_PREFIX,
+    key,
+  );
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = toT.params.map((type, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type,
+  }));
+  // A checked-dynamic variadic slot hides one trailing argument array; an
+  // all-arguments slot keeps every argument there, the named ones included.
+  const hiddenRest = toT.rest === true && toT.restAbi === undefined;
+  if (hiddenRest) params.push({ localId: "rest.0", name: "args", type: DYN });
+  const passed = hiddenRest && toT.argumentsAll === true ? params.slice(-1) : params;
+  const context = newFnCtx(false, null, null, toT.ret);
+  let body: IrStmt[];
+  lowerer.fnStack.push(context);
+  try {
+    const args = passed.map((param) => {
+      const converted = lowerer.coerceToExpected(
+        { kind: "varRef", localId: param.localId, type: param.type, loc },
+        DYN,
+      );
+      if (converted.type.kind !== "dyn")
+        throw new InternalCompilerError(
+          "lowerer bug: probed variadic adapter argument stopped boxing",
+        );
+      return converted;
+    });
+    const call: IrExpr = {
+      kind: "dynCall",
+      callee: { kind: "varRef", localId: "f.0", type: DYN, loc },
+      receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+      calleeName: "value",
+      args,
+      ...(toT.rest === true ? { spreads: [{ arg: args.length - 1, what: "arguments" }] } : {}),
+      type: DYN,
+      loc,
+    };
+    if (toT.ret.kind === "void") {
+      body = [
+        { kind: "exprStmt", expr: call, loc },
+        { kind: "return", value: null, loc },
+      ];
+    } else {
+      const result = lowerer.coerceToExpected(call, toT.ret);
+      if (!typeEquals(result.type, toT.ret))
+        throw new InternalCompilerError(
+          "lowerer bug: probed variadic adapter result stopped checking",
+        );
+      body = [{ kind: "return", value: result, loc }];
+    }
+    const first = toT.params[0];
+    if (
+      exact &&
+      toT.rest !== true &&
+      first !== undefined &&
+      omittableTrailingParam(lowerer, first)
+    ) {
+      const value: IrExpr = { kind: "varRef", localId: "a.0", type: first, loc };
+      const undefinedThere: IrExpr =
+        first.kind === "union"
+          ? {
+              kind: "unionIsTag",
+              unionId: first.unionId,
+              tag: lowerer.armTag(first.unionId, UNDEFINED_T),
+              negated: false,
+              value,
+              type: BOOL,
+              loc,
+            }
+          : { kind: "dynTest", test: "undefined", value, type: BOOL, loc };
+      body.unshift({
+        kind: "if",
+        cond: undefinedThere,
+        then: [
+          {
+            kind: "exprStmt",
+            expr: nodeThrowExpr(1, "", OMITTED_OR_UNDEFINED_ARGUMENT_MESSAGE, F64, loc),
+            loc,
+          },
+        ],
+        else_: null,
+        loc,
+      });
+    }
+  } finally {
+    lowerer.fnStack.pop();
+  }
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(name, { kind: "dyn" }, toT, params, context.locals, body, loc),
+  );
+  return name;
+}
+
+/** The function `value` adapted to the slot type `type` by the adapter
+ * funcCoerceAdapter answered: the adapter's factory applied to the value,
+ * boxed first for the variadic adapter, which calls the boxed function. */
+export function adaptedFunction(adapter: string, value: IrExpr, type: IrType, loc: SrcLoc): IrExpr {
+  const original: IrExpr =
+    adapter.startsWith(`${VARIADIC_ADAPTER_PREFIX}.`) ||
+    adapter.startsWith(`${EXACT_VARIADIC_ADAPTER_PREFIX}.`)
+      ? { kind: "dynFrom", value, type: DYN, loc }
+      : value;
+  return { kind: "call", callee: adapter, args: [original], type, loc };
 }
 
 /** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
@@ -260,6 +628,7 @@ function restPackingAdapter(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.signatureAdapters.set(name, "");
   lowerer.freshClosureAdapters.add(name);
   const fixed = fromT.params.length - 1;
   const restT = fromT.params[fixed] as IrType & { kind: "array" };
@@ -349,13 +718,78 @@ function funcIntoDynRestAdapter(
   return name;
 }
 
+/** The sort comparator's result adapter: JavaScript reads a comparator's
+ * result with ToNumber, so a comparator whose result may be `undefined`
+ * still orders — the unit arm completes as NaN, which makes every `< 0`
+ * and `> 0` comparison false and leaves the pair in place, exactly as Node
+ * does. TS infers that union for a JavaScript function that falls off its
+ * end (`if (a < b) return -1; if (a > b) return 1`), the shape semver's
+ * `rcompare` has. The adapter calls the source and narrows the result to
+ * its number arm with the NaN default; null unless the result is exactly
+ * the number arm plus `undefined`. */
+export function sortComparatorResultAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest === true || fromT.ret.kind !== "union") return null;
+  const from = lowerer.unions.get(fromT.ret.unionId);
+  if (from === undefined) return null;
+  // Any other arm is not a number the sort could compare, and keeps its
+  // existing (refused) treatment.
+  if (
+    !from.arms.some((arm) => typeEquals(arm, F64)) ||
+    !from.arms.every((arm) => typeEquals(arm, F64) || arm.kind === "undefinedT")
+  )
+    return null;
+  const key = `sortnum:${typeKey(fromT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.sortnum", key);
+  const narrowName = keyedHelperName(lowerer, "%sort.num", key);
+  const narrow = buildUnionNarrow(narrowName, from, F64, loc, (type) => lowerer.fmt(type), {
+    kind: "numLit",
+    value: NaN,
+    type: F64,
+    loc,
+  });
+  if (narrow === null) return null;
+  lowerer.liftedFns.push(narrow);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = fromT.params.map((type, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type,
+  }));
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: params.map((p): IrExpr => ({ kind: "varRef", localId: p.localId, type: p.type, loc })),
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] = [
+    {
+      kind: "return",
+      value: { kind: "call", callee: narrowName, args: [call], type: F64, loc },
+      loc,
+    },
+  ];
+  const toT: IrType & { kind: "func" } = { kind: "func", params: fromT.params, ret: F64 };
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
  * produce checked traps when called. Rest signatures are refused, except a
  * typed-rest source in a slot with fixed parameters, which the rest
- * packing adapter serves, and a fixed-parameter function into a
- * checked-dynamic rest signature without fixed parameters
- * (funcIntoDynRestAdapter). */
+ * packing adapter serves, a checked-dynamic variadic source, which is
+ * called boxed with the slot's arguments (variadicBoundaryAdapter), and a
+ * fixed-parameter function into a checked-dynamic rest signature without
+ * fixed parameters (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -364,6 +798,8 @@ export function funcCoerceAdapter(
 ): string | null {
   if (restPackingAdapterFits(lowerer, fromT, toT))
     return restPackingAdapter(lowerer, fromT, toT, loc);
+  if (variadicBoundaryFits(lowerer, fromT, toT))
+    return variadicBoundaryAdapter(lowerer, fromT, toT, loc);
   if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
     return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
@@ -484,11 +920,13 @@ export function funcCoerceAdapter(
     strandRet = false;
   // A record result the slot's result is a structural width of.
   if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
-  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${lowerer.coercions.checkedRetags > 0 ? ":checked" : ""}`;
+  const checked = lowerer.coercions.checkedRetags > 0;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${checked ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
+  lowerer.coercions.signatureAdapters.set(name, checked ? "checked" : "");
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((t, i) => ({
     localId: `a.${i}`,
@@ -609,6 +1047,54 @@ export function funcCoerceAdapter(
   lowerer.liftedFns.push(
     ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
   );
+  return name;
+}
+
+/** The adapter for a pair the general adapter has no conversion for
+ * (funcCoerceAdapter answers null): a view of the slot's type that throws
+ * the stranded TypeError when it is invoked. function-views.ts builds it
+ * where a function reaches a slot through a narrower one and the wider
+ * slot's arguments cannot be the function's (a rest parameter of another
+ * element type): JavaScript would hand the function a value its types
+ * exclude, and no native value represents that. */
+export function strandedFuncAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnstrand:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = toT.params.map((t, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type: t,
+  }));
+  const body: IrStmt[] = [
+    {
+      kind: "throw",
+      value: {
+        kind: "libCall",
+        fn: "error.new",
+        args: [
+          {
+            kind: "strLit",
+            value: `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
+            type: STRING,
+            loc,
+          },
+        ],
+        type: { kind: "object", className: "%TypeError" },
+        loc,
+      },
+      loc,
+    },
+  ];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
   return name;
 }
 

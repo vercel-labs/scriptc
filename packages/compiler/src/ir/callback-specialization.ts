@@ -1,5 +1,9 @@
 import type { IrContracts, IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
-import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import {
+  exprFunctionReference,
+  FUNCTION_REFERENCE_KINDS,
+  moduleFunctionReferences,
+} from "./function-references.js";
 import { reparseExpr, reparseStmt } from "./serialize.js";
 import { everyStmtList, mapExprChildren, mapStmtChildren } from "./traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
@@ -31,6 +35,15 @@ const REBINDING_KINDS: readonly IrNodeKind[] = [
   "assignExpr",
   "incDec",
   "closure",
+];
+
+/** The nodes the body facts of specializeCallbackCalls read: rebindings,
+ * declarations, direct calls and function references. */
+const BODY_FACT_KINDS: readonly IrNodeKind[] = [
+  ...REBINDING_KINDS,
+  "varDecl",
+  "call",
+  ...FUNCTION_REFERENCE_KINDS,
 ];
 
 /** The rebindings one function's body makes: locals it writes after
@@ -150,10 +163,12 @@ interface Candidate {
  * copied, each function gets at most MAX_COPIES_PER_FUNCTION copies, and
  * the module's copied nodes stay within a fixed share of its size. A helper
  * whose direct calls all pass the same targets keeps its single body, which
- * the backend already specializes. */
+ * the backend already specializes. `index`, an index of `mod`, gives the
+ * body facts of the functions it records without walking them. */
 export function specializeCallbackCalls(
   mod: IrModule,
   symbolName: (name: string) => string = (name) => name,
+  index?: IrNodeIndex,
 ): IrModule {
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const copies = new Map<string, IrFunction>();
@@ -187,9 +202,12 @@ export function specializeCallbackCalls(
   const globalWrites = new Map<string, IrExpr[]>();
   // One walk of every body records what the steps below read: its node
   // count (countNodes), its rebindings, the values written into each of its
-  // bindings, and its direct calls of helpers, in walk order.
+  // bindings, and its direct calls of helpers, in walk order. A body the
+  // index records is read from it instead.
+  const facts = index?.scan(BODY_FACT_KINDS);
   const each = mod.functions.map((fn) => {
-    let nodes = 0;
+    const recorded = index?.nodeCount(fn);
+    let nodes = recorded ?? 0;
     const own: FunctionRebindings = { ids: new Set(), sites: [] };
     const values = new Map<string, IrExpr[]>();
     const counts = new Map<string, number>();
@@ -202,10 +220,11 @@ export function specializeCallbackCalls(
         else list.push(value);
       }
     };
-    everyStmtList(fn.body, {
-      stmt: (stmt) => {
-        nodes++;
-        noteRebinding(fn.name, stmt, own);
+    eachNodeOfKinds(fn, recorded === undefined ? undefined : facts, (node, statement) => {
+      if (recorded === undefined) nodes++;
+      noteRebinding(fn.name, node, own);
+      if (statement) {
+        const stmt = node as IrStmt;
         if (stmt.kind === "varDecl") record(stmt.localId, stmt.init, stmt.init ? 1 : 0);
         if (stmt.kind === "assign") {
           if (globalIds.has(stmt.localId)) {
@@ -218,20 +237,16 @@ export function specializeCallbackCalls(
         if (stmt.kind === "forOf") record(stmt.localId, null, 2);
         if (stmt.kind === "tryCatch" && stmt.catchLocalId !== null)
           record(stmt.catchLocalId, null, 2);
-        return true;
-      },
-      expr: (expr) => {
-        nodes++;
-        noteRebinding(fn.name, expr, own);
-        if (expr.kind === "assignExpr" || expr.kind === "incDec") {
-          record(expr.localId, null, 2);
-          if (globalIds.has(expr.localId)) globalWrites.set(expr.localId, []);
-        }
-        if (expr.kind === "call" && helpers.has(expr.callee)) calls.push(expr);
-        const name = exprFunctionReference(expr);
-        if (name !== undefined) referenced.add(name);
-        return true;
-      },
+        return;
+      }
+      const expr = node as IrExpr;
+      if (expr.kind === "assignExpr" || expr.kind === "incDec") {
+        record(expr.localId, null, 2);
+        if (globalIds.has(expr.localId)) globalWrites.set(expr.localId, []);
+      }
+      if (expr.kind === "call" && helpers.has(expr.callee)) calls.push(expr);
+      const name = exprFunctionReference(expr);
+      if (name !== undefined) referenced.add(name);
     });
     return { fn, nodes: Math.min(nodes, MAX_FUNCTION_NODES + 1), own, values, counts, calls };
   });

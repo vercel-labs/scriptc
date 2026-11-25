@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/void-truthiness-reassigned-value.js"
+ ],
+ "diags": []
+}

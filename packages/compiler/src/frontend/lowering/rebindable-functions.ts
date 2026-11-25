@@ -22,16 +22,23 @@ export function collectRebindableFunctions(
 ): Set<ts.FunctionDeclaration> {
   const found = new Set<ts.FunctionDeclaration>();
   if (!isJsSourceFile(sf)) return found;
-  const byName = new Map<string, ts.FunctionDeclaration>();
-  for (const stmt of sf.statements.nodes) {
+  // Every named declaration in the file, top level or nested: an assignment
+  // to the binding replaces the function wherever the declaration sits, and
+  // the symbol's own declarations decide which one it names.
+  const byName = new Map<string, ts.FunctionDeclaration[]>();
+  ts.walkPreorder(sf, (node) => {
     if (
-      ts.isFunctionDeclaration(stmt) &&
-      stmt.name &&
-      stmt.body &&
-      stmt.typeParameters === undefined
-    )
-      byName.set(stmt.name.text, stmt);
-  }
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      node.body &&
+      node.typeParameters === undefined
+    ) {
+      const list = byName.get(node.name.text);
+      if (list) list.push(node);
+      else byName.set(node.name.text, [node]);
+    }
+    return undefined;
+  });
   if (byName.size === 0) return found;
   ts.walkPreorder(sf, (node) => {
     if (
@@ -40,10 +47,14 @@ export function collectRebindableFunctions(
       !ts.isIdentifier(node.left)
     )
       return undefined;
-    const decl = byName.get(node.left.text);
-    if (!decl || found.has(decl)) return undefined;
+    const candidates = byName.get(node.left.text);
+    if (candidates === undefined) return undefined;
     const symbol = lowerer.checker.getSymbolAtLocation(node.left);
-    if (symbol && symbol.declarations.includes(decl)) found.add(decl);
+    if (symbol === undefined) return undefined;
+    for (const decl of candidates) {
+      if (found.has(decl)) continue;
+      if (symbol.declarations.includes(decl)) found.add(decl);
+    }
     return undefined;
   });
   for (const decl of found) lowerer.rebindableFunctions.add(decl);

@@ -41,12 +41,16 @@ export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerR
   )
     return ELEMENT_RANGES[e.receiver.type.elem] ?? null;
   // ToNumber of an Int32[] element read: the stored int32, or NaN for a
-  // hole, a present undefined or a missing index.
+  // hole, a present undefined or a missing index. The test is read into a
+  // local first: called as `host.int32Elements(…)` it is a member call,
+  // which hands the function the emitter as its receiver, a dynamic value
+  // (LlEmitter.integerCloneHost).
+  const int32Elements = host.int32Elements;
   if (
     e.kind === "arrIntrinsic" &&
     e.method === "getNumber" &&
-    host.int32Elements !== null &&
-    host.int32Elements(e.receiver)
+    int32Elements !== null &&
+    int32Elements(e.receiver)
   )
     return ELEMENT_RANGES.i32!;
   // A UTF-16 code unit, or NaN past either end.
@@ -55,7 +59,13 @@ export function integerOrNaNRange(host: LlvmEmitterContext, e: IrExpr): IntegerR
   if (e.kind === "bin" && (e.op === "+" || e.op === "-" || e.op === "*")) {
     const left = integerOrNaNRange(host, e.left);
     const right = left && integerOrNaNRange(host, e.right);
-    return right ? integerArithmeticRange(e.op, left!, right) : null;
+    if (!right) return null;
+    // Integral operands give an integral result, but past the exact-integer
+    // range the double result rounds, so the sum has no exact range: an
+    // unbounded range says so. Analyses that need a magnitude (a wrapping
+    // 32-bit sum, an int32 compare, a product) re-derive the range with
+    // integerArithmeticRange or exactProduct and reject the unbounded one.
+    return integerArithmeticRange(e.op, left!, right) ?? UNBOUNDED_INTEGERS;
   }
   return null;
 }
@@ -69,12 +79,17 @@ export function integerOrNaNIndex(
   host: LlvmEmitterContext,
   value: LlValue,
   expr: IrExpr | undefined,
-): { wide: string; ordered: string } | null {
+): { wide: string; ordered: string; bounded: boolean } | null {
   const range = expr ? integerOrNaNRange(host, expr) : null;
   if (!range) return null;
+  // The conversion is exact only where the i64 range holds the value: past
+  // 2^63 fptosi is poison and freeze would hand the caller an arbitrary
+  // integer. `bounded` says whether the range proves that; an unbounded one
+  // leaves the caller to test the double itself before using the conversion.
+  const bounded = range.min >= -(2 ** 63) && range.max <= 2 ** 63 - 1;
   // A value that carries its integer and ordered bit needs no conversion.
   if (value.nanInteger !== undefined && value.ordered !== undefined)
-    return { wide: value.nanInteger, ordered: value.ordered };
+    return { wide: value.nanInteger, ordered: value.ordered, bounded };
   const B = host.B;
   const wide = B.tmp();
   let ordered = value.ordered;
@@ -91,7 +106,7 @@ export function integerOrNaNIndex(
     B.line(`${raw} = fptosi double ${value.name} to i64`);
     B.line(`${wide} = freeze i64 ${raw}`);
   }
-  return { wide, ordered };
+  return { wide, ordered, bounded };
 }
 
 const ELEMENT_RANGES: Partial<Record<string, IntegerRange>> = {
@@ -215,7 +230,11 @@ export function emitNanArithmetic(
     return { integer: value.nanInteger, ordered: value.ordered };
   };
   if ((!li && l.nanInteger === undefined) || (!ri && r.nanInteger === undefined)) return undefined;
-  if (!integerOrNaNRange(host, e)) return undefined;
+  // The i64 arithmetic below is the result's integer only while the value
+  // stays within the exact-integer range; an unbounded operand range cannot
+  // promise that, so the expression takes the double path instead.
+  const range = integerOrNaNRange(host, e);
+  if (!range || !Number.isFinite(range.min) || !Number.isFinite(range.max)) return undefined;
   const left = operand(l, li);
   const right = left && operand(r, ri);
   if (!right) return undefined;
@@ -243,11 +262,29 @@ function exactProduct(left: IntegerRange, right: IntegerRange): boolean {
   return magnitude(left) * magnitude(right) < 2 ** 53;
 }
 
+/** The values an induction variable can hold: every integer it can reach
+ * has no finite bound, so the range is unbounded. The fact it carries is
+ * that a value is an integral double, never -0, or NaN: a ± step of an
+ * exact integer is integral however far it runs, though it stops being
+ * exact on the byte once it passes 2^53. No consumer may therefore use this
+ * range as a proof of magnitude — a product here would round in the double
+ * where wrapping 32-bit arithmetic does not — so the analyses that need a
+ * bound (withinInt32, exactProduct, integerArithmeticRange) reject it and
+ * the value takes the double path. */
+const INTEGER_INDUCTION_RANGE: IntegerRange = { min: -Infinity, max: Infinity };
+
+/** An integral value whose magnitude is not bounded: an expression of two
+ * integral operands that the exact-range arithmetic cannot place. */
+const UNBOUNDED_INTEGERS: IntegerRange = { min: -Infinity, max: Infinity };
+
 /** The number locals of `fn` that only hold exact integers (never -0) or NaN, with the range of
  * those integers: locals declared once with an initializer, neither parameters nor captured or
- * boxed, whose initializer and every later write `integerOrNaNRange` covers. A local joins once
- * the values it is written depend only on locals that have joined, so `x = x + 1` keeps `x` out:
- * its values have no bound. Uses the function's `integerRanges` and `int32Elements`. */
+ * boxed, whose initializer and every later write `integerOrNaNRange` covers, or is a ± step of the
+ * local itself (`x++`, `x = x + 1`). The locals are tested together, so an induction variable and
+ * the temporary that copies it (`k = i + 1`) justify each other; a local that cannot be justified
+ * by the others is dropped. An induction variable keeps the wide exact-integer range, since a
+ * ± step of an exact integer is an exact integer however far it runs. Uses the function's
+ * `integerRanges` and `int32Elements`. */
 export function findIntegerOrNaNLocals(
   host: LlvmEmitterContext,
   fn: IrFunction,
@@ -275,9 +312,26 @@ export function findIntegerOrNaNLocals(
     if (list) list.push(value);
     else writes.set(id, [value]);
   };
+  /** Whether `value`, written to `id`, is a ± step: `id++`, `id--`, `id ± k`
+   * for an integer literal `k` in either order, or `id ± y` where `y` is a
+   * local already proven integer-or-NaN. A step of an exact integer (or NaN)
+   * is an exact integer (or NaN), however far it runs, so it needs no bound. */
+  const isInductionStep = (id: string, value: IrExpr): boolean => {
+    if (value.kind === "incDec") return value.localId === id;
+    if (value.kind !== "bin" || (value.op !== "+" && value.op !== "-")) return false;
+    for (const [self, other] of [
+      [value.left, value.right],
+      [value.right, value.left],
+    ] as const) {
+      if (self.kind !== "varRef" || self.localId !== id) continue;
+      if (other.kind === "numLit") return Number.isSafeInteger(other.value);
+      if (other.kind === "varRef") return found.has(other.localId);
+    }
+    return false;
+  };
   function walkExpr(e: IrExpr): boolean {
     if (e.kind === "assignExpr") write(e.localId, e.value);
-    else if (e.kind === "incDec") drop(e.localId);
+    else if (e.kind === "incDec") write(e.localId, e);
     return everyExprChild(e, walkExpr, walkStmt);
   }
   function walkStmt(s: IrStmt): boolean {
@@ -297,16 +351,28 @@ export function findIntegerOrNaNLocals(
   const previous = host.integerOrNaNLocals;
   host.integerOrNaNLocals = found;
   try {
-    let joined = true;
-    while (joined) {
-      joined = false;
-      for (const [id, values] of writes) {
-        if (found.has(id) || !declared.has(id)) continue;
+    // Greatest fixpoint: every declared local starts assumed to hold an
+    // exact integer (or NaN), and each pass drops the locals with a write
+    // that cannot be justified from the ones still assumed. An induction
+    // variable and the temporaries that copy its next value justify each
+    // other, which a least fixpoint cannot see.
+    for (const [id] of writes) if (declared.has(id)) found.set(id, INTEGER_INDUCTION_RANGE);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const [id] of [...found]) {
+        const values = writes.get(id)!;
         let range: IntegerRange | null = null;
+        let stepped = false;
+        let covered = true;
         for (const value of values) {
+          if (isInductionStep(id, value)) {
+            stepped = true;
+            continue;
+          }
           const next = integerOrNaNRange(host, value);
           if (next === null) {
-            range = null;
+            covered = false;
             break;
           }
           range =
@@ -314,9 +380,19 @@ export function findIntegerOrNaNLocals(
               ? next
               : { min: Math.min(range.min, next.min), max: Math.max(range.max, next.max) };
         }
-        if (range === null) continue;
-        found.set(id, range);
-        joined = true;
+        // A local needs a bounded write to stay; an induction variable whose
+        // every other write is an integer-or-NaN value keeps the wide range.
+        if (!covered || range === null) {
+          found.delete(id);
+          changed = true;
+          continue;
+        }
+        const joined = stepped ? INTEGER_INDUCTION_RANGE : range;
+        const current = found.get(id)!;
+        if (joined.min !== current.min || joined.max !== current.max) {
+          found.set(id, joined);
+          changed = true;
+        }
       }
     }
   } finally {

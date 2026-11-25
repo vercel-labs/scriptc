@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/define-properties-typed-receivers.ts"
+ ],
+ "diags": []
+}

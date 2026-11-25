@@ -1,0 +1,13 @@
+tuple-union-read-beside-mutable-slot.ts:19:7 - error SC1090: reading a union of tuples in place while 'stops' is also handed to a mutable array slot (line 17: that slot holds a copy of the tuple, so a write through it would not be seen here; declare the slot 'readonly', or narrow the value to one tuple first) is not supported yet
+
+  18 |   alias[0] = line;
+  19 |   if ((stops as readonly string[]).indexOf(line) === 0) count++;
+     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  20 | }
+
+tuple-union-read-beside-mutable-slot.ts:23:21 - error SC1090: reading a union of tuples in place while 'rows' is also handed to a mutable array slot (line 22: that slot holds a copy of the tuple, so a write through it would not be seen here; declare the slot 'readonly', or narrow the value to one tuple first) is not supported yet
+
+  22 |   count += longest(rows as unknown as string[]) + line.length;
+  23 |   for (const row of rows as readonly string[]) count += row.length;
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~
+  24 | }

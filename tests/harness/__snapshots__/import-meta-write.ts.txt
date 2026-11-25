@@ -1,5 +1,0 @@
-import-meta-write.ts:1:1 - error SC1090: assignment to non-variables are not supported yet
-
-  1 | import.meta.url = "file:///tmp/replaced.mjs";
-    | ^~~~~~~~~~~~~~~
-  2 | console.log("unreachable");

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readline-named-process-stream-imports.cjs"
+ ],
+ "diags": []
+}

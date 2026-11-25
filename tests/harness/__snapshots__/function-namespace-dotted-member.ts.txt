@@ -1,0 +1,15 @@
+function-namespace-dotted-member.ts:10:13 - error SC1090: an exported nested namespace in the function+namespace merge 'f' is not supported yet
+
+   9 | }
+  10 | namespace f.inner {
+     |             ^~~~~~~
+  11 |   export const x = 2;
+
+  hint: a merged namespace's exported members are own properties of the function object; this lowering writes exported const/let/var members with an initializer and exported functions there
+
+function-namespace-dotted-member.ts:13:37 - error SC1090: the reference to 'x' (a binding form with no lowering) is not supported yet
+
+  12 | }
+  13 | console.log(Object.keys(f), f.inner.x);
+     |                                     ^
+  14 | 

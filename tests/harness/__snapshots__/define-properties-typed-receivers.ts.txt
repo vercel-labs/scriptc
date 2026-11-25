@@ -1,0 +1,112 @@
+define-properties-typed-receivers.ts:14:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  13 | const point: Point = { x: 1, y: 2 };
+  14 | Object.defineProperties(point, { x: { value: 10 } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  15 | Object.defineProperty(point, "x", { value: 10 });
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:15:1 - error SC2020: 'Object.defineProperty' is part of the standard library types but has no scriptc lowering yet
+
+  14 | Object.defineProperties(point, { x: { value: 10 } });
+  15 | Object.defineProperty(point, "x", { value: 10 });
+     | ^~~~~~~~~~~~~~~~~~~~~
+  16 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:18:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  17 | const plain = { x: 1, y: 2 };
+  18 | Object.defineProperties(plain as Wider, { z: { value: 3, enumerable: true } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  19 | Object.defineProperty(plain as Wider, "z", { value: 3, enumerable: true });
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:19:1 - error SC2020: 'Object.defineProperty' is part of the standard library types but has no scriptc lowering yet
+
+  18 | Object.defineProperties(plain as Wider, { z: { value: 3, enumerable: true } });
+  19 | Object.defineProperty(plain as Wider, "z", { value: 3, enumerable: true });
+     | ^~~~~~~~~~~~~~~~~~~~~
+  20 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:22:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  21 | const table: Record<string, number> = { a: 1 };
+  22 | Object.defineProperties(table, { b: { value: 2 } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  23 | Object.defineProperty(table, "b", { value: 2 });
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:23:1 - error SC2020: 'Object.defineProperty' is part of the standard library types but has no scriptc lowering yet
+
+  22 | Object.defineProperties(table, { b: { value: 2 } });
+  23 | Object.defineProperty(table, "b", { value: 2 });
+     | ^~~~~~~~~~~~~~~~~~~~~
+  24 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:26:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  25 | const list = [1, 2, 3];
+  26 | Object.defineProperties(list, { extra: { value: "e" } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  27 | Object.defineProperty(list, "extra", { value: "e" });
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:27:1 - error SC2020: 'Object.defineProperty' is part of the standard library types but has no scriptc lowering yet
+
+  26 | Object.defineProperties(list, { extra: { value: "e" } });
+  27 | Object.defineProperty(list, "extra", { value: "e" });
+     | ^~~~~~~~~~~~~~~~~~~~~
+  28 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:30:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  29 | const lookup = new Map<string, number>();
+  30 | Object.defineProperties(lookup, { tag: { value: "m" } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  31 | Object.defineProperty(lookup, "tag", { value: "m" });
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:31:1 - error SC2020: 'Object.defineProperty' is part of the standard library types but has no scriptc lowering yet
+
+  30 | Object.defineProperties(lookup, { tag: { value: "m" } });
+  31 | Object.defineProperty(lookup, "tag", { value: "m" });
+     | ^~~~~~~~~~~~~~~~~~~~~
+  32 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:37:1 - error SC2020: 'Object.defineProperties' is part of the standard library types but has no scriptc lowering yet
+
+  36 | }
+  37 | Object.defineProperties(Registry, { version: { value: "1.0" } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~
+  38 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+define-properties-typed-receivers.ts:45:1 - error SC2020: Object.defineProperty with an accessor descriptor for the declared field 'value' is not supported yet
+
+  44 | const holder = new Holder();
+  45 | Object.defineProperties(holder, { value: { get: () => 2 } });
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  46 | Object.defineProperty(holder, "value", { get: () => 2 });
+
+define-properties-typed-receivers.ts:46:1 - error SC2020: Object.defineProperty with an accessor descriptor for the declared field 'value' is not supported yet
+
+  45 | Object.defineProperties(holder, { value: { get: () => 2 } });
+  46 | Object.defineProperty(holder, "value", { get: () => 2 });
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  47 | 

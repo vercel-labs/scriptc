@@ -1,8 +1,10 @@
 import { primitiveConstructorOr } from "./lower-exprs.js";
 import { TO_STRING_TAG_FIELD, wellKnownSymbolOfField } from "./symbol-fields.js";
 import { InternalCompilerError } from "../../errors.js";
-import { dynUndefinedExpr, helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
-import { constructedValue } from "./constructor-returns.js";
+import { dynUndefinedExpr, helperLoc, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { classKeyHash, classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
+import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
+import { constructedDynValue } from "./constructor-returns.js";
 import { eventTargetApiMembers, eventTargetInheritedMember } from "./lower-event-target.js";
 import {
   DATE_PROTOTYPE_METHOD_NAMES,
@@ -12,6 +14,7 @@ import {
   programDeclaresDateClass,
 } from "./builtins/date-classes.js";
 import { dateValueMethod } from "./builtins/dates.js";
+import { arrayClassView } from "./builtins/array-classes.js";
 import {
   BOOL,
   DATE_T,
@@ -20,6 +23,7 @@ import {
   DYN_CLASS_PROPERTIES as PROPERTY_BAG,
   STRING,
   VOID,
+  arrayOf,
   canConvertToDyn,
   canDynCheckTo,
   isClassOwnEnumerableFieldName,
@@ -36,16 +40,31 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { streamTypedRefEligible } from "../../ir/analysis.js";
-import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
+import {
+  everyExprChild,
+  everyStmtChild,
+  everyStmtList,
+  mapExprChildren,
+  mapStmtChildren,
+  transformExpr,
+  transformStmtList,
+} from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 import { isSloppyAt } from "./frozen-records.js";
-import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
+import type { FunctionCensus } from "./function-census.js";
+import {
+  erasedGenericInstance,
+  implicitDefaultInstance,
+  type GenericFnInfo,
+} from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
   accessorCall,
+  builtinSuppliesMethod,
   classValueRef,
   findGenericMethodOn,
   findGenericStaticOn,
+  findImplementationOn,
   findMethodOn,
   findStaticOn,
   genericOverrideBelow,
@@ -56,9 +75,18 @@ import {
   classPrototypeData,
   hasClassPrototypeData,
   prototypeReflectedFlag,
+  prototypeViewable,
+  prototypeViewStart,
   observedPrototypeMethod,
   reflectClassPrototype,
 } from "./class-prototypes.js";
+import { runtimeStaticDefines } from "./class-runtime-statics.js";
+import {
+  classStaticsRepresentable,
+  insertClassStaticsInstall,
+  staticTableFields,
+  staticTableReadyGlobal,
+} from "./class-static-tables.js";
 import { perEvaluationPrivateNames } from "./private-brands.js";
 import {
   errorPropertyRead,
@@ -76,21 +104,28 @@ import {
 } from "./class-method-values.js";
 import { classStaticData } from "./class-static-data.js";
 import { isJsSourceFile } from "../program.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import * as ts from "../ts7/adapter.js";
 import { SYMBOL_T, type IrLibFn } from "../../ir/ir.js";
-import { isClassCallback } from "./class-callbacks.js";
+import { METHODS_INTACT_PREFIX, isClassCallback, methodsIntactMember } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
 import { keyedHelperName } from "./stable-names.js";
 import { DispatchSites } from "./dispatch-sites.js";
+import { checkIncremental, FixpointWorklist } from "./fixpoint-worklist.js";
 import {
   emitterRooted,
   lowerDynamicEmitterEmit,
   lowerDynamicEmitterOn,
 } from "./lower-event-emitter.js";
 import { protocolArm, protocolFieldArm } from "./class-protocol-dispatch.js";
-import { STREAM_OPERATORS, operatorSignalOptions, reduceSignalSetup } from "./lower-stream.js";
+import {
+  STREAM_OPERATORS,
+  STREAM_STATE_GETTERS,
+  operatorSignalOptions,
+  reduceSignalSetup,
+} from "./lower-stream.js";
 import { deletedPropertyNames, fixedFieldFamily } from "./js-class-fields.js";
 
 /** The receiver local of a call rewritten for a getter-only name. */
@@ -159,7 +194,25 @@ const STREAM_NUM_PROPERTIES = new Set([
   "writableCorked",
 ]);
 const streamProperty = (name: string): boolean =>
-  STREAM_BOOL_PROPERTIES.has(name) || STREAM_NUM_PROPERTIES.has(name);
+  STREAM_BOOL_PROPERTIES.has(name) ||
+  STREAM_NUM_PROPERTIES.has(name) ||
+  STREAM_STATE_GETTERS.has(name);
+/** Whether a stream class of these sides has the stream property in Node
+ * (`name in stream`): the readable ones on Readable and the classes that
+ * extend it, the writable ones on Writable and the Duplex kinds,
+ * writableAborted on Writable alone (Duplex copies a fixed list of
+ * Writable's getters), allowHalfOpen on the Duplex kinds, and destroyed
+ * and closed everywhere. */
+const streamClassHasProperty = (sides: "r" | "w" | "rw", name: string): boolean =>
+  name === "writableAborted"
+    ? sides === "w"
+    : name === "allowHalfOpen"
+      ? sides === "rw"
+      : name.startsWith("readable")
+        ? sides !== "w"
+        : name.startsWith("writable")
+          ? sides !== "r"
+          : true;
 
 /** `(instance) => string`, the string a class's inherited
  * Symbol.toStringTag getter answers, which the runtime reads for
@@ -188,6 +241,71 @@ function stringTagHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrFunc
           [],
           STRING,
           loc,
+        ),
+        loc,
+      },
+    ],
+    loc,
+  };
+}
+
+/** The accessor members a checked view of `info` answers, nearest
+ * declaration first: the names some `get` accessor at or above the class
+ * declares, with the type its getter answers. A name whose nearest
+ * declaration is a setter alone has no getter to run (a read of it answers
+ * undefined, exactly as on the instance), and symbol-keyed and #private
+ * members never cross a conversion, so both are left out. */
+function viewAccessorsOf(lowerer: Lowerer, info: ClassInfo): { member: string; ret: IrType }[] {
+  const out: { member: string; ret: IrType }[] = [];
+  const declared = new Set<string>();
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    // A `get`/`set` pair is one accessor: within a class the getter decides.
+    const getters = new Set<string>();
+    const setters = new Set<string>();
+    for (const member of current.methods.keys()) {
+      if (member.startsWith("get:")) getters.add(member.slice("get:".length));
+      else if (member.startsWith("set:")) setters.add(member.slice("set:".length));
+    }
+    for (const name of [...getters, ...setters]) {
+      if (declared.has(name)) continue;
+      declared.add(name);
+      if (name.startsWith("sym:") || name.startsWith("#") || !getters.has(name)) continue;
+      const member = `get:${name}`;
+      // The abstract direct-call fence, as accessorCall applies it: a getter
+      // with no implementation at or below the receiver has no value.
+      const found = findMethodOn(lowerer, info, member);
+      if (!found) continue;
+      if (found.sig.abstract === true && !lowerer.overrideBelow(info, member)) continue;
+      out.push({ member, ret: found.sig.ret });
+    }
+  }
+  return out;
+}
+
+/** `(instance) => dyn`, the value one of an instance's accessor-backed
+ * members answers. A checked view holds an instance's own data fields, so a
+ * field that exists only behind a getter reads as undefined there; the
+ * materializer installs this helper as the member's getter and a read of the
+ * copied field runs it on the native instance. */
+function viewAccessorHelper(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  member: string,
+  ret: IrType,
+  loc: SrcLoc,
+): IrFunction {
+  const type: IrType = { kind: "object", className: info.def.name };
+  return {
+    name: `%class.view:${info.def.name}:${member}`,
+    params: [{ localId: "this", name: "this", type }],
+    locals: [{ id: "this", name: "this", type, mutable: false }],
+    returnType: DYN,
+    body: [
+      {
+        kind: "return",
+        value: lowerer.coerceToExpected(
+          accessorCall(lowerer, info.def.name, member, varRef("this", type, loc), [], ret, loc),
+          DYN,
         ),
         loc,
       },
@@ -248,8 +366,8 @@ const TO_PRIMITIVE_PREFIX = "%dyn.class.toPrimitive.";
  * and `==` take the default hint, the arithmetic, bitwise, relational and
  * numeric conversions the number hint, and the string conversions the
  * string hint. */
-const DEFAULT_HINT_CALLS = new Set<string>(["dyn.abstractEq", "dyn.add"]);
-const NUMBER_HINT_CALLS = new Set<string>([
+const DEFAULT_HINT_CALLS = new Set<IrLibFn>(["dyn.abstractEq", "dyn.add"]);
+const NUMBER_HINT_CALLS = new Set<IrLibFn>([
   "dyn.arithmetic",
   "dyn.bigintConstructor",
   "dyn.bitwise",
@@ -257,13 +375,14 @@ const NUMBER_HINT_CALLS = new Set<string>([
   "dyn.numberConstructor",
   "dyn.toNumberCoerce",
   "dyn.toNumeric",
+  "dyn.negate",
 ]);
-const STRING_HINT_CALLS = new Set<string>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
+const STRING_HINT_CALLS = new Set<IrLibFn>(["dyn.stringConstructor", "dyn.toStringCoerce"]);
 /** Operations whose second operand is a property key, converted with the
  * string hint when the receiver admits a key: `in` needs an object,
  * propertyIsEnumerable converts before checking its receiver, and the
  * others need a receiver other than null and undefined. */
-const KEY_CALLS = new Map<string, "object" | "any" | "value">([
+const KEY_CALLS = new Map<IrLibFn, "object" | "any" | "value">([
   ["dyn.hasKeyComputed", "object"],
   ["dyn.propertyIsEnumerableComputed", "any"],
   ["dyn.hasOwnComputed", "value"],
@@ -304,7 +423,9 @@ const PRIMITIVE_KINDS = new Set<string>([
 /** A declared conversion method, own or inherited. */
 function conversionMethod(lowerer: Lowerer, info: ClassInfo, method: ConversionMethod): boolean {
   if (info.fields.has(method)) return false;
-  const found = findMethodOn(lowerer, info, method);
+  // An abstract declaration emits no prototype member: the conversion calls
+  // the implementation above it, or the default when no class has one.
+  const found = findImplementationOn(lowerer, info, method);
   return !!found && !found.declarer.builtinError;
 }
 
@@ -318,6 +439,39 @@ interface PropertyReceiver {
   info: ClassInfo;
   capsule: ClassInfo;
   key: string;
+  /** A class declared `extends Array`: its instances are native arrays,
+   * which reach dynamic code as arrays rather than class capsules
+   * (DynamicClassDispatch.arrayReceivers). */
+  array?: true;
+}
+
+/** Whether a class declared `extends Array` answers the string key `name`
+ * itself: a public field, or a method or accessor with a body. An abstract
+ * re-declaration emits no prototype member, so the key reaches the Array
+ * member above it, as in Node; a private or compiler-owned name is no
+ * property of the instance. */
+function arrayClassAnswers(lowerer: Lowerer, info: ClassInfo, name: string): boolean {
+  if (!isClassOwnEnumerableFieldName(name)) return false;
+  // The class's member table spells an accessor as get:<key> / set:<key>, so
+  // a string key that begins with one of those prefixes names no property of
+  // the instance: it must not match the accessor's internal entry (a private
+  // getter's key included).
+  if (name.startsWith("get:") || name.startsWith("set:")) return false;
+  if (info.fields.has(name)) return true;
+  return [name, `get:${name}`, `set:${name}`].some((member) => {
+    const found = findMethodOn(lowerer, info, member);
+    return found !== null && found !== undefined && found.sig.abstract !== true;
+  });
+}
+
+/** `statements` with each class field write marked as sloppy-mode code
+ * (a write to a frozen instance is skipped, frozen-records.ts). */
+function markSloppyFieldWrites(statements: IrStmt[]): IrStmt[] {
+  return transformStmtList(statements, {
+    expr: (expr) => expr,
+    stmt: (statement) =>
+      statement.kind === "fieldSet" ? { ...statement, sloppy: true as const } : statement,
+  });
 }
 
 interface PropertyDispatch {
@@ -326,6 +480,9 @@ interface PropertyDispatch {
   fn: IrFunction;
   classes: Set<string>;
   reflect?: boolean;
+  /** A write whose sites are in sloppy-mode code: a field write to a frozen
+   * Array subclass instance is then skipped instead of throwing. */
+  sloppy?: boolean;
   /** The helper's fallthrough statements as created, and the same access
    * applied to the receiver itself: what the fallthrough reduces to for a
    * value that is neither a class capsule nor a function, whose bag is the
@@ -346,7 +503,7 @@ export function classInstanceOf(
     { localId: "value", name: "value", type: DYN },
     ...(classValue ? [{ localId: "class", name: "class", type: classValue.type }] : []),
   ];
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const candidate = varRef("candidate", DYN, loc);
     const prototype = classPrototypeData(
       lowerer,
@@ -399,7 +556,7 @@ export function classInstanceOf(
                 localId: "candidate",
                 value: {
                   kind: "libCall",
-                  fn: "dyn.getPrototypeForIdentity",
+                  fn: "dyn.classTestPrototype",
                   args: [candidate],
                   type: DYN,
                   loc,
@@ -475,6 +632,427 @@ function branchKind(cond: IrExpr, param: string): "classCapsule" | "funcKind" | 
     return branchKind(cond.cond, param);
   if (cond.kind === "logical" && cond.op === "&&") return branchKind(cond.left, param);
   return null;
+}
+
+/** The fewest distinct classes a run can dispatch on. Indexing costs a key
+ * load, a multiply and a compare tree whatever the table's size, while the
+ * chain costs a key test per class it skips: measured per read over tables
+ * read in rotation, indexing is 1.2 ns a read ahead at 20 classes, 4.1 ns at
+ * 40, 8.3 ns at 60 and 15 to 48 ns at 200. The crossover is far below this
+ * threshold, so what it decides is which tables change at all. Whole
+ * programs whose largest table holds fewer than this many classes measured
+ * within noise; the ones that gained (a nested decode -36.5%, 200-class reads
+ * -47%) gained through tables above it, and every smaller table keeps the
+ * chain it had. */
+const MIN_CLASS_DISPATCH_CASES = 64;
+
+/** The fewest distinct classes a run of class-value branches dispatches on
+ * (`dyn.classIs` tests: `x instanceof C`, `new C()` and a static member of
+ * an untyped constructor `C`). The receiver of such a table is most often
+ * not a compiled class at all (`value instanceof RegExp` in JavaScript that
+ * takes the constructor from a variable), and then every branch of the chain
+ * is a call that fails: the index answers "no class" from the value's tag
+ * and skips them all, so it pays from the first few classes on. Measured
+ * over 1.2 million tests of class instances against class values taken in
+ * rotation from a list of all the program's classes: 229 ms to 197 ms at 8
+ * classes, 251 to 232 at 16, 381 to 229 at 64, 1,193 to 282 at 300 and
+ * 3,804 to 452 at 1,000; a table of 6 keeps its chain and its time. */
+const MIN_CLASS_VALUE_DISPATCH_CASES = 8;
+
+/** The exact key test of one class branch: the receiver local, the key, and
+ * the builtin that folds a receiver of that kind to the key's switch case
+ * (`dyn.classHash` for a capsule tested with `dyn.typedRefIs`,
+ * `dyn.classValueHash` for a class value tested with `dyn.classIs`). */
+interface ClassKeyTest {
+  value: IrExpr;
+  receiver: string;
+  key: string;
+  index: "dyn.classHash" | "dyn.classValueHash";
+}
+
+/** A class branch as a run holds it. `returns`: the branch's last statement
+ * returns, so the class it selects leaves the helper. A branch that can
+ * complete (a keyed read's symbol-key prelude: `if (class) if (symbol key)
+ * ...`) continues into the statements after the run, as the unselected
+ * branches do. */
+interface ClassBranch extends ClassKeyTest {
+  returns: boolean;
+}
+
+/** A class table's branch whose condition tests one class's type key on a
+ * receiver local, or null for a statement of another form. */
+function classBranch(stmt: IrStmt): ClassBranch | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const test = classKeyTest(stmt.cond);
+  if (test === null) return null;
+  if (assignsLocal(stmt.then, test.receiver)) return null;
+  if (leavesSwitch(stmt.then)) return null;
+  return { ...test, returns: stmt.then[stmt.then.length - 1]?.kind === "return" };
+}
+
+/** Whether the branch would `break` the switch its body moves into: an
+ * unlabeled break that no loop or switch inside the body binds. A labeled
+ * break and an unlabeled one already bound inside the body keep their
+ * targets. */
+function leavesSwitch(statements: readonly IrStmt[]): boolean {
+  let found = false;
+  const scan = (body: readonly IrStmt[], bound: number): void => {
+    for (const stmt of body) {
+      if (found) return;
+      switch (stmt.kind) {
+        case "break":
+          if (stmt.label === undefined && bound === 0) found = true;
+          break;
+        case "while":
+        case "doWhile":
+        case "for":
+        case "forOf":
+          scan(stmt.body, bound + 1);
+          break;
+        case "switch":
+          for (const { body: caseBody } of stmt.cases) scan(caseBody, bound + 1);
+          break;
+        case "if":
+          scan(stmt.then, bound);
+          if (stmt.else_) scan(stmt.else_, bound);
+          break;
+        case "block":
+          scan(stmt.body, bound);
+          break;
+        case "tryCatch":
+          scan(stmt.tryBody, bound);
+          if (stmt.catchBody) scan(stmt.catchBody, bound);
+          if (stmt.finallyBody) scan(stmt.finallyBody, bound);
+          break;
+        default:
+          break;
+      }
+    }
+  };
+  scan(statements, 0);
+  return found;
+}
+
+/** The receiver local and interned type key of `dyn.typedRefIs(v, "object:C")`,
+ * or of the branch-conditional form `test ? instanceOf(v, C) : false`. The
+ * key must be ASCII: the dispatch indexes on the key's length and last four
+ * bytes, which for ASCII are the key text's own. */
+function classKeyTest(cond: IrExpr): ClassKeyTest | null {
+  if (cond.kind === "ternary" && cond.else_.kind === "boolLit" && cond.else_.value === false)
+    return classKeyTest(cond.cond);
+  if (cond.kind !== "libCall" || cond.args.length !== 2) return null;
+  // A capsule's key (an instance of the class) or a class value's key (the
+  // constructor itself): the two kinds of table never share a run.
+  const index: ClassKeyTest["index"] | null =
+    cond.fn === "dyn.typedRefIs"
+      ? "dyn.classHash"
+      : cond.fn === "dyn.classIs"
+        ? "dyn.classValueHash"
+        : null;
+  if (index === null) return null;
+  const [value, key] = cond.args;
+  if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
+  const prefix = index === "dyn.classHash" ? "object:" : "classval:";
+  if (!key.value.startsWith(prefix) || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  return { value, receiver: value.localId, key: key.value, index };
+}
+
+/** Whether the branch writes its receiver local, which would make the
+ * dispatch read a value the branch tests do not. */
+function assignsLocal(statements: readonly IrStmt[], localId: string): boolean {
+  let found = false;
+  everyStmtList(statements as IrStmt[], {
+    stmt: (stmt) => {
+      if (
+        (stmt.kind === "assign" || stmt.kind === "varDecl" || stmt.kind === "forOf") &&
+        stmt.localId === localId
+      )
+        found = true;
+      return !found;
+    },
+    expr: () => !found,
+  });
+  return found;
+}
+
+/** The class branches of a generated table, whether its body lists them or
+ * reaches them through the indexed dispatch indexBranchRuns builds. The
+ * passes that read a table's branches run after it: the switch selects a
+ * branch by its class's key and the branch keeps its own key guard, so a
+ * reader treats the branches as the chain they were lowered from. */
+function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some((stmt) => isClassDispatch(stmt) || isClassCaseDispatch(stmt))) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassDispatch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch indexBranchRuns builds over a table's branches. */
+function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
+}
+
+/** The fewest distinct classes a run of returning capsule branches selects
+ * among for caseBranchRuns to replace it with a table, after the run's head
+ * (CLASS_DISPATCH_HEAD), which stays in the chain. */
+const MIN_CLASS_CASE_KEYS = 6;
+
+/** A branch caseBranchRuns can move into a case: `if (dyn.typedRefIs(r,
+ * "object:C")) ...` on a receiver local `r`, whose statements never write
+ * `r` and hold no `break` the switch would bind. Its exact key test is the
+ * one the table's selector makes. `returns` records that the branch's
+ * statements leave it (a return or a throw), so a later branch of the same
+ * key can never run. */
+function caseBranch(stmt: IrStmt): { receiver: string; key: string; returns: boolean } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const cond = stmt.cond;
+  if (cond.kind !== "libCall" || cond.fn !== "dyn.typedRefIs" || cond.args.length !== 2)
+    return null;
+  const [value, key] = cond.args;
+  if (value?.kind !== "varRef" || key?.kind !== "strLit") return null;
+  if (!key.value.startsWith("object:") || !/^[\x20-\x7e]*$/.test(key.value)) return null;
+  if (key.value.includes("\n") || classKeyHash(key.value) < 0) return null;
+  if (assignsLocal(stmt.then, value.localId) || leavesSwitch(stmt.then)) return null;
+  const last = stmt.then[stmt.then.length - 1]?.kind;
+  return {
+    receiver: value.localId,
+    key: key.value,
+    returns: last === "return" || last === "throw",
+  };
+}
+
+/** A statement list's text without source positions, which decides when
+ * two classes' branches are the same statements. */
+function statementsText(statements: readonly IrStmt[]): string {
+  return JSON.stringify(statements, (field, value: unknown) =>
+    field === "loc" ? undefined : value,
+  );
+}
+
+/** Replace each run of consecutive capsule branches on one receiver
+ * (caseBranch), after the run's first CLASS_DISPATCH_HEAD branches, with a
+ * switch on `dyn.classCase(receiver, table)` when the rest tests at least
+ * MIN_CLASS_CASE_KEYS distinct classes. The table names each class's key
+ * once with the case that holds its branch's statements; the selector
+ * answers the case of the class whose exact key test passes (the backend
+ * switches on the key's hash and compares the key pointer once,
+ * backend/llvm/lib-dispatch.ts), so the cases need no guards of their own.
+ * Classes of the same key never pass different tests, so a later branch of
+ * a key whose earlier branch returns or throws is unreachable and leaves;
+ * branches whose statements are the same share a case. A case ends with a
+ * `break`, so a branch that can complete continues after the switch, as it
+ * continued after the run's tests; a run ends before a repeated key whose
+ * earlier branch can complete, which the chain would run a second time.
+ * Any other value (0) takes the statements after the run, as the chain's
+ * failing tests did. The head runs first, as before, so a class it selects
+ * never computes the index. */
+export function caseBranchRuns(body: IrStmt[]): IrStmt[] {
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const start = i;
+    const first = caseBranch(body[i]!);
+    if (first === null) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    const run: { key: string; stmt: IrStmt & { kind: "if" }; returns: boolean }[] = [];
+    const runReturns = new Map<string, boolean>();
+    let branch: ReturnType<typeof caseBranch> = first;
+    while (branch !== null && branch.receiver === first.receiver) {
+      const earlier = runReturns.get(branch.key);
+      // The chain tries a repeated key a second time, after the earlier
+      // branch (and any branch between) has completed; the table cannot.
+      if (earlier === false) break;
+      if (earlier === undefined) runReturns.set(branch.key, branch.returns);
+      run.push({
+        key: branch.key,
+        stmt: body[i] as IrStmt & { kind: "if" },
+        returns: branch.returns,
+      });
+      i++;
+      branch = i < body.length ? caseBranch(body[i]!) : null;
+    }
+    const head = Math.min(CLASS_DISPATCH_HEAD, run.length);
+    const rest = run.slice(head);
+    const keys = new Set(rest.map((entry) => entry.key));
+    if (keys.size < MIN_CLASS_CASE_KEYS) {
+      if (rebuilt) for (const entry of run) rebuilt.push(entry.stmt);
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    for (const entry of run.slice(0, head)) rebuilt.push(entry.stmt);
+    // A key the head tests never reaches the switch; a repeated key's later
+    // branch is unreachable in the chain too.
+    const seen = new Set(run.slice(0, head).map((entry) => entry.key));
+    const caseOf = new Map<string, number>();
+    const lines: string[] = [];
+    const cases: { test: IrExpr; body: IrStmt[] }[] = [];
+    const loc = rest[0]!.stmt.loc;
+    for (const entry of rest) {
+      if (seen.has(entry.key)) continue;
+      seen.add(entry.key);
+      const text = statementsText(entry.stmt.then);
+      let number = caseOf.get(text);
+      if (number === undefined) {
+        number = cases.length + 1;
+        caseOf.set(text, number);
+        // The block keeps the branch's locals its own, as its `if` did: a
+        // switch's cases share one scope.
+        cases.push({
+          test: numLit(number, entry.stmt.loc),
+          body: [
+            { kind: "block", body: entry.stmt.then, loc: entry.stmt.loc },
+            { kind: "break", loc: entry.stmt.loc },
+          ],
+        });
+      }
+      lines.push(`${number} ${entry.key}`);
+    }
+    const receiver = (rest[0]!.stmt.cond as IrExpr & { kind: "libCall" }).args[0]!;
+    rebuilt.push({
+      kind: "switch",
+      disc: {
+        kind: "libCall",
+        fn: "dyn.classCase",
+        args: [receiver, { kind: "strLit", value: lines.join("\n"), type: STRING, loc }],
+        type: F64,
+        loc,
+      },
+      cases,
+      loc,
+    });
+  }
+  return rebuilt ?? body;
+}
+
+/** One class branch of a run: the receiver local it tests, the key it tests
+ * for, and the statement itself. */
+interface ClassRunBranch extends ClassBranch {
+  stmt: IrStmt;
+}
+
+/** The run's leading branches that stay in the chain ahead of the switch.
+ * Indexing costs a key load, a multiply and a walk of the compare tree before
+ * the matching branch's own guard runs, so a class the table tests early is
+ * cheaper in the chain: a read that hits one of them never computes the
+ * index. Keeping the first two measured the difference: one effect program
+ * whose tables are large but read near their front ran 3.3% slower with every
+ * branch in the switch (757.0 ms against 735.5 ms over 30 interleaved rounds)
+ * and at the baseline time with two peeled (737.5 ms), while a 200-class read,
+ * where the hit sits deep, keeps its gain. */
+const CLASS_DISPATCH_HEAD = 2;
+
+/** Replace each run of consecutive class branches on one receiver (at least
+ * MIN_CLASS_DISPATCH_CASES distinct classes) with a switch that selects the
+ * receiver's class. The branches move into the switch's cases unchanged and
+ * in order, branches whose keys hash together in one case; a key shared
+ * with a class outside the table selects that case, whose guards are false,
+ * and the switch's fallthrough reaches the remaining guards and the
+ * statements after the run exactly as the chain would. The run's first
+ * CLASS_DISPATCH_HEAD branches stay in the chain ahead of the switch: they
+ * run in order before it, and a class they select returns as it always did,
+ * so the switch only sees the receiver once those tests have failed.
+ *
+ * Two kinds of run have no such head and are indexed whole, and each of
+ * their cases ends with a `break`: no later case can hold a branch of the
+ * same class (equal keys share a case), so the guards the chain would
+ * still walk are all false. A run of class-value branches (`dyn.classIs`)
+ * is reached mostly by values that are no compiled class: the index sends
+ * them past every branch at once, or, when such a value's key folds to an
+ * occupied slot, past the table after that slot's guards. A run of
+ * branches that can complete is one whose selected class continues after
+ * the run. Runs of returning capsule branches keep the fallthrough they
+ * were built with. */
+function indexBranchRuns(body: IrStmt[]): IrStmt[] {
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const start = i;
+    const first = classBranch(body[i]!);
+    if (first === null) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    const run: ClassRunBranch[] = [];
+    let branch: ReturnType<typeof classBranch> = first;
+    while (
+      branch !== null &&
+      branch.receiver === first.receiver &&
+      branch.index === first.index &&
+      branch.returns === first.returns
+    ) {
+      run.push({ ...branch, stmt: body[i]! });
+      i++;
+      branch = i < body.length ? classBranch(body[i]!) : null;
+    }
+    const keys = [...new Set(run.map((branch) => branch.key))];
+    const values = first.index === "dyn.classValueHash";
+    if (keys.length < (values ? MIN_CLASS_VALUE_DISPATCH_CASES : MIN_CLASS_DISPATCH_CASES)) {
+      if (rebuilt) for (const branch of run) rebuilt.push(branch.stmt);
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    const head = values || !first.returns ? 0 : Math.min(CLASS_DISPATCH_HEAD, run.length - 1);
+    for (const branch of run.slice(0, head)) rebuilt.push(branch.stmt);
+    rebuilt.push(classDispatch(run.slice(head)));
+  }
+  return rebuilt ?? body;
+}
+
+/** The switch that selects one of the run's branches, keyed by the class
+ * hash the emitted code computes from the receiver's key. A table of class
+ * values is keyed by a slot instead: the hash's high bits in a range about
+ * twice the table's size, which makes the switch a jump table, so a class
+ * value reaches its branch in one indexed jump however many classes the
+ * table holds. */
+function classDispatch(run: readonly ClassRunBranch[]): IrStmt {
+  const first = run[0]!;
+  const loc = first.stmt.loc;
+  const values = first.index === "dyn.classValueHash";
+  const bits = values ? classValueSlotBits(new Set(run.map((branch) => branch.key)).size) : 0;
+  const branches = new Map<number, IrStmt[]>();
+  for (const branch of run) {
+    const hash = values ? classValueSlot(branch.key, bits) : classKeyHash(branch.key);
+    const ofHash = branches.get(hash);
+    if (ofHash) ofHash.push(branch.stmt);
+    else branches.set(hash, [branch.stmt]);
+  }
+  const receiver = varRef(first.receiver, first.value.type, loc);
+  return {
+    kind: "switch",
+    disc: {
+      kind: "libCall",
+      fn: first.index,
+      args: values ? [receiver, numLit(bits, loc)] : [receiver],
+      type: F64,
+      loc,
+    },
+    // A case of returning capsule branches falls through to the cases
+    // after it, as those tables were built; every other case ends with a
+    // `break`. No later case holds a branch of the same class (equal keys
+    // share a case), so a value the case's own guards reject, such as a
+    // builtin constructor whose key folds to an occupied slot, is done with
+    // the table there instead of walking the guards behind it.
+    cases: [...branches].map(([hash, body]) => ({
+      test: numLit(hash, loc),
+      body: first.returns && !values ? body : [...body, { kind: "break", loc }],
+    })),
+    loc,
+  };
 }
 
 const READ_PROPERTIES = "%dyn.class.readProperties";
@@ -625,6 +1203,11 @@ function mergePositions(left: readonly number[], right: readonly number[]): numb
  * against a test of every receiver. */
 const CHECK_CANDIDATES = process.env["SCRIPTC_CHECK_DISPATCH_CANDIDATES"] === "1";
 
+/** Inherited names a class table repeats before it is worth sharing them with
+ * a base class's table: below this, the per-read delegation call costs more
+ * than the branches it saves. */
+const INHERITED_NAMES_TO_SHARE = 32;
+
 export function classPropertiesHelper(lowerer: Lowerer, loc: SrcLoc, readOnly = false): IrFunction {
   const name = readOnly ? READ_PROPERTIES : "%dyn.class.properties";
   lowerer.shareHelper(name);
@@ -669,7 +1252,7 @@ export function classForInHasKey(
   const name = "%dyn.class.forInHasKey";
   lowerer.shareHelper(name);
   lowerer.shareHelper("%dyn.class.forInBagHas");
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     // The read-only table: a recheck never creates an instance's table, which
     // is undefined while the instance has no own dynamic properties.
     const bagHas = "%dyn.class.forInBagHas";
@@ -770,12 +1353,16 @@ export function classForInHasKey(
  * normalization of the resulting capsule falls through. Only JavaScript
  * class hierarchies, whose instances live in untyped code, take the exact
  * box. */
-export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction[]): void {
+export function boxClassInstancesExactly(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const normalize = lowerer.liftedFnNamed("%dyn.class.normalize");
   if (!normalize) return;
   // Static class → its constructible descendants in normalization order.
   const branches = new Map<string, string[]>();
-  for (const stmt of normalize.body) {
+  for (const stmt of classTableBranches(normalize.body)) {
     if (stmt.kind !== "if" || stmt.cond.kind !== "libCall" || stmt.cond.fn !== "dyn.typedRefIs")
       continue;
     const key = stmt.cond.args[1];
@@ -856,6 +1443,8 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
   };
   for (const fn of [...functions]) {
     if (fn === normalize || fn.name.startsWith("%dyn.class.boxExact:")) continue;
+    // The rewrite only replaces `dynFrom` expressions.
+    if (!census.hasExpr(fn, "dynFrom")) continue;
     rewrite(fn);
   }
 }
@@ -863,7 +1452,11 @@ export function boxClassInstancesExactly(lowerer: Lowerer, functions: IrFunction
 /** Record field creation after the dispatch worklist closes, including writes
  * in generated member tables. Native values stay in their slots; the bag
  * owns only their property presence, attributes, and insertion position. */
-export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[]): void {
+export function trackClassFieldCreation(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (![...lowerer.classes.values()].some((info) => info.def.tracksOwnFields)) return;
   const loc = functions[0]!.loc;
   const name = "%dyn.class.fieldCreated";
@@ -1028,6 +1621,8 @@ export function trackClassFieldCreation(lowerer: Lowerer, functions: IrFunction[
     (isClassOwnEnumerableFieldName(field) ||
       symbolMemberKey(lowerer, lowerer.classes.get(className)!, field, loc) !== null);
   for (const fn of functions) {
+    // Only a field write or update can be instrumented.
+    if (!census.hasStmt(fn, "fieldSet") && !census.hasExpr(fn, "fieldIncDec")) continue;
     // The transform revisits the replacement it returns. An instrumented
     // write is recognized by its receiver, a temporary created here.
     const receivers = new Set<string>();
@@ -1193,22 +1788,1257 @@ function defineIfAbsent(lowerer: Lowerer, bag: IrExpr, key: IrExpr, loc: SrcLoc)
   ];
 }
 
+/** A key table's string key parameter. The dispatch helpers name their key
+ * `p.key` whatever its type, so a member body that reads the helper's key
+ * instead of the table's fails IR validation. */
+const TABLE_KEY = "p.name";
+
+/** The operation a computed dispatch helper's per-class key tables answer:
+ * everything about the helper that a table's members and fallthrough depend
+ * on, and nothing else. Helpers of one operation share a class's table.
+ *
+ * - `write`, `reflect` and `probe` select the member bodies: a read, a
+ *   write, Reflect.get, Reflect.set, `in`, hasOwnProperty or
+ *   propertyIsEnumerable.
+ * - `numericKey` selects the names: a helper whose key is a number looks up
+ *   only the names a number can spell.
+ * - `sloppyWrite` is the strictness of the helper's sites. An untyped write
+ *   is sloppy by its source range (IrModule.sloppyDynWrites), and a shared
+ *   helper takes the range of one of its users
+ *   (settleSharedHelperLocations), so a table may only be shared by helpers
+ *   whose sites agree; the dispatch helpers are split the same way.
+ *
+ * How the key arrives (a string, an untyped value, a number to format) and
+ * whether the read is optional do not reach a table: the helper passes the
+ * key's string, and an optional read differs only in the helper's own
+ * statements. */
+function computedTableOperation(shape: {
+  write: boolean;
+  reflect: boolean;
+  probe: "in" | "own" | "enumerable" | undefined;
+  numericKey: boolean;
+  sloppyWrite: boolean;
+}): string {
+  const base = shape.probe ?? (shape.write ? "set" : "get");
+  return [
+    shape.reflect ? `reflect.${base}` : base,
+    ...(shape.sloppyWrite ? ["sloppy"] : []),
+    ...(shape.numericKey ? ["index"] : []),
+  ].join(":");
+}
+
+/** The name prefix of every helper this pass generates for untyped code's
+ * use of class instances: keyed tables, member dispatch, checked casts. */
+export const DISPATCH_HELPER_PREFIX = "%dyn.class.";
+
+/** The name prefix of a class's checked cast helper (`%dyn.class.cast:C`):
+ * the one function that checks a dynamic value into class `C`, which every
+ * such check in the program calls. */
+export const CHECKED_CAST_PREFIX = `${DISPATCH_HELPER_PREFIX}cast:`;
+
 /** Calls on native class capsules keep the instance's compiled methods. The
  * reachable-body fixed point discovers both the boxed classes and method
  * names before generating checked native dispatch; ordinary dyn receivers
  * continue through their existing runtime implementation. */
+/** `key = ToPropertyKey(key)` when `target` is a function (a class value):
+ * the first statement of a helper whose static-field refusals compare the
+ * key. */
+function staticKeyConversion(target: IrExpr, key: IrExpr, loc: SrcLoc): IrStmt {
+  if (key.kind !== "varRef")
+    throw new InternalCompilerError("static key conversion needs a local key");
+  return {
+    kind: "if",
+    cond: { kind: "dynTest", test: "function", value: target, type: BOOL, loc },
+    then: [
+      {
+        kind: "assign",
+        localId: key.localId,
+        value: { kind: "libCall", fn: "dyn.propertyKey", args: [key], type: DYN, loc },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+function isStaticKeyConversion(statement: IrStmt | undefined): boolean {
+  return (
+    statement?.kind === "if" &&
+    statement.then.length === 1 &&
+    statement.then[0]!.kind === "assign" &&
+    statement.then[0]!.value.kind === "libCall" &&
+    statement.then[0]!.value.fn === "dyn.propertyKey"
+  );
+}
+
+/** The deletes a listed static field can meet: each runs the static delete
+ * guard first once a table is installed. */
+const STATIC_DELETE_CALLS = new Set<IrLibFn>([
+  "dyn.keyDelete",
+  "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
+]);
+
+/** The copies and definitions that can write a listed static field from a
+ * source object: each runs a static source guard first once a table is
+ * installed. */
+const STATIC_SOURCE_CALLS = new Set<IrLibFn>(["dyn.assign", "dyn.assignAll", "dyn.defineProps"]);
+
+/** A native static write the table sync already rewrote: its first
+ * statement declares the sync's temporary. */
+function isStaticTableSync(node: IrStmt): boolean {
+  return (
+    node.kind === "block" &&
+    node.body[0]?.kind === "varDecl" &&
+    node.body[0].localId.startsWith("%staticTableWrite.")
+  );
+}
+
+/** A native static increment the table sync already rewrote. */
+function isStaticTableSyncExpr(node: IrExpr): boolean {
+  return (
+    node.kind === "seqExpr" &&
+    node.stmts.some(
+      (statement) =>
+        statement.kind === "varDecl" && statement.localId.startsWith("%staticTableWrite."),
+    )
+  );
+}
+
+/** Whether `value`, a class value boxed as `keyClass`, holds exactly the
+ * class `actual`. The boxed type only bounds the class: a slot typed with a
+ * base class can hold any of its subclasses. */
+function classValueIdentity(value: IrExpr, keyClass: string, actual: string, loc: SrcLoc): IrExpr {
+  const keyType: IrType = { kind: "classval", className: keyClass };
+  return {
+    kind: "logical",
+    op: "&&",
+    left: {
+      kind: "libCall",
+      fn: "dyn.classIs",
+      args: [value, { kind: "strLit", value: typeKey(keyType), type: STRING, loc }],
+      type: BOOL,
+      loc,
+    },
+    right: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "dynCheck", value, type: keyType, loc },
+      right: {
+        kind: "classRef",
+        className: actual,
+        type: { kind: "classval", className: actual },
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** A static-field branch of a generated helper, in the flat form its pass
+ * builds: `if (ready && classValueIdentity(value, keyClass, actual) && test)`
+ * for a refusal (fenceStaticFieldKeys), `if (test && classValueIdentity(...))`
+ * for a computed-key write (branchComputedStaticWrites). `ready` says which. */
+export interface StaticFieldBranch {
+  value: IrExpr;
+  keyClass: string;
+  actual: string;
+  ready: boolean;
+}
+
+/** Runs of static-field branches shorter than this keep their flat form. */
+const MIN_GROUPED_STATIC_FIELD_BRANCHES = 8;
+
+/** The parts of a listed static-field branch as it stands: its `test` and
+ * `ready` operands. Null when another pass reshaped it, which then keeps
+ * its flat form. */
+function staticFieldBranchParts(
+  stmt: IrStmt,
+  branch: StaticFieldBranch,
+): { test: IrExpr; ready: IrExpr | null; then: IrStmt[] } | null {
+  if (stmt.kind !== "if" || stmt.else_ !== null) return null;
+  const cond = stmt.cond;
+  if (cond.kind !== "logical" || cond.op !== "&&") return null;
+  const identity = (expr: IrExpr): boolean =>
+    expr.kind === "logical" &&
+    expr.op === "&&" &&
+    expr.left.kind === "libCall" &&
+    expr.left.fn === "dyn.classIs" &&
+    expr.left.args[0] === branch.value &&
+    expr.right.kind === "bin" &&
+    expr.right.op === "===" &&
+    expr.right.left.kind === "dynCheck" &&
+    expr.right.left.value === branch.value &&
+    expr.right.left.type.kind === "classval" &&
+    expr.right.left.type.className === branch.keyClass &&
+    expr.right.right.kind === "classRef" &&
+    expr.right.right.className === branch.actual;
+  if (!branch.ready)
+    return identity(cond.right) ? { test: cond.left, ready: null, then: stmt.then } : null;
+  const guard = cond.left;
+  if (guard.kind !== "logical" || guard.op !== "&&" || !identity(guard.right)) return null;
+  return { test: cond.right, ready: guard.left, then: stmt.then };
+}
+
+/** `body` with each run of consecutive static-field branches (`branches`
+ * lists them) regrouped by the class value they test:
+ *
+ *     if (classIs(value, K)) {
+ *       const held = value as K;            // one check per boxed class
+ *       if (held === A && ready) { if (test) ...; if (test) ...; }
+ *     }
+ *
+ * The flat run repeats the class test, the checked conversion and its
+ * reference counting in every branch: one per (boxed class, held class,
+ * field), which for a class family with inherited static fields is
+ * thousands of branches in one helper. Regrouping keeps every branch's
+ * `test` and body, in the same relative order within each held class. A
+ * class value has one boxed class (its exact type key) and holds one class,
+ * so branches of two groups never both match, and the class test, the
+ * checked conversion and `ready` have no observable effect: the first
+ * branch whose condition holds is the same one, reached after the same
+ * observable `test`s. `local` names a boxed class's checked value, which
+ * `declare` adds to the helper. */
+export function groupStaticFieldBranches(
+  body: IrStmt[],
+  branches: ReadonlyMap<IrStmt, StaticFieldBranch>,
+  local: () => string,
+  declare: (id: string, type: IrType) => void,
+): IrStmt[] {
+  const parts = (stmt: IrStmt) => {
+    const branch = branches.get(stmt);
+    const found = branch === undefined ? null : staticFieldBranchParts(stmt, branch);
+    return branch === undefined || found === null ? null : { branch, ...found };
+  };
+  let rebuilt: IrStmt[] | null = null;
+  let i = 0;
+  while (i < body.length) {
+    const run: NonNullable<ReturnType<typeof parts>>[] = [];
+    const start = i;
+    for (
+      let next = parts(body[i]!);
+      next !== null;
+      next = i < body.length ? parts(body[i]!) : null
+    ) {
+      run.push(next);
+      i++;
+    }
+    if (run.length === 0) {
+      rebuilt?.push(body[i]!);
+      i++;
+      continue;
+    }
+    if (run.length < MIN_GROUPED_STATIC_FIELD_BRANCHES) {
+      rebuilt?.push(...body.slice(start, i));
+      continue;
+    }
+    rebuilt ??= body.slice(0, start);
+    const groups = new Map<
+      string,
+      { value: IrExpr; loc: SrcLoc; held: Map<string, { ready: IrExpr | null; tests: IrStmt[] }> }
+    >();
+    for (const { branch, test, ready, then } of run) {
+      const loc = body[start]!.loc;
+      let group = groups.get(branch.keyClass);
+      if (!group)
+        groups.set(branch.keyClass, (group = { value: branch.value, loc, held: new Map() }));
+      let held = group.held.get(branch.actual);
+      if (!held) group.held.set(branch.actual, (held = { ready, tests: [] }));
+      held.tests.push({ kind: "if", cond: test, then, else_: null, loc: test.loc });
+    }
+    for (const [keyClass, { value, loc, held }] of groups) {
+      const keyType: IrType = { kind: "classval", className: keyClass };
+      const id = local();
+      declare(id, keyType);
+      rebuilt.push({
+        kind: "if",
+        // The inline kind test first: `dyn.classIs` is a runtime call, and
+        // the flat run only reached it after a branch's key test matched,
+        // so a value that is no function (most of what a computed-key
+        // helper sees) must not pay one call per boxed class.
+        cond: {
+          kind: "logical",
+          op: "&&",
+          left: { kind: "dynTest", test: "funcKind", value, type: BOOL, loc },
+          right: {
+            kind: "libCall",
+            fn: "dyn.classIs",
+            args: [value, { kind: "strLit", value: typeKey(keyType), type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        then: [
+          {
+            kind: "varDecl",
+            localId: id,
+            init: { kind: "dynCheck", value, type: keyType, loc },
+            loc,
+          },
+          ...[...held].map(([actual, { ready, tests }]): IrStmt => {
+            const identity: IrExpr = {
+              kind: "bin",
+              op: "===",
+              left: varRef(id, keyType, loc),
+              right: {
+                kind: "classRef",
+                className: actual,
+                type: { kind: "classval", className: actual },
+                loc,
+              },
+              type: BOOL,
+              loc,
+            };
+            return {
+              kind: "if",
+              cond:
+                ready === null
+                  ? identity
+                  : { kind: "logical", op: "&&", left: identity, right: ready, type: BOOL, loc },
+              then: tests,
+              else_: null,
+              loc,
+            };
+          }),
+        ],
+        else_: null,
+        loc,
+      });
+    }
+  }
+  return rebuilt ?? body;
+}
+
 export class ClassDynamicDispatch {
   constructor(private readonly asyncFree = false) {}
+
+  /** The static-field branches this pass put in its helpers' bodies, which
+   * finalize regroups (groupStaticFieldBranches) and then forgets. A branch
+   * another pass copied is no longer listed and keeps its flat form. */
+  private readonly staticFieldBranches = new Map<IrStmt, StaticFieldBranch>();
+  /** The branches fenceStaticFieldKeys adds: they read only the helper's
+   * `target` and `key` parameters, so a long run of them can move into a
+   * chunk function unchanged (splitStaticFieldBranches). */
+  private readonly fenceBranches = new Set<IrStmt>();
 
   private readonly generatorDispatch = new GeneratorDynamicDispatch();
   private readonly caughtDispatch = new CaughtValueDispatch();
   private readonly constructionDispatch = new ClassConstructionDispatch();
   /** What each function's body holds for this pass and its sub-passes. */
   readonly sites = new DispatchSites();
+  /** The bodies this pass has still to discover and rewrite. Re-scanning a
+   * body's sites and rebuilding a rewritten body for every function on every
+   * fixpoint iteration made the pass superlinear in the module size. */
+  private readonly worklist = new FixpointWorklist(this.sites);
   /** Property names a delete can remove (null: any name), for the field
    * creation tracking decision. */
   private deletedNames: Set<string> | null | undefined;
   private readonly boxed = new Set<string>();
+  /** The element types (typeKey) of the arrays the program makes dynamic
+   * values. An instance of a class declared `extends Array` is such an
+   * array, so the classes over these elements answer dynamic member access
+   * (arrayReceivers). */
+  private readonly boxedArrayElems = new Set<string>();
+  /** The classes whose instances the program makes dynamic values, as this
+   * pass found them (dynamic-class-report.ts reads them). */
+  boxedClasses(): ReadonlySet<string> {
+    return this.boxed;
+  }
+  /** The class values whose static property table this pass installed. */
+  private readonly staticTablesInstalled = new Set<string>();
+
+  /** The static-field writes a value boxed as `keyClass` can receive for
+   * `name`: one per class the value can hold (`keyClass` or a descendant
+   * whose table is installed) on which `name` is a static field of a class
+   * whose table is installed. `own` says the class itself declares it. */
+  private staticWriteTargets(
+    lowerer: Lowerer,
+    keyClass: string,
+    name: string,
+  ): { actual: string; own: boolean; globalId: string; type: IrType; field: string }[] {
+    const keyInfo = lowerer.classes.get(keyClass);
+    if (!keyInfo || runtimeStaticDefines(lowerer, keyInfo, name)) return [];
+    if (findGenericStaticOn(lowerer, keyInfo, name)) return [];
+    const actuals = [
+      keyClass,
+      ...[...this.staticTablesInstalled].filter((other) => lowerer.isSubclassOf(other, keyClass)),
+    ];
+    const targets: {
+      actual: string;
+      own: boolean;
+      globalId: string;
+      type: IrType;
+      field: string;
+    }[] = [];
+    for (const actual of actuals) {
+      const info = lowerer.classes.get(actual);
+      if (!info || !this.staticTablesInstalled.has(actual)) continue;
+      const found = findStaticOn(lowerer, info, name);
+      const field = found?.field;
+      if (!found || !field || !this.staticTablesInstalled.has(found.declarer.def.name)) continue;
+      targets.push({
+        actual,
+        own: found.declarer === info,
+        globalId: field.globalId,
+        type: field.type,
+        field: name,
+      });
+    }
+    return targets;
+  }
+
+  /** The statements of a static-field write through a class value. For the
+   * class's own field: the value is checked against the field's type, the
+   * table write (`tableWrite`, which throws for a non-writable property)
+   * runs, and only then does the native storage take the value, so a write
+   * the property refuses leaves the class's state as it was. For an
+   * inherited field: a run-time refusal, because through a subclass Node
+   * defines an OWN property on the subclass and leaves the base's field
+   * alone, while the subclass's compiled code reads the inherited field
+   * from the base's storage. */
+  private staticWriteStatements(
+    lowerer: Lowerer,
+    fn: IrFunction,
+    target: { actual: string; own: boolean; globalId: string; type: IrType; field: string },
+    stored: IrExpr,
+    tableWrite: IrStmt[],
+    loc: SrcLoc,
+  ): IrStmt[] {
+    if (!target.own) {
+      const info = lowerer.classes.get(target.actual)!;
+      return [
+        {
+          kind: "runtimeFence",
+          code: "SC1090",
+          message: `assigning the inherited static '${target.field}' through the subclass '${info.def.jsName ?? info.def.name}' as a dynamic value is not supported yet (JavaScript creates an own property on the subclass, which the subclass's compiled reads do not see)`,
+          loc,
+        },
+      ];
+    }
+    const checked = `%staticTableWrite.${this.staticTableTemps++}`;
+    fn.locals.push({ id: checked, name: checked, type: target.type, mutable: false });
+    // One block led by the temporary: the table sync recognizes it as a
+    // write that already stores to the table.
+    return [
+      {
+        kind: "block",
+        body: [
+          {
+            kind: "varDecl",
+            localId: checked,
+            init: { kind: "dynCheck", value: stored, type: target.type, loc },
+            loc,
+          },
+          ...tableWrite,
+          {
+            kind: "assign",
+            localId: target.globalId,
+            value: varRef(checked, target.type, loc),
+            loc,
+          },
+        ],
+        loc,
+      },
+    ];
+  }
+
+  /** The table store of a static-field write: the class value's property
+   * table takes `stored` under `name`. */
+  private staticTableStore(value: IrExpr, name: IrExpr, stored: IrExpr, loc: SrcLoc): IrStmt {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          { kind: "call", callee: this.propertyBag!.name, args: [value], type: DYN, loc },
+          name,
+          stored,
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
+
+  /** Numbers the temporaries the static-table writes declare. */
+  private staticTableTemps = 0;
+
+  /** The (helper, boxed class, held class, field) branches of the
+   * computed-key writes already emitted. */
+  private readonly computedStaticWrites = new Set<string>();
+
+  /** A computed-key write (`C[key] = v`, `Reflect.set(C, key, v)`) through a
+   * class value lands in the class's property table. When the key names a
+   * static field the table lists, the class's native storage takes the
+   * value first (or the write is refused for an inherited field), so the
+   * compiled code that reads the field sees what reflection sees. */
+  private branchComputedStaticWrites(lowerer: Lowerer): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    const names = new Set<string>();
+    for (const className of this.staticTablesInstalled) {
+      const info = lowerer.classes.get(className);
+      if (info) for (const field of staticTableFields(lowerer, info)) names.add(field.name);
+    }
+    let changed = false;
+    for (const dispatch of this.computed.values()) {
+      const fn = dispatch.fn;
+      if (!fn.params.some((param) => param.localId === "p.1")) continue;
+      if (fn.params.some((param) => param.localId === "p.index")) continue;
+      const reflect = fn.params.some((param) => param.localId === "p.reflectReceiver");
+      const loc = fn.loc;
+      const value = varRef("p.0", DYN, loc);
+      const stored = varRef("p.1", DYN, loc);
+      const keyRead = varRef(dispatch.keyLocal, STRING, loc);
+      for (const keyClass of this.boxedConstructors)
+        for (const name of names)
+          for (const target of this.staticWriteTargets(lowerer, keyClass, name)) {
+            const id = `${fn.name}\0${keyClass}\0${target.actual}\0${name}`;
+            if (this.computedStaticWrites.has(id)) continue;
+            this.computedStaticWrites.add(id);
+            // The branch runs the whole write and returns: the table store
+            // first, then the native storage.
+            const stmts: IrStmt[] = reflect
+              ? (() => {
+                  const ok = `%staticTableWrite.${this.staticTableTemps++}`;
+                  fn.locals.push({ id: ok, name: ok, type: BOOL, mutable: true });
+                  return [
+                    ...this.staticWriteStatements(
+                      lowerer,
+                      fn,
+                      target,
+                      stored,
+                      [
+                        {
+                          kind: "varDecl",
+                          localId: ok,
+                          init: {
+                            kind: "libCall",
+                            fn: "dyn.reflectSet",
+                            args: [
+                              {
+                                kind: "call",
+                                callee: this.propertyBag!.name,
+                                args: [value],
+                                type: DYN,
+                                loc,
+                              },
+                              lowerer.coerceToExpected(keyRead, DYN),
+                              stored,
+                              varRef("p.reflectReceiver", DYN, loc),
+                            ],
+                            type: BOOL,
+                            loc,
+                          },
+                          loc,
+                        },
+                        // A refused store returns false and leaves the
+                        // native storage alone.
+                        {
+                          kind: "if",
+                          cond: {
+                            kind: "unary",
+                            op: "!",
+                            operand: varRef(ok, BOOL, loc),
+                            type: BOOL,
+                            loc,
+                          },
+                          then: [{ kind: "return", value: varRef(ok, BOOL, loc), loc }],
+                          else_: null,
+                          loc,
+                        },
+                      ],
+                      loc,
+                    ),
+                    { kind: "return", value: varRef(ok, BOOL, loc), loc },
+                  ];
+                })()
+              : [
+                  ...this.staticWriteStatements(
+                    lowerer,
+                    fn,
+                    target,
+                    stored,
+                    [this.staticTableStore(value, keyRead, stored, loc)],
+                    loc,
+                  ),
+                  { kind: "return", value: null, loc },
+                ];
+            const then: IrStmt[] = reflect
+              ? [
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "dynScalarEq",
+                      left: varRef("p.reflectReceiver", DYN, loc),
+                      right: value,
+                      type: BOOL,
+                      loc,
+                    },
+                    then: stmts,
+                    // A receiver other than the class stores on the
+                    // receiver in Node, which this write does not model.
+                    else_: [
+                      {
+                        kind: "runtimeFence",
+                        code: "SC1090",
+                        message: `'Reflect.set' of the static '${name}' with a receiver other than the class is not supported yet`,
+                        loc,
+                      },
+                    ],
+                    loc,
+                  },
+                ]
+              : stmts;
+            const branch: IrStmt = {
+              kind: "if",
+              cond: {
+                kind: "logical",
+                op: "&&",
+                left: {
+                  kind: "strEq",
+                  negated: false,
+                  left: keyRead,
+                  right: { kind: "strLit", value: name, type: STRING, loc },
+                  type: BOOL,
+                  loc,
+                },
+                right: classValueIdentity(value, keyClass, target.actual, loc),
+                type: BOOL,
+                loc,
+              },
+              then,
+              else_: null,
+              loc,
+            };
+            this.staticFieldBranches.set(branch, {
+              value,
+              keyClass,
+              actual: target.actual,
+              ready: false,
+            });
+            // After the statement that computes the key's string, if any.
+            const at = fn.body.findIndex(
+              (statement) =>
+                statement.kind === "varDecl" && statement.localId === dispatch.keyLocal,
+            );
+            fn.body = [...fn.body.slice(0, at + 1), branch, ...fn.body.slice(at + 1)];
+            changed = true;
+          }
+    }
+    return changed;
+  }
+
+  /** `Object.defineProperty` on a class value redefines a property of its
+   * table. For a static field the table lists, the class's compiled code
+   * keeps reading the field's native storage, which a redefinition (a new
+   * value, a non-writable or accessor property, an own property on a
+   * subclass) would leave behind: those are refused at run time before the
+   * table changes. */
+  private branchStaticDescriptorWrites(lowerer: Lowerer): boolean {
+    let changed = false;
+    if (this.descriptorHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.descriptorHelper,
+          (field, owner) =>
+            `redefining the static field '${field}' of '${owner}' with 'Object.defineProperty' is not supported yet (the class's compiled code reads the field's own storage)`,
+        ) || changed;
+    if (this.staticDeleteHelper)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          this.staticDeleteHelper,
+          (field, owner) =>
+            `deleting the static field '${field}' of '${owner}' is not supported yet (the class's compiled code keeps reading the field's own storage)`,
+        ) || changed;
+    // Object.assign and Object.defineProperties act on the source's (the
+    // descriptor map's) own enumerable keys.
+    // A null or undefined source has no keys: Object.assign skips it, and
+    // Object.defineProperties throws its own TypeError for it afterwards.
+    const sourceHas = (field: string, loc: SrcLoc): IrExpr => ({
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "dynTest",
+        test: "nullish",
+        negated: true,
+        value: varRef("source", DYN, loc),
+        type: BOOL,
+        loc,
+      },
+      right: {
+        kind: "libCall",
+        fn: "dyn.propertyIsEnumerable",
+        args: [varRef("source", DYN, loc), { kind: "strLit", value: field, type: STRING, loc }],
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    });
+    for (const [fn, guard] of this.staticSourceGuards)
+      changed =
+        this.fenceStaticFieldKeys(
+          lowerer,
+          guard,
+          (field, owner) =>
+            `${fn === "dyn.defineProps" ? "redefining" : "assigning"} the static field '${field}' of '${owner}' with '${fn === "dyn.defineProps" ? "Object.defineProperties" : "Object.assign"}' is not supported yet (the class's compiled code reads the field's own storage)`,
+          sourceHas,
+        ) || changed;
+    return changed;
+  }
+
+  /** Guards that run ahead of Object.assign and Object.defineProperties once a
+   * static table is installed (parameters `target` and `source`): a source
+   * that would write or redefine a listed static field is refused there. */
+  private readonly staticSourceGuards = new Map<IrLibFn, IrFunction>();
+
+  /** Runs the Object.assign guard over each source of a run-time list. */
+  private staticSourceList: IrFunction | null = null;
+
+  private staticSourceListGuard(lowerer: Lowerer, guard: string, loc: SrcLoc): IrFunction {
+    if (this.staticSourceList) return this.staticSourceList;
+    const listType: IrType = { kind: "array", elem: DYN };
+    this.staticSourceList = {
+      name: "%dyn.class.staticAssignAll",
+      params: [
+        { localId: "target", name: "target", type: DYN },
+        { localId: "sources", name: "sources", type: DYN },
+      ],
+      returnType: VOID,
+      locals: [
+        { id: "target", name: "target", type: DYN, mutable: false },
+        { id: "sources", name: "sources", type: DYN, mutable: false },
+        { id: "list", name: "list", type: listType, mutable: false },
+        { id: "source", name: "source", type: DYN, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "list",
+          init: { kind: "dynCheck", value: varRef("sources", DYN, loc), type: listType, loc },
+          loc,
+        },
+        {
+          kind: "forOf",
+          localId: "source",
+          iterable: varRef("list", listType, loc),
+          body: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: guard,
+                args: [varRef("target", DYN, loc), varRef("source", DYN, loc)],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      loc,
+    };
+    this.generated.add(this.staticSourceList);
+    lowerer.liftedFns.push(this.staticSourceList);
+    return this.staticSourceList;
+  }
+
+  private staticSourceGuard(lowerer: Lowerer, call: IrLibFn, loc: SrcLoc): IrFunction {
+    // Object.assign's two forms share one guard.
+    const fn: IrLibFn = call === "dyn.assignAll" ? "dyn.assign" : call;
+    const known = this.staticSourceGuards.get(fn);
+    if (known) return known;
+    const params = ["target", "source"].map((name) => ({ localId: name, name, type: DYN }));
+    const guard: IrFunction = {
+      name:
+        fn === "dyn.defineProps" ? "%dyn.class.staticDefineProperties" : "%dyn.class.staticAssign",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.staticSourceGuards.set(fn, guard);
+    this.generated.add(guard);
+    lowerer.liftedFns.push(guard);
+    return guard;
+  }
+
+  /** Refuses, at the head of `helper` (parameters `target` and `key`), an
+   * operation on a static field an installed table lists: one branch per
+   * class object the target can hold and field visible on it. */
+  private fenceStaticFieldKeys(
+    lowerer: Lowerer,
+    helper: IrFunction,
+    message: (field: string, owner: string) => string,
+    matches?: (field: string, loc: SrcLoc) => IrExpr,
+  ): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    let changed = false;
+    const loc = helper.loc;
+    const target = varRef("target", DYN, loc);
+    const key = varRef("key", DYN, loc);
+    const keyIs = (field: string, at: SrcLoc): IrExpr => ({
+      kind: "dynScalarEq",
+      left: key,
+      right: lowerer.coerceToExpected({ kind: "strLit", value: field, type: STRING, loc: at }, DYN),
+      type: BOOL,
+      loc: at,
+    });
+    const match = matches ?? keyIs;
+    for (const keyClass of this.boxedConstructors)
+      for (const actual of [keyClass, ...this.staticTablesInstalled]) {
+        if (actual !== keyClass && !lowerer.isSubclassOf(actual, keyClass)) continue;
+        const info = lowerer.classes.get(actual);
+        if (!info || !this.staticTablesInstalled.has(actual)) continue;
+        for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
+          if (!this.staticTablesInstalled.has(owner.def.name)) continue;
+          for (const field of staticTableFields(lowerer, owner)) {
+            const id = `${helper.name}\0${keyClass}\0${actual}\0${field.name}`;
+            if (this.computedStaticWrites.has(id)) continue;
+            this.computedStaticWrites.add(id);
+            // After the key's conversion, which leads the helper's body.
+            const at = isStaticKeyConversion(helper.body[0]) ? 1 : 0;
+            const branch: IrStmt = {
+              kind: "if",
+              cond: {
+                kind: "logical",
+                op: "&&",
+                // The target test runs first: the key test may read the
+                // source, which only a write onto this class may observe.
+                left: {
+                  kind: "logical",
+                  op: "&&",
+                  // The installer defines the table's own entries through
+                  // the defineProperty helper before the table is ready.
+                  left: varRef(staticTableReadyGlobal(info), BOOL, loc),
+                  right: classValueIdentity(target, keyClass, actual, loc),
+                  type: BOOL,
+                  loc,
+                },
+                right: match(field.name, loc),
+                type: BOOL,
+                loc,
+              },
+              then: [
+                {
+                  kind: "runtimeFence",
+                  code: "SC1090",
+                  message: message(field.name, info.def.jsName ?? info.def.name),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            };
+            this.staticFieldBranches.set(branch, { value: target, keyClass, actual, ready: true });
+            this.fenceBranches.add(branch);
+            helper.body.splice(at, 0, branch);
+            changed = true;
+          }
+        }
+      }
+    return changed;
+  }
+
+  /** Runs ahead of every property delete once a static table is installed
+   * (syncStaticTableWrites): a delete of a listed static field is refused
+   * there, because the table entry would go while the class's compiled
+   * code kept reading the field's native storage. */
+  private staticDeleteHelper: IrFunction | null = null;
+
+  private staticDeleteGuard(lowerer: Lowerer, loc: SrcLoc): IrFunction {
+    if (this.staticDeleteHelper) return this.staticDeleteHelper;
+    const params = ["target", "key"].map((name) => ({ localId: name, name, type: DYN }));
+    this.staticDeleteHelper = {
+      name: "%dyn.class.staticDelete",
+      params,
+      returnType: VOID,
+      locals: params.map((param) => ({
+        id: param.localId,
+        name: param.name,
+        type: DYN,
+        mutable: false,
+      })),
+      body: [{ kind: "return", value: null, loc }],
+      loc,
+    };
+    this.generated.add(this.staticDeleteHelper);
+    lowerer.liftedFns.push(this.staticDeleteHelper);
+    return this.staticDeleteHelper;
+  }
+
+  /** Native writes to a field an installed table lists, by global id. */
+  private staticTableGlobals(
+    lowerer: Lowerer,
+  ): Map<string, { info: ClassInfo; name: string; type: IrType }> {
+    const globals = new Map<string, { info: ClassInfo; name: string; type: IrType }>();
+    for (const className of this.staticTablesInstalled) {
+      const info = lowerer.classes.get(className);
+      if (!info) continue;
+      for (const field of staticTableFields(lowerer, info)) {
+        const type = info.staticFields.find(
+          (candidate) => candidate.globalId === field.globalId,
+        )?.type;
+        if (type) globals.set(field.globalId, { info, name: field.name, type });
+      }
+    }
+    return globals;
+  }
+
+  /** Per function, the body whose native static writes already update the
+   * tables and the number of installed tables it was synced for. */
+  private readonly syncedBodies = new Map<IrFunction, { body: IrStmt[]; version: number }>();
+
+  /** Keeps each installed table's data properties equal to the native
+   * storage. The table holds a static field as an own data property, as
+   * Node's class object does, but the class's compiled code reads and writes
+   * the field's native global: every native write to a listed field also
+   * stores the new value in the table, once the table is installed (the
+   * class statement's static initializers run before it). */
+  private syncStaticTableWrites(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.staticTablesInstalled.size === 0) return false;
+    const globals = this.staticTableGlobals(lowerer);
+    if (globals.size === 0) return false;
+    const version = this.staticTablesInstalled.size;
+    let changed = false;
+    if (!this.propertyBag) {
+      this.propertyBag = classPropertiesHelper(lowerer, functions[0]!.loc);
+      this.generated.add(this.propertyBag);
+      changed = true;
+    }
+    for (const fn of functions) {
+      const synced = this.syncedBodies.get(fn);
+      if (synced?.body === fn.body && synced.version === version) continue;
+      const writes = (body: IrStmt[]): boolean => {
+        let found = false;
+        const stmt = (node: IrStmt): boolean => {
+          if (found) return false;
+          if (isStaticTableSync(node)) return true;
+          if (node.kind === "assign" && globals.has(node.localId)) found = true;
+          return !found && everyStmtChild(node, expr, stmt);
+        };
+        const expr = (node: IrExpr): boolean => {
+          if (found) return false;
+          if (isStaticTableSyncExpr(node)) return true;
+          if (node.kind === "incDec" && globals.has(node.localId)) found = true;
+          if (
+            node.kind === "libCall" &&
+            (STATIC_DELETE_CALLS.has(node.fn) || STATIC_SOURCE_CALLS.has(node.fn))
+          )
+            found = true;
+          return !found && everyExprChild(node, expr, stmt);
+        };
+        body.every(stmt);
+        return found;
+      };
+      if (!writes(fn.body)) {
+        this.syncedBodies.set(fn, { body: fn.body, version });
+        continue;
+      }
+      const tableStore = (globalId: string, stored: IrExpr, loc: SrcLoc): IrStmt => {
+        const { info, name } = globals.get(globalId)!;
+        return {
+          kind: "if",
+          cond: varRef(staticTableReadyGlobal(info), BOOL, loc),
+          then: [
+            this.staticTableStore(
+              lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl!), DYN),
+              { kind: "strLit", value: name, type: STRING, loc },
+              lowerer.coerceToExpected(stored, DYN),
+              loc,
+            ),
+          ],
+          else_: null,
+          loc,
+        };
+      };
+      const temp = (type: IrType, mutable = false): string => {
+        const id = `%staticTableWrite.${this.staticTableTemps++}`;
+        fn.locals.push({ id, name: id, type, mutable });
+        return id;
+      };
+      // The new value goes to the table first: a property the program made
+      // non-writable throws there, before the native storage changes.
+      const stmt = (node: IrStmt): IrStmt => {
+        if (isStaticTableSync(node)) return node;
+        const mapped = mapStmtChildren(node, expr, stmt);
+        if (mapped.kind !== "assign" || !globals.has(mapped.localId)) return mapped;
+        const { type } = globals.get(mapped.localId)!;
+        const next = temp(type);
+        const loc = mapped.loc;
+        return {
+          kind: "block",
+          body: [
+            { kind: "varDecl", localId: next, init: mapped.value, loc },
+            tableStore(mapped.localId, varRef(next, type, loc), loc),
+            { ...mapped, value: varRef(next, type, loc) },
+          ],
+          loc,
+        };
+      };
+      const expr = (node: IrExpr): IrExpr => {
+        if (isStaticTableSyncExpr(node)) return node;
+        const mapped = mapExprChildren(node, expr, stmt);
+        if (mapped.kind === "libCall" && STATIC_SOURCE_CALLS.has(mapped.fn)) {
+          // The target and every source, evaluated in order, pass the guard
+          // before the copy or the definition runs.
+          const loc = mapped.loc;
+          const [target, sources] = mapped.args;
+          const guard = this.staticSourceGuard(lowerer, mapped.fn, loc).name;
+          const targetLocal = temp(target!.type);
+          const targetRead = (): IrExpr =>
+            lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN);
+          const stmts: IrStmt[] = [{ kind: "varDecl", localId: targetLocal, init: target!, loc }];
+          const check = (source: IrExpr): IrStmt => ({
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: guard,
+              args: [targetRead(), lowerer.coerceToExpected(source, DYN)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          });
+          let sourcesArg: IrExpr;
+          if (mapped.fn === "dyn.assignAll" && sources!.kind === "dynArrLit") {
+            const elems = sources!.elems.map((elem) => {
+              const local = temp(elem.type);
+              stmts.push({ kind: "varDecl", localId: local, init: elem, loc });
+              return varRef(local, elem.type, loc);
+            });
+            for (const elem of elems) stmts.push(check(elem));
+            sourcesArg = { ...sources!, elems };
+          } else if (mapped.fn === "dyn.assignAll") {
+            // A source list built at run time (Object.assign as a value,
+            // with its rest array): each source passes the guard in turn.
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push({
+              kind: "exprStmt",
+              expr: {
+                kind: "call",
+                callee: this.staticSourceListGuard(lowerer, guard, loc).name,
+                args: [
+                  targetRead(),
+                  lowerer.coerceToExpected(varRef(local, sources!.type, loc), DYN),
+                ],
+                type: VOID,
+                loc,
+              },
+              loc,
+            });
+            sourcesArg = varRef(local, sources!.type, loc);
+          } else {
+            const local = temp(sources!.type);
+            stmts.push({ kind: "varDecl", localId: local, init: sources!, loc });
+            stmts.push(check(varRef(local, sources!.type, loc)));
+            sourcesArg = varRef(local, sources!.type, loc);
+          }
+          return {
+            kind: "seqExpr",
+            stmts,
+            result: {
+              ...mapped,
+              args: [varRef(targetLocal, target!.type, loc), sourcesArg, ...mapped.args.slice(2)],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
+        if (mapped.kind === "libCall" && STATIC_DELETE_CALLS.has(mapped.fn)) {
+          // The delete's target and key, evaluated once, pass the guard first.
+          const loc = mapped.loc;
+          const [target, key, ...rest] = mapped.args;
+          const targetLocal = temp(target!.type);
+          const keyLocal = temp(key!.type);
+          const targetRead = varRef(targetLocal, target!.type, loc);
+          // A key of any other kind converts with ToPropertyKey once, here,
+          // when the target is a function (a class value): the guard and the
+          // delete then see the same key, and its conversion runs once.
+          const keyInit: IrExpr =
+            key!.type.kind === "dyn"
+              ? {
+                  kind: "ternary",
+                  cond: {
+                    kind: "dynTest",
+                    test: "function",
+                    value: lowerer.coerceToExpected(targetRead, DYN),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: { kind: "libCall", fn: "dyn.propertyKey", args: [key!], type: DYN, loc },
+                  else_: key!,
+                  type: DYN,
+                  loc,
+                }
+              : key!;
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: targetLocal, init: target!, loc },
+              { kind: "varDecl", localId: keyLocal, init: keyInit, loc },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "call",
+                  callee: this.staticDeleteGuard(lowerer, loc).name,
+                  args: [
+                    lowerer.coerceToExpected(varRef(targetLocal, target!.type, loc), DYN),
+                    lowerer.coerceToExpected(varRef(keyLocal, key!.type, loc), DYN),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            result: {
+              ...mapped,
+              args: [
+                varRef(targetLocal, target!.type, loc),
+                varRef(keyLocal, key!.type, loc),
+                ...rest,
+              ],
+            },
+            type: mapped.type,
+            loc,
+          };
+        }
+        if (mapped.kind !== "incDec" || !globals.has(mapped.localId)) return mapped;
+        const { type } = globals.get(mapped.localId)!;
+        const loc = mapped.loc;
+        const { info, name } = globals.get(mapped.localId)!;
+        if (type.kind !== "f64") {
+          // A non-number update has no store to run ahead of the native one.
+          const result = temp(type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              {
+                kind: "if",
+                cond: varRef(staticTableReadyGlobal(info), BOOL, loc),
+                then: [
+                  {
+                    kind: "runtimeFence",
+                    code: "SC1090",
+                    message: `'${mapped.op}${mapped.op}' on the non-number static field '${name}' of a class whose statics are reflected is not supported yet`,
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              },
+              { kind: "varDecl", localId: result, init: mapped, loc },
+            ],
+            result: varRef(result, type, loc),
+            type,
+            loc,
+          };
+        }
+        const old = temp(type);
+        const next = temp(type);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: old, init: varRef(mapped.localId, type, loc), loc },
+            {
+              kind: "varDecl",
+              localId: next,
+              init: {
+                kind: "bin",
+                op: mapped.op,
+                left: varRef(old, type, loc),
+                right: { kind: "numLit", value: 1, type: F64, loc },
+                type,
+                loc,
+              },
+              loc,
+            },
+            tableStore(mapped.localId, varRef(next, type, loc), loc),
+            { kind: "assign", localId: mapped.localId, value: varRef(next, type, loc), loc },
+          ],
+          result: varRef(mapped.prefix ? next : old, type, loc),
+          type,
+          loc,
+        };
+      };
+      fn.body = fn.body.map(stmt);
+      this.syncedBodies.set(fn, { body: fn.body, version });
+      this.sites.forget(fn);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Installs the static property table of every class value the program
+   * boxes (class-static-tables.ts): a keyed read through `any`, Reflect and
+   * the descriptor APIs answer from it. The table links to the base's and a
+   * slot typed with a class can hold any program descendant, so the program
+   * ancestors and descendants of each boxed class get one too. */
+  private installStaticTables(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.boxedConstructors.size === 0) return false;
+    const candidates = new Map<string, ClassInfo>();
+    const add = (info: ClassInfo | null): void => {
+      if (info) candidates.set(info.def.name, info);
+    };
+    for (const name of this.boxedConstructors) {
+      const info = lowerer.classes.get(name);
+      if (!info) continue;
+      add(info);
+      for (let base = info.base; base; base = base.base) add(base);
+      for (const other of lowerer.classes.values()) {
+        if (other === info || !lowerer.isSubclassOf(other.def.name, info.def.name)) continue;
+        // A slot typed with the boxed class can only hold a descendant this
+        // build retains (classCanBeConstructed). A descendant whose
+        // constructor the reachable graph dropped has no instance and no
+        // class value to reflect on, and installing its table would name its
+        // class value — pulling its declaration-time code into a library
+        // graph that does not reach it.
+        if (lowerer.classCanBeConstructed(other)) add(other);
+      }
+    }
+    // Ancestors install first: a table links to its base's, so the base's
+    // members are there when an inherited name resolves through it.
+    const depth = (info: ClassInfo): number => {
+      let n = 0;
+      for (let base = info.base; base; base = base.base) n++;
+      return n;
+    };
+    let changed = false;
+    for (const info of [...candidates.values()].sort((left, right) => depth(left) - depth(right))) {
+      if (this.staticTablesInstalled.has(info.def.name)) continue;
+      // A base this pass did not install (an ineligible one, whose fence
+      // stays) leaves the chain incomplete: this class keeps its fence.
+      let ready = true;
+      for (let base = info.base; base; base = base.base)
+        if (!this.staticTablesInstalled.has(base.def.name)) ready = false;
+      if (!ready || !classStaticsRepresentable(lowerer, info)) continue;
+      if (!insertClassStaticsInstall(lowerer, info, functions)) continue;
+      this.staticTablesInstalled.add(info.def.name);
+      changed = true;
+    }
+    return changed;
+  }
   private readonly boxedConstructors = new Set<string>();
   /** Every class a boxed value was statically typed as, runtime error
    * classes included: the value's capsule can be any of its subclasses. */
@@ -1227,9 +3057,28 @@ export class ClassDynamicDispatch {
       branchIndex: number;
       dynamicKey: boolean;
       numericKey: boolean;
+      /** Whether a receiver at one of the helper's call sites can be a
+       * compiled class instance (receiverCanBeInstance). Only then does the
+       * helper get a branch per boxed class and a class key table; a receiver
+       * that can only be a record, array or other builtin value matches no
+       * class, and reading class state for it would expose values its own
+       * dynamic code cannot reach. */
+      instances: boolean;
       probe: "in" | "own" | "enumerable" | undefined;
+      /** The operation the helper's per-class key tables answer
+       * (computedTableOperation). */
+      operation: string;
+      /** The helper's fallthrough applied to the value itself instead of its
+       * property bag: the access the runtime answers on the value's view,
+       * as it does for a key written as a literal. */
+      view: () => IrStmt[];
+      /** Whether the value's property bag has the key as an own property. */
+      bagHas: () => IrExpr;
     }
   >();
+  /** The key table of each class, by operation and class name. A class has
+   * one table per operation, shared by every dispatch helper of that
+   * operation. */
   private readonly computedClassHelpers = new Map<string, IrFunction>();
   private normalization: IrFunction | null = null;
   private normalizationKey = "";
@@ -1259,8 +3108,15 @@ export class ClassDynamicDispatch {
   private readonly instanceTests = new Map<string, Set<string>>();
   private readonly jsonPrototypes = new Set<string>();
   private serializesClasses = false;
+  /** Whether the program can delete an error's own `stack`
+   * (mayDeleteOwnStack); undefined until a class asks. */
+  private deletesOwnStack: boolean | undefined;
   private descriptorHelper: IrFunction | null = null;
   private prototypeHelper: IrFunction | null = null;
+  /** Whether a read through prototypeHelper can pass it an instance. The
+   * compiler's own reads for a class's heritage pass a class value, whose
+   * prototype is never chosen by an object's class. */
+  private prototypeOfInstances = false;
   private readonly prototypeClasses = new Set<string>();
   /** The stand-in prototype object of each class without prototype data
    * (prototypeStandIn), by class name. */
@@ -1268,7 +3124,7 @@ export class ClassDynamicDispatch {
   /** The prototype reads of identity walks, by libCall, and the classes
    * each one answers for boxed instances. */
   private readonly prototypeIdentityHelpers = new Map<
-    "dyn.getPrototype" | "dyn.getPrototypeForIdentity",
+    "dyn.getPrototype" | "dyn.classTestPrototype",
     { fn: IrFunction; classes: Set<string> }
   >();
   /** `value instanceof Error` through Error.prototype: boxed instances of
@@ -1319,6 +3175,8 @@ export class ClassDynamicDispatch {
     const toPrimitiveSites = new Set<IrFunction>();
     const hasKeySites = new Set<IrFunction>();
     const caughtSites = new Set<IrFunction>();
+    // dynamic-class-report.ts follows the same parts of a type to say where
+    // a class became a dynamic value: a part added here is added there.
     const discover = (type: IrType): void => {
       const key = typeKey(type);
       if (seenTypes.has(key)) return;
@@ -1327,8 +3185,10 @@ export class ClassDynamicDispatch {
         this.boxedStatic.add(type.className);
         if (isDynTypedRefType(type)) this.boxed.add(type.className);
       } else if (type.kind === "classval") this.boxedConstructors.add(type.className);
-      else if (type.kind === "array") discover(type.elem);
-      else if (type.kind === "record") {
+      else if (type.kind === "array") {
+        this.boxedArrayElems.add(typeKey(type.elem));
+        discover(type.elem);
+      } else if (type.kind === "record") {
         const shape = lowerer.shapes.get(type.shapeId);
         shape?.fields.forEach((field) => discover(field.type));
         if (shape?.indexValue) discover(shape.indexValue);
@@ -1354,6 +3214,10 @@ export class ClassDynamicDispatch {
     // the order the scan met them.
     sortAdded(lowerer, this.boxed, boxedBefore);
     sortAdded(lowerer, this.boxedConstructors, boxedConstructorsBefore);
+    changed = this.installStaticTables(lowerer, functions) || changed;
+    changed = this.branchComputedStaticWrites(lowerer) || changed;
+    changed = this.branchStaticDescriptorWrites(lowerer) || changed;
+    changed = this.syncStaticTableWrites(lowerer, functions) || changed;
     changed = this.caughtDispatch.dynamicPayloads(lowerer, caughtSites, this.boxed) || changed;
     if (this.boxed.size === 0 && rewrite.size === 0) return changed;
     const converting = this.convertingHints(lowerer);
@@ -1445,6 +3309,18 @@ export class ClassDynamicDispatch {
         this.generated.add(fn);
         lowerer.liftedFns.push(fn);
         changed = true;
+      }
+      for (const current of tagged(info)) {
+        if (current.def.viewAccessors !== undefined) continue;
+        const entries: NonNullable<IrClassDef["viewAccessors"]> = [];
+        for (const { member, ret } of viewAccessorsOf(lowerer, current)) {
+          const fn = viewAccessorHelper(lowerer, current, member, ret, functions[0]!.loc);
+          entries.push({ member, helper: fn.name });
+          this.generated.add(fn);
+          lowerer.liftedFns.push(fn);
+          changed = true;
+        }
+        if (entries.length > 0) current.def.viewAccessors = entries;
       }
       if (this.prototypeHelper && !this.prototypeClasses.has(className)) {
         this.prototypeClasses.add(className);
@@ -1728,15 +3604,21 @@ export class ClassDynamicDispatch {
             ? receiver
             : { kind: "downcast", value: receiver, type: { kind: "object", className }, loc },
         );
+        // A class without prototype data of its own (a generic class below
+        // a class that has it) has a prototype made from its nearest
+        // ancestor's. Object.prototype is no answer for it: a view cannot
+        // be given Object.prototype, so building one threw, and `value
+        // instanceof Error` builds one.
         const returned: IrStmt = {
           kind: "return",
-          value: prototype ?? {
-            kind: "libCall",
-            fn: "dyn.getPrototype",
-            args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
-            type: DYN,
-            loc,
-          },
+          value: prototype ??
+            this.inheritedPrototype(lowerer, info, loc) ?? {
+              kind: "libCall",
+              fn: "dyn.getPrototype",
+              args: [{ kind: "dynObjLit", fields: [], type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
           loc,
         };
         if (info === plan.capsule)
@@ -1875,9 +3757,12 @@ export class ClassDynamicDispatch {
     const candidates = (method: string): ClassInfo[] => {
       const found = byMethod.get(method);
       if (found) return found;
-      const plans = this.propertyReceivers(lowerer, true);
-      const test = ({ info }: PropertyReceiver): ClassInfo[] => {
+      const plans = this.propertyReceivers(lowerer, true, true, true);
+      const test = ({ info, array }: PropertyReceiver): ClassInfo[] => {
         if (!info || info.fields.has(method) || info.builtinError) return [];
+        // An Array subclass answers only the methods it implements: a private,
+        // compiler-owned or abstract one is not its own (arrayClassAnswers).
+        if (array && !arrayClassAnswers(lowerer, info, method)) return [];
         if (emitterRooted(lowerer, info) && EMITTER_METHODS.has(method)) return [info];
         if (
           emitterRooted(lowerer, info) &&
@@ -1913,12 +3798,17 @@ export class ClassDynamicDispatch {
     // same name (`n.toFixed(2)` while a class declares `get toFixed()`).
     // The runtime reads fields and other own properties of class instances
     // that early itself (scr_dyn_prepare_method).
+    const getterCapsuleTable = new Map<string, string[]>();
     const getterCapsules = (method: string): string[] => {
+      let cached = getterCapsuleTable.get(method);
+      if (cached !== undefined) return cached;
       const keys = new Set<string>();
       for (const { info, capsule } of this.propertyReceivers(lowerer, true))
         if (findMethodOn(lowerer, info, `get:${method}`))
           keys.add(typeKey({ kind: "object", className: capsule.def.name }));
-      return [...keys];
+      cached = [...keys];
+      getterCapsuleTable.set(method, cached);
+      return cached;
     };
     const getterCall = (
       fn: IrFunction,
@@ -2016,27 +3906,68 @@ export class ClassDynamicDispatch {
       }
       return set;
     };
+    // Static methods matter only for methods no instance answers.
+    const staticCandidateTable = new Map<string, boolean>();
+    const staticCandidates = (method: string): boolean => {
+      let cached = staticCandidateTable.get(method);
+      if (cached !== undefined) return cached;
+      cached = [...this.boxedConstructors].some((name) => {
+        const info = lowerer.classes.get(name);
+        return !!(info && findStaticOn(lowerer, info, method)?.method);
+      });
+      staticCandidateTable.set(method, cached);
+      return cached;
+    };
+    const hasError = lowerer.classes.has("%Error");
+    /** The current value of a rewrite dependency tag: the class tables a
+     * site the last rewrite left in place waited on. */
+    const depValue = (tag: string): string => {
+      const name = tag.slice(tag.indexOf(":") + 1);
+      if (tag.startsWith("method:"))
+        return `${candidates(name).length}:${staticCandidates(name) ? 1 : 0}:${getterCapsules(name).length}:${hasError && name === "toString" ? 1 : 0}`;
+      if (tag.startsWith("member:")) return prototypeMembers.has(name) ? "1" : "0";
+      if (tag.startsWith("hint:")) return converting.has(name as ToPrimitiveHint) ? "1" : "0";
+      if (tag.startsWith("call:")) return calling.has(name as "valueOf" | "toString") ? "1" : "0";
+      if (tag === "error") return hasError ? "1" : "0";
+      throw new InternalCompilerError(`unknown rewrite dependency ${tag}`);
+    };
     for (const fn of functions) {
       // Discovery already visits every expression. Preserve bodies without
       // dispatch sites instead of rebuilding their entire typed IR tree on
       // every reachability pass. Recompute this set as new bodies appear.
       if (this.generated.has(fn) || !rewrite.has(fn)) continue;
-      const keyInitializers = new Map<string, IrExpr>();
-      const written = new Set<string>();
-      everyStmtList(fn.body, {
-        expr: (expression) => {
-          if (expression.kind === "incDec" || expression.kind === "assignExpr")
-            written.add(expression.localId);
-          return true;
-        },
-        stmt: (statement) => {
-          if (statement.kind === "varDecl" && statement.init)
-            keyInitializers.set(statement.localId, statement.init);
-          if (statement.kind === "assign") written.add(statement.localId);
-          return true;
-        },
-      });
+      // A body whose last rewrite settled, with every table it deferred on
+      // unchanged, cannot change again.
+      const settled = !this.worklist.needsRewrite(fn, depValue);
+      if (settled && !checkIncremental) continue;
+      // The tables a site this rewrite leaves in place waits on. They are
+      // re-checked on the next call, in case a later class fills them.
+      const deferred = new Set<string>();
+      // The bindings a key expression reads through, and the ones a write
+      // rebinds. Only a dynamic-key site asks for them, so a body without one
+      // keeps its IR walk.
+      let keyTables: { initializers: Map<string, IrExpr>; written: Set<string> } | null = null;
+      const keysOf = (): { initializers: Map<string, IrExpr>; written: Set<string> } => {
+        if (keyTables !== null) return keyTables;
+        const initializers = new Map<string, IrExpr>();
+        const written = new Set<string>();
+        everyStmtList(fn.body, {
+          expr: (expression) => {
+            if (expression.kind === "incDec" || expression.kind === "assignExpr")
+              written.add(expression.localId);
+            return true;
+          },
+          stmt: (statement) => {
+            if (statement.kind === "varDecl" && statement.init)
+              initializers.set(statement.localId, statement.init);
+            if (statement.kind === "assign") written.add(statement.localId);
+            return true;
+          },
+        });
+        return (keyTables = { initializers, written });
+      };
       const keyValue = (value: IrExpr): IrExpr => {
+        const { initializers: keyInitializers, written } = keysOf();
         const visited = new Set<string>();
         while (true) {
           if (value.kind === "dynFrom") {
@@ -2060,1072 +3991,279 @@ export class ClassDynamicDispatch {
           return value;
         }
       };
-      fn.body = transformStmtList(fn.body, {
-        stmt: (stmt) => stmt,
-        expr: (expr) => {
-          if (expr.kind === "dynHasKey" && prototypeMembers.has(expr.key)) {
-            // A class instance's snapshot can carry its class's prototype
-            // data, which holds only the methods the program reads through
-            // the prototype. The computed-key form answers methods and
-            // accessors from the class itself.
+      const rewriteExpr = (expr: IrExpr): IrExpr => {
+        if (expr.kind === "dynHasKey" && prototypeMembers.has(expr.key)) {
+          // A class instance's snapshot can carry its class's prototype
+          // data, which holds only the methods the program reads through
+          // the prototype. The computed-key form answers methods and
+          // accessors from the class itself.
+          const loc = expr.loc;
+          const test: IrExpr = {
+            kind: "libCall",
+            fn: "dyn.hasKeyComputed",
+            args: [
+              expr.value,
+              {
+                kind: "dynFrom",
+                value: { kind: "strLit", value: expr.key, type: STRING, loc },
+                type: DYN,
+                loc,
+              },
+            ],
+            type: BOOL,
+            loc,
+          };
+          changed = true;
+          return {
+            kind: "seqExpr",
+            stmts: [],
+            result: expr.negated
+              ? { kind: "unary", op: "!", operand: test, type: BOOL, loc }
+              : test,
+            type: BOOL,
+            loc,
+          };
+        }
+        const called = calling.size ? this.convertMethodCall(lowerer, fn, expr, calling) : null;
+        if (called) {
+          changed = true;
+          return called;
+        }
+        const converted = converting.size
+          ? this.convertOperands(lowerer, fn, expr, converting)
+          : null;
+        if (converted) {
+          changed = true;
+          // A hoisting sequence revisits the operation as its child; a
+          // wrapped operation continues through the rewrites below.
+          if (converted.kind === "seqExpr") return converted;
+          expr = converted;
+        }
+        if (expr.kind === "dynCheck" && isDynTypedRefType(expr.type)) {
+          const type = expr.type;
+          let cast = this.checkedCasts.get(type.className);
+          if (!cast) {
             const loc = expr.loc;
-            const test: IrExpr = {
-              kind: "libCall",
-              fn: "dyn.hasKeyComputed",
-              args: [
-                expr.value,
-                {
-                  kind: "dynFrom",
-                  value: { kind: "strLit", value: expr.key, type: STRING, loc },
-                  type: DYN,
-                  loc,
-                },
+            const fn: IrFunction = {
+              name: `${CHECKED_CAST_PREFIX}${type.className}`,
+              params: [{ localId: "value", name: "value", type: DYN }],
+              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+              returnType: type,
+              body: [{ kind: "return", value: { ...expr, value: varRef("value", DYN, loc) }, loc }],
+              loc,
+            };
+            cast = { fn, classes: new Set() };
+            this.checkedCasts.set(type.className, cast);
+            this.generated.add(fn);
+            lowerer.liftedFns.push(fn);
+            changed = true;
+          }
+          return { kind: "call", callee: cast.fn.name, args: [expr.value], type, loc: expr.loc };
+        }
+        if (expr.kind === "libCall" && expr.fn === "dyn.inheritsErrorPrototype") {
+          if (!this.errorPrototypeHelper) {
+            const loc = expr.loc;
+            this.errorPrototypeHelper = {
+              name: "%dyn.class.inheritsErrorPrototype",
+              params: [{ localId: "value", name: "value", type: DYN }],
+              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+              returnType: BOOL,
+              loc,
+              body: [
+                { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
               ],
-              type: BOOL,
-              loc,
             };
+            lowerer.liftedFns.push(this.errorPrototypeHelper);
+            this.generated.add(this.errorPrototypeHelper);
             changed = true;
-            return {
-              kind: "seqExpr",
-              stmts: [],
-              result: expr.negated
-                ? { kind: "unary", op: "!", operand: test, type: BOOL, loc }
-                : test,
-              type: BOOL,
-              loc,
-            };
           }
-          const called = calling.size ? this.convertMethodCall(lowerer, fn, expr, calling) : null;
-          if (called) {
-            changed = true;
-            return called;
-          }
-          const converted = converting.size
-            ? this.convertOperands(lowerer, fn, expr, converting)
-            : null;
-          if (converted) {
-            changed = true;
-            // A hoisting sequence revisits the operation as its child; a
-            // wrapped operation continues through the rewrites below.
-            if (converted.kind === "seqExpr") return converted;
-            expr = converted;
-          }
-          if (expr.kind === "dynCheck" && isDynTypedRefType(expr.type)) {
-            const type = expr.type;
-            let cast = this.checkedCasts.get(type.className);
-            if (!cast) {
+          return {
+            kind: "call",
+            callee: this.errorPrototypeHelper.name,
+            args: expr.args,
+            type: BOOL,
+            loc: expr.loc,
+          };
+        }
+        if (
+          expr.kind === "libCall" &&
+          (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.classTestPrototype") &&
+          expr.args[0]?.kind !== "dynObjLit"
+        ) {
+          if (expr.prototypeIdentityOnly) {
+            let helper = this.prototypeIdentityHelpers.get(expr.fn);
+            if (!helper) {
               const loc = expr.loc;
-              const fn: IrFunction = {
-                name: `%dyn.class.cast:${type.className}`,
-                params: [{ localId: "value", name: "value", type: DYN }],
-                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                returnType: type,
-                body: [
-                  { kind: "return", value: { ...expr, value: varRef("value", DYN, loc) }, loc },
-                ],
-                loc,
-              };
-              cast = { fn, classes: new Set() };
-              this.checkedCasts.set(type.className, cast);
-              this.generated.add(fn);
-              lowerer.liftedFns.push(fn);
-              changed = true;
-            }
-            return { kind: "call", callee: cast.fn.name, args: [expr.value], type, loc: expr.loc };
-          }
-          if (expr.kind === "libCall" && expr.fn === "dyn.inheritsErrorPrototype") {
-            if (!this.errorPrototypeHelper) {
-              const loc = expr.loc;
-              this.errorPrototypeHelper = {
-                name: "%dyn.class.inheritsErrorPrototype",
-                params: [{ localId: "value", name: "value", type: DYN }],
-                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                returnType: BOOL,
-                loc,
-                body: [
-                  { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
-                ],
-              };
-              lowerer.liftedFns.push(this.errorPrototypeHelper);
-              this.generated.add(this.errorPrototypeHelper);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: this.errorPrototypeHelper.name,
-              args: expr.args,
-              type: BOOL,
-              loc: expr.loc,
-            };
-          }
-          if (
-            expr.kind === "libCall" &&
-            (expr.fn === "dyn.getPrototype" || expr.fn === "dyn.getPrototypeForIdentity") &&
-            expr.args[0]?.kind !== "dynObjLit"
-          ) {
-            if (expr.prototypeIdentityOnly) {
-              let helper = this.prototypeIdentityHelpers.get(expr.fn);
-              if (!helper) {
-                const loc = expr.loc;
-                helper = {
-                  fn: {
-                    name:
-                      expr.fn === "dyn.getPrototype"
-                        ? "%dyn.class.prototypeIdentity"
-                        : "%dyn.class.prototypeChainIdentity",
-                    params: [{ localId: "value", name: "value", type: DYN }],
-                    locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                    returnType: DYN,
-                    loc,
-                    body: [
-                      {
-                        kind: "return",
-                        value: { ...expr, args: [varRef("value", DYN, loc)] },
-                        loc,
-                      },
-                    ],
-                  },
-                  classes: new Set(),
-                };
-                this.prototypeIdentityHelpers.set(expr.fn, helper);
-                lowerer.liftedFns.push(helper.fn);
-                this.generated.add(helper.fn);
-                changed = true;
-              }
-              return {
-                kind: "call",
-                callee: helper.fn.name,
-                args: expr.args,
-                type: DYN,
-                loc: expr.loc,
-              };
-            }
-            if (!this.prototypeHelper) {
-              const loc = expr.loc;
-              this.prototypeHelper = {
-                name: "%dyn.class.getPrototype",
-                params: [{ localId: "value", name: "value", type: DYN }],
-                locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
-                returnType: DYN,
-                loc,
-                body: [
-                  { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
-                ],
-              };
-              lowerer.liftedFns.push(this.prototypeHelper);
-              this.generated.add(this.prototypeHelper);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: this.prototypeHelper.name,
-              args: expr.args,
-              type: DYN,
-              loc: expr.loc,
-            };
-          }
-          if (
-            expr.kind === "libCall" &&
-            (expr.fn === "dyn.toString" || expr.fn === "dyn.stringConstructor") &&
-            lowerer.classes.has("%Error")
-          ) {
-            const key = JSON.stringify([expr.fn, ...expr.args.map((arg) => typeKey(arg.type))]);
-            let errorString = this.errorStrings.get(key);
-            if (!errorString) {
-              const loc = expr.loc;
-              const params = expr.args.map((arg, i) => ({
-                localId: `p.${i}`,
-                name: `p${i}`,
-                type: arg.type,
-              }));
-              const value = varRef("p.0", DYN, loc);
-              errorString = {
-                name: `%dyn.error.${expr.fn.slice(4)}.${this.errorStrings.size}`,
-                params,
-                returnType: STRING,
-                locals: params.map((p) => ({
-                  id: p.localId,
-                  name: p.name,
-                  type: p.type,
-                  mutable: false,
-                })),
-                loc,
-                body: [
-                  {
-                    kind: "if",
-                    cond: { kind: "dynTest", test: "error", value, type: BOOL, loc },
-                    then: [
-                      {
-                        kind: "return",
-                        value: {
-                          kind: "dynCheck",
-                          type: STRING,
-                          loc,
-                          value: {
-                            kind: "dynCall",
-                            callee: errorToStringMethod(lowerer, {
-                              kind: "dynCheck",
-                              value,
-                              type: { kind: "object", className: "%Error" },
-                              loc,
-                            }),
-                            receiver: value,
-                            calleeName: "value.toString",
-                            args: params
-                              .slice(1)
-                              .map((p) =>
-                                lowerer.coerceToExpected(varRef(p.localId, p.type, loc), DYN),
-                              ),
-                            type: DYN,
-                            loc,
-                          },
-                        },
-                        loc,
-                      },
-                    ],
-                    else_: null,
-                    loc,
-                  },
-                  {
-                    kind: "return",
-                    value: { ...expr, args: params.map((p) => varRef(p.localId, p.type, loc)) },
-                    loc,
-                  },
-                ],
-              };
-              this.errorStrings.set(key, errorString);
-              this.generated.add(errorString);
-              lowerer.liftedFns.push(errorString);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: errorString.name,
-              args: expr.args,
-              type: STRING,
-              loc: expr.loc,
-            };
-          }
-          if (
-            expr.kind === "call" &&
-            (expr.callee === this.propertyBag!.name || expr.callee === "%dyn.class.readProperties")
-          ) {
-            const boxed = expr.args[0];
-            if (boxed?.kind === "dynFrom" && isDynTypedRefType(boxed.value.type)) {
-              const helper = this.typedPropertyBag(
-                lowerer,
-                boxed.value.type,
-                expr.loc,
-                expr.callee === "%dyn.class.readProperties",
-              );
-              if (helper) {
-                changed = true;
-                return { ...expr, callee: helper.name, args: [boxed.value] };
-              }
-            }
-          }
-          if (expr.kind === "libCall" && expr.fn === "bytes.construct") {
-            if (!this.constructDispatch) {
-              const loc = expr.loc;
-              const params = [DYN, DYN, STRING].map((type, i) => ({
-                localId: `p.${i}`,
-                name: `p${i}`,
-                type,
-              }));
-              this.constructDispatch = {
-                name: "%dyn.class.construct",
-                params,
-                returnType: DYN,
-                locals: params.map((p) => ({
-                  id: p.localId,
-                  name: p.name,
-                  type: p.type,
-                  mutable: false,
-                })),
-                body: [
-                  {
-                    kind: "return",
-                    value: { ...expr, args: params.map((p) => varRef(p.localId, p.type, loc)) },
-                    loc,
-                  },
-                ],
-                loc,
-              };
-              this.generated.add(this.constructDispatch);
-              lowerer.liftedFns.push(this.constructDispatch);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: this.constructDispatch.name,
-              args: expr.args,
-              type: DYN,
-              loc: expr.loc,
-            };
-          }
-          if (
-            expr.kind === "libCall" &&
-            (expr.fn === "dyn.forInKeys" || expr.fn === "dyn.forInKeyStrings")
-          ) {
-            let enumeration = this.enumerations.get(expr.fn);
-            if (!enumeration) {
-              const loc = expr.loc;
-              const value = varRef("p.0", DYN, loc);
-              enumeration = {
-                name:
-                  expr.fn === "dyn.forInKeys"
-                    ? "%dyn.class.forInKeys"
-                    : "%dyn.class.forInKeyStrings",
-                params: [{ localId: "p.0", name: "value", type: DYN }],
-                returnType: expr.type,
-                locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
-                body: [{ kind: "return", value: { ...expr, args: [value] }, loc }],
-                loc,
-              };
-              this.enumerations.set(expr.fn, enumeration);
-              this.generated.add(enumeration);
-              lowerer.liftedFns.push(enumeration);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: enumeration.name,
-              args: expr.args,
-              type: expr.type,
-              loc: expr.loc,
-            };
-          }
-          if (expr.kind === "libCall" && expr.fn === "dyn.defineProperty") {
-            const loc = expr.loc;
-            if (!this.descriptorHelper) {
-              const params = ["target", "key", "descriptor"].map((name) => ({
-                localId: name,
-                name,
-                type: DYN,
-              }));
-              const target = varRef("target", DYN, loc);
-              const key = varRef("key", DYN, loc);
-              const descriptor = varRef("descriptor", DYN, loc);
-              this.descriptorHelper = {
-                name: "%dyn.class.defineProperty",
-                params,
-                returnType: DYN,
-                locals: params.map((param) => ({
-                  id: param.localId,
-                  name: param.name,
-                  type: DYN,
-                  mutable: false,
-                })),
-                body: [
-                  {
-                    kind: "if",
-                    cond: { kind: "dynTest", test: "symbol", value: key, type: BOOL, loc },
-                    then: [
-                      {
-                        kind: "exprStmt",
-                        expr: {
-                          ...expr,
-                          args: [
-                            {
-                              kind: "call",
-                              callee: this.propertyBag!.name,
-                              args: [target],
-                              type: DYN,
-                              loc,
-                            },
-                            key,
-                            descriptor,
-                          ],
-                        },
-                        loc,
-                      },
-                      { kind: "return", value: target, loc },
-                    ],
-                    else_: null,
-                    loc,
-                  },
-                  { kind: "return", value: { ...expr, args: [target, key, descriptor] }, loc },
-                ],
-                loc,
-              };
-              this.generated.add(this.descriptorHelper);
-              lowerer.liftedFns.push(this.descriptorHelper);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: this.descriptorHelper.name,
-              args: expr.args,
-              type: DYN,
-              loc,
-            };
-          }
-          if (expr.kind === "dynKeyGet" && expr.value.kind === "dynObjLit") return expr;
-          const reflectRead = expr.kind === "libCall" && expr.fn === "dyn.reflectGet" ? expr : null;
-          const reflectWrite =
-            expr.kind === "libCall" && expr.fn === "dyn.reflectSet" ? expr : null;
-          const reflect = !!reflectRead || !!reflectWrite;
-          const computedRead = reflectRead
-            ? {
-                kind: "dynKeyGet" as const,
-                value: reflectRead.args[0]!,
-                key: reflectRead.args[1]!,
-                type: DYN,
-                loc: expr.loc,
-              }
-            : expr.kind === "dynKeyGet" && expr.key.kind !== "strLit"
-              ? expr
-              : null;
-          const computedWrite = reflectWrite
-            ? {
-                ...reflectWrite,
-                fn: "dyn.keySetComputed" as const,
-                args: reflectWrite.args.slice(0, 3),
-                type: VOID,
-              }
-            : expr.kind === "libCall" &&
-                (expr.fn === "dyn.keySetComputed" ||
-                  (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit"))
-              ? expr
-              : null;
-          const computedProbe =
-            expr.kind === "libCall" &&
-            [
-              "dyn.hasKeyComputed",
-              "dyn.hasOwnComputed",
-              "dyn.propertyIsEnumerableComputed",
-            ].includes(expr.fn)
-              ? expr
-              : null;
-          if (computedRead || computedWrite || computedProbe) {
-            const probe = computedProbe
-              ? computedProbe.fn === "dyn.hasKeyComputed"
-                ? "in"
-                : computedProbe.fn === "dyn.hasOwnComputed"
-                  ? "own"
-                  : "enumerable"
-              : undefined;
-            const dynamicKey =
-              reflect ||
-              !!computedProbe ||
-              computedWrite?.fn === "dyn.keySetComputed" ||
-              computedRead?.key.type.kind === "dyn";
-            const sourceKey = keyValue(
-              computedRead?.key ?? (computedWrite ?? computedProbe)!.args[1]!,
-            );
-            const numericKey =
-              sourceKey.type.kind === "f64" ||
-              (sourceKey.kind === "dynFrom" && sourceKey.value.type.kind === "f64") ||
-              (sourceKey.kind === "toString" && sourceKey.operand.type.kind === "f64");
-            // `value[i]` with a number `i`: the helper takes the number and
-            // reads a dense checked array element directly, formatting the
-            // property name only when that does not apply.
-            const indexKey =
-              computedRead &&
-              !reflect &&
-              !dynamicKey &&
-              !computedRead.optional &&
-              computedRead.key.kind === "toString" &&
-              computedRead.key.operand.type.kind === "f64"
-                ? computedRead.key
-                : null;
-            // A sloppy-mode write ignores a refused assignment
-            // (sloppyDynamicWrites), so its sites share their own helper,
-            // whose write takes the first such site's source range.
-            const sloppyWrite =
-              !!computedWrite && !reflect && isSloppyAt(lowerer, computedWrite.loc);
-            const key = JSON.stringify([
-              !!computedWrite,
-              computedRead?.optional ?? false,
-              dynamicKey,
-              probe,
-              numericKey,
-              reflect,
-              !!indexKey,
-              ...(sloppyWrite ? ["sloppy"] : []),
-            ]);
-            let dispatch = this.computed.get(key);
-            if (!dispatch) {
-              const loc = expr.loc;
-              const params = [
-                { localId: "p.0", name: "value", type: DYN },
-                indexKey
-                  ? { localId: "p.index", name: "index", type: F64 }
-                  : { localId: "p.key", name: "key", type: dynamicKey ? DYN : STRING },
-                ...(computedWrite ? [{ localId: "p.1", name: "stored", type: DYN }] : []),
-                ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
-              ];
-              const keyLocal = dynamicKey ? "key.string" : "p.key";
-              const bag: IrExpr = computedWrite
-                ? {
-                    kind: "call",
-                    callee: this.propertyBag!.name,
-                    args: [varRef("p.0", DYN, loc)],
-                    type: DYN,
-                    loc,
-                  }
-                : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
-              const reflectionFallback = (target: IrExpr, property: IrExpr): IrExpr => ({
-                kind: "libCall",
-                fn: computedWrite ? "dyn.reflectSet" : "dyn.reflectGet",
-                args: [
-                  target,
-                  lowerer.coerceToExpected(property, DYN),
-                  ...(computedWrite ? [varRef("p.1", DYN, loc)] : []),
-                  varRef("p.reflectReceiver", DYN, loc),
-                ],
-                type: computedWrite ? BOOL : DYN,
-                loc,
-              });
-              const fallback: IrExpr = reflect
-                ? reflectionFallback(bag, varRef(keyLocal, STRING, loc))
-                : computedProbe
-                  ? {
-                      ...computedProbe,
-                      fn:
-                        probe === "in"
-                          ? "dyn.in"
-                          : probe === "own"
-                            ? "dyn.hasOwn"
-                            : "dyn.propertyIsEnumerable",
-                      args: [bag, varRef(keyLocal, STRING, loc)],
-                    }
-                  : computedRead
-                    ? { ...computedRead, value: bag, key: varRef(keyLocal, STRING, loc) }
-                    : {
-                        ...computedWrite!,
-                        fn: "dyn.keySet",
-                        args: [bag, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
-                      };
-              const helper: IrFunction = {
-                name: `%dyn.class.computed.${this.computed.size}`,
-                params,
-                returnType:
-                  (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,
-                locals: [
-                  ...params.map((p) => ({
-                    id: p.localId,
-                    name: p.name,
-                    type: p.type,
-                    mutable: false,
-                  })),
-                  ...(dynamicKey || indexKey
-                    ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
-                    : []),
-                ],
-                body: reflect
-                  ? [{ kind: "return", value: fallback, loc }]
-                  : computedWrite
-                    ? [
-                        { kind: "exprStmt", expr: fallback, loc },
-                        { kind: "return", value: null, loc },
-                      ]
-                    : [{ kind: "return", value: fallback, loc }],
-                loc,
-                ...(numericKey && computedRead && !reflect && !dynamicKey
-                  ? { fastRead: "index" as const }
-                  : {}),
-              };
-              if (dynamicKey)
-                helper.body.unshift(
-                  {
-                    kind: "if",
-                    cond: {
-                      kind: "dynTest",
-                      test: "symbol",
-                      value: varRef("p.key", DYN, loc),
-                      type: BOOL,
-                      loc,
-                    },
-                    then: reflect
-                      ? [
-                          {
-                            kind: "return",
-                            value: reflectionFallback(bag, varRef("p.key", DYN, loc)),
-                            loc,
-                          },
-                        ]
-                      : computedProbe
-                        ? [
-                            {
-                              kind: "return",
-                              value: { ...computedProbe, args: [bag, varRef("p.key", DYN, loc)] },
-                              loc,
-                            },
-                          ]
-                        : computedRead
-                          ? [
-                              {
-                                kind: "return",
-                                value: {
-                                  ...computedRead,
-                                  value: bag,
-                                  key: varRef("p.key", DYN, loc),
-                                },
-                                loc,
-                              },
-                            ]
-                          : [
-                              {
-                                kind: "exprStmt",
-                                expr: {
-                                  ...computedWrite!,
-                                  args: [bag, varRef("p.key", DYN, loc), varRef("p.1", DYN, loc)],
-                                },
-                                loc,
-                              },
-                              { kind: "return", value: null, loc },
-                            ],
-                    else_: null,
-                    loc,
-                  },
-                  {
-                    kind: "if",
-                    cond: {
-                      kind: "dynTest",
-                      test: "nullish",
-                      value: varRef("p.0", DYN, loc),
-                      type: BOOL,
-                      loc,
-                    },
-                    then: [
-                      ...(reflect
-                        ? [
-                            {
-                              kind: "return",
-                              value: reflectionFallback(
-                                varRef("p.0", DYN, loc),
-                                varRef("p.key", DYN, loc),
-                              ),
-                              loc,
-                            } as IrStmt,
-                          ]
-                        : computedProbe
-                          ? [
-                              {
-                                kind: "return",
-                                value: {
-                                  ...computedProbe,
-                                  args: [varRef("p.0", DYN, loc), varRef("p.key", DYN, loc)],
-                                },
-                                loc,
-                              } as IrStmt,
-                            ]
-                          : computedRead
-                            ? [
-                                {
-                                  kind: "return",
-                                  value: {
-                                    ...computedRead,
-                                    value: varRef("p.0", DYN, loc),
-                                    key: varRef("p.key", DYN, loc),
-                                  },
-                                  loc,
-                                } as IrStmt,
-                              ]
-                            : [
-                                {
-                                  kind: "exprStmt",
-                                  expr: {
-                                    ...computedWrite!,
-                                    args: [
-                                      varRef("p.0", DYN, loc),
-                                      varRef("p.key", DYN, loc),
-                                      varRef("p.1", DYN, loc),
-                                    ],
-                                  },
-                                  loc,
-                                } as IrStmt,
-                                { kind: "return", value: null, loc } as IrStmt,
-                              ]),
-                    ],
-                    else_: null,
-                    loc,
-                  },
-                  {
-                    kind: "varDecl",
-                    localId: keyLocal,
-                    init: {
-                      kind: "libCall",
-                      fn: "dyn.toStringCoerce",
-                      args: [varRef("p.key", DYN, loc)],
-                      type: STRING,
-                      loc,
-                    },
-                    loc,
-                  },
-                );
-              if (indexKey) {
-                // An integer index below a checked array's length names an
-                // element (-0 included: its property name is "0"); dyn.arrLen
-                // answers 0 for every other kind. Holes keep dyn.arrAt's
-                // ordinary named lookup.
-                const index = varRef("p.index", F64, loc);
-                const elementRead: IrStmt = {
-                  kind: "if",
-                  cond: { kind: "libCall", fn: "number.isInteger", args: [index], type: BOOL, loc },
-                  then: [
+              helper = {
+                fn: {
+                  name:
+                    expr.fn === "dyn.getPrototype"
+                      ? "%dyn.class.prototypeIdentity"
+                      : "%dyn.class.prototypeChainIdentity",
+                  params: [{ localId: "value", name: "value", type: DYN }],
+                  locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+                  returnType: DYN,
+                  loc,
+                  body: [
                     {
-                      kind: "if",
-                      cond: {
-                        kind: "bin",
-                        op: ">=",
-                        left: index,
-                        right: { kind: "numLit", value: 0, type: F64, loc },
-                        type: BOOL,
-                        loc,
-                      },
-                      then: [
-                        {
-                          kind: "if",
-                          cond: {
-                            kind: "bin",
-                            op: "<",
-                            left: index,
-                            right: {
-                              kind: "libCall",
-                              fn: "dyn.arrLen",
-                              args: [varRef("p.0", DYN, loc)],
-                              type: F64,
-                              loc,
-                            },
-                            type: BOOL,
-                            loc,
-                          },
-                          then: [
-                            {
-                              kind: "return",
-                              value: {
-                                kind: "libCall",
-                                fn: "dyn.arrAt",
-                                args: [varRef("p.0", DYN, loc), index],
-                                type: DYN,
-                                loc,
-                              },
-                              loc,
-                            },
-                          ],
-                          else_: null,
-                          loc,
-                        },
-                      ],
-                      else_: null,
+                      kind: "return",
+                      value: { ...expr, args: [varRef("value", DYN, loc)] },
                       loc,
                     },
                   ],
-                  else_: null,
-                  loc,
-                };
-                helper.body.unshift(elementRead, {
-                  kind: "varDecl",
-                  localId: keyLocal,
-                  init: { ...indexKey, operand: index },
-                  loc,
-                });
-              }
-              dispatch = {
-                write: !!computedWrite,
-                reflect,
-                fn: helper,
+                },
                 classes: new Set(),
-                keyLocal,
-                branchIndex: dynamicKey ? 3 : indexKey ? 2 : 0,
-                dynamicKey,
-                numericKey,
-                probe,
               };
-              this.computed.set(key, dispatch);
-              this.generated.add(helper);
-              lowerer.liftedFns.push(helper);
+              this.prototypeIdentityHelpers.set(expr.fn, helper);
+              lowerer.liftedFns.push(helper.fn);
+              this.generated.add(helper.fn);
               changed = true;
             }
             return {
               kind: "call",
-              callee: dispatch.fn.name,
-              args: reflect
-                ? (reflectRead ?? reflectWrite)!.args
-                : computedRead
-                  ? [computedRead.value, indexKey ? indexKey.operand : computedRead.key]
-                  : (computedWrite ?? computedProbe)!.args,
-              type: dispatch.fn.returnType,
+              callee: helper.fn.name,
+              args: expr.args,
+              type: DYN,
               loc: expr.loc,
             };
           }
-          const read = expr.kind === "dynKeyGet" && expr.key.kind === "strLit" ? expr : null;
-          const write =
-            expr.kind === "libCall" && expr.fn === "dyn.keySet" && expr.args[1]?.kind === "strLit"
-              ? expr
-              : null;
-          const name =
-            read?.key.kind === "strLit"
-              ? read.key.value
-              : write?.args[1]?.kind === "strLit"
-                ? write.args[1].value
-                : null;
-          if (name !== null) {
-            const key = JSON.stringify([name, !!write, read?.optional ?? false]);
-            let dispatch = this.properties.get(key);
-            if (!dispatch) {
-              const loc = expr.loc;
-              const params = (write ? [0, 1] : [0]).map((i) => ({
-                localId: `p.${i}`,
-                name: `p${i}`,
-                type: DYN,
-              }));
-              const instanceBag: IrExpr = read
-                ? this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc)
-                : {
-                    kind: "call",
-                    callee: this.propertyBag!.name,
-                    args: [varRef("p.0", DYN, loc)],
-                    type: DYN,
-                    loc,
-                  };
-              const bag: IrExpr =
-                read && !["name", "length", "apply"].includes(name)
-                  ? {
-                      kind: "call",
-                      callee: this.constructorPropertyBag(lowerer, loc).name,
-                      args: [instanceBag],
-                      type: DYN,
-                      loc,
-                    }
-                  : instanceBag;
-              // A read compares the bag with the receiver and then reads it:
-              // evaluate it once, so each read retains the receiver once.
-              const bagRead = varRef("bag.0", DYN, loc);
-              const bagGet: IrExpr | null = read
-                ? {
-                    kind: "libCall",
-                    fn: "dyn.bagGet",
-                    args: [bagRead, read.key, varRef("p.0", DYN, loc)],
-                    type: DYN,
-                    loc,
-                  }
-                : null;
-              // A class instance whose class chain declares no member of an
-              // Object.prototype method's name (classes that do answer in
-              // their own branches) inherits it unless an own property
-              // shadows it; a class constructor's static bag reads as before.
-              const instanceRead: IrExpr | null =
-                read && INHERITED_OBJECT_METHODS.has(name)
-                  ? {
-                      kind: "ternary",
-                      cond: {
-                        kind: "dynTest",
-                        test: "function",
-                        value: varRef("p.0", DYN, loc),
-                        type: BOOL,
-                        loc,
-                      },
-                      then: bagGet!,
-                      else_: {
-                        kind: "ternary",
-                        cond: this.readBagHas(lowerer, "dyn.hasKey", bagRead, read.key, loc),
-                        then: bagGet!,
-                        else_: {
-                          kind: "libCall",
-                          fn: "dyn.builtinMethod",
-                          args: [{ kind: "strLit", value: "Object", type: STRING, loc }, read.key],
-                          type: DYN,
-                          loc,
-                        },
-                        type: DYN,
-                        loc,
-                      },
-                      type: DYN,
-                      loc,
-                    }
-                  : bagGet;
-              const fallback: IrExpr = read
-                ? {
-                    kind: "ternary",
-                    cond: {
-                      kind: "dynScalarEq",
-                      left: bagRead,
-                      right: varRef("p.0", DYN, loc),
-                      type: BOOL,
-                      loc,
-                    },
-                    then: { ...read, value: bagRead },
-                    else_: instanceRead!,
-                    type: DYN,
-                    loc,
-                  }
-                : { ...write!, args: [bag, write!.args[1]!, varRef("p.1", DYN, loc)] };
-              const helper: IrFunction = {
-                name: `%dyn.class.property.${this.properties.size}`,
-                params,
-                returnType: write ? VOID : DYN,
-                locals: [
-                  ...params.map((p) => ({
-                    id: p.localId,
-                    name: p.name,
-                    type: DYN,
-                    mutable: false,
-                  })),
-                  ...(read ? [{ id: "bag.0", name: "bag", type: DYN, mutable: false }] : []),
-                ],
-                body: write
-                  ? [
-                      { kind: "exprStmt", expr: fallback, loc },
-                      { kind: "return", value: null, loc },
-                    ]
-                  : [
-                      { kind: "varDecl", localId: "bag.0", init: bag, loc },
-                      {
-                        kind: "return",
-                        // Primitives answer their wrapper constructors.
-                        value:
-                          name === "constructor"
-                            ? primitiveConstructorOr(
-                                lowerer,
-                                varRef("p.0", DYN, loc),
-                                fallback,
-                                loc,
-                              )
-                            : fallback,
-                        loc,
-                      },
-                    ],
-                loc,
-              };
-              if (!write && name === "toString" && lowerer.classes.has("%Error")) {
-                const value = varRef("p.0", DYN, loc);
-                helper.body.unshift({
+          const read = expr.args[0];
+          if (!(read?.kind === "dynFrom" && read.value.type.kind === "classval"))
+            this.prototypeOfInstances = true;
+          if (!this.prototypeHelper) {
+            const loc = expr.loc;
+            this.prototypeHelper = {
+              name: "%dyn.class.getPrototype",
+              params: [{ localId: "value", name: "value", type: DYN }],
+              locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+              returnType: DYN,
+              loc,
+              body: [
+                { kind: "return", value: { ...expr, args: [varRef("value", DYN, loc)] }, loc },
+              ],
+            };
+            lowerer.liftedFns.push(this.prototypeHelper);
+            this.generated.add(this.prototypeHelper);
+            changed = true;
+          }
+          return {
+            kind: "call",
+            callee: this.prototypeHelper.name,
+            args: expr.args,
+            type: DYN,
+            loc: expr.loc,
+          };
+        }
+        if (
+          expr.kind === "libCall" &&
+          (expr.fn === "dyn.toString" || expr.fn === "dyn.stringConstructor") &&
+          lowerer.classes.has("%Error")
+        ) {
+          const key = JSON.stringify([expr.fn, ...expr.args.map((arg) => typeKey(arg.type))]);
+          let errorString = this.errorStrings.get(key);
+          if (!errorString) {
+            const loc = expr.loc;
+            const params = expr.args.map((arg, i) => ({
+              localId: `p.${i}`,
+              name: `p${i}`,
+              type: arg.type,
+            }));
+            const value = varRef("p.0", DYN, loc);
+            errorString = {
+              name: `%dyn.error.${expr.fn.slice(4)}.${this.errorStrings.size}`,
+              params,
+              returnType: STRING,
+              locals: params.map((p) => ({
+                id: p.localId,
+                name: p.name,
+                type: p.type,
+                mutable: false,
+              })),
+              loc,
+              body: [
+                {
                   kind: "if",
                   cond: { kind: "dynTest", test: "error", value, type: BOOL, loc },
                   then: [
                     {
                       kind: "return",
-                      value: errorToStringMethod(lowerer, {
+                      value: {
                         kind: "dynCheck",
-                        value,
-                        type: { kind: "object", className: "%Error" },
+                        type: STRING,
                         loc,
-                      }),
+                        value: {
+                          kind: "dynCall",
+                          callee: errorToStringMethod(lowerer, {
+                            kind: "dynCheck",
+                            value,
+                            type: { kind: "object", className: "%Error" },
+                            loc,
+                          }),
+                          receiver: value,
+                          calleeName: "value.toString",
+                          args: params
+                            .slice(1)
+                            .map((p) =>
+                              lowerer.coerceToExpected(varRef(p.localId, p.type, loc), DYN),
+                            ),
+                          type: DYN,
+                          loc,
+                        },
+                      },
                       loc,
                     },
                   ],
                   else_: null,
                   loc,
-                });
-              }
-              const receiverAccess: IrStmt[] = read
-                ? [{ kind: "return", value: { ...read, value: varRef("p.0", DYN, loc) }, loc }]
-                : [
-                    {
-                      kind: "exprStmt",
-                      expr: {
-                        ...write!,
-                        args: [varRef("p.0", DYN, loc), write!.args[1]!, varRef("p.1", DYN, loc)],
-                      },
-                      loc,
-                    },
-                    { kind: "return", value: null, loc },
-                  ];
-              dispatch = {
-                name,
-                write: !!write,
-                fn: helper,
-                classes: new Set(),
-                ...(name !== "constructor" && name !== "toString"
-                  ? { plain: { tail: [...helper.body], access: receiverAccess } }
-                  : {}),
-              };
-              this.properties.set(key, dispatch);
-              this.generated.add(helper);
-              lowerer.liftedFns.push(helper);
-              changed = true;
-            }
-            return {
-              kind: "call",
-              callee: dispatch.fn.name,
-              args: read ? [read.value] : [write!.args[0]!, write!.args[2]!],
-              type: dispatch.fn.returnType,
-              loc: expr.loc,
+                },
+                {
+                  kind: "return",
+                  value: { ...expr, args: params.map((p) => varRef(p.localId, p.type, loc)) },
+                  loc,
+                },
+              ],
             };
+            this.errorStrings.set(key, errorString);
+            this.generated.add(errorString);
+            lowerer.liftedFns.push(errorString);
+            changed = true;
           }
-          const iterator =
-            expr.kind === "libCall" &&
-            (expr.fn === "dyn.iterator" ||
-              expr.fn === "dyn.arrayFromIterator" ||
-              expr.fn === "dyn.asyncIteratorOpen")
-              ? expr
-              : null;
-          // `for await` opens a class instance's [Symbol.asyncIterator]().
-          const asyncOpen = iterator?.fn === "dyn.asyncIteratorOpen";
-          const invoke: Invoke | null = iterator
-            ? {
-                kind: "dynInvoke",
-                recv: iterator.args[0]!,
-                method: asyncOpen ? "sym:asyncIterator" : "sym:iterator",
-                calleeName: asyncOpen ? "value[Symbol.asyncIterator]" : "value[Symbol.iterator]",
-                args: [],
-                type: DYN,
-                loc: iterator.loc,
-              }
-            : expr.kind === "dynInvoke"
-              ? expr
-              : null;
-          // Static methods matter only for methods no instance answers.
-          const staticCandidates = (method: string): boolean =>
-            [...this.boxedConstructors].some((name) => {
-              const info = lowerer.classes.get(name);
-              return info && findStaticOn(lowerer, info, method)?.method;
-            });
-          if (
-            invoke &&
-            expr.kind === "dynInvoke" &&
-            candidates(invoke.method).length === 0 &&
-            !staticCandidates(invoke.method)
-          ) {
-            // The other receivers' call a rewrite left in place tests only
-            // the classes that rewrite did not.
-            const covered =
-              expr.recv.kind === "varRef" ? this.getterReceivers.get(expr.recv.localId) : undefined;
-            const capsules = getterCapsules(invoke.method).filter((key) => !covered?.has(key));
-            if (capsules.length > 0) return getterCall(fn, expr, capsules, covered);
+          return {
+            kind: "call",
+            callee: errorString.name,
+            args: expr.args,
+            type: STRING,
+            loc: expr.loc,
+          };
+        }
+        if (
+          expr.kind === "call" &&
+          (expr.callee === this.propertyBag!.name || expr.callee === "%dyn.class.readProperties")
+        ) {
+          const boxed = expr.args[0];
+          if (boxed?.kind === "dynFrom" && isDynTypedRefType(boxed.value.type)) {
+            const helper = this.typedPropertyBag(
+              lowerer,
+              boxed.value.type,
+              expr.loc,
+              expr.callee === "%dyn.class.readProperties",
+            );
+            if (helper) {
+              changed = true;
+              return { ...expr, callee: helper.name, args: [boxed.value] };
+            }
           }
-          if (
-            !invoke ||
-            (candidates(invoke.method).length === 0 &&
-              !staticCandidates(invoke.method) &&
-              !(invoke.method === "toString" && lowerer.classes.has("%Error")))
-          )
-            return expr;
-          const key = JSON.stringify([
-            invoke.method,
-            invoke.args.length,
-            iterator?.fn,
-            iterator?.args[1],
-          ]);
-          let dispatch = this.dispatches.get(key);
-          if (!dispatch) {
-            const params: IrParam[] = [invoke.recv, ...invoke.args].map((_, i) => ({
+        }
+        if (expr.kind === "libCall" && expr.fn === "bytes.construct") {
+          if (!this.constructDispatch) {
+            const loc = expr.loc;
+            const params = [DYN, DYN, STRING].map((type, i) => ({
               localId: `p.${i}`,
               name: `p${i}`,
-              type: DYN,
+              type,
             }));
-            params.splice(1, 0, { localId: "p.callback", name: "callback", type: DYN });
-            iterator?.args.slice(1).forEach((argument, i) =>
-              params.push({
-                localId: `p.iterator.${i}`,
-                name: `iterator${i}`,
-                type: argument.type,
-              }),
-            );
-            params.push({ localId: "p.calleeName", name: "calleeName", type: STRING });
-            const callback: IrFunction = {
-              name: `%dyn.class.callback.${this.dispatches.size}`,
-              params: [params[0]!],
-              returnType: DYN,
-              locals: [{ id: "p.0", name: "receiver", type: DYN, mutable: false }],
-              body: [{ kind: "return", value: dynUndefinedExpr(expr.loc), loc: expr.loc }],
-              loc: expr.loc,
-            };
-            const helper: IrFunction = {
-              name: `%dyn.class.call.${this.dispatches.size}`,
+            this.constructDispatch = {
+              name: "%dyn.class.construct",
               params,
               returnType: DYN,
               locals: params.map((p) => ({
@@ -3137,31 +4275,718 @@ export class ClassDynamicDispatch {
               body: [
                 {
                   kind: "return",
-                  value: iterator
-                    ? {
-                        ...iterator,
-                        args: [
-                          varRef("p.0", DYN, expr.loc),
-                          ...iterator.args
-                            .slice(1)
-                            .map((argument, i) =>
-                              varRef(`p.iterator.${i}`, argument.type, expr.loc),
-                            ),
-                        ],
-                      }
-                    : {
-                        ...invoke,
-                        calleeNameValue: varRef("p.calleeName", STRING, expr.loc),
-                        recv: varRef("p.0", DYN, expr.loc),
-                        args: invoke.args.map((_, i) => varRef(`p.${i + 1}`, DYN, expr.loc)),
-                      },
-                  loc: expr.loc,
+                  value: { ...expr, args: params.map((p) => varRef(p.localId, p.type, loc)) },
+                  loc,
                 },
               ],
-              loc: expr.loc,
+              loc,
             };
-            if (invoke.method === "toString" && lowerer.classes.has("%Error")) {
-              const loc = expr.loc;
+            this.generated.add(this.constructDispatch);
+            lowerer.liftedFns.push(this.constructDispatch);
+            changed = true;
+          }
+          return {
+            kind: "call",
+            callee: this.constructDispatch.name,
+            args: expr.args,
+            type: DYN,
+            loc: expr.loc,
+          };
+        }
+        if (
+          expr.kind === "libCall" &&
+          (expr.fn === "dyn.forInKeys" || expr.fn === "dyn.forInKeyStrings")
+        ) {
+          let enumeration = this.enumerations.get(expr.fn);
+          if (!enumeration) {
+            const loc = expr.loc;
+            const value = varRef("p.0", DYN, loc);
+            enumeration = {
+              name:
+                expr.fn === "dyn.forInKeys" ? "%dyn.class.forInKeys" : "%dyn.class.forInKeyStrings",
+              params: [{ localId: "p.0", name: "value", type: DYN }],
+              returnType: expr.type,
+              locals: [{ id: "p.0", name: "value", type: DYN, mutable: false }],
+              body: [{ kind: "return", value: { ...expr, args: [value] }, loc }],
+              loc,
+            };
+            this.enumerations.set(expr.fn, enumeration);
+            this.generated.add(enumeration);
+            lowerer.liftedFns.push(enumeration);
+            changed = true;
+          }
+          return {
+            kind: "call",
+            callee: enumeration.name,
+            args: expr.args,
+            type: expr.type,
+            loc: expr.loc,
+          };
+        }
+        if (expr.kind === "libCall" && expr.fn === "dyn.defineProperty") {
+          const loc = expr.loc;
+          if (!this.descriptorHelper) {
+            const params = ["target", "key", "descriptor"].map((name) => ({
+              localId: name,
+              name,
+              type: DYN,
+            }));
+            const target = varRef("target", DYN, loc);
+            const key = varRef("key", DYN, loc);
+            const descriptor = varRef("descriptor", DYN, loc);
+            this.descriptorHelper = {
+              name: "%dyn.class.defineProperty",
+              params,
+              returnType: DYN,
+              locals: params.map((param) => ({
+                id: param.localId,
+                name: param.name,
+                type: DYN,
+                mutable: param.localId === "key",
+              })),
+              body: [
+                // A class value's key converts with ToPropertyKey once, before
+                // the static-field refusals (fenceStaticFieldKeys) compare it
+                // and the define reads it.
+                staticKeyConversion(target, key, loc),
+                {
+                  kind: "if",
+                  cond: { kind: "dynTest", test: "symbol", value: key, type: BOOL, loc },
+                  then: [
+                    {
+                      kind: "exprStmt",
+                      expr: {
+                        ...expr,
+                        args: [
+                          {
+                            kind: "call",
+                            callee: this.propertyBag!.name,
+                            args: [target],
+                            type: DYN,
+                            loc,
+                          },
+                          key,
+                          descriptor,
+                        ],
+                      },
+                      loc,
+                    },
+                    { kind: "return", value: target, loc },
+                  ],
+                  else_: null,
+                  loc,
+                },
+                { kind: "return", value: { ...expr, args: [target, key, descriptor] }, loc },
+              ],
+              loc,
+            };
+            this.generated.add(this.descriptorHelper);
+            lowerer.liftedFns.push(this.descriptorHelper);
+            changed = true;
+          }
+          return {
+            kind: "call",
+            callee: this.descriptorHelper.name,
+            args: expr.args,
+            type: DYN,
+            loc,
+          };
+        }
+        if (expr.kind === "dynKeyGet" && expr.value.kind === "dynObjLit") {
+          // Left to the runtime unless a conversion applies; that needs a
+          // boxed class declaring one.
+          const hint = toPrimitiveHint(expr);
+          if (hint !== null) deferred.add(`hint:${hint}`);
+          return expr;
+        }
+        const reflectRead = expr.kind === "libCall" && expr.fn === "dyn.reflectGet" ? expr : null;
+        const reflectWrite = expr.kind === "libCall" && expr.fn === "dyn.reflectSet" ? expr : null;
+        const reflect = !!reflectRead || !!reflectWrite;
+        const computedRead = reflectRead
+          ? {
+              kind: "dynKeyGet" as const,
+              value: reflectRead.args[0]!,
+              key: reflectRead.args[1]!,
+              type: DYN,
+              loc: expr.loc,
+            }
+          : expr.kind === "dynKeyGet" && expr.key.kind !== "strLit"
+            ? expr
+            : null;
+        const computedWrite = reflectWrite
+          ? {
+              ...reflectWrite,
+              fn: "dyn.keySetComputed" as const,
+              args: reflectWrite.args.slice(0, 3),
+              type: VOID,
+            }
+          : expr.kind === "libCall" &&
+              (expr.fn === "dyn.keySetComputed" ||
+                (expr.fn === "dyn.keySet" && expr.args[1]?.kind !== "strLit"))
+            ? expr
+            : null;
+        // `dyn.in` is the `in` probe under a key that names a string: its
+        // helper takes the name as it is, like a write under such a key.
+        const namedProbe = expr.kind === "libCall" && expr.fn === "dyn.in";
+        const computedProbe =
+          expr.kind === "libCall" &&
+          (namedProbe ||
+            [
+              "dyn.hasKeyComputed",
+              "dyn.hasOwnComputed",
+              "dyn.propertyIsEnumerableComputed",
+            ].includes(expr.fn))
+            ? expr
+            : null;
+        // A write whose key names a string without being typed `string`
+        // (the libCall's namedKey). It and the `in` probe by a name are the
+        // named forms: before keys were passed by name their sites called
+        // the helpers that take a boxed key, so they get helpers of their
+        // own (`%dyn.class.named.<n>`), which keep that helper's
+        // checked-dynamic parameters (ir/jsval.ts jsvalParams).
+        const namedWrite = computedWrite?.fn === "dyn.keySet" && computedWrite.namedKey === true;
+        if (computedRead || computedWrite || computedProbe) {
+          const probe = computedProbe
+            ? computedProbe.fn === "dyn.hasKeyComputed" || namedProbe
+              ? "in"
+              : computedProbe.fn === "dyn.hasOwnComputed"
+                ? "own"
+                : "enumerable"
+            : undefined;
+          const dynamicKey =
+            reflect ||
+            (!!computedProbe && !namedProbe) ||
+            computedWrite?.fn === "dyn.keySetComputed" ||
+            computedRead?.key.type.kind === "dyn";
+          const sourceKey = keyValue(
+            computedRead?.key ?? (computedWrite ?? computedProbe)!.args[1]!,
+          );
+          const numericKey =
+            sourceKey.type.kind === "f64" ||
+            (sourceKey.kind === "dynFrom" && sourceKey.value.type.kind === "f64") ||
+            (sourceKey.kind === "toString" && sourceKey.operand.type.kind === "f64");
+          // `value[i]` with a number `i`: the helper takes the number and
+          // reads a dense checked array element directly, formatting the
+          // property name only when that does not apply.
+          const indexKey =
+            computedRead &&
+            !reflect &&
+            !dynamicKey &&
+            !computedRead.optional &&
+            computedRead.key.kind === "toString" &&
+            computedRead.key.operand.type.kind === "f64"
+              ? computedRead.key
+              : null;
+          // A sloppy-mode write ignores a refused assignment
+          // (sloppyDynamicWrites), so its sites share their own helper and
+          // their own per-class key tables (computedTableOperation), whose
+          // writes take the source range of one such site.
+          const sloppyWrite = !!computedWrite && !reflect && isSloppyAt(lowerer, computedWrite.loc);
+          const key = JSON.stringify([
+            !!computedWrite,
+            computedRead?.optional ?? false,
+            dynamicKey,
+            probe,
+            numericKey,
+            reflect,
+            !!indexKey,
+            ...(sloppyWrite ? ["sloppy"] : []),
+            ...(namedWrite ? ["named"] : []),
+          ]);
+          const receiver: IrExpr = reflect
+            ? (reflectRead ?? reflectWrite)!.args[0]!
+            : computedRead
+              ? computedRead.value
+              : (computedWrite ?? computedProbe)!.args[0]!;
+          const receiverIsInstance = this.receiverCanBeInstance(lowerer, receiver);
+          let dispatch = this.computed.get(key);
+          if (dispatch && receiverIsInstance && !dispatch.instances) {
+            dispatch.instances = true;
+            changed = true;
+          }
+          if (!dispatch) {
+            const loc = expr.loc;
+            const params = [
+              { localId: "p.0", name: "value", type: DYN },
+              indexKey
+                ? { localId: "p.index", name: "index", type: F64 }
+                : { localId: "p.key", name: "key", type: dynamicKey ? DYN : STRING },
+              ...(computedWrite ? [{ localId: "p.1", name: "stored", type: DYN }] : []),
+              ...(reflect ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }] : []),
+            ];
+            const keyLocal = dynamicKey ? "key.string" : "p.key";
+            const makeBag = (): IrExpr =>
+              computedWrite
+                ? {
+                    kind: "call",
+                    callee: this.propertyBag!.name,
+                    args: [varRef("p.0", DYN, loc)],
+                    type: DYN,
+                    loc,
+                  }
+                : this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc);
+            const bag = makeBag();
+            const reflectionFallback = (target: IrExpr, property: IrExpr): IrExpr => ({
+              kind: "libCall",
+              fn: computedWrite ? "dyn.reflectSet" : "dyn.reflectGet",
+              args: [
+                target,
+                lowerer.coerceToExpected(property, DYN),
+                ...(computedWrite ? [varRef("p.1", DYN, loc)] : []),
+                varRef("p.reflectReceiver", DYN, loc),
+              ],
+              type: computedWrite ? BOOL : DYN,
+              loc,
+            });
+            const fallbackOn = (target: IrExpr): IrExpr =>
+              reflect
+                ? reflectionFallback(target, varRef(keyLocal, STRING, loc))
+                : computedProbe
+                  ? {
+                      ...computedProbe,
+                      fn:
+                        probe === "in"
+                          ? "dyn.in"
+                          : probe === "own"
+                            ? "dyn.hasOwn"
+                            : "dyn.propertyIsEnumerable",
+                      args: [target, varRef(keyLocal, STRING, loc)],
+                    }
+                  : computedRead
+                    ? { ...computedRead, value: target, key: varRef(keyLocal, STRING, loc) }
+                    : {
+                        // The helper's own write is the plain one: the
+                        // site's namedKey chose this helper and stops here.
+                        kind: "libCall",
+                        fn: "dyn.keySet",
+                        args: [target, varRef(keyLocal, STRING, loc), varRef("p.1", DYN, loc)],
+                        type: computedWrite!.type,
+                        loc: computedWrite!.loc,
+                      };
+            const fallthroughOn = (target: IrExpr): IrStmt[] =>
+              computedWrite && !reflect
+                ? [
+                    { kind: "exprStmt", expr: fallbackOn(target), loc },
+                    { kind: "return", value: null, loc },
+                  ]
+                : [{ kind: "return", value: fallbackOn(target), loc }];
+            const helper: IrFunction = {
+              name: keyedHelperName(
+                lowerer,
+                `%dyn.class.${namedProbe || namedWrite ? "named" : "computed"}`,
+                key,
+              ),
+              params,
+              returnType:
+                (reflect && computedWrite) || computedProbe ? BOOL : computedWrite ? VOID : DYN,
+              locals: [
+                ...params.map((p) => ({
+                  id: p.localId,
+                  name: p.name,
+                  type: p.type,
+                  mutable: false,
+                })),
+                ...(dynamicKey || indexKey
+                  ? [{ id: keyLocal, name: "key", type: STRING, mutable: false }]
+                  : []),
+              ],
+              body: fallthroughOn(bag),
+              loc,
+              ...(numericKey && computedRead && !reflect && !dynamicKey
+                ? { fastRead: "index" as const }
+                : {}),
+            };
+            if (dynamicKey)
+              helper.body.unshift(
+                {
+                  kind: "if",
+                  cond: {
+                    kind: "dynTest",
+                    test: "symbol",
+                    value: varRef("p.key", DYN, loc),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: reflect
+                    ? [
+                        {
+                          kind: "return",
+                          value: reflectionFallback(bag, varRef("p.key", DYN, loc)),
+                          loc,
+                        },
+                      ]
+                    : computedProbe
+                      ? [
+                          {
+                            kind: "return",
+                            value: { ...computedProbe, args: [bag, varRef("p.key", DYN, loc)] },
+                            loc,
+                          },
+                        ]
+                      : computedRead
+                        ? [
+                            {
+                              kind: "return",
+                              value: {
+                                ...computedRead,
+                                value: bag,
+                                key: varRef("p.key", DYN, loc),
+                              },
+                              loc,
+                            },
+                          ]
+                        : [
+                            {
+                              kind: "exprStmt",
+                              expr: {
+                                ...computedWrite!,
+                                args: [bag, varRef("p.key", DYN, loc), varRef("p.1", DYN, loc)],
+                              },
+                              loc,
+                            },
+                            { kind: "return", value: null, loc },
+                          ],
+                  else_: null,
+                  loc,
+                },
+                {
+                  kind: "if",
+                  cond: {
+                    kind: "dynTest",
+                    test: "nullish",
+                    value: varRef("p.0", DYN, loc),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: [
+                    ...(reflect
+                      ? [
+                          {
+                            kind: "return",
+                            value: reflectionFallback(
+                              varRef("p.0", DYN, loc),
+                              varRef("p.key", DYN, loc),
+                            ),
+                            loc,
+                          } as IrStmt,
+                        ]
+                      : computedProbe
+                        ? [
+                            {
+                              kind: "return",
+                              value: {
+                                ...computedProbe,
+                                args: [varRef("p.0", DYN, loc), varRef("p.key", DYN, loc)],
+                              },
+                              loc,
+                            } as IrStmt,
+                          ]
+                        : computedRead
+                          ? [
+                              {
+                                kind: "return",
+                                value: {
+                                  ...computedRead,
+                                  value: varRef("p.0", DYN, loc),
+                                  key: varRef("p.key", DYN, loc),
+                                },
+                                loc,
+                              } as IrStmt,
+                            ]
+                          : [
+                              {
+                                kind: "exprStmt",
+                                expr: {
+                                  ...computedWrite!,
+                                  args: [
+                                    varRef("p.0", DYN, loc),
+                                    varRef("p.key", DYN, loc),
+                                    varRef("p.1", DYN, loc),
+                                  ],
+                                },
+                                loc,
+                              } as IrStmt,
+                              { kind: "return", value: null, loc } as IrStmt,
+                            ]),
+                  ],
+                  else_: null,
+                  loc,
+                },
+                {
+                  kind: "varDecl",
+                  localId: keyLocal,
+                  init: {
+                    kind: "libCall",
+                    fn: "dyn.toStringCoerce",
+                    args: [varRef("p.key", DYN, loc)],
+                    type: STRING,
+                    loc,
+                  },
+                  loc,
+                },
+              );
+            if (indexKey) {
+              // An integer index below a checked array's length names an
+              // element (-0 included: its property name is "0"); dyn.arrLen
+              // answers 0 for every other kind. Holes keep dyn.arrAt's
+              // ordinary named lookup.
+              const index = varRef("p.index", F64, loc);
+              const elementRead: IrStmt = {
+                kind: "if",
+                cond: { kind: "libCall", fn: "number.isInteger", args: [index], type: BOOL, loc },
+                then: [
+                  {
+                    kind: "if",
+                    cond: {
+                      kind: "bin",
+                      op: ">=",
+                      left: index,
+                      right: { kind: "numLit", value: 0, type: F64, loc },
+                      type: BOOL,
+                      loc,
+                    },
+                    then: [
+                      {
+                        kind: "if",
+                        cond: {
+                          kind: "bin",
+                          op: "<",
+                          left: index,
+                          right: {
+                            kind: "libCall",
+                            fn: "dyn.arrLen",
+                            args: [varRef("p.0", DYN, loc)],
+                            type: F64,
+                            loc,
+                          },
+                          type: BOOL,
+                          loc,
+                        },
+                        then: [
+                          {
+                            kind: "return",
+                            value: {
+                              kind: "libCall",
+                              fn: "dyn.arrAt",
+                              args: [varRef("p.0", DYN, loc), index],
+                              type: DYN,
+                              loc,
+                            },
+                            loc,
+                          },
+                        ],
+                        else_: null,
+                        loc,
+                      },
+                    ],
+                    else_: null,
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              };
+              helper.body.unshift(elementRead, {
+                kind: "varDecl",
+                localId: keyLocal,
+                init: { ...indexKey, operand: index },
+                loc,
+              });
+            }
+            dispatch = {
+              write: !!computedWrite,
+              reflect,
+              fn: helper,
+              classes: new Set(),
+              keyLocal,
+              branchIndex: dynamicKey ? 3 : indexKey ? 2 : 0,
+              dynamicKey,
+              numericKey,
+              instances: receiverIsInstance,
+              probe,
+              ...(sloppyWrite ? { sloppy: true } : {}),
+              operation: computedTableOperation({
+                write: !!computedWrite,
+                reflect,
+                probe,
+                numericKey,
+                sloppyWrite,
+              }),
+              view: () => fallthroughOn(varRef("p.0", DYN, loc)),
+              bagHas: () => ({
+                kind: "libCall",
+                fn: "dyn.hasOwn",
+                args: [makeBag(), varRef(keyLocal, STRING, loc)],
+                type: BOOL,
+                loc,
+              }),
+            };
+            this.computed.set(key, dispatch);
+            this.generated.add(helper);
+            lowerer.liftedFns.push(helper);
+            changed = true;
+          }
+          return {
+            kind: "call",
+            callee: dispatch.fn.name,
+            args: reflect
+              ? (reflectRead ?? reflectWrite)!.args
+              : computedRead
+                ? [computedRead.value, indexKey ? indexKey.operand : computedRead.key]
+                : (computedWrite ?? computedProbe)!.args,
+            type: dispatch.fn.returnType,
+            loc: expr.loc,
+          };
+        }
+        const read = expr.kind === "dynKeyGet" && expr.key.kind === "strLit" ? expr : null;
+        const write =
+          expr.kind === "libCall" && expr.fn === "dyn.keySet" && expr.args[1]?.kind === "strLit"
+            ? expr
+            : null;
+        const name =
+          read?.key.kind === "strLit"
+            ? read.key.value
+            : write?.args[1]?.kind === "strLit"
+              ? write.args[1].value
+              : null;
+        if (name !== null) {
+          // A write to a name an Array subclass answers keeps sloppy-mode
+          // sites apart: a frozen instance skips their field write and throws
+          // for strict-mode ones.
+          const sloppy =
+            !!write &&
+            isSloppyAt(lowerer, write.loc) &&
+            [...lowerer.classes.values()].some(
+              (info) => info.extendsArray !== undefined && arrayClassAnswers(lowerer, info, name),
+            );
+          const key = JSON.stringify([
+            name,
+            !!write,
+            read?.optional ?? false,
+            ...(sloppy ? [1] : []),
+          ]);
+          let dispatch = this.properties.get(key);
+          if (!dispatch) {
+            const loc = expr.loc;
+            const params = (write ? [0, 1] : [0]).map((i) => ({
+              localId: `p.${i}`,
+              name: `p${i}`,
+              type: DYN,
+            }));
+            const instanceBag: IrExpr = read
+              ? this.readPropertyBagOrEmpty(lowerer, varRef("p.0", DYN, loc), loc)
+              : {
+                  kind: "call",
+                  callee: this.propertyBag!.name,
+                  args: [varRef("p.0", DYN, loc)],
+                  type: DYN,
+                  loc,
+                };
+            const bag: IrExpr =
+              read && !["name", "length", "apply"].includes(name)
+                ? {
+                    kind: "call",
+                    callee: this.constructorPropertyBag(lowerer, loc).name,
+                    args: [instanceBag],
+                    type: DYN,
+                    loc,
+                  }
+                : instanceBag;
+            // A read compares the bag with the receiver and then reads it:
+            // evaluate it once, so each read retains the receiver once.
+            const bagRead = varRef("bag.0", DYN, loc);
+            const bagGet: IrExpr | null = read
+              ? {
+                  kind: "libCall",
+                  fn: "dyn.bagGet",
+                  args: [bagRead, read.key, varRef("p.0", DYN, loc)],
+                  type: DYN,
+                  loc,
+                }
+              : null;
+            // A class instance whose class chain declares no member of an
+            // Object.prototype method's name (classes that do answer in
+            // their own branches) inherits it unless an own property
+            // shadows it; a class constructor's static bag reads as before.
+            const instanceRead: IrExpr | null =
+              read && INHERITED_OBJECT_METHODS.has(name)
+                ? {
+                    kind: "ternary",
+                    cond: {
+                      kind: "dynTest",
+                      test: "function",
+                      value: varRef("p.0", DYN, loc),
+                      type: BOOL,
+                      loc,
+                    },
+                    then: bagGet!,
+                    else_: {
+                      kind: "ternary",
+                      cond: this.readBagHas(lowerer, "dyn.hasKey", bagRead, read.key, loc),
+                      then: bagGet!,
+                      else_: {
+                        kind: "libCall",
+                        fn: "dyn.builtinMethod",
+                        args: [{ kind: "strLit", value: "Object", type: STRING, loc }, read.key],
+                        type: DYN,
+                        loc,
+                      },
+                      type: DYN,
+                      loc,
+                    },
+                    type: DYN,
+                    loc,
+                  }
+                : bagGet;
+            const fallback: IrExpr = read
+              ? {
+                  kind: "ternary",
+                  cond: {
+                    kind: "dynScalarEq",
+                    left: bagRead,
+                    right: varRef("p.0", DYN, loc),
+                    type: BOOL,
+                    loc,
+                  },
+                  then: { ...read, value: bagRead },
+                  else_: instanceRead!,
+                  type: DYN,
+                  loc,
+                }
+              : { ...write!, args: [bag, write!.args[1]!, varRef("p.1", DYN, loc)] };
+            const helper: IrFunction = {
+              name: keyedHelperName(lowerer, "%dyn.class.property", key),
+              params,
+              returnType: write ? VOID : DYN,
+              locals: [
+                ...params.map((p) => ({
+                  id: p.localId,
+                  name: p.name,
+                  type: DYN,
+                  mutable: false,
+                })),
+                ...(read ? [{ id: "bag.0", name: "bag", type: DYN, mutable: false }] : []),
+              ],
+              body: write
+                ? [
+                    { kind: "exprStmt", expr: fallback, loc },
+                    { kind: "return", value: null, loc },
+                  ]
+                : [
+                    { kind: "varDecl", localId: "bag.0", init: bag, loc },
+                    {
+                      kind: "return",
+                      // Primitives answer their wrapper constructors.
+                      value:
+                        name === "constructor"
+                          ? primitiveConstructorOr(lowerer, varRef("p.0", DYN, loc), fallback, loc)
+                          : fallback,
+                      loc,
+                    },
+                  ],
+              loc,
+            };
+            if (!write && name === "toString" && lowerer.classes.has("%Error")) {
               const value = varRef("p.0", DYN, loc);
               helper.body.unshift({
                 kind: "if",
@@ -3169,21 +4994,12 @@ export class ClassDynamicDispatch {
                 then: [
                   {
                     kind: "return",
-                    value: {
-                      kind: "dynCall",
-                      callee: errorToStringMethod(lowerer, {
-                        kind: "dynCheck",
-                        value,
-                        type: { kind: "object", className: "%Error" },
-                        loc,
-                      }),
-                      receiver: value,
-                      calleeName: invoke.calleeName,
-                      calleeNameValue: varRef("p.calleeName", STRING, loc),
-                      args: invoke.args.map((_, i) => varRef(`p.${i + 1}`, DYN, loc)),
-                      type: DYN,
+                    value: errorToStringMethod(lowerer, {
+                      kind: "dynCheck",
+                      value,
+                      type: { kind: "object", className: "%Error" },
                       loc,
-                    },
+                    }),
                     loc,
                   },
                 ],
@@ -3191,54 +5007,269 @@ export class ClassDynamicDispatch {
                 loc,
               });
             }
-            dispatch = { source: invoke, fn: helper, callback, classes: new Set() };
-            this.dispatches.set(key, dispatch);
+            const receiverAccess: IrStmt[] = read
+              ? [{ kind: "return", value: { ...read, value: varRef("p.0", DYN, loc) }, loc }]
+              : [
+                  {
+                    kind: "exprStmt",
+                    expr: {
+                      ...write!,
+                      args: [varRef("p.0", DYN, loc), write!.args[1]!, varRef("p.1", DYN, loc)],
+                    },
+                    loc,
+                  },
+                  { kind: "return", value: null, loc },
+                ];
+            dispatch = {
+              name,
+              write: !!write,
+              fn: helper,
+              classes: new Set(),
+              ...(sloppy ? { sloppy: true } : {}),
+              ...(name !== "constructor" && name !== "toString"
+                ? { plain: { tail: [...helper.body], access: receiverAccess } }
+                : {}),
+            };
+            this.properties.set(key, dispatch);
             this.generated.add(helper);
-            this.generated.add(callback);
-            lowerer.liftedFns.push(helper, callback);
+            lowerer.liftedFns.push(helper);
             changed = true;
           }
-          // Resolve an own callback before argument effects can replace it.
-          const local = {
-            id: `%dispatch.receiver.${fn.locals.length}`,
-            name: "receiver",
-            type: DYN,
-            mutable: false,
-          };
-          fn.locals.push(local);
-          const receiver = varRef(local.id, DYN, expr.loc);
           return {
-            kind: "seqExpr",
-            stmts: [{ kind: "varDecl", localId: local.id, init: invoke.recv, loc: expr.loc }],
-            result: {
-              kind: "call",
-              callee: dispatch.fn.name,
-              args: [
-                receiver,
-                {
-                  kind: "call",
-                  callee: dispatch.callback.name,
-                  args: [receiver],
-                  type: DYN,
-                  loc: expr.loc,
-                },
-                ...invoke.args,
-                ...(iterator?.args.slice(1) ?? []),
-                invoke.calleeNameValue ?? {
-                  kind: "strLit",
-                  value: invoke.calleeName,
-                  type: STRING,
-                  loc: expr.loc,
-                },
-              ],
-              type: DYN,
-              loc: expr.loc,
-            },
-            type: DYN,
+            kind: "call",
+            callee: dispatch.fn.name,
+            args: read ? [read.value] : [write!.args[0]!, write!.args[2]!],
+            type: dispatch.fn.returnType,
             loc: expr.loc,
           };
+        }
+        const iterator =
+          expr.kind === "libCall" &&
+          (expr.fn === "dyn.iterator" ||
+            expr.fn === "dyn.arrayFromIterator" ||
+            expr.fn === "dyn.asyncIteratorOpen")
+            ? expr
+            : null;
+        // `for await` opens a class instance's [Symbol.asyncIterator]().
+        const asyncOpen = iterator?.fn === "dyn.asyncIteratorOpen";
+        const invoke: Invoke | null = iterator
+          ? {
+              kind: "dynInvoke",
+              recv: iterator.args[0]!,
+              method: asyncOpen ? "sym:asyncIterator" : "sym:iterator",
+              calleeName: asyncOpen ? "value[Symbol.asyncIterator]" : "value[Symbol.iterator]",
+              args: [],
+              type: DYN,
+              loc: iterator.loc,
+            }
+          : expr.kind === "dynInvoke"
+            ? expr
+            : null;
+        if (
+          invoke &&
+          expr.kind === "dynInvoke" &&
+          candidates(invoke.method).length === 0 &&
+          !staticCandidates(invoke.method)
+        ) {
+          // The other receivers' call a rewrite left in place tests only
+          // the classes that rewrite did not.
+          const covered =
+            expr.recv.kind === "varRef" ? this.getterReceivers.get(expr.recv.localId) : undefined;
+          const capsules = getterCapsules(invoke.method).filter((key) => !covered?.has(key));
+          if (capsules.length > 0) return getterCall(fn, expr, capsules, covered);
+        }
+        if (
+          !invoke ||
+          (candidates(invoke.method).length === 0 &&
+            !staticCandidates(invoke.method) &&
+            !(invoke.method === "toString" && hasError))
+        ) {
+          // The rewrite leaves this site to a class table that holds nothing
+          // now. A class lowered later can fill it, so record what the site
+          // waits on: the next call revisits the body when that table
+          // answers.
+          if (invoke) deferred.add(`method:${invoke.method}`);
+          else if (expr.kind === "dynHasKey") deferred.add(`member:${expr.key}`);
+          else if (expr.kind === "libCall" && expr.fn === "dyn.valueOf")
+            deferred.add("call:valueOf");
+          else if (expr.kind === "libCall" && expr.fn === "dyn.toString")
+            deferred.add("call:toString");
+          if (
+            expr.kind === "libCall" &&
+            (expr.fn === "dyn.toString" || expr.fn === "dyn.stringConstructor")
+          )
+            deferred.add("error");
+          const hint = toPrimitiveHint(expr);
+          if (hint !== null) deferred.add(`hint:${hint}`);
+          return expr;
+        }
+        // The helper takes an iterator call's other arguments (the spelling
+        // its error names) as parameters, so it depends on their types and
+        // not on what a site passes: sites that open the same protocol share
+        // one helper.
+        const key = JSON.stringify([
+          invoke.method,
+          invoke.args.length,
+          iterator?.fn,
+          ...(iterator?.args.slice(1).map((argument) => typeKey(argument.type)) ?? []),
+        ]);
+        let dispatch = this.dispatches.get(key);
+        if (!dispatch) {
+          const params: IrParam[] = [invoke.recv, ...invoke.args].map((_, i) => ({
+            localId: `p.${i}`,
+            name: `p${i}`,
+            type: DYN,
+          }));
+          params.splice(1, 0, { localId: "p.callback", name: "callback", type: DYN });
+          iterator?.args.slice(1).forEach((argument, i) =>
+            params.push({
+              localId: `p.iterator.${i}`,
+              name: `iterator${i}`,
+              type: argument.type,
+            }),
+          );
+          params.push({ localId: "p.calleeName", name: "calleeName", type: STRING });
+          const callback: IrFunction = {
+            name: keyedHelperName(lowerer, "%dyn.class.callback", key),
+            params: [params[0]!],
+            returnType: DYN,
+            locals: [{ id: "p.0", name: "receiver", type: DYN, mutable: false }],
+            body: [{ kind: "return", value: dynUndefinedExpr(expr.loc), loc: expr.loc }],
+            loc: expr.loc,
+          };
+          const helper: IrFunction = {
+            name: keyedHelperName(lowerer, "%dyn.class.call", key),
+            params,
+            returnType: DYN,
+            locals: params.map((p) => ({
+              id: p.localId,
+              name: p.name,
+              type: p.type,
+              mutable: false,
+            })),
+            body: [
+              {
+                kind: "return",
+                value: iterator
+                  ? {
+                      ...iterator,
+                      args: [
+                        varRef("p.0", DYN, expr.loc),
+                        ...iterator.args
+                          .slice(1)
+                          .map((argument, i) => varRef(`p.iterator.${i}`, argument.type, expr.loc)),
+                      ],
+                    }
+                  : {
+                      ...invoke,
+                      calleeNameValue: varRef("p.calleeName", STRING, expr.loc),
+                      recv: varRef("p.0", DYN, expr.loc),
+                      args: invoke.args.map((_, i) => varRef(`p.${i + 1}`, DYN, expr.loc)),
+                    },
+                loc: expr.loc,
+              },
+            ],
+            loc: expr.loc,
+          };
+          if (invoke.method === "toString" && lowerer.classes.has("%Error")) {
+            const loc = expr.loc;
+            const value = varRef("p.0", DYN, loc);
+            helper.body.unshift({
+              kind: "if",
+              cond: { kind: "dynTest", test: "error", value, type: BOOL, loc },
+              then: [
+                {
+                  kind: "return",
+                  value: {
+                    kind: "dynCall",
+                    callee: errorToStringMethod(lowerer, {
+                      kind: "dynCheck",
+                      value,
+                      type: { kind: "object", className: "%Error" },
+                      loc,
+                    }),
+                    receiver: value,
+                    calleeName: invoke.calleeName,
+                    calleeNameValue: varRef("p.calleeName", STRING, loc),
+                    args: invoke.args.map((_, i) => varRef(`p.${i + 1}`, DYN, loc)),
+                    type: DYN,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            });
+          }
+          dispatch = { source: invoke, fn: helper, callback, classes: new Set() };
+          this.dispatches.set(key, dispatch);
+          this.generated.add(helper);
+          this.generated.add(callback);
+          lowerer.liftedFns.push(helper, callback);
+          changed = true;
+        }
+        // Resolve an own callback before argument effects can replace it.
+        const local = {
+          id: `%dispatch.receiver.${fn.locals.length}`,
+          name: "receiver",
+          type: DYN,
+          mutable: false,
+        };
+        fn.locals.push(local);
+        const receiver = varRef(local.id, DYN, expr.loc);
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: local.id, init: invoke.recv, loc: expr.loc }],
+          result: {
+            kind: "call",
+            callee: dispatch.fn.name,
+            args: [
+              receiver,
+              {
+                kind: "call",
+                callee: dispatch.callback.name,
+                args: [receiver],
+                type: DYN,
+                loc: expr.loc,
+              },
+              ...invoke.args,
+              ...(iterator?.args.slice(1) ?? []),
+              invoke.calleeNameValue ?? {
+                kind: "strLit",
+                value: invoke.calleeName,
+                type: STRING,
+                loc: expr.loc,
+              },
+            ],
+            type: DYN,
+            loc: expr.loc,
+          },
+          type: DYN,
+          loc: expr.loc,
+        };
+      };
+      let touched = false;
+      const body = transformStmtList(fn.body, {
+        stmt: (stmt) => stmt,
+        expr: (expr) => {
+          const rewritten = rewriteExpr(expr);
+          if (rewritten !== expr) touched = true;
+          return rewritten;
         },
       });
+      if (settled) {
+        // The check mode: the full walk the worklist replaced.
+        if (touched)
+          throw new InternalCompilerError(`the settled rewrite of ${fn.name} changed its body`);
+        continue;
+      }
+      // A body the rewrite did not change keeps its statement list, so the
+      // dispatch-site summaries the pass keeps stay valid.
+      if (touched) fn.body = body;
+      const recorded = new Map<string, string>();
+      for (const tag of deferred) recorded.set(tag, depValue(tag));
+      this.worklist.record(fn, recorded);
     }
     for (const [target, cast] of this.checkedCasts) {
       for (const source of this.boxed) {
@@ -3280,8 +5311,14 @@ export class ClassDynamicDispatch {
       }
     }
     for (const dispatch of this.dispatches.values()) {
+      // This body has every branch the current receiver plans and class
+      // values call for.
       for (const name of this.boxedConstructors) {
         const info = lowerer.classes.get(name);
+        // The class value's property table answers a static its chain defines
+        // there, computed names included; the declarer's method is not what
+        // the class value holds.
+        if (info && runtimeStaticDefines(lowerer, info, dispatch.source.method)) continue;
         const found = info && findStaticOn(lowerer, info, dispatch.source.method);
         const key = `constructor:${name}`;
         if (!found?.method || dispatch.classes.has(key)) continue;
@@ -3364,7 +5401,7 @@ export class ClassDynamicDispatch {
       }
       // Compute the candidates where the first plan would have, so the
       // memoized set is the same whichever plans are already answered.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
       const matching = plans.length ? candidateSet(dispatch.source.method) : null;
       for (const plan of plans) {
         const { info } = plan;
@@ -3372,7 +5409,9 @@ export class ClassDynamicDispatch {
         dispatch.classes.add(plan.key);
         const loc = dispatch.source.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
-        if (isClassCallback(lowerer, info, dispatch.source.method)) {
+        // An Array subclass's instance keeps no property bag or prototype
+        // data: its members answer from the class alone.
+        if (!plan.array && isClassCallback(lowerer, info, dispatch.source.method)) {
           const prototypeMethod = observedPrototypeMethod(
             lowerer,
             info,
@@ -3574,6 +5613,8 @@ export class ClassDynamicDispatch {
       if (!dispatch.write)
         for (const name of this.boxedConstructors) {
           const info = lowerer.classes.get(name);
+          // A table the chain defines the name in answers the read itself.
+          if (info && runtimeStaticDefines(lowerer, info, dispatch.name)) continue;
           const found = info && findStaticOn(lowerer, info, dispatch.name);
           const field = found?.field;
           const key = `constructor:${name}`;
@@ -3618,15 +5659,96 @@ export class ClassDynamicDispatch {
           });
           changed = true;
         }
+      if (!dispatch.write)
+        // A value boxed as a class can hold one of its subclasses. A subclass
+        // that declares its own static field of the name answers from its own
+        // storage: those branches test the class object itself and run ahead
+        // of the boxed class's branch.
+        for (const name of this.boxedConstructors) {
+          if (!dispatch.classes.has(`constructor:${name}`)) continue;
+          const info = lowerer.classes.get(name);
+          const general = info && findStaticOn(lowerer, info, dispatch.name)?.field;
+          for (const actual of this.staticTablesInstalled) {
+            if (actual === name || !lowerer.isSubclassOf(actual, name)) continue;
+            const key = `constructor:${name}:${actual}`;
+            if (dispatch.classes.has(key)) continue;
+            const actualInfo = lowerer.classes.get(actual);
+            const field = actualInfo && findStaticOn(lowerer, actualInfo, dispatch.name)?.field;
+            if (!field || field.globalId === general?.globalId) continue;
+            dispatch.classes.add(key);
+            const loc = dispatch.fn.loc;
+            dispatch.fn.body.unshift({
+              kind: "if",
+              cond: classValueIdentity(varRef("p.0", DYN, loc), name, actual, loc),
+              then: [
+                {
+                  kind: "return",
+                  value: lowerer.coerceToExpected(varRef(field.globalId, field.type, loc), DYN),
+                  loc,
+                },
+              ],
+              else_: null,
+              loc,
+            });
+            changed = true;
+          }
+        }
+      if (dispatch.write)
+        // A write to a static field of a class value updates the native
+        // storage the class's own code reads, and the field's own data
+        // property in the installed table (Node's class object holds the
+        // field; the descriptor read and util.inspect answer from that
+        // entry). The branch tests the class object the value holds, not
+        // the type it was boxed as: a subclass boxed through a slot typed
+        // with its base must not write the base's storage.
+        for (const name of this.boxedConstructors) {
+          if (dispatch.name.startsWith("#")) continue;
+          const loc = dispatch.fn.loc;
+          for (const branch of this.staticWriteTargets(lowerer, name, dispatch.name)) {
+            const key = `constructor:${name}:${branch.actual}`;
+            if (dispatch.classes.has(key)) continue;
+            dispatch.classes.add(key);
+            const value = varRef("p.0", DYN, loc);
+            const stored = varRef("p.1", DYN, loc);
+            dispatch.fn.body.unshift({
+              kind: "if",
+              cond: classValueIdentity(value, name, branch.actual, loc),
+              then: [
+                ...this.staticWriteStatements(
+                  lowerer,
+                  dispatch.fn,
+                  branch,
+                  stored,
+                  [
+                    this.staticTableStore(
+                      value,
+                      { kind: "strLit", value: dispatch.name, type: STRING, loc },
+                      stored,
+                      loc,
+                    ),
+                  ],
+                  loc,
+                ),
+                { kind: "return", value: null, loc },
+              ],
+              else_: null,
+              loc,
+            });
+            changed = true;
+          }
+        }
       // Only the receivers that declare or hold the name, and the rooted
       // ones, can pass the test, except for names it decides on every
       // receiver. Fields added while bodies lower (the property bag and the
       // attribute words) have compiler names, which take every receiver.
-      const plans = this.propertyReceivers(lowerer, true);
+      const plans = this.propertyReceivers(lowerer, true, true, true);
+      // The own properties an Error keeps in native slots: `stack`, and
+      // `cause` for a read.
+      const errorSlot = dispatch.name === "stack" || (dispatch.name === "cause" && !dispatch.write);
       const anyReceiver =
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         dispatch.name === "constructor" ||
-        dispatch.name === "stack";
+        errorSlot;
       const skips = (plan: PropertyReceiver): boolean =>
         !isClassOwnEnumerableFieldName(dispatch.name) ||
         (!(plan.info.builtinStream !== undefined && streamProperty(dispatch.name)) &&
@@ -3636,7 +5758,7 @@ export class ClassDynamicDispatch {
           !findGenericMethodOn(lowerer, plan.info, dispatch.name) &&
           dispatch.name !== "constructor" &&
           !plan.info.fields.has(dispatch.name) &&
-          !(dispatch.name === "stack" && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
+          !(errorSlot && lowerer.isSubclassOf(plan.info.def.name, "%Error")) &&
           !findMethodOn(lowerer, plan.info, `get:${dispatch.name}`) &&
           !findMethodOn(lowerer, plan.info, `set:${dispatch.name}`));
       const selected = anyReceiver ? plans : receiversFor(plans, dispatch.name, "members");
@@ -3652,6 +5774,12 @@ export class ClassDynamicDispatch {
         // Classes answered in an earlier pass skip the member lookups.
         if (dispatch.classes.has(plan.key)) continue;
         if (skips(plan)) continue;
+        if (
+          plan.array &&
+          dispatch.name !== "constructor" &&
+          !arrayClassAnswers(lowerer, info, dispatch.name)
+        )
+          continue;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const { receiver, condition } = this.propertyReceiver(plan, loc);
@@ -3668,6 +5796,7 @@ export class ClassDynamicDispatch {
         let branch: IrStmt[];
         try {
           branch = this.propertyBody(lowerer, dispatch, info, varRef(local, receiver.type, loc));
+          if (plan.array && dispatch.sloppy) branch = markSloppyFieldWrites(branch);
         } catch (error) {
           if (!(error instanceof PoisonError) || !info.decl) throw error;
           const fence = lowerer.deferToRuntimeFence(before, info.decl, { kind: "statement" });
@@ -3685,24 +5814,89 @@ export class ClassDynamicDispatch {
       }
     }
     for (const dispatch of this.computed.values()) {
-      for (const plan of this.propertyReceivers(lowerer, true)) {
+      if (!dispatch.instances) continue;
+      // Array subclasses are in the plans too (an Array subclass instance
+      // keeps no property bag of its own; the PR's branch below handles it).
+      const plans = this.propertyReceivers(lowerer, true, true, true);
+      // The classes that get a table of their own for this dispatch, which a
+      // class may delegate to.
+      const tableClasses = new Set(plans.map((plan) => plan.info.def.name));
+      for (const plan of plans) {
         if (dispatch.classes.has(plan.key)) continue;
         const { info } = plan;
         dispatch.classes.add(plan.key);
         const loc = dispatch.fn.loc;
         const selected = this.propertyReceiver(plan, loc);
+        if (plan.array) {
+          // A class declared `extends Array` keeps no property bag: a key
+          // naming one of its own members (a field, getter or method for a
+          // read; a field or setter for a write) answers that member, and
+          // every other key (an element, a builtin array member) falls
+          // through to the access on the array itself.
+          if (dispatch.reflect || dispatch.probe || dispatch.numericKey) continue;
+          // Only the names a string key can reach: private (`#`) and
+          // compiler-owned (`%`) members are not properties of the instance.
+          const names = new Set<string>();
+          for (const field of info.fields.keys())
+            if (isClassOwnEnumerableFieldName(field)) names.add(field);
+          for (const method of info.methods.keys()) {
+            const setter = method.startsWith("set:");
+            const name = setter || method.startsWith("get:") ? method.slice(4) : method;
+            if (setter !== dispatch.write && !(dispatch.write && info.fields.has(name))) continue;
+            if (!name.startsWith("sym:") && arrayClassAnswers(lowerer, info, name)) names.add(name);
+          }
+          if (names.size === 0) continue;
+          const local = `receiver.${dispatch.fn.locals.length}`;
+          dispatch.fn.locals.push({
+            id: local,
+            name: "receiver",
+            type: selected.receiver.type,
+            mutable: false,
+          });
+          const receiver = varRef(local, selected.receiver.type, loc);
+          const members: IrStmt[] = [...names].map((name) => {
+            const body = this.propertyBody(lowerer, { ...dispatch, name }, info, receiver);
+            return {
+              kind: "if",
+              cond: {
+                kind: "strEq",
+                negated: false,
+                left: varRef(dispatch.keyLocal, STRING, loc),
+                right: { kind: "strLit", value: name, type: STRING, loc },
+                type: BOOL,
+                loc,
+              },
+              then: dispatch.sloppy ? markSloppyFieldWrites(body) : body,
+              else_: null,
+              loc,
+            };
+          });
+          dispatch.fn.body.splice(dispatch.branchIndex, 0, {
+            kind: "if",
+            cond: selected.condition,
+            then: [{ kind: "varDecl", localId: local, init: selected.receiver, loc }, ...members],
+            else_: null,
+            loc,
+          });
+          changed = true;
+          continue;
+        }
         const receiverType: IrType = { kind: "object", className: info.def.name };
         const receiver = varRef("p.receiver", receiverType, loc);
-        const helperKey = JSON.stringify([dispatch.fn.name, info.def.name]);
+        const helperKey = JSON.stringify([dispatch.operation, info.def.name]);
         const existingHelper = this.computedClassHelpers.get(helperKey);
         const callHelper = (helper: IrFunction): IrStmt => {
           const call: IrExpr = {
             kind: "call",
             callee: helper.name,
+            // A table takes the key as a string, whichever local of this
+            // helper holds it.
             args: helper.params.map((param) =>
               param.localId === "p.receiver"
                 ? selected.receiver
-                : varRef(param.localId, param.type, loc),
+                : param.localId === TABLE_KEY
+                  ? varRef(dispatch.keyLocal, STRING, loc)
+                  : varRef(param.localId, param.type, loc),
             ),
             type: helper.returnType,
             loc,
@@ -3757,6 +5951,20 @@ export class ClassDynamicDispatch {
                 loc,
               },
             ];
+          if (info.builtinStream !== undefined && streamProperty(name) && dispatch.probe)
+            return [
+              {
+                kind: "return",
+                value: {
+                  kind: "boolLit",
+                  value:
+                    dispatch.probe === "in" && streamClassHasProperty(info.builtinStream, name),
+                  type: BOOL,
+                  loc,
+                },
+                loc,
+              },
+            ];
           if (
             ((info.builtinStream !== undefined && streamProperty(name)) ||
               eventTargetInheritedMember(info, name) ||
@@ -3805,6 +6013,9 @@ export class ClassDynamicDispatch {
             ];
           }
           const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
+          // A symbol-keyed member is probed by the helper's own symbol
+          // branches, where `p.key` is the untyped key; a key table compares
+          // names and has no such member.
           const symbol = name.startsWith("sym:") || name.startsWith("%symbol:");
           const fn =
             dispatch.probe === "in"
@@ -3988,24 +6199,140 @@ export class ClassDynamicDispatch {
           changed = true;
           continue;
         }
-        const names = new Set([...info.fields.keys()].filter(isClassOwnEnumerableFieldName));
-        if (info.builtinStream)
-          for (const name of [...STREAM_BOOL_PROPERTIES, ...STREAM_NUM_PROPERTIES]) names.add(name);
-        const inherited = eventTargetApiMembers(info);
-        if (inherited) for (const name of inherited) names.add(name);
-        if (dateRootOf(info))
-          for (const name of DATE_PROTOTYPE_METHOD_NAMES)
-            if (dateInheritedMember(lowerer, info, name)) names.add(name);
-
-        for (let owner: ClassInfo | null = info; owner; owner = owner.base) {
-          const methodNames = [...owner.methods.keys()];
-          if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
-          for (const method of methodNames) {
-            const name =
-              method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
-            if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
+        // A class with enough inherited names delegates the ones it does not
+        // declare to a base class that has a table of its own for this
+        // operation, so the inherited branches are not repeated. A runtime
+        // base (Error, EventTarget, Date, a stream) has no table, so the
+        // first program class in the chain answers its runtime members
+        // itself. The base's table takes the same value, key, stored value
+        // and Reflect receiver; the instance is upcast to it, whose fields
+        // are an identical prefix of this class's layout.
+        const collectNames = (): Set<string> => {
+          const found = new Set<string>();
+          for (const field of info.fields.keys())
+            if (isClassOwnEnumerableFieldName(field)) found.add(field);
+          const addMethods = (owner: ClassInfo): void => {
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) found.add(name);
+            }
+          };
+          for (let owner: ClassInfo | null = info; owner; owner = owner.base) addMethods(owner);
+          return found;
+        };
+        let delegate: ClassInfo | null = null;
+        for (let owner = info.base; owner !== null; owner = owner.base) {
+          if (owner.decl !== null && !owner.def.runtime && tableClasses.has(owner.def.name)) {
+            delegate = owner;
+            break;
           }
         }
+        if (delegate !== null) {
+          // Only the names above the delegating base are shared, so they are
+          // only worth sharing when this class would otherwise repeat them
+          // and some other table would repeat them too.
+          let inheritedNames = 0;
+          for (let owner: ClassInfo | null = delegate; owner !== null; owner = owner.base) {
+            inheritedNames += [...owner.fields.keys()].filter(isClassOwnEnumerableFieldName).length;
+            inheritedNames += owner.methods.size + (owner.genericMethods?.size ?? 0);
+          }
+          let siblings = 0;
+          for (const name of tableClasses) {
+            if (name === info.def.name || name === delegate.def.name) continue;
+            if (lowerer.isSubclassOf(name, delegate.def.name)) siblings++;
+          }
+          if (inheritedNames < INHERITED_NAMES_TO_SHARE || siblings === 0) delegate = null;
+        }
+        const names = delegate === null ? collectNames() : new Set<string>();
+        if (delegate !== null) {
+          for (
+            let owner: ClassInfo | null = info;
+            owner !== null && owner !== delegate;
+            owner = owner.base
+          ) {
+            for (const field of owner.fieldOrder)
+              if (isClassOwnEnumerableFieldName(field.name)) names.add(field.name);
+            const methodNames = [...owner.methods.keys()];
+            if (owner.genericMethods) methodNames.push(...[...owner.genericMethods.keys()]);
+            for (const method of methodNames) {
+              const name =
+                method.startsWith("get:") || method.startsWith("set:") ? method.slice(4) : method;
+              if (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")) names.add(name);
+            }
+          }
+          // A name the program reflects on some class prototype answers from
+          // the receiver's own class's prototype view, which the base's table
+          // cannot do: keep it in every table so the view starts at the
+          // receiver's class.
+          if (lowerer.prototypeMethodAccesses.size > 0) {
+            for (const name of collectNames()) {
+              if (!lowerer.prototypeMethodAccesses.has(name)) continue;
+              const accessor =
+                findMethodOn(lowerer, info, `get:${name}`) ??
+                findMethodOn(lowerer, info, `set:${name}`);
+              if (accessor !== null && prototypeViewable(accessor.declarer)) names.add(name);
+            }
+          }
+        }
+        const delegateName =
+          delegate === null
+            ? null
+            : keyedHelperName(
+                lowerer,
+                "%dyn.class.keys",
+                JSON.stringify([dispatch.operation, delegate.def.name]),
+              );
+        // A class rooted at Error also has the own properties its runtime
+        // base keeps in slots (`stack`, `cause`), which are neither declared
+        // fields nor bag entries. A read or a presence test of a name the
+        // class does not declare is therefore asked of the instance's view,
+        // where the runtime answers a key written as a literal. A write
+        // keeps the bag, as a literal key's does (the runtime copies a
+        // slot's property from it). A read of a key the bag holds (a
+        // property or accessor the program added) stays a bag read with the
+        // instance as receiver, so a getter sees the instance as `this`.
+        // `stack` is read and written through the native slot, as the
+        // by-name dispatch does.
+        const errorRooted = lowerer.isSubclassOf(info.def.name, "%Error");
+        if (delegateName === null) {
+          if (errorRooted && !dispatch.probe && !dispatch.reflect) names.add("stack");
+          if (info.builtinStream)
+            for (const name of [
+              ...STREAM_BOOL_PROPERTIES,
+              ...STREAM_NUM_PROPERTIES,
+              ...STREAM_STATE_GETTERS.keys(),
+            ])
+              names.add(name);
+          const inherited = eventTargetApiMembers(info);
+          if (inherited) for (const name of inherited) names.add(name);
+          if (dateRootOf(info))
+            for (const name of DATE_PROTOTYPE_METHOD_NAMES)
+              if (dateInheritedMember(lowerer, info, name)) names.add(name);
+        }
+        const delegateTo = (table: string): IrStmt[] => {
+          const call: IrExpr = {
+            kind: "call",
+            callee: table,
+            args: [
+              varRef("p.0", DYN, loc),
+              varRef(TABLE_KEY, STRING, loc),
+              ...(dispatch.write ? [varRef("p.1", DYN, loc)] : []),
+              ...(dispatch.reflect ? [varRef("p.reflectReceiver", DYN, loc)] : []),
+              lowerer.upcastTo(receiver, delegate!.def.name),
+            ],
+            type: dispatch.fn.returnType,
+            loc,
+          };
+          return dispatch.write && !dispatch.reflect
+            ? [
+                { kind: "exprStmt", expr: call, loc },
+                { kind: "return", value: null, loc },
+              ]
+            : [{ kind: "return", value: call, loc }];
+        };
         const branch: IrStmt[] = [];
         for (const name of names) {
           if (dispatch.numericKey && String(Number(name)) !== name) continue;
@@ -4023,7 +6350,7 @@ export class ClassDynamicDispatch {
             kind: "if",
             cond: {
               kind: "strEq",
-              left: varRef(dispatch.keyLocal, STRING, loc),
+              left: varRef(TABLE_KEY, STRING, loc),
               right: { kind: "strLit", value: name, type: STRING, loc },
               negated: false,
               type: BOOL,
@@ -4034,17 +6361,70 @@ export class ClassDynamicDispatch {
             loc,
           });
         }
+        // A statement of this helper as the table's: the key is the table's
+        // string parameter, and an optional read is a plain one (the value
+        // a table receives is an instance, never null or undefined), so the
+        // table is the same whichever helper of its operation builds it.
+        const inTable = (expression: IrExpr): IrExpr =>
+          expression.kind === "varRef" && expression.localId === dispatch.keyLocal
+            ? varRef(TABLE_KEY, STRING, expression.loc)
+            : expression.kind === "dynKeyGet" && expression.optional
+              ? {
+                  kind: "dynKeyGet",
+                  key: expression.key,
+                  value: expression.value,
+                  type: expression.type,
+                  loc: expression.loc,
+                }
+              : expression;
+        // The helper's own generic operation on the instance's property bag,
+        // with the instance as the receiver of a bag accessor or setter: its
+        // last statement, and the bare return after a write's store.
+        const bagFallthrough = (): IrStmt[] =>
+          transformStmtList(dispatch.fn.body.slice(dispatch.write && !dispatch.reflect ? -2 : -1), {
+            stmt: (statement) => statement,
+            expr: (expression) =>
+              expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
+                ? {
+                    kind: "libCall",
+                    fn: "dyn.bagGet",
+                    args: [
+                      expression.value,
+                      expression.key,
+                      lowerer.coerceToExpected(receiver, DYN),
+                    ],
+                    type: DYN,
+                    loc,
+                  }
+                : expression.kind === "libCall" && expression.fn === "dyn.keySet"
+                  ? {
+                      ...expression,
+                      fn: "dyn.bagSet",
+                      args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
+                    }
+                  : inTable(expression),
+          });
+        // The same operation on the instance's view.
+        const viewFallthrough = (): IrStmt[] =>
+          transformStmtList(dispatch.view(), { stmt: (statement) => statement, expr: inTable });
         // Keep each class's key table in a separate function. A single
         // function containing every boxed class grows quadratically during
         // LLVM's control-flow optimization for large library workloads.
-        const params = [
-          ...dispatch.fn.params,
+        //
+        // The table's signature is its operation's, not this helper's: the
+        // value, the key as a string, what a write stores, Reflect's
+        // receiver, and the instance. Every helper of the operation calls it,
+        // so it takes nothing that only one of them has (the key before
+        // conversion, an index).
+        const params: IrParam[] = [
+          { localId: "p.0", name: "value", type: DYN },
+          { localId: TABLE_KEY, name: "key", type: STRING },
+          ...(dispatch.write ? [{ localId: "p.1", name: "stored", type: DYN }] : []),
+          ...(dispatch.reflect
+            ? [{ localId: "p.reflectReceiver", name: "receiver", type: DYN }]
+            : []),
           { localId: "p.receiver", name: "receiver", type: receiverType },
         ];
-        // A derived key (a dynamic key's string, or an index's name) is a
-        // local of the dispatch helper; pass it along.
-        if (!dispatch.fn.params.some((param) => param.localId === dispatch.keyLocal))
-          params.push({ localId: dispatch.keyLocal, name: "key", type: STRING });
         const helper: IrFunction = {
           name: keyedHelperName(lowerer, "%dyn.class.keys", helperKey),
           params,
@@ -4057,29 +6437,25 @@ export class ClassDynamicDispatch {
           })),
           body: [
             ...branch,
-            ...transformStmtList(dispatch.fn.body.slice(dispatch.write ? -2 : -1), {
-              stmt: (statement) => statement,
-              expr: (expression) =>
-                expression.kind === "dynKeyGet" && expression.key.type.kind === "string"
-                  ? {
-                      kind: "libCall",
-                      fn: "dyn.bagGet",
-                      args: [
-                        expression.value,
-                        expression.key,
-                        lowerer.coerceToExpected(receiver, DYN),
-                      ],
-                      type: DYN,
-                      loc,
-                    }
-                  : expression.kind === "libCall" && expression.fn === "dyn.keySet"
-                    ? {
-                        ...expression,
-                        fn: "dyn.bagSet",
-                        args: [...expression.args, lowerer.coerceToExpected(receiver, DYN)],
-                      }
-                    : expression,
-            }),
+            ...(delegateName !== null
+              ? delegateTo(delegateName)
+              : errorRooted && !dispatch.write
+                ? dispatch.probe || dispatch.reflect
+                  ? viewFallthrough()
+                  : [
+                      {
+                        kind: "if" as const,
+                        cond: transformExpr(dispatch.bagHas(), {
+                          stmt: (statement) => statement,
+                          expr: inTable,
+                        }),
+                        then: bagFallthrough(),
+                        else_: null,
+                        loc,
+                      },
+                      ...viewFallthrough(),
+                    ]
+                : bagFallthrough()),
           ],
           loc,
         };
@@ -4144,7 +6520,7 @@ export class ClassDynamicDispatch {
         }
         if (!supported || !info.decl) continue;
         const cls = classValueRef(lowerer, info, info.decl);
-        const result = constructedValue(lowerer, info, {
+        const result = constructedDynValue(lowerer, info, {
           kind: "new",
           className: name,
           args,
@@ -4160,7 +6536,7 @@ export class ClassDynamicDispatch {
             type: BOOL,
             loc,
           },
-          then: [{ kind: "return", value: lowerer.coerceToExpected(result, DYN), loc }],
+          then: [{ kind: "return", value: result, loc }],
           else_: null,
           loc,
         });
@@ -4241,6 +6617,86 @@ export class ClassDynamicDispatch {
       },
       { kind: "return", value: varRef(globalId, DYN, loc), loc },
     ];
+  }
+
+  /** The prototype of an instance of a class that has no prototype data of
+   * its own (a generic class) below a class that has it: one object per
+   * class, created from the nearest ancestor's prototype data on first use
+   * and named like the class, so a view of the instance inherits what the
+   * ancestors' prototypes hold and prints its class's name. Null when no
+   * ancestor has prototype data that can be named without a receiver. */
+  private inheritedPrototype(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): IrExpr | null {
+    const name = `%prototype.inherited.${info.def.name}`;
+    if (lowerer.liftedFnNamed(name) === undefined) {
+      let base: IrExpr | null = null;
+      for (let at = info.base; !base && at; at = at.base)
+        base = classPrototypeData(lowerer, at, loc);
+      if (!base) return null;
+      const globalId = `%g.${name}`;
+      const readyId = `${globalId}.ready`;
+      lowerer.shareHelper(name);
+      lowerer.globalsList.push(
+        { id: globalId, name: `${info.def.name}.prototype.inherited`, type: DYN, mutable: true },
+        {
+          id: readyId,
+          name: `${info.def.name}.prototype.inherited.ready`,
+          type: BOOL,
+          mutable: true,
+        },
+      );
+      const value = varRef(globalId, DYN, loc);
+      lowerer.liftedFns.push({
+        name,
+        params: [],
+        returnType: DYN,
+        locals: [],
+        loc,
+        speculativeDispatch: true,
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "unary", op: "!", operand: varRef(readyId, BOOL, loc), type: BOOL, loc },
+            then: [
+              {
+                kind: "assign",
+                localId: globalId,
+                value: { kind: "libCall", fn: "dyn.objCreate", args: [base], type: DYN, loc },
+                loc,
+              },
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.nameClassPrototype",
+                  args: [
+                    value,
+                    {
+                      kind: "strLit",
+                      value: info.def.jsName ?? info.def.name,
+                      type: STRING,
+                      loc,
+                    },
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "assign",
+                localId: readyId,
+                value: { kind: "boolLit", value: true, type: BOOL, loc },
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          { kind: "return", value, loc },
+        ],
+      });
+    }
+    return { kind: "call", callee: name, args: [], type: DYN, loc };
   }
 
   private readPropertyBag(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
@@ -5339,6 +7795,248 @@ export class ClassDynamicDispatch {
     }
     if (lowerer) this.guardClassTables(lowerer);
     if (lowerer) this.guardPropertyHelpers(lowerer);
+    if (lowerer) this.splitStaticFieldBranches(lowerer);
+    if (lowerer) this.groupStaticFieldBranchRuns(lowerer);
+    if (lowerer) this.indexClassBranches(lowerer);
+    if (lowerer) this.settleMethodsIntact(lowerer);
+  }
+
+  /** The families whose `%class.methodsIntact:<root>` body is written. */
+  private readonly intactFamilies = new Set<string>();
+
+  /** Writes the body of each `%class.methodsIntact:<root>` (class-callbacks.ts,
+   * methodsUnreplaced) now that the family below `<root>` is complete: the
+   * negation of a flag that every prototype data helper of the family sets
+   * whenever it answers, so the test holds exactly while no prototype object
+   * of the family has reached any code. A family with a member whose
+   * prototype is not such a helper's (a function-local class, a generic
+   * instantiation, a mixin, a class with a callable base) keeps the body that
+   * answers false, and its calls read the property table as before. The
+   * property table the test reads is part of every class of the family. */
+  private settleMethodsIntact(lowerer: Lowerer): void {
+    for (const fn of lowerer.liftedFns) {
+      if (!fn.name.startsWith(METHODS_INTACT_PREFIX) || this.intactFamilies.has(fn.name)) continue;
+      this.intactFamilies.add(fn.name);
+      const root = lowerer.classes.get(fn.name.slice(METHODS_INTACT_PREFIX.length));
+      if (!root) continue;
+      this.ensurePropertyBag(root);
+      const family: ClassInfo[] = [];
+      const collect = (info: ClassInfo): void => {
+        family.push(info);
+        info.subclasses.forEach(collect);
+      };
+      collect(root);
+      const helpers = family.flatMap((info) =>
+        info.def.prototypeDataHelper === undefined
+          ? []
+          : [lowerer.liftedFnNamed(info.def.prototypeDataHelper)],
+      );
+      if (
+        !family.every(methodsIntactMember) ||
+        !helpers.every((helper) => helper?.body.at(-1)?.kind === "return")
+      )
+        continue;
+      const loc = fn.loc;
+      const created = `%g.%prototype.created.${root.def.name}`;
+      lowerer.globalsList.push({
+        id: created,
+        name: `${root.def.jsName ?? root.def.name}.prototype.created`,
+        type: BOOL,
+        mutable: true,
+      });
+      for (const helper of helpers)
+        helper!.body.splice(-1, 0, {
+          kind: "assign",
+          localId: created,
+          value: { kind: "boolLit", value: true, type: BOOL, loc: helper!.loc },
+          loc: helper!.loc,
+        });
+      fn.body = [
+        {
+          kind: "return",
+          value: { kind: "unary", op: "!", operand: varRef(created, BOOL, loc), type: BOOL, loc },
+          loc,
+        },
+      ];
+    }
+  }
+
+  /** Long runs of static-field fence branches are split into chunk functions
+   * called in order. One helper with a branch per (boxed class, held class,
+   * field) leaves the native frame dominated by LLVM's spill slots for the
+   * branches' operands — about 24 bytes per branch, tens of KiB for a large
+   * class family — even though the branches themselves are small. A chunk of
+   * at most CHUNK branches has a bounded frame, and the calls run one after
+   * another rather than nested, so the helper's stack use no longer grows with
+   * the program's class fields. The statements, their order, their tests and
+   * their messages are unchanged; groupStaticFieldBranchRuns then regroups the
+   * branches inside each chunk. */
+  private splitStaticFieldBranches(lowerer: Lowerer): void {
+    const CHUNK = 256;
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn) || this.fenceBranches.size === 0) continue;
+      seen.add(fn);
+      let rebuilt: IrStmt[] | null = null;
+      let i = 0;
+      while (i < fn.body.length) {
+        if (!this.fenceBranches.has(fn.body[i]!)) {
+          rebuilt?.push(fn.body[i]!);
+          i++;
+          continue;
+        }
+        let end = i;
+        while (end < fn.body.length && this.fenceBranches.has(fn.body[end]!)) end++;
+        if (end - i <= CHUNK) {
+          rebuilt?.push(...fn.body.slice(i, end));
+          i = end;
+          continue;
+        }
+        rebuilt ??= fn.body.slice(0, i);
+        let start = i;
+        for (; start + CHUNK <= end; start += CHUNK) {
+          const statements = fn.body.slice(start, start + CHUNK);
+          const loc = statements[0]!.loc;
+          // The helper's own parameters, and every read-only local the
+          // branches name: a descriptor or delete helper's branches name
+          // `target` and `key`, but an Object.assign or defineProperties
+          // guard's name the source and the value it writes as well; the
+          // chunk must receive all of them.
+          const params = this.fenceChunkParams(fn, statements);
+          if (params === null) {
+            rebuilt.push(...statements);
+            continue;
+          }
+          const name = `%staticFieldFence.${this.staticFenceChunks++}`;
+          const chunk: IrFunction = {
+            name,
+            params,
+            returnType: VOID,
+            locals: params.map((param) => ({
+              id: param.localId,
+              name: param.name,
+              type: param.type,
+              mutable: false,
+            })),
+            body: statements,
+            loc,
+          };
+          lowerer.liftedFns.push(chunk);
+          rebuilt.push({
+            kind: "exprStmt",
+            expr: {
+              kind: "call",
+              callee: name,
+              args: params.map((param) => varRef(param.localId, param.type, loc)),
+              type: VOID,
+              loc,
+            },
+            loc,
+          });
+        }
+        rebuilt.push(...fn.body.slice(start, end));
+        i = end;
+      }
+      if (rebuilt !== null) fn.body = rebuilt;
+    }
+  }
+
+  /** The parameters a fence chunk needs for `statements`: the helper's own
+   * parameters and the read-only locals the branches read, or null when the
+   * statements write one of those locals, break out of the helper, or return
+   * early — cases the chunk cannot carry. */
+  private fenceChunkParams(fn: IrFunction, statements: readonly IrStmt[]): IrParam[] | null {
+    const used = new Set<string>();
+    const declared = new Set<string>();
+    const written = new Set<string>();
+    let transfers = false;
+    everyStmtList([...statements], {
+      expr: (expression) => {
+        if (expression.kind === "varRef") used.add(expression.localId);
+        else if (expression.kind === "incDec" || expression.kind === "assignExpr") {
+          used.add(expression.localId);
+          written.add(expression.localId);
+        } else if (expression.kind === "closure")
+          for (const captured of expression.captures) used.add(captured);
+        return true;
+      },
+      stmt: (statement) => {
+        switch (statement.kind) {
+          case "varDecl":
+          case "forOf":
+            declared.add(statement.localId);
+            break;
+          case "assign":
+            written.add(statement.localId);
+            break;
+          case "rethrow":
+            used.add(statement.localId);
+            break;
+          case "break":
+          case "continue":
+          case "return":
+            transfers = true;
+            break;
+        }
+        return true;
+      },
+    });
+    if (transfers) return null;
+    const params = new Map(fn.params.map((param) => [param.localId, param]));
+    const localById = new Map(fn.locals.map((local) => [local.id, local]));
+    const extras: IrParam[] = [];
+    for (const id of used) {
+      if (params.has(id) || declared.has(id)) continue;
+      const local = localById.get(id);
+      // An id this function does not declare is a global (the static-table
+      // ready flag and the field globals the branches read), which every
+      // function names the same way.
+      if (local === undefined) continue;
+      if (local.mutable || local.boxed === true || written.has(id)) return null;
+      extras.push({ localId: local.id, name: local.name, type: local.type });
+    }
+    return [...fn.params, ...extras];
+  }
+
+  /** The chunk functions splitStaticFieldBranches has made. */
+  private staticFenceChunks = 0;
+
+  /** Regroups the static-field branches of each generated helper by the
+   * class value they test (groupStaticFieldBranches). */
+  private groupStaticFieldBranchRuns(lowerer: Lowerer): void {
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      const body = groupStaticFieldBranches(
+        fn.body,
+        this.staticFieldBranches,
+        () => `%staticFieldClass.${this.staticTableTemps++}`,
+        (id, type) => fn.locals.push({ id, name: id, type, mutable: false }),
+      );
+      if (body !== fn.body) fn.body = body;
+    }
+    this.staticFieldBranches.clear();
+  }
+
+  /** Each generated class table tests its classes in order, one exact type
+   * key test per class, so a receiver costs time linear in the program's
+   * class count. Replace each run of such branches with a switch on the
+   * length and last four bytes of the receiver's key: the branches
+   * themselves stay, each still guarded by its key test, and the switch
+   * selects the class the receiver is. Runs whose branches continue instead
+   * of leaving the helper, or that hold fewer than sixty-four distinct classes,
+   * keep the chain. */
+  private indexClassBranches(lowerer: Lowerer): void {
+    const seen = new Set<IrFunction>();
+    for (const fn of [...this.generated, ...lowerer.liftedFns]) {
+      if (seen.has(fn)) continue;
+      seen.add(fn);
+      // Every class table's runs of capsule branches select their class from
+      // a table (caseBranchRuns); the runs it leaves keep the indexing below.
+      fn.body = caseBranchRuns(fn.body);
+      fn.body = indexBranchRuns(fn.body);
+    }
   }
 
   /** Each tracked class's bag initializer over a typed receiver (`this`),
@@ -5516,6 +8214,9 @@ export class ClassDynamicDispatch {
       ...[...this.computed.values()].map((dispatch) => dispatch.fn),
       ...[...this.dispatches.values()].flatMap((dispatch) => [dispatch.fn, dispatch.callback]),
       ...this.protocols,
+      // A capsule keeps its static class while its object may be a subclass
+      // instance, whose prototype is the subclass's.
+      ...(this.prototypeHelper && this.prototypeOfInstances ? [this.prototypeHelper] : []),
     ];
   }
 
@@ -5644,14 +8345,17 @@ export class ClassDynamicDispatch {
       this.normalization.body.push({ kind: "return", value, loc });
     }
     for (const fn of this.normalizedDispatches()) {
-      fn.locals.find((local) => local.id === "p.0")!.mutable = true;
+      // The prototype helper keeps the name it gives its value where
+      // nothing selects a class.
+      const id = fn === this.prototypeHelper ? "value" : "p.0";
+      fn.locals.find((local) => local.id === id)!.mutable = true;
       fn.body.unshift({
         kind: "assign",
-        localId: "p.0",
+        localId: id,
         value: {
           kind: "call",
           callee: this.normalization.name,
-          args: [varRef("p.0", DYN, fn.loc)],
+          args: [varRef(id, DYN, fn.loc)],
           type: DYN,
           loc: fn.loc,
         },
@@ -5680,6 +8384,45 @@ export class ClassDynamicDispatch {
     add(root);
   }
 
+  /** Whether the dynamic value a computed-access helper is handed can be a
+   * compiled class instance. An object, which is a class instance, and an
+   * untyped value that may hold one need the helper's per-class branches.
+   * A record, array, bytes, string or other builtin value cannot be one: its
+   * members live in its property bag, which the helper's checked-dynamic
+   * fallthrough reads. A helper shared by such a site and a class site keeps
+   * its branches; one whose every site hands it a record or array answers
+   * from the fallthrough alone, so class state (Immutable fields included)
+   * stays out of reach of dynamic code at those sites. */
+  private receiverCanBeInstance(lowerer: Lowerer, receiver: IrExpr): boolean {
+    let value = receiver;
+    // A record made dynamic is still a record: the conversions that keep a
+    // value's identity while changing its static type do not change what it
+    // is. (dynCheck keeps its own type: a class instance fails a check to a
+    // record or array, so the checked type tells the whole story.)
+    for (let steps = 0; steps < 32; steps++) {
+      if (value.kind === "dynFrom") value = value.value;
+      else if (value.kind === "seqExpr") value = value.result;
+      else break;
+    }
+    const seen = new Set<string>();
+    const holdsInstance = (type: IrType): boolean => {
+      switch (type.kind) {
+        case "object":
+        case "dyn":
+        case "jsval":
+          return true;
+        case "union": {
+          if (seen.has(type.unionId)) return false;
+          seen.add(type.unionId);
+          return (lowerer.unions.get(type.unionId)?.arms ?? []).some(holdsInstance);
+        }
+        default:
+          return false;
+      }
+    };
+    return holdsInstance(value.type);
+  }
+
   /** propertyReceivers results by mode, with the class graph they were
    * computed from: the boxed classes, the registered classes, the subclass
    * links and the constructed classes only grow, so equal counts and the
@@ -5695,9 +8438,10 @@ export class ClassDynamicDispatch {
     lowerer: Lowerer,
     streams = false,
     normalize = true,
+    arrays = false,
   ): readonly PropertyReceiver[] {
-    const mode = `${streams}:${normalize}`;
-    const revision = `${this.boxed.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
+    const mode = `${streams}:${normalize}:${arrays}`;
+    const revision = `${this.boxed.size}:${this.boxedArrayElems.size}:${lowerer.classes.size}:${lowerer.subclassLinks}:${lowerer.constructedClassCount()}`;
     const cached = this.receiverPlans.get(mode);
     if (cached?.revision === revision) {
       let i = 0;
@@ -5735,7 +8479,26 @@ export class ClassDynamicDispatch {
       };
       visit(capsule);
     }
+    if (arrays) plans.push(...this.arrayReceivers(lowerer));
     this.receiverPlans.set(mode, { revision, capsules, plans });
+    return plans;
+  }
+
+  /** The classes declared `extends Array` whose instances can be dynamic
+   * values: a constructed class over the elements of an array the program
+   * makes a dynamic value. Such an instance reaches dynamic code as the
+   * array itself (a live reference to it), so a member access there tests
+   * the array's class and views it as the class object. Only one level of
+   * Array subclass compiles, so each has no subclasses to test first. */
+  private arrayReceivers(lowerer: Lowerer): PropertyReceiver[] {
+    if (this.boxedArrayElems.size === 0) return [];
+    const plans: PropertyReceiver[] = [];
+    for (const info of lowerer.classes.values()) {
+      const elem = info.extendsArray?.elem;
+      if (elem === undefined || !this.boxedArrayElems.has(typeKey(elem))) continue;
+      if (!lowerer.classCanBeConstructed(info)) continue;
+      plans.push({ info, capsule: info, key: `array:${info.def.name}`, array: true });
+    }
     return plans;
   }
 
@@ -5744,6 +8507,36 @@ export class ClassDynamicDispatch {
     loc: SrcLoc,
   ): { receiver: IrExpr; condition: IrExpr } {
     const value = varRef("p.0", DYN, loc);
+    if (plan.array) {
+      // The runtime names the class of a live array and of a snapshot that
+      // records it; only the live array is an instance, with the class's
+      // fields after its header, so the branch tests the array it converts
+      // to as well.
+      const array: IrExpr = {
+        kind: "dynCheck",
+        value,
+        type: arrayOf(plan.info.extendsArray!.elem),
+        loc,
+      };
+      const className = plan.info.def.name;
+      return {
+        receiver: arrayClassView(plan.info, array, loc),
+        condition: {
+          kind: "ternary",
+          cond: {
+            kind: "libCall",
+            fn: "array.dynIsClass",
+            args: [value, { kind: "strLit", value: className, type: STRING, loc }],
+            type: BOOL,
+            loc,
+          },
+          then: { kind: "instanceOf", value: array, className, type: BOOL, loc },
+          else_: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        },
+      };
+    }
     const type: IrType = { kind: "object", className: plan.capsule.def.name };
     const checked: IrExpr = { kind: "dynCheck", value, type, loc };
     const matches: IrExpr = {
@@ -5925,6 +8718,40 @@ export class ClassDynamicDispatch {
     ];
   }
 
+  /** Whether the program can delete an error's own `stack`: it holds a
+   * `delete` of a member named `stack` or of a key it computes, or names
+   * `deleteProperty`. Every error is created with an own `stack`, which
+   * shadows a `stack` accessor its class declares until it is deleted
+   * (`delete this.stack` in the constructor exposes the accessor pair). The
+   * instance keeps no mark of the deletion, so a class that declares the
+   * accessor answers a read by name through it only in a program that can
+   * delete, and with the instance's stack in every other program. Asked
+   * only for such a class, and once. */
+  private mayDeleteOwnStack(lowerer: Lowerer): boolean {
+    if (this.deletesOwnStack !== undefined) return this.deletesOwnStack;
+    let deletes = false;
+    for (const sf of lowerer.program.getImplementationSourceFiles()) {
+      if (deletes) break;
+      if (sf.isDeclarationFile || !ts.sourceTextIncludes(sf, "delete")) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (ts.isDeleteExpression(node)) {
+          const target = withoutParenthesesTypeWrappers(node.expression);
+          if (ts.isPropertyAccessExpression(target)) {
+            if (target.name.text === "stack") deletes = true;
+          } else if (ts.isElementAccessExpression(target)) {
+            const key = withoutParenthesesTypeWrappers(target.argumentExpression);
+            if (!ts.isStringLiteralLike(key) || key.text === "stack") deletes = true;
+          }
+        } else if (ts.isPropertyAccessExpression(node) && node.name.text === "deleteProperty") {
+          deletes = true;
+        }
+        return undefined;
+      });
+    }
+    this.deletesOwnStack = deletes;
+    return deletes;
+  }
+
   private propertyBody(
     lowerer: Lowerer,
     dispatch: PropertyDispatch,
@@ -6008,6 +8835,23 @@ export class ClassDynamicDispatch {
             loc,
           },
         ];
+      const getter = STREAM_STATE_GETTERS.get(name);
+      // The runtime answers by the stream's class: undefined where Node's
+      // prototype does not define the getter.
+      if (getter !== undefined)
+        return [
+          {
+            kind: "return",
+            value: {
+              kind: "libCall",
+              fn: "stream.stateDyn",
+              args: [receiver, numLit(getter, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ];
       return [
         {
           kind: "return",
@@ -6027,14 +8871,16 @@ export class ClassDynamicDispatch {
     }
     // An Error's own `stack`: a string is the native error's stack, which
     // typed reads share; any other value is kept with the instance's own
-    // properties, which a read checks first. A class whose chain declares
-    // a `stack` accessor answers through it (the accessor code below).
+    // properties, which a read checks first. A `stack` accessor a class in
+    // the chain declares is a prototype member the instance's own `stack`
+    // shadows, so it answers only in a program that can delete the own one
+    // (the accessor code below).
     if (
       name === "stack" &&
       !info.fields.has(name) &&
       lowerer.isSubclassOf(info.def.name, "%Error") &&
-      !findMethodOn(lowerer, info, "get:stack") &&
-      !findMethodOn(lowerer, info, "set:stack")
+      ((!findMethodOn(lowerer, info, "get:stack") && !findMethodOn(lowerer, info, "set:stack")) ||
+        !this.mayDeleteOwnStack(lowerer))
     ) {
       const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
       const error = lowerer.upcastTo(receiver, "%Error");
@@ -6129,6 +8975,46 @@ export class ClassDynamicDispatch {
         },
       ];
     }
+    // An Error's own `cause`: the constructor's `{ cause }` option is kept
+    // by the native error, where typed reads find it; a value the program
+    // wrote by name is kept with the instance's own properties, which a
+    // read checks first. A write keeps the bag, and a class that declares
+    // `cause` answers with its field.
+    if (
+      name === "cause" &&
+      !write &&
+      !info.fields.has(name) &&
+      lowerer.isSubclassOf(info.def.name, "%Error")
+    ) {
+      const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+      const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
+      return [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+            then: {
+              kind: "libCall",
+              fn: "dyn.bagGet",
+              args: [bag, key, lowerer.coerceToExpected(receiver, DYN)],
+              type: DYN,
+              loc,
+            },
+            else_: {
+              kind: "libCall",
+              fn: "error.cause",
+              args: [lowerer.upcastTo(receiver, "%Error")],
+              type: DYN,
+              loc,
+            },
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+      ];
+    }
     if ((name === "message" || name === "name") && lowerer.isSubclassOf(info.def.name, "%Error"))
       return write
         ? [
@@ -6210,6 +9096,13 @@ export class ClassDynamicDispatch {
       }
       if (!field && !accessor && info.decl) {
         const declared = findMethodOn(lowerer, info, name);
+        // An abstract declaration emits no prototype function, so it has no
+        // value of its own: an instance of a class below reads that class's
+        // implementation (the nearest arm answers), and an instance with no
+        // implementation below reads the nearest concrete declaration above
+        // (or undefined when no class declares one), as JavaScript's
+        // prototype chain does.
+        const abstractHere = declared?.sig.abstract === true;
         // Untyped dispatch considers native classes that may never reach
         // this lookup. Libraries cannot expose fibers or promises through
         // those speculative branches. Direct typed references still reach
@@ -6236,8 +9129,14 @@ export class ClassDynamicDispatch {
             genericOverrideBelow(info, name))
         )
           return fence();
-        const method = classMethodValue(lowerer, info.decl, info, name, loc);
-        if (method && canConvertToDyn(method.type, getRecord, getUnion)) {
+        // An abstract declaration's slot holds no implementation: the value
+        // of a receiver whose class declares it that way is whatever the
+        // prototype chain answers above, walked past the abstract
+        // re-declarations that emit no member (null when none answers).
+        const method = abstractHere
+          ? this.inheritedMethodValue(lowerer, info.decl, info, name, loc)
+          : classMethodValue(lowerer, info.decl, info, name, loc);
+        if (abstractHere || (method && canConvertToDyn(method.type, getRecord, getUnion))) {
           // A capsule may have the base ABI even when its native object is
           // a subclass (for example an inherited iterator returning this).
           // Select the method declaration at extraction, before detaching it.
@@ -6246,7 +9145,11 @@ export class ClassDynamicDispatch {
               candidate !== info &&
               lowerer.classCanBeConstructed(candidate) &&
               lowerer.isSubclassOf(candidate.def.name, info.def.name) &&
-              (candidate.methods.has(name) || candidate.genericMethods?.has(name)),
+              (candidate.methods.has(name) || candidate.genericMethods?.has(name)) &&
+              // An abstract re-declaration adds no prototype member: an
+              // instance of that class reads the arm below it, or the
+              // fallback above, exactly as this branch would.
+              findMethodOn(lowerer, candidate, name)?.sig.abstract !== true,
           );
           overrides.sort((a, b) =>
             lowerer.isSubclassOf(a.def.name, b.def.name)
@@ -6257,7 +9160,12 @@ export class ClassDynamicDispatch {
           );
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
-          if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
+          // An Array subclass instance keeps no property bag and no prototype
+          // data behind one: its method is the class's.
+          if (
+            info.extendsArray === undefined &&
+            (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:")))
+          ) {
             const prototypeMethod = observedPrototypeMethod(lowerer, info, name, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
@@ -6318,11 +9226,30 @@ export class ClassDynamicDispatch {
               loc,
             });
           }
-          body.push({
-            kind: "return",
-            value: { kind: "dynFrom", value: method, type: DYN, loc },
-            loc,
-          });
+          if (method && !canConvertToDyn(method.type, getRecord, getUnion)) body.push(...fence());
+          else if (
+            !method &&
+            !INHERITED_OBJECT_METHODS.has(name) &&
+            builtinSuppliesMethod(lowerer, declared!.declarer, name)
+          )
+            // No program class implements it, but a built-in above the
+            // abstract re-declaration does (Date.prototype.getTime under
+            // `extends Date`): its function is not undefined, and this
+            // lookup has no value for it.
+            body.push(...fence());
+          else
+            body.push({
+              kind: "return",
+              value: method
+                ? { kind: "dynFrom", value: method, type: DYN, loc }
+                : INHERITED_OBJECT_METHODS.has(name)
+                  ? // No class in the chain implements an abstractly
+                    // re-declared Object.prototype method: the chain ends at
+                    // Object.prototype, which answers its own function.
+                    objectPrototypeMethod(name, loc)
+                  : dynUndefinedExpr(loc),
+              loc,
+            });
           return body;
         }
       }
@@ -6348,13 +9275,7 @@ export class ClassDynamicDispatch {
                 kind: "ternary",
                 cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
                 then: own,
-                else_: {
-                  kind: "libCall",
-                  fn: "dyn.builtinMethod",
-                  args: [{ kind: "strLit", value: "Object", type: STRING, loc }, key],
-                  type: DYN,
-                  loc,
-                },
+                else_: objectPrototypeMethod(name, loc),
                 type: DYN,
                 loc,
               },
@@ -6377,6 +9298,34 @@ export class ClassDynamicDispatch {
       if (accessor) {
         const bag = this.branchPropertyBag(lowerer, info, receiver, true, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        // A name the program reflects on some class prototype: the shared
+        // prototype view may hold a replaced accessor (Object.defineProperty
+        // on the prototype), so the read runs from the view with the
+        // instance as the receiver, after the instance's own properties.
+        const viewStart = prototypeViewStart(lowerer, info, accessor.declarer);
+        let prototype =
+          lowerer.prototypeMethodAccesses.has(name) && prototypeViewable(accessor.declarer)
+            ? reflectClassPrototype(
+                lowerer,
+                viewStart,
+                loc,
+                lowerer.coerceToExpected(receiver, DYN),
+              )
+            : null;
+        if (prototype && viewStart.prototypeReflectionRefusal !== undefined) prototype = null;
+        const answer: IrExpr = prototype
+          ? {
+              kind: "libCall",
+              fn: "dyn.reflectGet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected(key, DYN),
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: DYN,
+              loc,
+            }
+          : boxed;
         return [
           {
             kind: "if",
@@ -6397,7 +9346,7 @@ export class ClassDynamicDispatch {
             else_: null,
             loc,
           },
-          { kind: "return", value: boxed, loc },
+          { kind: "return", value: answer, loc },
         ];
       }
       if (field && info.def.tracksOwnFields) {
@@ -6499,14 +9448,68 @@ export class ClassDynamicDispatch {
     if (!checkable(type)) return fence();
     const value = lowerer.coerceToExpected(varRef("p.1", DYN, loc), type);
     if (!typeEquals(value.type, type)) return fence();
+    // A name the program reflects on some class prototype: a replaced
+    // setter (or a data property the definition put there) answers through
+    // the shared prototype view, with the instance as the receiver.
+    const viewStart =
+      accessor === null ? null : prototypeViewStart(lowerer, info, accessor.declarer);
+    let prototype =
+      !field &&
+      lowerer.prototypeMethodAccesses.has(name) &&
+      accessor !== null &&
+      prototypeViewable(accessor.declarer)
+        ? reflectClassPrototype(lowerer, viewStart!, loc, lowerer.coerceToExpected(receiver, DYN))
+        : null;
+    if (prototype && viewStart && viewStart.prototypeReflectionRefusal !== undefined)
+      prototype = null;
     const store: IrStmt = field
       ? { kind: "fieldSet", obj: receiver, className: info.def.name, field: name, value, loc }
-      : {
-          kind: "exprStmt",
-          expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
-          loc,
-        };
+      : prototype
+        ? {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.reflectSet",
+              args: [
+                prototype,
+                lowerer.coerceToExpected({ kind: "strLit", value: name, type: STRING, loc }, DYN),
+                lowerer.coerceToExpected(value, DYN),
+                lowerer.coerceToExpected(receiver, DYN),
+              ],
+              type: BOOL,
+              loc,
+            },
+            loc,
+          }
+        : {
+            kind: "exprStmt",
+            expr: accessorCall(lowerer, info.def.name, member, receiver, [value], VOID, loc),
+            loc,
+          };
     return [store, { kind: "return", value: null, loc }];
+  }
+
+  /** The value `name` has on `info`'s prototype chain above `info`: abstract
+   * declarations emit no prototype member, so the walk passes them the way
+   * the chain does. Null when no class above `info` implements the member,
+   * which the chain answers with undefined. */
+  private inheritedMethodValue(
+    lowerer: Lowerer,
+    blame: ts.Node,
+    info: ClassInfo,
+    name: string,
+    loc: SrcLoc,
+  ): IrExpr | null {
+    for (let current: ClassInfo | null = info.base; current;) {
+      const declared = findMethodOn(lowerer, current, name);
+      const generic = declared ? null : findGenericMethodOn(lowerer, current, name);
+      const declarer = declared?.declarer ?? generic?.declarer ?? null;
+      if (!declarer) return null;
+      if (declared?.sig.abstract !== true)
+        return classMethodValue(lowerer, blame, declarer, name, loc);
+      current = declarer.base;
+    }
+    return null;
   }
 
   /** EventEmitter.prototype's introspection and bookkeeping members on an
@@ -6526,10 +9529,11 @@ export class ClassDynamicDispatch {
       loc,
     });
     // Node indexes _events with the argument itself: an omitted name is
-    // the key "undefined".
+    // the key "undefined", and a symbol argument keys by its identity (the
+    // checked-dynamic name conversion, not a string coercion).
     const eventName = (): IrExpr =>
       incoming.length
-        ? lowerer.coerceToExpected(incoming[0]!, STRING)
+        ? { kind: "libCall", fn: "emitter.nameDyn", args: [incoming[0]!], type: STRING, loc }
         : { kind: "strLit", value: "undefined", type: STRING, loc };
     switch (method) {
       case "listenerCount":
@@ -6539,7 +9543,7 @@ export class ClassDynamicDispatch {
             : call("emitter.count", [eventName()], F64),
         );
       case "eventNames":
-        return ret(call("emitter.names", [], { kind: "array", elem: STRING }));
+        return ret(call("emitter.names", [], DYN));
       case "removeAllListeners":
         return ret(
           incoming.length
@@ -6610,9 +9614,16 @@ export class ClassDynamicDispatch {
       const ret = (value: IrExpr): IrStmt[] => [
         { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
       ];
+      // The event name keys Node's table: a symbol by its identity, any
+      // other value by its property key. A stream keeps the string-only
+      // coercion (its fixed events carry typed payload ABIs).
+      const eventKey = (value: IrExpr): IrExpr =>
+        streamRooted(info)
+          ? lowerer.coerceToExpected(value, STRING)
+          : { kind: "libCall", fn: "emitter.nameDyn", args: [value], type: STRING, loc };
       if (method === "emit") {
         if (!incoming.length) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const bridged = streamRooted(info)
           ? null
           : lowerDynamicEmitterEmit(lowerer, receiver, event, incoming.slice(1), loc);
@@ -6628,7 +9639,7 @@ export class ClassDynamicDispatch {
       }
       if (registering || removing) {
         if (incoming.length < 2) return fence();
-        const event = lowerer.coerceToExpected(incoming[0]!, STRING);
+        const event = eventKey(incoming[0]!);
         const cb = incoming[1]!;
         const bridged =
           registering && !streamRooted(info)
@@ -6782,7 +9793,25 @@ export class ClassDynamicDispatch {
         });
       return fence();
     }
-    const methodInfo = findMethodOn(lowerer, info, method);
+    const nearest = findMethodOn(lowerer, info, method);
+    // An abstract declaration with no implementation below the receiver's
+    // class emits no prototype member: the call reaches the implementation
+    // above it directly, the way the prototype chain does.
+    const inherited =
+      nearest?.sig.abstract === true && !lowerer.overrideBelow(info, method)
+        ? findImplementationOn(lowerer, nearest.declarer.base, method)
+        : null;
+    // No program class implements it, but a built-in above the abstract
+    // re-declaration does (Date.prototype.getTime under `extends Date`):
+    // the call reaches that function, which this dispatch does not lower.
+    if (
+      nearest?.sig.abstract === true &&
+      !inherited &&
+      !lowerer.overrideBelow(info, method) &&
+      builtinSuppliesMethod(lowerer, nearest.declarer, method)
+    )
+      return fence();
+    const methodInfo = inherited ?? nearest;
     if (this.asyncFree && (methodInfo?.sig.gen || methodInfo?.sig.async)) {
       return [
         {
@@ -6815,15 +9844,23 @@ export class ClassDynamicDispatch {
       params = methodInfo.sig.params;
       // An untyped async method's `dyn` result is its promise's payload; the
       // call answers the promise. An async generator method answers its
-      // generator object, which its signature already returns.
+      // generator object, which its signature already returns. A method
+      // whose declaration is a runtime fence (an async override of a sync
+      // method in an untyped module, say) has no async body behind it: the
+      // function stands for the refused construct and answers the slot's
+      // type, so the arm calls that and asks for no promise.
+      const fenced = owner.methodEntryFences?.has(method) === true;
       result =
         methodInfo.sig.async === true &&
         !methodInfo.sig.gen &&
-        methodInfo.sig.ret.kind !== "promise"
+        methodInfo.sig.ret.kind !== "promise" &&
+        !fenced
           ? { kind: "promise", inner: methodInfo.sig.ret }
           : methodInfo.sig.ret;
       callee = `%${owner.def.name}.${method}`;
-      virtual = lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true;
+      virtual =
+        inherited === null &&
+        (lowerer.overrideBelow(owner, method) || methodInfo.sig.abstract === true);
     } else if (
       generic?.info.implicitParams &&
       generic.declarer.decl &&
@@ -6843,7 +9880,14 @@ export class ClassDynamicDispatch {
       generic &&
       !generic.info.implicitParams &&
       generic.info.typeParams.length > 0 &&
+      // A refused generic member has no instance: the call keeps the fence.
+      generic.info.refused === undefined &&
       generic.declarer.decl &&
+      // An async generator has no checked-dynamic form: one that leaves
+      // through an untyped value can neither be iterated there nor checked
+      // back into its type. A generic async generator method called by
+      // name keeps the fence instead of answering such a value.
+      !isAsyncGenerator(generic.info.decl) &&
       !lowerer.overrideBelow(info, method)
     ) {
       // A generic method called by name runs its erased instance; a
@@ -6866,7 +9910,14 @@ export class ClassDynamicDispatch {
         collect(info);
         for (const sub of subclasses) {
           const own = sub.genericMethods!.get(method)!;
-          if (!sub.decl || own.implicitParams || own.typeParams.length === 0) return fence();
+          if (
+            !sub.decl ||
+            own.implicitParams ||
+            own.typeParams.length === 0 ||
+            own.refused ||
+            isAsyncGenerator(own.decl)
+          )
+            return fence();
           const subInstance = erasedGenericInstance(lowerer, sub.decl, own);
           if (
             subInstance.params.length !== params.length ||
@@ -7024,8 +10075,23 @@ const INHERITED_OBJECT_METHODS: ReadonlySet<string> = new Set([
   "valueOf",
   "toString",
   "hasOwnProperty",
+  "isPrototypeOf",
   "propertyIsEnumerable",
 ]);
+
+/** The interned value `Object.prototype.<name>` reads. */
+function objectPrototypeMethod(name: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.builtinMethod",
+    args: [
+      { kind: "strLit", value: "Object", type: STRING, loc },
+      { kind: "strLit", value: name, type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
 
 /** Whether a class or one of its bases has a heritage evaluated at run
  * time, whose prototype chain may reach Error.prototype. */
@@ -7033,4 +10099,14 @@ function hasRuntimeHeritage(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base)
     if (current.callableBase) return true;
   return false;
+}
+
+/** `async *f()`: a declaration whose calls answer an async generator. */
+function isAsyncGenerator(decl: GenericFnInfo["decl"]): boolean {
+  return (
+    !ts.isArrowFunction(decl) &&
+    !ts.isAccessor(decl) &&
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true
+  );
 }

@@ -1,0 +1,6 @@
+early-error-script-top-level-using.js:7:1 - error SC0013: a 'using' declaration is not allowed at the top level of a script: put it in a block, a function body, or a class static block
+
+  6 | }
+  7 | using resource = new Resource();
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  8 | 

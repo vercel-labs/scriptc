@@ -1,0 +1,6 @@
+{
+  "name": "node-islands-untracked-store-coverage-fixture",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "store-kit": "node" } }
+}

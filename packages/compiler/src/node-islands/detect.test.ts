@@ -65,7 +65,7 @@ describe("R1 runtime markers", () => {
   });
 
   test("R1.6 runtime-only globals", () => {
-    expect(markers("const r = new WeakRef(o);")).toEqual(["R1.6 weak-ref"]);
+    expect(markers("const r = new WeakRef(o);")).toEqual([]);
     expect(markers("const f = new FinalizationRegistry(cb);")).toEqual(["R1.6 weak-ref"]);
     expect(markers("if (typeof WeakRef !== 'undefined') {}")).toEqual([]);
     expect(markers("const o = { WeakRef: 1 }; o.WeakRef;")).toEqual([]);
@@ -73,21 +73,27 @@ describe("R1 runtime markers", () => {
 });
 
 describe("R2 object-model markers", () => {
-  test("R2.1 constructor functions", () => {
-    expect(markers("function F() {} const f = new F();")).toEqual(["R2.1 constructor-function"]);
-    expect(markers("function F() {} F.prototype.m = function () {};")).toEqual([
-      "R2.1 constructor-function",
-    ]);
-    expect(markers("const util = require('util'); util.inherits(A, B);")).toEqual([
-      "R2.1 constructor-function",
-    ]);
-    // `this` in a plain function is also the conservative sloppy-this marker
+  test("R2.1 constructor functions lower to the object model", () => {
+    // A constructor function is an ordinary object: `new F()` builds an
+    // instance whose prototype is `F.prototype`, a write reaches that
+    // prototype's property table, `util.inherits` retargets it, and
+    // `A.call(this, …)` runs the base constructor on the new object. The
+    // pre-scan marks none of them; the lowering's refusals decide what a
+    // constructor shape costs.
+    expect(markers("function F() {} const f = new F();")).toEqual([]);
+    expect(markers("function F() {} F.prototype.m = function () {};")).toEqual([]);
+    expect(markers("function F() {} F.prototype = { m() {} };")).toEqual([]);
+    expect(markers("const util = require('util'); util.inherits(A, B);")).toEqual([]);
+    // `this` in a plain function keeps the conservative sloppy-this marker
     // (decision S2): the file cannot see a call site in another module.
-    expect(markers("function Child() { Parent.call(this, 1); }")).toEqual([
-      "R2.1 constructor-function",
-      "R2.4 sloppy-this",
-    ]);
+    expect(markers("function Child() { Parent.call(this, 1); }")).toEqual(["R2.4 sloppy-this"]);
     expect(markers("class C {} const c = new C();")).toEqual([]);
+    // Constructing a bound function is the one constructor shape left: the
+    // runtime constructs the function it was handed, not the target Node
+    // constructs with the bound arguments.
+    expect(markers("function F() {} const f = new (F.bind(null))(1);")).toEqual([
+      "R2.1 constructor-function",
+    ]);
     expect(
       markers("function wrap(fn) { return function () { return fn.apply(this, arguments); }; }"),
     ).toEqual(["R2.4 sloppy-this"]);
@@ -107,10 +113,26 @@ describe("R2 object-model markers", () => {
   });
 
   test("R2.3 shape mutation outside the checker's view", () => {
-    expect(markers("Object.defineProperty(o, 'k', { get() { return 1; } });")).toEqual([
+    // An object the program builds keeps a definition in its own property
+    // table (a literal passed here becomes a checked-dynamic object, and an
+    // instance keeps it in its property bag).
+    expect(markers("Object.defineProperty(o, 'k', { get() { return 1; } });")).toEqual([]);
+    expect(markers("Object.defineProperties(o, { k: { get() { return 1; } } });")).toEqual([]);
+    expect(markers("const o = {}; o.__defineGetter__('g', f);")).toEqual(["R2.3 define-property"]);
+    // A class's members are laid out at compile time: a write or a
+    // definition outside them still has no lowering.
+    expect(markers("class C {} C.prototype.extra = 1;")).toEqual(["R2.3 define-property"]);
+    expect(
+      markers("class C {} Object.defineProperty(C.prototype, k, { get() { return 1; } });"),
+    ).toEqual(["R2.3 define-property"]);
+    expect(markers("class C {} delete C.prototype.m;")).toEqual(["R2.3 define-property"]);
+    // A definition on a builtin patches the builtin every module shares.
+    expect(markers("Object.defineProperty(Array.prototype, 'last', { value: f });")).toEqual([
       "R2.3 define-property",
     ]);
-    expect(markers("class C {} C.prototype.extra = 1;")).toEqual(["R2.3 define-property"]);
+    expect(markers("Object.defineProperty(Math, 'trunc2', { value: f });")).toEqual([
+      "R2.3 define-property",
+    ]);
     // Module objects and interop helpers build module records.
     expect(markers("Object.defineProperty(exports, '__esModule', { value: true });")).toEqual([]);
     expect(
@@ -288,6 +310,98 @@ describe("R2.5 builtin patches (H3.1)", () => {
   });
 });
 
+describe("builtin aliases follow lexical bindings (#2919)", () => {
+  /** The markers and the member each names, as `reason member` strings. */
+  function facts(source: string, ext = "cjs"): { patches: string[]; reads: string[] } {
+    const sf = parseSourceFile(`/virtual/b${serial++}.${ext}`, source, "js");
+    const scanned = scanModuleFacts(sf);
+    return {
+      patches: scanned.markers.map((m) => `${m.reason} ${m.member === undefined ? "-" : m.member}`),
+      reads: scanned.cjsReads.map((read) => read.member),
+    };
+  }
+
+  test("a parameter that reuses an alias name is the argument", () => {
+    // The Sentry SDK shape: `data` inside annotate is the call's argument,
+    // while the module-level alias is still patched by the outer write.
+    expect(
+      facts(
+        "const data = require('node:path'); function annotate(data) { data.sdkProcessingMetadata = 1; return data.sdkProcessingMetadata; } data.sdkProcessingMetadata = 1;",
+      ).patches,
+    ).toEqual(["builtin-patch path.sdkProcessingMetadata"]);
+  });
+
+  test("a block-local declaration masks the alias inside its block only", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); { const fs = require('node:path'); fs.join = f; } fs.readFileSync = f;",
+      ).patches,
+    ).toEqual(["builtin-patch path.join", "builtin-patch fs.readFileSync"]);
+  });
+
+  test("a hoisted var masks the alias for the whole function", () => {
+    expect(
+      facts("const fs = require('fs'); function f() { fs.readFileSync = g; { var fs = {}; } }")
+        .patches,
+    ).toEqual([]);
+  });
+
+  test("a nested function captures the outer alias", () => {
+    expect(
+      facts("const fs = require('fs'); function patch() { fs.readFileSync = f; }").patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+    // A default import is captured the same way.
+    expect(
+      facts("import fs from 'node:fs'; function f(fs) { fs.x = 1; } fs.readFileSync = g;", "mjs")
+        .patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("aliases created in a shadowed scope keep their own identity", () => {
+    expect(
+      facts(
+        "const path = require('path'); function f(path) { const fs = require('fs'); fs.readFileSync = g; path.join = h; } path.join = i;",
+      ).patches,
+    ).toEqual(["builtin-patch fs.readFileSync", "builtin-patch path.join"]);
+  });
+
+  test("createRequire results follow their binding when captured or shadowed", () => {
+    expect(
+      facts(
+        "const r = createRequire(import.meta.url); const fs = r('node:fs'); function patch(r) { const fs = r('node:path'); fs.join = g; } fs.readFileSync = f;",
+        "mjs",
+      ).patches,
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("an uninitialized var redeclaration keeps the alias it shares a scope with", () => {
+    expect(
+      facts("var fs = require('fs'); var fs; fs.readFileSync = g; fs.readFileSync(p);"),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: ["fs.readFileSync"] });
+  });
+
+  test("a catch parameter masks the alias inside its block only", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch (fs) { fs.readFileSync(p); } fs.readFileSync = g;",
+      ),
+    ).toEqual({ patches: ["builtin-patch fs.readFileSync"], reads: [] });
+    expect(
+      facts(
+        "const fs = require('fs'); try { f(); } catch ({ fs }) { fs.readFileSync(p); } fs.readFileSync(p);",
+      ),
+    ).toEqual({ patches: [], reads: ["fs.readFileSync"] });
+  });
+
+  test("patch forms and reads through a shadowed name stay local", () => {
+    expect(
+      facts(
+        "const fs = require('fs'); function f(fs) { Object.assign(fs, { readFileSync: g }); delete fs.readFileSync; fs.readFileSync(p); } fs.readFileSync(p);",
+      ),
+    ).toEqual({ patches: [], reads: ["fs.readFileSync"] });
+  });
+});
+
 test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   const reads = (source: string, ext = "cjs"): string[] => {
     const sf = parseSourceFile(`/virtual/r${serial++}.${ext}`, source, "js");
@@ -322,6 +436,41 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
   ).toEqual(["fs.readFileSync"]);
   // A namespace import is not the CommonJS object.
   expect(reads("import * as fs from 'node:fs'; const { readFileSync } = fs;", "mjs")).toEqual([]);
+});
+
+test("global reads are recorded for the implicit-global check (H3.4)", () => {
+  const globals = (source: string, ext = "cjs", kind: "js" | "ts" = "js"): string[] => {
+    const sf = parseSourceFile(`/virtual/g${serial++}.${ext}`, source, kind);
+    return scanModuleFacts(sf).globalReads.map((read) => read.name);
+  };
+  // A name the module declares nowhere resolves on the global object at
+  // run time, where an island's sloppy write can create it.
+  expect(globals("counter = 1; console.log(counter);")).toEqual(["counter"]);
+  expect(globals("if (typeof flag === 'boolean') flag.run();")).toEqual(["flag"]);
+  expect(globals("const o = { counter };")).toEqual(["counter"]);
+  expect(globals("for (key in source) {}")).toEqual(["source"]);
+  expect(globals("use(value);")).toEqual(["use", "value"]);
+  // Declared names, builtins and the CommonJS module scope are not global
+  // reads, and property names, labels and write targets are not reads.
+  expect(globals("const counter = 1; console.log(counter);")).toEqual([]);
+  expect(globals("console.log(process.env.HOME, Buffer.from('x'), globalThis.x);")).toEqual([]);
+  expect(globals("const r = require('r'); module.exports = exports;")).toEqual([]);
+  expect(
+    globals("const o = {}; o.counter = 1; counter = 2; counter++; label: break label;"),
+  ).toEqual([]);
+  // A TypeScript module's type positions and declaration names are not
+  // value reads: only a name used as a value can resolve on the global.
+  expect(
+    globals(
+      "interface Payload { n: number }\nconst p: Payload = { n: 1 };\nconsole.log(p);",
+      "ts",
+      "ts",
+    ),
+  ).toEqual([]);
+  expect(
+    globals("type Id<T> = T;\nfunction id<T>(value: T): T { return value; }\nid(1);", "ts", "ts"),
+  ).toEqual([]);
+  expect(globals("enum Mode { On }\nconsole.log(Mode.On);", "ts", "ts")).toEqual([]);
 });
 
 test("markers come back in source order with their locations", () => {

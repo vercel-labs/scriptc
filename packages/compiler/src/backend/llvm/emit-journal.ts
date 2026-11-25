@@ -7,6 +7,7 @@
  * and the range's text is renamed to those numbers. */
 import type { DebugRequest } from "./debug-info.js";
 import type { LlEmitter } from "./emitter.js";
+import { InternalCompilerError } from "../../errors.js";
 
 /** One event of a range's emission, in order. */
 export type JournalEntry =
@@ -107,6 +108,7 @@ export interface ChunkResult {
     readonly usesGenSlots: boolean;
     readonly needsUnionNone: boolean;
     readonly needsNullableAbsent: boolean;
+    readonly needsDynAbsent: boolean;
     readonly needsOom: boolean;
     readonly needsBadTag: boolean;
     readonly needsBadKey: boolean;
@@ -126,11 +128,22 @@ export interface ChunkResult {
 
 type Replay = (emitter: LlEmitter, args: readonly unknown[]) => string;
 const replays = new Map<string, Replay>();
+/** The ops whose helper is named from its arguments alone (contentSymbol):
+ * replay must answer the very name the range journaled. */
+const contentOps = new Set<string>();
 
 /** Registers the entry point that creates (or finds) a numbered helper or
  * site from its recorded arguments and answers its name. */
 export function registerReplay(op: string, replay: Replay): void {
   replays.set(op, replay);
+}
+
+/** Registers the entry point for a helper named from its own key
+ * (contentSymbol): the same arguments answer the same name in any emitter,
+ * so replay never renames one. */
+export function registerContentReplay(op: string, replay: Replay): void {
+  replays.set(op, replay);
+  contentOps.add(op);
 }
 
 /** Replays a range's entries on the merging emitter, in record order, and
@@ -151,6 +164,15 @@ export function replayJournal(
       throw new Error(`llvm emitter bug: no replay for journal entry ${entry.op}`);
     const own = stripSigil(replay(emitter, entry.args));
     const local = stripSigil(entry.name);
+    if (contentOps.has(entry.op)) {
+      // The name is a digest of the arguments, which replay just repeated:
+      // a different answer would give two definitions one name.
+      if (own !== local)
+        throw new InternalCompilerError(
+          `llvm emitter bug: replaying ${entry.op} answered ${own}, journaled as ${local}`,
+        );
+      continue;
+    }
     if (own !== local) names.set(local, own);
   }
 }

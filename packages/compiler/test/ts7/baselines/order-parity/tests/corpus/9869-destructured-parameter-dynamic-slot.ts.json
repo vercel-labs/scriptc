@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9869-destructured-parameter-dynamic-slot.ts"
+ ],
+ "diags": []
+}

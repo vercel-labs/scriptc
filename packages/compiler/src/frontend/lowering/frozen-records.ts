@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
   VOID,
+  isClassOwnEnumerableFieldName,
   shapeHasAccessorSlots,
   typeKey,
   type IrExpr,
@@ -13,7 +14,9 @@ import {
 import { numLit, strLit, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { Lowerer } from "./lowerer.js";
+import type { FunctionCensus } from "./function-census.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
+import { partialAssertionFields } from "./partial-assertions.js";
 import { isStrictCode } from "./strict-mode.js";
 
 /* Object.freeze of records and arrays that other references can still
@@ -26,7 +29,9 @@ import { isStrictCode } from "./strict-mode.js";
  * freezable when a static Object.freeze names it, or, in a program that
  * freezes, seals or prevents extensions of untyped values
  * (noteUntypedIntegrity), when a value of it or of a type reaching it can be
- * held as a live untyped reference. */
+ * held as a live untyped reference. A partial record assertion's object has
+ * two types, the asserted one and the literal's own (partial-assertions.ts):
+ * it is frozen through either name, so the two are freezable together. */
 
 type RecordType = Extract<IrType, { kind: "record" }>;
 type RecordWrite = Extract<IrStmt, { kind: "recordSet" | "recordKeySet" | "recordKeyDelete" }>;
@@ -122,10 +127,27 @@ export function freezableTypes(
   const arrays = new Set<string>();
   const live: IrType[] = [];
   const checked: IrType[] = [];
+  // The two record types of each partial record assertion, each way.
+  const partialPeers = new Map<string, string[]>();
+  const peer = (from: string, to: string): void => {
+    const list = partialPeers.get(from);
+    if (list === undefined) partialPeers.set(from, [to]);
+    else if (!list.includes(to)) list.push(to);
+  };
   let freezesUntyped = false;
   for (const fn of functions)
     everyStmtList(fn.body, {
       expr: (e) => {
+        if (
+          e.kind === "dynCheck" &&
+          e.partialView === true &&
+          e.type.kind === "record" &&
+          e.value.kind === "dynFrom" &&
+          e.value.value.type.kind === "record"
+        ) {
+          peer(e.type.shapeId, e.value.value.type.shapeId);
+          peer(e.value.value.type.shapeId, e.type.shapeId);
+        }
         if (e.kind === "libCall" && e.fn === "record.freeze") {
           const target = e.args[0];
           if (target && target.type.kind === "record") shapes.add(target.type.shapeId);
@@ -139,7 +161,19 @@ export function freezableTypes(
       },
       stmt: () => true,
     });
-  if (!lowerer.untypedIntegrity && !freezesUntyped) return { shapes, arrays };
+  // The other type of a partial assertion whose one type is freezable.
+  const withPeers = (): { shapes: Set<string>; arrays: Set<string> } => {
+    if (partialPeers.size === 0) return { shapes, arrays };
+    const pending = [...shapes];
+    while (pending.length > 0)
+      for (const other of partialPeers.get(pending.pop()!) ?? [])
+        if (!shapes.has(other)) {
+          shapes.add(other);
+          pending.push(other);
+        }
+    return { shapes, arrays };
+  };
+  if (!lowerer.untypedIntegrity && !freezesUntyped) return withPeers();
   const stack: IrType[] = [];
   // Both seeds are program-sized (one entry per untyped conversion or check in
   // every function), so they are pushed with loops: a spread argument list
@@ -170,6 +204,10 @@ export function freezableTypes(
         const shape = lowerer.shapes.get(type.shapeId);
         for (const field of shape?.fields ?? []) stack.push(field.type);
         if (shape?.indexValue) stack.push(shape.indexValue);
+        // The object of a partial assertion holds what its asserted type
+        // declares, whichever of its two types reached it.
+        for (const other of partialPeers.get(type.shapeId) ?? [])
+          stack.push({ kind: "record", shapeId: other });
         break;
       }
       case "union":
@@ -205,7 +243,92 @@ export function freezableTypes(
         break;
     }
   }
-  return { shapes, arrays };
+  return withPeers();
+}
+
+/** Checks the frozen bit before each write to a field of a class declared
+ * `extends Array` whose array type the program may freeze: Object.freeze of
+ * such an instance freezes the array, and its fields with it. A write to a
+ * frozen instance throws Node's TypeError in strict-mode code and leaves the
+ * field unchanged in sloppy-mode code. A field initializer (a define) runs
+ * before the instance can be frozen. */
+function guardArrayClassFieldWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+  const arrayTypes = new Map<string, IrType>();
+  for (const info of lowerer.classes.values()) {
+    const elem = info.extendsArray?.elem;
+    if (elem === undefined) continue;
+    const arrayType: IrType = { kind: "array", elem };
+    if (lowerer.freezableArrays.has(typeKey(arrayType))) arrayTypes.set(info.def.name, arrayType);
+  }
+  if (arrayTypes.size === 0) return;
+  // The guarded stores this pass builds, which the walk then visits as
+  // children. A store CLASS_ATTRIBUTES guarding already checked
+  // (attributesChecked) is still guarded here: that word answers
+  // defineProperty and the integrity calls of compiled classes, while
+  // Object.freeze of an Array subclass instance sets the array's bit.
+  const guardedStores = new Set<IrStmt>();
+  for (const fn of functions) {
+    const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
+      const id = `%frozenFieldWrite.${fn.locals.length}`;
+      fn.locals.push({ id, name: id, type, mutable: false });
+      return { kind: "varRef", localId: id, type, loc };
+    };
+    fn.body = transformStmtList(fn.body, {
+      expr: (expr) => expr,
+      stmt: (statement) => {
+        if (statement.kind !== "fieldSet" || statement.define || guardedStores.has(statement))
+          return statement;
+        const arrayType = arrayTypes.get(statement.className);
+        if (arrayType === undefined || !isClassOwnEnumerableFieldName(statement.field))
+          return statement;
+        const loc = statement.loc;
+        const receiver = local(statement.obj.type, loc);
+        const value = local(statement.value.type, loc);
+        const store: IrStmt = { ...statement, obj: receiver, value };
+        guardedStores.add(store);
+        const reject: IrStmt[] = statement.sloppy
+          ? []
+          : [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "record.throwFrozen",
+                  args: [
+                    strLit(statement.field, loc),
+                    strLit("[object Array]", loc),
+                    numLit(0, loc),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ];
+        return {
+          kind: "block",
+          body: [
+            { kind: "varDecl", localId: receiver.localId, init: statement.obj, loc },
+            { kind: "varDecl", localId: value.localId, init: statement.value, loc },
+            {
+              kind: "if",
+              cond: {
+                kind: "libCall",
+                fn: "array.isFrozen",
+                args: [{ kind: "upcast", value: receiver, type: arrayType, loc }],
+                type: BOOL,
+                loc,
+              },
+              then: reject,
+              else_: [store],
+              loc,
+            },
+          ],
+          loc,
+        };
+      },
+    });
+  }
 }
 
 /** The guarded form of a write to a freezable record: the receiver and the
@@ -240,16 +363,41 @@ function guardedWrite(
  * Node's TypeError in strict mode code; in sloppy-mode code it leaves the
  * record unchanged. Deleting a key the record does not have succeeds either
  * way. */
-export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): void {
+export function guardFrozenWrites(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
+  // A program that never freezes anything guards no write, and without
+  // untyped integrity the scan below has no other seed either: the census
+  // answers that without walking the program.
+  if (
+    !lowerer.untypedIntegrity &&
+    !functions.some(
+      (fn) =>
+        census.hasLibFn(fn, "record.freeze") ||
+        census.hasLibFn(fn, "array.freeze") ||
+        census.hasLibFn(fn, "dyn.freeze"),
+    )
+  )
+    return;
   const { shapes: freezable, arrays } = freezableTypes(lowerer, functions);
   for (const id of freezable) {
     const shape = lowerer.shapes.get(id);
     if (shape) shape.freezable = true;
   }
   for (const key of arrays) lowerer.freezableArrays.add(key);
+  guardArrayClassFieldWrites(lowerer, functions);
   if (freezable.size === 0) return;
   const lifted = lowerer.liftedFns.length;
   for (const fn of functions) {
+    // Only a record write can be guarded; most functions hold none.
+    if (
+      !census.hasStmt(fn, "recordSet") &&
+      !census.hasStmt(fn, "recordKeySet") &&
+      !census.hasStmt(fn, "recordKeyDelete")
+    )
+      continue;
     const local = (type: IrType, loc: SrcLoc): Extract<IrExpr, { kind: "varRef" }> => {
       const id = `%frozenWrite.${fn.locals.length}`;
       fn.locals.push({ id, name: id, type, mutable: false });
@@ -303,6 +451,9 @@ export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): vo
           const field = strLit(statement.field, loc);
           // `delete r.f` of an optional field writes its absent state: Node
           // only refuses it when the field is present.
+          // A property a partial record assertion left unwritten
+          // (partial-assertions.ts) is not there yet: its write would add it,
+          // which Node refuses with the not-extensible TypeError.
           const reject: IrStmt[] = sloppy
             ? []
             : deletes
@@ -315,7 +466,17 @@ export function guardFrozenWrites(lowerer: Lowerer, functions: IrFunction[]): vo
                     loc,
                   },
                 ]
-              : [thrown(field, 0)];
+              : partialAssertionFields(lowerer, shapeId).has(statement.field)
+                ? [
+                    {
+                      kind: "if",
+                      cond: lowerer.recordFieldPresent(receiver, shapeId, statement.field, loc),
+                      then: [thrown(field, 0)],
+                      else_: [thrown(field, 1)],
+                      loc,
+                    },
+                  ]
+                : [thrown(field, 0)];
           return guardedWrite(receiver, decls, reject, store, loc);
         }
         const key = local(statement.key.type, loc);
@@ -384,10 +545,17 @@ export function freezableRecordType(lowerer: Lowerer, type: IrType): type is Rec
  * refuses with a TypeError (a frozen or non-extensible object, a read-only
  * property) leaves the object unchanged instead. Only programs with such
  * writes list any; the backend calls the sloppy entry points for them. */
-export function sloppyDynamicWrites(lowerer: Lowerer, functions: readonly IrFunction[]): string[] {
+export function sloppyDynamicWrites(
+  lowerer: Lowerer,
+  functions: readonly IrFunction[],
+  census: FunctionCensus,
+): string[] {
   const keys = new Set<string>();
   const strictness = new Map<string, boolean>();
   for (const fn of functions) {
+    // Only these two entry points make an untyped property write; a function
+    // without them (nearly all of a large program) has nothing to report.
+    if (!census.hasLibFn(fn, "dyn.keySet") && !census.hasLibFn(fn, "dyn.keySetComputed")) continue;
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {

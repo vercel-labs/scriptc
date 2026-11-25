@@ -1,4 +1,36 @@
 import * as ts from "../ts7/adapter.js";
+import {
+  activeNodeIslands,
+  isForeignType,
+  type NodeIslandSet,
+} from "../../node-islands/boundary.js";
+import { extendsElementOf } from "../heritage-elements.js";
+import { bindsIslandExport } from "./lower-node-island.js";
+
+/** Whether a literal method implements a protocol the ENGINE reaches by
+ * the object's own property rather than by a member call: the conversion
+ * protocols String(), `+` and template literals use, and the iteration
+ * protocols for-of and spread use. Such a method that reads its receiver
+ * keeps the literal a live object, because the engine's lookup is not a
+ * member call and a record's field cannot answer it. A method that does not
+ * read the receiver keeps its record, whose conversion path reads the
+ * object it came from (wider-record-sources). */
+function conversionProtocolMethod(property: ts.ObjectLiteralElementLike): boolean {
+  if (!ts.isMethodDeclaration(property) || property.body === undefined) return false;
+  const name = property.name;
+  if (name === undefined) return false;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name))
+    return name.text === "toString" || name.text === "valueOf" || name.text === "toLocaleString";
+  if (!ts.isComputedPropertyName(name)) return false;
+  const key = name.expression;
+  if (!ts.isPropertyAccessExpression(key) || !ts.isIdentifier(key.expression)) return false;
+  if (key.expression.text !== "Symbol") return false;
+  return (
+    key.name.text === "toPrimitive" ||
+    key.name.text === "iterator" ||
+    key.name.text === "asyncIterator"
+  );
+}
 
 /** Index only program classes. Ambient declarations describe APIs, not
  * compiled implementations, and must not change a protocol's storage. */
@@ -8,6 +40,8 @@ export class ClassProtocols {
   private readonly answers = new Map<ts.Type, boolean>();
   /** The program classes each Pick or Omit view accepts (classesAcceptedBy). */
   private readonly accepted = new Map<ts.Type, ts.Symbol[]>();
+  /** copiedArgument's answers, per call and argument position. */
+  private readonly copiedArguments = new Map<ts.CallExpression | ts.NewExpression, boolean[]>();
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
   /** The value types of the string-keyed dictionaries that keep checked
@@ -18,10 +52,40 @@ export class ClassProtocols {
    * without protocol dispatch: their members are invoked on the collection
    * itself, not read from a property bag. */
   private readonly collectionViews = new Set<ts.Symbol>();
+  /** The mapped views a receiver-dependent literal is used as, whose source
+   * cannot carry the marking (see index). */
+  private readonly literalViews = new Set<ts.Type>();
+  /** The program types that receive island values and cannot carry the
+   * marking on a symbol, recorded by the type itself (see markIslandView). */
+  private readonly islandViews = new Set<ts.Type>();
+  /** islandValue's answers: which expressions read an island handle. */
+  private readonly islandValues = new Map<ts.Node, boolean>();
+  /** The names each file's imports and `require` declarations bind
+   * (importBoundNames): only those can bind an island module's export. */
+  private readonly importNames = new Map<ts.SourceFile, ReadonlySet<string>>();
+  /** islandSubclass's answers, per class declaration. */
+  private readonly islandSubclasses = new Map<ts.Node, boolean>();
+  /** The parameters a call passes an island value to, and the functions that
+   * return one, where the type is `any` or `unknown` (followIslandFlows). */
+  private readonly islandParameters = new Set<ts.Symbol>();
+  private readonly islandReturners = new Set<ts.Symbol>();
+  /** The untyped island values stored out of the analysis' sight
+   * (noteIslandEscapes). */
+  private readonly islandEscapes: ts.Expression[] = [];
+  /** The program interfaces that extend a builtin Error
+   * (markErrorInterfaces). */
+  private readonly errorInterfaces = new Set<ts.Symbol>();
+  /** The object types markReceivedView has answered for, so a type that
+   * names itself in a member (`interface Node { next?: Node }`) ends. */
+  private readonly receivedTypes = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
     private readonly sources: readonly ts.SourceFile[],
+    /** True for the standard library's declaration files: a type any other
+     * declaration file declares is a data type the program takes from a
+     * file with no implementation (markUnplacedConversions). */
+    private readonly isStdlibFile: (file: ts.SourceFile) => boolean,
   ) {}
 
   private index(): Set<ts.Symbol> {
@@ -29,6 +93,23 @@ export class ClassProtocols {
     const protocols = new Set<ts.Symbol>();
     this.implemented = protocols;
     const add = (type: ts.Type): void => {
+      // A homomorphic mapped view's own symbol is the shared mapped
+      // `__type` that every mapped type in the program uses: marking it
+      // would make every Pick, Omit, Partial and Readonly a view. Mark the
+      // type the view maps instead when that is a structural type. A source
+      // that cannot carry the marking keeps its own representation: a class
+      // instance would make every instance a view, and an intersection has
+      // no symbol. The VIEW type itself is recorded for those, so a
+      // receiver-dependent literal typed as it still keeps checked identity
+      // and protocol answers it through that record.
+      const mapped = this.mappedViewSource(type);
+      if (mapped !== null) {
+        if (!this.isStructuralTarget(mapped)) {
+          this.literalViews.add(type);
+          return;
+        }
+        type = mapped;
+      }
       const symbol = type.getSymbol();
       if (!symbol || protocols.has(symbol)) return;
       protocols.add(symbol);
@@ -45,11 +126,41 @@ export class ClassProtocols {
     // program, so it must stay syntax-cheap).
     const accessorNames = new Set<string>();
     const literals: ts.ObjectLiteralExpression[] = [];
+    // The expressions that may read a value out of an island handle, when the
+    // program runs islands at all: their declared types are marked once the
+    // walk ends (markIslandView).
+    const islands = activeNodeIslands();
+    const sites: ts.Node[] = [];
+    // The interfaces with an `extends` clause: those that reach a builtin
+    // Error are marked once the walk ends (markErrorInterfaces).
+    const extended: ts.InterfaceDeclaration[] = [];
     const visit = (node: ts.Node): void => {
+      if (ts.isInterfaceDeclaration(node) && node.heritageClauses !== undefined)
+        extended.push(node);
       if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
         const name = propertyNameText(node.name);
         if (name !== null) accessorNames.add(name);
       }
+      // The nodes an island value can be read, asserted, handed over or
+      // passed on at: they are judged once the walk ends, when the flows
+      // through the program's own functions are known (markIslandSites).
+      if (
+        islands !== null &&
+        (ts.isPropertyAccessExpression(node) ||
+          ts.isElementAccessExpression(node) ||
+          ts.isCallExpression(node) ||
+          ts.isNewExpression(node) ||
+          ts.isAssertionExpression(node) ||
+          (ts.isIdentifier(node) && this.importBound(node)) ||
+          ts.isReturnStatement(node) ||
+          ts.isArrowFunction(node) ||
+          ts.isVariableDeclaration(node) ||
+          ts.isPropertyDeclaration(node) ||
+          ts.isObjectLiteralExpression(node) ||
+          ts.isArrayLiteralExpression(node) ||
+          (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken))
+      )
+        sites.push(node);
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
@@ -74,19 +185,47 @@ export class ClassProtocols {
         }
       }
       if (ts.isObjectLiteralExpression(node)) {
+        // A receiver-dependent method of a DICTIONARY literal keeps checked
+        // identity: its type is an open key set, so every read and write of
+        // the object goes through the keyed path, and the live object is the
+        // representation that path already models (`methods.twice()` over
+        // `{ [key: string]: () => number }`).
+        const dictionary = (): boolean => {
+          for (const type of [
+            this.checker.getTypeAtLocation(node),
+            this.checker.getContextualType(node),
+          ]) {
+            if (
+              type !== undefined &&
+              attempt(() => this.checker.getIndexInfosOfType(type).length > 0) === true
+            )
+              return true;
+          }
+          return false;
+        };
+        const receiverDependent = (property: ts.ObjectLiteralElementLike): boolean => {
+          if (!property.body || !usesReceiver(property.body)) return false;
+          if (ts.isMethodDeclaration(property)) return dictionary();
+          return ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property);
+        };
         if (
           node.properties.nodes.some(
             (property) =>
-              (ts.isMethodDeclaration(property) ||
-                ts.isGetAccessorDeclaration(property) ||
-                ts.isSetAccessorDeclaration(property)) &&
-              property.body !== undefined &&
-              usesReceiver(property.body),
+              (conversionProtocolMethod(property) && usesReceiver(property.body!)) ||
+              receiverDependent(property),
           )
         ) {
-          // Receiver-dependent methods and accessors need a live object even
-          // without a class implementation. Receiver-free methods keep their
-          // native callable fields, including async callbacks.
+          // A receiver-dependent ACCESSOR needs a live object even without a
+          // class implementation: its slot is a closure pair with no
+          // receiver, so only the checked-dynamic object keeps the accessor
+          // live and gives it one. A method's own `this` is the call's
+          // receiver (a record's function field reads it like any function),
+          // so receiver-dependent methods keep their native callable fields
+          // and the literal stays a record. A member implementing a
+          // conversion or iteration protocol (`toString`, `valueOf`, a
+          // `Symbol.iterator`) is reached by the ENGINE, not by a member
+          // call, so its literal stays a live object too: a record's field
+          // is not what `${o}` or `for (const x of o)` looks up.
           add(this.checker.getTypeAtLocation(node));
           const contextual = this.checker.getContextualType(node);
           if (contextual) add(contextual);
@@ -100,8 +239,876 @@ export class ClassProtocols {
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
     for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
+    this.markErrorInterfaces(extended, protocols);
+    if (islands !== null) this.markIslandSites(sites, islands, add);
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Marks the program interfaces that extend a builtin Error (`interface
+   * Failure extends Error { status?: number }`). Such a type has two kinds
+   * of values: an error object, which is an instance of a class the
+   * runtime owns, and a plain object that has the members (an object
+   * literal typed by the interface, a parsed value asserted to it). No
+   * record layout holds the first: a copy of an error is no longer an
+   * instance of its class, has lost its stack and lists the record's
+   * fields as its keys. So every value of the type is a live checked view,
+   * as for an interface a program class implements: an error keeps its
+   * identity and answers its members itself, and a plain object is the
+   * object it is.
+   *
+   * The flow marking below reaches the same answer only where it sees an
+   * error flow into the interface and the program observe it. An error
+   * asserted to the interface out of an `unknown` slot (a `catch` binding)
+   * has no such flow, so the interface is marked by its declaration. Only
+   * the interface's own symbol is marked: the lib's Error stays the class
+   * it is. */
+  private markErrorInterfaces(
+    extended: readonly ts.InterfaceDeclaration[],
+    protocols: Set<ts.Symbol>,
+  ): void {
+    for (const declaration of extended) {
+      const symbol = attempt(() => this.checker.getSymbolAtLocation(declaration.name));
+      if (symbol === undefined || this.errorInterfaces.has(symbol)) continue;
+      const type = attempt(() => this.checker.getDeclaredTypeOfSymbol(symbol));
+      if (type === undefined || !this.extendsBuiltinError(type, 0)) continue;
+      protocols.add(symbol);
+      this.errorInterfaces.add(symbol);
+    }
+  }
+
+  /** Whether the program declares an interface that extends a builtin
+   * Error (markErrorInterfaces). Answered from the index the lowering
+   * built: a program whose lowering never asked it (one refused before a
+   * type was mapped) holds no value of such an interface, and the answer
+   * does not walk the program. */
+  declaresErrorInterface(): boolean {
+    return this.implemented !== null && this.errorInterfaces.size > 0;
+  }
+
+  /** Whether `type` is a program interface that extends a builtin Error. */
+  errorInterface(type: ts.Type): boolean {
+    this.index();
+    const symbol = type.getSymbol();
+    return symbol !== undefined && this.errorInterfaces.has(symbol);
+  }
+
+  /** Whether a program interface reaches a builtin Error through its
+   * `extends` clauses. */
+  private extendsBuiltinError(type: ts.Type, depth: number): boolean {
+    if (depth > 8) return false;
+    const target = type.isTypeReference() ? type.getTarget() : type;
+    if (target === undefined || !target.isClassOrInterface()) return false;
+    const symbol = target.getSymbol();
+    if (
+      symbol === undefined ||
+      !symbol.declarations.every(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    )
+      return false;
+    const bases = attempt(() => this.checker.getBaseTypes(target)) ?? [];
+    return bases.some(
+      (base) => this.isBuiltinError(base) || this.extendsBuiltinError(base, depth + 1),
+    );
+  }
+
+  /** Judges the nodes of the program an island value can pass through
+   * (collected by index) and marks the types that receive one.
+   *
+   * A crossing is a node whose declared type receives an island value: a
+   * member read, an index or a call on an island value; a name bound to an
+   * island module's export, read as a value (the island's value at each use,
+   * whatever type the program's declarations give it); and an assertion
+   * applied to an island value (`raw() as Item`, `raw() as unknown as Item`).
+   * The assertion names the type the program reads that value through. It
+   * has no run-time effect in Node, so it is a view of the island's object
+   * like any typed island read, never a copy: a record is made only where
+   * the program copies (`structuredClone`, a spread, JSON).
+   *
+   * What the program hands to an island (an argument of an island call or
+   * construction, a value assigned to a member of an island object) holds the
+   * functions the island calls with its own values (markIslandCallbacks). */
+  private markIslandSites(
+    sites: readonly ts.Node[],
+    islands: NodeIslandSet,
+    add: (type: ts.Type) => void,
+  ): void {
+    this.followIslandFlows(sites, islands);
+    const crossings: ts.Expression[] = [];
+    const handed: ts.Expression[] = [];
+    for (const node of sites) {
+      if (ts.isIdentifier(node)) {
+        if (this.islandBinding(node, islands)) crossings.push(node);
+        continue;
+      }
+      if (
+        ts.isReturnStatement(node) ||
+        ts.isArrowFunction(node) ||
+        ts.isVariableDeclaration(node) ||
+        ts.isPropertyDeclaration(node) ||
+        ts.isObjectLiteralExpression(node) ||
+        ts.isArrayLiteralExpression(node)
+      )
+        continue;
+      if (ts.isBinaryExpression(node)) {
+        if (
+          (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+          this.islandValue(node.left.expression, islands)
+        )
+          handed.push(node.right);
+        continue;
+      }
+      if (ts.isAssertionExpression(node)) {
+        if (this.islandValue(node.expression, islands)) crossings.push(node);
+        continue;
+      }
+      if (ts.isNewExpression(node)) {
+        if (this.islandValue(node.expression, islands))
+          for (const argument of node.arguments?.nodes ?? []) handed.push(argument);
+        continue;
+      }
+      const access = node as
+        | ts.PropertyAccessExpression
+        | ts.ElementAccessExpression
+        | ts.CallExpression;
+      if (ts.isCallExpression(access) && this.islandValue(access.expression, islands))
+        for (const argument of access.arguments.nodes) handed.push(argument);
+      // A call of a program function that hands on an island value answers
+      // one too (followIslandFlows); its callee is not an island value.
+      if (this.islandValue(access, islands)) crossings.push(access);
+    }
+    // An island read marks every type it reaches, as it always has: the read
+    // the island's own declarations type, and equally the read whose value
+    // the island makes under a type of the program's (a name bound to an
+    // island export, a member of a native subclass of an island class), which
+    // had no other form than a refusal. The origins where the program GIVES
+    // an untyped island value a type (an assertion, the typed slot an `any`
+    // value is put in, a parameter of a function handed to the island) are
+    // conversions on main: they mark a type only when a view can hold all it
+    // declares (markOriginView), and they come last, so that the outcome does
+    // not depend on the order in which the program's files name a type.
+    const given: ts.Expression[] = [];
+    for (const crossing of crossings) {
+      if (ts.isAssertionExpression(crossing)) {
+        given.push(crossing);
+        continue;
+      }
+      this.markIslandView(crossing, islands, add);
+      const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+      if (type !== undefined && (type.flags & ts.TypeFlags.Any) !== 0) given.push(crossing);
+    }
+    for (const crossing of given) {
+      const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+      if (ts.isAssertionExpression(crossing)) {
+        if (type !== undefined) this.markOriginView(type, islands, add, 0);
+      } else {
+        // An untyped island value takes the type of the slot it is put in (a
+        // typed binding, a parameter, a return): that type receives it.
+        const slot = attempt(() => this.checker.getContextualType(crossing));
+        if (slot !== undefined) this.markOriginView(slot, islands, add, 0);
+      }
+    }
+    for (const value of handed) this.markIslandCallbacks(value, islands, add, 0);
+    traceIslandViews(crossings);
+    for (const node of sites) this.noteIslandEscapes(node, islands);
+    if (this.islandEscapes.length > 0) this.markUnplacedConversions(sites, islands, add);
+  }
+
+  /** Marks the declaration-file types an untyped value of unknown origin is
+   * given, in a program that stores an untyped island value out of sight
+   * (noteIslandEscapes found a store). The stored value is read back with no
+   * origin, so any assertion applied to an untyped value, and any typed
+   * binding of an `any`, may be the one that receives it. A type a
+   * declaration file declares has no implementation of its own: until such
+   * types were mapped to native records, a value asserted to one stayed the
+   * dynamic value it was, an island's object included. Marking the type a
+   * view keeps that: the island's object stays the island's, and a native
+   * value under the type is read with the same checks. A type the program's
+   * own source declares keeps the checked conversion, as it always had (it
+   * copies an island's object; SC6007 names the store). */
+  private markUnplacedConversions(
+    sites: readonly ts.Node[],
+    islands: NodeIslandSet,
+    add: (type: ts.Type) => void,
+  ): void {
+    for (const node of sites) {
+      let operand: ts.Expression;
+      let untyped: number = ts.TypeFlags.Any;
+      if (ts.isAssertionExpression(node)) {
+        operand = node.expression;
+        untyped |= ts.TypeFlags.Unknown;
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        node.type !== undefined &&
+        node.initializer !== undefined
+      ) {
+        operand = node.initializer;
+      } else continue;
+      // An island value the analysis follows was marked where it crossed.
+      if (this.islandValue(operand, islands)) continue;
+      const from = attempt(() => this.checker.getTypeAtLocation(operand));
+      if (from === undefined || (from.flags & untyped) === 0) continue;
+      const target = attempt(() => this.checker.getTypeAtLocation(node));
+      if (target === undefined || !this.declarationFileType(target, 0)) continue;
+      this.markOriginView(target, islands, add, 0);
+    }
+  }
+
+  /** Whether `type`, an arm of it or its element type is an object type
+   * whose every declaration is in a declaration file outside the standard
+   * library. */
+  private declarationFileType(type: ts.Type, depth: number): boolean {
+    if (depth > DECLARATION_FILE_TYPE_DEPTH) return false;
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts.constituentTypes(type).some((part) => this.declarationFileType(part, depth + 1));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) {
+      const elements = attempt(() => this.checker.getTypeArguments(type as ts.TypeReference));
+      return (elements ?? []).some((element) => this.declarationFileType(element, depth + 1));
+    }
+    const declarations = type.getSymbol()?.declarations ?? [];
+    return (
+      declarations.length > 0 &&
+      declarations.every((declaration) => {
+        const file = ts.getSourceFileOfNode(declaration);
+        return file.isDeclarationFile && !this.isStdlibFile(file);
+      })
+    );
+  }
+
+  /** The untyped island values the program stores where their origin is no
+   * longer followed (see noteIslandEscapes), in source order. */
+  islandEscapeSites(): readonly ts.Expression[] {
+    this.index();
+    return this.islandEscapes;
+  }
+
+  /** Whether `expr` holds a value a Node island made, as this analysis
+   * follows it (islandValue): the divergence scan asks it of the operand of
+   * a conversion that copies (SC6007), so that the warning sees every origin
+   * the marking does. False for a program that runs no island. */
+  islandOrigin(expr: ts.Expression): boolean {
+    this.index();
+    const islands = activeNodeIslands();
+    return islands !== null && this.islandValue(expr, islands);
+  }
+
+  /** Records the untyped island values `node` stores out of the analysis'
+   * sight. An island value typed `any` or `unknown` is followed through
+   * `const` bindings, parameters and returns of the program's functions, and
+   * where it is asserted it becomes a view. Stored in a member, an element, a
+   * reassigned binding, a literal the program keeps or a container (an
+   * argument whose declared type is a type parameter: `list.push(v)`,
+   * `map.set(k, v)`, `keep<T>(v)`), it is read back as a value of unknown
+   * origin, and an assertion applied to it then is the checked conversion,
+   * which copies an island's object. The build names each such store
+   * (SC6007, divergences.ts). */
+  private noteIslandEscapes(node: ts.Node, islands: NodeIslandSet): void {
+    const note = (value: ts.Expression | undefined, stored: () => boolean): void => {
+      if (value === undefined || !this.islandValue(value, islands)) return;
+      const type = attempt(() => this.checker.getTypeAtLocation(value));
+      if (type === undefined || (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0)
+        return;
+      if (stored()) this.islandEscapes.push(value);
+    };
+    if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      if (this.islandValue(node.expression, islands) || isStructuredClone(node)) return;
+      const args = node.arguments?.nodes ?? [];
+      for (let index = 0; index < args.length; index++) {
+        const argument = args[index]!;
+        if (ts.isSpreadElement(argument)) break;
+        note(argument, () => this.argumentKept(node, index));
+      }
+    } else if (ts.isBinaryExpression(node)) {
+      const target = node.left;
+      if (
+        (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
+        this.islandValue(target.expression, islands)
+      )
+        return;
+      note(node.right, () => true);
+    } else if (ts.isVariableDeclaration(node)) {
+      const held =
+        ts.isIdentifier(node.name) && (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0;
+      if (!held) note(node.initializer, () => true);
+    } else if (ts.isPropertyDeclaration(node)) {
+      note(node.initializer, () => true);
+    } else if (ts.isObjectLiteralExpression(node)) {
+      for (const property of node.properties.nodes) {
+        const value = ts.isPropertyAssignment(property)
+          ? property.initializer
+          : ts.isShorthandPropertyAssignment(property)
+            ? (property.name as ts.Identifier)
+            : ts.isSpreadAssignment(property)
+              ? property.expression
+              : undefined;
+        note(value, () => !this.handedToIsland(node, islands));
+      }
+    } else if (ts.isArrayLiteralExpression(node)) {
+      for (const element of node.elements.nodes)
+        note(ts.isSpreadElement(element) ? element.expression : element, () => {
+          return !this.handedToIsland(node, islands);
+        });
+    } else if (ts.isReturnStatement(node)) {
+      note(node.expression, () => this.functionSymbolOf(node) === undefined);
+    } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) {
+      note(node.body, () => this.functionSymbolOf(node) === undefined);
+    }
+  }
+
+  /** Whether the callee of `call` may keep its argument at `index`: the
+   * parameter's declared type names a type parameter, of the function or of
+   * the class or interface that declares it, so the callee stores the value
+   * or hands it back at a type the caller chose (`Array<T>.push`,
+   * `Map<K, V>.set`, a generic helper). A parameter with a type of its own
+   * converts the value, and an untyped one of a program function is followed
+   * (followIslandFlows). */
+  private argumentKept(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    const declaration = attempt(() => this.checker.getResolvedSignature(call))?.declaration;
+    if (declaration === undefined || !ts.isFunctionLike(declaration)) return false;
+    const parameters = declaration.parameters.nodes;
+    const last = parameters.at(-1);
+    const parameter =
+      parameters[index] ??
+      (last !== undefined && last.dotDotDotToken !== undefined ? last : undefined);
+    if (parameter === undefined || parameter.type === undefined) return false;
+    const names = new Set<string>();
+    for (let scope: ts.Node | undefined = declaration; scope !== undefined; scope = scope.parent) {
+      const declared =
+        ts.isFunctionLike(scope) ||
+        ts.isClassDeclaration(scope) ||
+        ts.isClassExpression(scope) ||
+        ts.isInterfaceDeclaration(scope)
+          ? scope.typeParameters
+          : undefined;
+      for (const typeParameter of declared?.nodes ?? []) names.add(typeParameter.name.text);
+    }
+    if (names.size === 0) return false;
+    const mentions = (type: ts.Node): boolean =>
+      (ts.isIdentifier(type) && names.has(type.text)) || ts.forEachChild(type, mentions) === true;
+    return mentions(parameter.type);
+  }
+
+  /** Whether the literal `literal`, or the literal it is a member of, is
+   * handed to an island where it stands: an argument of an island call or
+   * construction, or a value assigned to a member of an island object. The
+   * island then holds what the literal holds. */
+  private handedToIsland(
+    literal: ts.ObjectLiteralExpression | ts.ArrayLiteralExpression,
+    islands: NodeIslandSet,
+  ): boolean {
+    let value: ts.Node = literal;
+    for (;;) {
+      const parent: ts.Node | undefined = value.parent;
+      if (parent === undefined) return false;
+      if (
+        ts.isParenthesizedExpression(parent) ||
+        ts.isAssertionExpression(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isPropertyAssignment(parent) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isObjectLiteralExpression(parent) ||
+        ts.isArrayLiteralExpression(parent)
+      ) {
+        value = parent;
+        continue;
+      }
+      if (ts.isCallExpression(parent) || ts.isNewExpression(parent))
+        return parent.expression !== value && this.islandValue(parent.expression, islands);
+      if (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === value
+      ) {
+        const target = parent.left;
+        return (
+          (ts.isPropertyAccessExpression(target) || ts.isElementAccessExpression(target)) &&
+          this.islandValue(target.expression, islands)
+        );
+      }
+      return false;
+    }
+  }
+
+  /** Follows island values through the program's own functions, where the
+   * type says nothing about them: a parameter typed `any` or `unknown` that
+   * a call passes an island value to holds one (`asItem(raw())` with
+   * `function asItem(value: unknown)`), and a function that returns an
+   * island value at one of those types answers one. Both sets only grow, and
+   * each round judges every call and return again with what the previous one
+   * found, until a round finds nothing. A value stored in a field, an
+   * element or a reassigned binding is not followed: its origin is not
+   * visible where it is read back. */
+  private followIslandFlows(sites: readonly ts.Node[], islands: NodeIslandSet): void {
+    const untyped = (node: ts.Node): boolean => {
+      const type = attempt(() => this.checker.getTypeAtLocation(node));
+      return type !== undefined && (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    };
+    for (let round = 0; round < ISLAND_FLOW_ROUNDS; round++) {
+      let grew = false;
+      for (const node of sites) {
+        if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+          const args = node.arguments?.nodes ?? [];
+          let declaration: ts.Node | undefined | null = null;
+          for (let index = 0; index < args.length; index++) {
+            const argument = args[index]!;
+            if (ts.isSpreadElement(argument)) break;
+            if (!this.islandValue(argument, islands)) continue;
+            if (declaration === null)
+              declaration = attempt(() => this.checker.getResolvedSignature(node))?.declaration;
+            if (declaration === undefined || declaration === null) break;
+            if (!ts.isFunctionLike(declaration)) break;
+            if (ts.getSourceFileOfNode(declaration).isDeclarationFile) break;
+            const parameter = declaration.parameters.nodes[index];
+            if (
+              parameter === undefined ||
+              parameter.dotDotDotToken !== undefined ||
+              !ts.isIdentifier(parameter.name) ||
+              !untyped(parameter)
+            )
+              continue;
+            const symbol = attempt(() => this.checker.getSymbolAtLocation(parameter.name));
+            if (symbol === undefined || this.islandParameters.has(symbol)) continue;
+            this.islandParameters.add(symbol);
+            grew = true;
+          }
+          continue;
+        }
+        let returned: ts.Expression | undefined;
+        if (ts.isReturnStatement(node)) returned = node.expression;
+        else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) returned = node.body;
+        if (returned === undefined || !untyped(returned) || !this.islandValue(returned, islands))
+          continue;
+        const symbol = this.functionSymbolOf(node);
+        if (symbol === undefined || this.islandReturners.has(symbol)) continue;
+        this.islandReturners.add(symbol);
+        grew = true;
+      }
+      if (!grew) return;
+      // What a round found changes the answers of the next.
+      this.islandValues.clear();
+    }
+  }
+
+  /** The symbol callers name the function enclosing `node` by: a declared
+   * function's or method's own, or the binding or member an arrow or
+   * function expression initializes. */
+  private functionSymbolOf(node: ts.Node): ts.Symbol | undefined {
+    let fn: ts.Node | undefined = ts.isArrowFunction(node) ? node : node.parent;
+    while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+    if (fn === undefined) return undefined;
+    let name: ts.Node | undefined;
+    if (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) name = fn.name;
+    else if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+      const holder = fn.parent;
+      if (holder !== undefined && ts.isVariableDeclaration(holder) && holder.initializer === fn)
+        name = holder.name;
+      else if (holder !== undefined && ts.isPropertyAssignment(holder) && holder.initializer === fn)
+        name = holder.name;
+    }
+    if (name === undefined || !ts.isIdentifier(name)) return undefined;
+    const named = name;
+    return attempt(() => this.checker.getSymbolAtLocation(named));
+  }
+
+  /** Marks the program types that receive island values (SPEC 6 = C). An
+   * island object crossing into a program record type used to be refused
+   * (SC8010): a deep checked copy loses the identity and every later write
+   * the island makes to the object. The checked-identity view is the one
+   * representation for "a native-typed value that must stay a live
+   * JavaScript object", so a program type that receives island values
+   * becomes a view instead: an island object is already a live dynamic
+   * object natively (a handle), and every other value of the type is the
+   * checked-dynamic object a view builds, so identity and later changes are
+   * shared exactly and the copy never happens.
+   *
+   * The types are the DECLARED types at the reads that produce island
+   * values (`doc.colors`, `event.usage.cache_creation`, `islandFn()`), the
+   * set `fromIsland` answers for. An intersection or union marks its object
+   * parts; an island-declared part is a handle already and is skipped. A
+   * type that cannot carry the marking on its symbol — a mapped type, whose
+   * symbol is the shared `__type` — is recorded by instance instead.
+   *
+   * A member read from a live island object is an island value too, received
+   * by the member's declared type (`const i = o.inner` holds the island's
+   * own inner object), so the types a marked type's members are declared
+   * with are marked with it, to any depth (markReceivedMembers). */
+  private markIslandView(
+    crossing: ts.Expression,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+  ): void {
+    const type = attempt(() => this.checker.getTypeAtLocation(crossing));
+    if (type !== undefined) this.markReceivedView(type, islands, add, 0);
+  }
+
+  /** Marks the types that receive island values through a function the
+   * program hands to an island: an argument of an island call or
+   * construction, or a value assigned to a member of an island object. The
+   * island calls the function with its own values (`each((item) => ...)`,
+   * `emitter.on("row", onRow)`, `{ validate: (items) => ... }`), so each
+   * parameter's declared type receives an island value exactly as the type
+   * of an island read does. A fresh object or array literal is copied member
+   * by member, so the functions among its members are handed over too; any
+   * other object crosses by reference and keeps its own members' types. */
+  private markIslandCallbacks(
+    value: ts.Expression,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (depth > RECEIVED_VIEW_DEPTH) return;
+    let inner: ts.Expression = value;
+    for (;;) {
+      if (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+        inner = inner.expression;
+      else if (ts.isAssertionExpression(inner) || ts.isSatisfiesExpression(inner))
+        inner = inner.expression;
+      else break;
+    }
+    if (ts.isSpreadElement(inner)) return;
+    if (ts.isArrayLiteralExpression(inner)) {
+      for (const element of inner.elements.nodes)
+        this.markIslandCallbacks(element, islands, add, depth + 1);
+      return;
+    }
+    if (ts.isObjectLiteralExpression(inner)) {
+      for (const property of inner.properties.nodes) {
+        if (ts.isPropertyAssignment(property))
+          this.markIslandCallbacks(property.initializer, islands, add, depth + 1);
+        else if (ts.isShorthandPropertyAssignment(property))
+          this.markIslandCallbacks(property.name as ts.Identifier, islands, add, depth + 1);
+        else if (ts.isMethodDeclaration(property))
+          for (const parameter of property.parameters.nodes) {
+            const type = attempt(() => this.checker.getTypeAtLocation(parameter));
+            if (type !== undefined) this.markOriginView(type, islands, add, depth + 1);
+          }
+      }
+      return;
+    }
+    const type = attempt(() => this.checker.getTypeAtLocation(inner));
+    if (type === undefined) return;
+    for (const signature of attempt(() => this.checker.getCallSignatures(type)) ?? [])
+      for (const parameter of signature.getParameters()) {
+        const received = attempt(() => this.checker.getTypeOfSymbol(parameter));
+        if (received !== undefined) this.markOriginView(received, islands, add, depth + 1);
+      }
+  }
+
+  private markReceivedView(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (depth > RECEIVED_VIEW_DEPTH) return;
+    if (type.isUnionType() || type.isIntersectionType()) {
+      for (const part of ts.constituentTypes(type))
+        this.markReceivedView(part, islands, add, depth + 1);
+      return;
+    }
+    if ((type.flags & ts.TypeFlags.Object) === 0) return;
+    if (islands !== null && isForeignType(islands, type, this.checker)) return;
+    if (this.receivedTypes.has(type)) return;
+    this.receivedTypes.add(type);
+    // A promise the island returns is adopted, never converted: it is the
+    // same promise on both sides, and the value that crosses is the one it
+    // settles with, where the program awaits it or a reaction receives it.
+    // That value's declared type is the promise's type argument, so the
+    // argument is the type that receives the island value
+    // (`await later<Rec>()` reads an island object as a `Rec`).
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type) {
+      this.markReceivedView(settled, islands, add, depth + 1);
+      return;
+    }
+    // A mapped type's symbol is the shared `__type` every mapped type in the
+    // program uses, so it can never carry the marking: a homomorphic view
+    // marks what it maps (as a literal view does), and any other mapped type
+    // (`Record<string, V>`, an inline `{ [K in ...]: V }`) is recorded by the
+    // type itself. This is what keeps the fact from spreading to every Pick,
+    // Partial and Record in the program.
+    const source = this.mappedViewSource(type);
+    if (source !== null) {
+      if (this.isStructuralTarget(source)) add(source);
+      else this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    if (((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Mapped) !== 0) {
+      this.islandViews.add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    if (this.isStructuralTarget(type)) {
+      add(type);
+      this.markReceivedMembers(type, islands, add, depth);
+      return;
+    }
+    // A class instance keeps its own native value (fromIsland unboxes it, it
+    // is never copied), and an array, tuple or function has its own crossing
+    // rule: neither is a record this marking can help.
+    if (this.isProgramClassInstance(type) || this.checker.isArrayType(type)) return;
+    if (this.checker.isTupleType(type)) return;
+    if (this.checker.getCallSignatures(type).length > 0) return;
+    // A library class (Date, Map, Error, URL, a typed array) has a native
+    // representation of its own and never becomes a record, so there is no
+    // view to mark; its instance type is also one type for the whole
+    // program, native uses included.
+    if (this.isLibraryClassInstance(type)) return;
+    this.islandViews.add(type);
+    this.markReceivedMembers(type, islands, add, depth);
+  }
+
+  /** Marks `type` where the program gives an untyped island value a type,
+   * unless a view cannot hold what the type declares (viewKept): then
+   * nothing is marked, the value keeps the checked conversion (a copy taken
+   * where the type is given), and the divergence scan names the conversion
+   * (SC6007, divergences.ts). */
+  private markOriginView(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    if (this.viewKept(type, islands, new Set(), 0)) return;
+    this.markReceivedView(type, islands, add, depth);
+  }
+
+  /** Whether `type`, or a type one of its members is declared with, is one
+   * a view of an island object cannot answer as the checked conversion does:
+   * a string-keyed dictionary (a view reads a missing key as a TypeError
+   * where a native dictionary answers `undefined`, and marking it would
+   * change every dictionary of the type the program builds itself), or a
+   * library object other than an array, a byte view or a promise (a Date, a
+   * RegExp, a Map, a Set, an Error, a URL: the conversion builds the native
+   * value, a member read through a view does not). */
+  private viewKept(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    seen: Set<ts.Type>,
+    depth: number,
+  ): boolean {
+    if (depth > RECEIVED_VIEW_DEPTH) return false;
+    if (type.isUnionType() || type.isIntersectionType())
+      return ts
+        .constituentTypes(type)
+        .some((part) => this.viewKept(part, islands, seen, depth + 1));
+    if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+    if (islands !== null && isForeignType(islands, type, this.checker)) return false;
+    if (seen.has(type)) return false;
+    seen.add(type);
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) {
+      const elements = attempt(() => this.checker.getTypeArguments(type as ts.TypeReference));
+      return (elements ?? []).some((element) => this.viewKept(element, islands, seen, depth + 1));
+    }
+    if (attempt(() => this.checker.getCallSignatures(type).length > 0) === true) return false;
+    const settled = attempt(() => this.checker.getAwaitedType(type));
+    if (settled !== undefined && settled !== type)
+      return this.viewKept(settled, islands, seen, depth + 1);
+    if (this.isLibraryClassInstance(type)) {
+      const symbol = type.getSymbol();
+      return symbol === undefined || !VIEWED_LIBRARY_OBJECTS.has(ts.symbolName(symbol));
+    }
+    if (attempt(() => this.checker.getIndexInfosOfType(type).length > 0) === true) return true;
+    for (const property of this.checker.getPropertiesOfType(type)) {
+      const member = attempt(() => this.checker.getTypeOfSymbol(property));
+      if (member !== undefined && this.viewKept(member, islands, seen, depth + 1)) return true;
+    }
+    return false;
+  }
+
+  /** Marks the types the members of a marked type are declared with: the
+   * island object behind a view holds island objects in its members, and a
+   * read hands one to the member's type. Property types and index signature
+   * values are followed through unions, intersections and optional members
+   * (markReceivedView), so `inner: Inner`, `opt?: Inner`, `Inner | string`,
+   * `Record<string, Inner>` and `Box<Inner>` all reach `Inner`.
+   *
+   * A promise-typed member reaches the type it settles with the same way
+   * (`Promise<Inner>`). Arrays, tuples, Maps, Sets and other library classes
+   * are not records and stay what they are: an island array has no native
+   * counterpart, so a marked type with such a member is refused by name
+   * where the island value crosses (fromIsland's unreceivableMember), not
+   * marked here. */
+  private markReceivedMembers(
+    type: ts.Type,
+    islands: NodeIslandSet | null,
+    add: (type: ts.Type) => void,
+    depth: number,
+  ): void {
+    for (const property of this.checker.getPropertiesOfType(type)) {
+      const member = attempt(() => this.checker.getTypeOfSymbol(property));
+      if (member !== undefined) this.markReceivedView(member, islands, add, depth + 1);
+    }
+    for (const index of this.checker.getIndexInfosOfType(type))
+      this.markReceivedView(index.type, islands, add, depth + 1);
+  }
+
+  /** Whether `expr` reads a value out of an island handle: its receiver
+   * chain is rooted at a value that comes out of an island. The origin
+   * decides, not the type the program names: a binding of an island-declared
+   * type, a name bound to an island module's export (islandBinding), or
+   * `this` in a member of a native subclass of an island class, whose
+   * instances the island constructs (islandSubclass). A value a program type
+   * holds is a program value — that type is the one this pass marks — so the
+   * chain never has to be followed through one. */
+  private islandValue(expr: ts.Expression, islands: NodeIslandSet): boolean {
+    const known = this.islandValues.get(expr);
+    if (known !== undefined) return known;
+    let inner: ts.Expression = expr;
+    for (;;) {
+      if (ts.isParenthesizedExpression(inner) || ts.isNonNullExpression(inner))
+        inner = inner.expression;
+      else if (ts.isAssertionExpression(inner) || ts.isSatisfiesExpression(inner))
+        inner = inner.expression;
+      else break;
+    }
+    // A chain that comes back to itself through `const` initializers ends.
+    this.islandValues.set(expr, false);
+    let answer = false;
+    if (ts.isPropertyAccessExpression(inner) || ts.isElementAccessExpression(inner))
+      answer = this.islandValue(inner.expression, islands);
+    else if (ts.isCallExpression(inner))
+      answer = this.islandValue(inner.expression, islands) || this.islandReturner(inner);
+    // The value an island promise settles with, and a value one of whose
+    // sources is an island value (`a ?? b`, `c ? a : b`).
+    else if (ts.isAwaitExpression(inner)) answer = this.islandValue(inner.expression, islands);
+    else if (ts.isConditionalExpression(inner))
+      answer =
+        this.islandValue(inner.whenTrue, islands) || this.islandValue(inner.whenFalse, islands);
+    else if (ts.isBinaryExpression(inner) && VALUE_SELECTING.has(inner.operatorToken.kind))
+      answer = this.islandValue(inner.left, islands) || this.islandValue(inner.right, islands);
+    else if (ts.isIdentifier(inner))
+      answer =
+        attempt(() =>
+          isForeignType(islands, this.checker.getTypeAtLocation(inner), this.checker),
+        ) === true ||
+        this.islandBinding(inner, islands) ||
+        this.islandHeld(inner, islands);
+    else if (inner.kind === ts.SyntaxKind.ThisKeyword)
+      answer = this.islandSubclassReceiver(inner, islands);
+    this.islandValues.set(expr, answer);
+    return answer;
+  }
+
+  /** Whether `name` holds a value read out of an island for good: a `const`
+   * initialized with one (`const body = makeBody()`), whatever type it has
+   * (an island's `any` or `unknown` result is asserted or passed on later),
+   * or a parameter a call passes one to (followIslandFlows). A `let` can be
+   * reassigned, and a member holds whatever its writers put there: the
+   * origin is not visible through those. */
+  private islandHeld(name: ts.Identifier, islands: NodeIslandSet): boolean {
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(name));
+    if (symbol === undefined) return false;
+    if (this.islandParameters.has(symbol)) return true;
+    const declaration = symbol.valueDeclaration;
+    if (
+      declaration === undefined ||
+      !ts.isVariableDeclaration(declaration) ||
+      declaration.initializer === undefined ||
+      !ts.isIdentifier(declaration.name) ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
+    )
+      return false;
+    return this.islandValue(declaration.initializer, islands);
+  }
+
+  /** Whether `call` calls a program function that returns an island value
+   * (followIslandFlows), named by a binding or a member. */
+  private islandReturner(call: ts.CallExpression): boolean {
+    if (this.islandReturners.size === 0) return false;
+    let callee: ts.Expression = call.expression;
+    while (ts.isParenthesizedExpression(callee) || ts.isNonNullExpression(callee))
+      callee = callee.expression;
+    const name = ts.isPropertyAccessExpression(callee) ? callee.name : callee;
+    if (!ts.isIdentifier(name)) return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(name));
+    return symbol !== undefined && this.islandReturners.has(symbol);
+  }
+
+  /** Whether the identifier `name`, read as a value, binds an island
+   * module's export: an import or a `require` of an island module, or a name
+   * a native module re-exports from one (bindsIslandExport). Only a name the
+   * file's own import and `require` declarations bind can be one, so every
+   * other identifier is answered from syntax. */
+  private islandBinding(name: ts.Identifier, islands: NodeIslandSet): boolean {
+    if (!this.importBound(name)) return false;
+    return attempt(() => bindsIslandExport(this.checker, islands, name)) === true;
+  }
+
+  /** Whether `name` is a use of a name its file's import and `require`
+   * declarations bind, answered from syntax. */
+  private importBound(name: ts.Identifier): boolean {
+    const parent = name.parent;
+    if (parent === undefined) return false;
+    // The declaration's own names, a member name, and a name in a type.
+    if (
+      ts.isImportClause(parent) ||
+      ts.isImportSpecifier(parent) ||
+      ts.isNamespaceImport(parent) ||
+      ts.isExportSpecifier(parent) ||
+      ts.isTypeReferenceNode(parent) ||
+      ts.isTypeQueryNode(parent) ||
+      ts.isQualifiedName(parent) ||
+      (ts.isPropertyAccessExpression(parent) && parent.name === name)
+    )
+      return false;
+    const source = ts.getSourceFileOfNode(name);
+    let names = this.importNames.get(source);
+    if (names === undefined) {
+      names = importBoundNames(source);
+      this.importNames.set(source, names);
+    }
+    return names.has(name.text);
+  }
+
+  /** Whether `receiver` (a `this`) is an instance of a native subclass of an
+   * island class: the island constructs the instance, so its members are
+   * read out of the island like any island object's. */
+  private islandSubclassReceiver(receiver: ts.Node, islands: NodeIslandSet): boolean {
+    // Arrow functions keep the enclosing member's `this`.
+    let scope: ts.Node | undefined = receiver.parent;
+    while (scope !== undefined && (!ts.isFunctionLike(scope) || ts.isArrowFunction(scope))) {
+      if (ts.isPropertyDeclaration(scope) || ts.isClassStaticBlockDeclaration(scope)) break;
+      scope = scope.parent;
+    }
+    const owner = scope?.parent;
+    return (
+      owner !== undefined && ts.isClassDeclaration(owner) && this.islandSubclass(owner, islands)
+    );
+  }
+
+  /** Whether `declaration` is a top-level class whose base is an island
+   * class or another such subclass (lower-node-island.ts,
+   * islandSubclassHeritage), answered from the declarations alone. */
+  private islandSubclass(declaration: ts.ClassDeclaration, islands: NodeIslandSet): boolean {
+    const known = this.islandSubclasses.get(declaration);
+    if (known !== undefined) return known;
+    this.islandSubclasses.set(declaration, false);
+    let answer = false;
+    const base = extendsElementOf(declaration);
+    if (
+      declaration.name !== undefined &&
+      ts.isSourceFile(declaration.parent) &&
+      base !== undefined
+    ) {
+      answer =
+        attempt(() =>
+          isForeignType(islands, this.checker.getTypeAtLocation(base.expression), this.checker),
+        ) === true;
+      if (!answer) {
+        const symbol = attempt(() => this.checker.getSymbolAtLocation(base.expression));
+        const parent = symbol?.declarations.find(ts.isClassDeclaration);
+        answer = parent !== undefined && this.islandSubclass(parent, islands);
+      }
+    }
+    this.islandSubclasses.set(declaration, answer);
+    return answer;
   }
 
   /** Marks the structural types a literal's member kinds disagree with: a
@@ -113,10 +1120,11 @@ export class ClassProtocols {
    * checked-dynamic view, where the accessor stays live, `Object.keys`
    * lists it, and `JSON.stringify` calls it — Node's own model.
    *
-   * Only the TARGET is marked: the literal then takes the checked-dynamic
-   * literal path (`lowerDynObjectLiteral`), which defines an accessor member
-   * as a live get/set property and a data member as a plain property, so
-   * both directions construct live objects. */
+   * Only the TARGET is marked (for an intersection or union, its object
+   * constituents): the literal then takes the checked-dynamic literal path
+   * (`lowerDynObjectLiteral`), which defines an accessor member as a live
+   * get/set property and a data member as a plain property, so both
+   * directions construct live objects. */
   private markMemberKindViews(
     literal: ts.ObjectLiteralExpression,
     accessorNames: ReadonlySet<string>,
@@ -143,25 +1151,124 @@ export class ClassProtocols {
     if (members.length === 0) return;
     const contextual = attempt(() => this.checker.getContextualType(literal));
     if (contextual === undefined) return;
-    // Only one object type can be the one the literal converts into: a union
-    // with several arms picks its arm from the value itself, and an
-    // intersection merges members, so neither has the single layout the
-    // literal would have to disagree with. Nullish arms are ignored, so
-    // `Counter | undefined` still names Counter.
+    // The literal converts into an object PART of its contextual type, so
+    // both composites are resolved part by part. An intersection needs the
+    // views of every constituent that declares a disagreeing member. A
+    // union keeps checked identity only as a whole (usesCheckedIdentity
+    // answers it when every present arm does), so it becomes a view only
+    // when NO present arm can hold the literal natively: every present arm
+    // declares a disagreeing member. An arm that agrees is the arm the
+    // literal is, and marking the union anyway would make a program whose
+    // literals already match their arms dynamic for nothing. Nullish arms
+    // are ignored, so `Counter | undefined` still names Counter.
     const present = contextual.isUnionType()
       ? ts
           .constituentTypes(contextual)
           .filter((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) === 0)
       : [contextual];
-    const target = present.length === 1 ? present[0]! : undefined;
-    if (target === undefined || target.isIntersectionType()) return;
-    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return;
-    if (!this.isStructuralTarget(target)) return;
-    const disagrees = members.some((member) => {
+    if (present.length === 0) return;
+    const union = present.length > 1;
+    if (union && !present.every((part) => this.memberKindDisagrees(part, members))) return;
+    const targets: ts.Type[] = [];
+    for (const arm of present) {
+      const found = this.viewTargets(arm, members, union);
+      // An arm that cannot become a view leaves the union native; marking
+      // the other arms alone would not give it checked identity.
+      if (found === null) return;
+      targets.push(...found);
+    }
+    for (const target of targets) add(target);
+  }
+
+  /** The view targets `target` needs for a literal with these member kinds,
+   * or null when `target` cannot become a view. An intersection needs the
+   * targets of every constituent. A homomorphic mapped view (Partial, Pick,
+   * Omit, Readonly) has no symbol of its own — its symbol is the shared
+   * mapped `__type`, which every mapped type in the program uses — so the
+   * type it maps is the target instead, and `protocol` answers the view
+   * through that marking. `force` targets a union arm that must keep
+   * checked identity even when it agrees with the literal by itself. */
+  private viewTargets(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+    force: boolean,
+  ): ts.Type[] | null {
+    if (target.isIntersectionType()) {
+      const targets: ts.Type[] = [];
+      for (const part of ts.constituentTypes(target)) {
+        const found = this.viewTargets(part, members, force);
+        if (found === null) return null;
+        targets.push(...found);
+      }
+      return targets;
+    }
+    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return null;
+    const source = this.mappedViewSource(target) ?? target;
+    if (!this.isStructuralTarget(source)) return null;
+    if (!force && !this.memberKindDisagrees(target, members)) return [];
+    return [source];
+  }
+
+  /** Whether any of the literal's member kinds disagrees with the member
+   * `target` declares under that name (a missing member never disagrees). */
+  private memberKindDisagrees(
+    target: ts.Type,
+    members: readonly { name: string; accessor: boolean }[],
+  ): boolean {
+    return members.some((member) => {
       const kind = attempt(() => this.memberKind(target, member.name));
       return kind == null ? false : (kind === "accessor") !== member.accessor;
     });
-    if (disagrees) add(target);
+  }
+
+  /** The structural type a homomorphic mapped VIEW maps — Partial, Pick,
+   * Omit or Readonly over a program type. Mapped types share one `__type`
+   * symbol, so a view is identified through the alias it is spelled with;
+   * program aliases of views (`type A = B`, `type B = Partial<X>`) are
+   * followed through their declarations, and nested views
+   * (`Partial<Omit<X, K>>`) resolve to the type carrying the members.
+   * Null for everything else. */
+  private mappedViewSource(type: ts.Type, depth = 0): ts.Type | null {
+    if (depth > 8) return null;
+    const alias = type.getAliasSymbol();
+    if (alias === undefined) return null;
+    if (this.isHomomorphicMappedAlias(alias)) {
+      const [source] = type.getAliasTypeArguments();
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(alias);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** mappedViewSource for a view spelled as a type node (a program alias's
+   * declaration, whose resolved type is the alias itself). */
+  private mappedViewSourceNode(node: ts.TypeNode, depth: number): ts.Type | null {
+    if (depth > 8) return null;
+    while (ts.isParenthesizedTypeNode(node)) node = node.type;
+    if (!ts.isTypeReferenceNode(node)) return null;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(node.typeName));
+    if (symbol === undefined) return null;
+    if (this.isHomomorphicMappedAlias(symbol)) {
+      const sourceNode = node.typeArguments?.nodes[0];
+      if (sourceNode === undefined) return null;
+      const source = attempt(() => this.checker.getTypeFromTypeNode(sourceNode));
+      if (source === undefined) return null;
+      return this.mappedViewSource(source, depth + 1) ?? source;
+    }
+    const declaration = this.programTypeAlias(symbol);
+    return declaration === null ? null : this.mappedViewSourceNode(declaration.type, depth + 1);
+  }
+
+  /** The lib's homomorphic mapped utility types. */
+  private isHomomorphicMappedAlias(symbol: ts.Symbol): boolean {
+    const name = ts.symbolName(symbol);
+    if (name !== "Pick" && name !== "Omit" && name !== "Partial" && name !== "Readonly")
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+    );
   }
 
   /** The member kind `type` declares at `name` — an accessor (get/set pair)
@@ -200,6 +1307,8 @@ export class ClassProtocols {
       /** The node whose contextual type `target` answers. */
       contextual?: ts.Expression;
       assertion?: true;
+      /** The call the expression is an argument of, and its position. */
+      call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
@@ -219,9 +1328,12 @@ export class ClassProtocols {
      * signature's parameter) flows into the declared parameter type. */
     const callbackParams: { fn: ts.SignatureDeclaration; index: number; name: ts.Node }[] = [];
     const contextual = (expr: ts.Expression) => () => this.checker.getContextualType(expr);
-    const flow = (expr: ts.Expression | undefined): void => {
+    const flow = (
+      expr: ts.Expression | undefined,
+      call?: { node: ts.CallExpression | ts.NewExpression; index: number },
+    ): void => {
       if (expr !== undefined)
-        sites.push({ source: expr, target: contextual(expr), contextual: expr });
+        sites.push({ source: expr, target: contextual(expr), contextual: expr, call });
     };
     const write = (target: ts.Expression): void => {
       while (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))
@@ -309,7 +1421,7 @@ export class ClassProtocols {
     const visit = (node: ts.Node): void => {
       observe(node);
       if (ts.isCallExpression(node) || ts.isNewExpression(node))
-        node.arguments?.nodes.forEach(flow);
+        node.arguments?.nodes.forEach((argument, index) => flow(argument, { node, index }));
       else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
@@ -330,13 +1442,18 @@ export class ClassProtocols {
         !ts.isArrayLiteralExpression(node.left)
       ) {
         const left = node.left;
-        sites.push({ source: node.right, target: () => this.checker.getTypeAtLocation(left) });
+        sites.push({
+          source: node.right,
+          target: () => this.checker.getTypeAtLocation(left),
+          call: undefined,
+        });
       } else if ((ts.isAsExpression(node) || ts.isTypeAssertion(node)) && !accessedInPlace(node)) {
         const typeNode = node.type;
         sites.push({
           source: node.expression,
           target: () => this.checker.getTypeFromTypeNode(typeNode),
           assertion: true,
+          call: undefined,
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
@@ -379,6 +1496,8 @@ export class ClassProtocols {
       origins: new Map(),
       targets: new Map(),
       flows: new Map(),
+      callSites: new Map(),
+      otherSites: new Set(),
       genericObservers: new Set(),
     };
     const typeOf = (node: ts.Node): ts.Type | undefined =>
@@ -433,6 +1552,8 @@ export class ClassProtocols {
       sourceType: ts.Type;
       target: () => ts.Type | undefined;
       contextual?: ts.Expression;
+      /** The call the source is an argument of, and its position. */
+      call: { node: ts.CallExpression | ts.NewExpression; index: number } | undefined;
     }[] = [];
     /** Views a value of unknown origin is asserted to and that expose a
      * method of a class the view accepts (see methodViewSources). */
@@ -450,7 +1571,7 @@ export class ClassProtocols {
         const target = attempt(site.target);
         if (target !== undefined)
           for (const { classType, view } of attempt(() => this.methodViewSources(target)) ?? []) {
-            pending.push({ sourceType: classType, target: () => view });
+            pending.push({ sourceType: classType, target: () => view, call: undefined });
             const symbol = view.getSymbol();
             if (symbol !== undefined) methodViews.add(symbol);
           }
@@ -458,8 +1579,8 @@ export class ClassProtocols {
       }
       pending.push(
         site.contextual === undefined
-          ? { sourceType, target: site.target }
-          : { sourceType, target: site.target, contextual: site.contextual },
+          ? { sourceType, target: site.target, call: site.call }
+          : { sourceType, target: site.target, contextual: site.contextual, call: site.call },
       );
     }
     for (const { fn, index, name } of callbackParams) {
@@ -477,6 +1598,7 @@ export class ClassProtocols {
           pending.push({
             sourceType: this.checker.getTypeOfSymbol(parameter),
             target: () => declared,
+            call: undefined,
           });
         }
       });
@@ -508,7 +1630,9 @@ export class ClassProtocols {
         const target = targets.get(i);
         if (
           target !== undefined &&
-          attempt(() => this.markTarget(entry.sourceType, target, marked)) === true
+          attempt(() =>
+            this.markTarget(entry.sourceType, target, marked, entry.call ?? null, true),
+          ) === true
         )
           changed = true;
       }
@@ -704,7 +1828,12 @@ export class ClassProtocols {
       written === "all" || [...written].some((name) => names.has(name));
     for (const origin of origins) {
       const written = facts.written.get(origin);
-      if (written !== undefined && writesNames(written)) return true;
+      // A field written after construction would be stale in a copy — unless
+      // every value of the view arrives as a call argument the callee reads
+      // and nothing else, where the copy answers the same reads the instance
+      // would (copiedAtEverySite).
+      if (written !== undefined && writesNames(written) && !this.copiedAtEverySite(symbol, facts))
+        return true;
       // An accessor runs on every read of the instance: a copy would keep
       // the value of one call.
       if (this.hasAccessorFor(origin, names)) return true;
@@ -733,6 +1862,207 @@ export class ClassProtocols {
           );
         }) === true,
     );
+  }
+
+  /** Whether every value of the view arrives as a call argument whose
+   * callee only reads it: then the record copy the boundary builds answers
+   * the same reads the instance itself would, and later writes to the
+   * instance cannot be observed through the view. */
+  private copiedAtEverySite(symbol: ts.Symbol, facts: FlowFacts): boolean {
+    if (facts.otherSites.has(symbol)) return false;
+    const sites = facts.callSites.get(symbol);
+    if (sites === undefined || sites.length === 0) return false;
+    return sites.every(
+      (site) =>
+        this.isProgramClassInstance(site.source) && this.copiedArgument(site.node, site.index),
+    );
+  }
+
+  /** Whether argument `index` of `call` can be copied into the parameter's
+   * record: the callee is a program function whose body reads the instance
+   * only through declared fields of primitive type, keeps no reference to
+   * it, and runs no code that could write to it (assignments only to its
+   * own locals, no await or yield, and every call a numeric builtin). */
+  private copiedArgument(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    let byIndex = this.copiedArguments.get(call);
+    if (byIndex === undefined) {
+      byIndex = [];
+      this.copiedArguments.set(call, byIndex);
+    }
+    const cached = byIndex[index];
+    if (cached !== undefined) return cached;
+    const answer = attempt(() => this.copiedArgumentNow(call, index)) === true;
+    byIndex[index] = answer;
+    return answer;
+  }
+
+  private copiedArgumentNow(call: ts.CallExpression | ts.NewExpression, index: number): boolean {
+    const args = call.arguments?.nodes ?? [];
+    if (index >= args.length || args.some((argument) => ts.isSpreadElement(argument))) return false;
+    const signature = this.checker.getResolvedSignature(call);
+    const declaration = signature?.declaration;
+    if (declaration === undefined) return false;
+    if (
+      !ts.isFunctionDeclaration(declaration) &&
+      !ts.isFunctionExpression(declaration) &&
+      !ts.isArrowFunction(declaration)
+    )
+      return false;
+    if (declaration.body === undefined) return false;
+    if (!this.fixedCallee(declaration, call)) return false;
+    if (declaration.asteriskToken !== undefined) return false;
+    if (
+      declaration.modifiers?.nodes.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+      ) === true
+    )
+      return false;
+    // Defaults run in the callee's frame, after the arguments, and may write
+    // the instance; a parameter pattern reads members the same way.
+    if (
+      declaration.parameters.nodes.some(
+        (parameter) => !ts.isIdentifier(parameter.name) || parameter.initializer !== undefined,
+      )
+    )
+      return false;
+    const parameter = declaration.parameters.nodes[index];
+    if (parameter === undefined || !ts.isIdentifier(parameter.name)) return false;
+    if (parameter.dotDotDotToken !== undefined || parameter.questionToken !== undefined)
+      return false;
+    // Arguments evaluated after this one run while the copy stands: code in
+    // them may write the instance before the callee reads the copy.
+    for (let position = index + 1; position < args.length; position++) {
+      const argument = args[position];
+      if (argument !== undefined && containsProgramCode(argument, this.checker)) return false;
+    }
+    return this.readsParameterOnlyFields(declaration, parameter.name.text);
+  }
+
+  /** Whether the function whose body is inspected is the one this call runs:
+   * the callee is the function itself, the identifier of the function
+   * declaration, or the identifier of the `const` binding that holds it.
+   * A `let` binding, a property, or another binding of the same signature
+   * could run a body this analysis never saw. */
+  private fixedCallee(
+    fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+    call: ts.CallExpression | ts.NewExpression,
+  ): boolean {
+    const callee = unwrapExpression(call.expression);
+    if (callee === fn) return true;
+    if (!ts.isIdentifier(callee)) return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(callee));
+    if (ts.isFunctionDeclaration(fn))
+      return symbol?.declarations?.some((declaration) => declaration === fn) === true;
+    const parent = fn.parent;
+    const list = parent?.parent;
+    if (
+      !ts.isVariableDeclaration(parent) ||
+      parent.initializer !== fn ||
+      list === undefined ||
+      (list.flags & ts.NodeFlags.Const) === 0
+    )
+      return false;
+    return symbol?.declarations?.some((declaration) => declaration === parent) === true;
+  }
+
+  /** The body of `declaration` mentions `name` only as the receiver of a
+   * property read whose value is a primitive, and never stores, returns,
+   * passes on or compares the value itself. */
+  private readsParameterOnlyFields(
+    declaration: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+    name: string,
+  ): boolean {
+    const body = declaration.body;
+    if (body === undefined) return false;
+    const locals = new Set<string>();
+    for (const parameter of declaration.parameters.nodes)
+      if (ts.isIdentifier(parameter.name)) locals.add(parameter.name.text);
+    ts.walkPreorder(body, (node) => {
+      if (ts.isFunctionLike(node)) return "skip";
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) locals.add(node.name.text);
+      return undefined;
+    });
+    let ok = true;
+    ts.walkPreorder(body, (node) => {
+      if (!ok) return "stop";
+      if (ts.isTypeNode(node)) return "skip";
+      if (ts.isFunctionLike(node)) {
+        // A nested function that mentions the parameter captures the value,
+        // so the copy would be told apart from the instance.
+        if (mentionsBinding(node, name)) ok = false;
+        return "skip";
+      }
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      ) {
+        // Only the body's own locals may be written: a write through any
+        // other value could reach the instance. A compound assignment also
+        // coerces both sides, and a non-primitive operand runs its value
+        // hook.
+        const left = unwrapExpression(node.left);
+        if (!ts.isIdentifier(left) || !locals.has(left.text)) {
+          ok = false;
+          return "stop";
+        }
+        if (
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken &&
+          !primitiveOperands(left, node.right, this.checker)
+        ) {
+          ok = false;
+          return "stop";
+        }
+        return undefined;
+      }
+      if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      ) {
+        const operand = unwrapExpression(node.operand);
+        if (
+          !ts.isIdentifier(operand) ||
+          !locals.has(operand.text) ||
+          !primitiveNode(operand, this.checker)
+        ) {
+          ok = false;
+          return "stop";
+        }
+        return undefined;
+      }
+      // Calls, await and yield, element access, accessors, dynamic member
+      // access, iteration and value coercion can all run program code while
+      // the copy is the callee's parameter.
+      if (expressionRunsCode(node, this.checker)) {
+        ok = false;
+        return "stop";
+      }
+      if (ts.isIdentifier(node) && node.text === name) {
+        if (isMemberName(node)) return "skip";
+        const receiver = unwrapExpression(node);
+        const access = receiver.parent;
+        if (
+          access === undefined ||
+          !ts.isPropertyAccessExpression(access) ||
+          access.expression !== receiver
+        ) {
+          ok = false;
+          return "stop";
+        }
+        if (!primitiveValue(this.checker.getTypeAtLocation(access))) {
+          ok = false;
+          return "stop";
+        }
+        if (isWrittenAccess(access)) {
+          ok = false;
+          return "stop";
+        }
+        return "skip";
+      }
+      return undefined;
+    });
+    return ok;
   }
 
   /** Whether one of `names` is a member the collection type itself
@@ -881,7 +2211,9 @@ export class ClassProtocols {
    * counts when it is an existing object (a binding, member, element or
    * `this`, not a fresh literal or call result) whose type is a program
    * class instance or a record with declared properties, or a constant
-   * `{}`, `object` or `unknown` binding initialized with one. */
+   * `{}`, `object` or `unknown` binding initialized with one. A native
+   * `new Proxy(...)` counts as well, and keeps identity unconditionally:
+   * its traps are the value, so no copy could stand in for it. */
   private markDictionaryViews(
     sites: readonly {
       source: ts.Expression;
@@ -916,13 +2248,21 @@ export class ClassProtocols {
       }
       return calls.get(name) ?? [];
     };
-    const candidates: { index: number; sourceType: ts.Type }[] = [];
+    const candidates: { index: number; sourceType: ts.Type | undefined; proxy: boolean }[] = [];
     for (let i = 0; i < sites.length; i++) {
       const source = sourceNodes[i]!;
-      if (!isExistingObject(source)) continue;
+      // A native Proxy never converts by value: its traps are the object,
+      // so a dictionary slot that receives one has to keep identity. No
+      // `seen` gate follows either: a program that only reads through the
+      // proxy would otherwise keep the by-value layout that cannot hold it.
+      const proxy = this.nativeProxyConstruction(source);
+      if (!proxy && !isExistingObject(source)) continue;
       const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
-      if (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
-        candidates.push({ index: i, sourceType });
+      if (
+        proxy ||
+        (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
+      )
+        candidates.push({ index: i, sourceType, proxy });
     }
     if (candidates.length === 0) return;
     // One batch for the contextual targets of the candidate sites.
@@ -935,22 +2275,22 @@ export class ClassProtocols {
       ),
     );
     const received = new Set<ts.Type>();
-    for (const { index, sourceType } of candidates) {
+    const proxied = new Set<ts.Type>();
+    for (const { index, sourceType, proxy } of candidates) {
       const target = attempt(sites[index]!.target);
       const parts =
         target === undefined ? [] : target.isUnionType() ? ts.constituentTypes(target) : [target];
       for (const part of parts) {
         const value = this.dictionaryValueType(part);
         // A dictionary of `unknown` or `any` values is checked-dynamic already.
-        if (
-          value !== undefined &&
-          (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0 &&
-          this.dictionaryValueType(sourceType) !== value
-        )
+        if (value === undefined || (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0)
+          continue;
+        if (proxy) proxied.add(value);
+        else if (sourceType === undefined || this.dictionaryValueType(sourceType) !== value)
           received.add(value);
       }
     }
-    if (received.size === 0) return;
+    if (received.size === 0 && proxied.size === 0) return;
     // The dictionary values the program writes through or observes.
     const seen = new Set<ts.Type>();
     for (const node of [...writeNodes, ...observedNodes]) {
@@ -963,6 +2303,24 @@ export class ClassProtocols {
       }
     }
     for (const value of received) if (seen.has(value)) this.dictionaryViews.add(value);
+    for (const value of proxied) this.dictionaryViews.add(value);
+  }
+
+  /** `new Proxy(target, handler)` over the standard library's Proxy
+   * constructor: the one construction the compiler lowers to a live native
+   * proxy (expressions/native-proxy.ts), a value a dictionary cannot copy. */
+  private nativeProxyConstruction(expr: ts.Expression): boolean {
+    while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+    if (!ts.isNewExpression(expr) || !ts.isIdentifier(expr.expression)) return false;
+    if (expr.expression.text !== "Proxy") return false;
+    const symbol = attempt(() => this.checker.getSymbolAtLocation(expr.expression));
+    if (symbol === undefined || symbol.declarations === undefined) return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every((declaration) =>
+        this.isStdlibFile(ts.getSourceFileOfNode(declaration)),
+      )
+    );
   }
 
   /** Whether `source` holds an existing object that a dictionary
@@ -1112,6 +2470,28 @@ export class ClassProtocols {
     );
   }
 
+  /** An instance of a class the standard library or a declaration package
+   * provides: a type whose symbol is also a value (`class URL`, or the lib's
+   * `interface Date` with `declare var Date`) and is declared only in
+   * declaration files. A pure library interface (a data shape such as
+   * `PropertyDescriptor`) has no value side and is not one. */
+  private isLibraryClassInstance(type: ts.Type): boolean {
+    const symbol = type.getSymbol();
+    if (symbol === undefined) return false;
+    if (
+      (symbol.flags &
+        (ts.SymbolFlags.Class | ts.SymbolFlags.Variable | ts.SymbolFlags.Function)) ===
+      0
+    )
+      return false;
+    return (
+      symbol.declarations.length > 0 &&
+      symbol.declarations.every(
+        (declaration) => ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      )
+    );
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
@@ -1144,6 +2524,8 @@ export class ClassProtocols {
     if (this.isBuiltinError(type)) return true;
     // A live Pick or Omit view of a program class holds the instance itself.
     if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
+    // A homomorphic mapped view of a marked type is the live view itself.
+    if (this.mappedViewSource(type) !== null && this.protocol(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
@@ -1178,11 +2560,20 @@ export class ClassProtocols {
 
   /** Marks the structural parts of `target` that the identity-carrying
    * parts of `source` flow into. Answers whether anything new was marked. */
-  private markTarget(source: ts.Type, target: ts.Type, marked: Set<ts.Symbol>): boolean {
+  private markTarget(
+    source: ts.Type,
+    target: ts.Type,
+    marked: Set<ts.Symbol>,
+    site: { node: ts.CallExpression | ts.NewExpression; index: number } | null,
+    record: boolean,
+  ): boolean {
     if (source.isUnionType()) {
       let changed = false;
       for (const part of ts.constituentTypes(source))
-        if (this.carriesIdentity(part, marked) && this.markTarget(part, target, marked))
+        if (
+          this.carriesIdentity(part, marked) &&
+          this.markTarget(part, target, marked, site, false)
+        )
           changed = true;
       return changed;
     }
@@ -1199,13 +2590,16 @@ export class ClassProtocols {
         accepting.push(part);
       }
       let changed = false;
-      for (const part of accepting) if (this.markTarget(source, part, marked)) changed = true;
+      for (const part of accepting)
+        if (this.markTarget(source, part, marked, site, false)) changed = true;
       return changed;
     }
     if (this.checker.isArrayType(source) && this.checker.isArrayType(target)) {
       const [from] = this.checker.getTypeArguments(source as ts.TypeReference);
       const [to] = this.checker.getTypeArguments(target as ts.TypeReference);
-      return from !== undefined && to !== undefined && this.markTarget(from, to, marked);
+      return (
+        from !== undefined && to !== undefined && this.markTarget(from, to, marked, site, false)
+      );
     }
     if (!this.isStructuralTarget(target)) return false;
     const symbol = target.getSymbol();
@@ -1243,6 +2637,18 @@ export class ClassProtocols {
         const flows = facts.flows.get(from) ?? new Set<ts.Symbol>();
         flows.add(symbol);
         facts.flows.set(from, flows);
+      }
+    }
+    if (facts !== null) {
+      // Every top-level site that reaches this view is remembered: a view
+      // whose values only ever arrive as a call argument the callee reads can
+      // keep the record shape its type declares (copiedAtEverySite).
+      if (site === null || !record) facts.otherSites.add(symbol);
+      else {
+        const recorded = facts.callSites.get(symbol) ?? [];
+        if (!recorded.some((entry) => entry.node === site.node && entry.index === site.index))
+          recorded.push({ node: site.node, index: site.index, source });
+        facts.callSites.set(symbol, recorded);
       }
     }
     // A view marked earlier that becomes a collection view still changes
@@ -1298,6 +2704,18 @@ export class ClassProtocols {
     const symbol = type.getSymbol();
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
+    // A mapped view whose source cannot carry the marking was recorded
+    // itself (index): the receiver-dependent literal typed as it needs the
+    // live object, and no other view of that source does.
+    if (this.literalViews.has(type)) return true;
+    // A program type that receives island values, recorded by the type
+    // itself because it has no symbol to mark (markIslandView).
+    if (this.islandViews.has(type)) return true;
+    // A homomorphic mapped view (Partial, Pick, Omit, Readonly) has no
+    // symbol of its own to mark, so it is a view exactly when the type it
+    // maps is one.
+    const mapped = this.mappedViewSource(type);
+    if (mapped !== null && this.protocol(mapped)) return true;
     if (
       !this.pickOfProgramClass(type) &&
       (!symbol ||
@@ -1326,6 +2744,53 @@ export class ClassProtocols {
   }
 }
 
+/** How deep markReceivedView follows composites and members. The set of
+ * answered types ends every finite cycle; the bound ends a generic that
+ * names a larger instance of itself in a member (`next: List<T[]>`), and
+ * what lies beyond it stays a native record, which the crossing refuses by
+ * name. */
+const RECEIVED_VIEW_DEPTH = 32;
+
+/** The library objects a view of an island object holds as they are: byte
+ * views share their memory with the island's (viewKept). */
+const VIEWED_LIBRARY_OBJECTS: ReadonlySet<string> = new Set([
+  "ArrayBuffer",
+  "SharedArrayBuffer",
+  "Buffer",
+  "DataView",
+  "Int8Array",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float32Array",
+  "Float64Array",
+  "BigInt64Array",
+  "BigUint64Array",
+]);
+
+/** How deep declarationFileType looks into unions and element types. */
+const DECLARATION_FILE_TYPE_DEPTH = 4;
+
+/** The operators whose value is one of their operands. */
+const VALUE_SELECTING: ReadonlySet<ts.SyntaxKind> = new Set([
+  ts.SyntaxKind.QuestionQuestionToken,
+  ts.SyntaxKind.BarBarToken,
+  ts.SyntaxKind.AmpersandAmpersandToken,
+]);
+
+/** `structuredClone(value)`: the program states the copy. */
+function isStructuredClone(call: ts.CallExpression | ts.NewExpression): boolean {
+  return ts.isIdentifier(call.expression) && call.expression.text === "structuredClone";
+}
+
+/** How many rounds followIslandFlows runs at most: each round follows an
+ * island value one more call or return further, and a program hands one
+ * through only a few of its own functions before it types it. */
+const ISLAND_FLOW_ROUNDS = 8;
+
 interface FlowFacts {
   /** Types whose values reach identity comparisons, Set/Map keys, array
    * searches or whole-object observers. */
@@ -1348,6 +2813,15 @@ interface FlowFacts {
   targets: Map<ts.Symbol, ts.Type>;
   /** The marked types each marked type's values flow into. */
   flows: Map<ts.Symbol, Set<ts.Symbol>>;
+  /** The call arguments that mark each symbol: the call, the position, and
+   * the argument's type (copiedAtEverySite). */
+  callSites: Map<
+    ts.Symbol,
+    { node: ts.CallExpression | ts.NewExpression; index: number; source: ts.Type }[]
+  >;
+  /** Symbols some mark reaches through something other than a call
+   * argument: a variable, a field, a return, an array element. */
+  otherSites: Set<ts.Symbol>;
 }
 
 /** The empty answer of the symbol maps above. */
@@ -1500,6 +2974,55 @@ function inConstructor(node: ts.Node): boolean {
   return false;
 }
 
+/** SCRIPTC_NODE_ISLANDS_TRACE=views at build time prints each assertion
+ * applied to an island value, whose asserted type becomes a view: the sites
+ * where a program that copied on an assertion now reads through the handle. */
+function traceIslandViews(crossings: readonly ts.Expression[]): void {
+  const trace = process.env["SCRIPTC_NODE_ISLANDS_TRACE"];
+  if (trace === undefined || !trace.includes("views")) return;
+  for (const crossing of crossings) {
+    if (!ts.isAssertionExpression(crossing)) continue;
+    const source = ts.getSourceFileOfNode(crossing);
+    const { line } = ts.getLineAndCharacterOfPosition(source, ts.tokenStartOfNode(crossing));
+    process.stderr.write(`[node-islands] view assertion ${source.fileName}:${line + 1}\n`);
+  }
+}
+
+/** The names a file's imports and top-level `require` declarations bind. */
+function importBoundNames(source: ts.SourceFile): ReadonlySet<string> {
+  const names = new Set<string>();
+  const bound = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) names.add(name.text);
+    else if (ts.isObjectBindingPattern(name))
+      for (const element of name.elements.nodes)
+        if (element.name !== undefined) bound(element.name);
+  };
+  for (const statement of source.statements.nodes) {
+    if (ts.isImportDeclaration(statement)) {
+      const clause = statement.importClause;
+      if (clause === undefined || clause.isTypeOnly) continue;
+      if (clause.name !== undefined) names.add(clause.name.text);
+      const named = clause.namedBindings;
+      if (named === undefined) continue;
+      if (ts.isNamespaceImport(named)) names.add(named.name.text);
+      else for (const element of named.elements.nodes) names.add(element.name.text);
+    } else if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations.nodes) {
+        let init = declaration.initializer;
+        while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
+        if (
+          init !== undefined &&
+          ts.isCallExpression(init) &&
+          ts.isIdentifier(init.expression) &&
+          init.expression.text === "require"
+        )
+          bound(declaration.name);
+      }
+    }
+  }
+  return names;
+}
+
 /** A checker query that may hit an upstream checker panic: the flow scan
  * skips a site it cannot type rather than failing the build. */
 function attempt<T>(query: () => T): T | undefined {
@@ -1508,6 +3031,232 @@ function attempt<T>(query: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Ground numeric calls: they cannot run program code, so a callee that
+ * only uses them cannot observe a write to an instance it was handed. */
+const PURE_CALLS = new Set(["parseInt", "parseFloat", "isNaN", "isFinite"]);
+
+/** The identifier names a member (`o.value`), not the binding `o`. */
+function isMemberName(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (parent === undefined || ts.isShorthandPropertyAssignment(parent)) return false;
+  if ((parent as ts.Node & { name?: ts.Node }).name === node) return true;
+  return ts.isBindingElement(parent) && parent.propertyName === node;
+}
+
+/** The node with parentheses, non-null assertions and type assertions
+ * peeled off. */
+function unwrapExpression(node: ts.Node): ts.Node {
+  let outer = node;
+  for (;;) {
+    const parent = outer.parent;
+    if (parent === undefined) return outer;
+    if (
+      !ts.isParenthesizedExpression(parent) &&
+      !ts.isNonNullExpression(parent) &&
+      !ts.isAssertionExpression(parent)
+    )
+      return outer;
+    outer = parent;
+  }
+}
+
+/** A number, string, boolean, bigint, null or undefined (or a union of
+ * them): a value a record copy carries by value. */
+function primitiveValue(type: ts.Type): boolean {
+  if (type.isUnionType()) return ts.constituentTypes(type).every(primitiveValue);
+  return (
+    (type.flags &
+      (ts.TypeFlags.Number |
+        ts.TypeFlags.NumberLiteral |
+        ts.TypeFlags.String |
+        ts.TypeFlags.StringLiteral |
+        ts.TypeFlags.Boolean |
+        ts.TypeFlags.BooleanLiteral |
+        ts.TypeFlags.BigInt |
+        ts.TypeFlags.BigIntLiteral |
+        ts.TypeFlags.Null |
+        ts.TypeFlags.Undefined)) !==
+    0
+  );
+}
+
+/** Whether the property read `access` is assigned, updated or deleted. */
+function isWrittenAccess(access: ts.Expression): boolean {
+  let outer: ts.Node = access;
+  for (;;) {
+    const parent = outer.parent;
+    if (
+      parent !== undefined &&
+      (ts.isParenthesizedExpression(parent) || ts.isNonNullExpression(parent))
+    ) {
+      outer = parent;
+      continue;
+    }
+    if (parent === undefined) return false;
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === outer &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return parent.operand === outer;
+    return ts.isDeleteExpression(parent);
+  }
+}
+
+/** Whether `call` is one of the calls a copying callee may make: a numeric
+ * builtin or console printer the program does not shadow, over values of
+ * primitive type only (a coercion runs no hook on them). */
+function pureCall(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
+  const callee = call.expression;
+  const global = (node: ts.Node) => libSymbol(attempt(() => checker.getSymbolAtLocation(node)));
+  if (ts.isIdentifier(callee)) {
+    if (!PURE_CALLS.has(callee.text) || !global(callee)) return false;
+  } else if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)) {
+    const owner = callee.expression.text;
+    if (owner !== "Math" && owner !== "Number" && owner !== "console") return false;
+    if (!global(callee.expression) || !global(callee.name)) return false;
+  } else return false;
+  const args = call.arguments?.nodes ?? [];
+  return args.every((argument) => {
+    if (ts.isSpreadElement(argument)) return false;
+    const type = attempt(() => checker.getTypeAtLocation(argument));
+    return type !== undefined && primitiveValue(type);
+  });
+}
+
+/** Whether every declaration of `symbol` is in a declaration file: the
+ * binding is the library's own, not one the program shadows it with. */
+function libSymbol(symbol: ts.Symbol | undefined): boolean {
+  const declarations = symbol?.declarations;
+  return (
+    declarations !== undefined &&
+    declarations.length > 0 &&
+    declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile)
+  );
+}
+
+/** Whether evaluating `node` can run program code — a call, a constructor, a
+ * getter or a dynamic member read, an iterator, a coercion hook — and so
+ * write an instance a copy was made of. */
+function expressionRunsCode(node: ts.Node, checker: ts.TypeChecker): boolean {
+  if (ts.isCallExpression(node)) return !pureCall(node, checker);
+  if (ts.isNewExpression(node)) return true;
+  if (ts.isElementAccessExpression(node)) return true;
+  if (ts.isPropertyAccessExpression(node)) return accessRunsCode(node, checker);
+  if (ts.isTemplateExpression(node)) {
+    for (const span of node.templateSpans.nodes)
+      if (!primitiveNode(span.expression, checker)) return true;
+    return false;
+  }
+  if (ts.isBinaryExpression(node)) {
+    const operator = node.operatorToken.kind;
+    if (operator === ts.SyntaxKind.InstanceOfKeyword) return true;
+    if (operator >= ts.SyntaxKind.FirstAssignment && operator <= ts.SyntaxKind.LastAssignment)
+      return true;
+    return !primitiveOperands(node.left, node.right, checker);
+  }
+  if (ts.isPrefixUnaryExpression(node)) {
+    const operator = node.operator;
+    if (operator === ts.SyntaxKind.PlusPlusToken || operator === ts.SyntaxKind.MinusMinusToken)
+      return true;
+    if (
+      operator !== ts.SyntaxKind.PlusToken &&
+      operator !== ts.SyntaxKind.MinusToken &&
+      operator !== ts.SyntaxKind.TildeToken
+    )
+      return false;
+    return !primitiveNode(node.operand, checker);
+  }
+  if (ts.isPostfixUnaryExpression(node)) return true;
+  if (ts.isDeleteExpression(node) || ts.isAwaitExpression(node) || ts.isYieldExpression(node))
+    return true;
+  if (ts.isTaggedTemplateExpression(node)) return true;
+  if (ts.isForOfStatement(node)) return true;
+  if (ts.isSpreadElement(node) || ts.isSpreadAssignment(node)) return true;
+  return false;
+}
+
+/** Whether reading `access` can run program code: a getter, or a member of
+ * a value the analysis knows nothing static about. */
+function accessRunsCode(access: ts.PropertyAccessExpression, checker: ts.TypeChecker): boolean {
+  const symbol = attempt(() => checker.getSymbolAtLocation(access.name));
+  if (symbol === undefined) return true;
+  if ((symbol.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0) return true;
+  const receiver = valueType(access.expression, checker);
+  if (receiver === undefined) return true;
+  return (
+    (receiver.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0
+  );
+}
+
+/** Whether both operand types are primitive, so an operator between them
+ * runs no value coercion. */
+function primitiveOperands(
+  left: ts.Expression,
+  right: ts.Expression,
+  checker: ts.TypeChecker,
+): boolean {
+  return primitiveNode(left, checker) && primitiveNode(right, checker);
+}
+
+/** The type of `node`'s value, ignoring parentheses, non-null assertions and
+ * type assertions: a cast does not change what the value is at run time. */
+function valueType(node: ts.Expression, checker: ts.TypeChecker): ts.Type | undefined {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current) ||
+    ts.isNonNullExpression(current) ||
+    ts.isAssertionExpression(current)
+  )
+    current = current.expression;
+  return attempt(() => checker.getTypeAtLocation(current));
+}
+
+/** Whether the value of `node` has a primitive type, so coercing it runs no
+ * value hook. */
+function primitiveNode(node: ts.Expression, checker: ts.TypeChecker): boolean {
+  const type = valueType(node, checker);
+  return type !== undefined && primitiveValue(type);
+}
+
+/** Whether `root` contains an expression that runs program code. */
+function containsProgramCode(root: ts.Node, checker: ts.TypeChecker): boolean {
+  let runs = false;
+  ts.walkPreorder(root, (node) => {
+    if (runs) return "stop";
+    if (ts.isTypeNode(node)) return "skip";
+    if (ts.isFunctionLike(node)) return "skip";
+    // A class body's computed keys and static fields run when the class is
+    // evaluated.
+    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
+      runs = true;
+      return "stop";
+    }
+    if (expressionRunsCode(node, checker)) {
+      runs = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return runs;
+}
+
+/** Whether `node` mentions the binding `name`. */
+function mentionsBinding(node: ts.Node, name: string): boolean {
+  let found = false;
+  ts.walkPreorder(node, (child) => {
+    if (found) return "stop";
+    if (ts.isIdentifier(child) && child.text === name && !isMemberName(child)) {
+      found = true;
+      return "stop";
+    }
+    return undefined;
+  });
+  return found;
 }
 
 /** The static property name a member declares, or null for a computed key

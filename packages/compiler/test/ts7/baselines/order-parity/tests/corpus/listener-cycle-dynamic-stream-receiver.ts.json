@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/listener-cycle-dynamic-stream-receiver.ts"
+ ],
+ "diags": []
+}

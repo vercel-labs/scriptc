@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-namespace-reexport/cst.ts",
+  "<repo>/tests/corpus/module-namespace-reexport/dist.ts",
+  "<repo>/tests/corpus/module-namespace-reexport/browser.ts",
+  "<repo>/tests/corpus/module-namespace-reexport/main.ts"
+ ],
+ "diags": []
+}

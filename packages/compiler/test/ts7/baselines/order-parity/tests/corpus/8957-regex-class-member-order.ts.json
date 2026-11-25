@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8957-regex-class-member-order.ts"
+ ],
+ "diags": []
+}

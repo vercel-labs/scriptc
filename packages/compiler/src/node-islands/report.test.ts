@@ -21,6 +21,7 @@ function mod(pkg: string | null, file: string, markers: NodeIslandMarker[] = [])
     packageName: pkg,
     markers,
     cjsReads: [],
+    globalReads: [],
     stripProblem: null,
     dropped: false,
   };
@@ -37,6 +38,7 @@ function edge(from: string | null, to: string): PackageEdge {
     to,
     toDir: `${NM}/${to}`,
     shim: false,
+    loads: true,
     loc: { file: from === null ? "/app/main.ts" : `${NM}/${from}/index.js`, start: 0, end: 1 },
   };
 }
@@ -80,7 +82,7 @@ function report(
     npm,
     diagnostics: [],
     fences,
-    policy: nodeIslandPolicy(config, options),
+    policy: nodeIslandPolicy(config, options, "/app/main.ts"),
   });
 }
 
@@ -161,7 +163,7 @@ describe("user modules", () => {
       "/app/package.json",
       JSON.stringify({ scriptc: { nodeIslands: { modules: ["src/plugins/**/*.ts"] } } }),
     );
-    const policy = nodeIslandPolicy(config, { islands: ["/app/src/legacy.js"] });
+    const policy = nodeIslandPolicy(config, { islands: ["/app/src/legacy.js"] }, "/app/main.ts");
     expect(isMarkedUserModule(policy, "/app/src/plugins/a/loader.ts")).toBe("config");
     expect(isMarkedUserModule(policy, "/app/src/legacy.js")).toBe("cli");
     expect(isMarkedUserModule(policy, "/app/src/main.ts")).toBe(null);
@@ -187,7 +189,7 @@ describe("user modules", () => {
         npm: [],
         diagnostics: [],
         fences: [],
-        policy: nodeIslandPolicy(emptyProjectConfig(), { strictUserJs }),
+        policy: nodeIslandPolicy(emptyProjectConfig(), { strictUserJs }, file),
       });
     expect(build(false).userJs).toEqual([]);
     expect(build(true).userJs.map((d) => d.code)).toEqual(["SC8101", "SC8105"]);
@@ -219,7 +221,7 @@ describe("reachability", () => {
       npm: [],
       diagnostics: [],
       fences: [],
-      policy: nodeIslandPolicy(emptyProjectConfig(), options),
+      policy: nodeIslandPolicy(emptyProjectConfig(), options, "/app/main.ts"),
     });
 
   test("a marked user module owns the packages only it imports", () => {

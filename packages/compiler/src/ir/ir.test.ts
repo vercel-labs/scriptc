@@ -5,10 +5,12 @@ import {
   F64,
   HANDLE_KINDS,
   BYTES_ELEMENT_NAME,
+  adoptsAtTypedSlot,
   bytesOf,
   canConvertToDyn,
   canDynCheckTo,
   type IrBytesElem,
+  holdsFieldlessRecord,
   isJsonSafeType,
   iterableArmsElem,
   isJsonStringifySafeType,
@@ -19,6 +21,8 @@ import {
   POINTER_KINDS,
   STRING,
   arrayOf,
+  sortArms,
+  sortArmsTotal,
   typeEquals,
   typeKey,
 } from "./ir.js";
@@ -86,6 +90,27 @@ describe("IR kind sets", () => {
     const surplus = { kind: "func" as const, params: [STRING], ret: STRING, rest: true as const };
     expect(typeEquals(full, surplus)).toBe(false);
     expect(typeKey(full)).toBe("func(string,arguments[])=>string");
+  });
+
+  test("distinguishes a typed rest array from the arguments array after it", () => {
+    const packed = arrayOf(STRING);
+    const both = {
+      kind: "func" as const,
+      params: [packed],
+      ret: STRING,
+      rest: true as const,
+      restAbi: "typed" as const,
+      argumentsAll: true as const,
+    };
+    const rest = {
+      kind: "func" as const,
+      params: [packed],
+      ret: STRING,
+      rest: true as const,
+      restAbi: "typed" as const,
+    };
+    expect(typeEquals(both, rest)).toBe(false);
+    expect(typeKey(both)).toBe("func(array<string>,...typed[],arguments[])=>string");
   });
 });
 
@@ -399,6 +424,60 @@ describe("recursive checked graphs", () => {
     expect(canDynCheckTo({ kind: "record", shapeId: "unsafeContext" }, record, union)).toBe(false);
     expect(canDynCheckTo({ kind: "record", shapeId: "unsafeOptions" }, record, union)).toBe(false);
   });
+
+  test("a union reached again through its own function arm ends", () => {
+    // `type Step = (() => Step) | number`: the cycle passes through a union
+    // and a function type, with no record on it.
+    const step: IrType = { kind: "union", unionId: "step" };
+    const stepFn: IrType = { kind: "func", params: [], ret: step };
+    const steps = new Map<string, IrUnionDef>([["step", { id: "step", arms: [F64, stepFn] }]]);
+    const stepUnion = (id: string): IrUnionDef | undefined => steps.get(id);
+    expect(canDynCheckTo(step, record, stepUnion)).toBe(true);
+    expect(canDynCheckTo(stepFn, record, stepUnion)).toBe(true);
+    expect(canConvertToDyn(stepFn, record, stepUnion)).toBe(true);
+  });
+
+  test("a failed alternative inside a recursive record keeps the record in progress", () => {
+    // The method's generator parameter fails the composite walk before the
+    // generator rule accepts it; that failure clears the query's results,
+    // and must not clear the mark of the record being checked.
+    const chain: IrType = { kind: "record", shapeId: "chain" };
+    const chains = new Map<string, IrRecordShape>([
+      [
+        "chain",
+        {
+          id: "chain",
+          fields: [
+            {
+              name: "feed",
+              type: {
+                kind: "func",
+                params: [
+                  {
+                    kind: "generator",
+                    yieldT: F64,
+                    retT: { kind: "void" },
+                    nextT: { kind: "undefinedT" },
+                  },
+                ],
+                ret: chain,
+              },
+            },
+            { name: "total", type: F64 },
+          ],
+        },
+      ],
+    ]);
+    expect(canDynCheckTo(chain, (id) => chains.get(id), union)).toBe(true);
+  });
+
+  test("a union whose function arm returns it and whose other arm does not convert is refused", () => {
+    const loop: IrType = { kind: "union", unionId: "loop" };
+    const loops = new Map<string, IrUnionDef>([
+      ["loop", { id: "loop", arms: [{ kind: "func", params: [], ret: loop }, { kind: "jsval" }] }],
+    ]);
+    expect(canConvertToDyn(loop, record, (id) => loops.get(id))).toBe(false);
+  });
 });
 
 describe("checked conversion graph traversal", () => {
@@ -473,5 +552,157 @@ describe("checked conversion graph traversal", () => {
     expect(
       canConvertToDyn({ kind: "record", shapeId: "child" }, getRecord, () => undefined, visiting),
     ).toBe(false);
+  });
+});
+
+describe("arm sorting", () => {
+  // A deliberately mixed list: every kind typeKey distinguishes, a shared
+  // object twice (equal keys), and funcs whose keys differ only in their
+  // rest ABI spelling.
+  const pool = (): IrType[] => [
+    F64,
+    STRING,
+    DYN,
+    arrayOf(F64),
+    arrayOf(STRING),
+    { kind: "map", key: STRING, value: F64 },
+    { kind: "set", elem: STRING },
+    { kind: "record", shapeId: "r1" },
+    { kind: "record", shapeId: "r0" },
+    { kind: "union", unionId: "u9" },
+    { kind: "object", className: "B" },
+    { kind: "object", className: "A" },
+    { kind: "promise", inner: F64 },
+    { kind: "generator", yieldT: F64, retT: F64, nextT: F64 },
+    { kind: "func", params: [F64], ret: F64 },
+    { kind: "func", params: [F64], ret: F64, rest: true },
+    { kind: "func", params: [F64], ret: F64, rest: true, restAbi: "typed" },
+    { kind: "undefinedT" },
+    { kind: "nullT" },
+    { kind: "classval", className: "A" },
+    { kind: "moduleNs", moduleId: "m2" },
+  ];
+  const shuffled = (n: number): IrType[] => {
+    const base = pool();
+    const arms: IrType[] = [];
+    let seed = 12345;
+    for (let i = 0; i < n; i++) {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      arms.push(base[seed % base.length]!);
+    }
+    return arms;
+  };
+  const inlineOrder = (arms: IrType[]): number[] => {
+    const copy = [...arms];
+    copy.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    return copy.map((arm) => arms.indexOf(arm));
+  };
+  const inlineTotalOrder = (arms: IrType[]): number[] => {
+    const copy = [...arms];
+    copy.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : typeKey(a) > typeKey(b) ? 1 : 0));
+    return copy.map((arm) => arms.indexOf(arm));
+  };
+
+  test("sorts arms by key in place and returns the same array", () => {
+    const arms = shuffled(64);
+    const before = arms.map(typeKey).sort();
+    expect(sortArms(arms)).toBe(arms);
+    expect(arms.map(typeKey)).toEqual(before);
+  });
+
+  test("leaves the order the inline comparator produces, ties included", () => {
+    for (const n of [2, 3, 5, 8, 17, 40, 64]) {
+      const arms = shuffled(n);
+      expect(sortArms([...arms]).map((arm) => arms.indexOf(arm))).toEqual(inlineOrder(arms));
+    }
+  });
+
+  test("the total-order form leaves the order the three-way comparator produces", () => {
+    for (const n of [2, 3, 5, 8, 17, 40, 64]) {
+      const arms = shuffled(n);
+      expect(sortArmsTotal([...arms]).map((arm) => arms.indexOf(arm))).toEqual(
+        inlineTotalOrder(arms),
+      );
+    }
+  });
+
+  test("keeps arms with equal keys in input order in the total-order form", () => {
+    const record = { kind: "record", shapeId: "r0" } as const;
+    const arms: IrType[] = [record, F64, record, STRING, record];
+    // "f64" < "record:r0" < "string": the three equal-key records stay in
+    // the order they appear in.
+    expect(sortArmsTotal(arms)).toEqual([F64, record, record, record, STRING]);
+    expect(arms.map((arm) => arm.kind)).toEqual(["f64", "record", "record", "record", "string"]);
+  });
+
+  test("passes empty and single-arm lists through untouched", () => {
+    const empty: IrType[] = [];
+    expect(sortArms(empty)).toBe(empty);
+    expect(sortArmsTotal(empty)).toBe(empty);
+    const one: IrType[] = [STRING];
+    expect(sortArms(one)).toBe(one);
+    expect(sortArmsTotal(one)).toBe(one);
+  });
+});
+
+describe("the types a typed slot's conversion adopts its source for", () => {
+  const record = (shapeId: string): IrType => ({ kind: "record", shapeId });
+  const union = (unionId: string): IrType => ({ kind: "union", unionId });
+  const shapeList: IrRecordShape[] = [
+    { id: "cell", fields: [{ name: "x", type: F64 }] },
+    { id: "empty", fields: [] },
+    { id: "byKey", fields: [], indexValue: F64 },
+    { id: "byKeyEmpty", fields: [], indexValue: union("emptyOrNumber") },
+    { id: "box", fields: [{ name: "slot", type: union("emptyOrNumber") }] },
+    { id: "node", fields: [{ name: "next", type: union("nodeOrNumber") }] },
+    { id: "pair", tuple: true, fields: [{ name: "0", type: record("empty") }] },
+  ];
+  const unionList: IrUnionDef[] = [
+    { id: "cellOrNumber", arms: [F64, record("cell")] },
+    { id: "emptyOrNumber", arms: [F64, record("empty")] },
+    { id: "cellOrEmpty", arms: [record("cell"), record("empty")] },
+    { id: "nodeOrNumber", arms: [F64, record("node")] },
+    { id: "numberOrString", arms: [F64, STRING] },
+  ];
+  const shapes = new Map<string, IrRecordShape>();
+  for (const shape of shapeList) shapes.set(shape.id, shape);
+  const unions = new Map<string, IrUnionDef>();
+  for (const def of unionList) unions.set(def.id, def);
+  const getRecord = (id: string): IrRecordShape | undefined => shapes.get(id);
+  const getUnion = (id: string): IrUnionDef | undefined => unions.get(id);
+  const holds = (t: IrType): boolean => holdsFieldlessRecord(t, getRecord, getUnion);
+  const adopts = (t: IrType): boolean => adoptsAtTypedSlot(t, getRecord, getUnion);
+
+  test("a record, an array and a union of them adopt", () => {
+    for (const t of [record("cell"), arrayOf(F64), arrayOf(record("cell")), union("cellOrNumber")])
+      expect([holds(t), adopts(t)]).toEqual([false, true]);
+    // An index signature has a place for every key: it is not a record
+    // without fields.
+    expect([holds(record("byKey")), adopts(record("byKey"))]).toEqual([false, true]);
+    // A type that revisits itself ends, and its fields decide.
+    expect([holds(record("node")), adopts(record("node"))]).toEqual([false, true]);
+  });
+
+  test("a type that can hold a record without fields keeps the copy", () => {
+    // The empty literal's arm of a union, alone, beside a record with
+    // fields, as an element, as a field, as an index signature's value and
+    // as a tuple's position: adopted, the source would lose every property.
+    for (const t of [
+      record("empty"),
+      union("emptyOrNumber"),
+      union("cellOrEmpty"),
+      arrayOf(union("emptyOrNumber")),
+      arrayOf(arrayOf(record("empty"))),
+      record("box"),
+      arrayOf(record("box")),
+      record("byKeyEmpty"),
+      record("pair"),
+    ])
+      expect([holds(t), adopts(t)]).toEqual([true, false]);
+  });
+
+  test("a type without a live capsule does not adopt either way", () => {
+    for (const t of [F64, STRING, DYN, union("numberOrString")])
+      expect([holds(t), adopts(t)]).toEqual([false, false]);
   });
 });

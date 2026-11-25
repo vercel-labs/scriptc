@@ -1,0 +1,92 @@
+{
+	"name": "chalk",
+	"version": "6.0.1",
+	"description": "Terminal string styling done right",
+	"license": "MIT",
+	"repository": "chalk/chalk",
+	"funding": "https://github.com/chalk/chalk?sponsor=1",
+	"type": "module",
+	"exports": {
+		"types": "./source/index.d.ts",
+		"default": "./source/index.js"
+	},
+	"imports": {
+		"#ansi-styles": "./source/vendor/ansi-styles/index.js",
+		"#supports-color": {
+			"node": "./source/vendor/supports-color/index.js",
+			"default": "./source/vendor/supports-color/browser.js"
+		}
+	},
+	"sideEffects": false,
+	"engines": {
+		"node": ">=22"
+	},
+	"scripts": {
+		"test": "xo && c8 ava && tsc --noEmit --types node source/index.d.ts",
+		"bench": "matcha benchmark.js"
+	},
+	"files": [
+		"source"
+	],
+	"keywords": [
+		"color",
+		"colour",
+		"colors",
+		"terminal",
+		"console",
+		"cli",
+		"string",
+		"ansi",
+		"style",
+		"styles",
+		"tty",
+		"formatting",
+		"rgb",
+		"256",
+		"shell",
+		"xterm",
+		"log",
+		"logging",
+		"command-line",
+		"text"
+	],
+	"devDependencies": {
+		"@types/node": "^26.1.1",
+		"ansi-styles": "^6.2.3",
+		"ava": "^8.0.1",
+		"c8": "^12.0.0",
+		"color-convert": "^3.1.3",
+		"execa": "^10.0.0",
+		"log-update": "^8.0.0",
+		"matcha": "^0.7.0",
+		"typescript": "^6.0.3",
+		"xo": "^4.0.0",
+		"yoctodelay": "^2.0.0"
+	},
+	"xo": [
+		{
+			"ignores": [
+				"source/vendor"
+			]
+		},
+		{
+			"rules": {
+				"unicorn/prefer-string-slice": "off",
+				"@typescript-eslint/consistent-type-imports": "off",
+				"@typescript-eslint/consistent-type-exports": "off",
+				"@typescript-eslint/consistent-type-definitions": "off",
+				"unicorn/expiring-todo-comments": "off",
+				"no-warning-comments": "off"
+			}
+		}
+	],
+	"c8": {
+		"reporter": [
+			"text",
+			"lcov"
+		],
+		"exclude": [
+			"source/vendor"
+		]
+	}
+}

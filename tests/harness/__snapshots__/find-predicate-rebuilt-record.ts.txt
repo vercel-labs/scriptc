@@ -1,0 +1,13 @@
+find-predicate-rebuilt-record.ts:21:30 - error SC1090: narrowing '.find' to '{ grams: number; label: string }' with a written type predicate (a '{ label: string } | undefined' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type) is not supported yet
+
+  20 | 
+  21 | const weighed = parcels.find((parcel): parcel is WeighedParcel => "grams" in parcel);
+     |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | console.log(weighed?.grams);
+
+find-predicate-rebuilt-record.ts:28:30 - error SC1090: narrowing '.findLast' to '{ grams: number; label: string }' with a written type predicate (a '{ label: string } | undefined' element has no checked conversion that answers the element itself; annotate the return ': boolean' to keep the receiver's element type) is not supported yet
+
+  27 | // The same search with a guard function passed by name, from the end.
+  28 | console.log(parcels.findLast(isWeighed)?.label);
+     |                              ^~~~~~~~~
+  29 | 

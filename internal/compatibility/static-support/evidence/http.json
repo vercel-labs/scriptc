@@ -1,0 +1,3 @@
+{
+    "node-builtin.http": ["tests/corpus/1780-http-res-surface.ts", "tests/corpus/2672-http-request-response-callback.ts", "tests/corpus/2700-http-static-trailers.ts", "tests/corpus/2701-http-static-trailer-wire.ts", "tests/corpus/2702-http-static-trailer-end.ts", "tests/corpus/2957-http-static-response-controls.ts", "tests/fixtures/server/cases/http-trailers/main.ts"]
+}

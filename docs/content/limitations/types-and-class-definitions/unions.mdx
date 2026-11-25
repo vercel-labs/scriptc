@@ -3,4 +3,5 @@
   Same-representation methods on class unions, `map` and `forEach` on array unions, and shared or joinable field reads compile.
   `console.log(u)` supports printing a whole union.
   A union may hold one promise beside other members, such as `T | Promise<T>` or `Promise<R | void> | R | void`: `await`, an async function's `return`, `Promise.resolve`, and `instanceof Promise` act on the member it holds, with Node's microtask timing.
+  `instanceof` against one of the program's classes answers for the member the union holds as well, and is false for the promise.
   A promise member beside a member that declares `then`, two promise members in one union, and `console.log` of a union holding a promise are unsupported.

@@ -13,6 +13,7 @@ import {
   funcOf,
 } from "../../ir/ir.js";
 import { numLit } from "../../ir/build.js";
+import { requireLiveBytes } from "./buffers.js";
 import { transformStmtList } from "../../ir/traverse.js";
 
 type SortLocal = IrExpr & { kind: "varRef" };
@@ -820,13 +821,20 @@ function recognizeKeyTerm(fn: IrFunction, value: IrExpr): SortKeyOrder | null {
 }
 
 /** The keys of a comparator closure: a zero-capture closure (not a
- * signature adapter) over a lifted function recognizeKeyComparator accepts. */
+ * signature adapter) over a lifted function recognizeKeyComparator accepts.
+ * `liftedFnNamed` finds the lifted function by name (Lowerer.liftedFnNamed).
+ * It is a function, not a record with that member: the compiler lowers its
+ * own source, and while the parameter was a record type every caller handed
+ * the Lowerer itself over as a dynamic value, which kept the Lowerer and
+ * each class its fields reach in the dynamic tier of the compiler's own
+ * build (see Lowerer.isStdlibFile). Pass
+ * `(name) => lowerer.liftedFnNamed(name)`. */
 export function closureKeyOrder(
-  liftedFns: readonly IrFunction[],
+  liftedFnNamed: (name: string | undefined) => IrFunction | undefined,
   closure: IrExpr,
 ): readonly SortKeyOrder[] | null {
   if (closure.kind !== "closure" || closure.captures.length > 0 || closure.adapts) return null;
-  const fn = liftedFns.find((lifted) => lifted.name === closure.fnName);
+  const fn = liftedFnNamed(closure.fnName);
   return fn ? recognizeKeyComparator(fn) : null;
 }
 
@@ -1120,6 +1128,10 @@ export function buildBytesSortFn(
   copyFirst: boolean,
   order: 1 | -1 | null,
   loc: SrcLoc,
+  /** The method name whose detached-receiver TypeError Node raises before
+   * the sort reads %TypedArrayLength (`sort`/`toSorted`); null keeps the
+   * historic body. */
+  guardMethod: string | null = null,
 ): IrFunction {
   const b = new SortIr(loc);
   const a = b.local("a", type),
@@ -1138,6 +1150,7 @@ export function buildBytesSortFn(
   const body: IrStmt[] = copyFirst
     ? [b.bind(src, { kind: "bytesIntrinsic", method: "slice", receiver: a, args: [], type, loc })]
     : [];
+  if (guardMethod !== null) body.unshift(requireLiveBytes(a, guardMethod, loc));
   const compare: IrStmt[] =
     f === null ? [] : [{ kind: "exprStmt", expr: intrinsic("sortCompare", f), loc }];
   if (f === null) body.push({ kind: "exprStmt", expr: intrinsic("sortNumeric", b.num(0)), loc });

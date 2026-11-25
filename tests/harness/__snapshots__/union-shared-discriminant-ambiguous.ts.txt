@@ -1,0 +1,8 @@
+union-shared-discriminant-ambiguous.ts:22:8 - error SC2003: union conversion has no unambiguous layout mapping: expected '{ callId: string; input: unknown; parentId: string | undefined; partial: unknown; type: string } | { callId: string; input: unknown; parentId: string | undefined; type: string } | { type: string }', got '{ callId: string; input: unknown; type: string } | { type: string }' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  21 | function handle(event: Event): void {
+  22 |   emit(event);
+     |        ^~~~~
+  23 | }
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's

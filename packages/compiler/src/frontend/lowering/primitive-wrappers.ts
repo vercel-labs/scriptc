@@ -18,9 +18,11 @@ import {
   type IrStmt,
   type SrcLoc,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
+import type { FunctionCensus } from "./function-census.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
 
 export type WrapperKind = "String" | "Number" | "Boolean";
@@ -141,7 +143,7 @@ export function lowerWrapperNew(lowerer: Lowerer, expr: ts.NewExpression): IrExp
  * `constructor` property (the interned closures `x === String` compares). */
 export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
   return (["String", "Number", "Boolean"] as const).map((name) =>
-    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc, true), DYN),
+    lowerer.coerceToExpected(primitiveCtorClosure(lowerer, name, loc), DYN),
   );
 }
 
@@ -151,22 +153,33 @@ export function wrapperConstructors(lowerer: Lowerer, loc: SrcLoc): IrExpr[] {
  * compare). Until they know the slot, a wrapper reaching one refuses: each
  * dynamic argument passes through wrapper.guard, which throws the
  * not-supported Error when the value's own data graph holds a wrapper. */
-const GUARDED_CONSUMERS: ReadonlySet<string> = new Set([
+export const GUARDED_CONSUMERS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "json.stringifyValue",
   "json.stringifyReplacer",
   "util.isDeepStrictEqual",
-  "dyn.structuredClone",
   "assert.looseDeepDyn",
   "assert.partialDeepDyn",
   "console.dirDyn",
+  "console.dirHidden",
   "insp.format",
   "insp.formatPrimitives",
   "insp.formatList",
   "insp.formatWithOptions",
   "insp.inspect",
+  "insp.inspectDir",
   "insp.dynS",
   "insp.dynFormatS",
 ]);
+
+/** The library entry points that routeWrapperConsumers retargets besides
+ * GUARDED_CONSUMERS. */
+const ROUTED_ENTRY_POINTS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
+  "dyn.objectTag",
+  "util.typeIs",
+]);
+
+/** The intrinsics whose dynamic arguments routeWrapperConsumers guards. */
+const GUARDED_INTRINSICS: readonly string[] = ["console.log", "console.error", "console.trace"];
 
 /** util.types brands that read the [[PrimitiveValue]] slot. */
 const WRAPPER_TYPE_PROBES: ReadonlySet<string> = new Set([
@@ -177,7 +190,7 @@ const WRAPPER_TYPE_PROBES: ReadonlySet<string> = new Set([
 ]);
 
 /** The consumer as the refusal names it. */
-function consumerName(fn: string): string {
+export function consumerName(fn: string): string {
   if (fn.startsWith("json.")) return "JSON.stringify";
   if (fn === "dyn.structuredClone") return "structuredClone";
   if (fn === "util.isDeepStrictEqual") return "util.isDeepStrictEqual";
@@ -203,7 +216,11 @@ function guarded(arg: IrExpr, fn: string): IrExpr {
  * brands answer from the slot (wrapper.objectTag, wrapper.typeIs), and the
  * graph-walking consumers above guard their dynamic arguments. Programs
  * without a wrapper site keep every node unchanged. */
-export function routeWrapperConsumers(lowerer: Lowerer, functions: IrFunction[]): void {
+export function routeWrapperConsumers(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   if (!(lowerer.createsWrappers ??= programCreatesWrappers(lowerer))) return;
   const transform = {
     expr: (expr: IrExpr): IrExpr => {
@@ -218,16 +235,22 @@ export function routeWrapperConsumers(lowerer: Lowerer, functions: IrFunction[])
         if (GUARDED_CONSUMERS.has(expr.fn))
           return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.fn)) };
       }
-      if (
-        expr.kind === "intrinsic" &&
-        (expr.name === "console.log" || expr.name === "console.error")
-      )
+      if (expr.kind === "intrinsic" && GUARDED_INTRINSICS.includes(expr.name))
         return { ...expr, args: expr.args.map((arg) => guarded(arg, expr.name)) };
       return expr;
     },
     stmt: (stmt: IrStmt): IrStmt => stmt,
   };
-  for (const fn of functions) fn.body = transformStmtList(fn.body, transform);
+  // The transform reaches only the entry points and intrinsics above.
+  for (const fn of functions) {
+    if (
+      !census.hasAnyLibFn(fn, GUARDED_CONSUMERS) &&
+      !census.hasAnyLibFn(fn, ROUTED_ENTRY_POINTS) &&
+      !census.hasAnyIntrinsic(fn, GUARDED_INTRINSICS)
+    )
+      continue;
+    fn.body = transformStmtList(fn.body, transform);
+  }
 }
 
 /** `Object(x)` / `new Object(x)` over a checked-dynamic `x` in a program

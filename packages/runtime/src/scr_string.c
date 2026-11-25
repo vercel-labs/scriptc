@@ -102,7 +102,7 @@ typedef struct ScrSidx {
   bool points_complete;  /* points cover every stride of indexed prefix */
   uint32_t walks;        /* index walks before the offsets exist */
   uint16_t *units;       /* the UTF-16 code units, once reads warrant them */
-  uint32_t nunits;       /* units and offsets need at most 1 << 24 bytes */
+  uint32_t nunits;       /* the unit count, at most the byte length */
   uint32_t reads;        /* indexed reads that missed the unit array */
   ScrSidxOffsets *offsets; /* every unit's byte offset, once walks warrant */
 } ScrSidx; /* 128 bytes on 64-bit targets: every lookup clears or copies one */
@@ -234,6 +234,52 @@ static void scr_sidx_purge(const ScrStr *s) {
   if (scr_sidx_active) scr_sidx_purge_active(s);
 }
 
+/* The lazy half of the proven-ASCII fact, for a text whose builder cannot
+ * cheaply know (a JSON document). The header has no room for a third state,
+ * but one exists beside it: a string that is not ASCII, or is being walked,
+ * owns an index entry or a length slot, and a string with neither is
+ * unknown. The first .length of an unknown string scans it, 32 bytes a
+ * step, before any index is claimed, so the usual all-ASCII document is
+ * marked by its first reader and no builder pays for readers that never
+ * come.
+ *
+ * A marked string must own no index entry: release skips the purge of a
+ * marked string, so a mark set beside a live entry would leave that entry
+ * to answer for the next string at this address. A length slot that a
+ * producer noted is dropped for the same reason. Immortal strings are
+ * shared across threads and may be read-only, so they are never written;
+ * every other string belongs to one thread.
+ *
+ * Only the builder of such texts refers to this function: it installs it
+ * as scr_str_lazy_ascii when it finishes a document (scr_jb_finish), every
+ * thread the same value, and a program that finishes none links no proof
+ * and keeps the index walk for its unknown strings. */
+bool scr_str_prove_ascii(ScrStr *s) {
+  /* Only a text of more than 64 bytes is ever asked (a shorter one is
+   * counted directly), so the scan needs no byte loop: whole 32-byte steps,
+   * then the last 32 bytes again. */
+  size_t n = s->len;
+  if (s->rc == SIZE_MAX || n < 32) return false;
+  if (scr_sidx_active) {
+    for (int i = 0; i < SCR_SIDX_N; i++) {
+      if (scr_sidx_sparse_tab[i].s == s || scr_sidx_cursor_tab[i].s == s) return false;
+    }
+  }
+  const uint64_t high = UINT64_C(0x8080808080808080);
+  uint64_t w[4];
+  for (size_t i = 0; n - i >= 32; i += 32) {
+    memcpy(w, s->data + i, sizeof w);
+    if ((w[0] | w[1] | w[2] | w[3]) & high) return false;
+  }
+  memcpy(w, s->data + n - 32, sizeof w);
+  if ((w[0] | w[1] | w[2] | w[3]) & high) return false;
+  scr_u16len_forget(s);
+  s->ascii = 1;
+  return true;
+}
+
+bool (*scr_str_lazy_ascii)(ScrStr *s) = NULL;
+
 static void scr_sidx_init(ScrSidx *e, const ScrStr *s, unsigned *live) {
   memset(e, 0, sizeof(*e));
   e->s = s;
@@ -357,7 +403,7 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
   if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
-  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
+  ScrStr *s = scr_mem_alloc_ref(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
@@ -465,12 +511,40 @@ ScrStr *scr_str_alloc_raw(size_t len, size_t cap) {
   return s;
 }
 
+/* A symbol event name's registry key (scr_string.h): a ScrStr-shaped
+ * identity key with len == SIZE_MAX and the ScrSym* in its bytes. Emissions
+ * of a symbol-named event make one per call, so it is a plain small
+ * allocation on the ordinary string refcount — the audit's live count
+ * stays exact — and the release path's short-string, index and spare-block
+ * caches all decline it (len far above the cache window, ascii proven). */
+ScrStr *scr_str_symbol_key(ScrSym *sym) {
+  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + sizeof sym);
+  if (!s) scr_oom();
+  s->rc = 1;
+  s->len = SIZE_MAX;
+  s->cap = 0;
+  s->ascii = 1; /* no char index to purge: the bytes are a pointer */
+#if SCR_STR_HASH_CACHE
+  s->hash = 0;
+#endif
+  memcpy(s->data, &sym, sizeof sym);
+#ifdef SCR_RC_AUDIT
+  scr_live_strings++;
+#endif
+  return s;
+}
+
+/* The symbol unit's table for the emitter's symbol-keyed buckets
+ * (scr_string.h); scr_symbol.c installs it from a constructor. NULL in a
+ * program without symbols — a symbol-keyed bucket cannot exist there. */
+const ScrSymEventOps *scr_sym_event_ops = NULL;
+
 ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
   if (newcap < s->len || newcap > SCR_STR_MAX_CAP) scr_oom();
   scr_short_forget(s);
   scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc_ref(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -758,10 +832,134 @@ ScrStr *scr_str_concat_mixed(ScrStr *head, ScrStr *const *parts, const double *n
   return scr_str_concat_mixed_bytes(head, parts, nums, count);
 }
 
-ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
+/* The consuming concat `text = text + piece` (scr_str_concat_move): the
+ * caller hands over its reference to a, so a string nobody else holds
+ * (rc == 1) is appended to in its own block, which grows itself once it is
+ * large (SCR_STR_GROW_OWNED_MIN).
+ * Everything below is linked only by a program that appends this way;
+ * scr_str_concat, the concat of two live strings, is not part of it. */
+
+/* scr_copy_bytes for an appended piece: up to 64 bytes move as two
+ * overlapping fixed-size halves, so the usual short piece of an append loop
+ * (a word, a tag, a number's text) costs no libc call. */
+static inline void scr_copy_piece(char *dst, const char *src, size_t n) {
+  if (n <= 16) {
+    scr_copy_bytes(dst, src, n);
+  } else if (n <= 32) {
+    uint64_t head[2], tail[2];
+    memcpy(head, src, 16);
+    memcpy(tail, src + n - 16, 16);
+    memcpy(dst, head, 16);
+    memcpy(dst + n - 16, tail, 16);
+  } else if (n <= 64) {
+    uint64_t head[4], tail[4];
+    memcpy(head, src, 32);
+    memcpy(tail, src + n - 32, 32);
+    memcpy(dst, head, 32);
+    memcpy(dst + n - 32, tail, 32);
+  } else {
+    memcpy(dst, src, n);
+  }
+}
+
+/* The capacity from which a full block that the caller owns alone grows
+ * itself: grown by half it is past the size at which the allocator makes a
+ * growing block a run of pages (scr_mem_realloc_ref, 128 KiB), which grows
+ * in place up to its last chunk and by moving its pages beyond. A smaller
+ * block's regrow is a copy into a second block, as scr_str_concat's is, with
+ * a reallocation's bookkeeping on top, so a full small block stays
+ * scr_str_concat's. */
+#define SCR_STR_GROW_OWNED_MIN ((size_t)128 << 10)
+
+/* Room for `more` further bytes in a string the caller owns alone and is
+ * consuming: the block itself grows (in place where the allocator can
+ * extend it, by moving its pages beyond) instead of being copied
+ * into a second block, by the slack scr_str_concat gives a copy, so a text
+ * holds no more memory than one built there. The bytes do not change, so a
+ * proven-ASCII fact survives the regrow's reset. */
+static ScrStr *scr_str_grow_owned(ScrStr *a, size_t more) {
+  if (more > SCR_STR_MAX_CAP - a->len) scr_oom();
+  size_t need = a->len + more;
+  size_t grown = (size_t)a->cap + (a->cap >> 1) + 16;
+  if (grown > SCR_STR_MAX_CAP) grown = SCR_STR_MAX_CAP;
+  bool ascii = a->ascii;
+  a = scr_str_regrow(a, grown > need ? grown : need);
+  if (ascii) a->ascii = 1;
+  return a;
+}
+
+/* The concat of two live strings, then the moved reference's release: every
+ * append that is not made in place. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_release(ScrStr *a, ScrStr *b) {
   ScrStr *r = scr_str_concat(a, b);
   scr_str_release(a);
   return r;
+}
+
+/* Two strings that are not proven ASCII can complete a surrogate pair at
+ * their seam (scr_str_concat's test): that concat is not an append. */
+static inline bool scr_str_seam_joins(const ScrStr *a, const ScrStr *b) {
+  return __builtin_expect(scr_wtf8_any(), 0) && !a->ascii && !b->ascii &&
+         scr_wtf8_joins(a->data, a->len, b->data, b->len);
+}
+
+/* The in-place append of every case the leaf below does not take: a
+ * non-empty piece into the block of a non-empty text that only the moved
+ * reference holds and that has room (the caller's tests). The reference
+ * moves through to the result with no count change. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_move_general(ScrStr *a, ScrStr *b) {
+  if (scr_str_seam_joins(a, b)) return scr_str_concat_release(a, b);
+  size_t alen = a->len, blen = b->len;
+  bool ascii = a->ascii && b->ascii;
+  scr_short_forget(a);
+  scr_str_hash_forget(a);
+  scr_copy_bytes(a->data + alen, b->data, blen);
+  a->len = alen + blen;
+  a->data[alen + blen] = '\0';
+  a->ascii = ascii;
+  /* As in scr_str_concat's in-place append: the facts below the old end
+   * stay valid, the cached length does not. */
+  if (!ascii) scr_sidx_concat_append(a, alen);
+  return a;
+}
+
+/* A full block of at least SCR_STR_GROW_OWNED_MIN that only the moved
+ * reference holds: it grows itself and takes the piece in place. */
+static __attribute__((noinline)) ScrStr *scr_str_concat_move_full(ScrStr *a, ScrStr *b) {
+  if (a == b || a->len - 1 >= (size_t)a->cap) return scr_str_concat_release(a, b);
+  return scr_str_concat_move_general(scr_str_grow_owned(a, b->len), b);
+}
+
+ScrStr *scr_str_concat_move(ScrStr *a, ScrStr *b) {
+  /* A shared or immortal text is never appended to, and a full block
+   * below the size that grows itself is copied with slack: both are what
+   * this function was before the in-place paths, a test or two later. */
+  if (a->rc != 1) return scr_str_concat_release(a, b);
+  size_t alen = a->len, blen = b->len, cap = (size_t)a->cap;
+  if (cap - alen < blen) {
+    if (cap >= SCR_STR_GROW_OWNED_MIN) return scr_str_concat_move_full(a, b);
+    return scr_str_concat_release(a, b);
+  }
+  if (a == b) return scr_str_concat_release(a, b); /* `s = s + s` */
+  /* The step of an append loop as a leaf: a proven-ASCII piece of 1 to 64
+   * bytes appended to a proven-ASCII text of more than four bytes (a
+   * shorter one may own a short-string cache entry, which must be
+   * forgotten; the test also refuses a symbol key, whose length is
+   * SIZE_MAX and whose capacity is 0). Nothing here calls out, so this
+   * function needs no frame on this path. A proven-ASCII text owns no index
+   * facts, so its cached key hash is the only fact the append invalidates. */
+  if ((a->ascii & b->ascii) && alen - 5 < cap && blen - 1 < 64) {
+#if SCR_STR_HASH_CACHE
+    a->hash = 0;
+#endif
+    scr_copy_piece(a->data + alen, b->data, blen);
+    a->len = alen + blen;
+    a->data[alen + blen] = '\0';
+    return a; /* the reference moves through */
+  }
+  /* An empty side is scr_str_concat's. */
+  if (blen == 0 || alen - 1 >= cap) return scr_str_concat_release(a, b);
+  return scr_str_concat_move_general(a, b);
 }
 
 ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code) {
@@ -771,12 +969,16 @@ ScrStr *scr_str_concat_move_char_code(ScrStr *a, double code) {
      * ASCII if it was, and a non-ASCII string's index facts below the old
      * end stay valid (scr_sidx_concat_append). */
     size_t oldlen = a->len;
+    /* scr_str_hash_forget clears the proven-ASCII fact with the hash; an
+     * ASCII byte appended to a proven-ASCII string keeps it. */
+    bool ascii = a->ascii;
     scr_short_forget(a);
     scr_str_hash_forget(a);
     a->data[oldlen] = (char)cp;
     a->len = oldlen + 1;
     a->data[oldlen + 1] = '\0';
-    if (!a->ascii) scr_sidx_concat_append(a, oldlen);
+    a->ascii = ascii;
+    if (!ascii) scr_sidx_concat_append(a, oldlen);
     return a;
   }
   ScrStr *c = scr_str_from_char_code_one(code);
@@ -1045,6 +1247,8 @@ static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
+ScrStr *scr_str_empty_value(void) { return scr_str_empty(); }
+
 /* Empty/ASCII characters are immortal; tiny spans share live heap strings. */
 static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   if (len == 0) return scr_str_empty();
@@ -1063,6 +1267,8 @@ static ScrStr *scr_str_from_span(const char *bytes, size_t len) {
   }
   return scr_str_new(bytes, len);
 }
+
+ScrStr *scr_str_intern_span(const char *bytes, size_t len) { return scr_str_from_span(bytes, len); }
 
 /* scr_str_from_span for a span of a proven-ASCII string: the result is
  * ASCII without another scan. */
@@ -1656,17 +1862,33 @@ static inline size_t scr_u16_to_byte_c(const ScrStr *s, ScrSidx *e, size_t u16,
 /* Index walks on one long non-ASCII receiver (slices, substrings and
  * indexed reads taken across it) each step through bytes from the nearest
  * known position. Once those walks would have paid for one pass over the
- * receiver (a walk per 32 bytes, at least 64 walks), a receiver from
- * SCR_SIDX_MIN_BYTES to SCR_SIDX_OFFSETS_MAX bytes keeps every unit's byte
- * offset: a 32-bit base per 64 units and one byte per unit past it (64 units
- * span at most 192 bytes). The low half of an astral character has its high
- * half's offset. The offsets are freed with the entry, and an append drops
- * them (scr_sidx_concat_append). */
+ * receiver (a walk per 32 bytes, at least 64 walks), a receiver keeps every
+ * unit's byte offset while that table fits the per-receiver budget: a 32-bit
+ * base per 64 units and one byte per unit past it (64 units span at most 192
+ * bytes), about 1.07 bytes per byte of receiver data. The low half of an
+ * astral character has its high half's offset. The offsets are freed with
+ * the entry, and an append drops them (scr_sidx_concat_append). */
 #define SCR_SIDX_OFFSET_BLOCK ((size_t)64)
-#define SCR_SIDX_OFFSETS_MAX ((size_t)1 << 24)
+#define SCR_SIDX_OFFSETS_BUDGET ((size_t)64 << 20)
+/* The largest receiver whose table fits the budget. Units never outnumber
+ * bytes, so it is at most one byte per byte of data plus one 32-bit base per
+ * 64 units, and the last 68 bytes cover the header and the rounding. Every
+ * walk consults this bound, so it is one comparison. */
+#define SCR_SIDX_OFFSETS_MAX_LEN                                     \
+  (((SCR_SIDX_OFFSETS_BUDGET - 68) * SCR_SIDX_OFFSET_BLOCK) /        \
+   (SCR_SIDX_OFFSET_BLOCK + sizeof(uint32_t)))
+_Static_assert(SCR_SIDX_OFFSETS_MAX_LEN +
+                       (SCR_SIDX_OFFSETS_MAX_LEN / SCR_SIDX_OFFSET_BLOCK + 1) * sizeof(uint32_t) +
+                       64 <=
+                   SCR_SIDX_OFFSETS_BUDGET,
+               "the largest offsets receiver's table fits the budget");
+/* Whether the offsets for a receiver of `len` bytes fit the budget. */
+static inline bool scr_sidx_offsets_fit(size_t len) {
+  return len <= SCR_SIDX_OFFSETS_MAX_LEN;
+}
 static bool scr_sidx_offsets(const ScrStr *s, ScrSidx *e) {
   if (e->offsets) return true;
-  if (s->len < SCR_SIDX_MIN_BYTES || s->len > SCR_SIDX_OFFSETS_MAX) return false;
+  if (s->len < SCR_SIDX_MIN_BYTES || !scr_sidx_offsets_fit(s->len)) return false;
   if (++e->walks < 64 || (size_t)e->walks * 32 < s->len) return false;
   size_t n = scr_sidx_len(s, e);
   if (s->ascii || e->u16len == s->len) return false;
@@ -1747,6 +1969,14 @@ static size_t scr_sidx_walk_from(const ScrStr *s, ScrSidx *e, size_t cu, size_t 
 
 static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, ScrSidx *e,
                                                              size_t u16, bool *mid) {
+  /* An index at or past a known length (the end of `s.slice(k)`, which is
+   * the length itself) is the byte length. Walking to it would index the
+   * whole string first: the rest of a text cut again and again paid one
+   * pass over that rest for every cut. An unknown length is SIZE_MAX. */
+  if (u16 >= e->u16len) {
+    *mid = false;
+    return s->len;
+  }
   if (scr_sidx_offsets(s, e)) {
     *mid = false;
     if (u16 >= e->offsets->n) return s->len;
@@ -1969,10 +2199,12 @@ static inline bool scr_needle_halves_pairs(const ScrStr *n) {
       0);
 }
 
-/* The UTF-16 code units of s (malloc'd); *n gets their count. */
-static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
+/* The UTF-16 code units of s (malloc'd); *n gets their count. NULL when the
+ * allocation fails, so a caller that can fall back does not have to treat
+ * exhausted memory as fatal. */
+static uint16_t *scr_str_units_try(const ScrStr *s, size_t *n) {
   uint16_t *u = malloc((s->len + 1) * sizeof *u); /* units <= bytes */
-  if (!u) scr_oom();
+  if (!u) return NULL;
   size_t k = 0;
   for (size_t i = 0; i < s->len;) {
     size_t adv;
@@ -1989,27 +2221,49 @@ static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
   return u;
 }
 
+static uint16_t *scr_str_units(const ScrStr *s, size_t *n) {
+  uint16_t *u = scr_str_units_try(s, n);
+  if (!u) scr_oom();
+  return u;
+}
+
 /* Indexed reads of one non-ASCII receiver (charCodeAt/charAt scans) map
  * UTF-16 units to bytes through the cursor and checkpoints. Once its
  * reads would have paid for converting it (one read per 16 bytes), a
- * receiver up to SCR_SIDX_UNITS_MAX units keeps its code units in its
- * entry and reads become loads. The bound admits source texts of several
- * megabytes, which scanners read in full. The array is freed with the
- * entry, and an append drops it (scr_sidx_concat_append). */
-#define SCR_SIDX_UNITS_MAX ((size_t)1 << 24)
-static void scr_sidx_take_units(const ScrStr *s, ScrSidx *e) {
+ * receiver keeps its code units in its entry while the array fits the
+ * per-receiver budget: at most two bytes per byte of UTF-8 data, since
+ * units never outnumber bytes. That admits source texts of tens of
+ * megabytes, which scanners read in full. The array is sized by byte
+ * length (the upper bound of the unit count, so multi-byte data leaves
+ * only untouched pages) and freed with the entry; an append drops it
+ * (scr_sidx_concat_append). */
+#define SCR_SIDX_UNITS_BUDGET ((size_t)96 << 20)
+/* The largest receiver whose unit array fits the budget. A loop entry
+ * consults this bound once, before it weighs a pass over the receiver. */
+#define SCR_SIDX_UNITS_MAX_LEN (SCR_SIDX_UNITS_BUDGET / sizeof(uint16_t) - 1)
+_Static_assert((SCR_SIDX_UNITS_MAX_LEN + 1) * sizeof(uint16_t) <= SCR_SIDX_UNITS_BUDGET,
+               "the largest units receiver's array fits the budget");
+/* Whether the unit array of a receiver of `len` bytes fits the budget. */
+static inline bool scr_sidx_units_fit(size_t len) {
+  return len <= SCR_SIDX_UNITS_MAX_LEN;
+}
+static bool scr_sidx_take_units(const ScrStr *s, ScrSidx *e) {
   size_t n = 0;
-  e->units = scr_str_units(s, &n);
+  uint16_t *u;
+  if (!scr_sidx_units_fit(s->len)) return false;
+  u = scr_str_units_try(s, &n);
+  if (!u) {
+    /* Wait another read interval before retrying under memory pressure. */
+    e->reads = 0;
+    return false;
+  }
+  e->units = u;
   e->nunits = (uint32_t)n;
+  return true;
 }
 
-static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
-  if (!e->units) {
-    if (s->len > SCR_SIDX_UNITS_MAX || ++e->reads < 32 || (size_t)e->reads * 16 < s->len)
-      return false;
-    scr_sidx_take_units(s, e);
-  }
-  /* Publish the scan's receiver for emitted reads (scr_runtime.h). */
+/* Publish the scan's receiver for emitted reads (scr_runtime.h). */
+static inline bool scr_sidx_publish(const ScrStr *s, ScrSidx *e) {
   if (scr_str_scan.s != s) {
     scr_str_scan.s = s;
     scr_str_scan.units = e->units;
@@ -2018,23 +2272,56 @@ static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
   return true;
 }
 
+/* A receiver past this size converts only from a loop entry, which knows the
+ * range the loop reads. A bare count of reads cannot weigh the pass it would
+ * buy: a strided scan that reads one unit per 17 bytes still performs close
+ * to one read per 16 bytes, so the count would convert a receiver the loop
+ * rarely touches. Converting such a receiver is only worth it when the
+ * entry reports a range that covers it. */
+#define SCR_SIDX_COUNTED_MAX ((size_t)1 << 24)
+
+/* Count one indexed read toward the threshold and convert when it is
+ * reached. The threshold is one read per 16 bytes and at least 32 reads, so
+ * reaching it has already cost about a pass over the receiver. */
+static bool scr_sidx_units(const ScrStr *s, ScrSidx *e) {
+  if (!e->units) {
+    if (s->len > SCR_SIDX_COUNTED_MAX || ++e->reads < 32 ||
+        (size_t)e->reads * 16 < s->len)
+      return false;
+    if (!scr_sidx_take_units(s, e)) return false;
+  }
+  return scr_sidx_publish(s, e);
+}
+
 /* A loop about to read s (bytes-loop-versions.ts) between the indexes
  * `from` and `to` (NaN: no bound) converts it at once instead of after the
- * threshold's reads, and publishes it as the scan's receiver, when that
- * range has at least one unit per 16 bytes of s (the threshold's ratio).
- * A shorter loop, such as one over a line of a source text, counts as one
- * read, so a short loop does not keep all of a long string's units. ASCII
- * receivers and receivers past SCR_SIDX_UNITS_MAX publish nothing; the
- * caller compares scr_str_scan.s with s. */
-void scr_str_scan_units_for(ScrStr *s, double from, double to) {
-  if (s->ascii || s->len > SCR_SIDX_UNITS_MAX) return;
+ * threshold's reads, and publishes it as the scan's receiver, when the loop
+ * reads s at least once per 16 bytes (the threshold's ratio). `step` is the
+ * loop counter's stride (NaN when the loop is not counted); a stride above
+ * 16 puts the read rate below that ratio, so a strided loop over a long
+ * string keeps walking bytes instead of paying a full pass at entry. A loop
+ * that runs to the string's own length reports no bound: its range is s
+ * itself, read once per stride, so it covers the whole receiver and a pass
+ * over it pays for itself. A loop with a known bound but no stride (a
+ * bounded while loop) converts at entry when that range is dense enough and
+ * counts its reads otherwise.
+ *
+ * A loop that declines counts as one indexed read, so a receiver the loops
+ * keep touching still converts once their reads would have paid for a pass;
+ * no single strided loop pays for one at its entry. ASCII receivers publish
+ * nothing; the caller compares scr_str_scan.s with s. */
+void scr_str_scan_units_for(ScrStr *s, double from, double to, double step) {
+  if (s->ascii) return;
   ScrSidx *e = scr_sidx(s);
   if (!e->units) {
-    if (fabs(to - from) * 16 < (double)s->len) {
+    double span = fabs(to - from);
+    if (isnan(span)) span = (double)s->len;
+    bool sparse = step >= 1.0 && span / step * 16 < (double)s->len;
+    if (sparse || span * 16 < (double)s->len) {
       (void)scr_sidx_units(s, e);
       return;
     }
-    scr_sidx_take_units(s, e);
+    if (!scr_sidx_take_units(s, e)) return;
   }
   if (scr_str_scan.s != s) {
     scr_str_scan.s = s;
@@ -2132,6 +2419,10 @@ double scr_str_utf16_len(ScrStr *s) {
     return (double)(int64_t)last->u16len; /* lengths fit int64_t */
   ScrU16Len *slot = scr_u16len_slot(s);
   if (slot && slot->s == s) return (double)(int64_t)slot->units;
+  /* The walk below proves an all-ASCII string too, at several times the
+   * cost of the scan a program with unscanned texts installs. */
+  bool (*lazy)(ScrStr *) = __atomic_load_n(&scr_str_lazy_ascii, __ATOMIC_RELAXED);
+  if (lazy && lazy(s)) return (double)s->len;
   size_t units = scr_sidx_len(s, scr_sidx(s));
   /* The walk may prove the string ASCII, which needs no slot. */
   if (s->ascii) return (double)(int64_t)units;
@@ -2533,9 +2824,14 @@ static ScrStr *scr_str_slice_units(ScrStr *s, ScrSidx *e,
     ScrStr *result = scr_str_from_span(s->data + from_b, content_len);
     /* Unit boundaries already prove the exact output length. Preserve it
      * instead of decoding a potentially megabyte-sized copy on .length.
-     * Index checkpoints remain lazy and owned by the result's cache slot. */
-    if (content_len >= SCR_SIDX_MIN_BYTES && !result->ascii)
-      scr_sidx(result)->u16len = to - from;
+     * Index checkpoints remain lazy and owned by the result's cache slot;
+     * a result below the index's size keeps its length in the length
+     * table, so the next slice of it (the rest of a text, cut again) does
+     * not count it either. */
+    if (!result->ascii) {
+      if (content_len >= SCR_SIDX_MIN_BYTES) scr_sidx(result)->u16len = to - from;
+      else scr_str_note_utf16_len(result, to - from);
+    }
     return result;
   }
 
@@ -2614,6 +2910,10 @@ ScrStr *scr_str_trim(ScrStr *s) {
     e = cs;
   }
   return scr_str_from_span(s->data + b, e - b);
+}
+
+ScrStr *scr_str_ascii_char(unsigned code) {
+  return (ScrStr *)&scr_ascii1[code & 0x7f];
 }
 
 ScrStr *scr_str_char_at(ScrStr *s, double i) {
@@ -3128,7 +3428,64 @@ ScrStr *scr_str_replace_chars(ScrStr *s, ScrStr *chars, ScrStr *texts) {
   return out;
 }
 
+/* replace / replaceAll of one byte by plain text. A one-byte needle is an
+ * ASCII character, and `hit` is its first match. The matches are counted
+ * first, so the result is allocated once at its exact size. Declines
+ * (NULL) a replacement that expands `$` or that could complete a surrogate
+ * pair at a seam (an empty one, or one with a lone surrogate at either
+ * end): scr_str_replace_bytes keeps those. */
+static ScrStr *scr_str_replace_byte(ScrStr *s, const char *hit, char c, ScrStr *rep, bool all) {
+  size_t rl = rep->len;
+  if (rl == 0 || (unsigned char)rep->data[0] == 0xED ||
+      (rl >= 3 && (unsigned char)rep->data[rl - 3] == 0xED) || memchr(rep->data, '$', rl) != NULL)
+    return NULL;
+  const char *end = s->data + s->len;
+  size_t count = 1;
+  if (all)
+    for (const char *p = hit + 1; (p = memchr(p, c, (size_t)(end - p))) != NULL; p++) count++;
+  if (count > (SCR_STR_MAX_CAP - s->len) / rl) scr_oom();
+  size_t len = s->len - count + count * rl;
+  ScrStr *out = scr_str_alloc_raw(len, len);
+  char *to = out->data;
+  const char *from = s->data;
+  for (size_t k = 0;;) {
+    size_t gap = (size_t)(hit - from);
+    scr_copy_bytes(to, from, gap);
+    to += gap;
+    scr_copy_bytes(to, rep->data, rl);
+    to += rl;
+    from = hit + 1;
+    if (++k == count) break;
+    hit = memchr(from, c, (size_t)(end - from));
+  }
+  scr_copy_bytes(to, from, (size_t)(end - from));
+  out->len = len;
+  /* A spare block may be far larger than the result (as in
+   * scr_str_replace_bytes). */
+  if (out->cap - len > len / 4 + 64) out = scr_str_regrow(out, len);
+  out->data[len] = '\0';
+  scr_str_hash_forget(out);
+  if (s->ascii && rep->ascii) scr_str_note_ascii(out);
+  return out;
+}
+
+static __attribute__((noinline)) ScrStr *scr_str_replace_literal_long(ScrStr *s, ScrStr *search,
+                                                                      ScrStr *rep, bool all);
+
+/* A one-character search value takes one memchr; a subject without it is
+ * returned as it is, with no allocation. */
 ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all) {
+  if (search->len == 1) {
+    const char *hit = memchr(s->data, search->data[0], s->len);
+    if (!hit) return scr_str_retain(s);
+    ScrStr *out = scr_str_replace_byte(s, hit, search->data[0], rep, all);
+    if (out) return out;
+  }
+  return scr_str_replace_literal_long(s, search, rep, all);
+}
+
+static __attribute__((noinline)) ScrStr *scr_str_replace_literal_long(ScrStr *s, ScrStr *search,
+                                                                      ScrStr *rep, bool all) {
   if (search->len) return scr_str_replace_bytes(s, search->data, search->len, rep, all);
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -3659,6 +4016,8 @@ static ScrStr *scr_encode_uri_impl(ScrStr *s, bool keep_reserved) {
   }
   out->len = out_len;
   out->data[out_len] = '\0';
+  /* Every byte written is an unescaped ASCII character, '%' or a hex digit. */
+  scr_str_note_ascii(out);
   return out;
 }
 
@@ -3839,6 +4198,8 @@ ScrStr *scr_str_encode_uri_component(ScrStr *s) {
     }
   }
   out->data[out->len] = '\0';
+  /* Every byte written is an unreserved ASCII character, '%' or a hex digit. */
+  scr_str_note_ascii(out);
   return out;
 }
 

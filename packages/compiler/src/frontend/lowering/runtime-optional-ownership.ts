@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** Program queries for the array-ownership proof. */
 export interface OwnershipHost {
@@ -134,7 +135,7 @@ export class ArrayOwnership {
   }
 
   private rootOf(node: ts.Expression): Root | null {
-    const e = peel(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isIdentifier(e)) {
       const symbol = this.host.symbolOf(e);
       const declaration = symbol ? this.host.declarationOf(symbol) : undefined;
@@ -244,7 +245,7 @@ export class ArrayOwnership {
     )
       return this.isFreshArray(user.right);
     if (ts.isCallExpression(user) && user.arguments.nodes[0] === use) {
-      const callee = peel(user.expression);
+      const callee = withoutParenthesesTypeWrappers(user.expression);
       return (
         ts.isPropertyAccessExpression(callee) &&
         ((callee.name.text === "hasOwn" && this.host.isGlobal(callee.expression, "Object")) ||
@@ -303,10 +304,10 @@ export class ArrayOwnership {
   }
 
   private isFreshArray(node: ts.Expression): boolean {
-    const e = peel(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isArrayLiteralExpression(e)) return true;
     if (!ts.isNewExpression(e) && !ts.isCallExpression(e)) return false;
-    const callee = peel(e.expression);
+    const callee = withoutParenthesesTypeWrappers(e.expression);
     if (ts.isIdentifier(callee)) return this.host.isGlobal(callee, "Array");
     if (!ts.isPropertyAccessExpression(callee)) return false;
     const method = callee.name.text;
@@ -332,7 +333,7 @@ export class ArrayOwnership {
           if (list) list.push(node.expression);
           else this.namedAccesses.set(node.name.text, [node.expression]);
         } else if (ts.isElementAccessExpression(node)) {
-          const key = peel(node.argumentExpression);
+          const key = withoutParenthesesTypeWrappers(node.argumentExpression);
           if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
             const list = this.literalKeyAccesses.get(key.text);
             if (list) list.push(node.expression);
@@ -341,7 +342,7 @@ export class ArrayOwnership {
         } else if (ts.isSpreadAssignment(node)) this.copiedObjects.push(node.expression);
         else if (ts.isForInStatement(node)) this.reflected.push(node.expression);
         else if (ts.isCallExpression(node)) {
-          const callee = peel(node.expression);
+          const callee = withoutParenthesesTypeWrappers(node.expression);
           const walker =
             ts.isPropertyAccessExpression(callee) &&
             (this.host.isGlobal(callee.expression, "Object") ||
@@ -382,17 +383,4 @@ function usesArguments(fn: ts.FunctionExpression): boolean {
   };
   if (fn.body !== undefined) ts.forEachChild(fn.body, visit);
   return found;
-}
-
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
 }

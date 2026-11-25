@@ -1,0 +1,14 @@
+{
+  "name": "wsrecords",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "dependencies": {
+    "wstypes": "workspace:*"
+  }
+}

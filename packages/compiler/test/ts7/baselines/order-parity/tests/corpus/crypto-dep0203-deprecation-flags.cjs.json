@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/crypto-dep0203-deprecation-flags.cjs"
+ ],
+ "diags": []
+}

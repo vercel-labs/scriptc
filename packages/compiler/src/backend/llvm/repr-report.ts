@@ -1,9 +1,9 @@
 /* The representation report (SCRIPTC_REPR_REPORT=<file>): after a module is
  * emitted, one tab-separated line per class field, function parameter,
- * function result and union, naming the storage the backend chose for it
- * and, for numbers kept as doubles, the reason the int32 analysis recorded
- * (int32-slots.ts Int32Slots.reasons). It is a diagnostic for ranking
- * representation work; nothing reads it back. */
+ * function result, captured binding and union, naming the storage the
+ * backend chose for it and, for numbers kept as doubles, the reason the
+ * int32 analysis recorded (int32-slots.ts Int32Slots.reasons). It is a
+ * diagnostic for ranking representation work; nothing reads it back. */
 import { writeFileSync } from "node:fs";
 import { typeKey, type IrFunction, type IrModule, type IrType } from "../../ir/ir.js";
 import type { LlEmitter } from "./emitter.js";
@@ -86,6 +86,28 @@ export function representationReport(emitter: LlEmitter): string {
     } else if (ret.kind === "union" && abi?.union === true) storage = "register pair";
     else storage = unionStorage(ret) ?? scalarStorage(ret);
     row("return", fn.name, "", typeLabel(ret), storage, reason);
+  }
+
+  // Captured bindings: a `binding` is declared by its function, a `capture`
+  // arrives through its closure's environment. Each is a shared box, or
+  // holds its value in place (value-captures.ts).
+  for (const fn of mod.functions) {
+    const received = emitter.valueCaptures.slots(fn.name);
+    const plain = emitter.valueCaptures.plain(fn);
+    const captured = new Map((fn.captures ?? []).map((c, index) => [c.localId, index]));
+    for (const local of fn.locals) {
+      if (local.boxed !== true) continue;
+      const index = captured.get(local.id);
+      const value = index === undefined ? plain.has(local.id) : received.has(index);
+      row(
+        index === undefined ? "binding" : "capture",
+        fn.name,
+        local.name,
+        typeLabel(local.type),
+        value ? "value" : "box",
+        "",
+      );
+    }
   }
 
   for (const def of mod.unions ?? [])

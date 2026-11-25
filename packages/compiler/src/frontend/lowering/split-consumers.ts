@@ -1,7 +1,7 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { IrExpr } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
-import { stripValueWrappers } from "./binding-analysis.js";
 import { identifiersNamed } from "./identifier-uses.js";
 
 /** A fresh split array is dense. A stored result has the same guarantee
@@ -14,7 +14,7 @@ export function isPrivateSplitConsumer(
 ): boolean {
   if (iterable.type.kind !== "array" || iterable.type.elem.kind !== "string") return false;
   if (iterable.kind === "strIntrinsic" && iterable.method === "split") return true;
-  const name = stripValueWrappers(source);
+  const name = withoutParenthesesTypeWrappers(source);
   if (!ts.isIdentifier(name) || iterable.kind !== "varRef") return false;
   const symbol = lowerer.resolveValueSymbol(name);
   if (!symbol) return false;
@@ -31,7 +31,7 @@ export function isPrivateSplitConsumer(
     (decl.parent.flags & ts.NodeFlags.Const) === 0
   )
     return false;
-  const init = stripValueWrappers(decl.initializer);
+  const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (
     !ts.isCallExpression(init) ||
     init.questionDotToken ||

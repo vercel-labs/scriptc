@@ -18,10 +18,18 @@ declare module "http2" {
   export interface Http2ServerRequest {
     readonly url: string;
     readonly method: string;
+    /* The trailer block the request carried (empty before the request
+     * ends): a record of joined values, and the raw [name, value, ...]
+     * list after 'end'. */
+    readonly trailers: IncomingHttpHeaders;
+    readonly rawTrailers: string[];
     readonly statusCode: number | undefined;
     readonly socket: Socket;
     readonly headers: { [name: string]: string | undefined };
-    readonly stream: Http2Stream;
+    readonly stream: ServerHttp2Stream;
+    /* The request's :authority and :scheme pseudo-headers. */
+    readonly authority: string;
+    readonly scheme: string;
     /* The h2 compat request's version triple ("2.0" over real h2 streams;
      * the allowHTTP1 lowering's HTTP/1.1 connections answer 1.x). */
     readonly httpVersion: string;
@@ -54,11 +62,15 @@ declare module "http2" {
      * response IS this parser's response handle. */
     statusCode: number;
     statusMessage: string;
-    setHeader(name: string, value: string | number): void;
-    getHeader(name: string): string | undefined;
+    setHeader(name: string, value: number | string | readonly string[]): void;
+    /* Node answers the value as set (a number, string or string[]), and the
+     * ":status" a writeHead stores is a number. */
+    getHeader(name: string): string | number | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): import("http").OutgoingHttpHeaders;
+    /* the stream's idle timeout; the callback is a 'timeout' listener */
+    setTimeout(msecs: number, callback?: () => void): void;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     writeHead(
@@ -70,8 +82,10 @@ declare module "http2" {
       statusMessage: string,
       headers?: import("http").OutgoingHttpHeaders | string[],
     ): Http2ServerResponse;
-    writeContinue(): void;
-    writeEarlyHints(hints: Record<string, string | string[]>): void;
+    writeContinue(): boolean;
+    writeEarlyHints(hints: Record<string, string | string[]>): boolean;
+    /* A 1xx block before the response starts: 100..199 (never 101). */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     write(data: string | Uint8Array): void;
     flushHeaders(): void;
     cork(): void;
@@ -91,6 +105,7 @@ declare module "http2" {
   }
   export interface Http2SecureServer {
     listen(port: number, callback?: () => void): void;
+    listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
@@ -116,13 +131,7 @@ declare module "http2" {
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
-    on(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    on(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     once(event: "connection", listener: (socket: Socket) => void): void;
     once(
       event: "request",
@@ -136,13 +145,7 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     once(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     addListener(event: "connection", listener: (socket: Socket) => void): void;
     addListener(
       event: "request",
@@ -161,10 +164,7 @@ declare module "http2" {
     addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
     addListener(
       event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
+      listener: (req: any, resOrSocket: any, head?: Buffer) => void,
     ): void;
   }
   export interface SecureServerOptions {
@@ -460,6 +460,7 @@ declare module "http2" {
     destroy(): void;
     readonly closed: boolean;
     readonly destroyed: boolean;
+    readonly connecting: boolean;
     readonly encrypted: boolean;
     readonly type: number;
     readonly alpnProtocol: string;
@@ -468,7 +469,14 @@ declare module "http2" {
     ref(): void;
     unref(): void;
     setTimeout(msecs: number, callback?: () => void): void;
-    ping(callback: (err: Error | null, duration: number, payload: Uint8Array) => void): boolean;
+    /* A cancelled ping (sent while connecting, after close(), or open when
+     * the session goes away) calls back with the error alone, as Node
+     * does: duration and payload are then undefined. */
+    ping(callback: (err: Error | null, duration?: number, payload?: Buffer) => void): boolean;
+    ping(
+      payload: Uint8Array,
+      callback: (err: Error | null, duration?: number, payload?: Buffer) => void,
+    ): boolean;
     /* The settings surface rides the checked-dynamic machinery (records
      * cross as dyn values — the suite's mustCall listeners are dyn). */
     settings(settings?: any, callback?: any): void;
@@ -558,10 +566,16 @@ declare module "http2" {
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly pending: boolean;
+    /* END_STREAM rode the initial HEADERS block; the writable side's
+     * buffered bytes (flow-control withheld). */
+    readonly endAfterHeaders: boolean;
+    readonly bufferSize: number;
     readonly aborted: boolean;
     readonly session: Http2Session;
-    readonly sentHeaders: OutgoingHttpHeaders;
-    readonly state: Record<string, number>;
+    readonly sentHeaders: any;
+    readonly sentInfoHeaders: any;
+    readonly sentTrailers: any;
+    readonly state: any;
     write(chunk: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;
@@ -634,15 +648,32 @@ declare module "http2" {
       headers?: OutgoingHttpHeaders,
       options?: { endStream?: boolean; waitForTrailers?: boolean },
     ): void;
+    /* respondWithFile(path[, headers[, options]]) and respondWithFD: the
+     * stat and statCheck run on a later turn, then the bytes stream within
+     * the peer's windows. statCheck cancels the response on an explicit
+     * false; its record carries the stat's numeric fields (size, mode,
+     * dev, ino, nlink, uid, gid). */
     respondWithFile(
       path: string,
       headers?: OutgoingHttpHeaders,
-      options?: Record<string, unknown>,
+      options?: {
+        offset?: number;
+        length?: number;
+        waitForTrailers?: boolean;
+        statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
+      },
     ): void;
     respondWithFD(
       fd: number,
       headers?: OutgoingHttpHeaders,
-      options?: Record<string, unknown>,
+      options?: {
+        offset?: number;
+        length?: number;
+        waitForTrailers?: boolean;
+        statCheck?: (stat: any, headers: any) => boolean;
+        onError?: (err: any) => void;
+      },
     ): void;
     pushStream(
       headers: OutgoingHttpHeaders,
@@ -658,6 +689,9 @@ declare module "http2" {
   }
 
   export interface ClientHttp2Stream extends Http2StreamCore {
+    on(event: "continue", listener: () => void): void;
+    once(event: "continue", listener: () => void): void;
+    addListener(event: "continue", listener: () => void): void;
     on(event: "response", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     on(event: "push", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
     on(event: "headers", listener: (headers: IncomingHttpHeaders, flags: number) => void): void;
@@ -753,6 +787,11 @@ declare module "http2" {
     on(event: "close" | "listening" | "timeout", listener: () => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    /* HTTP CONNECT, as on the secure server above: the compatibility
+     * response on an HTTP/2 stream, the raw socket on an HTTP/1.1
+     * (allowHTTP1) connection. Without this declaration a JavaScript
+     * listener infers the neighboring 'stream' overload's parameters. */
+    on(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     once(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -766,6 +805,7 @@ declare module "http2" {
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     addListener(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -781,6 +821,10 @@ declare module "http2" {
     addListener(
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
+    addListener(
+      event: "connect",
+      listener: (req: any, resOrSocket: any, head?: Buffer) => void,
     ): void;
   }
 
@@ -807,7 +851,8 @@ declare module "http2" {
   ): ClientHttp2Session;
 
   export function getDefaultSettings(): any;
-  export function getPackedSettings(settings: Record<string, number | boolean>): Uint8Array;
+  export function getPackedSettings(settings?: any): Buffer;
+  export function getUnpackedSettings(buf: Uint8Array): any;
   export const sensitiveHeaders: unique symbol;
 }
 

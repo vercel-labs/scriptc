@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8735-replaced-method-late-prototype.ts"
+ ],
+ "diags": []
+}

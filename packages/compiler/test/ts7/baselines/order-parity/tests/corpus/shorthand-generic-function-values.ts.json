@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/shorthand-generic-function-values.ts"
+ ],
+ "diags": []
+}

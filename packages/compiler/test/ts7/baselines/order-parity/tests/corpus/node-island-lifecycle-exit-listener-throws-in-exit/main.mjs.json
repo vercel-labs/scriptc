@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-exit-listener-throws-in-exit/main.mjs"
+ ],
+ "diags": []
+}

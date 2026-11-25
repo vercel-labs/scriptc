@@ -98,6 +98,10 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       ]);
     case "tls.createSecureContextDyn":
       return finishRuntimeCall(host, e, "scr_tls_create_secure_context_dyn", a);
+    case "tls.checkServerIdentity":
+      // (hostname, cert) → Error | undefined; may throw the alt-name
+      // format error from its parser.
+      return finishRuntimeCall(host, e, "scr_tls_check_server_identity", [a[0]!, a[1]!]);
     case "tls.pemDyn":
       return finishRuntimeCall(host, e, "scr_tls_pem_from_dyn", [
         a[0]!,
@@ -109,6 +113,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
     case "tls.sockGetCipher":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
+    case "tls.sockGetTlsTicket":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_tls_ticket", a);
     case "tls.sockAlpnProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
     case "tls.serverAddContext":
@@ -144,9 +150,30 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
     case "tls.connectCb":
       if (args[3] !== undefined) host.toHeap(args[3]);
       return finishRuntimeCall(host, e, "scr_tls_connect_dyn", [...a.slice(0, 3), a[3] ?? ptr()]);
+    case "tls.connectPath": {
+      // The slot holds the callback, or a dyn undefined for the form
+      // without one (the C side takes a null closure then).
+      const hasCb = args[2] !== undefined && e.args[2]!.type.kind === "func";
+      if (hasCb) host.toHeap(args[2]!);
+      return finishRuntimeCall(host, e, "scr_tls_connect_path", [
+        a[0]!,
+        a[1]!,
+        hasCb ? a[2]! : ptr(),
+      ]);
+    }
     case "tls.sockOnSecureConnect":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure_connect", a);
+    case "tls.sockDynMember":
+      return finishRuntimeCall(host, e, "scr_tls_sock_dyn_member", a);
+    case "tls.sockExportKeyingMaterial":
+      return finishRuntimeCall(host, e, "scr_tls_sock_export_keying_material", a);
+    case "tls.serverIs":
+      return finishRuntimeCall(host, e, "scr_net_server_is_tls", a);
+    case "tls.serverIsDyn":
+      return finishRuntimeCall(host, e, "scr_tls_server_is_dyn", a);
+    case "tls.sockDisableRenegotiation":
+      return finishRuntimeCall(host, e, "scr_tls_sock_disable_renegotiation", a);
     case "tls.sockOnSecure":
       host.toHeap(args[1]!);
       return finishRuntimeCall(host, e, "scr_tls_sock_on_secure", a);
@@ -154,6 +181,36 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", [a[0]!, a[1]!, ptr()]);
     case "tls.wrapSocketCtx":
       return finishRuntimeCall(host, e, "scr_tls_wrap_socket", a);
+    case "tls.sockOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_sock_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
+    case "tls.serverOnKeylog": {
+      const cb = args[1]!,
+        type = callbackType(cb);
+      const adapter =
+        type.params.length === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      return finishRuntimeCall(host, e, "scr_tls_server_on_keylog", [
+        a[0]!,
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
+        a[2]!,
+      ]);
+    }
     case "tls.sockOnSession": {
       const cb = args[1]!,
         type = callbackType(cb);
@@ -165,7 +222,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_session", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }

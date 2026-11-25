@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8853-promise-all-literal-armed.ts"
+ ],
+ "diags": []
+}

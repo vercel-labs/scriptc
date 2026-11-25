@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9995-buffer-alloc-untyped-fill/main.ts"
+ ],
+ "diags": []
+}

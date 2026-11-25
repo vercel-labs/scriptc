@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/class-conversions-with-a-conversion-field.ts"
+ ],
+ "diags": []
+}

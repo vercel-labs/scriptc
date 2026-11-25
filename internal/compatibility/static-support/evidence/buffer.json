@@ -1,0 +1,3 @@
+{
+    "node-builtin.buffer": ["tests/corpus/1402-buffer-encodings.ts", "tests/corpus/1660-buffer-read-write-num.ts", "tests/corpus/2902-bigint-bytes.ts", "tests/corpus/2904-bigint-errors.ts"]
+}

@@ -102,7 +102,12 @@ export function stageNativeCliAssets(options: {
   normalizeLineEndings(sources);
   const declarations = join(lib, "declarations");
   mkdirSync(declarations, { recursive: true });
-  for (const name of ["scriptc.d.ts", "scriptc-overrides.d.ts", "scriptc-node-fallback.d.ts"]) {
+  for (const name of [
+    "scriptc.d.ts",
+    "scriptc-overrides.d.ts",
+    "scriptc-node-fallback.d.ts",
+    "scriptc-dom-exception.d.ts",
+  ]) {
     cpSync(join(repository, "packages/compiler/ambient", name), join(declarations, name));
   }
   cpSync(

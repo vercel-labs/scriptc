@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 
 /** Program queries for the record-flow proof. */
 export interface RecordFlowHost {
@@ -324,7 +325,7 @@ export class RecordFlowClasses {
       return;
     }
     if (!ts.isElementAccessExpression(access)) return;
-    const key = peel(access.argumentExpression);
+    const key = withoutParenthesesTypeWrappers(access.argumentExpression);
     if (!ts.isStringLiteral(key) && !ts.isNoSubstitutionTemplateLiteral(key)) this.markOpen(field);
     else if (key.text === name && !this.use(access, field)) this.markOpen(field);
   }
@@ -333,7 +334,7 @@ export class RecordFlowClasses {
     for (const file of this.files) {
       ts.walkPreorder(file, (node) => {
         if (ts.isElementAccessExpression(node)) {
-          const key = peel(node.argumentExpression);
+          const key = withoutParenthesesTypeWrappers(node.argumentExpression);
           if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
             this.literalKeys.add(key.text);
           return undefined;
@@ -614,7 +615,7 @@ export class RecordFlowClasses {
   /** Joins the slot with the class a value comes from, or opens the slot
    * when the value can be an object some other storage already holds. */
   private source(node: ts.Expression, slot: number): void {
-    const e = peel(node);
+    const e = withoutParenthesesTypeWrappers(node);
     if (ts.isObjectLiteralExpression(e)) {
       this.literalSources.push({ slot, literal: e });
       return;
@@ -728,7 +729,7 @@ export class RecordFlowClasses {
           op === ts.SyntaxKind.ExclamationEqualsToken
         ) {
           const other = user.left === value ? user.right : user.left;
-          const e = peel(other);
+          const e = withoutParenthesesTypeWrappers(other);
           if (e.kind === ts.SyntaxKind.NullKeyword || isUndefined(e)) return true;
           // Comparing identity needs both records in one layout.
           this.source(other, slot);
@@ -766,7 +767,7 @@ export class RecordFlowClasses {
         return !!symbol && this.returnSlots.has(symbol);
       }
       if (ts.isCallExpression(user) && user.expression !== value) {
-        const callee = peel(user.expression);
+        const callee = withoutParenthesesTypeWrappers(user.expression);
         if (ts.isIdentifier(callee)) {
           if (READING_FUNCTIONS.has(callee.text) && this.host.isGlobal(callee, callee.text))
             return true;
@@ -885,17 +886,4 @@ function isUndefined(node: ts.Expression): boolean {
 
 function isJsFile(file: ts.SourceFile): boolean {
   return /\.(c|m)?jsx?$/.test(file.fileName);
-}
-
-function peel(node: ts.Expression): ts.Expression {
-  let e = node;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e) ||
-    ts.isNonNullExpression(e)
-  )
-    e = e.expression;
-  return e;
 }

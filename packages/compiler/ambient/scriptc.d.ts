@@ -38,10 +38,15 @@ type RequestInfo = string | URL | Request;
 
 /* Node exposes the codec constructors globally, but older @types/node
  * versions rely on lib.dom for their instance type names. Keep those types
- * available in the ES-only program as well as the fallback type world. */
+ * available in the ES-only program as well as the fallback type world.
+ * `encode` allocates a new, non-shared ArrayBuffer (WHATWG encoding), which
+ * is what @types/node's `NonSharedUint8Array` and lib.dom spell: a plain
+ * `Uint8Array` defaults to `ArrayBufferLike`, and that shared view is not a
+ * `BufferSource` for lib.dom's Web Crypto signatures once a dependency
+ * brings lib.dom into the program. */
 interface TextEncoder {
   readonly encoding: string;
-  encode(input?: string): Uint8Array;
+  encode(input?: string): Uint8Array<ArrayBuffer>;
   encodeInto(source: string, destination: Uint8Array): { read: number; written: number };
 }
 interface TextDecoder {
@@ -80,6 +85,12 @@ interface Timeout extends Disposable {
   /* Re-arms the timer to fire at now + the original delay (Node's
    * Timeout.refresh). Chaining like ref/unref. */
   refresh(): Timeout;
+  /* Node's legacy cancel: clearTimeout(this), returning the handle for
+   * chaining (the primitive id is unchanged and clear again no-ops). */
+  close(): Timeout;
+  /* The handle coerces to its numeric timer id — Node's
+   * Symbol.toPrimitive, which is also what clearTimeout accepts. */
+  [Symbol.toPrimitive](): number;
   [Symbol.dispose](): void;
 }
 /* The callback is invoked with NO arguments; the second overload admits a
@@ -104,12 +115,12 @@ declare function clearTimeout(handle?: Timeout | number | null | undefined): voi
 
 /* Compile-time evaluation. The callback must be an inline arrow/function
  * expression with NO references to outer bindings (it is extracted
- * source-textually and executed in an isolated node:vm context inside the
- * COMPILER's Node process); the returned value is baked into the binary as a
- * literal — numbers (finite), strings, booleans, arrays, and records,
- * nested. What type-checks runs with real JavaScript semantics, so the
- * baked result is exactly what Node would compute at runtime (the
- * differential harness verifies this with a `comptime = (f) => f()` shim). */
+ * source-textually and executed in the compiler's evaluator, a separate
+ * process that holds no host object); the returned value is baked into the
+ * binary as a literal — numbers (finite), strings, booleans, arrays, and
+ * records, nested. What evaluates gives the value Node would compute at
+ * runtime, and what cannot is refused by name (the differential harness
+ * verifies this with a `comptime = (f) => f()` shim). */
 declare function comptime<T>(compute: () => T): T;
 
 /* The JavaScript WebAssembly API, as the DOM library declares it (scriptc's

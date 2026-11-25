@@ -222,7 +222,7 @@ test("a JavaScript file TypeScript checks uses its JSDoc types for class layouts
   expect(params(unchecked, "%Account.constructor")).toBe("(object, dyn, dyn): void");
 });
 
-test("instances of a class with subclasses box at their exact class", async () => {
+test("a class-typed JSDoc parameter keeps the value it was handed", async () => {
   const module = await lower(`${SHAPES}
 /** @param {any} value */
 function keep(value) {
@@ -232,10 +232,17 @@ function keep(value) {
 function cross(shape) {
   return keep(shape);
 }
-console.log(cross(new Square()).size, cross(new Shape()).label);
+console.log(cross(new Square()).size, cross({ sides: 3, label: "plain" }).label);
 `);
+  // An unchecked file's JSDoc class parameter is a hint: the caller may hand
+  // it a plain object, so it takes checked-dynamic storage and crosses to
+  // `keep` as that value, not boxed at Shape's exact class (a plain object
+  // cannot be boxed as one).
+  expect(params(module, "cross")).toBe("(dyn): dyn");
+  expect(calls(module, "cross")).toEqual(["keep"]);
+  // The hierarchy's exact-class box still exists for values that do cross as
+  // a Shape (`return this` through an untyped method call).
   const helper = module.functions.find((fn) => fn.name === "%dyn.class.boxExact:Shape");
   expect(helper).toBeDefined();
-  expect(calls(module, "cross")).toContain("%dyn.class.boxExact:Shape");
   expect(JSON.stringify(helper!.body)).toContain('"className":"Square"');
 });

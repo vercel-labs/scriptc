@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-collection-typed-slot.ts"
+ ],
+ "diags": []
+}

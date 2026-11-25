@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-tuple-literal-hole-presence.ts"
+ ],
+ "diags": []
+}

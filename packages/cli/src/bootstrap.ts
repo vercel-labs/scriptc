@@ -6,7 +6,7 @@ import { enableCompileCache } from "node:module";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { CLI_OPTIONS, USAGE } from "./usage.js";
+import { CLI_FAST_PATHS, CLI_OPTIONS, firstCliOptionOutside, USAGE } from "./usage.js";
 
 // Node 24 can persist V8's compiled module bytecode. scriptc's CLI imports
 // the compiler and its lowering/backend graph before handling any command, so
@@ -58,32 +58,28 @@ async function tryFastPath(): Promise<number | null> {
   }
   const [command, inputArg] = positionals;
   if (command === "coverage") return coverageFastPath(values, inputArg, positionals.length);
+  // Computed-access sites emit different code by default; an explicit value
+  // other than "1" is an opt-out or one the full compiler validates
+  // (backend/llvm/js-ic.ts).
+  const indexFastpath = process.env["SCRIPTC_DYN_INDEX_FASTPATH"];
   if (
     (command !== "build" && command !== "run") ||
     inputArg === undefined ||
+    // The route below keys or handles these options only. The full CLI owns
+    // every other one: it uses the option or refuses it.
+    firstCliOptionOutside(values, CLI_FAST_PATHS.executable.options) !== undefined ||
     (values.emit !== undefined && values.emit !== "exe") ||
-    values.print !== undefined ||
-    values["emit-ir"] ||
-    values.lib ||
-    values["provenance-sources"] ||
-    // The full compiler keys these builds by the profile's bytes.
-    values["profile-generate"] !== undefined ||
-    values["profile-use"] !== undefined ||
-    values.sparse ||
     // A --libnode=beside build places the pack and the island modules next
     // to the executable, which a routed hit does not do.
     values.libnode === "beside" ||
-    // The full compiler resolves `native` against the build host.
-    values["target-cpu"] !== undefined ||
-    // The full CLI validates the value.
-    values.exceptions !== undefined ||
-    (values["external-types"] ?? []).length > 0 ||
-    // The full CLI validates the Node island policy flags.
-    hasNodeIslandFlags(values) ||
     // The full compiler writes the representation report and keys the heap
     // census build (backend/llvm/repr-report.ts, heap-census.ts).
     (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
-    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== "" ||
+    // An attribution build emits a different way count, and the full compiler
+    // keys the build by it (backend/llvm/js-ic.ts).
+    (process.env["SCRIPTC_DEBUG_JS_IC_WAYS"] ?? "") !== "" ||
+    (indexFastpath !== undefined && indexFastpath !== "" && indexFastpath !== "1")
   )
     return null;
   const backend = values.backend;
@@ -144,7 +140,7 @@ async function tryFastPath(): Promise<number | null> {
     entryPath: input,
     outDir,
     outPath,
-    emitIr: values["emit-ir"],
+    emitIr: false,
     sanitize: values.sanitize,
     backend: "llvm",
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
@@ -155,6 +151,9 @@ async function tryFastPath(): Promise<number | null> {
     ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
     ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Only builds with the computed-access shape reach this route, and the
+    // full compiler keys those builds by it (backend/llvm/js-ic.ts).
+    dynIndexFastpath: true as const,
     // Mirrors the full compiler's key: shape inference's overlay is opt-in
     // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
     ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false
@@ -181,12 +180,31 @@ async function tryFastPath(): Promise<number | null> {
     libnodeIdentity: () => startup.libnodeCacheKey(values.libnode, process.env, dirname(input)),
   });
   if (hit === null) return null;
+  // A restored executable links nothing, so the ICU data file its Intl
+  // program reads at run time was not installed beside it; the full compiler
+  // restores the same executable and installs that file.
+  if (hit.native.intl === true) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
-    // A cached build repeats its performance warning (SC6101).
-    const performance = hit.performance ?? [];
-    if (performance.length > 0 && values["dynamic-tier-warning"] !== false)
-      process.stderr.write(startup.renderPerformanceWarnings(performance) + "\n");
+    // A cached build repeats every warning it reported, rendered by the same
+    // function the full compiler uses, from the same entry: the warnings and,
+    // for a file the build edited before locating a warning in it, the text
+    // the entry kept. The fast path answers only the options that drop a
+    // warning; every other warning option takes the full CLI.
+    const cachedWarnings = hit.warnings ?? [];
+    const warnings = startup.buildWarnings(cachedWarnings, {
+      dynamicTier: values["dynamic-tier-warning"] !== false,
+    });
+    if (warnings.length > 0) {
+      const color = process.stderr.isTTY ?? false;
+      process.stderr.write(
+        startup.renderBuildWarnings(
+          warnings,
+          startup.warningSourceTexts(cachedWarnings, hit.warningSources),
+          { color },
+        ) + "\n",
+      );
+    }
     process.stdout.write(`${outPath}\n`);
     return 0;
   }
@@ -201,21 +219,6 @@ async function tryFastPath(): Promise<number | null> {
       }
     });
   });
-}
-
-function hasNodeIslandFlags(
-  values: ReturnType<
-    typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
-  >["values"],
-): boolean {
-  return (
-    values["node-islands"] !== undefined ||
-    (values["node-island"] ?? []).length > 0 ||
-    (values.native ?? []).length > 0 ||
-    values.node !== undefined ||
-    values["explain-island"] !== undefined ||
-    values["strict-user-js"]
-  );
 }
 
 /** An unchanged program's coverage verdict replays from the verdict cache
@@ -233,29 +236,22 @@ async function coverageFastPath(
   if (
     inputArg === undefined ||
     positionalCount !== 2 ||
+    // The replay is the verdict of the default analysis. The full CLI owns
+    // every option that changes the analysis or the report, and every one it
+    // refuses.
+    firstCliOptionOutside(values, CLI_FAST_PATHS.coverage.options) !== undefined ||
     (print !== undefined && print !== "diagnostics") ||
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
-    values.emit !== undefined ||
-    values.strip ||
-    values.static ||
-    values["detached-exit"] ||
-    values["large-pages"] ||
-    values.exceptions !== undefined ||
-    values["target-cpu"] !== undefined ||
-    values["cpu-dispatch"] !== undefined ||
-    values.lib ||
-    values.profile !== undefined ||
-    values.ffi !== undefined ||
-    values.backend !== undefined ||
-    values.optimization !== undefined ||
-    values["windows-subsystem"] !== undefined ||
-    values["provenance-sources"] ||
-    values["emit-ir"] ||
-    (values["npm-static"] ?? []).length > 0 ||
-    values["shape-overlay"] === false ||
-    (values["external-types"] ?? []).length > 0 ||
-    // The replay covers the default Node island policy only.
-    hasNodeIslandFlags(values)
+    // `--coverage=reached` keys its own verdicts; any other value is the
+    // full CLI's to validate.
+    (values.coverage !== undefined &&
+      values.coverage !== "full" &&
+      values.coverage !== "reached") ||
+    // --fail-on=divergences checks the warnings --no-copy-warning and
+    // --no-key-order-warning leave out: the full CLI refuses either pair,
+    // and a replayed verdict must not pass it.
+    (failOn === "divergences" &&
+      (values["copy-warning"] === false || values["key-order-warning"] === false))
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
@@ -264,10 +260,19 @@ async function coverageFastPath(
   } catch {
     return null;
   }
-  const hit = await startup.readCoverageVerdict(resolve(inputArg), {}).catch(() => null);
+  const hit = await startup
+    .readCoverageVerdict(
+      resolve(inputArg),
+      values.coverage === "reached" ? { coverage: "reached" } : {},
+    )
+    .catch(() => null);
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
   if (values["dynamic-tier-warning"] === false) delete coverage.performance;
+  if (values["copy-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
+  if (values["key-order-warning"] === false && coverage.divergences !== undefined)
+    coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

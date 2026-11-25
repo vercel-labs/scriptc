@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-table-replacement/full.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-table-replacement/lean.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-table-replacement/lib.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-table-replacement/main.js"
+ ],
+ "diags": []
+}

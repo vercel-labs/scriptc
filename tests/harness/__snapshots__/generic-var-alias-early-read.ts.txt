@@ -1,0 +1,6 @@
+generic-var-alias-early-read.ts:18:10 - error SC1090: generic 'var' aliases read as values before their declaration runs (Node reads undefined there; declare 'varAlias' with const) are not supported yet
+
+  17 | function readEarly(): unknown {
+  18 |   return varAlias;
+     |          ^~~~~~~~
+  19 | }

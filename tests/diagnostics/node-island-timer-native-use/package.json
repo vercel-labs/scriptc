@@ -1,0 +1,1 @@
+{ "name": "node-island-timer-native-use", "private": true, "type": "module", "scriptc": { "packages": { "timer-pkg": "node" } } }

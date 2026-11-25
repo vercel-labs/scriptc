@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-typed-array-read-equality.js"
+ ],
+ "diags": []
+}

@@ -6,13 +6,15 @@ declare module "stream/consumers" {
    * string chunks contribute their utf8 bytes, Node's Blob rule).
    * Stream errors reject; an early close rejects with
    * ERR_STREAM_PREMATURE_CLOSE. arrayBuffer answers an ArrayBuffer over
-   * the bytes; blob fences per site. */
+   * the bytes, bytes a Uint8Array of them, and blob a Blob whose type is
+   * empty. */
   function text(stream: unknown): Promise<string>;
   function json(stream: unknown): Promise<unknown>;
   function buffer(stream: unknown): Promise<Buffer>;
   function arrayBuffer(stream: unknown): Promise<ArrayBuffer>;
-  function blob(stream: unknown): Promise<unknown>;
-  export { arrayBuffer, blob, buffer, json, text };
+  function bytes(stream: unknown): Promise<Uint8Array>;
+  function blob(stream: unknown): Promise<Blob>;
+  export { arrayBuffer, blob, buffer, bytes, json, text };
 }
 
 declare module "node:stream/consumers" {

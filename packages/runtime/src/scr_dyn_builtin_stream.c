@@ -125,7 +125,6 @@ static ScrDyn *bcs_apply(ScrDyn *fn, ScrDyn *self, ScrDyn *const *args, size_t a
  * back to the same JavaScript value (+1). */
 static ScrError *bcs_error_of(const ScrDyn *value) {
   if (!scr_dyn_truthy(value)) return NULL;
-  if (value->kind == SCR_DYN_STR) return scr_error_new(SCR_ERR_ERROR, value->v.str);
   return scr_error_from_dyn(value);
 }
 
@@ -191,6 +190,13 @@ ScrStream *scr_dyn_builtin_stream_of(const ScrDyn *value) {
   ScrStream *own = bcs_of(value);
   if (own) return scr_stream_retain(own);
   return bcs_native_of(value);
+}
+
+/* stream.isDestroyed and the other four predicates (scr_stream_util_is_dyn's
+ * contract) in programs that link this unit: a constructor-function stream
+ * answers through its runtime stream. */
+ScrDyn *scr_dyn_builtin_stream_util_is(const ScrDyn *value, double which) {
+  return scr_stream_util_is_value(value, which, scr_dyn_builtin_stream_of);
 }
 
 /* The JavaScript value of a runtime stream: the constructor-function
@@ -550,6 +556,18 @@ static ScrClosure *bcs_adapter(ScrDyn *fn, ScrDyn *self, void *call) {
   return adapter;
 }
 
+/* The listener's checked-dynamic callable: a function value over an adapter
+ * that binds the stream as `this`, so an untyped emit — the empty argument
+ * vector the stream's own events carry — reaches the listener the way Node
+ * calls it, rather than through the listener's bare thunk, whose `this` is
+ * whatever the ambient receiver window holds. The adapter adopts the
+ * listener's identity, so off/removeListener still find the entry. +1. */
+static ScrDyn *bcs_flex_listener(ScrDyn *listener, ScrDyn *self) {
+  ScrClosure *adapter = bcs_adapter(listener, self, (void *)bcs_listener_flex);
+  return scr_dyn_new_func(adapter, bcs_listener_flex, listener->v.fn.arity, listener->v.fn.sig,
+                          listener->v.fn.name);
+}
+
 static bool bcs_is(const ScrStr *name, const char *text) {
   size_t length = strlen(text);
   return name->len == length && memcmp(name->data, text, length) == 0;
@@ -598,26 +616,37 @@ static bool bcs_add_listener(ScrStream *s, ScrDyn *self, ScrDyn *type, ScrDyn *l
   if (!name) return false;
   ScrEmitter *em = (ScrEmitter *)s;
   ScrEmitter *chained = NULL;
-  switch (bcs_event_shape(name)) {
+  int shape = bcs_event_shape(name);
+  /* The fixed tuples run the adapter; the checked-dynamic callable beside
+   * them binds the same receiver for untyped emits. */
+  ScrDyn *flex = listener->kind == SCR_DYN_FUNC && shape >= 0 && shape <= 4
+                     ? bcs_flex_listener(listener, self)
+                     : NULL;
+  switch (shape) {
   case 0:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener0),
-                                 scr_ee_inv_fixed0, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener0),
+                                       scr_ee_inv_fixed0, once, prepend);
     break;
   case 1:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_data),
-                                 scr_ee_inv_fixed3, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_data),
+                                       scr_ee_inv_fixed3, once, prepend);
     break;
   case 2:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_error),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_error),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   case 3:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_stream),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_stream),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   case 4:
-    chained = scr_emitter_on_dyn(em, name, listener, bcs_adapter(listener, self, (void *)bcs_listener_name),
-                                 scr_ee_inv_fixed1, once, prepend);
+    chained = scr_emitter_on_dyn_bound(em, name, listener, flex,
+                                       bcs_adapter(listener, self, (void *)bcs_listener_name),
+                                       scr_ee_inv_fixed1, once, prepend);
     break;
   default: {
     ScrClosure *adapter = bcs_adapter(listener, self, (void *)bcs_listener_flex);
@@ -627,6 +656,7 @@ static bool bcs_add_listener(ScrStream *s, ScrDyn *self, ScrDyn *type, ScrDyn *l
     break;
   }
   }
+  if (flex) scr_dyn_release(flex);
   if (chained) scr_emitter_release(chained);
   scr_str_release(name);
   return !scr_exc_pending();
@@ -644,18 +674,19 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
   bool had = false;
   switch (bcs_event_shape(name)) {
   case 0:
-    had = scr_emitter_emit(em, name);
+    had = scr_emitter_emit_mixed(em, name, NULL, 0);
     break;
   case 1:
-    /* 'data' carries the bytes, string and value slots (scr_stream_emit_data) */
+    /* 'data' carries the bytes, string and value slots (scr_stream_emit_data);
+     * the emitted value is also the checked-dynamic argument. */
     if (first->kind == SCR_DYN_BYTES) {
       ScrBytes *bytes = scr_bytes_raw_view(first->v.bytes);
-      had = scr_emitter_emit(em, name, bytes, (ScrStr *)NULL, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, bytes, (ScrStr *)NULL, first);
       scr_bytes_release(bytes);
     } else if (first->kind == SCR_DYN_STR) {
-      had = scr_emitter_emit(em, name, (ScrBytes *)NULL, first->v.str, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, (ScrBytes *)NULL, first->v.str, first);
     } else {
-      had = scr_emitter_emit(em, name, (ScrBytes *)NULL, (ScrStr *)NULL, first);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, (ScrBytes *)NULL, (ScrStr *)NULL, first);
     }
     break;
   case 2:
@@ -683,14 +714,14 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
         err = scr_error_new(SCR_ERR_ERROR, empty);
         scr_str_release(empty);
       }
-      had = scr_emitter_emit_error(em, name, err);
+      had = scr_emitter_emit_error_mixed(em, name, err, rest, restc);
       scr_error_release(err);
     }
     break;
   case 3: {
     ScrStream *stream = scr_dyn_builtin_stream_of(first);
     if (stream) {
-      had = scr_emitter_emit(em, name, stream);
+      had = scr_emitter_emit_mixed(em, name, rest, restc, stream);
       scr_stream_release(stream);
     } else {
       bcs_unsupported("emit('pipe') or emit('unpipe') with a value other than a stream on a constructor-function stream is not supported yet");
@@ -698,7 +729,7 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
     break;
   }
   case 4:
-    if (first->kind == SCR_DYN_STR) had = scr_emitter_emit(em, name, first->v.str);
+    if (first->kind == SCR_DYN_STR) had = scr_emitter_emit_mixed(em, name, rest, restc, first->v.str);
     else bcs_unsupported("emit('newListener') or emit('removeListener') with a name other than a string on a constructor-function stream is not supported yet");
     break;
   default:
@@ -711,16 +742,7 @@ static ScrDyn *bcs_emit(ScrStream *s, ScrDyn *const *args, size_t argc) {
 }
 
 static ScrDyn *bcs_event_names(ScrStream *s) {
-  ScrArr *names = scr_emitter_event_names((ScrEmitter *)s);
-  ScrDyn *result = scr_dyn_new_arr();
-  double length = scr_arr_len(names);
-  for (double i = 0; i < length; i++) {
-    ScrStr *name = scr_arr_get_ref(names, i);
-    scr_dyn_arr_push(result, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_arr_release(names);
-  return result;
+  return scr_emitter_event_names((ScrEmitter *)s);
 }
 
 /* EventEmitter.prototype's methods on a constructor-function stream
@@ -1282,6 +1304,10 @@ static ScrDyn *bcs_method_call(ScrClosure *closure, ScrDyn *const *args, size_t 
     } else if (first->kind == SCR_DYN_NULL) {
       scr_stream_push_null(s);
       result = bcs_undefined();
+    } else if (first->kind == SCR_DYN_UNDEF) {
+      /* a byte-mode stream drops undefined, an object-mode one takes it */
+      scr_stream_unshift_dyn(s, first);
+      result = bcs_undefined();
     } else {
       scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer or Uint8Array", first);
     }
@@ -1759,4 +1785,16 @@ ScrStream *scr_dyn_builtin_stream_unbox(const ScrDyn *value, const ScrStr *messa
 ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr *message) {
   if (bcs_of(value) && value->kind == SCR_DYN_OBJ) return scr_dyn_builtin_stream_unbox(value, message);
   return scr_stream_unbox_dyn_stage(value, message);
+}
+
+/* stream/consumers over an untyped value in programs that link this unit
+ * (the sc.source libCall): a constructor-function stream answers its
+ * runtime stream (+1); every other value as scr_stream_consumer_source
+ * does (a native stream, a web ReadableStream through Readable.from, or
+ * the compiled program's not-supported message). The consumer only reads,
+ * so an overridden write() or end() does not matter here. */
+ScrStream *scr_dyn_builtin_stream_consumer_source(const ScrDyn *value, const ScrStr *message) {
+  ScrStream *s = bcs_of(value);
+  if (s && value->kind == SCR_DYN_OBJ) return scr_stream_retain(s);
+  return scr_stream_consumer_source(value, message);
 }

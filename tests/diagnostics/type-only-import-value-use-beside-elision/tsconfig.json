@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "target": "ES2022",
+    "strict": true,
+    "noEmit": true
+  }
+}

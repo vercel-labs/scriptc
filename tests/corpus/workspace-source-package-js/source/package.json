@@ -1,0 +1,1 @@
+{ "name": "wsjs", "type": "module", "exports": { ".": "./index.ts" } }

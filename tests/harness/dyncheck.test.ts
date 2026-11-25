@@ -19,10 +19,10 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
-import { compile } from "@scriptc/compiler";
+import { analyze, compile } from "@scriptc/compiler";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -37,20 +37,28 @@ interface RunResult {
 
 /** Compiles an inline program and runs the binary, tolerating nonzero exit.
  * `ext` selects the source lane: "cjs" for the JS lane's per-site checked
- * lowerings (dyn member dispatch exists only there). */
+ * lowerings (dyn member dispatch exists only there). `files` adds sibling
+ * modules (a JavaScript module and its declaration sidecar) next to the
+ * entry, so a lying declaration can be exercised without a lying cast. */
 async function compileAndRun(
   name: string,
   source: string,
   ext: "ts" | "cjs" = "ts",
   compareNode = false,
+  files: Record<string, string> = {},
 ): Promise<RunResult> {
   const key = createHash("sha256")
     .update(source)
+    .update(JSON.stringify(files))
     .update(sanitize ? "san" : "plain")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, `dyncheck-${key}`);
   mkdirSync(outDir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(outDir, name)), { recursive: true });
+    writeFileSync(join(outDir, name), text);
+  }
   const file = join(outDir, `${name}.${ext}`);
   writeFileSync(file, source);
   // Pinned: the exact TypeError text and path rendering of failed checked
@@ -111,6 +119,160 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("true\ntrue\ntrue\n");
+    expect(r.stderr).toBe("");
+  });
+
+  test("an Extract member pattern assertion checks the member the literal selects", async () => {
+    const r = await compileAndRun(
+      "extract-member-pattern-assertion",
+      `
+      type Circle = { kind: "circle"; radius: number };
+      type Square = { kind: "square"; side: number };
+      type Shape = Circle | Square;
+      function pick<K extends Shape["kind"]>(shape: Shape, kind: K): string {
+        const picked = shape as Extract<Shape, { kind: K }>;
+        return JSON.stringify(picked);
+      }
+      console.log(pick({ kind: "circle", radius: 1 }, "circle"));
+      try { console.log(pick({ kind: "square", side: 2 }, "circle")); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"kind":"circle","radius":1}\n' +
+        "true a '{ kind: string; side: number }' value is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a value routed by a partial discriminant is checked into the arm it names", async () => {
+    const r = await compileAndRun(
+      "partial-discriminant-route",
+      `
+      type Reply =
+        | { op: "open"; ok: true; data: { handle: number } }
+        | { op: "close"; ok: true }
+        | { op: "list"; ok: true; data: { names: string[] } }
+        | { op: string; ok: false; error: string };
+      const done = <T extends "open" | "close" | "list">(op: T, data: object): Reply => ({ op, ok: true, data }) as Reply;
+      console.log(JSON.stringify(done("open", { handle: 1 })));
+      try { console.log(JSON.stringify(done("list", { handle: 1 }))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { console.log(JSON.stringify(done("other" as "open", {}))); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"op":"open","ok":true,"data":{"handle":1}}\n' +
+        "true expected array at $.names, got undefined\n" +
+        "true invalid 'op' discriminant in record conversion\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("a record beside undefined asserted to a subtype checks the value", async () => {
+    const r = await compileAndRun(
+      "asserted-subtype-beside-undefined",
+      `
+      interface Reply { handled?: boolean }
+      interface Routed extends Reply { handled: true; origin: { x: number } }
+      function produce(n: number): Reply | undefined { return n === 0 ? undefined : { handled: n > 1 }; }
+      function read(n: number): string {
+        const result = produce(n);
+        try { const routed = result as Routed; return "routed " + routed.origin.x; }
+        catch (error) { return (error instanceof TypeError) + " " + (error as Error).message; }
+      }
+      console.log(read(0));
+      console.log(read(2));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "true undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n" +
+        "true expected object at $.origin, got undefined\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("joining an untyped array converts an instance through its class's toString", async () => {
+    // Node runs the class's toString for each element. The runtime calls the
+    // compiled conversion the program registered for the class, so an
+    // instance in an untyped slot converts as it does at its class's own
+    // call sites; a class without a conversion prints "[object Object]".
+    const r = await compileAndRun(
+      "untyped-join-class-to-string",
+      `
+      class Named { toString(): string { return "x"; } }
+      class Sub extends Named {}
+      class Plain { a = 1; }
+      const attempt = (label: string, go: () => unknown): void => {
+        try { console.log(label, go()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      const named: unknown[] = [new Named(), "a"];
+      const sub: unknown[] = ["a", new Sub()];
+      const nested: unknown[] = [1, [new Named()]];
+      const plain: unknown[] = [new Plain(), "a", null, undefined, 1];
+      const one: unknown = new Named();
+      attempt("join", () => named.join("+"));
+      attempt("String", () => String(named));
+      attempt("template", () => \`\${named}\`);
+      attempt("inherited", () => sub.join("+"));
+      attempt("nested", () => nested.join("+"));
+      attempt("plain", () => plain.join("+"));
+      attempt("direct", () => String(one));
+    `,
+    );
+    expect(r.stdout).toBe(
+      [
+        "join x+a",
+        "String x,a",
+        "template x,a",
+        "inherited a+x",
+        "nested 1+x",
+        "plain [object Object]+a+++1",
+        "direct x",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  test("an untyped RegExp with properties of its own prints them", async () => {
+    // Node prints the added properties after the pattern (`/b+/i { extra: 1 }`),
+    // including inside a Set and a class field; a RegExp without any prints as
+    // its pattern and flags.
+    const r = await compileAndRun(
+      "untyped-regexp-own-properties",
+      `
+      const attempt = (label, go) => {
+        try { go(); } catch (e) { console.log(label, "threw", e.message); }
+      };
+      const withProps = /b+/i;
+      withProps.extra = 1;
+      class Box { constructor(v) { this.v = v; } }
+      const plain = JSON.parse("[]");
+      plain.push(/a+/g, [/c/]);
+      attempt("plain", () => console.log(plain));
+      attempt("set", () => console.log(new Set([withProps])));
+      attempt("class field", () => console.log(new Box(withProps)));
+      attempt("plain set", () => console.log(new Set([/d/])));
+    `,
+      "cjs",
+    );
+    expect(r.stdout).toBe(
+      [
+        "[ /a+/g, [ /c/ ] ]",
+        "Set(1) { /b+/i { extra: 1 } }",
+        "Box { v: /b+/i { extra: 1 } }",
+        "Set(1) { /d/ }",
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(0);
     expect(r.stderr).toBe("");
   });
 
@@ -207,6 +369,30 @@ console.log("unreachable", c.host);
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("");
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got string");
+  });
+
+  test("a getter-backed field the conversion copies still checks its type", async () => {
+    // The view answers an accessor-backed member through its getter, and
+    // the value it returns goes through the typed boundary's check like any
+    // other: the accessor is how the field is read, not an exemption.
+    const r = await compileAndRun(
+      "getter-boundary-mismatch",
+      `interface Counted { readonly count: number }
+class Tally {
+  private items: string[];
+  constructor(items: string[]) { this.items = items; }
+  get count(): string { return String(this.items.length); }
+}
+try {
+  const counted = new Tally(["a", "b"]) as unknown as Counted;
+  console.log("unreachable", counted.count);
+} catch (error) {
+  console.log("caught", (error as Error).name, (error as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("caught TypeError expected number at $, got string\n");
   });
 
   test("a record cast from unknown to a dictionary throws at its mismatched read", async () => {
@@ -1063,6 +1249,39 @@ console.log("unreachable", asNum());
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $, got string");
   });
 
+  test("a TYPED-REST target adapts the boxed function and checks each argument", async () => {
+    // The cast's domain includes rest-parameter signatures: the adapter packs
+    // the call's trailing arguments and the source thunk checks every one
+    // against its own parameter type. Node calls the source function with
+    // whatever arrived (here numbers into string params) and prints "1,2".
+    const r = await compileAndRun(
+      "dynfn-rest-arg-mismatch",
+      `function asDyn(value: unknown): unknown { return value; }
+const src = asDyn((...values: string[]) => values.join(","));
+const f = src as (...values: number[]) => string;
+console.log(f(1, 2));
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected string at $[0], got number");
+  });
+
+  test("a look-alike object cannot acquire the boxed native result's kind", async () => {
+    // A native result type with a boxed form unwraps the BOX only: the object
+    // is a different kind. Node erases the cast and reads status 0.
+    const r = await compileAndRun(
+      "dyn-spawnres-lookalike",
+      `import type { SpawnSyncReturns } from "node:child_process";
+function asDyn(value: unknown): unknown { return value; }
+const lookalike = asDyn({ status: 0, signal: null, stdout: "x", stderr: "", pid: 1, output: [] });
+const result = lookalike as SpawnSyncReturns;
+console.log(result.status);
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected SpawnSyncReturns at $, got object");
+  });
+
   test("boundary TypeErrors are catchable and calls keep working after", async () => {
     const r = await compileAndRun(
       "dynfn-recover",
@@ -1318,6 +1537,195 @@ console.log(typeof read(), read() === undefined);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("undefined true\nnumber false\n");
   });
+
+  test("a cast to an interface a declaration file declares is checked like one the program declares", async () => {
+    // A type has no implementation: an interface from a declarations-only
+    // package, from the project's own declaration file or from an ambient
+    // module types records the program builds, so untyped data asserted to
+    // it goes through the same checked conversion as for an interface in a
+    // `.ts` file. Node never checks an `as`; these throw.
+    const declared = "interface Book {\n  isbn: string;\n  title: string;\n  year?: number;\n}\n";
+    const exported = "export " + declared;
+    const body = `
+function scan(text: string): string {
+  try {
+    const book = JSON.parse(text) as Book;
+    return "read " + typeof book.isbn + " " + book.title;
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+function tally(text: string): string {
+  try {
+    return String((JSON.parse(text) as Book[]).length);
+  } catch (error) {
+    return (error as Error).name + ": " + (error as Error).message;
+  }
+}
+console.log(scan('{"isbn":7,"title":"Tides"}'));
+console.log(scan('{"isbn":"0-1"}'));
+console.log(scan("[1,2]"));
+console.log(scan('{"isbn":"0-1","title":"Moss"}'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3"}]'));
+console.log(tally('[{"isbn":"0-2","title":"Kelp"},{"isbn":"0-3","title":"Ferns","year":1961}]'));
+`;
+    const expected = [
+      "TypeError: expected string at $.isbn, got number",
+      "TypeError: expected string at $.title, got undefined",
+      "TypeError: expected object at $, got array",
+      "read string Moss",
+      "TypeError: expected string at $[1].title, got undefined",
+      "2",
+      "",
+    ].join("\n");
+    const variants: [string, string, Record<string, string>][] = [
+      ["declared-cast-program", declared + body, {}],
+      [
+        "declared-cast-package",
+        `import type { Book } from "shelf-types";\n` + body,
+        {
+          "node_modules/shelf-types/package.json":
+            '{ "version": "0.4.1", "name": "shelf-types", "main": "./shelf.d.ts", "types": "./shelf.d.ts" }\n',
+          "node_modules/shelf-types/shelf.d.ts": exported,
+        },
+      ],
+      [
+        "declared-cast-file",
+        `import type { Book } from "./types.js";\n` + body,
+        { "types.d.ts": exported },
+      ],
+      [
+        "declared-cast-ambient",
+        `/// <reference path="./shims.d.ts" />\nimport type { Book } from "ambient-types";\n` +
+          body,
+        { "shims.d.ts": `declare module "ambient-types" {\n${exported}}\n` },
+      ],
+      [
+        "declared-cast-global",
+        `/// <reference path="./globals.d.ts" />\n` + body,
+        { "globals.d.ts": declared },
+      ],
+    ];
+    for (const [name, source, files] of variants) {
+      const r = await compileAndRun(name, source, "ts", false, files);
+      expect([name, r.exitCode, r.stdout, r.stderr]).toEqual([name, 0, expected, ""]);
+    }
+  });
+
+  test("an untyped value returned where the result is declared undefined is checked", async () => {
+    // Node hands the caller the value (5, null); a result declared
+    // `undefined` has no representation for it, so the return throws.
+    const r = await compileAndRun(
+      "undefined-result-returns",
+      `
+      function five(): any { return JSON.parse("5"); }
+      function nothing(): any { return JSON.parse("null"); }
+      const flag: boolean = process.argv.length < 99;
+      type Nothing = undefined;
+      function declared(): undefined { return five(); }
+      function aliased(): Nothing { return five(); }
+      function ofNull(): undefined { return nothing(); }
+      function conditional(): undefined { return flag ? five() : undefined; }
+      const concise = (): undefined => five();
+      const conciseConditional = (): undefined => (flag ? five() : undefined);
+      let effects = 0;
+      const effect = (): void => { effects++; };
+      const conciseVoidArm = (): undefined => (flag ? five() : void effect());
+      const conciseVoidTaken = (): undefined => (flag ? void effect() : five());
+      const castNumber = (): undefined => 5 as any;
+      const castNull = (): undefined => null as any;
+      const castUndefined = (): undefined => undefined as any;
+      function returnsCastNumber(): undefined { return 5 as any; }
+      function returnsCastUndefined(): undefined { return undefined as any; }
+      class Holder {
+        method(): undefined { return five(); }
+        static make(): undefined { return five(); }
+      }
+      const run = (label: string, f: () => unknown): void => {
+        try { console.log(label, f()); }
+        catch (error) { console.log(label, (error as Error).name, (error as Error).message); }
+      };
+      run("declared", () => declared());
+      run("aliased", () => aliased());
+      run("null", () => ofNull());
+      run("conditional", () => conditional());
+      run("concise", () => concise());
+      run("conciseConditional", () => conciseConditional());
+      run("conciseVoidArm", () => conciseVoidArm());
+      run("conciseVoidTaken", () => conciseVoidTaken());
+      console.log("effects", effects);
+      run("castNumber", () => castNumber());
+      run("castNull", () => castNull());
+      run("castUndefined", () => castUndefined());
+      run("returnsCastNumber", () => returnsCastNumber());
+      run("returnsCastUndefined", () => returnsCastUndefined());
+      run("method", () => new Holder().method());
+      run("static", () => Holder.make());
+      declared();
+    `,
+    );
+    const message =
+      "TypeError a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)";
+    expect(r.stdout).toBe(
+      [
+        ...["declared", "aliased", "null", "conditional", "concise", "conciseConditional"].map(
+          (label) => `${label} ${message}`,
+        ),
+        `conciseVoidArm ${message}`,
+        "conciseVoidTaken undefined",
+        "effects 1",
+        `castNumber ${message}`,
+        `castNull ${message}`,
+        "castUndefined undefined",
+        `returnsCastNumber ${message}`,
+        "returnsCastUndefined undefined",
+        ...["method", "static"].map((label) => `${label} ${message}`),
+        "",
+      ].join("\n"),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("a value other than undefined is not representable");
+  });
+
+  test("a wider default behind an element read stops by name where the element is absent", async () => {
+    // `rows[at] ?? wide`: the checker types the read present and so the
+    // whole expression as the element; past the end Node answers `wide`
+    // itself, which the element's type cannot hold and a copy would not be.
+    // The present side answers the element (corpus
+    // nullish-absent-read-wider-default-present); the absent side evaluates
+    // the default and throws a TypeError that names the form, and the build
+    // reports both sites.
+    const source = `
+      const counts: number[][] = [[1, 2]];
+      const anything: (number | string)[] = [7, 8];
+      let asked = 0;
+      function spare(): (number | string)[] { asked++; return anything; }
+      function pick(at: number): number { return (counts[at] ?? anything).length; }
+      function lazy(at: number): number { return (counts[at] || spare()).length; }
+      console.log(pick(0), lazy(0), asked);
+      try { console.log(pick(3)); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { console.log(lazy(3)); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message, asked); }
+      console.log(pick(5));
+    `;
+    const r = await compileAndRun("absent-read-wider-default", source);
+    const message = (op: string): string =>
+      `the default of '${op}' has a wider type ('(number | string)[]') than the left side ('number[]'), and the left side was absent although its type holds no undefined: the default would be copied to reach the left side's type, where JavaScript answers the default itself (give both sides one type)`;
+    expect(r.stdout).toBe(
+      ["2 2 0", `true ${message("??")}`, `true ${message("||")} 1`, ""].join("\n"),
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain(`TypeError: ${message("??")}`);
+
+    const file = join(cacheDir, "dyncheck-absent-read-wider-default.ts");
+    writeFileSync(file, source);
+    const warnings = (analyze(file).coverage.divergences ?? []).filter((d) => d.code === "SC6001");
+    expect(warnings.map((d) => d.message)).toEqual([
+      "the left side of this default can be absent at run time although its type 'number[]' holds no undefined, and the default has the wider type '(number | string)[]', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy",
+      "the left side of this default can be absent at run time although its type 'number[]' holds no undefined, and the default has the wider type '(number | string)[]', which reaches the left side's type only as a copy (a conversion to another layout builds a new object), while under Node the result is the default itself: where the left side is absent the program stops here with a TypeError instead of answering a copy",
+    ]);
+  });
 });
 
 describe(`native-handle boundary fences (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
@@ -1342,13 +1750,14 @@ server.listen(0, '127.0.0.1', wrap(function() {
 `;
 
   test("a real-but-unmodeled member on a dyn handle throws the 'not supported yet' Error", async () => {
-    // writeContinue stays unmodeled (cork/uncork/flushHeaders graduated
-    // to real dispatches — the ladder's exemplar moves with the surface).
+    // addTrailers stays unmodeled (cork/uncork/flushHeaders, then the
+    // informational calls, graduated to real dispatches — the ladder's
+    // exemplar moves with the surface).
     const r = await compileAndRun(
       "handle-unmodeled-member",
       serverPreamble +
         `server.on('request', wrap(function(req, res) {
-  res.writeContinue();
+  res.addTrailers({ 'x-a': '1' });
 }));
 ` +
         listenAndHit,
@@ -1356,7 +1765,7 @@ server.listen(0, '127.0.0.1', wrap(function() {
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain(
-      "'ServerResponse.prototype.writeContinue' on a dynamic value is not supported yet",
+      "'ServerResponse.prototype.addTrailers' on a dynamic value is not supported yet",
     );
   });
 
@@ -1699,11 +2108,12 @@ console.log("done", caught);
     expect(r.stdout).toBe("done 100\n");
   });
 
-  test("an inspection refusal throws before console.log writes", async () => {
-    // A promise reached through `unknown` has no dynamic rendering; the
-    // refusal must stop the call, not print a partial line and continue.
+  test("an untyped promise inspects in Node's Promise form", async () => {
+    // A promise reached through `unknown` renders with its settled value, at
+    // the top level and inside records and arrays, and inspect answers the
+    // same text console.log writes.
     const r = await compileAndRun(
-      "inspect-refusal-unwind",
+      "inspect-promise-render",
       `import { inspect } from "node:util";
 const p: unknown = Promise.resolve(3);
 function attempt(label: string, f: () => void): void {
@@ -1723,18 +2133,30 @@ console.log(p);
 console.log("after");
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
-    expect(r.exitCode).toBe(1);
+    expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+      [
+        "x Promise { 3 }",
+        "log returned",
+        "13",
+        "inspect returned",
+        "{ a: Promise { 3 } }",
+        "record returned",
+        "[ Promise { 3 } ]",
+        "array returned",
+        "before",
+        "Promise { 3 }",
+        "after",
+        "",
+      ].join("\n"),
     );
-    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+    expect(r.stderr).toBe("");
   });
 
-  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+  test("a promise in a record's kept source properties renders in Node's form", async () => {
     // A record converted from an object with undeclared properties renders
-    // them through its checked view; a refusal there, inside an enclosing
-    // record or array, must not leave that render's frames open.
+    // them through its checked view; a promise there, inside an enclosing
+    // record or array, renders with its settled value.
     const r = await compileAndRun(
       "inspect-refusal-kept-source",
       `import { inspect } from "node:util";
@@ -1756,12 +2178,13 @@ attempt("array", () => console.log(inspect([r, r])));
 console.log([3, 4], { d: 5 });
 `,
     );
-    const refusal = "util.inspect of a promise value is not supported yet";
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
-      `record ${refusal}\n` +
+      `{ outer: { a: 1, p: Promise { 3 } }, n: [ 1, 2 ] }\n` +
+        "record returned\n" +
         `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
-        `array ${refusal}\n` +
+        "[ { a: 1, p: Promise { 3 } }, { a: 1, p: Promise { 3 } } ]\n" +
+        "array returned\n" +
         "[ 3, 4 ] { d: 5 }\n",
     );
   });
@@ -1832,10 +2255,10 @@ console.log(format("%O", [1]));
     );
   });
 
-  test("inspecting a compiled class with static fields through unknown refuses", async () => {
-    // Node prints `[class S] { count: 3 }`; the class object does not
-    // carry compiled static fields, so the inspector refuses rather than
-    // print `[class S]`. A class without static fields still prints.
+  test("inspecting a compiled class with static fields through unknown matches Node", async () => {
+    // Node prints the constructor form with the class's enumerable statics.
+    // The class object carries them in its static property table, so the
+    // inspector renders the same line.
     const r = await compileAndRun(
       "inspect-class-statics",
       `class Plain {}
@@ -1845,28 +2268,203 @@ class S extends Plain {
 const plain: unknown = Plain;
 const s: unknown = S;
 console.log(plain);
-try {
-  console.log(s);
-} catch (e) {
-  console.log((e as Error).message);
-}
+console.log(s);
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
-    );
+    expect(r.stdout).toBe("[class Plain]\n[class S extends Plain] { count: 3 }\n");
   });
 
-  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
-    // Node's showHidden adds a function's length/name/prototype, an
-    // error's stack and a typed array's byte fields; %o throws the 'not
-    // supported yet' Error for them instead of printing without them.
+  test("a static field written through a subclass value is refused, never stored on the base", async () => {
+    // Node defines an own property on the subclass. The subclass's compiled
+    // reads take the inherited field from the base's storage, so the write is
+    // refused, whether the value is the subclass or a slot typed with the base
+    // that holds it.
     const r = await compileAndRun(
-      "format-o-hidden-refusals",
+      "static-write-through-subclass",
+      `class Base {
+  static count = 1;
+}
+class Sub extends Base {
+  static own = "a";
+}
+function write(C: any, key: string, value: unknown): void {
+  C[key] = value;
+}
+function writeCount(C: any, value: unknown): void {
+  C.count = value;
+}
+const held: typeof Base = Sub;
+for (const attempt of [() => write(held, "count", 40), () => writeCount(held, 41), () => writeCount(Sub, 42)]) {
+  try {
+    attempt();
+    console.log("stored");
+  } catch (error) {
+    console.log((error as Error).message.includes("inherited static 'count'"));
+  }
+}
+console.log(Base.count, Sub.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n1 1\n");
+  });
+
+  test("redefining a reflected static field is refused before the table changes", async () => {
+    // The class's compiled code reads the field's own storage, which a
+    // redefinition (a new value or a non-writable property) would leave
+    // behind. A key the class does not declare still defines.
+    const r = await compileAndRun(
+      "static-redefinition",
+      `class Counter {
+  static count = 1;
+}
+const anyCounter: any = Counter;
+try {
+  Object.defineProperty(Counter, "count", { value: 9, writable: false });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"));
+}
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  Object.defineProperty(Counter, key, { value: 9 });
+  console.log("defined");
+} catch (error) {
+  console.log((error as Error).message.includes("redefining the static field 'count'"), conversions);
+}
+anyCounter.count = 5;
+Object.defineProperty(Counter, "extra", { value: 2, enumerable: true });
+console.log(Counter.count, Reflect.get(Counter, "count"), anyCounter.extra);
+try {
+  Reflect.set(Counter, "count", 6, {});
+} catch (error) {
+  console.log((error as Error).message.includes("receiver other than the class"));
+}
+console.log(Counter.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue 1\n5 5 2\ntrue\n5\n");
+  });
+
+  test("deleting a reflected static field is refused, and other keys still delete", async () => {
+    // The table entry would go while the class's compiled code kept reading
+    // the field's own storage, so the delete is refused before it runs.
+    const r = await compileAndRun(
+      "static-delete",
+      `class Base {
+  static count = 1;
+}
+function remove(C: any, key: any): boolean {
+  return Reflect.deleteProperty(C, key);
+}
+try {
+  console.log(remove(Base, "count"));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"));
+}
+// A key object converts to the field's name: the refusal compares the
+// converted key, and the conversion runs once.
+let conversions = 0;
+const key: any = {
+  toString(): string {
+    conversions++;
+    return "count";
+  },
+};
+try {
+  console.log(remove(Base, key));
+} catch (error) {
+  console.log((error as Error).message.includes("deleting the static field 'count'"), conversions);
+}
+const added: any = Base;
+added.extra = 1;
+console.log(remove(Base, "extra"), added.extra, Base.count, Reflect.get(Base, "count"));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue 1\ntrue undefined 1 1\n");
+  });
+
+  test("Object.assign and Object.defineProperties onto a reflected static field are refused", async () => {
+    // Both act on the source's own enumerable keys. A key naming a static
+    // field the table lists would change the table (its value, or its
+    // writability) while the class's compiled code kept its own storage, so
+    // the call is refused before anything is copied or defined. Other keys
+    // still copy and define.
+    const r = await compileAndRun(
+      "static-assign-define-many",
+      `class Base {
+  static count = 1;
+}
+const C: any = Base;
+for (const attempt of [
+  () => Object.assign(C, { other: 9 }, { count: 2 }),
+  () => Object.defineProperties(C, { count: { value: 9 } }),
+  () => Object.defineProperties(C, { count: { writable: false } }),
+]) {
+  try {
+    attempt();
+    console.log("changed");
+  } catch (error) {
+    console.log((error as Error).message.includes("static field 'count'"));
+  }
+}
+Object.assign(C, { other: 9 });
+Object.defineProperties(C, { more: { value: 3, enumerable: true } });
+C.count = 5;
+console.log(Base.count, Reflect.get(Base, "count"), C.other, C.more);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n5 5 9 3\n");
+  });
+
+  test("a public static named like a private one never publishes the private value", async () => {
+    // \`static ["#secret"]\` is a public key, distinct from the private
+    // \`#secret\`. The class keeps its reflection refusal instead of listing
+    // the private storage under the public name, and Reflect.get refuses
+    // rather than answering undefined.
+    const r = await compileAndRun(
+      "public-key-spelled-private",
+      `class Holder {
+  static #secret = 41;
+  static ["#secret"] = 5;
+  static count = 3;
+}
+const anyHolder: any = Holder;
+for (const read of [() => Reflect.get(Holder, "#secret"), () => anyHolder["#secret"], () => Object.getOwnPropertyDescriptor(Holder, "#secret")?.value]) {
+  try {
+    console.log(read());
+  } catch (error) {
+    console.log((error as Error).message.includes("not supported"));
+  }
+}
+console.log(Holder.count);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("true\ntrue\ntrue\n3\n");
+  });
+
+  test("%o prints the dynamic kinds whose hidden entries render", async () => {
+    // Node's showHidden adds a function's length/name/prototype and an
+    // error's enumerable properties; the walk renders both. A typed array's
+    // byte fields render; a SharedArrayBuffer's own accessors do not, so
+    // those keep the 'not supported yet' Error.
+    const r = await compileAndRun(
+      "format-o-hidden-renders",
       `import { format } from "node:util";
 function f(): void {}
-const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+const sab = new SharedArrayBuffer(1);
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]], ["sab", sab], ["sabView", new Uint8Array(sab)]];
 for (const [label, value] of values) {
   try {
     console.log(label, format("%o", value));
@@ -1879,12 +2477,444 @@ for (const [label, value] of values) {
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       [
-        "fn util.format %o of function values is not supported yet",
-        "err util.format %o of Error values is not supported yet",
-        "u8 util.format %o of typed array values is not supported yet",
+        "fn <ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
+        "err [Error: e] { [stack]: [Getter/Setter], [message]: 'e' }",
+        "u8 Uint8Array(1) [",
+        "  0,",
+        "  [BYTES_PER_ELEMENT]: 1,",
+        "  [length]: 1,",
+        "  [byteLength]: 1,",
+        "  [byteOffset]: 0,",
+        "  [buffer]: ArrayBuffer { [byteLength]: 1 }",
+        "]",
         "arr [ 1, [length]: 1 ]",
+        "sab util.format %o of SharedArrayBuffer values is not supported yet",
+        "sabView util.format %o of SharedArrayBuffer values is not supported yet",
         "",
       ].join("\n"),
     );
+  });
+
+  test("console.dir renders showHidden through the checked-dynamic walk", async () => {
+    // dir is inspect with customInspect: false, so the hidden entries come
+    // from the walk's showHidden state; a function's own hidden entries
+    // render, and the kinds without a hidden view keep their refusal,
+    // naming console.dir.
+    const r = await compileAndRun(
+      "console-dir-show-hidden",
+      `const arr: any = [1, 2];
+arr.extra = 3;
+Object.defineProperty(arr, "hidden", { value: 4, enumerable: false });
+console.dir(arr, { showHidden: true });
+console.dir(arr);
+function f(): void {}
+try {
+  console.dir(f, { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+const sab = new SharedArrayBuffer(1);
+try {
+  console.dir(new Uint8Array(sab), { showHidden: true });
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[ 1, 2, [length]: 2, extra: 3, [hidden]: 4 ]",
+        "[ 1, 2, extra: 3 ]",
+        "<ref *1> [Function: f] {",
+        "  [length]: 0,",
+        "  [name]: 'f',",
+        "  [prototype]: { [constructor]: [Circular *1] }",
+        "}",
+        "console.dir with showHidden of SharedArrayBuffer values is not supported yet",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("showHidden refuses the renders that would expose a SharedArrayBuffer's byte accessors", async () => {
+    // Node lists a SharedArrayBuffer's own byteLength, maxByteLength and
+    // growable accessors and its toStringTag symbol under showHidden, which
+    // this inspector does not model: the render throws SC2020 instead of
+    // printing without them, for a view's [buffer] as much as the buffer
+    // itself. Without showHidden the buffer and its views print.
+    const r = await compileAndRun(
+      "inspect-shared-array-buffer-hidden",
+      `import { inspect } from "node:util";
+const sab = new SharedArrayBuffer(4);
+const renders: [string, () => string][] = [
+  ["sab", () => inspect(sab, { showHidden: true })],
+  ["view", () => inspect(new Uint8Array(sab, 1, 2), { showHidden: true })],
+  ["dataView", () => inspect(new DataView(sab, 1, 2), { showHidden: true })],
+];
+for (const [label, render] of renders) {
+  try {
+    console.log(label, render());
+  } catch (e) {
+    const err = e as Error & { code?: string };
+    console.log(label, err.code, err.message);
+  }
+}
+console.log(inspect(sab));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "sab SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "view SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "dataView SC2020 util.inspect with showHidden of SharedArrayBuffer values is not supported yet",
+        "SharedArrayBuffer { [Uint8Contents]: <00 00 00 00>, [byteLength]: 4 }",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("collection seeds from a dynamic iterable convert every element through the checked boundary", async () => {
+    // `new Set(x)` / `new Map(x)` over a checked-dynamic source seed the
+    // declared collection by iterating with the dynamic iterator protocol and
+    // converting each element (and each Map key and value) through the existing
+    // checked conversion. A lying view — a marked accessor whose data members
+    // are typed Set<string> / Map<string, number> but hold JSON arrays — makes
+    // the conversion fail where Node, which never checks, copies silently: the
+    // documented checked-dynamic divergence. The seed stops at the first bad
+    // element and the TypeError is catchable.
+    const r = await compileAndRun(
+      "collection-dyn-seed-checked",
+      `interface State {
+  readonly label: string;
+  readonly pending: Set<string>;
+  readonly table: Map<string, number>;
+}
+function create(): State {
+  return {
+    get label(): string {
+      return "agent";
+    },
+    pending: JSON.parse("[1,2]"),
+    table: JSON.parse("[[1,2]]"),
+  };
+}
+class Owner {
+  private m: State = create();
+  get state(): State {
+    return this.m;
+  }
+}
+const owner = new Owner();
+try {
+  const copy = new Set(owner.state.pending);
+  console.log("set-ok", copy.size);
+} catch (error) {
+  console.log("set-threw", (error as Error).name, (error as Error).message);
+}
+try {
+  const table = new Map(owner.state.table);
+  console.log("map-ok", table.size);
+} catch (error) {
+  console.log("map-threw", (error as Error).name, (error as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "set-threw TypeError expected string at $, got number",
+        "map-threw TypeError expected string at $, got number",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a function reached through a narrower slot refuses an argument its parameter cannot hold", async () => {
+    // The checker admits both steps: a function with an optional parameter
+    // into a slot without it, and that slot into one whose extra parameter
+    // has another type. Node hands the function the value its type
+    // excludes. The wide slot's value is built from the function, so the
+    // mismatch is the function's own: invoking the slot throws, and a
+    // function that has no such parameter still ignores the argument.
+    const r = await compileAndRun(
+      "function-view-stranded",
+      `
+      function fixed(a: string, digits?: number): string { return a + (digits === undefined ? "" : (1).toFixed(digits)); }
+      function plain(a: string): string { return a + "!"; }
+      function narrowOf(f: (a: string) => string): (a: string) => string { return f; }
+      function widen(f: (a: string) => string): (a: string, b: string) => string { return f; }
+      console.log(widen(narrowOf(plain))("x", "y"), narrowOf(fixed)("x"));
+      try { console.log(widen(narrowOf(fixed))("x", "y")); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "x! x",
+        "true a '(string, number | undefined) => string' function invoked through a '(string, string) => string' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an untyped call reaches the function behind a slot; the slot's type and the function's own still check", async () => {
+    // A function that passed through a typed slot is checked against what
+    // it declares. Three claims remain the program's and still throw where
+    // Node proceeds: a call through the slot's type, the parameter type the
+    // function itself declares, and a function whose parameter type the
+    // slot gave it.
+    const r = await compileAndRun(
+      "untyped-call-through-slot-claims",
+      `
+      interface Payload { diff: string; path: string }
+      type Show = (payload: Payload) => string;
+      function loose(payload: any): string { return "loose " + JSON.stringify(payload); }
+      function narrow(payload: { diff: string }): string { return "narrow " + payload.diff; }
+      const viaLoose: { show: Show } = { show: loose };
+      const viaNarrow: { show: Show } = { show: narrow };
+      const viaSlot: { show: Show } = { show: (payload) => "typed " + payload.diff };
+      const empty: any = {};
+      const attempt = (label: string, call: () => string): void => {
+        try { console.log(label, call()); }
+        catch (error) { console.log(label, error instanceof TypeError, (error as Error).message); }
+      };
+      // No claim on either side: the function runs.
+      const looseWide: (payload: any) => string = viaLoose.show;
+      const looseAny: any = viaLoose.show;
+      attempt("wider type:", () => looseWide(empty));
+      attempt("any:", () => looseAny(empty));
+      // The call through the slot's type.
+      attempt("slot type, asserted:", () => viaLoose.show(empty as Payload));
+      attempt("slot type, any argument:", () => viaLoose.show(empty));
+      // The function's own parameter type.
+      const narrowWide: (payload: any) => string = viaNarrow.show;
+      const narrowAny: any = viaNarrow.show;
+      attempt("own type, wider type:", () => narrowWide(empty));
+      attempt("own type, any:", () => narrowAny(empty));
+      attempt("own type, admitted:", () => narrowWide({ diff: "d" }));
+      // The function typed by the slot.
+      const slotWide: (payload: any) => string = viaSlot.show;
+      attempt("typed by the slot:", () => slotWide(empty));
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "wider type: loose {}",
+        "any: loose {}",
+        "slot type, asserted: true expected string at $.diff, got undefined",
+        "slot type, any argument: true expected string at $.diff, got undefined",
+        "own type, wider type: true expected string at $.diff, got undefined",
+        "own type, any: true expected string at $[0].diff, got undefined",
+        "own type, admitted: narrow d",
+        "typed by the slot: true expected string at $.diff, got undefined",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an untyped Map or Set converts to a typed collection type only when every entry conforms, and stays one collection", async () => {
+    // The conforming conversions are differential (corpus
+    // untyped-collection-typed-slot.ts). Here: what throws where Node, which
+    // checks nothing, runs. A non-conforming entry names its position in
+    // iteration order, then 0 for a key and 1 for a value; the collection is
+    // left as it was. A converted collection has ONE typed layout: another
+    // typed collection type and a non-conforming write through the untyped
+    // side are refused by name, never answered with a copy.
+    const r = await compileAndRun(
+      "untyped-collection-typed-slot-failures",
+      `function invoke(callee: unknown, argument: unknown): unknown {
+  if (typeof callee === "function") return callee(argument);
+  return undefined;
+}
+function attempt(label: string, body: () => unknown): void {
+  try {
+    console.log(label + ": " + String(body()));
+  } catch (error) {
+    console.log(label + ": " + (error instanceof TypeError) + " " + (error as Error).message);
+  }
+}
+function total(counts: Map<string, number>): number {
+  let sum = 0;
+  for (const [, count] of counts) sum += count;
+  return sum;
+}
+function size(names: Set<string>): number {
+  return names.size;
+}
+function loose(counts: Map<string, unknown>): number {
+  return counts.size;
+}
+interface Booking {
+  guest: string;
+  nights: number;
+}
+function nights(byRoom: Map<string, Booking>): number {
+  let sum = 0;
+  for (const [, booking] of byRoom) sum += booking.nights;
+  return sum;
+}
+const badValue = new Map<unknown, unknown>([["a", 1], ["b", "two"]]);
+attempt("value", () => invoke(total, badValue));
+const hidden: unknown = badValue;
+attempt("value, cast", () => total(hidden as Map<string, number>));
+attempt("still untyped", () => badValue.size + " " + String(badValue.get("b")));
+const badKey = new Map<unknown, unknown>([["a", 1], [2, 2]]);
+attempt("key", () => invoke(total, badKey));
+const badMember = new Set<unknown>(["a", 2]);
+attempt("member", () => invoke(size, badMember));
+attempt("not a collection", () => invoke(total, { size: 0 }));
+attempt("a set for a map", () => invoke(total, new Set<unknown>(["a"])));
+const good = new Map<unknown, unknown>([["a", 1]]);
+attempt("first typed view", () => invoke(total, good));
+attempt("another typed layout", () => invoke(loose, good));
+attempt("non-conforming write through the untyped side", () => good.set("b", "two").size);
+attempt("conforming write through the untyped side", () => good.set("b", 2).size);
+attempt("typed view again", () => invoke(total, good));
+const bornTyped = new Map<string, number | string>([["a", 1]]);
+attempt("born with another layout", () => invoke(total, bornTyped));
+const held: unknown = JSON.parse('{"guest":"eve","nights":2}');
+const sharing = new Map<unknown, unknown>([["r1", held]]);
+attempt("an entry something else holds", () => invoke(nights, sharing));
+const pruned = new Map<unknown, unknown>([["a", 1], ["b", 2], ["c", 3]]);
+pruned.delete("a");
+attempt("first view while iterated past a removed entry", () => {
+  let out = "";
+  for (const [key] of pruned) out += String(key) + String(invoke(total, pruned));
+  return out;
+});
+attempt("first view after that loop", () => invoke(total, pruned));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "value: true expected number at $[0][1][1], got string",
+        "value, cast: true expected number at $[1][1], got string",
+        "still untyped: 2 two",
+        "key: true expected string at $[0][1][0], got number",
+        "member: true expected string at $[0][1], got number",
+        "not a collection: true expected map<string,f64> at $[0], got object",
+        "a set for a map: true expected map<string,f64> at $[0], got Set",
+        "first typed view: 1",
+        "another typed layout: true expected map<string,dyn> at $[0], got Map",
+        "non-conforming write through the untyped side: true expected number at $, got string",
+        "conforming write through the untyped side: 2",
+        "typed view again: 3",
+        "born with another layout: true expected map<string,f64> at $[0], got Map",
+        "an entry something else holds: true expected object that nothing else references (a typed Map takes its entries without copying them) at $[0][0][1], got object",
+        "first view while iterated past a removed entry: true expected map<string,f64> at $[0], got Map",
+        "first view after that loop: 5",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an entry of an untyped Map or Set converts only when nothing else holds what it holds, and the collection must not change while it is checked", async () => {
+    // A typed collection takes its entries without copying them: a plain
+    // object or array converts to a typed value, so one that the program
+    // still reaches another way, at any depth of an entry, would become
+    // two objects. Node, which converts nothing, runs these; here they
+    // throw by name with the path of the held value. So does a collection
+    // that a getter of an entry writes to while the entries are checked.
+    const r = await compileAndRun(
+      "untyped-collection-typed-slot-held-members",
+      `function invoke(callee: unknown, argument: unknown): unknown {
+  if (typeof callee === "function") return callee(argument);
+  return undefined;
+}
+function attempt(label: string, body: () => unknown): void {
+  try {
+    console.log(label + ": " + String(body()));
+  } catch (error) {
+    console.log(label + ": " + (error instanceof TypeError) + " " + (error as Error).message);
+  }
+}
+interface Stay {
+  room: number;
+  guests: string[];
+}
+interface Pair {
+  first: Stay;
+  second: Stay;
+}
+function rooms(byGuest: Map<string, Stay>): number {
+  let sum = 0;
+  for (const [, stay] of byGuest) sum += stay.room;
+  return sum;
+}
+function listed(all: Set<Stay[]>): number {
+  return all.size;
+}
+function paired(all: Map<string, Pair>): number {
+  return all.size;
+}
+function stayWith(guests: unknown): unknown {
+  const stay: any = JSON.parse('{"room":4}');
+  stay.guests = guests;
+  return stay;
+}
+function listOf(stay: unknown): unknown {
+  const list: any = JSON.parse("[null]");
+  list[0] = stay;
+  return list;
+}
+function twice(): unknown {
+  const pair: any = JSON.parse("{}");
+  pair.first = JSON.parse('{"room":2,"guests":[]}');
+  pair.second = pair.first;
+  return pair;
+}
+attempt("members of its own", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(JSON.parse('["bo"]'))]])));
+const guests: unknown = JSON.parse('["ada"]');
+attempt("a member something else holds", () => invoke(rooms, new Map<unknown, unknown>([["ada", stayWith(guests)]])));
+const kept: unknown = JSON.parse('{"room":2,"guests":[]}');
+attempt("an element something else holds", () => invoke(listed, new Set<unknown>([listOf(kept)])));
+attempt("one object under two members", () => invoke(paired, new Map<unknown, unknown>([["p", twice()]])));
+const changing = new Map<unknown, unknown>();
+let acted = false;
+function watched(): unknown {
+  const stay: any = JSON.parse('{"guests":[]}');
+  Object.defineProperty(stay, "room", {
+    enumerable: true,
+    get: () => {
+      if (!acted) {
+        acted = true;
+        changing.set("ada", JSON.parse('{"room":9,"guests":[]}'));
+      }
+      return 1;
+    },
+  });
+  return stay;
+}
+changing.set("ada", JSON.parse('{"room":4,"guests":[]}'));
+changing.set("bo", watched());
+attempt("an entry written while the entries are checked", () => invoke(rooms, changing));
+attempt("the same collection afterwards", () => invoke(rooms, changing));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "members of its own: 4",
+        "a member something else holds: true expected array that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].guests, got array",
+        "an element something else holds: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][0], got object",
+        "one object under two members: true expected object that nothing else references (a typed Map or Set takes its entries without copying them) at $[0][0][1].first, got object",
+        "an entry written while the entries are checked: true expected Map whose entries stay as they are while they are checked at $[0], got Map",
+        "the same collection afterwards: 10",
+        "",
+      ].join("\n"),
+    );
+    expect(r.stderr).toBe("");
   });
 });

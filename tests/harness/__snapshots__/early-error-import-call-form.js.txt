@@ -1,0 +1,27 @@
+early-error-import-call-form.js:5:1 - error SC0008: import() takes a module specifier and an optional second argument; the argument list cannot be omitted or extended
+
+  4 | // as an error, so the grammar check is the compiler's own early error.
+  5 | import();
+    | ^~~~~~~~
+  6 | import("./mod.js", {}, {});
+
+early-error-import-call-form.js:6:1 - error SC0008: import() takes a module specifier and an optional second argument; the argument list cannot be omitted or extended
+
+  5 | import();
+  6 | import("./mod.js", {}, {});
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 | import.defer();
+
+early-error-import-call-form.js:7:1 - error SC0008: import.defer() takes exactly one module specifier
+
+  6 | import("./mod.js", {}, {});
+  7 | import.defer();
+    | ^~~~~~~~~~~~~~
+  8 | import.defer("./mod.js", {});
+
+early-error-import-call-form.js:8:1 - error SC0008: import.defer() takes exactly one module specifier
+
+  7 | import.defer();
+  8 | import.defer("./mod.js", {});
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | 

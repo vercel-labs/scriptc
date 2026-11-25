@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8862-class-value-loop-instanceof.js"
+ ],
+ "diags": []
+}

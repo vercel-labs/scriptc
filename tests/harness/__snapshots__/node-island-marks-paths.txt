@@ -1,0 +1,33 @@
+<dir>/main.ts:1:1 - error SC8006: --node-island=node_modules/widget.js names no module of this program: read as the path <dir>/node_modules/widget.js, because no package is named node_modules
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a path or glob marks the program's own modules; code under node_modules runs in a Node island by package: to mark the package write --node-island=widget.js
+
+<dir>/main.ts:1:1 - error SC8006: --node-island=node_modules/@acme/table.json/** names no module of this program: read as the glob <dir>/node_modules/@acme/table.json/**, because a value with '*' is a glob over the program's own modules
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a path or glob marks the program's own modules; code under node_modules runs in a Node island by package: to mark the package write --node-island=@acme/table.json
+
+<dir>/main.ts:1:1 - error SC8006: --node-island=./lib/missing.js names no module of this program: read as the path <dir>/lib/missing.js, because a value that starts with '.' or '/' is a path
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a path or glob marks the program's own modules, resolved from the working directory; to mark a package write its name as the program imports it (--node-island=<package>)
+
+<dir>/main.ts:1:1 - error SC8006: --node-island=package.json names no module of this program: read as the path <dir>/package.json, because that file exists and the entry module resolves no package of that name
+
+  1 | // @requires-libnode
+    | ^
+  2 | // Packages whose names look like files (`widget.js`, `relay.io`, the scoped
+
+  hint: a path marks one of the program's own modules, and the program loads no module from this file; while the file exists, a package of the same name is marked in package.json ("scriptc": { "packages": { "<name>": "node" } })
+
+4 errors.

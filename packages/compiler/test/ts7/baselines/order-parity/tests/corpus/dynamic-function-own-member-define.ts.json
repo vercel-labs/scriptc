@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dynamic-function-own-member-define.ts"
+ ],
+ "diags": []
+}

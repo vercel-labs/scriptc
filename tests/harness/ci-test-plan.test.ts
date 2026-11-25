@@ -1,29 +1,38 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, globSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
+  caseCosts,
+  caseCostsPath,
   ciTestPlan,
   corpusFiles,
   darwinCorpusFiles,
   darwinFiles,
+  darwinSmokeCases,
   effectFiles,
   fileExclusions,
   caseShardedSideFiles,
   isolatedFiles,
   leakSuppressions,
   memoryHeavyFiles,
+  nativeFrontendFiles,
   sanitizedNodesJobEnv,
   sideOwners,
+  sidePlan,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
 import { runCiTestPlan } from "../../scripts/ci-test.mjs";
+import { parseShardLoads, parseShardSpec, skipUnownedTest } from "./shard.js";
 
-test.for([1, 3, 5, 10, 20])(
+test.for([1, 3, 5, 10, 20, 30])(
   "CI retains every suite with %i shards without mixing partition axes",
   (count) => {
     for (const flavor of ["plain", "san"]) {
       const plans = Array.from({ length: count }, (_, index) =>
-        ciTestPlan({ shard: `${index + 1}/${count}`, flavor }),
+        // The Linux shard plan: the sanitized native frontend builds leave it
+        // for their own jobs, and the macOS shards keep them.
+        ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" }),
       );
       const sideFiles = plans.flatMap((plan) =>
         plan.side.filter((task) => task.args.length === 2).map((task) => task.args[1]),
@@ -53,7 +62,12 @@ test.for([1, 3, 5, 10, 20])(
       );
       const measured = [
         ...new Set([...Object.keys(testCosts[flavor]), ...Object.keys(memoryHeavyFiles)]),
-      ].filter((file) => !isolated.has(file));
+      ].filter(
+        (file) =>
+          !isolated.has(file) &&
+          // The sanitized native frontend builds run in their own jobs, not in a shard.
+          !(flavor === "san" && nativeFrontendFiles.includes(file)),
+      );
       expect(measured.length).toBeGreaterThan(0);
       expect(balanced.toSorted()).toEqual(measured.toSorted());
       for (const plan of plans) {
@@ -71,7 +85,9 @@ test.for([1, 3, 5, 10, 20])(
           expect(cache.env.SCRIPTC_CACHE_TEST_SHARD).toBe(plan.corpus.env.SCRIPTC_TEST_SHARD);
           expect(cache.env.SCRIPTC_TEST_STABLE_TOOLCHAIN).toBe("0");
         }
-        expect(plan.side.some((task) => task.name === "coverage sweep")).toBe(flavor === "plain");
+        expect(plan.side.some((task) => task.name === "coverage corpus sweep")).toBe(
+          flavor === "plain",
+        );
       }
     }
   },
@@ -122,30 +138,185 @@ test("the sanitized three.js nodes build leaves the Linux corpus for its own job
       "${{ github.workspace }}/tests/harness/lsan.supp",
     ),
   );
-  expect(job.steps.at(-1)!.run).toBe(
+  expect(lastRun(job)).toBe(
     `pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"`,
   );
 });
 
-test("the side queue balances measured files across the twenty Linux shards", () => {
-  for (const flavor of ["plain", "san"] as const) {
-    const costs = testCosts[flavor] as Record<string, number>;
-    const owned = new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]);
-    const shards = Array.from({ length: 20 }, (_, index) => {
-      const files = ciTestPlan({ shard: `${index + 1}/20`, flavor })
-        .side.slice(1)
-        .flatMap((task) => task.args.filter((arg) => owned.has(arg)));
-      return { files, load: files.reduce((sum, file) => sum + (costs[file] ?? 0) + 1000, 0) };
-    });
-    // A file heavier than an even share holds a shard alone; the shards
-    // sharing several files are within 10% of each other.
-    const shared = shards.filter((shard) => shard.files.length > 1).map((shard) => shard.load);
-    expect(shared.length).toBeGreaterThan(10);
-    expect(Math.max(...shared)).toBeLessThanOrEqual(Math.min(...shared) * 1.1);
-    // The longest file starts from the last shard, away from the longest
-    // corpus and three.js cases, which balance from the first.
-    const longest = [...owned].sort((a, b) => (costs[b] ?? 0) - (costs[a] ?? 0))[0]!;
-    expect(shards[19]!.files).toContain(longest);
+test("the sanitized native frontend builds leave the Linux shard side queue", () => {
+  const selected = (flavor: "plain" | "san", platform: string) =>
+    Array.from({ length: 20 }, (_, index) =>
+      ciTestPlan({ shard: `${index + 1}/20`, flavor, platform }),
+    )
+      .flatMap((plan) =>
+        plan.side.flatMap((task) => task.args).filter((arg) => nativeFrontendFiles.includes(arg)),
+      )
+      .sort();
+  const all = [...nativeFrontendFiles].sort();
+  for (const platform of ["linux", "darwin"]) {
+    // The plain compile fits in the shard's budget; the sanitized Linux one
+    // does not, and it runs in its own jobs instead. The macOS shards, which
+    // have no LeakSanitizer, keep them in the side queue.
+    expect(selected("plain", platform), platform).toEqual(all);
+    expect(selected("san", platform), platform).toEqual(platform === "linux" ? [] : all);
+  }
+});
+
+test("the sanitized native frontend builds run in a dedicated required job", () => {
+  type Job = {
+    "runs-on": string;
+    needs: string[];
+    if?: string;
+    "timeout-minutes": number;
+    strategy: { matrix: { include: { suite: string; file: string }[] } };
+    env: Record<string, string>;
+    steps: { run?: string; uses?: string }[];
+  };
+  const { jobs } = load(
+    readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  ) as { jobs: Record<string, Job> };
+  const job = jobs["native_frontend_san"]!;
+  expect(job).toBeDefined();
+  expect(job["runs-on"]).toBe("ubuntu-24.04");
+  // The queue leaves the sanitized shards to the push to main, which runs this job.
+  expect(job.if).toBe(
+    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}",
+  );
+  expect(job.needs).toEqual(expect.arrayContaining(["validation_scope", "lanes", "native_linux"]));
+  expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(30);
+  expect(job.env["SCRIPTC_SAN"]).toBe("1");
+  expect(job.env["SCRIPTC_TEST_WORKERS"]).toBe("1");
+  expect(job.env["ASAN_OPTIONS"]).toBe("detect_leaks=0");
+  expect(job.strategy.matrix.include.map((entry) => entry.file).sort()).toEqual(
+    [...nativeFrontendFiles].sort(),
+  );
+  // Two cores: the sanitized build starts one clang per core, and four of them beside the
+  // compile in Node need more than the runner's 16 GB.
+  expect(lastRun(job)).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
+  expect(jobs["test"]!.needs).toContain("native_frontend_san");
+});
+
+test.for([20, 30])(
+  "the side queue is balanced across %i Linux shards by measured cost",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const) {
+      const { loads, placed, owners } = sidePlan(flavor, count, "linux");
+      // The plan accounts for every whole file it owns and every measured test
+      // of the suites that split their own tests, each on one shard.
+      const items = placed.flatMap((shard) => shard.map(([file, test]) => `${file} > ${test}`));
+      expect(new Set(items).size).toBe(items.length);
+      expect(items.toSorted()).toEqual(
+        [
+          ...[...owners.keys()].map((file) => `${file} > undefined`),
+          ...caseShardedSideFiles.flatMap(([, file]) =>
+            Object.keys(caseCosts[file]![flavor]).map((test) => `${file} > ${test}`),
+          ),
+        ].toSorted(),
+      );
+      placed.forEach((shard, index) =>
+        expect(
+          shard.reduce((sum, [, , ms]) => sum + ms, 0),
+          `${flavor} ${index + 1}`,
+        ).toBe(loads[index]),
+      );
+      // No shard's side queue is planned past 1.3 times the mean, unless one
+      // test or file holds the shard alone but for a tenth of the mean: an item
+      // longer than an even share cannot be divided.
+      const mean = loads.reduce((sum, load) => sum + load, 0) / loads.length;
+      loads.forEach((load, index) => {
+        const longest = Math.max(...placed[index]!.map(([, , ms]) => ms));
+        if (load - longest > mean * 0.1)
+          expect(load, `${flavor} ${index + 1}`).toBeLessThanOrEqual(mean * 1.3);
+      });
+      // The two longest items of the whole side queue, whichever suites or
+      // files they belong to, are on different shards.
+      const [first, second] = placed
+        .flatMap((shard, index) => shard.map(([, , ms]) => ({ ms, index })))
+        .sort((a, b) => b.ms - a.ms);
+      expect(first!.index).not.toBe(second!.index);
+    }
+  },
+);
+
+test.for([1, 3, 5, 10, 20, 30])(
+  "every one of %i shards starts each self-splitting suite from the same planned loads",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const) {
+      const { starts } = sidePlan(flavor, count, "linux");
+      const plans = Array.from({ length: count }, (_, index) =>
+        ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" }),
+      );
+      for (const [name, file] of caseShardedSideFiles) {
+        const loads = plans.map(
+          (plan) => plan.side.find((task) => task.name === name)!.env.SCRIPTC_TEST_SHARD_LOADS,
+        );
+        expect(new Set(loads).size, file).toBe(1);
+        expect(parseShardLoads(count, loads[0]), file).toEqual(starts.get(file));
+      }
+      // Only those suites receive loads: the corpus and the other tasks
+      // balance from nothing, as they do outside CI.
+      for (const plan of plans)
+        for (const task of [plan.corpus, ...plan.side])
+          expect("SCRIPTC_TEST_SHARD_LOADS" in task.env, `${flavor} ${task.name}`).toBe(
+            caseShardedSideFiles.some(([name]) => name === task.name),
+          );
+    }
+  },
+);
+
+test.for([3, 10, 20, 30])(
+  "the planned loads keep every test of a self-splitting suite on exactly one of %i shards",
+  (count) => {
+    for (const flavor of ["plain", "san"] as const)
+      for (const [name, file] of caseShardedSideFiles) {
+        const costs = caseCosts[file]![flavor] as Record<string, number>;
+        // The measured tests, two the table does not know and a repeated title.
+        const names = [...Object.keys(costs), "unmeasured a", "unmeasured b", "unmeasured a"];
+        const shards = Array.from({ length: count }, (_, index) => {
+          const plan = ciTestPlan({ shard: `${index + 1}/${count}`, flavor, platform: "linux" });
+          const env = plan.side.find((task) => task.name === name)!.env;
+          const suite = { tasks: [] as { name: string }[] };
+          suite.tasks = names.map((test) => ({ type: "test", name: test, suite }));
+          return suite.tasks
+            .filter((task) => {
+              let skipped = false;
+              skipUnownedTest(
+                { task, skip: () => (skipped = true) } as unknown as Parameters<
+                  typeof skipUnownedTest
+                >[0],
+                costs,
+                parseShardSpec(env.SCRIPTC_TEST_SHARD),
+                parseShardLoads(count, env.SCRIPTC_TEST_SHARD_LOADS),
+              );
+              return !skipped;
+            })
+            .map((task) => task.name);
+        });
+        expect(shards.flat().toSorted(), `${flavor} ${file}`).toEqual(names.toSorted());
+      }
+  },
+);
+
+test("every file that splits its own tests runs on every shard, with a cost table", () => {
+  const root = new URL("../../", import.meta.url);
+  const splitting = globSync(
+    ["tests/harness/**/*.test.ts", "packages/*/src/**/*.test.ts", "packages/*/test/**/*.test.ts"],
+    { cwd: fileURLToPath(root), exclude: (name) => name === "node_modules" },
+  )
+    .map((file) => file.replaceAll("\\", "/"))
+    .filter(
+      (file) =>
+        file !== "tests/harness/shard.test.ts" &&
+        file !== "tests/harness/ci-test-plan.test.ts" &&
+        readFileSync(new URL(file, root), "utf8").includes("skipUnownedTest("),
+    );
+  // vitest's --shard would hand such a file to one shard, which would skip
+  // the tests the others own: they would run nowhere.
+  expect(splitting.toSorted()).toEqual(caseShardedSideFiles.map(([, file]) => file).toSorted());
+  for (const [, file] of caseShardedSideFiles) {
+    expect(fileExclusions).toContain(file);
+    const table = JSON.parse(readFileSync(new URL(caseCostsPath(file), root), "utf8"));
+    expect(Object.keys(table).toSorted(), file).toEqual(["plain", "san"]);
   }
 });
 
@@ -211,6 +382,29 @@ test.for([1, 2, 4, 8])(
   },
 );
 
+test.for([2, 4, 8])(
+  "the corpus's workers take side tasks once the corpus ends, within a budget of %i workers",
+  async (workers) => {
+    const plan = ciTestPlan({ shard: "1/10", flavor: "plain", workers, platform: "linux" });
+    expect(plan.side.length).toBeGreaterThan(workers);
+    const started: string[] = [];
+    let active = 0;
+    let peak = 0;
+    // The corpus ends at once; each side task takes a few milliseconds.
+    await runCiTestPlan(plan, async (task) => {
+      const cost = Number(task.env.SCRIPTC_TEST_WORKERS);
+      active += cost;
+      peak = Math.max(peak, active);
+      started.push(task.name);
+      if (task !== plan.corpus) await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= cost;
+    });
+    // Without the corpus's workers, the side queue would hold one worker at a time.
+    expect(peak).toBe(workers);
+    expect(started.toSorted()).toEqual([plan.corpus, ...plan.side].map((task) => task.name).sort());
+  },
+);
+
 test("CI reports failures after running every scheduled suite", async () => {
   const plan = ciTestPlan({ shard: "1/10", flavor: "plain" });
   const seen: string[] = [];
@@ -264,6 +458,32 @@ test.for([1, 2, 3])("the darwin suite retains every darwin file with %i shards",
   expect(corpusFiles).toEqual(expect.arrayContaining(darwinCorpusFiles));
 });
 
+test("the darwin smoke suite runs the corpus's fs and os programs in two processes", () => {
+  const plan = ciTestPlan({ shard: "1/1", flavor: "plain", workers: 2, suite: "darwin-smoke" });
+  expect(plan.sideWorkers).toBe(1);
+  expect(plan.side).toHaveLength(1);
+  const halves = [plan.corpus, plan.side[0]!];
+  expect(halves.map((half) => half.env.SCRIPTC_TEST_SHARD)).toEqual(["1/2", "2/2"]);
+  for (const half of halves) {
+    expect(half.args).toEqual(["test", ...darwinCorpusFiles, "-t", darwinSmokeCases]);
+    expect(half.env.SCRIPTC_TEST_WORKERS).toBe("1");
+  }
+  // vitest matches the pattern against "<file> <describe title> <case>", the
+  // case being the program's path under tests/corpus.
+  const pattern = new RegExp(darwinSmokeCases);
+  const title = "tests/harness/differential.test.ts differential corpus (3720 programs, shard 1/2)";
+  for (const name of [
+    "fs-lchmod.cjs",
+    "118-fs-stored-callbacks.cjs",
+    "1353-os-basics.ts",
+    "9-fs_x/main.ts",
+  ])
+    expect(pattern.test(`${title} ${name}`), name).toBe(true);
+  for (const name of ["process-env.ts", "node-fs-x.ts", "1-osc.ts", "2-cfs-x.ts"])
+    expect(pattern.test(`${title} ${name}`), name).toBe(false);
+  expect(pattern.test(title)).toBe(false);
+});
+
 /** Expands the ${{ }} expressions of a workflow value for one event: string
  * literals, ==, !=, !, &&, || and fromJSON, with matrix.shard left as
  * "{shard}". A value that is a single expression returns its result. */
@@ -282,11 +502,21 @@ function expand(value: string, context: { event: string; macosSuite: string | nu
   );
 }
 
+/** The last step that runs a command: a job may end with an upload step that only keeps a report. */
+const lastRun = (job: { steps: { run?: string }[] }) =>
+  job.steps.filter((step) => step.run !== undefined).at(-1)!.run;
+
 test("pull requests run the full suite on Linux and the darwin suite on macOS", () => {
   type Job = {
     "runs-on": string;
     needs: string[];
-    strategy: { matrix: { flavor: string[]; shard: number[] | string } };
+    strategy: {
+      matrix: {
+        flavor: string | string[];
+        shard: number[] | string;
+        exclude?: { flavor: string; shard: number }[];
+      };
+    };
     env: Record<string, string>;
     steps: { run?: string; uses?: string; with?: { name?: string } }[];
   };
@@ -297,8 +527,48 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   const macos = jobs["tests_macos"]!;
   expect(linux["runs-on"]).toBe("ubuntu-24.04");
   expect(linux.needs).toContain("native_linux");
-  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe("${{ matrix.shard }}/20");
+  // The sanitized shards are the lane's long pole, so they run thirty slices
+  // while the plain lane keeps twenty; the exclusions leave exactly that.
+  expect(linux.strategy.matrix.exclude).toEqual(
+    Array.from({ length: 10 }, (_, index) => ({ flavor: "plain", shard: 21 + index })),
+  );
+  // The matrix follows the run's tier: the queue runs the plain shards its plan reports, a push to main the
+  // sanitized shards, and a full run both flavors. Evaluate each expression for a tier.
+  const linuxMatrix = (tier: "queue" | "post" | "full") => {
+    const queue = tier === "queue" ? "true" : "false";
+    const post = tier === "post" ? "true" : "false";
+    const plan = JSON.stringify(JSON.stringify(Array.from({ length: 20 }, (_, i) => i + 1)));
+    const evaluate = (value: string): unknown => {
+      const single = /^\$\{\{(.*)\}\}$/s.exec(value);
+      expect(single, value).not.toBeNull();
+      const expression = single![1]!
+        .replaceAll("needs.lanes.outputs.queue", JSON.stringify(queue))
+        .replaceAll("needs.lanes.outputs.post", JSON.stringify(post))
+        .replaceAll("needs.queue_plan.outputs.plain_shards", plan)
+        .replaceAll("fromJSON", "JSON.parse");
+      return new Function(`return (${expression});`)();
+    };
+    return {
+      flavor: evaluate(String(linux.strategy.matrix.flavor)) as string[],
+      shard: evaluate(String(linux.strategy.matrix.shard)) as number[],
+    };
+  };
+  const all = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
+  expect(linuxMatrix("queue")).toEqual({ flavor: ["plain"], shard: all(20) });
+  expect(linuxMatrix("post")).toEqual({ flavor: ["san"], shard: all(30) });
+  expect(linuxMatrix("full")).toEqual({ flavor: ["plain", "san"], shard: all(30) });
+  const shardsOf = (flavor: string): number[] =>
+    linuxMatrix("full").shard.filter(
+      (shard) =>
+        !linux.strategy.matrix.exclude!.some(
+          (entry) => entry.flavor === flavor && entry.shard === shard,
+        ),
+    );
+  expect(shardsOf("plain")).toEqual(all(20));
+  expect(shardsOf("san")).toEqual(all(30));
+  expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe(
+    "${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}",
+  );
   expect(linux.env["SCRIPTC_CI_SUITE"]).toBeUndefined();
   expect(linux.steps.some((step) => step.uses === "./.github/actions/llvm-linux")).toBe(true);
   expect(
@@ -333,15 +603,16 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(coreStep).toBeLessThan(linux.steps.length - 1);
   // Linux runs the suites in a memory-capped scope where systemd manages the
   // runner, and directly elsewhere.
-  const linuxRun = linux.steps.at(-1)!.run as string;
+  const linuxRun = lastRun(linux) as string;
   expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
   expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
   expect(linuxRun).toMatch(
     /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
   );
   expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
-  expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
-  for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(lastRun(macos)).toBe("node scripts/ci-test.mjs");
+  expect(macos.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(typeof linux.strategy.matrix.flavor).toBe("string");
 });
 
 test("CI rejects malformed scheduling inputs", () => {

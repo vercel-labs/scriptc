@@ -116,6 +116,10 @@ function cTypeToLl(raw: string, types: HeaderTypes): string {
   if (LL_I32_TYPES.has(t)) return "i32";
   if (types.enums.has(t)) return "i32"; // C enums are int-sized on every supported target
   if (types.ptrTypedefs.has(t)) return "ptr"; // typedef'd function pointers (ScrTraceFn, ...)
+  // A by-value two-double record (the execution-id pair). The backend does
+  // not declare these entry points itself — they are called from the
+  // runtime's C — so the guard only has to model the header's prototypes.
+  if (t === "ScrAsyncExecState") return "{ double, double }";
   throw new Error(`scr_runtime.h uses a C type this guard cannot map: "${raw}" — extend cTypeToLl`);
 }
 

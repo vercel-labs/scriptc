@@ -980,14 +980,20 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     )
       return expr;
     // A dynamic read names the member it validated, so a failing check
-    // reports `$.projectId` (or `$[0]`) instead of the bare `$`.
+    // reports `$.projectId` (or `$[0]`) instead of the bare `$`. The path
+    // spelling is a dot for a name and a decimal index for a position, so a
+    // key it cannot spell unambiguously (`d[""]`, `d["a-b"]`, `d[1.5]`)
+    // keeps the bare root path.
     const readPath: { pathKey?: string; pathIndex?: number } = {};
     if (ts.isPropertyAccessExpression(node)) readPath.pathKey = node.name.text;
     else if (ts.isElementAccessExpression(node)) {
       const key = node.argumentExpression;
-      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key))
-        readPath.pathKey = key.text;
-      else if (ts.isNumericLiteral(key)) readPath.pathIndex = Number(key.text);
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key.text)) readPath.pathKey = key.text;
+      } else if (ts.isNumericLiteral(key)) {
+        const index = Number(key.text);
+        if (Number.isSafeInteger(index) && index >= 0) readPath.pathIndex = index;
+      }
     }
     // A property read through the receiver's index signature answers
     // undefined for a key the value does not hold, exactly as the same read

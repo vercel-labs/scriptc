@@ -23,6 +23,12 @@ function read(raw: unknown): void {
 
   const key = "projectId";
   console.log("computed", strings[key], strings[key] === undefined);
+
+  // Keys the `.name` path spelling cannot name: an empty name and a
+  // fractional index still read as undefined, and a failing check on one
+  // keeps the bare root path.
+  console.log("empty key", strings[""], strings[""] === undefined);
+  console.log("fractional key", numbers[1.5], numbers[1.5] === undefined);
 }
 
 read({ name: "cli", count: 2, verbose: true, item: { label: "x" } });

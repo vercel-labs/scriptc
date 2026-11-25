@@ -578,6 +578,21 @@ read({ projectId: 7 });
     );
   });
 
+  test("a key the path spelling cannot name keeps the root path", async () => {
+    const r = await compileAndRun(
+      "unspellable-key-path",
+      `function read(raw: unknown): void {
+  const params = raw as Record<string, string>;
+  const empty: string = params[""];
+  console.log(empty);
+}
+read({ "": 7 });
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("Uncaught TypeError: expected string | undefined at $, got number");
+  });
+
   test("optional field: a PRESENT wrong-typed key throws with the arms named", async () => {
     // (A MISSING key producing the undefined arm is corpus-tested
     // differentially — 1009-json-optional-fields; this covers the failure

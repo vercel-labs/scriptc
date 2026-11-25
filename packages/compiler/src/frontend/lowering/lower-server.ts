@@ -7180,6 +7180,7 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
   "keepAliveInitialDelay",
   "sessionTimeout",
   "ticketKeys",
+  "secureProtocol",
 ]);
 
 /** The http.Server options https.createServer also reads (Node's
@@ -7254,6 +7255,8 @@ function tlsLiteralNeedsRuntimeWalk(
  * tls.createServer and https.createServer, and the literal cert/key
  * lowering does not. */
 const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca"]);
+/** secureProtocol is validated and applied by the runtime version ladder. */
+const TLS_SECURE_PROTOCOL_OPTIONS: ReadonlySet<string> = new Set(["secureProtocol"]);
 
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
@@ -7263,6 +7266,16 @@ const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
   "minVersion",
   "maxVersion",
   ...TLS_CLIENT_AUTH_OPTIONS,
+  ...TLS_SECURE_PROTOCOL_OPTIONS,
+]);
+
+/** https.createServer literals the runtime walk implements: the client-auth
+ * members plus secureProtocol, whose validation and bounds the https
+ * runtime server now applies. minVersion/maxVersion keep their static
+ * lowering there. */
+const TLS_HTTPS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  ...TLS_CLIENT_AUTH_OPTIONS,
+  ...TLS_SECURE_PROTOCOL_OPTIONS,
 ]);
 
 function lowerTlsServerOptionsOrDyn(
@@ -7693,7 +7706,7 @@ function lowerTlsModuleCall(
       args[0]!,
       "tls.createSecureContext",
       false,
-      TLS_CLIENT_AUTH_OPTIONS,
+      new Set([...TLS_CLIENT_AUTH_OPTIONS, ...TLS_SECURE_PROTOCOL_OPTIONS]),
     );
     if (opts.dyn !== undefined) {
       return {
@@ -8130,7 +8143,7 @@ function lowerHttpsModuleCall(
     // walk reads the same HTTP members from the record.
     const walkLiteral =
       ts.isObjectLiteralExpression(optionsNode) &&
-      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS) ||
+      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_HTTPS_SERVER_RUNTIME_OPTIONS) ||
         httpsLiteralOptionsNeedWalk(optionsNode));
     let httpOpts: HttpServerOptionPlan | null = null;
     if (ts.isObjectLiteralExpression(optionsNode) && !walkLiteral) {
@@ -8145,7 +8158,7 @@ function lowerHttpsModuleCall(
       optionsNode,
       "https.createServer",
       false,
-      TLS_CLIENT_AUTH_OPTIONS,
+      TLS_HTTPS_SERVER_RUNTIME_OPTIONS,
       false,
       walkLiteral,
     );

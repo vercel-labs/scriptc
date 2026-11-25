@@ -35058,6 +35058,7 @@
           "tests/corpus/compat-errors-stream.mjs",
           "tests/corpus/compat-errors-tls-keying-state.mjs",
           "tests/corpus/compat-errors-tls-options.mjs",
+          "tests/corpus/compat-errors-tls-secure-protocol.mjs",
           "tests/corpus/compat-errors-tls-state.mjs",
           "tests/corpus/compat-errors-tracing-categories.mjs",
           "tests/corpus/compat-errors-web-streams.mjs",
@@ -41868,8 +41869,11 @@
       "anchor": "err_tls_invalid_protocol_method",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_METHOD"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.ERR_TLS_INVALID_PROTOCOL_METHOD",
+        "tests": [
+          "tests/corpus/compat-errors-tls-secure-protocol.mjs"
+        ]
       },
       "anchorSource": "exact"
     },

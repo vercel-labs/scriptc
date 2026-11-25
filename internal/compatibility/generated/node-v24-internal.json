@@ -31015,7 +31015,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.'console.log'",
         "tests": [
           "tests/corpus/diagnostics-channel-console.cjs",
@@ -31042,7 +31042,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.'console.info'",
         "tests": [
           "tests/corpus/diagnostics-channel-console.cjs",
@@ -31069,7 +31069,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.'console.debug'",
         "tests": [
           "tests/corpus/diagnostics-channel-console.cjs",
@@ -31096,7 +31096,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.'console.warn'",
         "tests": [
           "tests/corpus/diagnostics-channel-console.cjs",
@@ -31123,7 +31123,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:diagnostics_channel.'console.error'",
         "tests": [
           "tests/corpus/diagnostics-channel-console.cjs",

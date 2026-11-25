@@ -28,6 +28,12 @@ attempt("define-default", () => {
   return [dbFields.added, Object.getOwnPropertyDescriptor(db, "added")];
 });
 attempt("added-keys", () => [Object.keys(db), Object.getOwnPropertyNames(db)]);
+attempt("added-enumerable", () => [
+  db.propertyIsEnumerable("added"),
+  db.limits.propertyIsEnumerable("length"),
+  db.propertyIsEnumerable("isOpen"),
+  db.propertyIsEnumerable("nope"),
+]);
 attempt("added-json", () => JSON.parse(JSON.stringify(db)));
 attempt("added-for-in", () => {
   const seen: string[] = [];

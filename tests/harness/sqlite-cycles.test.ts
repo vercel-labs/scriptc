@@ -35,6 +35,11 @@ const cases = [
     fixture: "sqlite-session-teardown/main.ts",
     bound: 40,
   },
+  {
+    name: "dropped sessions do not accumulate on a long-lived database",
+    fixture: "sqlite-session-lifetime/main.ts",
+    bound: 12,
+  },
 ];
 
 describe.skipIf(sanitize)("sqlite object lifetimes", () => {

@@ -2407,11 +2407,13 @@ static void *scr_sqlite_db_retain(void *h) {
   return h;
 }
 
-/* The collector's teardown of a database: its statements, sessions, limits
- * object and added properties are traced children the collector frees, so
- * only untraced state (the connection, the path string, the list arrays)
- * goes here. sqlite3_close_v2 leaves the connection open until its last
- * statement is finalized, so the order the collector frees in is safe. */
+/* The collector's teardown of a database: its limits object and added
+ * properties are traced children the collector frees, so only untraced
+ * state (the connection, the path string, the list arrays) goes here. The
+ * statement and session registries hold no references: a statement's entry
+ * clears itself, and a session in a dead group is freed with it.
+ * sqlite3_close_v2 leaves the connection open until its last statement is
+ * finalized, so the order the collector frees in is safe. */
 static void scr_sqlite_db_gcfree(void *p) {
   ScrSqliteDb *db = p;
   if (db->conn_ref != NULL) {
@@ -2472,10 +2474,9 @@ static void scr_sqlite_db_trace(void *p, ScrTraceVisit visit, void *ctx) {
   visit(db->limits_object, ctx);
   visit(db->expandos, ctx);
   visit(db->authorizer, ctx);
-  /* The statement registry is non-owning: a statement the program dropped
-   * is finalized and collected while the database stays alive, and a
-   * statement in a cycle is reclaimed with its cycle. */
-  for (size_t i = 0; i < db->session_n; i++) visit(db->sessions[i], ctx);
+  /* The statement and session registries are non-owning: an object the
+   * program dropped is finalized and collected while the database stays
+   * alive, and one in a cycle is reclaimed with its cycle. */
 }
 
 static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db);
@@ -3341,9 +3342,8 @@ static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db) {
       sqlite3session_delete(session->session);
       session->session = NULL;
     }
-    /* The database's reference to the session goes; a program that still
-     * holds the session keeps a closed one. */
-    scr_sqlite_session_release(session);
+    /* The list does not own the session: a program that still holds one
+     * keeps a closed one until its last reference goes. */
   }
 }
 
@@ -3549,7 +3549,9 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
     db->sessions = grown;
     db->session_cap = cap;
   }
-  scr_sqlite_session_retain(session);
+  /* The list is non-owning, like the statement registry: a session the
+   * program drops is deleted and untracked at once, so request-scoped
+   * sessions do not accumulate change tracking on a long-lived database. */
   db->sessions[db->session_n++] = session;
   scr_dyn_handle_install(SCR_DYNH_SQLITE_SESSION, &scr_sqlite_session_ops);
   ScrDyn *out = scr_dyn_new_handle(session, SCR_DYNH_SQLITE_SESSION);
@@ -4295,8 +4297,14 @@ static bool scr_sqlite_own_method_call(ScrDyn *expandos, void *h, ScrDynHandleTa
    * an accessor written over the property is not entered for it — and a
    * function the program wrote there is dispatched as it was written. */
   if (scr_dyn_method_value_target == h && scr_dyn_method_value_name != NULL &&
-      strcmp(scr_dyn_method_value_name, method) == 0)
+      strcmp(scr_dyn_method_value_name, method) == 0) {
+    /* Consume the marker: it covers this dispatch only. A callback the
+     * method runs that calls the same method on the same object is a fresh
+     * call, where the property the program added is the override Node runs. */
+    scr_dyn_method_value_target = NULL;
+    scr_dyn_method_value_name = NULL;
     return false;
+  }
   ScrDynProp prop;
   if (!scr_sqlite_table_prop(expandos, method, strlen(method), &prop)) return false;
   ScrDyn *callable;

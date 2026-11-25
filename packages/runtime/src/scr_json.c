@@ -4838,6 +4838,26 @@ static bool scr_dyn_handle_own_name(const ScrDyn *v, const ScrStr *key) {
   return found;
 }
 
+/* Whether `key` is one of a handle class's own ENUMERABLE property names. A
+ * class whose added properties may be non-enumerable declares the enumerable
+ * subset (own_enumerable_names); otherwise every own name is enumerable. */
+static bool scr_dyn_handle_own_enumerable_name(const ScrDyn *v, const ScrStr *key) {
+  if (v->kind != SCR_DYN_HANDLE) return false;
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(v);
+  if (ops->own_enumerable_names == NULL) return scr_dyn_handle_own_name(v, key);
+  ScrDyn *names = ops->own_enumerable_names(v->v.handle.ptr);
+  if (names == NULL) return false;
+  bool found = false;
+  for (size_t i = 0; i < names->v.arr.len && !found; i++) {
+    const ScrDyn *name = names->v.arr.items[i];
+    if (name->kind == SCR_DYN_STR && name->v.str->len == key->len &&
+        memcmp(name->v.str->data, key->data, key->len) == 0)
+      found = true;
+  }
+  scr_dyn_release(names);
+  return found;
+}
+
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
   if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(value)->own_names) {
@@ -23152,9 +23172,10 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return false;
   }
-  /* A handle class's own properties are all enumerable. */
+  /* A handle class's own properties, by the class's own attributes: a
+   * property JavaScript added is enumerated only when it was defined so. */
   if (value->kind == SCR_DYN_HANDLE && !scr_ni_dyn_handle(value))
-    return scr_dyn_handle_own_name(value, key);
+    return scr_dyn_handle_own_enumerable_name(value, key);
   if (value->kind == SCR_DYN_OBJ)
     return scr_dyn_obj_enumerable(value, key->data, key->len);
   if (value->kind == SCR_DYN_STR)

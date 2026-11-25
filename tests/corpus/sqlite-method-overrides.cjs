@@ -21,3 +21,18 @@ const stmt = db.prepare("SELECT 1 AS n");
 const savedGet = stmt.get;
 stmt.get = savedGet;
 console.log("stmtSaved", stmt.get().n);
+
+// A callback a saved method runs reaches an added override as a fresh call:
+// the saved value's own dispatch does not hide the property the program wrote.
+const nestedDb = new DatabaseSync(":memory:");
+let nested = 0;
+nestedDb.function("f", () => {
+  nestedDb.exec("SELECT 1");
+  return 1;
+});
+const savedExec = nestedDb.exec;
+nestedDb.exec = function () {
+  nested += 1;
+};
+savedExec.call(nestedDb, "SELECT f()");
+console.log("nested", nested);

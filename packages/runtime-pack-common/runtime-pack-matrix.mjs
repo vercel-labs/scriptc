@@ -177,6 +177,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
+  ["scr_fs_blob.c", "fsOpenAsBlob"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],

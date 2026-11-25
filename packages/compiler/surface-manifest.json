@@ -1456,6 +1456,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.openAsBlob",
+      "kind": "node-builtin",
+      "name": "fs.openAsBlob",
+      "status": "static",
+      "note": "a Blob over a file's bytes, read on demand: the open and fstat happen at the call, and every read re-checks the file's size and modification time"
+    },
+    {
       "id": "node-builtin.fs.openSync",
       "kind": "node-builtin",
       "name": "fs.openSync",

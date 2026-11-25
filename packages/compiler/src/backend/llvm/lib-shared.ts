@@ -1285,6 +1285,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.rmOpts": "scr_fsp_rm_opts",
   "fsp.rmRetry": "scr_fsp_rm_opts_retry",
   "fsp.stat": "scr_fsp_stat",
+  "fs.openAsBlob": "scr_fs_open_as_blob",
   "fsp.realpath": "scr_fsp_realpath",
   "fsp.lstat": "scr_fsp_lstat",
   "fs.opendirSync": "scr_fs_opendir",

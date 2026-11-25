@@ -27,6 +27,8 @@ export interface NativeLinkFeatures {
    * jsObjectModelFact ORs this fact into. */
   bigintBytes: boolean;
   fileHandle: boolean;
+  /** fs.openAsBlob: scr_fs_blob.c, the Blob unit over a file's reads. */
+  fsOpenAsBlob?: boolean;
   /** filehandle.readableWebStream: scr_fs_web_stream.c. */
   fsWebStream?: boolean;
   fetch: boolean;
@@ -507,8 +509,6 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // still needs the hook when it can reach one.
   { feature: "pki", requires: ["mlkem"] },
   { feature: "mlkem", requires: ["pki"] },
-  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
-  // unit comes with it through executable-features' webStreams OR.
   { feature: "fsWebStream", requires: ["fileHandle"] },
   // scr_stream_dyn.c tests values and calls JavaScript stream members through
   // the dyn-invoke unit (the checked-dynamic stream slots).
@@ -517,6 +517,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  { feature: "fsOpenAsBlob", requires: ["fileHandle", "dynAsync"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

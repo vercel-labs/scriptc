@@ -75,7 +75,7 @@ export function executableLinkFeatures(
     ...(features.zstd ? { zstd: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
-    dynInvoke: features.dynInvoke || features.fsWebStream,
+    dynInvoke: features.dynInvoke || features.fsWebStream || features.fsOpenAsBlob,
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
@@ -139,8 +139,9 @@ export function executableLinkFeatures(
       features.fsWebStream ||
       features.inspectFunctionValue === true ||
       features.utilPromisify === true,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     bigint: features.bigint,
-    ...(features.bigstats ? { bigstats: true } : {}),
+    ...(features.bigstats || features.fsOpenAsBlob ? { bigstats: true } : {}),
     searchParams: features.searchParams,
     qs: features.qs,
     utilPromisify: features.utilPromisify,

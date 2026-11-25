@@ -1142,6 +1142,10 @@ export const DH_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPrivateKey",
   "crypto.createPublicKey",
+  "crypto.parsePKCS12",
+  "crypto.pkcs12Key",
+  "crypto.pkcs12Der",
+  "crypto.pkcs12Count",
   "crypto.createSign",
   "crypto.createVerify",
   "crypto.generateKeyPairCb",

@@ -1420,9 +1420,11 @@ static const SpKeyCipher sp_pbes1_2des = {"pbeWithSHAAnd2-KeyTripleDES-CBC", "DE
  * builds it: the whole string is decoded as UTF-8 (overlongs and
  * surrogates are not UTF-8), and the first sequence that does not decode
  * switches the *whole* passphrase to the byte-wise form OpenSSL's
- * OPENSSL_asc2uni uses, where each byte is one UTF-16 code unit. The
- * string ends with the KDF's zero unit. +1 malloc'd. */
-static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t *out_len) {
+ * OPENSSL_asc2uni uses, where each byte is one UTF-16 code unit. OpenSSL's
+ * conversion ends the string with the KDF's zero unit; `terminate` off is
+ * the NULL-password form, which has no password block at all. +1 malloc'd. */
+static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, bool terminate,
+                                     size_t *out_len) {
   /* The passphrase can be a live view of shared memory: decode from a
    * snapshot so a concurrent writer cannot change a byte between the
    * validation pass and the conversion pass (which reads each sequence's
@@ -1510,27 +1512,58 @@ static unsigned char *sp_utf8_to_bmp(const unsigned char *s, size_t len, size_t 
       }
     }
   }
-  b[o++] = 0;
-  b[o++] = 0;
+  /* OpenSSL's UTF-8 to BMPString conversion carries a trailing zero unit;
+   * a NULL password is passed through with no password block at all (see
+   * sp_p12_verify_mac's retry), which the flag selects. */
+  if (terminate) {
+    b[o++] = 0;
+    b[o++] = 0;
+  }
   *out_len = o;
   mbedtls_platform_zeroize(snapshot, len);
   free(snapshot);
   return b;
 }
 
-/* RFC 7292 Appendix B.2 with SHA-1 (u = 20, v = 64). The passphrase is its
- * UTF-8 form as a BMPString, and the string carries the KDF's trailing
- * zero unit. */
-static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsigned char *salt,
-                          size_t salt_len, unsigned id, unsigned iterations, unsigned char *out,
-                          size_t out_len) {
-  enum { U = 20, V = 64 };
-  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA1);
-  if (info == NULL) return false;
+/* The digest's block size, the PKCS#12 KDF's v. mbedTLS exposes only the
+ * digest size, so the widths follow the type: the SHA-512 family hashes in
+ * 128-byte blocks and SHA-3 in its rate. */
+static size_t sp_md_block_size(mbedtls_md_type_t type) {
+  switch (type) {
+    case MBEDTLS_MD_SHA384:
+    case MBEDTLS_MD_SHA512:
+      return 128;
+    case MBEDTLS_MD_SHA3_224:
+      return 144;
+    case MBEDTLS_MD_SHA3_256:
+      return 136;
+    case MBEDTLS_MD_SHA3_384:
+      return 104;
+    case MBEDTLS_MD_SHA3_512:
+      return 72;
+    default:
+      return 64;
+  }
+}
+
+/* RFC 7292 Appendix B.2 with `info`'s digest (u = its size, v = `block`). The
+ * passphrase is its UTF-8 form as a BMPString, and the string carries the
+ * KDF's trailing zero unit. The PKCS#12 password schemes use SHA-1; a
+ * bundle's MAC key uses the MacData digest. */
+static bool sp_pkcs12_kdf_digest(const mbedtls_md_info_t *info, size_t block,
+                                 const unsigned char *pass, size_t pass_len,
+                                 const unsigned char *salt, size_t salt_len, unsigned id,
+                                 unsigned iterations, bool terminate, unsigned char *out,
+                                 size_t out_len) {
+  enum { V_MAX = 144 };
+  size_t v = block;
+  if (info == NULL || v == 0 || v > V_MAX) return false;
+  size_t u = (size_t)mbedtls_md_get_size(info);
+  if (u == 0 || u > 64) return false;
   size_t pass16_len = 0;
-  unsigned char *pass16 = sp_utf8_to_bmp(pass, pass_len, &pass16_len);
-  size_t p_pad = (pass16_len + V - 1) / V * V;
-  size_t s_pad = salt_len == 0 ? 0 : (salt_len + V - 1) / V * V;
+  unsigned char *pass16 = sp_utf8_to_bmp(pass, pass_len, terminate, &pass16_len);
+  size_t p_pad = (pass16_len + v - 1) / v * v;
+  size_t s_pad = salt_len == 0 ? 0 : (salt_len + v - 1) / v * v;
   size_t i_len = p_pad + s_pad;
   unsigned char *I = malloc(i_len ? i_len : 1);
   if (!I) scr_trap("scriptc: out of memory\n");
@@ -1540,8 +1573,8 @@ static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsi
   for (size_t i = 0; i < p_pad; i++) I[s_pad + i] = pass16[i % pass16_len];
   mbedtls_platform_zeroize(pass16, pass16_len);
   free(pass16);
-  unsigned char D[V], A[U], B[V];
-  memset(D, (int)id, sizeof D);
+  unsigned char D[V_MAX], A[64], B[V_MAX];
+  memset(D, (int)id, v);
   size_t produced = 0;
   bool ok = true;
   while (ok && produced < out_len) {
@@ -1549,7 +1582,7 @@ static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsi
     mbedtls_md_init(&ctx);
     int r = mbedtls_md_setup(&ctx, info, 0);
     if (r == 0) r = mbedtls_md_starts(&ctx);
-    if (r == 0) r = mbedtls_md_update(&ctx, D, sizeof D);
+    if (r == 0) r = mbedtls_md_update(&ctx, D, v);
     if (r == 0) r = mbedtls_md_update(&ctx, I, i_len);
     if (r == 0) r = mbedtls_md_finish(&ctx, A);
     mbedtls_md_free(&ctx);
@@ -1557,7 +1590,7 @@ static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsi
       mbedtls_md_init(&ctx);
       r = mbedtls_md_setup(&ctx, info, 0);
       if (r == 0) r = mbedtls_md_starts(&ctx);
-      if (r == 0) r = mbedtls_md_update(&ctx, A, sizeof A);
+      if (r == 0) r = mbedtls_md_update(&ctx, A, u);
       if (r == 0) r = mbedtls_md_finish(&ctx, A);
       mbedtls_md_free(&ctx);
     }
@@ -1565,15 +1598,16 @@ static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsi
       ok = false;
       break;
     }
-    size_t n = out_len - produced < U ? out_len - produced : U;
+    size_t n = out_len - produced < u ? out_len - produced : u;
     memcpy(out + produced, A, n);
     produced += n;
-    for (size_t j = 0; j < V; j++) B[j] = A[j % U];
-    for (size_t block = 0; block < i_len; block += V) {
+    for (size_t j = 0; j < v; j++) B[j] = A[j % u];
+    for (size_t at = 0; at < i_len; at += v) {
       unsigned carry = 1;
-      for (int j = V - 1; j >= 0; j--) {
-        unsigned sum = (unsigned)I[block + j] + B[j] + carry;
-        I[block + j] = (unsigned char)sum;
+      for (size_t j = v; j > 0;) {
+        j--;
+        unsigned sum = (unsigned)I[at + j] + B[j] + carry;
+        I[at + j] = (unsigned char)sum;
         carry = sum >> 8;
       }
     }
@@ -1585,11 +1619,28 @@ static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsi
   return ok;
 }
 
+/* The PKCS#12 password schemes' KDF run: SHA-1, id 1 for a key and id 2
+ * for an IV. */
+static bool sp_pkcs12_kdf(const unsigned char *pass, size_t pass_len, const unsigned char *salt,
+                          size_t salt_len, unsigned id, unsigned iterations, bool terminate,
+                          unsigned char *out, size_t out_len) {
+  return sp_pkcs12_kdf_digest(mbedtls_md_info_from_type(MBEDTLS_MD_SHA1), 64, pass, pass_len,
+                              salt, salt_len, id, iterations, terminate, out, out_len);
+}
+
+/* The most key-derivation iterations a bundle may ask for. The count is
+ * file-controlled and the derivation runs before the bundle can be told
+ * apart from a forgery, so a small unauthenticated bundle could otherwise
+ * ask for billions of hashes. 2048 (OpenSSL's default) through 10,000
+ * (java keytool) are the counts real tools write. */
+#define SP_P12_MAX_ITERATIONS 1000000
+
 /* A PBES1 EncryptedPrivateKeyInfo's plaintext: 1 decrypted, 0 an unusable
  * structure, -1 a passphrase that does not decrypt it. */
 static int sp_decrypt_pbes1(const SpKeyCipher *ci, const mbedtls_asn1_buf *params,
                             const unsigned char *ct, size_t ct_len, const unsigned char *pass,
-                            size_t pass_len, unsigned char **out, size_t *out_len) {
+                            size_t pass_len, bool terminate, unsigned char **out,
+                            size_t *out_len) {
   unsigned char *q = params->p;
   const unsigned char *q_end = params->p + params->len;
   size_t salt_len;
@@ -1600,11 +1651,14 @@ static int sp_decrypt_pbes1(const SpKeyCipher *ci, const mbedtls_asn1_buf *param
   const unsigned char *salt = q;
   q += salt_len;
   if (mbedtls_asn1_get_int(&q, q_end, &iterations) != 0 || iterations < 1) return 0;
+  if (iterations > SP_P12_MAX_ITERATIONS) return -3;
   /* The key comes from the id-1 run and the IV from the id-2 run
    * (PKCS12_pbe_keyivgen's two PKCS12_key_gen calls). */
   unsigned char key[24], iv[8];
-  bool ok = sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 1, (unsigned)iterations, key, ci->key_len) &&
-            sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 2, (unsigned)iterations, iv, ci->iv_len);
+  bool ok = sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 1, (unsigned)iterations, terminate,
+                          key, ci->key_len) &&
+            sp_pkcs12_kdf(pass, pass_len, salt, salt_len, 2, (unsigned)iterations, terminate,
+                          iv, ci->iv_len);
   if (!ok) {
     mbedtls_platform_zeroize(key, sizeof key);
     return 0;
@@ -1615,37 +1669,32 @@ static int sp_decrypt_pbes1(const SpKeyCipher *ci, const mbedtls_asn1_buf *param
   return *out ? 1 : -1;
 }
 
-/* The PKCS#8 inside an encrypted EncryptedPrivateKeyInfo `der` (+1
- * malloc'd, *out_len): PBES2 (PBKDF2 with any HMAC-SHA PRF and one of the
- * AES ciphers) and PBES1 (the PKCS#12 3DES schemes) decrypt; 1 decrypted,
- * 0 an unsupported scheme or cipher, -1 a passphrase that does not
- * decrypt it. */
-static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned char *pass, size_t pass_len,
-                            unsigned char **out, size_t *out_len) {
-  unsigned char *p = (unsigned char *)der;
-  const unsigned char *end = der + len;
-  size_t n;
-  mbedtls_asn1_buf alg, params;
-  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return 0;
-  end = p + n;
-  if (mbedtls_asn1_get_alg(&p, end, &alg, &params) != 0) return 0;
-  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OCTET_STRING) != 0) return 0;
-  const unsigned char *ct = p;
-  size_t ct_len = n;
-  if (alg.len == sizeof sp_pbes1_3des_oid && memcmp(alg.p, sp_pbes1_3des_oid, alg.len) == 0)
-    return sp_decrypt_pbes1(&sp_pbes1_3des, &params, ct, ct_len, pass, pass_len, out, out_len);
-  if (alg.len == sizeof sp_pbes1_2des_oid && memcmp(alg.p, sp_pbes1_2des_oid, alg.len) == 0)
-    return sp_decrypt_pbes1(&sp_pbes1_2des, &params, ct, ct_len, pass, pass_len, out, out_len);
-  if (alg.len != MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS5_PBES2) ||
-      memcmp(alg.p, MBEDTLS_OID_PKCS5_PBES2, alg.len) != 0) {
+/* The plaintext of a content encrypted with `alg`/`params` (+1 malloc'd in
+ * *out, *out_len): PBES2 (PBKDF2 with any HMAC-SHA PRF and one of the AES
+ * ciphers) and PBES1 (the PKCS#12 3DES schemes) decrypt; 1 decrypted,
+ * 0 an unusable structure, -1 a passphrase that does not decrypt it, -2 an
+ * algorithm this build does not decrypt. Shared by the PKCS#8 decoder and
+ * crypto.parsePKCS12's encrypted SafeContents. */
+static int sp_decrypt_alg(const mbedtls_asn1_buf *alg, const mbedtls_asn1_buf *params,
+                          const unsigned char *ct, size_t ct_len, const unsigned char *pass,
+                          size_t pass_len, bool terminate, unsigned char **out,
+                          size_t *out_len) {
+  if (alg->len == sizeof sp_pbes1_3des_oid && memcmp(alg->p, sp_pbes1_3des_oid, alg->len) == 0)
+    return sp_decrypt_pbes1(&sp_pbes1_3des, params, ct, ct_len, pass, pass_len, terminate, out,
+                            out_len);
+  if (alg->len == sizeof sp_pbes1_2des_oid && memcmp(alg->p, sp_pbes1_2des_oid, alg->len) == 0)
+    return sp_decrypt_pbes1(&sp_pbes1_2des, params, ct, ct_len, pass, pass_len, terminate, out,
+                            out_len);
+  if (alg->len != MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS5_PBES2) ||
+      memcmp(alg->p, MBEDTLS_OID_PKCS5_PBES2, alg->len) != 0) {
     /* A well-formed EncryptedPrivateKeyInfo naming an algorithm this build
      * does not decrypt: Node answers the EVP unsupported error, not the
      * decoder one. */
     return -2;
   }
-  if (params.tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) return 0;
-  unsigned char *q = params.p;
-  const unsigned char *params_end = params.p + params.len;
+  if (params->tag != (MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) return 0;
+  unsigned char *q = params->p;
+  const unsigned char *params_end = params->p + params->len;
   mbedtls_asn1_buf kdf, kdf_params, scheme, scheme_params;
   if (mbedtls_asn1_get_alg(&q, params_end, &kdf, &kdf_params) != 0 ||
       kdf.len != MBEDTLS_OID_SIZE(MBEDTLS_OID_PKCS5_PBKDF2) || memcmp(kdf.p, MBEDTLS_OID_PKCS5_PBKDF2, kdf.len) != 0 ||
@@ -1670,6 +1719,7 @@ static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned
   const unsigned char *salt = k;
   k += salt_len;
   if (mbedtls_asn1_get_int(&k, k_end, &iterations) != 0 || iterations < 1) return 0;
+  if (iterations > SP_P12_MAX_ITERATIONS) return -3;
   if (k < k_end && *k == MBEDTLS_ASN1_INTEGER && (mbedtls_asn1_get_int(&k, k_end, &key_len) != 0 ||
                                                   key_len != (int)ci->key_len))
     return 0;
@@ -1686,6 +1736,23 @@ static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned
   *out = sp_key_cipher_run(ci, false, key, scheme_params.p, ct, ct_len, out_len);
   mbedtls_platform_zeroize(key, sizeof key);
   return *out ? 1 : -1;
+}
+
+/* The PKCS#8 inside an encrypted EncryptedPrivateKeyInfo `der` (+1
+ * malloc'd, *out_len): the codes of sp_decrypt_alg, with 0 also for a
+ * wrapper that is not an EncryptedPrivateKeyInfo. */
+static int sp_decrypt_pkcs8(const unsigned char *der, size_t len, const unsigned char *pass,
+                            size_t pass_len, bool terminate, unsigned char **out,
+                            size_t *out_len) {
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  mbedtls_asn1_buf alg, params;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return 0;
+  end = p + n;
+  if (mbedtls_asn1_get_alg(&p, end, &alg, &params) != 0) return 0;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OCTET_STRING) != 0) return 0;
+  return sp_decrypt_alg(&alg, &params, p, n, pass, pass_len, terminate, out, out_len);
 }
 
 
@@ -2629,8 +2696,9 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
         if (from_pem) sp_throw_passphrase_missing(true);
         else sp_throw(SCR_ERR_TYPE, "ERR_MISSING_PASSPHRASE", "Passphrase required for encrypted key");
       } else {
-        r = sp_decrypt_pkcs8(der, der_len, pass->data, (size_t)scr_bytes_byte_len(pass), &plain, &plain_len);
-        if (r == -2) sp_evp_unsupported();
+        r = sp_decrypt_pkcs8(der, der_len, pass->data, (size_t)scr_bytes_byte_len(pass), true,
+                             &plain, &plain_len);
+        if (r == -2 || r == -3) sp_evp_unsupported();
         else if (r < 0) sp_throw_bad_decrypt(from_pem ? 0 : 1);
       }
       if (r > 0) {
@@ -8411,5 +8479,568 @@ ScrBytes *scr_crypto_spkac_public_key(ScrDyn *spkac, ScrDyn *encoding) {
   }
   free(der);
   scr_bytes_release(input);
+  return out;
+}
+
+/* ── PKCS#12 (crypto.parsePKCS12) ─────────────────────────────────────── */
+
+/* The content types and bag ids a PKCS#12 bundle names: PKCS#7 data and
+ * encryptedData, and the keyBag, pkcs8ShroudedKeyBag, certBag and
+ * safeContentsBag of PKCS#12, with the x509Certificate certificate type. */
+static const unsigned char sp_p12_oid_data[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x01};
+static const unsigned char sp_p12_oid_encrypted_data[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x07, 0x06};
+static const unsigned char sp_p12_oid_key_bag[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                   0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x01};
+static const unsigned char sp_p12_oid_shrouded[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                   0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x02};
+static const unsigned char sp_p12_oid_cert_bag[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                   0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x03};
+static const unsigned char sp_p12_oid_safe_contents_bag[] = {0x2a, 0x86, 0x48, 0x86, 0xf7,
+                                                             0x0d, 0x01, 0x0c, 0x0a, 0x01, 0x06};
+static const unsigned char sp_p12_oid_x509_cert[] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x16, 0x01};
+
+/* A parsed bundle: the first private key's PKCS#8 encoding and every
+ * certificate's DER, both owned. The MAC was verified before these were
+ * collected, as OpenSSL's PKCS12_parse does. */
+typedef struct {
+  unsigned char *key;
+  size_t key_len;
+  unsigned char **certs;
+  size_t *cert_lens;
+  size_t cert_count;
+  size_t cert_cap;
+} SpP12Contents;
+
+/* The parse's verdicts: 0 parsed; 1 not a PKCS#12 structure; 2 the MAC did
+ * not verify; 3 an algorithm this build does not decrypt; 4 the passphrase
+ * did not decrypt the content. */
+enum {
+  SP_P12_OK,
+  SP_P12_NOT_RECOGNIZED,
+  SP_P12_MAC_FAILURE,
+  SP_P12_UNSUPPORTED,
+  SP_P12_BAD_DECRYPT,
+  SP_P12_TOO_MANY_ITERATIONS
+};
+
+/* A bundle can nest a safeContentsBag (or an encrypted SafeContents) inside
+ * another; a real tool nests a level or two, and parsing an attacker's
+ * arbitrarily deep chain recursively would spend the stack on its bytes. */
+enum { SP_P12_MAX_DEPTH = 16 };
+
+
+
+static void sp_p12_free(SpP12Contents *c) {
+  if (c->key) {
+    mbedtls_platform_zeroize(c->key, c->key_len);
+    free(c->key);
+  }
+  for (size_t i = 0; i < c->cert_count; i++) free(c->certs[i]);
+  free(c->certs);
+  free(c->cert_lens);
+  memset(c, 0, sizeof *c);
+}
+
+static bool sp_p12_copy(unsigned char **out, const unsigned char *der, size_t len) {
+  unsigned char *copy = malloc(len ? len : 1);
+  if (!copy) scr_trap("scriptc: out of memory\n");
+  if (len) memcpy(copy, der, len);
+  *out = copy;
+  return true;
+}
+
+static bool sp_p12_set_key(SpP12Contents *c, const unsigned char *der, size_t len) {
+  /* OpenSSL keeps the first private key it meets; later bags are ignored. */
+  if (c->key) return true;
+  c->key_len = len;
+  return sp_p12_copy(&c->key, der, len);
+}
+
+static bool sp_p12_add_cert(SpP12Contents *c, const unsigned char *der, size_t len) {
+  if (c->cert_count == c->cert_cap) {
+    size_t cap = c->cert_cap ? c->cert_cap * 2 : 4;
+    unsigned char **certs = realloc(c->certs, cap * sizeof *certs);
+    size_t *lens = realloc(c->cert_lens, cap * sizeof *lens);
+    if (!certs || !lens) scr_trap("scriptc: out of memory\n");
+    c->certs = certs;
+    c->cert_lens = lens;
+    c->cert_cap = cap;
+  }
+  c->cert_lens[c->cert_count] = len;
+  sp_p12_copy(&c->certs[c->cert_count], der, len);
+  c->cert_count++;
+  return true;
+}
+
+/* One CertBag's DER (the SEQUENCE inside its bagValue): an x509Certificate's
+ * OCTET STRING joins the bundle's certificates; other certificate types are
+ * ignored, as OpenSSL ignores every bag it does not know. */
+static int sp_p12_cert_bag(SpP12Contents *c, const unsigned char *der, size_t len) {
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_OID) != 0) return SP_P12_NOT_RECOGNIZED;
+  bool x509 = n == sizeof sp_p12_oid_x509_cert && memcmp(p, sp_p12_oid_x509_cert, n) == 0;
+  p += n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  if (!x509) return SP_P12_OK;
+  unsigned char *q = p;
+  const unsigned char *value_end = p + n;
+  size_t cert_len;
+  if (mbedtls_asn1_get_tag(&q, value_end, &cert_len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  sp_p12_add_cert(c, q, cert_len);
+  return SP_P12_OK;
+}
+
+/* A plaintext SafeContents: its SafeBags' keys and certificates. */
+static int sp_p12_safe_contents(SpP12Contents *c, const unsigned char *der, size_t len,
+                                const unsigned char *pass, size_t pass_len, bool terminate,
+                                int depth) {
+  if (depth > SP_P12_MAX_DEPTH) return SP_P12_NOT_RECOGNIZED;
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  while (p < end) {
+    if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+    unsigned char *bag_end = p + n;
+    size_t oid_len;
+    if (mbedtls_asn1_get_tag(&p, bag_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return SP_P12_NOT_RECOGNIZED;
+    const unsigned char *oid = p;
+    p += oid_len;
+    size_t value_len;
+    if (mbedtls_asn1_get_tag(&p, bag_end, &value_len,
+                             MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED) != 0)
+      return SP_P12_NOT_RECOGNIZED;
+    const unsigned char *value = p;
+    int verdict = SP_P12_OK;
+    if (oid_len == sizeof sp_p12_oid_key_bag && memcmp(oid, sp_p12_oid_key_bag, oid_len) == 0) {
+      sp_p12_set_key(c, value, value_len);
+    } else if (oid_len == sizeof sp_p12_oid_shrouded && memcmp(oid, sp_p12_oid_shrouded, oid_len) == 0) {
+      unsigned char *plain = NULL;
+      size_t plain_len = 0;
+      int r = sp_decrypt_pkcs8(value, value_len, pass, pass_len, terminate, &plain, &plain_len);
+      if (r == -2) verdict = SP_P12_UNSUPPORTED;
+      else if (r == -3) verdict = SP_P12_TOO_MANY_ITERATIONS;
+      else if (r < 0) verdict = SP_P12_BAD_DECRYPT;
+      else if (r == 0) verdict = SP_P12_NOT_RECOGNIZED;
+      else sp_p12_set_key(c, plain, plain_len);
+      if (plain) {
+        mbedtls_platform_zeroize(plain, plain_len);
+        free(plain);
+      }
+    } else if (oid_len == sizeof sp_p12_oid_cert_bag && memcmp(oid, sp_p12_oid_cert_bag, oid_len) == 0) {
+      verdict = sp_p12_cert_bag(c, value, value_len);
+    } else if (oid_len == sizeof sp_p12_oid_safe_contents_bag &&
+               memcmp(oid, sp_p12_oid_safe_contents_bag, oid_len) == 0) {
+      /* A safeContentsBag holds another plaintext SafeContents: OpenSSL
+       * collects every key and certificate in it. */
+      verdict = sp_p12_safe_contents(c, value, value_len, pass, pass_len, terminate, depth + 1);
+    }
+    if (verdict != SP_P12_OK) return verdict;
+    p = bag_end;
+  }
+  return SP_P12_OK;
+}
+
+/* An encryptedData ContentInfo's value: EncryptedData, whose decrypted
+ * encryptedContent is a SafeContents. */
+static int sp_p12_encrypted_data(SpP12Contents *c, const unsigned char *der, size_t len,
+                                 const unsigned char *pass, size_t pass_len, bool terminate,
+                                 int depth) {
+  if (depth > SP_P12_MAX_DEPTH) return SP_P12_NOT_RECOGNIZED;
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  int version;
+  if (mbedtls_asn1_get_int(&p, end, &version) != 0 || version != 0) return SP_P12_NOT_RECOGNIZED;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  const unsigned char *info_end = p + n;
+  size_t oid_len;
+  if (mbedtls_asn1_get_tag(&p, info_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return SP_P12_NOT_RECOGNIZED;
+  if (oid_len != sizeof sp_p12_oid_data || memcmp(p, sp_p12_oid_data, oid_len) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  p += oid_len;
+  mbedtls_asn1_buf alg, params;
+  if (mbedtls_asn1_get_alg(&p, info_end, &alg, &params) != 0) return SP_P12_NOT_RECOGNIZED;
+  if (p >= info_end) return SP_P12_NOT_RECOGNIZED;
+  size_t ct_len;
+  if (mbedtls_asn1_get_tag(&p, info_end, &ct_len, MBEDTLS_ASN1_CONTEXT_SPECIFIC) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  unsigned char *plain = NULL;
+  size_t plain_len = 0;
+  int r = sp_decrypt_alg(&alg, &params, p, ct_len, pass, pass_len, terminate, &plain, &plain_len);
+  if (r == -2) return SP_P12_UNSUPPORTED;
+  if (r == -3) return SP_P12_TOO_MANY_ITERATIONS;
+  if (r < 0) return SP_P12_BAD_DECRYPT;
+  if (r == 0) return SP_P12_NOT_RECOGNIZED;
+  int verdict = sp_p12_safe_contents(c, plain, plain_len, pass, pass_len, terminate, depth + 1);
+  mbedtls_platform_zeroize(plain, plain_len);
+  free(plain);
+  return verdict;
+}
+
+/* The AuthenticatedSafe inside authSafe: each ContentInfo is a plaintext
+ * SafeContents or an encrypted one. */
+static int sp_p12_auth_safe(SpP12Contents *c, const unsigned char *der, size_t len,
+                            const unsigned char *pass, size_t pass_len, bool terminate,
+                            int depth) {
+  if (depth > SP_P12_MAX_DEPTH) return SP_P12_NOT_RECOGNIZED;
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  while (p < end) {
+    if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+    unsigned char *ci_end = p + n;
+    size_t oid_len;
+    if (mbedtls_asn1_get_tag(&p, ci_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return SP_P12_NOT_RECOGNIZED;
+    const unsigned char *oid = p;
+    p += oid_len;
+    size_t value_len;
+    if (mbedtls_asn1_get_tag(&p, ci_end, &value_len,
+                             MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED) != 0)
+      return SP_P12_NOT_RECOGNIZED;
+    int verdict = SP_P12_OK;
+    if (oid_len == sizeof sp_p12_oid_data && memcmp(oid, sp_p12_oid_data, oid_len) == 0) {
+      unsigned char *q = p;
+      const unsigned char *value_end = p + value_len;
+      size_t contents_len;
+      if (mbedtls_asn1_get_tag(&q, value_end, &contents_len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+        return SP_P12_NOT_RECOGNIZED;
+      verdict = sp_p12_safe_contents(c, q, contents_len, pass, pass_len, terminate, depth + 1);
+    } else if (oid_len == sizeof sp_p12_oid_encrypted_data &&
+               memcmp(oid, sp_p12_oid_encrypted_data, oid_len) == 0) {
+      verdict = sp_p12_encrypted_data(c, p, value_len, pass, pass_len, terminate, depth + 1);
+    } else {
+      verdict = SP_P12_UNSUPPORTED;
+    }
+    if (verdict != SP_P12_OK) return verdict;
+    p = ci_end;
+  }
+  return SP_P12_OK;
+}
+
+/* Verify a PFX's MacData over the authSafe octets, as PKCS12_verify_mac
+ * does: the key is the PKCS#12 KDF's id-3 run with the MacData digest. */
+static int sp_p12_verify_mac(const unsigned char *authsafe, size_t authsafe_len,
+                             const unsigned char *mac_data, size_t mac_len, const unsigned char *pass,
+                             size_t pass_len, bool terminate) {
+  unsigned char *p = (unsigned char *)mac_data;
+  const unsigned char *end = mac_data + mac_len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  unsigned char *digest_info_end = p + n;
+  mbedtls_asn1_buf md_oid, md_params;
+  if (mbedtls_asn1_get_alg(&p, digest_info_end, &md_oid, &md_params) != 0) return SP_P12_NOT_RECOGNIZED;
+  size_t digest_len;
+  if (mbedtls_asn1_get_tag(&p, digest_info_end, &digest_len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  const unsigned char *digest = p;
+  p = digest_info_end;
+  size_t salt_len;
+  if (mbedtls_asn1_get_tag(&p, end, &salt_len, MBEDTLS_ASN1_OCTET_STRING) != 0) return SP_P12_NOT_RECOGNIZED;
+  const unsigned char *salt = p;
+  p += salt_len;
+  int iterations = 1;
+  if (p < end && mbedtls_asn1_get_int(&p, end, &iterations) != 0) return SP_P12_NOT_RECOGNIZED;
+  if (iterations < 1) return SP_P12_NOT_RECOGNIZED;
+  if (iterations > SP_P12_MAX_ITERATIONS) return SP_P12_TOO_MANY_ITERATIONS;
+  mbedtls_md_type_t md_type;
+  if (mbedtls_oid_get_md_alg(&md_oid, &md_type) != 0) return SP_P12_UNSUPPORTED;
+  const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md_type);
+  if (!info) return SP_P12_UNSUPPORTED;
+  size_t md_len = (size_t)mbedtls_md_get_size(info);
+  if (digest_len != md_len) return SP_P12_MAC_FAILURE;
+  unsigned char key[64], mac[64];
+  if (!sp_pkcs12_kdf_digest(info, sp_md_block_size(md_type), pass, pass_len, salt, salt_len, 3,
+                            (unsigned)iterations, terminate, key, md_len))
+    return SP_P12_NOT_RECOGNIZED;
+  int r = mbedtls_md_hmac(info, key, md_len, authsafe, authsafe_len, mac);
+  mbedtls_platform_zeroize(key, sizeof key);
+  if (r != 0) return SP_P12_NOT_RECOGNIZED;
+  unsigned diff = 0;
+  for (size_t i = 0; i < md_len; i++) diff |= (unsigned)(mac[i] ^ digest[i]);
+  mbedtls_platform_zeroize(mac, sizeof mac);
+  return diff == 0 ? SP_P12_OK : SP_P12_MAC_FAILURE;
+}
+
+/* Parse a DER PKCS#12 PFX: the MAC first, then every ContentInfo's
+ * SafeContents. */
+static int sp_p12_parse(SpP12Contents *c, const unsigned char *der, size_t len,
+                        const unsigned char *pass, size_t pass_len) {
+  unsigned char *p = (unsigned char *)der;
+  const unsigned char *end = der + len;
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  end = p + n;
+  /* OpenSSL's d2i_PKCS12 accepts any version; PKCS12_parse never checks it. */
+  int version;
+  if (mbedtls_asn1_get_int(&p, end, &version) != 0) return SP_P12_NOT_RECOGNIZED;
+  (void)version;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0) return SP_P12_NOT_RECOGNIZED;
+  unsigned char *ci_end = p + n;
+  size_t oid_len, value_len;
+  if (mbedtls_asn1_get_tag(&p, ci_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return SP_P12_NOT_RECOGNIZED;
+  if (oid_len != sizeof sp_p12_oid_data || memcmp(p, sp_p12_oid_data, oid_len) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  p += oid_len;
+  if (mbedtls_asn1_get_tag(&p, ci_end, &value_len,
+                           MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  unsigned char *q = p;
+  const unsigned char *value_end = p + value_len;
+  size_t authsafe_len;
+  if (mbedtls_asn1_get_tag(&q, value_end, &authsafe_len, MBEDTLS_ASN1_OCTET_STRING) != 0)
+    return SP_P12_NOT_RECOGNIZED;
+  const unsigned char *authsafe = q;
+  p = ci_end;
+  /* OpenSSL's conversions carry a trailing zero BMP unit; some tools write
+   * the NULL-password form instead, with no password block at all. Accept
+   * both when the bundle has no passphrase: the MAC decides which one the
+   * bundle used, and the same form decrypts its contents. A bundle without a
+   * MAC is tried with the standard form first. */
+  bool terminate = true;
+  if (p < end) {
+    const unsigned char *mac_data = p;
+    size_t mac_len = (size_t)(end - p);
+    int verdict = sp_p12_verify_mac(authsafe, authsafe_len, mac_data, mac_len, pass, pass_len, true);
+    if (verdict == SP_P12_MAC_FAILURE && pass_len == 0) {
+      terminate = false;
+      verdict = sp_p12_verify_mac(authsafe, authsafe_len, mac_data, mac_len, pass, pass_len, false);
+    }
+    if (verdict != SP_P12_OK) return verdict;
+  }
+  int verdict = sp_p12_auth_safe(c, authsafe, authsafe_len, pass, pass_len, terminate, 0);
+  if (verdict == SP_P12_BAD_DECRYPT && pass_len == 0 && terminate) {
+    sp_p12_free(c);
+    verdict = sp_p12_auth_safe(c, authsafe, authsafe_len, pass, pass_len, false, 0);
+  }
+  return verdict;
+}
+
+/* Whether `cert_der` carries the public half of `key`, as OpenSSL's
+ * X509_check_private_key decides a bundle's matching certificate: the
+ * parsed public keys compare, so a compressed EC point in the certificate
+ * matches the same point written uncompressed by the key. NULL keeps
+ * Node's answer for a certificate whose key this build cannot parse: it
+ * is not the matching one. */
+static bool sp_p12_cert_matches(SpKey *key, const unsigned char *cert_der, size_t cert_len) {
+  const unsigned char *spki;
+  size_t spki_len;
+  if (!sp_cert_spki(cert_der, cert_len, &spki, &spki_len)) return false;
+  SpKey *cert = sp_parse(spki, spki_len, false);
+  if (!cert) {
+    if (scr_exc_pending()) scr_caught_release(scr_exc_take());
+    return false;
+  }
+  bool same = false;
+  if (sp_is_ed(key) || sp_is_ed(cert)) {
+    same = sp_is_ed(key) && sp_is_ed(cert) && memcmp(key->ed_pub, cert->ed_pub, 32) == 0;
+  } else if (mbedtls_pk_get_type(&key->pk) == mbedtls_pk_get_type(&cert->pk)) {
+    SpKey *pub = key->private_key ? sp_public_of(key) : key;
+    if (pub) {
+      unsigned char *a = malloc(SP_DER_MAX), *b = malloc(SP_DER_MAX);
+      if (!a || !b) scr_trap("scriptc: out of memory\n");
+      int na = sp_write_spki_der(pub, a, SP_DER_MAX);
+      int nb = sp_write_spki_der(cert, b, SP_DER_MAX);
+      same = na > 0 && na == nb && memcmp(a + SP_DER_MAX - na, b + SP_DER_MAX - nb, (size_t)na) == 0;
+      free(a);
+      free(b);
+      if (pub != key) sp_key_release(pub);
+    }
+  }
+  sp_key_release(cert);
+  return same;
+}
+
+/* The passphrase of a parsePKCS12 options bag: NULL when absent, with the
+ * Node error pending on a value that is not a string or buffer source or
+ * that holds a NUL byte. */
+static bool sp_p12_passphrase(const ScrDyn *options, ScrBytes **out) {
+  *out = NULL;
+  /* The member may be a statically typed value (a record or Buffer
+   * capsule); sp_plain materializes it. */
+  ScrDyn *passphrase = sp_plain(sp_opt(options, "passphrase"));
+  if (passphrase->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(passphrase);
+    return true;
+  }
+  ScrBytes *pass = sp_source_bytes(passphrase, NULL);
+  if (!pass) {
+    scr_dyn_prop_type_fail("options.passphrase",
+                           "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView",
+                           passphrase);
+    scr_dyn_release(passphrase);
+    return false;
+  }
+  size_t len = (size_t)scr_bytes_byte_len(pass);
+  for (size_t i = 0; i < len; i++) {
+    if (pass->data[i] == 0) {
+      /* OpenSSL reads the passphrase as a C string, so an embedded NUL would
+       * truncate it; Node rejects it instead of opening the bundle with a
+       * shorter password. */
+      ScrStr *received = sp_received(passphrase, false);
+      scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE",
+                        "The property 'options.passphrase' must not contain null bytes. Received %.*s",
+                        (int)received->len, received->data);
+      scr_str_release(received);
+      scr_bytes_release(pass);
+      scr_dyn_release(passphrase);
+      return false;
+    }
+  }
+  scr_dyn_release(passphrase);
+  *out = pass;
+  return true;
+}
+
+/* crypto.parsePKCS12(bundle, options): Node's checks, then the parsed
+ * bundle as the lowering's three-part handle — [key object or null, the
+ * matching certificate's DER or null, every other certificate's DER]. The
+ * parts are read by scr_crypto_pkcs12_key, scr_crypto_pkcs12_der and
+ * scr_crypto_pkcs12_count, which the frontend composes into Node's result
+ * record. */
+ScrDyn *scr_crypto_parse_pkcs12(ScrDyn *bundle, ScrDyn *options) {
+  if (!(bundle->kind == SCR_DYN_BYTES || bundle->kind == SCR_DYN_TYPED_REF ||
+        scr_buffer_storage_is(bundle))) {
+    scr_dyn_arg_type_fail("bundle", "an instance of ArrayBuffer, TypedArray, DataView, or Buffer", bundle);
+    return NULL;
+  }
+  /* A statically typed options object arrives as a record capsule; its
+   * members are read from the materialized plain object. */
+  ScrDyn *opts = options->kind == SCR_DYN_UNDEF ? NULL : sp_plain(options);
+  if (options->kind != SCR_DYN_UNDEF && opts == NULL) return NULL;
+  if (opts != NULL && !sp_check_object(opts, "options")) {
+    scr_dyn_release(opts);
+    return NULL;
+  }
+  ScrBytes *pass = NULL;
+  bool pass_ok = opts == NULL || sp_p12_passphrase(opts, &pass);
+  if (opts) scr_dyn_release(opts);
+  if (!pass_ok) return NULL;
+  ScrBytes *view = scr_bytes_buffer_source(bundle);
+  if (!view) {
+    if (pass) scr_bytes_release(pass);
+    return NULL;
+  }
+  size_t der_len = (size_t)scr_bytes_byte_len(view);
+  unsigned char *der = malloc(der_len ? der_len : 1);
+  if (!der) scr_trap("scriptc: out of memory\n");
+  if (der_len) memcpy(der, view->data, der_len);
+  scr_bytes_release(view);
+  SpP12Contents contents;
+  memset(&contents, 0, sizeof contents);
+  int verdict = sp_p12_parse(&contents, der, der_len, pass ? pass->data : NULL,
+                             pass ? (size_t)scr_bytes_byte_len(pass) : 0);
+  if (pass) scr_bytes_release(pass);
+  free(der);
+  if (verdict != SP_P12_OK) {
+    sp_p12_free(&contents);
+    switch (verdict) {
+      case SP_P12_MAC_FAILURE:
+        sp_throw_openssl("11800071", "PKCS12 routines", "mac verify failure",
+                         "ERR_OSSL_PKCS12_MAC_VERIFY_FAILURE", true);
+        break;
+      case SP_P12_UNSUPPORTED:
+        sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_UNSUPPORTED_OPERATION",
+                 "PKCS#12 bundle uses an unsupported algorithm; it may require the OpenSSL legacy provider");
+        break;
+      case SP_P12_TOO_MANY_ITERATIONS:
+        sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED",
+                 "PKCS#12 bundle asks for more key-derivation iterations than this build performs");
+        break;
+      case SP_P12_BAD_DECRYPT:
+        sp_throw_openssl("1C800064", "Provider routines", "bad decrypt", "ERR_OSSL_BAD_DECRYPT", true);
+        break;
+      default:
+        sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_OPERATION_FAILED",
+                 "Input is not a valid PKCS#12 structure");
+        break;
+    }
+    return NULL;
+  }
+  ScrDyn *key = scr_dyn_new_null();
+  if (contents.key) {
+    SpKey *parsed = sp_parse_with(contents.key, contents.key_len, true, NULL);
+    if (!parsed) {
+      sp_p12_free(&contents);
+      return NULL;
+    }
+    key = sp_key_box(parsed);
+  }
+  /* The certificate matching the private key is `certificate`; every other
+   * certificate, in bundle order, is an additional one. */
+  size_t leaf = SIZE_MAX;
+  SpKey *key_of = sp_key_of(key);
+  if (key_of) {
+    for (size_t i = 0; i < contents.cert_count; i++) {
+      if (sp_p12_cert_matches(key_of, contents.certs[i], contents.cert_lens[i])) {
+        leaf = i;
+        break;
+      }
+    }
+  }
+  ScrDyn *parts = scr_dyn_new_arr();
+  scr_dyn_arr_push(parts, key);
+  if (leaf != SIZE_MAX) scr_dyn_arr_push(parts, sp_dyn_buffer(contents.certs[leaf], contents.cert_lens[leaf]));
+  else scr_dyn_arr_push(parts, scr_dyn_new_null());
+  ScrDyn *extras = scr_dyn_new_arr();
+  for (size_t i = 0; i < contents.cert_count; i++)
+    if (i != leaf) scr_dyn_arr_push(extras, sp_dyn_buffer(contents.certs[i], contents.cert_lens[i]));
+  scr_dyn_arr_push(parts, extras);
+  sp_p12_free(&contents);
+  return parts;
+}
+
+/** The private key handle of a parsed bundle, or null. */
+ScrDyn *scr_crypto_pkcs12_key(ScrDyn *parts) { return scr_dyn_arr_at(parts, 0); }
+
+/** How many additional certificates a parsed bundle holds. */
+double scr_crypto_pkcs12_count(ScrDyn *parts) {
+  ScrDyn *extras = scr_dyn_arr_at(parts, 2);
+  double count = scr_dyn_arr_len(extras);
+  scr_dyn_release(extras);
+  return count;
+}
+
+/** The DER of `which`'s certificate (-1 the matching one, 0.. the additional
+ * ones), or empty bytes when the bundle has none. */
+ScrBytes *scr_crypto_pkcs12_der(ScrDyn *parts, double which) {
+  ScrDyn *item;
+  if (which < 0) {
+    item = scr_dyn_arr_at(parts, 1);
+  } else {
+    ScrDyn *extras = scr_dyn_arr_at(parts, 2);
+    item = scr_dyn_arr_at(extras, which);
+    scr_dyn_release(extras);
+  }
+  ScrBytes *out;
+  if (item == NULL || item->kind == SCR_DYN_NULL) {
+    out = scr_bytes_new(SCR_BYTES_U8, 0);
+  } else {
+    ScrBytes *view = scr_bytes_buffer_source(item);
+    if (!view) {
+      scr_dyn_release(item);
+      return NULL;
+    }
+    size_t len = (size_t)scr_bytes_byte_len(view);
+    out = scr_bytes_new(SCR_BYTES_U8, (double)len);
+    if (len) memcpy(out->data, view->data, len);
+    scr_bytes_release(view);
+  }
+  scr_dyn_release(item);
   return out;
 }

@@ -243,6 +243,14 @@ export const cryptoSignatures = defineLibFnSignatures({
    * receives (null, publicKey, privateKey) in a later macrotask. */
   "crypto.createPrivateKey": { argTypes: [DYN], result: DYN },
   "crypto.createPublicKey": { argTypes: [DYN], result: DYN },
+  /** crypto.parsePKCS12's parsed bundle and the three reads the frontend
+   * composes Node's result record from (scr_pki.c): the parts handle, the
+   * private key or null, a certificate's DER (index -1 is the matching one),
+   * and the additional certificates' count. */
+  "crypto.parsePKCS12": { argTypes: [DYN, DYN], result: DYN },
+  "crypto.pkcs12Key": { argTypes: [DYN], result: DYN },
+  "crypto.pkcs12Der": { argTypes: [DYN, F64], result: BYTES_U8 },
+  "crypto.pkcs12Count": { argTypes: [DYN], result: F64 },
   "crypto.generateKeyPairSync": { argTypes: [DYN, DYN], result: DYN },
   "crypto.encapsulate": { argTypes: [DYN, DYN], result: DYN },
   "crypto.decapsulate": { argTypes: [DYN, DYN, DYN], result: DYN },

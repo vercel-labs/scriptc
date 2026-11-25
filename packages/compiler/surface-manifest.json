@@ -740,6 +740,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.parsePKCS12",
+      "kind": "node-builtin",
+      "name": "crypto.parsePKCS12",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.pbkdf2",
       "kind": "node-builtin",
       "name": "crypto.pbkdf2",

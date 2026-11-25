@@ -5935,6 +5935,27 @@ interface PipelineStagesLowering {
   wrap: (call: IrExpr) => IrExpr;
 }
 
+/** The async-protocol interface a plain pipeline stage's source parameter
+ * is declared with, or null. Those types hold a compiled generator in
+ * typed code, which the checked-dynamic stage call cannot rebuild from
+ * the stream or generator the pipeline passes it. */
+const ASYNC_PROTOCOL_PARAMETERS: ReadonlySet<string> = new Set([
+  "AsyncIterable",
+  "AsyncIterableIterator",
+  "AsyncIterator",
+  "AsyncGenerator",
+]);
+
+function asyncProtocolParameterName(
+  lowerer: Lowerer,
+  param: ts.ParameterDeclaration,
+): string | null {
+  const type = lowerer.checker.getTypeAtLocation(param.name);
+  const symbol = type.getAliasSymbol() ?? type.getSymbol();
+  const name = symbol === undefined ? undefined : ts.symbolName(symbol);
+  return name !== undefined && ASYNC_PROTOCOL_PARAMETERS.has(name) ? name : null;
+}
+
 /** pipeline(...) with function stages (pipeline.js). A function may
  * start the pipeline (a source function, called with `{ signal }`), may
  * end it (an async function whose promise's value reaches the callback or
@@ -5982,9 +6003,25 @@ function lowerPipelineStages(
     return varRef(handoffCell.id, DYN, loc);
   };
   let takes = false;
+  // Whether the j-th argument is a plain function stage (the branch below
+  // that lowers the function value and lets the checked-dynamic stage call
+  // it): a function that is not an async generator, after the source
+  // position. A stage that hands its result over through the handoff cell
+  // gives it to such a stage too, as Node's pipeline passes a transform's
+  // returned async iterable itself.
+  const plainStageAt = (i: number): boolean => {
+    if (i <= 0 || i >= stageArgs.length || preLowered?.has(i) === true) return false;
+    if (plan?.fns.has(i) === true) return false;
+    const f = pipelineStageFunction(lowerer, stageArgs[i]!);
+    if (f === null) return false;
+    const isLastI = i === stageArgs.length - 1;
+    const isAsyncI = (f.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
+    const isGenI = !ts.isArrowFunction(f) && f.asteriskToken !== undefined;
+    return !isAsyncI || (!isGenI && !isLastI);
+  };
   for (let j = 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
-    const givesToNext = plan?.fns.has(j + 1) === true;
+    const givesToNext = plan?.fns.has(j + 1) === true || plainStageAt(j + 1);
     if (j === 0 && dynSource !== undefined) {
       const source = lowerDynSourceStage(
         lowerer,
@@ -6095,13 +6132,71 @@ function lowerPipelineStages(
     const isLast = j === stageArgs.length - 1;
     const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
-    if (!isAsync || (!isGen && !isLast)) {
+    // A stage that is not an async generator (a plain function, an async
+    // function that is not the destination, a synchronous generator) is
+    // Node's plain function stage: pipelineImpl calls it with the previous
+    // stage's stream or async iterable and requires an async iterable back
+    // (ERR_INVALID_RETURN_VALUE otherwise); a destination's promise settles
+    // the pipeline's value and an async iterable it returns is pumped into
+    // the PassThrough pipeline() answers. The checked-dynamic stage runs
+    // exactly that protocol, so the stage is lowered as the function value
+    // it is and the runtime drives it.
+    const plain = !isAsync || (!isGen && !isLast);
+    if (plain && srcT !== null) {
+      // A source parameter typed as one of the async-protocol interfaces
+      // is the pipeline's own object held as a compiled generator, which
+      // the checked-dynamic call cannot rebuild from the stream or
+      // generator the stage receives: the typed stage takes the fence.
+      const sourceParam = fn.parameters.nodes[0];
+      const protocol =
+        sourceParam !== undefined && ts.isIdentifier(sourceParam.name)
+          ? asyncProtocolParameterName(lowerer, sourceParam)
+          : null;
+      if (protocol === null) {
+        const take = takes;
+        const give = givesToNext && !isLast;
+        takes = give;
+        const fnValue = lowerer.lowerExprExpecting(arg, DYN);
+        const lowered = lowerDynFunctionStage(
+          lowerer,
+          fnValue,
+          srcT,
+          j,
+          isLast,
+          loc,
+          take || give ? { cell: cellRef(), take, give } : undefined,
+        );
+        mask |= 1 << stages.length;
+        positions += 2 ** j;
+        argOrder.push({ list: stages, index: stages.length });
+        stages.push(lowered.closure);
+        if (isLast) {
+          // its result is classified at run time: a promise settles the
+          // pipeline's value, and an async iterable is pumped into the
+          // PassThrough
+          const genT = dynStageGenType();
+          const helpers = fromGenHelpers(lowerer, genT, loc);
+          if (!helpers) lowerer.noLowering("a pipeline destination with this generator type", arg);
+          helperArgs.push(helpers![0]!, helpers![1]!, helpers![2]!);
+          dest = 3;
+          destPromise = { kind: "promise", inner: DYN };
+          srcT = null;
+        } else {
+          srcT = lowered.out;
+        }
+        continue;
+      }
+      lowerer.noLowering(
+        `a pipeline stage whose source parameter is typed '${protocol}'`,
+        sourceParam!,
+        "type the source parameter as the stream the stage receives, or write the stage as async function* (source)",
+      );
+    }
+    if (plain) {
       lowerer.noLowering(
         isLast
           ? "a pipeline destination that is not an async function"
-          : srcT === null
-            ? "a pipeline source function that is not an async generator function"
-            : "pipeline stages that are not async generator functions",
+          : "a pipeline source function that is not an async generator function",
         arg,
         "write the stage as async function* (source) { for await (const chunk of source) ... }",
       );

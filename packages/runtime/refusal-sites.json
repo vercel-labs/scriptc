@@ -1820,7 +1820,7 @@
  {
   "file": "scr_stream.c",
   "function": "scr_stream_dyn_stage_returned_stream",
-  "message": "pipeline function stages that return a stream are not supported yet",
+  "message": "a pipeline source function that returns a stream is not supported yet",
   "code": "SC2020"
  },
  {

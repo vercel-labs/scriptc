@@ -9358,6 +9358,13 @@ static const char *scr_dyn_specific_type_impl(const ScrDyn *cb, char *detail, si
   case SCR_DYN_PROMISE: d = "an instance of Promise"; break;
 
   case SCR_DYN_TYPED_REF: {
+    /* A generator object has no `constructor` property, so Node's
+     * determineSpecificType falls back to inspect(value, { depth: -1 }),
+     * which tags it "[Generator]" (the async form "[AsyncGenerator]"). */
+    if (scr_dyn_generator(cb)) {
+      d = cb->v.typed_ref.type_key[0] == 'a' ? "Object [AsyncGenerator] {}" : "Object [Generator] {}";
+      break;
+    }
     /* A class instance's view has no prototype; Node names its class. */
     const ScrStr *class_name = scr_dyn_typed_ref_class_name(cb);
     if (class_name && class_name->len) {

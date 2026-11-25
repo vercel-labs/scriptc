@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- The bundled Node declarations type the promise passed to process rejection listeners, name the two uncaught-exception origins, and export `fs.StatOptions` for shared stat options.
+
 <!-- release:start -->
 
 ## 0.4.16

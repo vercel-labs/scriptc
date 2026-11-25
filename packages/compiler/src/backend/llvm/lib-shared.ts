@@ -514,6 +514,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "perf.slidingRecordBig": "scr_sliding_record_big",
   "perf.slidingReset": "scr_sliding_reset",
   "perf.slidingSnapshot": "scr_sliding_snapshot",
+  "urlpattern.new": "scr_urlpattern_new",
+  "urlpattern.is": "scr_urlpattern_is",
   "perf.histoKsTest": "scr_histo_ks_test",
   "perf.histoCohensD": "scr_histo_cohens_d",
   "perf.histoCliffsD": "scr_histo_cliffs_d",

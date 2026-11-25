@@ -57,6 +57,7 @@
 #include "scr_json.h"
 #include "scr_record_source_get.h"
 #include "scr_event_target.h"
+#include "scr_urlpattern.h"
 #include "scr_blob.h"
 #include "scr_object.h"
 #include "scr_region.h"

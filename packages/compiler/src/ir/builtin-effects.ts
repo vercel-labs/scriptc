@@ -856,6 +856,8 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "perf.histoRecordCorrected",
   // add/subtract reject a non-RecordableHistogram argument.
   "perf.histoAdd",
+  // new URLPattern: a bad pattern or regexp throws catchably.
+  "urlpattern.new",
   "perf.histoSubtract",
   // The comparisons reject an `other` that is not a Histogram with Node's
   // ERR_INVALID_ARG_TYPE.

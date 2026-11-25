@@ -190,6 +190,7 @@ import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
+import { lowerUrlPatternNew } from "./builtins/urlpattern.js";
 import {
   lowerBroadcastChannelNew,
   lowerMessageChannelNew,
@@ -12986,6 +12987,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const urlClass = stdlibUrlClassOf(lowerer, expr.expression);
     if (urlClass === "URL") return lowerUrlNew(lowerer, expr);
     if (urlClass === "URLSearchParams") return lowerSearchParamsNew(lowerer, expr, loc);
+  }
+  // `new URLPattern(...)`: the runtime compiles and matches the pattern
+  // (urlpattern.ts).
+  {
+    const pattern = lowerUrlPatternNew(lowerer, expr);
+    if (pattern) return pattern;
   }
   // `new util.TextEncoder()` / `new util.TextDecoder()`: the util module's
   // members are the global classes of the same name in Node

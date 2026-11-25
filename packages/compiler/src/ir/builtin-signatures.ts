@@ -96,6 +96,7 @@ import { tlscaSignatures } from "./builtin-signatures/tlsca.js";
 import { tpSignatures } from "./builtin-signatures/tp.js";
 import { transformSignatures } from "./builtin-signatures/transform.js";
 import { urlSignatures } from "./builtin-signatures/url.js";
+import { urlpatternSignatures } from "./builtin-signatures/urlpattern.js";
 import { utilSignatures } from "./builtin-signatures/util.js";
 import { wasmSignatures } from "./builtin-signatures/wasm.js";
 import { watchEventsSignatures } from "./builtin-signatures/watchEvents.js";
@@ -217,6 +218,7 @@ function buildLibFnSignatures() {
     ...tpSignatures,
     ...transformSignatures,
     ...urlSignatures,
+    ...urlpatternSignatures,
     ...utilSignatures,
     ...wasmSignatures,
     ...watchEventsSignatures,

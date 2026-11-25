@@ -571,6 +571,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  unit((u) => u.opts.urlPattern === true, "scr_urlpattern.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",

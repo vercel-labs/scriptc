@@ -264,6 +264,23 @@ void scr_net_ls_add_shared_once(ScrNetLs *l, ScrClosure *cb, void *fn,
   l->ls[l->n - 1].shared_once = once;
 }
 
+/* Drop the entries whose shared once token already fired (the mirror of a
+ * once registration consumed through another list): their callbacks and
+ * token references are released, the live entries keep their order. */
+void scr_net_ls_prune(ScrNetLs *l) {
+  size_t w = 0;
+  for (size_t i = 0; i < l->n; i++) {
+    ScrNetL entry = l->ls[i];
+    if (entry.shared_once != NULL && entry.shared_once->fired) {
+      scr_closure_release(entry.cb);
+      scr_net_once_release(entry.shared_once);
+      continue;
+    }
+    l->ls[w++] = entry;
+  }
+  l->n = w;
+}
+
 bool scr_net_ls_has_live(const ScrNetLs *l) {
   for (size_t i = 0; i < l->n; i++) {
     if (l->ls[i].shared_once == NULL || !l->ls[i].shared_once->fired) return true;

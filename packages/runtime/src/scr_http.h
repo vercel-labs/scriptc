@@ -61,6 +61,11 @@ typedef struct ScrHttpH2Ops {
 void scr_http_set_h2_ops(const ScrHttpH2Ops *ops);
 void scr_http_set_h2_request_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                                void *fn, bool once));
+/* The server-side 'checkContinue'/'checkExpectation' registration for an h2
+ * ctx: scr_http2.c owns it (the h2 dispatch, and the HTTP/1 parser behind an
+ * allowHTTP1 server). */
+void scr_http_set_h2_check_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                             void *fn, bool once, bool expectation));
 void scr_http_set_h2_connect_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                                void *h1_fn, void *h2_fn, bool once));
 void scr_http_set_h2_upgrade_hook(void (*hook)(void *h2ctx, ScrClosure *cb /*moves*/,
@@ -127,6 +132,8 @@ void scr_http2_stream_undef_call(ScrStr *member);
 void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once);
 void scr_http1_ctx_on_request(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               ScrNetOnce *shared_once /*moves, nullable*/);
+void scr_http1_ctx_on_check(void *ctx, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                            bool expectation, ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_connect(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once,
                               ScrNetOnce *shared_once /*moves, nullable*/);
 void scr_http1_ctx_on_upgrade(void *ctx, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once);

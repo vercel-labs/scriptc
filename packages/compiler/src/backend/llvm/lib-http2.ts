@@ -235,6 +235,14 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         ...handler,
       ]);
     }
+    case "http2.serverOnCheckContinue":
+      // The Expect: 100-continue listeners: the (req, res) handler adapter
+      // the http server's request listeners use.
+      return finishRuntimeCall(host, e, "scr_http2_server_on_check_continue", [
+        a[0]!,
+        ...requestHandler(host, args[1]!),
+        a[2]!,
+      ]);
     case "http2.streamRespondWithFile":
     case "http2.streamRespondWithFD": {
       // The trailing statCheck value crosses as a checked-dynamic callable;

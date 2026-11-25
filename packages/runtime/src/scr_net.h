@@ -46,6 +46,9 @@ void scr_net_once_release(ScrNetOnce *once);
 void scr_net_ls_add_shared_once(ScrNetLs *l, ScrClosure *cb, void *fn,
                                 ScrNetOnce *once /*moves*/);
 bool scr_net_ls_has_live(const ScrNetLs *l);
+/* Drop the entries whose shared once token already fired, releasing their
+ * callbacks and token references. */
+void scr_net_ls_prune(ScrNetLs *l);
 void scr_net_ls_drop(ScrNetLs *l);
 size_t scr_net_ls_snapshot(ScrNetLs *l, ScrNetL **out);
 void scr_net_fire0(ScrNetLs *l);

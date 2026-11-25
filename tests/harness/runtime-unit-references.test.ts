@@ -108,7 +108,6 @@ const KNOWN_REFERENCES: Readonly<Record<string, readonly string[]>> = {
     "scr_fs_write_file_options_dyn_mode",
   ],
   "scr_http2.c -> scr_tls.c": [
-    "scr_https_create_server",
     "scr_tls_h2_client_wrap",
     "scr_tls_server_wrap_h2",
     "scr_tls_srv_opts_walk",

@@ -85,6 +85,10 @@ void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool 
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                        ScrH2SessionErrorFn fn, bool once);
+/* The Expect: 100-continue listeners; the first one also places the
+ * compatibility dispatch among the 'stream' listeners. */
+void scr_http2_server_on_check_continue(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                         ScrHttpReqFn fn, bool once);
 void scr_http2_session_error_thunk0(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
 void scr_http2_session_error_thunk1(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);
 void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *session);

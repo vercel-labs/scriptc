@@ -188,6 +188,8 @@ ScrArr *scr_http_methods(void) {
 static SCR_TL const ScrHttpH2Ops *scr_http_h2_ops = NULL;
 static SCR_TL void (*scr_http_h2_request_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                          void *fn, bool once) = NULL;
+static SCR_TL void (*scr_http_h2_check_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
+                                       void *fn, bool once, bool expectation) = NULL;
 static SCR_TL void (*scr_http_h2_connect_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
                                         void *h1_fn, void *h2_fn, bool once) = NULL;
 static SCR_TL void (*scr_http_h2_upgrade_hook)(void *h2ctx, ScrClosure *cb /*moves*/,
@@ -197,6 +199,10 @@ void scr_http_set_h2_ops(const ScrHttpH2Ops *ops) { scr_http_h2_ops = ops; }
 
 void scr_http_set_h2_request_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void *fn, bool once)) {
   scr_http_h2_request_hook = hook;
+}
+void scr_http_set_h2_check_hook(void (*hook)(void *h2ctx, ScrClosure *cb, void *fn, bool once,
+                                             bool expectation)) {
+  scr_http_h2_check_hook = hook;
 }
 void scr_http_set_h2_connect_hook(void (*hook)(void *h2ctx, ScrClosure *cb,
                                                void *h1_fn, void *h2_fn, bool once)) {
@@ -4404,6 +4410,22 @@ void scr_http1_ctx_on_connect(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeF
   }
 }
 
+void scr_http1_ctx_on_check(void *p, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
+                            bool expectation, ScrNetOnce *shared_once /*moves, nullable*/) {
+  ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)p;
+  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
+    scr_closure_release(cb);
+    scr_net_once_release(shared_once);
+    return;
+  }
+  ScrNetLs *list = expectation ? &ctx->check_expectation_ls : &ctx->check_continue_ls;
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(list, cb, (void *)fn, shared_once);
+  } else {
+    scr_net_ls_add(list, cb, (void *)fn, once);
+  }
+}
+
 void scr_http1_ctx_on_upgrade(void *p, ScrClosure *cb /*moves*/, ScrHttpUpgradeFn fn, bool once) {
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)p;
   if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1) {
@@ -5139,6 +5161,9 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   }
   if (expect != NULL) {
     if (scr_http_expects_continue(expect)) {
+      /* The mirror of a once registration consumed through the h2 dispatch
+       * is dead here: prune it (releasing its callback) before choosing. */
+      scr_net_ls_prune(&conn->srv->check_continue_ls);
       if (scr_net_ls_has_live(&conn->srv->check_continue_ls)) handlers = &conn->srv->check_continue_ls;
       else scr_http_res_write_continue(res);
     } else if (scr_net_ls_has_live(&conn->srv->check_expectation_ls)) {
@@ -5968,9 +5993,25 @@ void scr_http_server_on_request(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHt
 /* server.on('checkContinue' | 'checkExpectation', (req, res) => ...). */
 void scr_http_server_on_check(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrHttpReqFn fn, bool once,
                               bool expectation) {
+  const char *event = expectation ? "checkExpectation" : "checkContinue";
   ScrHttpSrvCtx *ctx = (ScrHttpSrvCtx *)scr_net_server_get_http_ctx(s);
-  if (ctx == NULL || ctx->proto != SCR_NET_PROTO_HTTP1 || scr_net_server_settled(s) ||
-      scr_http_add_blocked(s, expectation ? "checkExpectation" : "checkContinue")) {
+  if (ctx != NULL && ctx->proto != SCR_NET_PROTO_HTTP1) {
+    /* an h2 server's ctx: the compat seam — scr_http2.c's hook owns the
+     * registration (the h2 dispatch, and the HTTP/1 parser behind an
+     * allowHTTP1 server) */
+    if (scr_http_h2_check_hook != NULL && !scr_net_server_settled(s)) {
+      if (scr_http_add_blocked(s, event)) {
+        scr_closure_release(cb);
+        return;
+      }
+      scr_http_h2_check_hook(ctx, cb, (void *)fn, once, expectation);
+      return;
+    }
+    ctx = NULL;
+  }
+  if (ctx == NULL || scr_net_server_settled(s) || scr_http_add_blocked(s, event)) {
+    /* no parser, or the server already settled ('checkContinue' can never
+     * fire again — an install would only re-arm the cycle the settle broke) */
     scr_closure_release(cb);
     return;
   }

@@ -159,11 +159,14 @@ test("only the push run and the gate's own complete dispatch vouch for the relea
   expect(decide(eligibleRuns(runs, sha), { dispatched: true }).action).toBe("pass");
 });
 
-test("CI on main keeps one group without cancelling, and pull requests keep cancelling", () => {
+test("CI on each integration branch keeps one group without cancelling, and pull requests keep cancelling", () => {
   const ci = load(readFileSync(join(repoRoot, ".github/workflows/ci.yml"), "utf8")) as {
     concurrency: { group: string; "cancel-in-progress": string };
   };
-  expect(ci.concurrency.group).toContain("github.event_name == 'push' && 'main'");
+  // One group per pushed branch: a canary push never drops a pending main push, or the reverse.
+  expect(ci.concurrency.group).toContain(
+    "github.event_name == 'push' && format('push-{0}', github.ref_name)",
+  );
   // A pull request's expensive tier (a dispatch with pr) runs in a group of its own, apart from the pull
   // request's, so it never cancels the pull request run the merge gate's checks come from; other manual runs,
   // such as the release CI gate's, keep a group per run.

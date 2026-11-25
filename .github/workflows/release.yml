@@ -50,9 +50,12 @@ jobs:
 
   check-release:
     name: Check for new version
+    # Releases publish from main only: canary is the integration branch, and a
+    # manual dispatch on canary must not publish. Every later job needs this
+    # job's outputs, so a run on another ref builds and publishes nothing.
     # The private mirror carries this file too; only the public repo
     # publishes (the trusted publisher is pinned to it).
-    if: github.repository == 'vercel-labs/scriptc'
+    if: github.repository == 'vercel-labs/scriptc' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

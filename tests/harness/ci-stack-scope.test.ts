@@ -23,7 +23,7 @@ const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
 // The tag job follows the required check and is not part of it.
 const heavyJobs = Object.keys(workflow.jobs).filter(
   (name) =>
-    !["validation_scope", "code_quality", "test", "green_main", ...nightlyJobs].includes(name),
+    !["validation_scope", "code_quality", "test", "green_tag", ...nightlyJobs].includes(name),
 );
 
 const repository = "vercel-labs/scriptc";
@@ -199,13 +199,33 @@ const laneOf = (name: string) => {
   return laneNames.find((lane) => condition.includes(`needs.lanes.outputs.${lane} == 'true'`));
 };
 
-test("a pull request runs the fast tier unless the ci:full label asks for the full suite", () => {
+test("a pull request into canary runs the fast tier, and ci:full opts it into the full suite", () => {
+  // Canary's merge queue and post-merge runs take the lighter canary tier; main's keep the full tier. A pull
+  // request into canary stays fast, and the ci:full label still opts it into the full suite.
+  expect(
+    runScopeOutputs("push", { repository: { full_name: repository }, ref: "refs/heads/canary" }),
+  ).toBe("full=true\ntier=canary\n");
+  expect(
+    runScopeOutputs("push", { repository: { full_name: repository }, ref: "refs/heads/main" }),
+  ).toBe("full=true\ntier=full\n");
+  expect(
+    runScopeOutputs("merge_group", {
+      repository: { full_name: repository },
+      merge_group: { base_ref: "refs/heads/canary" },
+    }),
+  ).toBe("full=true\ntier=canary\n");
+  expect(
+    runScopeOutputs("merge_group", {
+      repository: { full_name: repository },
+      merge_group: { base_ref: "refs/heads/main" },
+    }),
+  ).toBe("full=true\ntier=full\n");
   const ordinary = {
-    repository: { full_name: repository, default_branch: "main" },
+    repository: { full_name: repository, default_branch: "canary" },
     pull_request: {
       author_association: "MEMBER",
       head: { repo: { full_name: repository } },
-      base: { ref: "main", repo: { full_name: repository } },
+      base: { ref: "canary", repo: { full_name: repository } },
       labels: [{ name: "enhancement" }],
     },
   };
@@ -424,17 +444,26 @@ function runGate(
   return spawnSync("bash", ["-e", "-o", "pipefail", "-c", script], { encoding: "utf8" });
 }
 
-test("the fast tier needs no gate on the default branch, and other events never take it", () => {
+test("a pull request into canary runs the fast tier, and the release pull request into main the full tier", () => {
   const ordinary = {
-    repository: { full_name: repository, default_branch: "main" },
+    repository: { full_name: repository, default_branch: "canary" },
     pull_request: {
       author_association: "MEMBER",
       head: { repo: { full_name: repository } },
-      base: { ref: "main", repo: { full_name: repository } },
+      base: { ref: "canary", repo: { full_name: repository } },
       labels: [],
     },
   };
   expect(runScopeOutputs("pull_request", ordinary)).toBe("full=true\ntier=fast\n");
+  // The canary -> main release pull request runs the full tier.
+  const release = {
+    ...ordinary,
+    pull_request: {
+      ...ordinary.pull_request,
+      base: { ref: "main", repo: { full_name: repository } },
+    },
+  };
+  expect(runScopeOutputs("pull_request", release)).toBe("full=true\ntier=full\n");
   // The label asks for the full suite in the pull request's own run.
   const labeled = {
     ...ordinary,
@@ -444,6 +473,29 @@ test("the fast tier needs no gate on the default branch, and other events never 
   expect(runScopeOutputs("push", { repository: ordinary.repository })).toBe(
     "full=true\ntier=full\n",
   );
+});
+
+test("a canary post-merge passes on the fast jobs and the canary tests, not the heavy lanes", () => {
+  const canaryLanes = {
+    linux: "false",
+    macos: "false",
+    effects: "false",
+    bootstrap: "false",
+    macos_smoke: "false",
+    fast: "true",
+  };
+  expect(runGate("true", {}, canaryLanes, "canary").status).toBe(0);
+  // The fast tier and the canary tests are required on canary.
+  expect(runGate("true", { fast_tests: "failure" }, canaryLanes, "canary").status).toBe(1);
+  // The lane selector picks the canary tier, and the fast job adds the source-rule and snapshot tests there.
+  const lanesScript = workflow.jobs.lanes!.steps!.find((step) => step.id === "lanes")!.run!;
+  expect(lanesScript).toContain('"$TIER" = canary');
+  const canaryStep = workflow.jobs.fast_tests!.steps!.find(
+    (step) => step.name === "Canary source-rule and snapshot tests",
+  )!;
+  expect(canaryStep.if).toBe("needs.validation_scope.outputs.tier == 'canary'");
+  expect(canaryStep.run).toContain("tests/harness/diagnostics.test.ts");
+  expect(canaryStep.run).toContain("tests/harness/surface-manifest.test.ts");
 });
 
 test("the required test check passes only after full validation", () => {

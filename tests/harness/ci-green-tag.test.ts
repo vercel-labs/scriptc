@@ -5,17 +5,20 @@ import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import {
-  TAG_PATH,
-  TAG_REF,
   ghArgs,
+  greenTag,
   isAncestor,
   tagAction,
+  tagPath,
+  tagRef,
   tagRequest,
-} from "../../scripts/ci/green-main.mjs";
+} from "../../scripts/ci/green-tag.mjs";
 
 const workflow = load(
   readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
 ) as {
+  on: { push: { branches: string[] }; pull_request: { branches?: string[] } };
+  concurrency: { group: string };
   jobs: Record<
     string,
     {
@@ -31,6 +34,16 @@ const workflow = load(
 const before = "a".repeat(40);
 const after = "b".repeat(40);
 
+test("each integration branch has its own green tag", () => {
+  expect(greenTag("main")).toBe("green-main");
+  expect(greenTag("canary")).toBe("green-canary");
+  for (const branch of ["", "release", "main\n"])
+    expect(() => greenTag(branch), JSON.stringify(branch)).toThrow();
+  expect(tagRef("green-main")).toBe("refs/tags/green-main");
+  expect(tagRef("green-canary")).toBe("refs/tags/green-canary");
+  expect(tagPath("green-canary")).toBe("tags/green-canary");
+});
+
 test("the tag is created once, moved forward, and left alone when it already names the commit or a newer one", () => {
   expect(tagAction(undefined, after)).toBe("create");
   expect(tagAction("", after)).toBe("create");
@@ -45,7 +58,7 @@ test("the tag is created once, moved forward, and left alone when it already nam
 });
 
 test("ancestry decides whether a commit can move the tag", () => {
-  const directory = mkdtempSync(join(tmpdir(), "ci-green-main-"));
+  const directory = mkdtempSync(join(tmpdir(), "ci-green-tag-"));
   try {
     const git = (...args: string[]) => {
       const result = spawnSync("git", args, { cwd: directory, encoding: "utf8" });
@@ -69,16 +82,15 @@ test("ancestry decides whether a commit can move the tag", () => {
   }
 });
 
-test("every request writes the green-main tag and nothing else", () => {
+test("every request writes one green tag and nothing else", () => {
   const repo = "vercel-labs/scriptc";
-  expect(TAG_REF).toBe("refs/tags/green-main");
-  const create = tagRequest("create", repo, after);
+  const create = tagRequest("create", repo, after, "green-main");
   expect(create.method).toBe("POST");
   expect(create.path).toBe("repos/vercel-labs/scriptc/git/refs");
   expect(create.fields).toEqual({ ref: "refs/tags/green-main", sha: after });
-  const update = tagRequest("update", repo, after);
+  const update = tagRequest("update", repo, after, "green-canary");
   expect(update.method).toBe("PATCH");
-  expect(update.path).toBe(`repos/vercel-labs/scriptc/git/refs/${TAG_PATH}`);
+  expect(update.path).toBe(`repos/vercel-labs/scriptc/git/refs/${tagPath("green-canary")}`);
   // `force` is a boolean in the request body, not the string "true".
   expect(update.fields).toEqual({ sha: after, force: true });
   for (const request of [create, update]) {
@@ -86,14 +98,14 @@ test("every request writes the green-main tag and nothing else", () => {
     expect(request.path).not.toContain("/git/refs/heads");
     expect(JSON.stringify(request.fields)).not.toContain("refs/heads");
   }
-  expect(() => tagRequest("create", "", after)).toThrow();
-  expect(() => tagRequest("unchanged", repo, after)).toThrow();
+  expect(() => tagRequest("create", "", after, "green-main")).toThrow();
+  expect(() => tagRequest("unchanged", repo, after, "green-main")).toThrow();
   // The boolean field goes through -F, so the API receives a boolean; strings keep -f.
   expect(ghArgs(update)).toEqual([
     "api",
     "--method",
     "PATCH",
-    `repos/${repo}/git/refs/${TAG_PATH}`,
+    `repos/${repo}/git/refs/${tagPath("green-canary")}`,
     "-f",
     `sha=${after}`,
     "-F",
@@ -105,21 +117,30 @@ test("every request writes the green-main tag and nothing else", () => {
     "POST",
     `repos/${repo}/git/refs`,
     "-f",
-    `ref=${TAG_REF}`,
+    `ref=${tagRef("green-main")}`,
     "-f",
     `sha=${after}`,
   ]);
 });
 
-test("a passing push to main moves the tag; a failing or non-push run never does", () => {
-  const job = workflow.jobs.green_main!;
-  expect(job.name).toBe("tag green-main");
+test("a passing push moves that branch's tag; a failing or non-push run never does", () => {
+  // Push runs on both integration branches; pull requests run on every base (stacks target their lower branch),
+  // and a push's run is not cancelled by the other branch's.
+  expect(workflow.on.push.branches).toEqual(["main", "canary"]);
+  expect(workflow.on.pull_request.branches).toBeUndefined();
+  expect(workflow.concurrency.group).toContain("format('push-{0}', github.ref_name)");
+  const job = workflow.jobs.green_tag!;
+  expect(job.name).toBe("tag green-${{ github.ref_name }}");
   expect(job.needs).toEqual(["test"]);
   expect(job.if).toBe("${{ github.event_name == 'push' && needs.test.result == 'success' }}");
   // The one permission is the tag write; the job is not part of the required check.
   expect(job.permissions).toEqual({ contents: "write" });
-  expect(workflow.jobs.test!.needs).not.toContain("green_main");
-  const step = job.steps!.find((candidate) => candidate.run?.includes("green-main.mjs"))!;
-  expect(step.run).toBe('node scripts/ci/green-main.mjs "$SHA"');
-  expect(step.env).toEqual({ GH_TOKEN: "${{ github.token }}", SHA: "${{ github.sha }}" });
+  expect(workflow.jobs.test!.needs).not.toContain("green_tag");
+  const step = job.steps!.find((candidate) => candidate.run?.includes("green-tag.mjs"))!;
+  expect(step.run).toBe('node scripts/ci/green-tag.mjs "$SHA" --branch "$BRANCH"');
+  expect(step.env).toEqual({
+    GH_TOKEN: "${{ github.token }}",
+    SHA: "${{ github.sha }}",
+    BRANCH: "${{ github.ref_name }}",
+  });
 });

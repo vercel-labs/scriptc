@@ -2,8 +2,10 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import {
   revertArguments,
+  revertBase,
   revertBody,
   revertBranch,
+  revertPrArgs,
   revertTitle,
 } from "../../scripts/ci/revert-pr.mjs";
 
@@ -18,10 +20,33 @@ const specs = [
   },
 ];
 
-test("the revert branch is one per culprit and never main", () => {
+test("the revert branch is one per culprit and never an integration branch", () => {
   expect(revertBranch(culprit)).toBe("ci/revert-012345678");
   expect(revertBranch(culprit)).not.toBe("main");
+  expect(revertBranch(culprit)).not.toBe("canary");
   expect(revertBranch(culprit)).toBe(revertBranch(culprit));
+});
+
+test("the revert lands on the branch whose post-merge run failed", () => {
+  expect(revertBase("main")).toBe("main");
+  expect(revertBase("canary")).toBe("canary");
+  for (const base of ["", "--force", "main branch", "-x"])
+    expect(() => revertBase(base), JSON.stringify(base)).toThrow();
+  // The pull request targets that branch, not a hardcoded main.
+  expect(
+    revertPrArgs({ base: "canary", branch: "ci/revert-012345678", title: "t", bodyFile: "/tmp/b" }),
+  ).toEqual([
+    "pr",
+    "create",
+    "--base",
+    "canary",
+    "--head",
+    "ci/revert-012345678",
+    "--title",
+    "t",
+    "--body-file",
+    "/tmp/b",
+  ]);
 });
 
 test("the title names the reverted commit", () => {

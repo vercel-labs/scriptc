@@ -1,9 +1,10 @@
-name: Bisect main
+name: Bisect post-merge
 
-# A failed post-merge CI run on main starts this. It re-runs the tests that failed, twice, to screen out a flake;
-# if they still fail it searches green-main..main in parallel for the first commit that fails them, confirms the
-# boundary with three failures on the culprit and three passes on the commit before it, and opens a revert pull
-# request. When it cannot confirm a culprit it opens an issue instead. It never pushes main and never force-pushes.
+# A failed post-merge CI run on main or canary starts this. It re-runs the tests that failed, twice, to screen out
+# a flake; if they still fail it searches green-<branch>..<branch> in parallel for the first commit that fails
+# them, confirms the boundary with three failures on the culprit and three passes on the commit before it, and
+# opens a revert pull request into that branch. When it cannot confirm a culprit it opens an issue instead. It
+# never pushes main or canary and never force-pushes.
 on:
   workflow_run:
     workflows: [CI]
@@ -12,9 +13,10 @@ on:
 permissions:
   contents: read
 
-# One search at a time: a burst of failing runs narrows to the newest one, and the older range stays in it.
+# One search at a time per integration branch: a burst of failing runs narrows to the newest one, and the older
+# range stays in it. Main's and canary's searches are separate.
 concurrency:
-  group: bisect-main
+  group: bisect-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 env:
@@ -59,8 +61,8 @@ jobs:
           HEAD: ${{ github.event.workflow_run.head_sha }}
         run: |
           EMPTY=$(jq -c --argjson width "$WIDTH" '[range(0; $width) | { index: -1, sha: "" }]')
-          if [ "$EVENT" = push ] && [ "$BRANCH" = main ] && [ "$CONCLUSION" = failure ] &&
-             [ "$RUN_PATH" = .github/workflows/ci.yml ]; then
+          if [ "$EVENT" = push ] && { [ "$BRANCH" = main ] || [ "$BRANCH" = canary ]; } &&
+             [ "$CONCLUSION" = failure ] && [ "$RUN_PATH" = .github/workflows/ci.yml ]; then
             echo "applicable=true" >> "$GITHUB_OUTPUT"
           else
             {
@@ -74,7 +76,7 @@ jobs:
       - if: steps.trigger.outputs.applicable == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: main
+          ref: ${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
       # The failed run uploads one report per test job, from scripts/ci-failure-reporter.mjs. A run that failed
       # before any test job, or only in a build or bootstrap job, has none.
@@ -90,6 +92,7 @@ jobs:
         if: steps.trigger.outputs.applicable == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
@@ -119,12 +122,12 @@ jobs:
             --jq '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' \
             > "$RUNNER_TEMP/failing-jobs.json"
           echo "failing_jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")" >> "$GITHUB_OUTPUT"
-          # The baseline is the newest passing main commit before this run. Candidates are the green-main tag and
-          # every successful push run's head, newest first; the search takes the newest one that is an ancestor of
-          # the failed head. Scanning all of them, not just the newest run, keeps the search alive when main has
-          # already passed a newer commit, and a repository with no tag still searches.
-          TAG_BASE=$(gh api "repos/$REPO/git/ref/tags/green-main" --jq .object.sha 2>/dev/null || true)
-          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" \
+          # The baseline is the newest passing commit on this branch before this run. Candidates are the
+          # green-<branch> tag and every successful push run's head, newest first; the search takes the newest one
+          # that is an ancestor of the failed head. Scanning all of them, not just the newest run, keeps the search
+          # alive when the branch has already passed a newer commit, and a repository with no tag still searches.
+          TAG_BASE=$(gh api "repos/$REPO/git/ref/tags/green-$BRANCH" --jq .object.sha 2>/dev/null || true)
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=$BRANCH&status=success&per_page=100" \
             --paginate --slurp > "$RUNNER_TEMP/success-runs.json" 2>/dev/null ||
             echo '[]' > "$RUNNER_TEMP/success-runs.json"
           CANDIDATES=$( {
@@ -141,7 +144,7 @@ jobs:
               BASE=$candidate
             fi
           done
-          [ -n "$BASE" ] || fail "no passing main commit before this run to search from"
+          [ -n "$BASE" ] || fail "no passing $BRANCH commit before this run to search from"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           if ! find failure-reports -name '*.json' -print -quit 2>/dev/null | grep -q .; then
             fail "the failed run kept no failing-test report"
@@ -152,7 +155,7 @@ jobs:
           # second parents, and those snapshots were never the reviewed, merged tip. They are never probed.
           node scripts/ci/bisect.mjs commits --base "$BASE" --head "$RED" > "$RUNNER_TEMP/commits.json"
           COUNT=$(jq length "$RUNNER_TEMP/commits.json")
-          [ "$COUNT" -gt 0 ] || fail "main has no first-parent commit after the baseline"
+          [ "$COUNT" -gt 0 ] || fail "$BRANCH has no first-parent commit after the baseline"
           [ "$COUNT" -le 128 ] || fail "the first-parent range holds $COUNT commits, more than one search should cover"
           node scripts/ci/bisect.mjs plan --commits "$RUNNER_TEMP/commits.json" --base "$BASE" --head "$RED" \
             --width "$WIDTH" > "$RUNNER_TEMP/plan.json"
@@ -173,10 +176,10 @@ jobs:
             --arg base "$BASE" "$RUNNER_TEMP/plan.json")
           echo "culprit_sha=$culprit" >> "$GITHUB_OUTPUT"
           echo "predecessor_sha=$predecessor" >> "$GITHUB_OUTPUT"
-          echo "Planned $COUNT commit(s) since green-main with $(jq length "$RUNNER_TEMP/specs.json") failing test(s)"
+          echo "Planned $COUNT commit(s) since green-$BRANCH with $(jq length "$RUNNER_TEMP/specs.json") failing test(s)"
 
-  # The search could not start: no green-main, no reported test, or a range too large. An issue names why, and the
-  # failing jobs, so a person can follow up.
+  # The search could not start: no green-<branch> tag, no reported test, or a range too large. An issue names why,
+  # and the failing jobs, so a person can follow up.
   unresolved:
     needs: plan
     if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.plan.outputs.proceed != 'true' }}
@@ -188,13 +191,14 @@ jobs:
     steps:
       - env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           RANGE: ${{ needs.plan.outputs.reason }}
           JOBS: ${{ needs.plan.outputs.failing_jobs }}
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on main and no culprit could be searched" \
+            --title "Post-merge CI failed on $BRANCH and no culprit could be searched" \
             --body "$(printf 'The post-merge run on `%s` failed.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
               "${RED:0:9}" "${RANGE:-the search did not start}" "${JOBS:-none recorded}" "$RUN")"
 
@@ -233,7 +237,7 @@ jobs:
           echo "outcome=$(jq -r 'if .infra then "infra" elif .pass then "flake" else "failing" end' \
             "$RUNNER_TEMP/result.json")" >> "$GITHUB_OUTPUT"
 
-  # The first probe round: the reported tests at up to eight commits between green-main and the failing head.
+  # The first probe round: the reported tests at up to eight commits between green-<branch> and the failing head.
   probe_1:
     needs: [plan, flake_screen]
     if: ${{ needs.plan.outputs.applicable == 'true' && needs.flake_screen.outputs.outcome == 'failing' }}
@@ -529,6 +533,7 @@ jobs:
         if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
           GREEN: ${{ needs.plan.outputs.base }}
           RED: ${{ github.event.workflow_run.head_sha }}
@@ -539,11 +544,12 @@ jobs:
           printf '%s' "$SPECS" > "$RUNNER_TEMP/specs.json"
           subject=$(git log -1 --format=%s "$CULPRIT")
           node scripts/ci/revert-pr.mjs --culprit "$CULPRIT" --subject "$subject" --green "$GREEN" \
-            --red "$RED" --specs "$RUNNER_TEMP/specs.json"
+            --red "$RED" --base "$BRANCH" --specs "$RUNNER_TEMP/specs.json"
       - name: Report a revert that conflicts
         if: ${{ failure() }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
           JOBS: ${{ needs.plan.outputs.failing_jobs }}
           GREEN: ${{ needs.plan.outputs.base }}
@@ -551,14 +557,15 @@ jobs:
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on main and the revert needs a person" \
-            --body "$(printf 'The search confirmed `%s` after green-main `%s`, but the revert could not be opened (a conflict or a failed push).\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${CULPRIT:0:9}" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
+            --title "Post-merge CI failed on $BRANCH and the revert needs a person" \
+            --body "$(printf 'The search confirmed `%s` after green-%s `%s`, but the revert could not be opened (a conflict or a failed push).\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
 
       - name: Report what could not be confirmed
         if: ${{ needs.decide.outputs.reason != '' && needs.decide.outputs.reason != 'flake' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           REASON: ${{ needs.decide.outputs.reason }}
           JOBS: ${{ needs.plan.outputs.failing_jobs }}
           GREEN: ${{ needs.plan.outputs.base }}
@@ -566,13 +573,14 @@ jobs:
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on main and no culprit was confirmed" \
-            --body "$(printf 'The post-merge run on `%s` failed after green-main `%s`.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${RED:0:9}" "${GREEN:0:9}" "$REASON" "${JOBS:-none recorded}" "$RUN")"
+            --title "Post-merge CI failed on $BRANCH and no culprit was confirmed" \
+            --body "$(printf 'The post-merge run on `%s` failed after green-%s `%s`.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${RED:0:9}" "$BRANCH" "${GREEN:0:9}" "$REASON" "${JOBS:-none recorded}" "$RUN")"
       - name: Report a boundary that did not confirm
         if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result != 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
           CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
           JOBS: ${{ needs.plan.outputs.failing_jobs }}
           GREEN: ${{ needs.plan.outputs.base }}
@@ -580,6 +588,6 @@ jobs:
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on main and the culprit did not confirm" \
-            --body "$(printf 'The search named `%s` after green-main `%s`, but three runs either side did not confirm it.\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${CULPRIT:0:9}" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
+            --title "Post-merge CI failed on $BRANCH and the culprit did not confirm" \
+            --body "$(printf 'The search named `%s` after green-%s `%s`, but three runs either side did not confirm it.\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"

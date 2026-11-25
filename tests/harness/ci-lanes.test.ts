@@ -323,6 +323,13 @@ test("a pull request's fast tier turns every lane off and runs the fast tests", 
   expect(step.env!["TIER"]).toBe("${{ needs.validation_scope.outputs.tier }}");
 });
 
+test("a canary merge queue or post-merge run takes the fast jobs, not the full lanes", () => {
+  for (const event of ["push", "merge_group"])
+    expect(runLanes(event, "canary"), event).toBe(
+      "linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\nqueue=false\npost=false\n",
+    );
+});
+
 test("every job on a macOS runner is in the macos lane, but the main push smoke job", () => {
   const macosJobs = Object.entries(workflow.jobs).filter(([, job]) =>
     [job["runs-on"], ...(job.strategy?.matrix?.include ?? []).map((entry) => entry.runner)].some(

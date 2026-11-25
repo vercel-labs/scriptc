@@ -82,6 +82,9 @@ jobs:
           node scripts/check-llvm-dist.mjs --baseline "$RUNNER_TEMP/helper-release-archive"
           --candidate "$RUNNER_TEMP/helper-profiled" --rounds 3 --work "$RUNNER_TEMP/llvm-check"
       - name: Attach the archive to the release
+        # Published artifacts come from main: a dispatch on another ref builds and checks the distribution without
+        # attaching it.
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCHIVE: ${{ runner.temp }}/scriptc-llvm-22.1.8-linux-${{ matrix.arch }}.tar.xz

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The tests a merge queue group runs, as the queue_plan job reports them (.github/workflows/ci.yml). Today the
 // queue's fast gate is every plain shard of the Linux suite and no separate smoke list: the merge queue stops
-// running the sanitized, Effect, bootstrap and cross-platform lanes, which move to the push to main (the post
+// running the sanitized, Effect, bootstrap and cross-platform lanes, which move to the push to the integration
+// branch (the post
 // tier). A later change swaps this selection for a subset of the shards plus a smoke corpus, and the workflow
 // picks it up without edits: it reads plain_shards for the test matrix and smoke for the smoke job.
 //

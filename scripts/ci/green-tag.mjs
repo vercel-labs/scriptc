@@ -1,19 +1,30 @@
 #!/usr/bin/env node
-// Moves the green-main tag to the commit of a passing post-merge run (.github/workflows/ci.yml, green_main).
+// Moves an integration branch's green tag to the commit of a passing post-merge run (.github/workflows/ci.yml,
+// green_tag): green-main on main, green-canary on canary.
 //
-// green-main names the newest commit on main whose full post-merge verification passed: the commit a release, a
-// nightly baseline or a pre-warmed sandbox image may cut from. The tag is the only ref this writes; it never
-// touches a branch, and in particular never main. The workflow grants the job `contents: write` for that one tag
-// and the token is GitHub Actions' own GITHUB_TOKEN.
+// The tag names the newest commit on its branch whose full post-merge verification passed: the commit a release,
+// a nightly baseline or a pre-warmed sandbox image may cut from. The tag is the only ref this writes; it never
+// touches a branch. The workflow grants the job `contents: write` for that one tag and the token is GitHub
+// Actions' own GITHUB_TOKEN.
 //
-// usage: node scripts/ci/green-main.mjs <commit-sha> [--dry-run]
+// usage: node scripts/ci/green-tag.mjs <commit-sha> --branch <main|canary> [--dry-run]
 // environment: GITHUB_REPOSITORY (owner/repo), GH_TOKEN (set by the workflow's token)
 import { execFileSync } from "node:child_process";
 
-export const GREEN_MAIN_TAG = "green-main";
-// The API names a tag by the path below "refs/", and creates one by its full ref.
-export const TAG_PATH = `tags/${GREEN_MAIN_TAG}`;
-export const TAG_REF = `refs/${TAG_PATH}`;
+/** The branches whose post-merge runs keep a green tag. */
+export const GREEN_TAG_BRANCHES = ["main", "canary"];
+
+/** The tag an integration branch's post-merge run moves: green-main on main, green-canary on canary. */
+export function greenTag(branch) {
+  if (typeof branch !== "string" || !GREEN_TAG_BRANCHES.includes(branch))
+    throw new Error(`no green tag for branch ${JSON.stringify(branch)}`);
+  return `green-${branch}`;
+}
+
+/** The API names a tag by the path below "refs/". */
+export const tagPath = (tag) => `tags/${tag}`;
+/** The API creates a tag by its full ref. */
+export const tagRef = (tag) => `refs/${tagPath(tag)}`;
 
 /**
  * What moving the tag from `currentSha` to `nextSha` takes: create it, move it forward, leave it, or stale when
@@ -22,25 +33,25 @@ export const TAG_REF = `refs/${TAG_PATH}`;
  */
 export function tagAction(currentSha, nextSha, { ancestor = false } = {}) {
   if (typeof nextSha !== "string" || !/^[0-9a-f]{40}$/.test(nextSha))
-    throw new Error(`green-main needs a full commit sha, got ${JSON.stringify(nextSha)}`);
+    throw new Error(`the green tag needs a full commit sha, got ${JSON.stringify(nextSha)}`);
   if (currentSha === nextSha) return "unchanged";
   if (typeof currentSha !== "string" || currentSha.length === 0) return "create";
   return ancestor ? "update" : "stale";
 }
 
-/** The REST request that performs `action` for `sha` in `repo`: a tag ref, and nothing else. */
-export function tagRequest(action, repo, sha) {
+/** The REST request that performs `action` for `sha` in `repo`: one tag ref, and nothing else. */
+export function tagRequest(action, repo, sha, tag) {
   if (!/^[^/]+\/[^/]+$/.test(repo)) throw new Error(`invalid repository ${JSON.stringify(repo)}`);
   if (action === "create")
     return {
       method: "POST",
       path: `repos/${repo}/git/refs`,
-      fields: { ref: TAG_REF, sha },
+      fields: { ref: tagRef(tag), sha },
     };
   if (action === "update")
     return {
       method: "PATCH",
-      path: `repos/${repo}/git/refs/${TAG_PATH}`,
+      path: `repos/${repo}/git/refs/${tagPath(tag)}`,
       // `force` is a boolean in the API's request body; `gh api -F` sends it as one.
       fields: { sha, force: true },
     };
@@ -88,9 +99,9 @@ function ensureCommit(sha) {
 }
 
 /** The commit the tag names now, or undefined when it does not exist yet. */
-export function currentTagSha(repo) {
+export function currentTagSha(repo, tag) {
   try {
-    const ref = JSON.parse(gh(["api", `repos/${repo}/git/ref/${TAG_PATH}`]));
+    const ref = JSON.parse(gh(["api", `repos/${repo}/git/ref/${tagPath(tag)}`]));
     return ref?.object?.sha;
   } catch (error) {
     const text = `${error.stderr ?? ""}${error.message ?? ""}`;
@@ -101,11 +112,17 @@ export function currentTagSha(repo) {
 }
 
 function main() {
-  const [sha] = process.argv.slice(2).filter((arg) => !arg.startsWith("--"));
-  const dryRun = process.argv.includes("--dry-run");
+  const args = process.argv.slice(2);
+  const dryRun = args.includes("--dry-run");
+  const branchOption = args.indexOf("--branch");
+  const branch = branchOption >= 0 ? args[branchOption + 1] : undefined;
+  const [sha] = args.filter(
+    (arg, index) => !arg.startsWith("--") && (branchOption < 0 || index !== branchOption + 1),
+  );
+  const tag = greenTag(branch);
   const repo = process.env.GITHUB_REPOSITORY ?? "";
   // Reading the tag is read-only; a dry run still reports whether it would create or update.
-  const current = currentTagSha(repo);
+  const current = currentTagSha(repo, tag);
   let ancestor = false;
   if (typeof current === "string" && current.length > 0 && current !== sha) {
     ensureCommit(current);
@@ -113,23 +130,23 @@ function main() {
   }
   const action = tagAction(current, sha, { ancestor });
   if (action === "unchanged") {
-    console.log(`green-main already names ${sha}`);
+    console.log(`${tag} already names ${sha}`);
     return;
   }
   if (action === "stale") {
     console.log(
-      `::notice::green-main already names a newer passing commit (${current}); leaving it rather than moving ` +
+      `::notice::${tag} already names a newer passing commit (${current}); leaving it rather than moving ` +
         `it back to ${sha}`,
     );
     return;
   }
-  const request = tagRequest(action, repo, sha);
+  const request = tagRequest(action, repo, sha, tag);
   if (dryRun) {
     console.log(`${request.method} ${request.path} ${JSON.stringify(request.fields)}`);
     return;
   }
   gh([...ghArgs(request), "--silent"]);
-  console.log(`green-main now names ${sha} (${action})`);
+  console.log(`${tag} now names ${sha} (${action})`);
 }
 
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main();

@@ -6,13 +6,14 @@ run-name: "${{ inputs.pr != '' && format('Expensive tier of #{0} at {1}', inputs
 
 on:
   push:
-    branches: [main]
+    branches: [main, canary]
   # An ordinary pull request runs the fast tier; the ci:full label asks for the full suite. Labeling a pull
-  # request starts a run for the new tier, and the next push keeps it while the label stays.
+  # request starts a run for the new tier, and the next push keeps it while the label stays. Pull requests target
+  # canary during development and main for a release; stacked layers target their lower pull request's branch.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-  # A merge queue group: the tree that would become main, tested before it does. It runs the fast gate: the plain
-  # shards, code quality and the TypeScript baselines. The global lanes run on the push to main.
+  # A merge queue group: the tree that would become main or canary, tested before it does. It runs the fast gate:
+  # the plain shards, code quality and the TypeScript baselines. The global lanes run on the push to the branch.
   merge_group:
   # Nightly full macOS sweep. Pushes to main run only the macOS smoke job (tests_macos_smoke), and pull requests
   # run the macOS jobs only when they change darwin code (scripts/ci-lanes.mjs).
@@ -44,19 +45,20 @@ on:
         default: all
 
 concurrency:
-  # A new push to a pull request cancels its previous run. Pushes to main share one group without cancelling: a
-  # running main run finishes, and of the pushes that land meanwhile only the newest gets a run (GitHub cancels the
-  # older pending ones before they start), so a burst of merges costs one run instead of one each. A main run
-  # covers every commit merged before it. Releases still require a green run on their own commit: the release's
-  # CI gate (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue
-  # group runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by
-  # main pushes. A pull request's dispatched full tier (a dispatch with pr) runs in a group of its own beside the
+  # A new push to a pull request cancels its previous run. Pushes to an integration branch share one group per
+  # branch without cancelling: a running run finishes, and of the pushes that land meanwhile only the newest gets a
+  # run (GitHub cancels the older pending ones before they start), so a burst of merges costs one run instead of
+  # one each, and a canary push never drops a pending main push (or the reverse). A run covers every commit merged
+  # before it. Releases still require a green run on their own commit: the release's CI gate
+  # (scripts/release-ci-gate.mjs) dispatches one when that commit's push run was dropped. Each merge queue group
+  # runs in a group of its own commit. The nightly sweep and manual runs neither cancel nor are cancelled by push
+  # runs. A pull request's dispatched full tier (a dispatch with pr) runs in a group of its own beside the
   # pull request's: it never cancels the pull request run, whose checks the merge gate requires.
-  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && 'main' || github.sha }}
+  group: ci-${{ github.event_name == 'schedule' && 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.pr && format('full-{0}', inputs.pr) || format('dispatch-{0}', github.run_id)) || github.event.pull_request.number || github.event_name == 'push' && format('push-{0}', github.ref_name) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
-# writes to a branch, comments on a pull request or requests an OIDC token; the green-main job declares its own
+# writes to a branch, comments on a pull request or requests an OIDC token; the green_tag job declares its own
 # contents permission for its tag alone, and caches and artifacts do not use this token.
 permissions:
   contents: read
@@ -81,10 +83,12 @@ jobs:
       contents: read
     outputs:
       full: ${{ steps.scope.outputs.full }}
-      # fast: a pull request runs the fast tier (code_quality, fast_tests with the smoke set, and the TS7
-      # baselines) in minutes. The ci:full label runs every lane the pull request selects instead; so do pushes,
-      # merge queue groups, the nightly sweep and manual runs. superseded: a dispatched run whose branch moved on
-      # runs nothing; the new head has its own.
+      # fast: a pull request into canary runs the fast tier (code_quality, fast_tests with the smoke set, and the
+      # TS7 baselines) in minutes; the ci:full label runs every lane the pull request selects instead. canary:
+      # canary's merge queue and post-merge runs run the fast tier plus the compiler source-rule and snapshot
+      # tests. full: the release pull request into main, pushes to main, main's merge queue, the nightly sweep and
+      # manual runs run every lane. superseded: a dispatched run whose branch moved on runs nothing; the new head
+      # has its own.
       tier: ${{ steps.scope.outputs.tier }}
     steps:
       - id: scope
@@ -117,20 +121,35 @@ jobs:
           const full = !upperLayer && !shapeOnly && !superseded;
           // A pull request runs the fast tier unless it carries the label that asks for the full suite.
           const fullLabel = (pr?.labels ?? []).some((label) => label?.name === 'ci:full');
+          // Canary's merge queue and post-merge runs take the canary tier: the fast PR jobs plus the compiler
+          // source-rule and snapshot tests. The full tier runs only for main.
+          const eventName = process.env.GITHUB_EVENT_NAME;
+          const integrationBranch = eventName === 'push'
+            ? (event.ref ?? '').replace(/^refs\/heads\//, '')
+            : eventName === 'merge_group'
+              ? (event.merge_group?.base_ref ?? '').replace(/^refs\/heads\//, '')
+              : '';
+          const canary = integrationBranch === 'canary';
+          // The release pull request from canary into main runs the full tier; a pull request into canary runs the
+          // fast tier unless the label asks for the full suite.
+          const releasePullRequest = eventName === 'pull_request' && pr?.base?.ref === 'main';
           const tier = superseded ? 'superseded'
-            : process.env.GITHUB_EVENT_NAME === 'pull_request' && !fullLabel
+            : canary ? 'canary'
+            : eventName === 'pull_request' && !releasePullRequest && !fullLabel
               ? 'fast'
               : 'full';
           appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\ntier=${tier}\n`);
           console.log(superseded ? `The branch moved on from ${event.inputs?.sha}: its new head runs its own CI`
             : !full ? 'Defer CI until this PR becomes the lowest unmerged layer'
             : tier === 'fast' ? 'Run the fast tier; the ci:full label runs the full suite'
+            : tier === 'canary' ? 'Run the canary tier: the fast tier plus the source-rule and snapshot tests'
             : 'Run full CI');
           NODE
 
   # Which expensive lanes a pull request needs (scripts/ci-lanes.mjs, run from the base commit against the pull
   # request's diff, so a pull request cannot change its own selection). Pushes to main run every global lane, and a
   # merge queue group runs the fast gate: the plain shards, the TypeScript 7 baselines and the checks above them.
+  # Canary's merge queue and post-merge runs turn every lane off and run fast_tests with the canary tests instead.
   # The lane outputs still name what a full run would do, and the queue and post outputs below say which of the
   # two tiers this run is. The nightly sweep and manual runs run every lane but macos_smoke, which the complete
   # macOS lane covers. A pull request's fast tier turns every lane off; its ci:full run and its dispatched full
@@ -189,6 +208,9 @@ jobs:
           # A dispatched full tier reads the pull request's base from the API.
           base() { [ -n "$BASE" ] || BASE=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .base.sha); }
           if [ "$TIER" = fast ]; then
+            printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\nqueue=false\npost=false\n' | tee -a "$GITHUB_OUTPUT"
+          elif [ "$TIER" = canary ]; then
+            # Canary's merge queue and post-merge runs: the fast PR jobs and the canary tests, nothing else.
             printf 'linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\nqueue=false\npost=false\n' | tee -a "$GITHUB_OUTPUT"
           elif [ "$EVENT" = merge_group ]; then
             queued
@@ -279,7 +301,8 @@ jobs:
   # The fast tier of a pull request: the TypeScript build (the typecheck) and the tests related to its changes,
   # plus the smoke set (scripts/ci-fast-tests.mjs), against freshly built or restored Linux native packages.
   # code_quality runs lint, format, the header check and the TypeScript baselines beside it. Everything else runs
-  # only when the ci:full label asks for the full suite.
+  # only when the ci:full label asks for the full suite. Canary's merge queue and post-merge runs use this job too,
+  # with the source-rule and snapshot tests added below.
   fast_tests:
     needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.fast == 'true' }}
@@ -314,9 +337,37 @@ jobs:
       - uses: ./.github/actions/libnode
       - name: Related tests
         env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD" --smoke
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # A push's before is all zeros when the branch is new: compare the commit before the head instead.
+          if ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE=$(git rev-parse "$HEAD^" 2>/dev/null || echo "$HEAD")
+          fi
+          node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD" --smoke
+      # Canary's merge queue and post-merge tier: the fast PR jobs plus the compiler source-rule and snapshot tests.
+      # It reuses this job's native packages and build; the heavy lanes run only on main. Suites that read
+      # tests/harness/__snapshots__ are here; coverage.test.ts is the coverage lane's whole suite and stays there.
+      - name: Canary source-rule and snapshot tests
+        if: needs.validation_scope.outputs.tier == 'canary'
+        run: >-
+          pnpm test
+          tests/harness/diagnostics.test.ts
+          tests/harness/node-island-marks.test.ts
+          tests/harness/project-config.test.ts
+          tests/harness/library-int.test.ts
+          tests/harness/surface-manifest.test.ts
+          tests/harness/decl-boundary.test.ts
+          tests/harness/workspace-source.test.ts
+          tests/harness/source-package.test.ts
+          tests/harness/partial-assertion-read-rule.test.ts
+          packages/compiler/src/program-facts.test.ts
+          tests/harness/ci-lanes.test.ts
+          tests/harness/ci-test-plan.test.ts
+          tests/harness/ci-bisect.test.ts
+          tests/harness/ci-green-tag.test.ts
+          tests/harness/ci-queue-tests.test.ts
+          tests/harness/ci-review-gate.test.ts
 
   native_macos:
     needs: [validation_scope, lanes, code_quality]
@@ -526,10 +577,10 @@ jobs:
         with:
           name: failure-report-tests-macos-${{ matrix.flavor }}-${{ matrix.shard }}
 
-  # Pushes to main run no macOS lane, so a darwin-only regression could land unseen until the nightly sweep. This
-  # one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin smoke suite
-  # (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows the host
-  # platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
+  # Pushes to main and canary run no macOS lane, so a darwin-only regression could land unseen until the nightly
+  # sweep. This one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin
+  # smoke suite (scripts/ci-test-plan.mjs): the differential corpus's fs and os programs, whose Node oracle follows
+  # the host platform, in two processes. Pull requests that change darwin code run the whole darwin suite instead.
   tests_macos_smoke:
     needs: [validation_scope, lanes, code_quality]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos_smoke == 'true' && needs.lanes.outputs.queue != 'true' }}
@@ -1813,9 +1864,15 @@ jobs:
               # A job of the run's own tier must succeed; a skip is a failure there.
               require() { [ "$2" = success ] || { echo "$1: $2"; exit 1; }; }
               MODE=full
+              if [ "${{ needs.validation_scope.outputs.tier }}" = canary ]; then MODE=canary; fi
               if [ "${{ needs.lanes.outputs.queue }}" = true ]; then MODE=queue; fi
               if [ "${{ needs.lanes.outputs.post }}" = true ]; then MODE=post; fi
               case "$MODE" in
+                canary)
+                  # Canary's lighter tier: the fast PR jobs plus the compiler source-rule and snapshot tests. The
+                  # heavy lanes run only on main.
+                  require fast_tests "${{ needs.fast_tests.result }}"
+                  ;;
                 queue)
                   # The merge queue's fast gate: the plain shards and the checks above them. Everything the queue
                   # leaves to the post-merge run is skipped, so it is not required here.
@@ -1893,14 +1950,15 @@ jobs:
               ;;
           esac
 
-  # A post-merge run that passes moves the green-main tag to its commit: the newest main commit whose full
-  # post-merge verification passed. Releases, baselines and pre-warmed images may cut from it. The job writes that
-  # one tag and nothing else. It never writes a branch, and in particular never main; the token is GitHub Actions'
-  # own, and the job holds `contents: write` only for the tag.
-  green_main:
+  # A post-merge run that passes moves its branch's green tag to its commit: green-main on main, green-canary on
+  # canary. The tag names the newest commit on that branch whose post-merge verification (the full tier on main,
+  # the lighter canary tier on canary) passed; releases, baselines and pre-warmed images may cut from it. The job
+  # writes that one tag and nothing else. It never writes a branch; the token is GitHub Actions' own, and the job
+  # holds `contents: write` only for the tag.
+  green_tag:
     needs: [test]
     if: ${{ github.event_name == 'push' && needs.test.result == 'success' }}
-    name: tag green-main
+    name: tag green-${{ github.ref_name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -1911,8 +1969,9 @@ jobs:
           # A rerun of an older push needs the newer commits to tell whether the tag already names one.
           fetch-depth: 0
           persist-credentials: false
-      - name: Move the green-main tag
+      - name: Move the green-${{ github.ref_name }} tag
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
-        run: node scripts/ci/green-main.mjs "$SHA"
+          BRANCH: ${{ github.ref_name }}
+        run: node scripts/ci/green-tag.mjs "$SHA" --branch "$BRANCH"

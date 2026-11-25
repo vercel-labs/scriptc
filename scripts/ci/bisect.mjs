@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Plans and narrows the culprit search for a failing post-merge run (.github/workflows/bisect-main.yml). The
-// range is green-main..main, and each probe runs only the tests the failing run reported, so a round costs
+// range is green-<branch>..<branch> on main or canary, and each probe runs only the tests the failing run
+// reported, so a round costs
 // minutes rather than a full suite. An n-way round with width 8 narrows up to 16 commits to at most two; a second
 // round covers larger ranges.
 //

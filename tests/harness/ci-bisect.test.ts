@@ -297,7 +297,7 @@ test("the workflow's plan and narrow commands speak JSON", () => {
   }
 });
 
-test("the culprit search starts on a failed post-merge CI run and never writes main", () => {
+test("the culprit search starts on a failed post-merge CI run on main or canary and never writes either", () => {
   const workflow = load(
     readFileSync(new URL("../../.github/workflows/bisect-main.yml", import.meta.url), "utf8"),
   ) as {
@@ -323,6 +323,12 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
   expect(trigger.env!.EVENT).toBe("${{ github.event.workflow_run.event }}");
   expect(trigger.run).toContain('"$CONCLUSION" = failure');
   expect(trigger.run).toContain('"$BRANCH" = main');
+  expect(trigger.run).toContain('"$BRANCH" = canary');
+  // The search's checkout is the failed branch, not main.
+  const checkout = workflow.jobs.plan!.steps!.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  )!;
+  expect(checkout.with!.ref).toBe("${{ github.event.workflow_run.head_branch }}");
   expect(workflow.jobs.plan!.permissions).toEqual({ actions: "read", contents: "read" });
   expect(workflow.jobs.unresolved!.if).toContain("needs.plan.outputs.applicable == 'true'");
   // The boundary ends with three runs on each side of the culprit.
@@ -346,12 +352,19 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
   expect(probe.with!.expect).toBe("${{ matrix.expect }}");
   // The baseline falls back to the newest successful push run when the tag is absent or stale.
   const planStep = workflow.jobs.plan!.steps!.find((step) => step.id === "plan")!;
-  expect(planStep.run).toContain("git/ref/tags/green-main");
+  expect(planStep.run).toContain("git/ref/tags/green-$BRANCH");
+  expect(planStep.run).toContain("branch=$BRANCH");
   expect(planStep.run).toContain("status=success");
-  // Every successful run is a candidate, not only the newest: main may have passed a newer commit already.
+  // Every successful run is a candidate, not only the newest: the branch may have passed a newer commit already.
   expect(planStep.run).toContain("workflow_runs[].head_sha");
   expect(planStep.run).toContain("--paginate --slurp");
   expect(planStep.run).toContain("merge-base --is-ancestor");
+  // The revert lands on the branch that failed, not on main.
+  const revert = workflow.jobs.conclude!.steps!.find((step) =>
+    step.run?.includes("revert-pr.mjs"),
+  )!;
+  expect(revert.run).toContain('--base "$BRANCH"');
+  expect(revert.env!.BRANCH).toBe("${{ github.event.workflow_run.head_branch }}");
   // The job that writes has exactly the tag-free writes it needs, and the revert never force-pushes.
   expect(workflow.jobs.conclude!.permissions).toEqual({
     contents: "write",
@@ -360,7 +373,7 @@ test("the culprit search starts on a failed post-merge CI run and never writes m
   });
   for (const job of Object.values(workflow.jobs))
     for (const step of job.steps ?? [])
-      expect(step.run ?? "").not.toMatch(/push\s+(--force|-f)\b|push\s+origin\s+main\b/);
+      expect(step.run ?? "").not.toMatch(/push\s+(--force|-f)\b|push\s+origin\s+(main|canary)\b/);
 });
 
 test("the probe action runs the reported tests and keeps their result", () => {

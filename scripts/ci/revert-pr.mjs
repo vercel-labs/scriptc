@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Opens a revert pull request for a confirmed culprit (.github/workflows/bisect-main.yml). It pushes a new branch
-// and opens a pull request into main; it never pushes main and never force-pushes anything.
+// and opens a pull request into the branch whose post-merge run failed (main or canary); it never pushes an
+// integration branch and never force-pushes anything.
 //
-// usage: node scripts/ci/revert-pr.mjs --culprit <sha> --subject <text> --green <sha> --red <sha>
+// usage: node scripts/ci/revert-pr.mjs --culprit <sha> --subject <text> --green <sha> --red <sha> --base <branch>
 //                                       --specs specs.json [--dry-run]
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -17,6 +18,29 @@ export function revertArguments(sha, parentCount = 1) {
 /** The branch the revert is pushed to: one per culprit, so a retried run finds the same one. */
 export function revertBranch(sha) {
   return `ci/revert-${sha.slice(0, 9)}`;
+}
+
+/** The base branch a revert lands on: the integration branch whose post-merge run failed. */
+export function revertBase(base) {
+  if (typeof base !== "string" || !/^[A-Za-z0-9._/-]+$/.test(base) || base.startsWith("-"))
+    throw new Error(`invalid base branch ${JSON.stringify(base)}`);
+  return base;
+}
+
+/** The `gh pr create` arguments for a revert pull request into `base`. */
+export function revertPrArgs({ base, branch, title, bodyFile }) {
+  return [
+    "pr",
+    "create",
+    "--base",
+    base,
+    "--head",
+    branch,
+    "--title",
+    title,
+    "--body-file",
+    bodyFile,
+  ];
 }
 
 /** The pull request title: a revert of the culprit's subject. */
@@ -48,6 +72,7 @@ function main() {
   const culprit = option("--culprit");
   const green = option("--green");
   const red = option("--red");
+  const base = revertBase(option("--base"));
   const subject = option("--subject") ?? "the culprit commit";
   const specs = JSON.parse(readFileSync(option("--specs"), "utf8"));
   const branch = revertBranch(culprit);
@@ -64,7 +89,8 @@ function main() {
     .trim()
     .split(/\s+/)
     .slice(1);
-  // The revert lands on top of the red commit, on a branch of its own. A conflict leaves the branch unpushed.
+  // The revert lands on top of the red commit, on a branch of its own, and its pull request targets the branch
+  // whose post-merge run failed. A conflict leaves the branch unpushed.
   run("git", ["checkout", "-B", branch, red]);
   try {
     run("git", revertArguments(culprit, parents.length));
@@ -78,18 +104,7 @@ function main() {
   run("git", ["push", "origin", branch]);
   const bodyFile = join(tmpdir(), `${branch.replaceAll("/", "-")}.md`);
   writeFileSync(bodyFile, body);
-  run("gh", [
-    "pr",
-    "create",
-    "--base",
-    "main",
-    "--head",
-    branch,
-    "--title",
-    title,
-    "--body-file",
-    bodyFile,
-  ]);
+  run("gh", revertPrArgs({ base, branch, title, bodyFile }));
   if (!dryRun) console.log(`Opened the revert pull request for ${culprit}`);
 }
 

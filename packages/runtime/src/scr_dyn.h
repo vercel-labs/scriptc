@@ -2747,6 +2747,15 @@ typedef struct ScrDynHandleOps {
    * (a definition still shadows it), and it is the set the fetch classes
    * answer from their interfaces. NULL = the class declares no accessors. */
   const ScrDynHandleName *attributes;
+  /* Reflect.get on a class accessor with an explicit receiver that is not
+   * an instance of the class raises this TypeError (`key` is the accessor's
+   * name). NULL = V8's text: "Illegal invocation", or "Cannot convert
+   * undefined or null to object" for a nullish receiver. */
+  void (*accessor_brand_error)(const char *key, size_t key_len, const ScrDyn *receiver);
+  /* The accessors that answer a rejected promise, not a throw, when a
+   * Reflect.get receiver is not an instance of the class (a WebIDL `rejects`
+   * attribute such as a reader's closed). NULL = none. */
+  const ScrDynHandleName *rejecting_names;
   /* The class name V8's property TypeErrors print when it differs from
    * cls: undici's constructors are `_Request` and `_Response`, which V8
    * shows as `#<_Request>`. NULL = cls. */
@@ -2787,6 +2796,12 @@ typedef struct ScrDynHandlePropsHooks {
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
   const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The class's own member read for a handle of `tag`, skipping the
+   * handle's own-property table: Reflect.get invokes an inherited getter on
+   * an explicit receiver, and the receiver's own properties do not take
+   * part. NULL result without a pending exception = the class has no such
+   * member. */
+  ScrDyn *(*class_get)(const ScrDyn *handle, const char *key, size_t key_len);
   /* The table a write of `key` lands in (borrowed, made on first use), or
    * NULL when the write is not a table write (a modeled property, or a
    * member key the slice refuses). */

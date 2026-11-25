@@ -2975,13 +2975,13 @@ function lowerFromSource(
           type: DYN,
           loc,
         };
-        // SCR_FROM_HAS_HWM (8): the source's chunks as object-mode entries.
-        // Node's highWaterMark for a stream body is 1 unless the options
-        // name one.
+        // SCR_FROM_HAS_HWM (8) and the parsed option flags, so that
+        // objectMode: false builds a byte-mode wrapper. Node's
+        // highWaterMark for a stream body is 1 unless the options name one.
         return {
           kind: "libCall",
           fn: "readable.fromAsyncIter",
-          args: [iter, numLit(8, loc), hwm ?? numLit(1, loc)],
+          args: [iter, numLit(opts.flags | 8, loc), hwm ?? numLit(1, loc)],
           type,
           loc,
         };

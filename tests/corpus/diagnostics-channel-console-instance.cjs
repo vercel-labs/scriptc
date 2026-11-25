@@ -25,4 +25,8 @@ const value = console;
 value.log('value', 2);
 value.warn('careful');
 
+// A method held as a separate function value publishes too.
+const log = console.log;
+log('detached', 3);
+
 process.stdout.write(`${JSON.stringify(seen)}\n`);

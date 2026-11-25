@@ -113,6 +113,8 @@ static ScrDyn *scr_console_create_task(ScrDyn *const *args, size_t argc) {
   return task;
 }
 
+static int scr_console_member_index(const char *key, size_t len);
+
 static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const ScrConsoleMember *member = &scr_console_members[(size_t)scr_box_get_f64(closure->caps[0])];
   if (member->target == 2) return scr_console_create_task(args, argc);
@@ -124,9 +126,30 @@ static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args,
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)len, "SC2020");
     return NULL;
   }
+  /* A console output member called through a stored value publishes on the
+   * same channel as a direct call: the arguments become a pack, a
+   * subscriber can retain it, and the line is formatted from a snapshot. */
+  int index = scr_console_member_index(member->name, strlen(member->name));
+  const ScrDyn *const *values = args;
+  size_t count = argc;
+  ScrDyn *snapshot = NULL;
+  if (index >= 0 && scr_console_channel_active((double)index)) {
+    ScrDyn *pack = scr_dyn_new_arr();
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(pack, scr_dyn_retain(args[i]));
+    scr_console_publish_args((double)index, pack);
+    if (scr_exc_pending()) {
+      scr_dyn_release(pack);
+      return NULL;
+    }
+    snapshot = scr_console_snapshot_pack(pack);
+    scr_dyn_release(pack);
+    values = snapshot->v.arr.items;
+    count = snapshot->v.arr.len;
+  }
   ScrInspFormatOptions options;
   scr_insp_format_defaults(&options, member->surface);
-  ScrStr *line = scr_insp_format(args, argc, &options);
+  ScrStr *line = scr_insp_format(values, count, &options);
+  scr_dyn_release(snapshot);
   if (!line) return NULL;
   ScrLogArg arg = {.tag = SCR_ARG_STR};
   arg.v.s = line;
@@ -318,8 +341,6 @@ static bool scr_console_inst_set(void *ptr, const char *key, size_t len, const S
 
 /* Dynamic calls render like the stored global methods: every argument
  * through the dyn inspector (strings verbatim), space-joined. */
-static int scr_console_member_index(const char *key, size_t len);
-
 static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key, ScrDyn *const *args,
                                        size_t argc, const char *what) {
   (void)self; (void)what;

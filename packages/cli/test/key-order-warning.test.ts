@@ -38,8 +38,8 @@ test("a build reports the record types whose key order it does not follow, and -
     await mkdir(join(dir, "cache"), { mode: 0o700 });
     const warned = await cli(["build", fixture, "-o", join(dir, "program")], join(dir, "cache"));
     expect(warned.code).toBe(0);
-    expect(warned.stderr.match(/warning SC6014/g)?.length).toBe(2);
-    expect(warned.stderr).toContain("2 warnings: the program compiled");
+    expect(warned.stderr.match(/warning SC6014/g)?.length).toBe(3);
+    expect(warned.stderr).toContain("3 warnings: the program compiled");
 
     await mkdir(join(dir, "quiet"), { mode: 0o700 });
     const quiet = await cli(

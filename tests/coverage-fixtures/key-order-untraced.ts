@@ -86,3 +86,38 @@ interface Vat {
 const vat: Vat = { dye: "indigo" };
 Object.assign(vat, { rinse: "cold", mordant: "alum" });
 console.log(vat.dye, vat.rinse, vat.mordant);
+
+// A clone of a literal-built source that adds optional keys the source
+// lacks: Node appends them after the source's own keys, which the literal
+// fixed, so the result's order is known and nothing is reported.
+interface Dial {
+  host: string;
+  port?: number;
+  secure?: boolean;
+}
+const base: Dial = { host: "localhost" };
+const tuned: Dial = { ...base, port: 8080, secure: true };
+console.log(Object.keys(tuned).join(","));
+
+// Clone overrides run in the order the clone is written, so a source that
+// lacks them takes that order, not the declaration order.
+interface Tip {
+  id: string;
+  low?: number;
+  high?: number;
+}
+const seed: Tip = { id: "x" };
+const tipped: Tip = { ...seed, high: 9, low: 1 };
+console.log(Object.keys(tipped).join(","));
+
+// A delete takes back a key the literal wrote: the clone's override appends
+// it after the keys the value has left, so the type's order cannot be
+// followed and the type is reported.
+interface Strand {
+  id: string;
+  a?: number;
+}
+const strand: Strand = { a: 1, id: "x" };
+delete strand.a;
+const knotted: Strand = { ...strand, a: 2 };
+console.log(JSON.stringify(knotted));

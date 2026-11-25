@@ -154,6 +154,7 @@ test("a key order the compiler does not follow reports where the type is observe
   const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
   expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
     ["SC6014", 14],
+    ["SC6014", 122],
     ["SC6014", 27],
   ]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);

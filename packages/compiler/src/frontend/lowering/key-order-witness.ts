@@ -676,6 +676,10 @@ interface WriteSite {
   loop: string;
   pos: number;
   loc: SrcLoc;
+  /** For a clone override: the binding the clone copies, and the shape that
+   * binding has (when it is a record). */
+  source?: string | null;
+  sourceShapeId?: string;
 }
 
 interface BindingInit {
@@ -684,6 +688,46 @@ interface BindingInit {
   loop: string;
   pos: number;
   fresh: boolean;
+  /** The first value the binding is initialized with. */
+  value: IrExpr | null;
+}
+
+/** The operand a field or element read reads, or a member write writes. */
+function memberReceiver(e: IrExpr): IrExpr | undefined {
+  switch (e.kind) {
+    case "recordGet":
+    case "recordKeyGet":
+    case "recordHas":
+    case "fieldGet":
+    case "fieldIncDec":
+      return e.obj;
+    case "arrayGet":
+    case "arrayHas":
+    case "arrayState":
+      return e.arr;
+    default:
+      return undefined;
+  }
+}
+
+/** The operand a member or element write writes through. */
+function memberWriteReceiver(s: IrStmt): IrExpr | undefined {
+  switch (s.kind) {
+    case "recordSet":
+    case "recordKeySet":
+    case "recordKeyDelete":
+      return s.obj;
+    case "fieldSet":
+      return s.obj;
+    case "arraySet":
+    case "bytesSet":
+    case "arraySetLength":
+    case "arraySetUndefined":
+    case "arrayDelete":
+      return s.arr;
+    default:
+      return undefined;
+  }
 }
 
 interface ShapeFacts {
@@ -992,7 +1036,7 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
       init.kind === "recordLit" ||
       init.kind === "recordClone" ||
       (init.kind === "seqExpr" && init.result.kind === "recordLit");
-    inits.set(id, { count: 1, fn: fnName, loop: loopKey(), pos, fresh });
+    inits.set(id, { count: 1, fn: fnName, loop: loopKey(), pos, fresh, value: init });
   };
   const visitExpr = (e: IrExpr): void => {
     const probe = notes.sourceProbeOf(e);
@@ -1035,6 +1079,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         const f = factsOf(e.type.shapeId);
         f.site ??= e.loc;
         f.clones = true;
+        const source = bindingOf(e.source);
+        const sourceShapeId = e.source.type.kind === "record" ? e.source.type.shapeId : undefined;
         for (const o of e.overrides)
           f.writes.push({
             field: o.name,
@@ -1044,6 +1090,8 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
             loop: "",
             pos,
             loc: e.loc,
+            source,
+            ...(sourceShapeId === undefined ? {} : { sourceShapeId }),
           });
         return;
       }
@@ -1406,6 +1454,128 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     if (f === undefined) return true;
     return f.absent.has(key) || f.runtime || f.opaque || f.deleted.has(key);
   };
+  // ── keys of a clone's source ────────────────────────────────────────
+  const fnByName = new Map<string, IrFunction>();
+  for (const fn of fns) if (!fnByName.has(fn.name)) fnByName.set(fn.name, fn);
+  /** The binding an alias chain starts from. */
+  const canonicalBinding = (binding: string): string | null => {
+    let id = binding;
+    const seen = new Set<string>();
+    for (;;) {
+      if (seen.has(id)) return null;
+      seen.add(id);
+      const alias = aliases.get(id);
+      const init = inits.get(id);
+      if (alias === undefined || init === undefined || init.count !== 1) return id;
+      id = alias.target;
+    }
+  };
+  /** Whether a binding is only ever the receiver of member reads and
+   * writes: it cannot gain a key from another object or escape to code
+   * this pass cannot see. */
+  const containedBinding = (fn: IrFunction, id: string): boolean => {
+    const refs = new Set<IrExpr>();
+    const allowed = new Set<IrExpr>();
+    let contained = true;
+    const expr = (e: IrExpr): boolean => {
+      if (!contained) return false;
+      if (e.kind === "varRef" && e.localId === id) refs.add(e);
+      if (e.kind === "closure" && (e.captures ?? []).includes(id)) {
+        contained = false;
+        return false;
+      }
+      const receiver = memberReceiver(e);
+      if (receiver !== undefined && receiver.kind === "varRef" && receiver.localId === id)
+        allowed.add(receiver);
+      // A clone reads its source's keys; it never writes the source.
+      if (e.kind === "recordClone" && e.source.kind === "varRef" && e.source.localId === id)
+        allowed.add(e.source);
+      // Reading the value for output or JSON does not change its keys.
+      if (e.kind === "jsonStringify" && e.value.kind === "varRef" && e.value.localId === id)
+        allowed.add(e.value);
+      if (e.kind === "libCall" && e.fn.startsWith("insp."))
+        for (const arg of e.args) if (arg.kind === "varRef" && arg.localId === id) allowed.add(arg);
+      everyExprChild(e, expr, stmt);
+      return contained;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (!contained) return false;
+      // The binding's one initialization is not a second write to it.
+      if (s.kind === "assign" && s.localId === id && inits.get(id)?.value !== s.value) {
+        contained = false;
+        return false;
+      }
+      const receiver = memberWriteReceiver(s);
+      if (receiver !== undefined && receiver.kind === "varRef" && receiver.localId === id)
+        allowed.add(receiver);
+      everyStmtChild(s, expr, stmt);
+      return contained;
+    };
+    for (const s of fn.body) stmt(s);
+    if (!contained) return false;
+    for (const ref of refs) if (!allowed.has(ref)) return false;
+    return true;
+  };
+  /** The keys a value built from `value` can have, when the construction is
+   * a literal (and spreads of literals) this pass can read whole. Null
+   * otherwise. */
+  const literalKeysOf = (value: IrExpr, seen: Set<string>): Set<string> | null => {
+    if (value.kind === "seqExpr") return literalKeysOf(value.result, seen);
+    if (value.kind === "upcast" || value.kind === "unionNarrow")
+      return literalKeysOf(value.value, seen);
+    if (value.kind === "recordClone") {
+      if (value.source.kind !== "varRef") return null;
+      const base = bindingKeys(value.source.localId, seen);
+      if (base === null) return null;
+      for (const o of value.overrides) base.add(o.name);
+      return base;
+    }
+    if (value.kind !== "recordLit") return null;
+    const segments = notes.literalOf(value);
+    if (segments === undefined) return null;
+    const out = new Set<string>();
+    for (const segment of segments) {
+      if (segment.kind === "opaque") return null;
+      if (segment.kind !== "spread") {
+        if (!segment.definite) return null;
+        out.add(segment.name);
+        continue;
+      }
+      if (segment.value === undefined) return null;
+      const keys = bindingKeys(segment.value.localId, seen);
+      if (keys === null) return null;
+      for (const k of keys) out.add(k);
+    }
+    return out;
+  };
+  /** The keys a binding's value can have, when it is initialized once from
+   * a literal and never escapes or aliases. Null otherwise. */
+  const bindingKeys = (binding: string, seen: Set<string>): Set<string> | null => {
+    const id = canonicalBinding(binding);
+    if (id === null || seen.has(id)) return null;
+    seen.add(id);
+    const init = inits.get(id);
+    if (init === undefined || init.count !== 1 || init.value === null) return null;
+    // A module global is visible to every function: it must be contained in
+    // all of them. A local id is unique within its function.
+    const fn = fnByName.get(init.fn);
+    const contained = id.startsWith("%g.")
+      ? fns.every((each) => containedBinding(each, id))
+      : fn !== undefined && containedBinding(fn, id);
+    if (!contained) return null;
+    return literalKeysOf(init.value, seen);
+  };
+  /** The keys a same-shape clone's source value has, or null when the
+   * source is not a literal-constructed binding this pass can read. Any
+   * write or delete through the binding, including a delete that removes a
+   * key the literal wrote, makes the keys at the clone depend on the path,
+   * so the clone gets no static order. */
+  const cloneSourceKeys = (id: string, w: WriteSite): Set<string> | null => {
+    if (w.kind !== "clone" || w.source === null || w.source === undefined) return null;
+    if (w.sourceShapeId !== id) return null;
+    for (const other of facts.get(id)?.writes ?? []) if (other.binding === w.source) return null;
+    return bindingKeys(w.source, new Set());
+  };
   /** Edges every value of the shape satisfies whatever its sources'
    * orders are, or "unknown" when late writes make the order depend on
    * the value. */
@@ -1419,15 +1589,54 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     const created = keys.filter((k) => maybeAbsent(id, k) && createdKeys(k));
     const lateOnly = new Set(keys.filter((k) => maybeAbsent(id, k) && !createdKeys(k)));
     // The constraint depends on the written key only, not on the site.
-    const moving = new Set<string>();
-    for (const w of f.writes)
-      if (w.kind !== "delete" && keySet.has(w.field) && maybeAbsent(id, w.field))
-        moving.add(w.field);
-    for (const field of moving) {
-      const before = lateOnly.has(field) ? [...required, ...created] : keys;
-      for (const k of before) if (k !== field) edges.push([k, field]);
+    // A clone override (`{ ...value, k: v }`) places `k` after the keys the
+    // source value has when the source lacks `k`, and leaves it where the
+    // source has it otherwise. When the source's keys are known, the
+    // override's order is known too: it follows the source's keys, not
+    // every key of the type.
+    const moving = new Map<string, Set<string> | null>();
+    /** The keys one clone appends, in the order its overrides run. */
+    const cloneSequences = new Map<string, string[]>();
+    for (const w of f.writes) {
+      if (w.kind === "delete" || !keySet.has(w.field) || !maybeAbsent(id, w.field)) continue;
+      if (w.kind !== "clone") {
+        moving.set(w.field, null);
+        continue;
+      }
+      const source = cloneSourceKeys(id, w);
+      if (source === null) {
+        moving.set(w.field, null);
+        continue;
+      }
+      // The source has the key: the override keeps the position the source
+      // gave it, which the literal and copy witnesses already describe.
+      if (source.has(w.field)) continue;
+      const key = `${w.fn}\0${w.pos}\0${w.source ?? ""}`;
+      const sequence = cloneSequences.get(key) ?? [];
+      if (!sequence.includes(w.field)) sequence.push(w.field);
+      cloneSequences.set(key, sequence);
+      const before = lateOnly.has(w.field)
+        ? new Set([...required, ...created])
+        : new Set([...source].filter((k) => keySet.has(k)));
+      const previous = moving.get(w.field);
+      if (previous === undefined) moving.set(w.field, before);
+      else if (previous !== null) for (const k of before) previous.add(k);
     }
-    const lateSites = f.writes.filter((w) => lateOnly.has(w.field));
+    // Override keys the source lacks are appended in the order the clone is
+    // written, whatever order the type declares them in.
+    for (const sequence of cloneSequences.values())
+      for (let i = 0; i + 1 < sequence.length; i++) edges.push([sequence[i]!, sequence[i + 1]!]);
+    for (const [field, before] of moving) {
+      const list =
+        before === null ? (lateOnly.has(field) ? [...required, ...created] : keys) : [...before];
+      for (const k of list) if (k !== field) edges.push([k, field]);
+    }
+    const lateSites = f.writes.filter(
+      (w) =>
+        w.kind !== "delete" &&
+        lateOnly.has(w.field) &&
+        !(w.kind === "clone" && cloneSourceKeys(id, w) !== null),
+    );
     const lateWritten = new Set(lateSites.filter((w) => w.kind !== "delete").map((w) => w.field));
     if (lateWritten.size < 2) return edges;
     // Two or more late-only keys: each value gains them in the order its
@@ -1651,12 +1860,18 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     for (const c of f.copies) deps.add(c.source);
     return [...deps];
   };
-  /** `{ ...value, ...rest }` that starts with a spread of a value of the
-   * literal's own shape holding every key: it creates its keys in the
-   * value's order, and the later segments only overwrite them. With no
-   * checked conversion building the shape, every value enumerates in the
-   * one table this pass chooses, so the copy agrees with any choice and
-   * adds no edge. */
+  /** A literal that starts with a spread of a value of its own shape: it
+   * creates its keys in the value's order, so the copy takes whatever
+   * order the shape has and adds none of its own.
+   *
+   * `{ ...value }` alone has exactly the value's own keys, in the value's
+   * order, whether or not the shape's optional keys are present: nothing
+   * follows the spread to add a key the value lacks, so optional keys need
+   * no special care. With later segments the copy is free of an edge too
+   * when every key is present, because the later segments only overwrite
+   * keys the spread already placed. With no checked conversion building
+   * the shape, every value enumerates in the one table this pass chooses,
+   * so the copy agrees with any choice. */
   const copiesItself = (
     id: string,
     f: ShapeFacts,
@@ -1664,15 +1879,10 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
     segments: readonly KeyOrderSegment[],
   ): boolean => {
     const first = segments[0];
-    return (
-      first !== undefined &&
-      first.kind === "spread" &&
-      first.shapeId === id &&
-      !first.maybeAbsent &&
-      (!f.runtime || orderedSpreads.has(segments)) &&
-      segments.every((s) => s.kind !== "opaque") &&
-      table.every((k) => !maybeAbsent(id, k))
-    );
+    if (first === undefined || first.kind !== "spread" || first.shapeId !== id) return false;
+    if (first.maybeAbsent || (f.runtime && !orderedSpreads.has(segments))) return false;
+    if (segments.length === 1) return true;
+    return segments.every((s) => s.kind !== "opaque") && table.every((k) => !maybeAbsent(id, k));
   };
   /** One shape's order given its sources' current orders. */
   const resolveOne = (

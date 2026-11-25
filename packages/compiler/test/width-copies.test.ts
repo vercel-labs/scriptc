@@ -64,6 +64,20 @@ test("an aliasable copy the program only reads is not a warning", () => {
   expect(seen.warnings).toEqual([]);
 });
 
+test("a copy passed to a function that only reads it still warns", () => {
+  // Aliasing cannot be ruled out cheaply: a callee can mutate the original
+  // through a global, a callback, an await or a promise executor. A copy
+  // handed to a call is therefore reported even when the callee only reads
+  // the parameter.
+  const seen = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" }; function read(n: N): number { return n.a; } console.log(read(w)); const other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
+  );
+  expect(seen.facts).toEqual([
+    { kind: "width", depth: "value", aliasable: true, observed: "write" },
+  ]);
+  expect(seen.warnings).toHaveLength(1);
+});
+
 test("a write to either layout makes the copy a warning, wherever the copy went", () => {
   const through = facts(
     `${TYPES}const w: W = { a: 1, b: "x" }; const m = new Map<string, N>(); m.set("k", w); m.get("k")!.a = 3; console.log(w.a);`,

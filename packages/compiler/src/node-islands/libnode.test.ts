@@ -14,6 +14,7 @@ import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
 import {
   libnodeCacheKey,
   libnodeRecord,
+  libnodeRecordFor,
   libnodeTarget,
   NODE_BRIDGE_ABI,
   nodeIslandPackHint,
@@ -246,9 +247,24 @@ describe("SC8005's hint", () => {
     expect(hint).toContain("Node.js >=24.13.1");
   });
 
-  test("names the Windows pack too", () => {
+  test("says the Windows pack is not published instead of offering an install", () => {
+    // Its package is private and excluded from the release until the pack
+    // build ships: `npm i` would 404.
     const hint = nodeIslandPackHint(use, { SCRIPTC_TARGET: "x86_64-windows-gnu" });
-    expect(hint).toContain("npm i @scriptc/libnode-win32-x64@");
+    expect(hint).not.toContain("npm i @scriptc/libnode-");
+    expect(hint).toContain("@scriptc/libnode-win32-x64");
+    expect(hint).toContain("is not published yet");
+    expect(hint).toContain("packages/libnode-common/build-pack.mjs");
+  });
+
+  test("names the self-build route for an unpublished pack, not an install", () => {
+    // The Windows package is private until its pack build and release wiring
+    // ship: telling a reader to install it would send them to an unpublished
+    // package.
+    const message = libnodeRecordFor("windows-x64-msvc", undefined, "/out/app", {}, "/nonexistent");
+    expect(message).toContain("@scriptc/libnode-win32-x64");
+    expect(message).toContain("is not published yet");
+    expect(message).not.toContain("install @scriptc/libnode-win32-x64,");
   });
 
   test("keeps the self-build route where no pack is published", () => {

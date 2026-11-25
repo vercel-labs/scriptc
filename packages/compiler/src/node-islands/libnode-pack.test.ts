@@ -21,6 +21,7 @@ import {
   hostLibnodeTarget,
   libnodePackPackage,
   parseLibnodeSetting,
+  publishedLibnodePackPackage,
   readLibnodePack,
   writeLibnodeNotices,
 } from "./libnode-pack.js";
@@ -111,6 +112,18 @@ describe("the pack packages", () => {
     expect(libnodePackPackage("linux-x64-musl")).toBeNull();
     expect(libnodePackPackage("wasm32-wasi")).toBeNull();
     expect(libnodePackPackage("ios-arm64")).toBeNull();
+  });
+
+  test("only a published pack is offered as an install", () => {
+    // The Windows package exists and a build looks for it when installed, but
+    // nothing can install it until its pack ships.
+    expect(publishedLibnodePackPackage("windows-x64-msvc")).toBeNull();
+    expect(publishedLibnodePackPackage("linux-x64-gnu")).toBe("@scriptc/libnode-linux-x64-gnu");
+    expect(publishedLibnodePackPackage("linux-arm64-gnu")).toBe("@scriptc/libnode-linux-arm64-gnu");
+    expect(publishedLibnodePackPackage("macos-arm64")).toBe("@scriptc/libnode-darwin-arm64");
+    expect(publishedLibnodePackPackage("macos-x64")).toBe("@scriptc/libnode-darwin-x64");
+    expect(publishedLibnodePackPackage("linux-x64-musl")).toBeNull();
+    expect(publishedLibnodePackPackage("wasm32-wasi")).toBeNull();
   });
 
   test("host targets map to native target names", () => {

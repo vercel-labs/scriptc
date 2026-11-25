@@ -30,6 +30,25 @@ const PACK_PACKAGES: Readonly<Record<string, string>> = {
   "windows-x64-msvc": "@scriptc/libnode-win32-x64",
 };
 
+/** The pack packages npm publishes today. The Windows package exists in this
+ * repository, and a build looks for it when one is installed, but its pack
+ * build and release wiring are still landing: until they do, no message
+ * offers it as an install line. */
+const PUBLISHED_PACK_PACKAGES: ReadonlySet<string> = new Set([
+  "@scriptc/libnode-linux-x64-gnu",
+  "@scriptc/libnode-linux-arm64-gnu",
+  "@scriptc/libnode-darwin-arm64",
+  "@scriptc/libnode-darwin-x64",
+]);
+
+/** The pack package for a native target that can be installed today, or null
+ * when npm has no pack for it: musl, WASI and mobile targets, and a target
+ * whose package is not published yet. */
+export function publishedLibnodePackPackage(targetName: string): string | null {
+  const packageName = PACK_PACKAGES[targetName];
+  return packageName !== undefined && PUBLISHED_PACK_PACKAGES.has(packageName) ? packageName : null;
+}
+
 export type LibnodePlacement =
   | { kind: "embedded" }
   | { kind: "beside" }

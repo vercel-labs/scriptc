@@ -2,7 +2,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
-import { hostLibnodeTarget, libnodePackPackage } from "../src/node-islands/libnode-pack.js";
+import {
+  hostLibnodeTarget,
+  publishedLibnodePackPackage,
+} from "../src/node-islands/libnode-pack.js";
 
 /* SC8005 when no pack can be found: the build names the module and the
  * @scriptc/node API that reach into Node (so a program can avoid the island),
@@ -32,7 +35,7 @@ test("SC8005 points at the use and at the install line for this host", async () 
   if (result.ok) throw new Error("expected the build to fail without a libnode pack");
   const diag = result.diagnostics.find((d) => d.code === "SC8005");
   expect(diag?.hint).toContain("main.ts uses callSync (@scriptc/node)");
-  const pack = libnodePackPackage(hostLibnodeTarget());
+  const pack = publishedLibnodePackPackage(hostLibnodeTarget());
   if (pack === null) expect(diag?.hint).toContain("packages/libnode-common/build-pack.mjs");
   else expect(diag?.hint).toContain(`npm i ${pack}@`);
 });

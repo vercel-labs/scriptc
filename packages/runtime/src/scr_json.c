@@ -3940,6 +3940,13 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     }
     return proto;
   }
+  /* A handle of an installed class (a web stream, a node:sqlite object):
+   * the class's prototype, the one instanceof matches. */
+  if (object->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(object);
+    if (proto != NULL) return proto;
+    if (scr_exc_pending()) return NULL;
+  }
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -15734,6 +15741,20 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
     }
     return scr_dyn_arr_has_index(v, idx);
   }
+  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
+    /* A class instance answers a key its class's prototype holds: the
+     * presence a for-in's per-visit recheck asks for. */
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(v);
+    if (proto != NULL) {
+      bool has = scr_dyn_has_key(proto, key);
+      scr_dyn_release(proto);
+      return has;
+    }
+    if (scr_exc_pending()) {
+      scr_exc_clear();
+      return false;
+    }
+  }
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
   if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
@@ -21189,6 +21210,17 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL)
     return scr_dyn_new_arr();
+  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(value);
+    if (proto != NULL) {
+      scr_dyn_release(proto);
+      /* A class instance owns no properties of its own: the class's members
+       * live on its prototype, and a property a program added is answered
+       * by the handle table above. */
+      return scr_dyn_new_arr();
+    }
+    if (scr_exc_pending()) return NULL;
+  }
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -21717,6 +21749,17 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     scr_dyn_release(view);
     return keys;
   }
+  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
+    /* A handle owns no enumerable properties: for-in visits the enumerable
+     * accessors of its class's prototype, as it does on Node's instances. */
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(v);
+    if (proto != NULL) {
+      ScrDyn *keys = scr_dyn_for_in_keys(proto);
+      scr_dyn_release(proto);
+      return keys;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
   switch (v->kind) {
   case SCR_DYN_OBJ: {
     ScrDyn *keys = scr_dyn_new_arr();
@@ -21848,8 +21891,10 @@ static ScrArr *scr_dyn_key_strs_from(ScrDyn *keys) {
  * Every other value takes the dyn walk and converts its result. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
-  /* A plain object's prototype adds keys unless it is Object.prototype. */
-  if (v->kind != SCR_DYN_OBJ || v->prototype == NULL ||
+  /* A plain object's prototype adds keys unless it is Object.prototype;
+   * a handle's class prototype adds the class's enumerable members, so its
+   * own (empty) keys are not the answer. */
+  if ((v->kind != SCR_DYN_OBJ && v->kind != SCR_DYN_HANDLE) || v->prototype == NULL ||
       v->prototype == scr_builtin_object_prototype) {
     ScrArr *own = scr_dyn_own_key_strs(v, true);
     if (own) return own;

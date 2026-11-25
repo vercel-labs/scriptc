@@ -199,6 +199,8 @@ ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *sel
 
 static void hc_define_method(ScrDyn *prototype, ScrDynHandleTag tag, const char *name) {
   ScrDyn *fn = scr_dyn_handle_class_method(tag, name);
+  /* Enumerable, as Node's web stream classes define their methods (its
+   * for-in lists them); the class's own HTML-style classes may differ. */
   if (fn) hc_define(prototype, name, fn, true, true, true);
 }
 

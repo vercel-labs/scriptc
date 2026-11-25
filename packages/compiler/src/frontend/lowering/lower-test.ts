@@ -519,47 +519,19 @@ function splitTestArgs(
   return out;
 }
 
-/** Bodies lowered while a runtime name was built for them: the registration
- * reuses the same function value, so the call's arguments evaluate once, as
- * Node evaluates them. */
-const preLoweredBodies = new WeakMap<Lowerer, Map<ts.Expression, { cb: IrExpr; flags: number }>>();
-function bodyCache(lowerer: Lowerer): Map<ts.Expression, { cb: IrExpr; flags: number }> {
-  let bodies = preLoweredBodies.get(lowerer);
-  if (bodies === undefined) {
-    bodies = new Map();
-    preLoweredBodies.set(lowerer, bodies);
-  }
-  return bodies;
-}
-
-/** A test's name read from the function itself at run time (Node's
- * `fn.name`, "<anonymous>" when unnamed): the body is lowered here and
- * stored for the registration, so it evaluates once. */
-function runtimeTestName(
-  lowerer: Lowerer,
-  fnNode: ts.Expression,
-  what: string,
-  loc: SrcLoc,
-): IrExpr {
-  const body = lowerBodyArg(lowerer, fnNode, what, true);
-  /* The name is read through the function's dynamic view, and a body that
-   * takes the TestContext has none: refuse by name rather than failing
-   * inside the lowering. */
-  if (body.cb.type.kind === "func" && body.cb.type.params.some((p) => p.kind === "testCtx"))
-    lowerer.noLowering(
-      `${what} with a runtime function name, whose body takes the TestContext`,
-      fnNode,
-      "pass the test's name: a body that takes the TestContext cannot have its name read from the function yet",
-    );
-  const fnLocal = lowerer.declareHiddenLocal("%testBody", body.cb.type);
+/** A registration's name read from the function at run time (Node's
+ * `fn.name`, "<anonymous>" when unnamed). The function value is evaluated
+ * once, where the call's argument evaluates, and the same value registers
+ * the test or suite. */
+function runtimeNameOfValue(lowerer: Lowerer, fnValue: IrExpr, loc: SrcLoc): IrExpr {
+  const fnLocal = lowerer.declareHiddenLocal("%testBody", fnValue.type);
   const nameLocal = lowerer.declareHiddenLocal("%testName", STRING);
-  const fnValue = (): IrExpr => varRef(fnLocal.id, body.cb.type, loc);
-  bodyCache(lowerer).set(fnNode, { cb: fnValue(), flags: body.flags });
+  const fnRef = (): IrExpr => varRef(fnLocal.id, fnValue.type, loc);
   const read = varRef(nameLocal.id, STRING, loc);
   return {
     kind: "seqExpr",
     stmts: [
-      { kind: "varDecl", localId: fnLocal.id, init: body.cb, loc },
+      { kind: "varDecl", localId: fnLocal.id, init: fnValue, loc },
       {
         kind: "varDecl",
         localId: nameLocal.id,
@@ -567,7 +539,7 @@ function runtimeTestName(
           {
             kind: "dynKeyGet",
             key: strLit("name", loc),
-            value: lowerer.coerceToExpected(fnValue(), DYN),
+            value: lowerer.coerceToExpected(fnRef(), DYN),
             type: DYN,
             loc,
           },
@@ -589,6 +561,20 @@ function runtimeTestName(
   };
 }
 
+/** Whether a registration takes its name from the function at run time:
+ * no (or an empty) name, a function whose name is not known at compile
+ * time, and no options object (the options path is not lowered yet). */
+function takesRuntimeName(
+  lowerer: Lowerer,
+  nameNode: ts.Expression | undefined,
+  fnNode: ts.Expression | undefined,
+  optionsNode: ts.Expression | undefined,
+): boolean {
+  if (fnNode === undefined || optionsNode !== undefined) return false;
+  if (staticFunctionName(lowerer, fnNode) !== null) return false;
+  return nameNode === undefined || (ts.isStringLiteralLike(nameNode) && nameNode.text === "");
+}
+
 /** The test's name, as Node's Test constructor completes it: a missing or
  * empty name takes the function's name, or "<anonymous>". */
 function lowerTestName(
@@ -597,20 +583,16 @@ function lowerTestName(
   what: string,
   nameNode: ts.Expression | undefined,
   fnNode: ts.Expression | undefined,
-  hasOptions: boolean,
   loc: SrcLoc,
 ): IrExpr {
   const fallback = (): IrExpr => {
     const fnName = fnNode ? staticFunctionName(lowerer, fnNode) : "";
-    if (fnName === null) {
-      if (hasOptions)
-        lowerer.noLowering(
-          `${what} with a runtime function name and an options object`,
-          fnNode ?? expr,
-          "pass the test's name, or drop the options object: a name read from the function at run time combined with an options object is not lowered yet",
-        );
-      return runtimeTestName(lowerer, fnNode!, what, loc);
-    }
+    if (fnName === null)
+      lowerer.noLowering(
+        `${what} with a runtime function name and an options object`,
+        fnNode ?? expr,
+        "pass the test's name, or drop the options object: a name read from the function at run time combined with an options object is not lowered yet",
+      );
     return strLit(fnName || "<anonymous>", loc);
   };
   if (!nameNode) return fallback();
@@ -650,7 +632,25 @@ function lowerRegistration(
 ): IrExpr {
   if (sub === null) requireStatementPosition(lowerer, expr, what);
   const { nameNode, optionsNode, fnNode } = splitTestArgs(lowerer, expr, what);
-  let name = lowerTestName(lowerer, expr, what, nameNode, fnNode, optionsNode !== undefined, loc);
+  let preLoweredBody: { cb: IrExpr; flags: number } | null = null;
+  let name: IrExpr;
+  if (takesRuntimeName(lowerer, nameNode, fnNode, optionsNode)) {
+    /* The name comes from the function, so the body is lowered here and the
+     * same value registers the test: one evaluation, as Node's arguments. */
+    preLoweredBody = lowerBodyArg(lowerer, fnNode!, what, true);
+    if (
+      preLoweredBody.cb.type.kind === "func" &&
+      preLoweredBody.cb.type.params.some((candidate) => candidate.kind === "testCtx")
+    )
+      lowerer.noLowering(
+        `${what} with a runtime function name, whose body takes the TestContext`,
+        fnNode!,
+        "pass the test's name: a body that takes the TestContext cannot have its name read from the function yet",
+      );
+    name = runtimeNameOfValue(lowerer, preLoweredBody.cb, loc);
+  } else {
+    name = lowerTestName(lowerer, expr, what, nameNode, fnNode, loc);
+  }
   let opts = noOptions();
   if (optionsNode) {
     opts = lowerTestOptions(lowerer, optionsNode, what, false);
@@ -711,8 +711,7 @@ function lowerRegistration(
       loc,
     );
   }
-  const cachedBody = bodyCache(lowerer).get(fnNode);
-  const { cb, flags } = cachedBody ?? lowerBodyArg(lowerer, fnNode, what, true);
+  const { cb, flags } = preLoweredBody ?? lowerBodyArg(lowerer, fnNode, what, true);
   const flagsLit = numLit(flags | flagBits, loc);
   if (sub) {
     const promiseVoid: IrType = { kind: "promise", inner: VOID };
@@ -773,15 +772,14 @@ function lowerSuite(
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
   const split = splitTestArgs(lowerer, expr, what);
-  let name = lowerTestName(
-    lowerer,
-    expr,
-    what,
-    split.nameNode,
-    split.fnNode,
-    split.optionsNode !== undefined,
-    loc,
-  );
+  let preLoweredSuiteBody: IrExpr | null = null;
+  let name: IrExpr;
+  if (takesRuntimeName(lowerer, split.nameNode, split.fnNode, split.optionsNode)) {
+    preLoweredSuiteBody = lowerer.lowerExpr(split.fnNode!);
+    name = runtimeNameOfValue(lowerer, preLoweredSuiteBody, loc);
+  } else {
+    name = lowerTestName(lowerer, expr, what, split.nameNode, split.fnNode, loc);
+  }
   let opts = noOptions();
   if (split.optionsNode) {
     opts = lowerTestOptions(lowerer, split.optionsNode, what, true);
@@ -795,8 +793,7 @@ function lowerSuite(
   if (!fnNode) {
     lowerer.noLowering(`${what} without a body`, expr, "give the suite a body function");
   }
-  const cachedSuiteBody = bodyCache(lowerer).get(fnNode);
-  const cb = cachedSuiteBody ? cachedSuiteBody.cb : lowerer.lowerExpr(fnNode);
+  const cb = preLoweredSuiteBody ?? lowerer.lowerExpr(fnNode);
   // The body may take the SuiteContext (flag 2, as test bodies take theirs).
   if (
     cb.type.kind !== "func" ||

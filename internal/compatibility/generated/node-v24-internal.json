@@ -99003,6 +99003,7 @@
           "tests/corpus/class-instance-method-value-this.ts",
           "tests/corpus/object-literal-method-this.ts",
           "tests/corpus/prototype-method-value-this.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/fixtures/node-test/cases/assert-integration.ts",
           "tests/fixtures/node-test/cases/assert-register.ts",
           "tests/fixtures/node-test/cases/context-names.ts",
@@ -99035,6 +99036,7 @@
           "tests/fixtures/node-test/cases/only-nested.ts",
           "tests/fixtures/node-test/cases/plan-wait-timeout.ts",
           "tests/fixtures/node-test/cases/plan-wait.ts",
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
           "tests/fixtures/node-test/cases/root-hooks.ts",
           "tests/fixtures/node-test/cases/snapshot-default-serializers.ts",
           "tests/fixtures/node-test/cases/snapshot-resolve-path.ts",
@@ -99118,6 +99120,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:describe",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102436,6 +102440,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:suite",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102549,6 +102555,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:test",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102575,6 +102583,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:test.skip",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102601,6 +102611,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:test.todo",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102627,6 +102639,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:test.only",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102653,6 +102667,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:describe",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -102766,6 +102782,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:it",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -115062,6 +115080,8 @@
         "tests": [
           "tests/corpus/v8-heap-statistics.ts",
           "tests/corpus/v8-require-optional.cjs",
+          "tests/diagnostics/test-runtime-name-options.ts",
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -115641,6 +115661,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:before",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },
@@ -115662,6 +115684,8 @@
         "status": "partial",
         "evidence": "compiler-dedicated:after",
         "tests": [
+          "tests/fixtures/node-test/cases/registration-runtime-name.ts",
+          "tests/diagnostics/test-runtime-name-options.ts",
           "tests/harness/node-test.test.ts"
         ]
       },

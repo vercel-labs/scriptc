@@ -1,0 +1,8 @@
+test-runtime-name-options.ts:7:23 - error SC2020: 'test(...) with a runtime function name and an options object' is part of the standard library types but has no scriptc lowering yet
+
+  6 | 
+  7 | test({ timeout: 10 }, body);
+    |                       ^~~~
+  8 | 
+
+  hint: pass the test's name, or drop the options object: a name read from the function at run time combined with an options object is not lowered yet

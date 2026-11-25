@@ -92,6 +92,13 @@ bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
  * supported yet" Error). */
 void scr_net_set_dynh_http_on(bool (*fn)(ScrNetServer *, const char *, const ScrDyn *, bool));
 void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data, ScrNetNativeEventFn eof, ScrNetNativeEventFn closed, void *ctx, void (*ctx_free)(void *));
+/* A protocol takeover (http2.performServerHandshake): the socket may still
+ * own the context of a reader that stepped aside (an HTTP/1 upgrade or
+ * CONNECT handover keeps it until socket death) — install the new reader and
+ * release that context, so the taking-over protocol does not leak it. */
+void scr_net_sock_adopt_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
+                                      void *ctx, void (*ctx_free)(void *));
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *));
 /* The upgrade handover: clear the reader's fn pointers, keep the ctx. */
 void scr_net_sock_clear_native_reader(ScrNetSocket *s);

@@ -64017,6 +64017,7 @@
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-http2-settings.mjs",
           "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/http2-allow-http1-check-continue.ts",
           "tests/corpus/http2-check-continue.ts",
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
@@ -66592,6 +66593,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.'checkContinue'",
         "tests": [
+          "tests/corpus/http2-allow-http1-check-continue.ts",
           "tests/corpus/http2-check-continue.ts"
         ]
       },
@@ -66889,6 +66891,7 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.'checkContinue'",
         "tests": [
+          "tests/corpus/http2-allow-http1-check-continue.ts",
           "tests/corpus/http2-check-continue.ts"
         ]
       },

@@ -1559,6 +1559,7 @@ static const ScrHttpH2Ops scr_h2_compat_ops;
 static void scr_h2_request_hook(void *ctx, ScrClosure *cb, void *fn, bool once);
 static void scr_h2_connect_hook(void *ctx, ScrClosure *cb, void *h1_fn, void *h2_fn, bool once);
 static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb, void *fn, bool once);
+static void scr_h2_check_hook(void *ctx, ScrClosure *cb, void *fn, bool once, bool expectation);
 
 static void scr_http2_install(void) {
   static SCR_TL bool installed = false;
@@ -1570,6 +1571,7 @@ static void scr_http2_install(void) {
    * ops vtable and h2-tagged 'request' registrations through the hook */
   scr_http_set_h2_ops(&scr_h2_compat_ops);
   scr_http_set_h2_request_hook(&scr_h2_request_hook);
+  scr_http_set_h2_check_hook(&scr_h2_check_hook);
   scr_http_set_h2_connect_hook(&scr_h2_connect_hook);
   scr_http_set_h2_upgrade_hook(&scr_h2_upgrade_hook);
 }
@@ -4023,6 +4025,43 @@ static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb /*moves*/, void *fn, b
   }
 }
 
+/* The checkContinue/checkExpectation registration under both entry points:
+ * the h2 dispatch's list, and — on an allowHTTP1 server — the HTTP/1 parser's
+ * list behind the same handle, with one shared once token so a once listener
+ * fires for whichever protocol answers first (Node's single listener list).
+ * checkExpectation has no h2 surface (Node's h2 compat answers other
+ * expectations itself): it registers on the HTTP/1 parser alone. */
+static void scr_h2_register_check(ScrH2SrvCtx *srv, ScrClosure *cb /*moves*/, ScrHttpReqFn fn,
+                                  bool once, bool expectation) {
+  bool have_h1 = srv->http1_ctx != NULL;
+  ScrNetOnce *shared_once = have_h1 && !expectation && once ? scr_net_once_new() : NULL;
+  if (have_h1) {
+    scr_http1_ctx_on_check(srv->http1_ctx, scr_closure_retain(cb), fn, once, expectation,
+                           shared_once != NULL ? scr_net_once_retain(shared_once) : NULL);
+  }
+  if (expectation) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (shared_once != NULL) {
+    scr_net_ls_add_shared_once(&srv->check_continue_ls, cb, (void *)fn, shared_once);
+  } else {
+    scr_net_ls_add(&srv->check_continue_ls, cb, (void *)fn, once);
+  }
+}
+
+/* scr_http.c's h2 seam (scr_http_server_on_check on an h2-tagged ctx):
+ * notify_new_listener already ran in the caller, as for 'request'. */
+static void scr_h2_check_hook(void *ctx, ScrClosure *cb /*moves*/, void *fn, bool once,
+                              bool expectation) {
+  ScrH2SrvCtx *srv = (ScrH2SrvCtx *)ctx;
+  if (srv == NULL || srv->proto != SCR_NET_PROTO_H2) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_h2_register_check(srv, cb, (ScrHttpReqFn)fn, once, expectation);
+}
+
 /* Build the (req, res) pair over a fresh server stream and fire the
  * 'request' listeners (this = the net server, the http/1 shape). */
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
@@ -4280,9 +4319,13 @@ ScrNetServer *scr_http2_create_secure_server_dyn(const ScrDyn *opts /*borrowed*/
     scr_closure_release(handler);
     return NULL;
   }
+  /* allowHTTP1 is Node's dual-ALPN server (h2 and HTTP/1.1 on one TLS
+   * endpoint) — the same build the literal options take. An HTTP/1.1-only
+   * server would refuse the h2 clients Node accepts. */
   ScrNetServer *s = allow_http1
-      ? scr_https_create_server((const char *)cert->data, cert->len,
-                                 (const char *)key->data, key->len, handler, fn)
+      ? scr_http2_create_secure_server_allow_http1(
+            (const char *)cert->data, cert->len, (const char *)key->data, key->len, handler, fn,
+            NULL, NULL, false)
       : scr_http2_create_secure_server_req((const char *)cert->data, cert->len,
                                             (const char *)key->data, key->len, handler, fn,
                                             false);
@@ -4525,25 +4568,31 @@ void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrCh
   scr_net_ls_add(&s->err_ls, cb, (void *)fn, once);
 }
 
-/* server.on("checkContinue"): the Expect: 100-continue listeners. The
- * first listener places the compatibility dispatch among the 'stream'
- * listeners, as a 'request' listener does. */
+/* server.on("checkContinue"): the Expect: 100-continue listeners. Node's
+ * compatibility dispatch attaches from a 'request' listener alone; a
+ * checkContinue-only server never dispatches (the request waits), so this
+ * registration does not place it. On an allowHTTP1 server the listener also
+ * lands in the HTTP/1 parser's list — the same handle serves HTTP/1.1. */
 void scr_http2_server_on_check_continue(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                          ScrHttpReqFn fn, bool once) {
   ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
-  if (ctx == NULL || scr_net_server_settled(s)) {
+  if (ctx == NULL) {
+    /* not an h2 ctx: an HTTP/1.1 parser behind the same handle takes the
+     * listener through its own checkContinue hook (that path fires
+     * newListener). */
+    scr_http_server_on_check(s, cb, fn, once, false);
+    return;
+  }
+  if (scr_net_server_settled(s)) {
     scr_closure_release(cb);
     return;
   }
-  /* Node's compatibility dispatch attaches from a 'request' listener
-   * alone; a checkContinue-only server never dispatches (the request
-   * waits), so this registration does not place it. */
   scr_net_server_notify_new_listener(s, "checkContinue");
   if (scr_exc_pending()) {
     scr_closure_release(cb);
     return;
   }
-  scr_net_ls_add(&ctx->check_continue_ls, cb, (void *)fn, once);
+  scr_h2_register_check(ctx, cb, fn, once, false);
 }
 
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,

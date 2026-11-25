@@ -101,9 +101,7 @@ test("the post-merge lanes only read: no job can open an issue or a pull request
   expect(postmerge.permissions).toEqual({ contents: "read" });
   for (const [name, job] of Object.entries(postmerge.jobs)) {
     for (const [scope, level] of Object.entries(job.permissions ?? {}))
-      // The one write: the CI call must grant what CI's roll-up job asks for, a step it skips here.
-      if (!(name === "macos" && scope === "statuses"))
-        expect(level, `${name} ${scope}`).toBe("read");
+      expect(level, `${name} ${scope}`).toBe("read");
     if (job.uses === undefined) expect(job["timeout-minutes"], name).toBeDefined();
   }
   const text = read(".github/workflows/postmerge.yml");
@@ -258,9 +256,13 @@ test("every recipe replays the current workflow's steps without an expression it
     }
   }
   // The tests_macos recipe runs the job's own test command, with the job's environment for the complete suite.
+  // Steps after it keep the failure report; the command is the job's last step that runs something.
   const tests = recipes.find((r: { id: string }) => r.id === "tests_macos");
+  const testCommand = ci.jobs
+    .tests_macos!.steps!.filter((step) => step.run !== undefined)
+    .at(-1)!.run;
   expect(replaySteps(ci, tests, {}, "/tmp").map((s: { run: string }) => s.run)).toEqual([
-    ci.jobs.tests_macos!.steps!.at(-1)!.run,
+    testCommand,
   ]);
   expect(tests.env({ flavor: "san", shard: "4" })).toEqual({
     SCRIPTC_TEST_WORKERS: "4",

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Moves the green-main tag to the commit of a passing post-merge run (.github/workflows/ci.yml, green_main).
+// Moves the green-main tag to the commit of a passing CI push to main (.github/workflows/green-main.yml).
 //
 // green-main names the newest commit on main whose full post-merge verification passed: the commit a release, a
 // nightly baseline or a pre-warmed sandbox image may cut from. The tag is the only ref this writes; it never

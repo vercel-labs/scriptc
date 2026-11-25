@@ -71,13 +71,11 @@ jobs:
     needs: pick
     if: ${{ needs.pick.outputs.skip == 'false' }}
     uses: ./.github/workflows/ci.yml
-    # A called workflow's jobs may ask for no more than this job grants, whether or not they run: the lane
-    # selector reads pull requests, and the required check's roll-up can write the ci/full status, which it skips in
-    # a post-merge call.
+    # This job's permissions are the ceiling for the whole called graph, and GitHub validates every job in it
+    # whether or not the job runs: the lane selector reads pull requests, and CI asks for nothing more.
     permissions:
       contents: read
       pull-requests: read
-      statuses: write
     with:
       ref: ${{ needs.pick.outputs.sha }}
       only_lane: macos

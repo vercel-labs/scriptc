@@ -76,8 +76,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
-# writes to a branch, comments on a pull request or requests an OIDC token; the green-main job declares its own
-# contents permission for its tag alone, and caches and artifacts do not use this token.
+# writes to a branch, comments on a pull request or requests an OIDC token; caches and artifacts do not use this
+# token. CI is also a reusable workflow the post-merge lanes call read-only, and GitHub validates every job in a
+# called workflow against the caller's permission ceiling whether or not it runs, so no job here may ask for more.
 permissions:
   contents: read
 
@@ -1989,26 +1990,3 @@ jobs:
               ;;
           esac
 
-  # A post-merge run that passes moves the green-main tag to its commit: the newest main commit whose full
-  # post-merge verification passed. Releases, baselines and pre-warmed images may cut from it. The job writes that
-  # one tag and nothing else. It never writes a branch, and in particular never main; the token is GitHub Actions'
-  # own, and the job holds `contents: write` only for the tag.
-  green_main:
-    needs: [test]
-    if: ${{ github.event_name == 'push' && needs.test.result == 'success' }}
-    name: tag green-main
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # A rerun of an older push needs the newer commits to tell whether the tag already names one.
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Move the green-main tag
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SHA: ${{ github.sha }}
-        run: node scripts/ci/green-main.mjs "$SHA"

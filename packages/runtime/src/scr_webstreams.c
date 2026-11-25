@@ -2153,7 +2153,19 @@ ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
     scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
     return NULL;
   }
-  bool clone2 = clone != NULL && clone->kind != SCR_DYN_UNDEF && scr_dyn_truthy(clone);
+  /* Node validates the flag before the tee locks the source: any value
+   * but a boolean (an absent argument and undefined are the default false)
+   * is ERR_INVALID_ARG_TYPE, never a truthiness coercion, so a rejected
+   * call leaves the stream unlocked and unread. */
+  bool clone2 = false;
+  if (clone != NULL && clone->kind != SCR_DYN_UNDEF) {
+    if (clone->kind != SCR_DYN_BOOL) {
+      scr_dyn_release(receiver);
+      scr_dyn_arg_type_fail("cloneForBranch2", "of type boolean", clone);
+      return NULL;
+    }
+    clone2 = clone->v.b;
+  }
   WsReadable *a, *b;
   bool ok = ws_readable_tee_ex(receiver->v.handle.ptr, clone2, &a, &b);
   scr_dyn_release(receiver); /* the tee's reader holds the stream */

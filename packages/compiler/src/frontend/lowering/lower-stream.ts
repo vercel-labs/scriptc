@@ -4297,7 +4297,8 @@ export function lowerStreamModuleCall(
     // function export beside the web stream classes, which lower through
     // the globals' own paths. It answers the default tee's two branches,
     // the second reading a structuredClone of each chunk when the flag is
-    // truthy.
+    // true; any other value but undefined is Node's argument TypeError,
+    // raised before the tee locks the source.
     if (bi.member !== "ReadableStreamTee") return null;
     const args = call.arguments.nodes;
     if (args.length < 1 || args.length > 2) {

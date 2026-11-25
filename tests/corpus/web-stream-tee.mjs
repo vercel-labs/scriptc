@@ -109,3 +109,17 @@ try {
 } catch (error) {
   console.log("body-locked", error.name, error.message);
 }
+
+// Node validates cloneForBranch2 before the tee locks the source: any value
+// but a boolean (an absent argument and undefined are the default false) is
+// ERR_INVALID_ARG_TYPE, so the rejected call leaves the stream unlocked.
+const unclaimed = make(["x"]);
+for (const value of ["yes", 1, null, {}, []]) {
+  try {
+    ReadableStreamTee(unclaimed, value);
+    console.log("flag", "accepted");
+  } catch (error) {
+    console.log("flag", error.name, error.code, error.message);
+  }
+}
+console.log("flag-unlocked", unclaimed.locked);

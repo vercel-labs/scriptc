@@ -151,6 +151,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "strdec.nextDyn",
   "dyn.construct",
   "dyn.reflectApply",
+  "dyn.reflectConstruct",
   "dyn.reflectGet",
   "dyn.usingMethod",
   "dyn.usingDispose",
@@ -176,6 +177,9 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  // The stream/consumers source over an untyped value refuses by name
+  // (SC2020) when it is neither a native stream nor a web ReadableStream.
+  "sc.source",
   // The stream predicates and state getters refuse by name (SC2020): a
   // value that is neither a native stream nor a primitive, and a child or
   // process stdio stream asked about the side it does not have here.
@@ -336,6 +340,13 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
 ];
 
 const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
+  // node:cluster validates its env argument and refuses setupPrimary in a
+  // worker process (ERR_WORKER_INIT_FAILED).
+  "cluster.fork",
+  "cluster.setup",
+  "cluster.on",
+  "cluster.off",
+  "cluster.disconnect",
   "icu.dateTimeFormatFormatDyn",
   "icu.numToLocaleString",
   "icu.dateTimeFormatNew",
@@ -454,6 +465,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http.validateHeaderName",
   "http.validateHeaderValue",
   "http.setMaxIdleParsers",
+  "http.setGlobalProxyFromEnv",
   "http.agentCreateConnectionCheck",
   // 'prefinish' on the HTTP/2 compatibility response is refused by name.
   "http.resOnPrefinish",
@@ -700,6 +712,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "readable.pipe",
   "readable.pipeGeneral",
   "readable.unpipe",
+  "readable.setEncodingOption",
   "writable.write",
   "writable.writeStr",
   "writable.writeU",

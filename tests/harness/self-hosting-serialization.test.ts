@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import {
   analyze,
   compile,
@@ -18,6 +18,14 @@ import { IR_VERSION } from "../../packages/compiler/src/ir/serialize.js";
 import { F64, VOID, type IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { numLit } from "../../packages/compiler/src/ir/build.js";
 import { validatorCases } from "./self-hosting-validator-cases.js";
+
+// The self-hosted serializer compiles a 3,000+ statement program with the
+// LLVM backend, then runs a dozen Node-oracle and native round trips. On a
+// loaded pooled runner that has outlasted vitest's shared 300 s default (one
+// observed run timed out mid-flight at exactly 300000 ms), so this file is
+// its own hang detector at about twice the longest green run.
+const SERIALIZATION_TIMEOUT_MS = 900_000;
+vi.setConfig({ testTimeout: SERIALIZATION_TIMEOUT_MS });
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const entry = join(root, "tests/fixtures/self-hosting/serialize.ts");

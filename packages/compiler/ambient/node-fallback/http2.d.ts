@@ -26,7 +26,10 @@ declare module "http2" {
     readonly statusCode: number | undefined;
     readonly socket: Socket;
     readonly headers: { [name: string]: string | undefined };
-    readonly stream: Http2Stream;
+    readonly stream: ServerHttp2Stream;
+    /* The request's :authority and :scheme pseudo-headers. */
+    readonly authority: string;
+    readonly scheme: string;
     /* The h2 compat request's version triple ("2.0" over real h2 streams;
      * the allowHTTP1 lowering's HTTP/1.1 connections answer 1.x). */
     readonly httpVersion: string;
@@ -60,7 +63,9 @@ declare module "http2" {
     statusCode: number;
     statusMessage: string;
     setHeader(name: string, value: number | string | readonly string[]): void;
-    getHeader(name: string): string | undefined;
+    /* Node answers the value as set (a number, string or string[]), and the
+     * ":status" a writeHead stores is a number. */
+    getHeader(name: string): string | number | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
     getHeaders(): import("http").OutgoingHttpHeaders;
@@ -100,6 +105,7 @@ declare module "http2" {
   }
   export interface Http2SecureServer {
     listen(port: number, callback?: () => void): void;
+    listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
@@ -125,13 +131,7 @@ declare module "http2" {
     /* HTTP CONNECT (and, in Node, the h2 extended CONNECT — which the
      * allowHTTP1 lowering never sees): the second argument is the raw
      * socket on HTTP/1.1 connections; narrow with instanceof. */
-    on(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    on(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     once(event: "connection", listener: (socket: Socket) => void): void;
     once(
       event: "request",
@@ -145,13 +145,7 @@ declare module "http2" {
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
     ): void;
     once(event: "session", listener: (session: ServerHttp2Session) => void): void;
-    once(
-      event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
-    ): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     addListener(event: "connection", listener: (socket: Socket) => void): void;
     addListener(
       event: "request",
@@ -170,10 +164,7 @@ declare module "http2" {
     addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
     addListener(
       event: "connect",
-      listener: (
-        req: Http2ServerRequest | import("http").IncomingMessage,
-        resOrSocket: Http2ServerResponse | Socket,
-      ) => void,
+      listener: (req: any, resOrSocket: any, head?: Buffer) => void,
     ): void;
   }
   export interface SecureServerOptions {
@@ -575,10 +566,16 @@ declare module "http2" {
     readonly closed: boolean;
     readonly destroyed: boolean;
     readonly pending: boolean;
+    /* END_STREAM rode the initial HEADERS block; the writable side's
+     * buffered bytes (flow-control withheld). */
+    readonly endAfterHeaders: boolean;
+    readonly bufferSize: number;
     readonly aborted: boolean;
     readonly session: Http2Session;
-    readonly sentHeaders: OutgoingHttpHeaders;
-    readonly state: Record<string, number>;
+    readonly sentHeaders: any;
+    readonly sentInfoHeaders: any;
+    readonly sentTrailers: any;
+    readonly state: any;
     write(chunk: string | Uint8Array, callback?: (err?: Error | null) => void): boolean;
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;
@@ -790,6 +787,11 @@ declare module "http2" {
     on(event: "close" | "listening" | "timeout", listener: () => void): void;
     on(event: "connection", listener: (socket: import("net").Socket) => void): void;
     on(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    /* HTTP CONNECT, as on the secure server above: the compatibility
+     * response on an HTTP/2 stream, the raw socket on an HTTP/1.1
+     * (allowHTTP1) connection. Without this declaration a JavaScript
+     * listener infers the neighboring 'stream' overload's parameters. */
+    on(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     once(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -803,6 +805,7 @@ declare module "http2" {
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
+    once(event: "connect", listener: (req: any, resOrSocket: any, head?: Buffer) => void): void;
     addListener(
       event: "stream",
       listener: (stream: ServerHttp2Stream, headers: IncomingHttpHeaders, flags: number) => void,
@@ -818,6 +821,10 @@ declare module "http2" {
     addListener(
       event: "sessionError",
       listener: (err: Error, session: ServerHttp2Session) => void,
+    ): void;
+    addListener(
+      event: "connect",
+      listener: (req: any, resOrSocket: any, head?: Buffer) => void,
     ): void;
   }
 

@@ -16,17 +16,6 @@
       ]
     },
     {
-      "test": "crypto-ml-kem-callbacks.ts",
-      "files": ["tests/harness/differential.test.ts", "tests/harness/llvm-differential.test.ts"],
-      "owner": "ctate",
-      "reason": "ML-KEM callback output differs between runs of the same build",
-      "added": "2026-11-22",
-      "expires": "2026-12-06",
-      "evidence": [
-        "run 44663892688 attempt 1, job 136052568160 test (Linux, plain, 13/20): llvm-differential dev stdout differs; passed on attempt 2 (2026-11-20)"
-      ]
-    },
-    {
       "test": "the published Effect generator logs and completes statically",
       "files": ["tests/harness/npm-static.test.ts"],
       "owner": "ctate",

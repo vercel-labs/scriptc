@@ -1786,3 +1786,15 @@ ScrStream *scr_dyn_builtin_stream_unbox_stage(const ScrDyn *value, const ScrStr 
   if (bcs_of(value) && value->kind == SCR_DYN_OBJ) return scr_dyn_builtin_stream_unbox(value, message);
   return scr_stream_unbox_dyn_stage(value, message);
 }
+
+/* stream/consumers over an untyped value in programs that link this unit
+ * (the sc.source libCall): a constructor-function stream answers its
+ * runtime stream (+1); every other value as scr_stream_consumer_source
+ * does (a native stream, a web ReadableStream through Readable.from, or
+ * the compiled program's not-supported message). The consumer only reads,
+ * so an overridden write() or end() does not matter here. */
+ScrStream *scr_dyn_builtin_stream_consumer_source(const ScrDyn *value, const ScrStr *message) {
+  ScrStream *s = bcs_of(value);
+  if (s && value->kind == SCR_DYN_OBJ) return scr_stream_retain(s);
+  return scr_stream_consumer_source(value, message);
+}

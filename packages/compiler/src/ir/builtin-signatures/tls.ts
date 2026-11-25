@@ -91,6 +91,9 @@ export const tlsSignatures = defineLibFnSignatures({
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getTLSTicket(): the received session ticket as a dyn Buffer, or
+   * undefined (a server socket, or a client without one yet). */
+  "tls.sockGetTlsTicket": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
    * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()
@@ -146,4 +149,8 @@ export const tlsSignatures = defineLibFnSignatures({
    * set, then the trailing compiler-rendered fence — ALWAYS THROWS (the
    * error.nodeThrow polymorphic-result carve-out). May-throw seed. */
   "tls.caCertsChk": { argTypes: [DYN, STRING], result: VOID },
+  /** TLSSocket.on('keylog') and tls.Server.on('keylog'): Node's NSS
+   * key-log lines, each a Buffer. */
+  "tls.sockOnKeylog": { argTypes: [NETSOCKET_T, null, BOOL], result: VOID },
+  "tls.serverOnKeylog": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
 });

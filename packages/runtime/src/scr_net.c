@@ -533,6 +533,9 @@ struct ScrNetServer {
   /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
    * TLS unit for a handshake that fails */
   ScrNetLs client_error_ls;
+  /* listeners for events this server never fires ('keylog' on a plain
+   * server, any unknown name): Node's EventEmitter keeps them, inert */
+  ScrNetLs inert_ls;
   /* server.maxConnections (unset = undefined) and its 'drop' listeners */
   bool max_conns_set;
   double max_conns;
@@ -551,6 +554,9 @@ struct ScrNetServer {
   ScrNetNativeConnFn native_conn;
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* the native context's settle-time hook: releases the listeners the
+   * context owns that can no longer fire once the server settles */
+  void (*native_settle)(void *);
   /* the HTTP-parser ctx ALIAS (borrowed — owned through the native-conn
    * chain): late 'request' installs reach it even after a TLS wrap
    * replaced native_ctx (the https/http2 servers). NULL = no parser. */
@@ -844,6 +850,8 @@ typedef struct ScrNetTunnel {
   /* bytes a wrapped socket left unsent, which go out before the
    * transport's own; no response head is read */
   bool send_only;
+  ScrNetTunnelMsgFn msg_fn; /* the failure message formatter, or NULL */
+  void *msg_ctx;
 } ScrNetTunnel;
 
 /* The 'lookup' event's half of the runtime, installed by the first
@@ -908,6 +916,8 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_net_ls_drop(&s->timeout_ls);
     scr_net_ls_drop(&s->drop_ls);
     scr_net_ls_drop(&s->new_listener_ls);
+    scr_net_ls_drop(&s->inert_ls);
+    scr_net_ls_drop(&s->client_error_ls);
     scr_als_ctx_release(s->listen_ctx);
     scr_als_ctx_release(s->close_ctx);
     scr_closure_release(s->close_override);
@@ -2202,8 +2212,11 @@ static void scr_net_sock_tunnel_pump(ScrNetSocket *s) {
     if (end == 0) continue;
     int status = scr_net_tunnel_status(t->in, end);
     if (status != 200) {
-      char msg[128];
-      scr_net_tunnel_failure(status, msg, sizeof msg);
+      char msg[512];
+      if (t->msg_fn != NULL)
+        t->msg_fn(t->msg_ctx, status, t->in, end, msg, sizeof msg);
+      else
+        scr_net_tunnel_failure(status, msg, sizeof msg);
       scr_net_sock_tunnel_fail(s, msg);
       return;
     }
@@ -2865,6 +2878,13 @@ void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*bo
 void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/) {
   scr_closure_release(s->close_override);
   s->close_override = ov;
+}
+
+/* A listener for an event this server never fires (Node's EventEmitter
+ * keeps any event name): it stays registered and inert until the server
+ * settles, so listenerCount/removeListener see it as Node's would. */
+void scr_net_server_on_inert(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  scr_net_ls_add(&s->inert_ls, cb, fn, once);
 }
 
 void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
@@ -5056,6 +5076,32 @@ ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nul
 void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to) {
   if (from->wlen > from->whead) scr_net_sock_write_native(to, from->wbuf + from->whead, from->wlen - from->whead);
   scr_net_sock_wq_clear(from);
+}
+
+bool scr_net_sock_dial_pending(ScrNetSocket *s) { return s->dial_deferred; }
+
+/* Whether the peer has closed its side already: the FIN may sit in the kernel
+ * unread (a pooled keep-alive socket whose I/O has not run yet), so a plain
+ * socket is peeked. A TLS socket answers from its own EOF bookkeeping only.
+ * Every socket this file owns is non-blocking (FIONBIO / O_NONBLOCK at
+ * creation), so a bare MSG_PEEK never waits: Winsock has no MSG_DONTWAIT and
+ * answers WSAEWOULDBLOCK for the no-data case. */
+bool scr_net_sock_peer_closed(ScrNetSocket *s) {
+  if (s == NULL) return true;
+  if (s->rd_eof || s->close_emitted || s->emit_close) return true;
+  if (s->fd < 0 || s->connecting || s->tops != NULL) return false;
+  char c;
+#ifdef _WIN32
+  int n = recv((SOCKET)s->fd, &c, 1, MSG_PEEK);
+  if (n < 0) {
+    int e = (int)WSAGetLastError();
+    return e != WSAEWOULDBLOCK && e != WSAEINTR;
+  }
+#else
+  ssize_t n = recv(s->fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+  if (n < 0) return errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR;
+#endif
+  return n == 0; /* an orderly FIN is queued; pending data means the peer is open */
 }
 
 void scr_net_sock_dial_start(ScrNetSocket *s) {
@@ -8656,6 +8702,10 @@ void scr_net_server_set_native_conn(ScrNetServer *s, ScrNetNativeConnFn fn, void
   s->native_ctx_free = ctx_free;
 }
 
+void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *)) {
+  s->native_settle = fn;
+}
+
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *)) {
   s->proto_settle = fn;
 }
@@ -8743,15 +8793,24 @@ void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n) {
 
 /* ── the transport hooks (scr_tls.c) ─────────────────────────────────── */
 
-void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
-  if (s->fd < 0 || !s->connecting || s->tunnel != NULL) return;
+void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
+                                ScrNetTunnelMsgFn msg_fn, void *ctx) {
+  /* a deferred socket has no descriptor yet but is connecting: its CONNECT
+   * exchange runs when the dial starts (connect_done pumps the tunnel) */
+  if (!s->connecting || s->tunnel != NULL) return;
   ScrNetTunnel *t = calloc(1, sizeof *t);
   if (!t) scr_net_oom();
   t->out = malloc(len);
   if (!t->out) scr_net_oom();
   memcpy(t->out, request, len);
   t->out_len = len;
+  t->msg_fn = msg_fn;
+  t->msg_ctx = ctx;
   s->tunnel = t;
+}
+
+void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len) {
+  scr_net_sock_set_tunnel_ex(s, request, len, NULL, NULL);
 }
 
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx) {
@@ -9047,6 +9106,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
   scr_net_ls_drop(&srv->client_error_ls);
+  scr_net_ls_drop(&srv->inert_ls);
   scr_net_ls_drop(&srv->new_listener_ls);
   scr_net_ls_drop(&srv->drop_ls);
   /* listen({ signal }): the registration detaches at the close — readline's
@@ -9060,6 +9120,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
     scr_dyn_release(dispose);
   }
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
+  if (srv->native_settle && srv->native_ctx) srv->native_settle(srv->native_ctx);
   scr_net_server_unregister(srv);
 }
 
@@ -9327,6 +9388,12 @@ static void scr_net_sweep(void) {
         scr_net_ls_drop(&srv->listening_cbs);
         scr_net_ls_drop(&srv->timeout_ls);
         scr_net_ls_drop(&srv->new_listener_ls);
+        scr_net_ls_drop(&srv->inert_ls);
+        /* the protocol and native contexts own listeners too: settle them as
+         * a close does, so a listener capturing the server cannot keep it
+         * alive through them after the failed listen */
+        if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
+        if (srv->native_settle && srv->native_ctx) srv->native_settle(srv->native_ctx);
         scr_net_server_unregister(srv);
       }
       if (scr_exc_pending()) {

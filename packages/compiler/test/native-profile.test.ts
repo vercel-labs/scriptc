@@ -1,15 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
-import {
-  access,
-  lstat,
-  mkdtemp,
-  readFile,
-  readdir,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -329,6 +320,31 @@ async function emitReporting(dir: string, source: string, options: EmitOptions) 
 
 type ServerReply = { status: number; stdout: string; stderr: string };
 
+/** Connects to a Unix socket the helper is starting. The path appears when
+ * the helper binds, which can be a tick BEFORE it listens: a single connect
+ * in that window answers ECONNREFUSED (an observed startup race). Retry the
+ * connect itself — the only readiness signal that matters — for up to ten
+ * seconds instead of polling for the path and then connecting once. */
+function connectWhenListening(
+  path: string,
+  deadlineMs = 10_000,
+): Promise<ReturnType<typeof connect>> {
+  const deadline = Date.now() + deadlineMs;
+  return new Promise((resolve, reject) => {
+    const attempt = (): void => {
+      const connection = connect(path);
+      connection.once("connect", () => resolve(connection));
+      connection.once("error", (error: NodeJS.ErrnoException) => {
+        connection.destroy();
+        const transient = error.code === "ENOENT" || error.code === "ECONNREFUSED";
+        if (transient && Date.now() < deadline) setTimeout(attempt, 25);
+        else reject(error);
+      });
+    };
+    attempt();
+  });
+}
+
 /** Starts the helper as a server and sends `requests` to it in order on one
  * connection, the way a build sends its commands to a resident helper. */
 async function serveRequests(
@@ -343,20 +359,7 @@ async function serveRequests(
     server.exitCode === null ? server.once("exit", () => resolve()) : resolve(),
   );
   try {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await access(socket);
-        break;
-      } catch (error) {
-        if (attempt === 100) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    const connection = connect(socket);
-    await new Promise<void>((resolve, reject) => {
-      connection.once("connect", () => resolve());
-      connection.once("error", reject);
-    });
+    const connection = await connectWhenListening(socket);
     let pending = Buffer.alloc(0);
     let arrived: (() => void) | null = null;
     let closed: Error | null = null;

@@ -17,4 +17,14 @@ export const http2NeverThrow: readonly IrLibFn[] = [
   "http2.getPackedSettings0",
   // Copies the values a name has in a string pairs array.
   "http2.pairsValues",
+  "http2.statusMessageUnsupported",
+  "http2.statusMessageRead",
+  "http2.streamEndAfterHeaders",
+  "http2.streamBufferSize",
+  "http2.reqAuthority",
+  "http2.reqScheme",
+  "http2.streamSentHeaders",
+  "http2.streamSentInfoHeaders",
+  "http2.streamSentTrailers",
+  "http2.streamState",
 ];

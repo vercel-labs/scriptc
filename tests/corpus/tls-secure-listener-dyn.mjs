@@ -19,7 +19,9 @@ server.on("connection", () => events.push("connection"));
 server.on("secureConnection", (socket) => events.push(`secure:${socket.encrypted === true}`));
 server.once("secureConnection", () => events.push("secure once"));
 
-const path = "/tmp/scriptc-tls-dyn-secure.sock";
+/* one bind path per process: the differential and llvm-differential
+ * suites run this program at the same time in one job */
+const path = `/tmp/scriptc-tls-dyn-secure-${process.pid}.sock`;
 rmSync(path, { force: true });
 await new Promise((resolve) => server.listen(path, resolve));
 

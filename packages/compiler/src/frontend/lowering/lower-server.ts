@@ -1763,6 +1763,26 @@ export function lowerHttpResPropertyAssignment(
     return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(left.expression))?.kind !== "httpRes") return null;
   if (!lowerer.isStdlibMember(left)) return null;
+  if (
+    name === "statusMessage" &&
+    ts.symbolNameOf(lowerer.typeOf(left.expression).getSymbol()) === "Http2ServerResponse"
+  ) {
+    // HTTP/2 ignores a reason phrase; the receiver and value are still
+    // evaluated and the runtime reports Node's one-time UnsupportedWarning.
+    const receiver = coerceToHandle(lowerer, left.expression, HTTPRES_T);
+    const value = lowerer.coerceToExpected(lowerer.lowerExpr(right), DYN);
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "http2.statusMessageUnsupported",
+        args: [receiver, value],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
   const receiver = coerceToHandle(lowerer, left.expression, HTTPRES_T);
   const value =
     name === "statusCode"
@@ -2664,6 +2684,26 @@ function lowerNetServerMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // A tls or https server's NSS key-log lines: (line: Buffer). The
+      // listener takes the Buffer or nothing; a plain server never fires it.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.serverOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "newListener") {
       // Node's meta event, fired with the event name BEFORE a listener
       // joins its list (a handler that throws abandons the add).
@@ -2865,37 +2905,59 @@ function lowerNetServerMethodCall(
       // CONNECT and an Http2ServerResponse for valid traditional/extended
       // HTTP/2 CONNECT, so portless's union-typed listener selects the
       // protocol arm with `instanceof net.Socket`.
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "connect listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
       const sockParamOk = (t: IrType): boolean => {
         if (t.kind === "netSocket") return true;
         if (t.kind !== "union") return false;
         const def = lowerer.unions.get(t.unionId);
         return !!def && def.arms.some((a) => a.kind === "netSocket");
       };
+      /* The h2 arm of the socket slot carries no head bytes, so a listener
+       * that serves that arm declares `head` as `Buffer | undefined`; the
+       * adapter builds the matching union arm. */
+      const headUnionOk = (t: IrType): boolean => {
+        if (t.kind !== "union") return false;
+        const def = lowerer.unions.get(t.unionId);
+        return (
+          !!def &&
+          def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
+          def.arms.some((a) => a.kind === "undefinedT")
+        );
+      };
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's payload, like the request
+       * handler does: the socket (or the h2 compatibility response, which
+       * the h2 server's CONNECT hands over instead) and the head arrive as
+       * dynamic values, so one listener serves both arms. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "connect listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? sockParamOk(p)
+              : (p.kind === "bytes" && p.elem === "u8") || headUnionOk(p),
+        "use (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, DYN, DYN],
+          rejectValueReturn: true,
+        },
+      );
+      /* A listener that serves the h2 arm (the union socket slot) must not
+       * declare a bare Buffer head: the h2 arm has none, so the slot would
+       * be left without a value. */
       if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && !sockParamOk(p1)) ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
+        cb.type.kind === "func" &&
+        cb.type.params[1]?.kind === "union" &&
+        cb.type.params[2] !== undefined &&
+        cb.type.params[2]!.kind === "bytes"
       ) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "connect listeners whose parameters are not (req: IncomingMessage, socket: Socket — or a union carrying the Socket arm, the h2 compat shape, head: Buffer)",
+          "connect listeners whose third parameter is a bare Buffer on the h2 arm (declare it as `Buffer | undefined`)",
         );
       }
       return {
@@ -2912,33 +2974,26 @@ function lowerNetServerMethodCall(
       // socket over raw with the bytes read past the head, and destroys
       // the socket when no listener exists. Registration works on every
       // server kind (a parserless net server never fires it, like Node).
-      const cb = lowerer.lowerExpr(args[1]!);
-      if (cb.type.kind !== "func" || cb.type.params.length > 3) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners with more than three parameters (use (req, socket, head))",
-        );
-      }
-      if (cb.type.ret.kind !== "void") {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners returning a value (make the callback body a block)",
-        );
-      }
-      const [p0, p1, p2] = cb.type.params;
-      if (
-        (p0 !== undefined && p0.kind !== "httpReq") ||
-        (p1 !== undefined && p1.kind !== "netSocket") ||
-        (p2 !== undefined && !(p2.kind === "bytes" && p2.elem === "u8"))
-      ) {
-        lowerer.unsupported(
-          "SC1090",
-          args[1]!,
-          "upgrade listeners whose parameters are not (req: IncomingMessage, socket: Socket, head: Buffer)",
-        );
-      }
+      /* An untyped JavaScript listener (dyn parameters) crosses the
+       * checked-dynamic boundary with the event's (req, socket, head)
+       * payload, like the request handler does. */
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        args[1]!,
+        "upgrade listeners",
+        3,
+        (p, i) =>
+          i === 0
+            ? p.kind === "httpReq"
+            : i === 1
+              ? p.kind === "netSocket"
+              : p.kind === "bytes" && p.elem === "u8",
+        "use (req: IncomingMessage, socket: Socket, head: Buffer)",
+        {
+          dynTuple: [HTTPREQ_T, NETSOCKET_T, BYTES_U8],
+          rejectValueReturn: true,
+        },
+      );
       return {
         kind: "libCall",
         fn: "http.serverOnUpgrade",
@@ -3849,13 +3904,22 @@ function lowerNetSocketMethodCall(
       loc,
     };
   }
-  if ((name === "getProtocol" || name === "getCipher") && args.length === 0) {
+  if (
+    (name === "getProtocol" || name === "getCipher" || name === "getTLSTicket") &&
+    args.length === 0
+  ) {
     // TLSSocket.getProtocol(): "TLSv1.2"/"TLSv1.3" or null;
-    // getCipher(): { name, standardName, version }.
+    // getCipher(): { name, standardName, version }; getTLSTicket(): the
+    // received session ticket as a Buffer, or undefined.
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
     const value: IrExpr = {
       kind: "libCall",
-      fn: name === "getProtocol" ? "tls.sockGetProtocol" : "tls.sockGetCipher",
+      fn:
+        name === "getProtocol"
+          ? "tls.sockGetProtocol"
+          : name === "getCipher"
+            ? "tls.sockGetCipher"
+            : "tls.sockGetTlsTicket",
       args: [receiver],
       type: DYN,
       loc,
@@ -4224,6 +4288,27 @@ function lowerNetSocketMethodCall(
         loc,
       };
     }
+    if (event === "keylog") {
+      // TLSSocket's NSS key-log lines: each a Buffer holding
+      // "<LABEL> <client_random hex> <secret hex>\n"; a plain socket never
+      // fires it, like Node.
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "keylog listeners",
+        1,
+        (p) => p.kind === "bytes" && p.elem === "u8",
+        "use (line: Buffer) or ()",
+        [DYN],
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.sockOnKeylog",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "session") {
       // The received-ticket event: fires once per TLS client socket with
       // the serialized session (a Buffer); plain sockets never fire it.
@@ -4247,7 +4332,7 @@ function lowerNetSocketMethodCall(
     lowerer.noLowering(
       `socket.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
       args[0]!,
-      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", and "session" are the supported socket events (as literals)',
+      '"data", "end", "close", "error", "connect", "lookup", "connectionAttempt", "connectionAttemptFailed", "connectionAttemptTimeout", "ready", "timeout", "readable", "secureConnect", "secure", "session", and "keylog" are the supported socket events (as literals)',
     );
   }
   lowerer.noLowering(
@@ -5305,6 +5390,17 @@ export function lowerServerProperty(
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqSocket", args: [receiver], type: NETSOCKET_T, loc };
     }
+    if (name === "authority" || name === "scheme") {
+      // The HTTP/2 request's pseudo-headers.
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      return {
+        kind: "libCall",
+        fn: name === "authority" ? "http2.reqAuthority" : "http2.reqScheme",
+        args: [receiver],
+        type: STRING,
+        loc,
+      };
+    }
     if (name === "httpVersion") {
       const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
       return { kind: "libCall", fn: "http.reqHttpVersion", args: [receiver], type: STRING, loc };
@@ -5382,11 +5478,23 @@ export function lowerServerProperty(
           loc,
         };
       }
-      lowerer.noLowering(
-        "reading 'stream' from a request outside a method call",
-        expr,
-        "call req.stream methods directly; optional calls remain undefined on HTTP/1 and use the live stream on HTTP/2",
-      );
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPREQ_T);
+      const unionType: IrType = {
+        kind: "union",
+        unionId: lowerer.unions.intern([HTTP2STREAM_T, UNDEFINED_T]),
+      };
+      const optional: IrExpr = {
+        kind: "libCall",
+        fn: "http.reqH2Stream",
+        args: [receiver],
+        type: unionType,
+        loc,
+      };
+      // A plain read keeps the HTTP/1 undefined arm: on an allowHTTP1
+      // server req.stream is Node's undefined there, so a presence test,
+      // a binding or a nullish default sees it (the direct-call forms
+      // above still throw JS's member TypeError for it).
+      return optional;
     }
     if (name === "session") {
       // Http2ServerRequest's h2-only members are not exposed through the
@@ -5793,6 +5901,31 @@ export function lowerServerProperty(
     lowerer.isStdlibMember(expr) &&
     expr.name.text === "statusMessage"
   ) {
+    // HTTP/2 has no reason phrase: the compat response answers "", and the
+    // first read reports Node's one-time UnsupportedWarning (next tick).
+    // The receiver expression is still evaluated.
+    if (ts.symbolNameOf(lowerer.typeOf(expr.expression).getSymbol()) === "Http2ServerResponse") {
+      const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "http2.statusMessageRead",
+              args: [receiver],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: { kind: "strLit", value: "", type: STRING, loc },
+        type: STRING,
+        loc,
+      };
+    }
     // Unset until the head is sent; then the assigned or default reason.
     const receiver = coerceToHandle(lowerer, expr.expression, HTTPRES_T);
     return {
@@ -5903,6 +6036,33 @@ export function lowerServerProperty(
       return { kind: "libCall", fn: "http2.streamPending", args: [recv()], type: BOOL, loc };
     if (m === "headersSent")
       return { kind: "libCall", fn: "http2.streamHeadersSent", args: [recv()], type: BOOL, loc };
+    if (m === "sentHeaders" || m === "sentInfoHeaders" || m === "sentTrailers" || m === "state") {
+      const fn: IrLibFn =
+        m === "sentHeaders"
+          ? "http2.streamSentHeaders"
+          : m === "sentInfoHeaders"
+            ? "http2.streamSentInfoHeaders"
+            : m === "sentTrailers"
+              ? "http2.streamSentTrailers"
+              : "http2.streamState";
+      return { kind: "libCall", fn, args: [recv()], type: DYN, loc };
+    }
+    if (m === "endAfterHeaders")
+      return {
+        kind: "libCall",
+        fn: "http2.streamEndAfterHeaders",
+        args: [recv()],
+        type: BOOL,
+        loc,
+      };
+    if (m === "bufferSize")
+      return {
+        kind: "libCall",
+        fn: "http2.streamBufferSize",
+        args: [recv()],
+        type: F64,
+        loc,
+      };
     if (m === "session")
       return {
         kind: "libCall",
@@ -6793,6 +6953,23 @@ function lowerHttpModuleCall(
       loc,
     };
   }
+  if (bi.member === "setGlobalProxyFromEnv") {
+    requireStatementPosition(lowerer, expr, "http.setGlobalProxyFromEnv(...)");
+    const args = expr.arguments.nodes;
+    if (args.length > 1 || args.some((a) => ts.isSpreadElement(a))) {
+      lowerer.noLowering(
+        "http.setGlobalProxyFromEnv arguments",
+        expr,
+        "pass at most one proxy-environment object",
+      );
+    }
+    let env: IrExpr = dynUndefinedExpr(loc);
+    if (args.length === 1) {
+      const value = lowerer.lowerExpr(args[0]!);
+      env = value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    }
+    return { kind: "libCall", fn: "http.setGlobalProxyFromEnv", args: [env], type: VOID, loc };
+  }
   if (bi.member === "setMaxIdleHTTPParsers") {
     // Node sizes a pool of idle parser objects; the compiled parser is
     // per-connection state, so the call validates its argument like
@@ -7066,6 +7243,7 @@ const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
 const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  "ALPNCallback",
   "ALPNProtocols",
   "minVersion",
   "maxVersion",
@@ -10954,6 +11132,8 @@ function lowerHttpResMethodCall(
     // res.writeHead(...).end(...)): statement position keeps the plain
     // void call; a consumed result (or a statusMessage prefix) rides the
     // receiver-returning helper.
+    const h2Res =
+      ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol()) === "Http2ServerResponse";
     const headResult = (fn: IrLibFn, callArgs: IrExpr[]): IrExpr => {
       if (msg === null && ts.isExpressionStatement(call.parent)) {
         return { kind: "libCall", fn, args: callArgs, type: VOID, loc };
@@ -10961,10 +11141,18 @@ function lowerHttpResMethodCall(
       if (msg === null) return receiverReturningCall(lowerer, fn, callArgs, HTTPRES_T, loc);
       // With a message the helper's parameter list gains the msg at slot
       // 1 (feeding the resStatusMsgSet prefix); the head call itself
-      // re-selects around it.
-      const withMsg = [callArgs[0]!, msg, ...callArgs.slice(1)];
+      // re-selects around it. An HTTP/2 response has no reason phrase: the
+      // value is evaluated, the runtime warns once, and nothing is stored.
+      const withMsg = [
+        callArgs[0]!,
+        h2Res ? lowerer.coerceToExpected(msg, DYN) : msg,
+        ...callArgs.slice(1),
+      ];
       return receiverReturningCall(lowerer, fn, withMsg, HTTPRES_T, loc, {
-        prefix: { fn: "http.resStatusMsgSet", argIndices: [0, 1] },
+        prefix: {
+          fn: h2Res ? "http2.statusMessageUnsupported" : "http.resStatusMsgSet",
+          argIndices: [0, 1],
+        },
         mainArgIndices: [0, ...callArgs.slice(1).map((_, i) => i + 2)],
       });
     };

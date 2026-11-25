@@ -1,10 +1,24 @@
 #include "scr_message.h"
 #include "scr_mailbox.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 const ScrMessagePortOps *scr_message_port_ops = NULL;
+
+/* SCRIPTC_PUBLISH_TRACE is a diagnostic switch checked on every publish. An
+ * environment read takes the process lock, so read it once per process, like
+ * SCRIPTC_PUBLISH below. */
+static atomic_int scr_message_publish_trace = -1;
+static bool scr_message_trace_publish(void) {
+  int traced = atomic_load_explicit(&scr_message_publish_trace, memory_order_relaxed);
+  if (traced < 0) {
+    traced = scr_getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+    atomic_store_explicit(&scr_message_publish_trace, traced, memory_order_relaxed);
+  }
+  return traced != 0;
+}
 
 typedef struct {
   const char *key;
@@ -447,7 +461,7 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
                       : input->v.typed_ref.array   ? 1
                                                    : 0),
     };
-    if (getenv("SCRIPTC_PUBLISH_TRACE"))
+    if (scr_message_trace_publish())
       fprintf(stderr, "scriptc: published %.*s shared by reference\n", (int)input->v.typed_ref.type_key_len,
               input->v.typed_ref.type_key);
     return id;
@@ -765,7 +779,7 @@ static int scr_publish_enabled = -1;
 
 static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
   if (scr_publish_enabled < 0) {
-    const char *env = getenv("SCRIPTC_PUBLISH");
+    const char *env = scr_getenv("SCRIPTC_PUBLISH");
     scr_publish_enabled = !(env && env[0] == '0');
   }
   if (!scr_publish_enabled || (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR)) return NULL;
@@ -803,10 +817,10 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
     message->readable = true;
     message->nodes[0].kind = SCR_MESSAGE_PUBLISHED;
     message->nodes[0].v.published = (ScrDyn *)value;
-    if (getenv("SCRIPTC_PUBLISH_TRACE"))
+    if (scr_message_trace_publish())
       fprintf(stderr, "scriptc: published %zu nodes zero-copy%s\n", p.count,
               value->rc == SIZE_MAX && !p.count ? " (already published)" : "");
-  } else if (getenv("SCRIPTC_PUBLISH_TRACE")) {
+  } else if (scr_message_trace_publish()) {
     fprintf(stderr, "scriptc: graph not deeply frozen plain data; cloned\n");
   }
   free(p.nodes);

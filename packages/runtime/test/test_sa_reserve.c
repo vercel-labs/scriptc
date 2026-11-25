@@ -12,6 +12,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef SCR_WORKERS
+/* The allocator reads its tunables through the locked environment accessor.
+ * This harness links no script context, and the window contract does not
+ * involve the environment: answer through the platform getenv, leave the
+ * lock a no-op. */
+const char *scr_context_getenv(const char *name) { return getenv(name); }
+void scr_context_env_process_lock(void) {}
+void scr_context_env_process_unlock(void) {}
+#endif
 #include <sys/resource.h>
 
 #define COUNT 400000

@@ -29,6 +29,14 @@ declare namespace __scrLocalNs {
   const z: number;
 }
 
+// These erase too, but the names are Node's own globals: the identifier
+// still resolves to the global object at run time, so typeof answers what
+// Node has there (`declare class Buffer {}` names Node's Buffer).
+declare class Buffer {}
+declare function fetch(input: string): Promise<unknown>;
+declare const process: { env: Record<string, string> };
+declare const navigator: { userAgent: string };
+
 console.log(
   typeof __scrTypedVar,
   typeof __scrTypedFn,
@@ -37,6 +45,9 @@ console.log(
   typeof __scrTypedEnum,
 );
 console.log(typeof __scrLocalClass, typeof __scrLocalEnum, typeof __scrLocalNs);
+console.log(typeof Buffer, typeof fetch, typeof process, typeof navigator);
+if (typeof Buffer === "undefined") console.log("buffer absent");
+else console.log("buffer present");
 if (typeof __scrTypedNs === "undefined") console.log("namespace absent");
 const absent = typeof __scrTypedClass !== "undefined";
 console.log(absent, typeof __scrTypedClass === "function");

@@ -461,8 +461,23 @@ function lowerTypeofAnswer(
       ambientErasedValueSymbolOf(lowerer, tested) ||
       ambientTypesOnlyGlobalSymbolOf(lowerer, tested)
     ) {
-      if (!programMayWriteGlobalName(lowerer, tested.text, tested))
-        return { kind: "strLit", value: "undefined", type: STRING, loc };
+      if (!programMayWriteGlobalName(lowerer, tested.text, tested)) {
+        // The erased declaration leaves the identifier to the global
+        // object at run time. A name Node's global object defines answers
+        // that value's kind (`declare class Buffer {}` still names Node's
+        // global Buffer); only a name the global object lacks is
+        // unresolvable.
+        const kind = nodeGlobalKind(tested.text);
+        if (kind !== null) {
+          const answer = kind.kind === "function" ? "function" : kind.type;
+          // An accessor that throws or a platform-dependent value has no
+          // static typeof answer; the runtime read below answers it.
+          if (answer !== "throws" && answer !== "platform")
+            return { kind: "strLit", value: answer, type: STRING, loc };
+        } else {
+          return { kind: "strLit", value: "undefined", type: STRING, loc };
+        }
+      }
       return {
         kind: "libCall",
         fn: "dyn.typeof",

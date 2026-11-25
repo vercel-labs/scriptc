@@ -1841,6 +1841,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "readable.resume": "scr_stream_resume",
   "readable.isPaused": "scr_stream_is_paused",
   "readable.setEncoding": "scr_stream_set_encoding",
+  "readable.setEncodingOption": "scr_stream_set_encoding_option",
   "readable.encodingName": "scr_stream_set_encoding_name",
   "stream.getDefaultHwm": "scr_stream_get_default_hwm",
   "stream.setDefaultHwm": "scr_stream_set_default_hwm",
@@ -2192,6 +2193,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "sp.finished": "scr_sp_finished",
   // stream/consumers' promise consumers (+1 promises; may-throw pending
   // check — the 'newListener' meta emit can run user code).
+  "sc.source": "scr_stream_consumer_source",
   "sc.text": "scr_sc_text",
   "sc.json": "scr_sc_json",
   "sc.buffer": "scr_sc_buffer",
@@ -2598,6 +2600,7 @@ export const USES_TIMERS_LIB_FNS = new Set<IrLibFn>([
   "readable.read",
   "readable.readDyn",
   "readable.setEncoding",
+  "readable.setEncodingOption",
   "readable.nextChunk",
   "readable.nextChunkDyn",
   "readable.fromArr",

@@ -4048,8 +4048,9 @@ export const BUILTIN_MODULE_FENCE_HINTS: Record<
   },
   crypto: {
     setFips:
-      "a compiled binary has no FIPS provider to enable, and Node itself throws on setFips(true) " +
-      "in a non-FIPS build — getFips() answers 0 here",
+      "a compiled binary has no OpenSSL property query to switch: on a build without a FIPS provider, " +
+      "Node's setFips(true) succeeds, getFips() answers 1, and later crypto fetches fail with " +
+      "ERR_OSSL_EVP_UNSUPPORTED, so this runtime cannot match it — getFips() answers 0 here",
   },
   http2: {
     connect:

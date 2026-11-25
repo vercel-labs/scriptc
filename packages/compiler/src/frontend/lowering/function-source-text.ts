@@ -24,6 +24,7 @@ import { sourceTextRange, tokenStartOfNode } from "../ts7/node-functions.js";
 import { isThisParameter } from "./call-signatures.js";
 import type { IrFunction, IrLibFn, SrcLoc } from "../../ir/ir.js";
 import { everyStmtList } from "../../ir/traverse.js";
+import type { FunctionCensus } from "./function-census.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** The library calls that turn a dynamic value into text. A function boxed
@@ -94,8 +95,24 @@ export function noteFunctionSourceNode(lowerer: Lowerer, fn: IrFunction, node: t
 export function finalizeFunctionSourceText(
   lowerer: Lowerer,
   functions: readonly IrFunction[],
+  census: FunctionCensus,
 ): void {
   if (lowerer.functionSourceLocs.size === 0) return;
+  // Only a dynamic value converted to text prints a function's own text. The
+  // census answers whether any body holds such a conversion without walking
+  // every body; the boxed-function walk below runs only when one does.
+  let converts = false;
+  for (const fn of functions) {
+    if (
+      census.hasExpr(fn, "toString") ||
+      census.hasExpr(fn, "dynInvoke") ||
+      census.hasAnyLibFn(fn, TEXT_CONVERSIONS)
+    ) {
+      converts = true;
+      break;
+    }
+  }
+  if (!converts) return;
   const boxed = boxedFunctionNames(functions);
   if (boxed === null) return;
   // A generic function or arrow is lowered again for each instantiation, as

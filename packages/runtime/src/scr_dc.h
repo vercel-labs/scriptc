@@ -70,12 +70,13 @@ ScrDyn *scr_dc_tc_trace_sync(double h, ScrDyn *fn, ScrDyn *ctx, ScrDyn *this_arg
 ScrDyn *scr_dc_tc_trace_callback(double h, ScrDyn *fn, double position, ScrDyn *ctx,
                                   ScrDyn *this_arg, ScrDyn *args);
 /* bindStore / runStores (the AsyncLocalStorage integration): per-store
- * SET semantics (a re-bind replaces the transform; a non-function
- * transform means identity); runStores enters every bound store with
- * transform(data), publishes inside the entered contexts, runs fn with
- * thisArg bound and arguments forwarded, and restores in reverse. The
- * tracing choreography enters the start channel's stores around
- * traceSync/traceCallback/tracePromise bodies and the asyncStart
+ * SET semantics (a re-bind replaces the transform in place, and only an
+ * undefined transform means identity); runStores enters the bound stores in
+ * reverse binding order (Node wraps them in insertion order, which makes
+ * the last-bound store outermost), publishes inside the entered contexts,
+ * runs fn with thisArg bound and arguments forwarded, and restores in
+ * reverse. The tracing choreography enters the start channel's stores
+ * around traceSync/traceCallback/tracePromise bodies and the asyncStart
  * channel's around traceCallback's wrapped callback. */
 void scr_dc_chan_bind_store(double handle, double als_id, ScrDyn *transform);
 bool scr_dc_chan_unbind_store(double handle, double als_id);

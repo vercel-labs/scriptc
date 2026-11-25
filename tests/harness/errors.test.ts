@@ -3796,7 +3796,11 @@ refuse("assign", () => Object.assign(Date.prototype, { getTime: () => 42 }));
 // its named fence when it runs. An X448 call that the key's usage refuses
 // still reports Node's ExperimentalWarning as the algorithm normalizes.
 // Node's own rejections (unknown names, bad usages) are corpus-pinned
-// (6292, 6294); these refusals have no Node twin, so they live here.
+// (6292, 6294); these refusals had no Node twin, so they live here.
+// Asymmetric wrapKey/unwrapKey is no longer one of them: it exports the key
+// and wraps (or unwraps and imports) its encoding, so the two ECDSA attempts
+// below now reach Node's own OperationError for an encoding AES-KW cannot
+// take (corpus-pinned too, in webcrypto-wrap-asymmetric.ts).
 describe("WebCrypto refusals (JS lane)", () => {
   test("recognized algorithms outside the lowered ones reject with SC2020", async () => {
     const r = await compileAndRun(
@@ -3843,10 +3847,10 @@ await attempt("unwrap an ecdsa key", () =>
         "cshake TypeError ERR_MISSING_OPTION Failed to normalize algorithm: passed algorithm cannot be converted to 'CShakeParams' because 'outputLength' is required in 'CShakeParams'.\n" +
         "x448 bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
         "ecdh bits InvalidAccessError 15 baseKey does not have deriveBits usage\n" +
-        "rsa-oaep wrap Error SC2020 crypto.subtle.wrapKey with the RSA-OAEP algorithm is not supported yet\n" +
-        "wrap an ecdsa key Error SC2020 crypto.subtle.wrapKey with an ECDSA, Ed25519 or RSA key is not supported yet\n" +
+        "rsa-oaep wrap InvalidAccessError 15 Key algorithm mismatch\n" +
+        "wrap an ecdsa key OperationError 0 The operation failed for an operation-specific reason\n" +
         "wrap with an ecdsa key InvalidAccessError 15 Key algorithm mismatch\n" +
-        "unwrap an ecdsa key Error SC2020 crypto.subtle.unwrapKey with the ECDSA algorithm is not supported yet\n",
+        "unwrap an ecdsa key OperationError 0 The operation failed for an operation-specific reason\n",
     );
   });
 

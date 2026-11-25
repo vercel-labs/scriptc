@@ -138,7 +138,7 @@ test("the sanitized three.js nodes build leaves the Linux corpus for its own job
       "${{ github.workspace }}/tests/harness/lsan.supp",
     ),
   );
-  expect(job.steps.at(-1)!.run).toBe(
+  expect(lastRun(job)).toBe(
     `pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"`,
   );
 });
@@ -178,8 +178,9 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   const job = jobs["native_frontend_san"]!;
   expect(job).toBeDefined();
   expect(job["runs-on"]).toBe("ubuntu-24.04");
+  // The queue leaves the sanitized shards to the push to main, which runs this job.
   expect(job.if).toBe(
-    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}",
+    "${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' && needs.lanes.outputs.queue != 'true' }}",
   );
   expect(job.needs).toEqual(expect.arrayContaining(["validation_scope", "lanes", "native_linux"]));
   expect(job["timeout-minutes"]).toBeGreaterThanOrEqual(30);
@@ -191,7 +192,7 @@ test("the sanitized native frontend builds run in a dedicated required job", () 
   );
   // Two cores: the sanitized build starts one clang per core, and four of them beside the
   // compile in Node need more than the runner's 16 GB.
-  expect(job.steps.at(-1)!.run).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
+  expect(lastRun(job)).toBe("taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}");
   expect(jobs["test"]!.needs).toContain("native_frontend_san");
 });
 
@@ -501,13 +502,17 @@ function expand(value: string, context: { event: string; macosSuite: string | nu
   );
 }
 
+/** The last step that runs a command: a job may end with an upload step that only keeps a report. */
+const lastRun = (job: { steps: { run?: string }[] }) =>
+  job.steps.filter((step) => step.run !== undefined).at(-1)!.run;
+
 test("pull requests run the full suite on Linux and the darwin suite on macOS", () => {
   type Job = {
     "runs-on": string;
     needs: string[];
     strategy: {
       matrix: {
-        flavor: string[];
+        flavor: string | string[];
         shard: number[] | string;
         exclude?: { flavor: string; shard: number }[];
       };
@@ -524,19 +529,43 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(linux.needs).toContain("native_linux");
   // The sanitized shards are the lane's long pole, so they run thirty slices
   // while the plain lane keeps twenty; the exclusions leave exactly that.
-  expect(linux.strategy.matrix.shard).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
   expect(linux.strategy.matrix.exclude).toEqual(
     Array.from({ length: 10 }, (_, index) => ({ flavor: "plain", shard: 21 + index })),
   );
+  // The matrix follows the run's tier: the queue runs the plain shards its plan reports, a push to main the
+  // sanitized shards, and a full run both flavors. Evaluate each expression for a tier.
+  const linuxMatrix = (tier: "queue" | "post" | "full") => {
+    const queue = tier === "queue" ? "true" : "false";
+    const post = tier === "post" ? "true" : "false";
+    const plan = JSON.stringify(JSON.stringify(Array.from({ length: 20 }, (_, i) => i + 1)));
+    const evaluate = (value: string): unknown => {
+      const single = /^\$\{\{(.*)\}\}$/s.exec(value);
+      expect(single, value).not.toBeNull();
+      const expression = single![1]!
+        .replaceAll("needs.lanes.outputs.queue", JSON.stringify(queue))
+        .replaceAll("needs.lanes.outputs.post", JSON.stringify(post))
+        .replaceAll("needs.queue_plan.outputs.plain_shards", plan)
+        .replaceAll("fromJSON", "JSON.parse");
+      return new Function(`return (${expression});`)();
+    };
+    return {
+      flavor: evaluate(String(linux.strategy.matrix.flavor)) as string[],
+      shard: evaluate(String(linux.strategy.matrix.shard)) as number[],
+    };
+  };
+  const all = (count: number) => Array.from({ length: count }, (_, i) => i + 1);
+  expect(linuxMatrix("queue")).toEqual({ flavor: ["plain"], shard: all(20) });
+  expect(linuxMatrix("post")).toEqual({ flavor: ["san"], shard: all(30) });
+  expect(linuxMatrix("full")).toEqual({ flavor: ["plain", "san"], shard: all(30) });
   const shardsOf = (flavor: string): number[] =>
-    linux.strategy.matrix.shard.filter(
+    linuxMatrix("full").shard.filter(
       (shard) =>
         !linux.strategy.matrix.exclude!.some(
           (entry) => entry.flavor === flavor && entry.shard === shard,
         ),
     );
-  expect(shardsOf("plain")).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
-  expect(shardsOf("san")).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+  expect(shardsOf("plain")).toEqual(all(20));
+  expect(shardsOf("san")).toEqual(all(30));
   expect(linux.env["SCRIPTC_TEST_SHARD"]).toBe(
     "${{ matrix.shard }}/${{ matrix.flavor == 'san' && '30' || '20' }}",
   );
@@ -574,15 +603,16 @@ test("pull requests run the full suite on Linux and the darwin suite on macOS", 
   expect(coreStep).toBeLessThan(linux.steps.length - 1);
   // Linux runs the suites in a memory-capped scope where systemd manages the
   // runner, and directly elsewhere.
-  const linuxRun = linux.steps.at(-1)!.run as string;
+  const linuxRun = lastRun(linux) as string;
   expect(linuxRun.startsWith("ulimit -c 0\n")).toBe(true);
   expect(linuxRun).toContain("systemd-run --scope --quiet -p MemoryMax=15G -p OOMPolicy=continue");
   expect(linuxRun).toMatch(
     /-- env PATH="\$PATH" HOME="\$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts\/ci-test\.mjs\n/,
   );
   expect(linuxRun.endsWith("fi\nnode scripts/ci-test.mjs\n")).toBe(true);
-  expect(macos.steps.at(-1)!.run).toBe("node scripts/ci-test.mjs");
-  for (const job of [linux, macos]) expect(job.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(lastRun(macos)).toBe("node scripts/ci-test.mjs");
+  expect(macos.strategy.matrix.flavor).toEqual(["plain", "san"]);
+  expect(typeof linux.strategy.matrix.flavor).toBe("string");
 });
 
 test("CI rejects malformed scheduling inputs", () => {

@@ -789,6 +789,11 @@ export function prepareNativeLibrary(
     sanitizeAttributes: options.sanitize === true,
     timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
+    // A dev library carries the sources a dev executable does, so native
+    // debuggers and stack frames name the TypeScript lines.
+    ...(carriesDebugSources(profile.optimization, false)
+      ? { debugSources: prepared.sourceTexts }
+      : {}),
   });
   timing("llvm-emit");
   const input: NativeExecutableInput = {

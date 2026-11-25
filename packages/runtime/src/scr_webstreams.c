@@ -6415,9 +6415,45 @@ WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws
 
 static SCR_TL bool ws_installed;
 
+/* Defined by the stream unit; weak so a web-streams-only link stays valid. */
+extern ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) __attribute__((weak));
+
+/* The pair adaptation the hook answers with lives in the stream unit too
+ * (a program that reaches it links streams, web streams and the dyn tier),
+ * so the reference is weak: the hook is only called from the stream unit,
+ * which links this one with it. */
+extern ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) __attribute__((weak));
+
+static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
+  if (value == NULL) return NULL;
+  ScrDyn *view = NULL;
+  const ScrDyn *target = value;
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    view = scr_dyn_typed_ref_materialize(value); /* +1 */
+    if (!view) return NULL;
+    target = view;
+  }
+  ScrDyn *readable = scr_dyn_obj_read(target, "readable", 8);
+  ScrDyn *writable = scr_dyn_obj_read(target, "writable", 8);
+  bool pair = readable != NULL && readable->kind == SCR_DYN_HANDLE &&
+              (readable->v.handle.tag == SCR_DYNH_WS_READABLE ||
+               readable->v.handle.tag == SCR_DYNH_WEB_STREAM) &&
+              writable != NULL && writable->kind == SCR_DYN_HANDLE &&
+              (writable->v.handle.tag == SCR_DYNH_WS_WRITABLE ||
+               writable->v.handle.tag == SCR_DYNH_WEB_WRITABLE);
+  if (readable) scr_dyn_release(readable);
+  if (writable) scr_dyn_release(writable);
+  ScrStream *out = NULL;
+  if (!scr_exc_pending() && pair && scr_stream_duplex_from_web != NULL)
+    out = scr_stream_duplex_from_web((ScrDyn *)target, flags);
+  if (view) scr_dyn_release(view);
+  return out;
+}
+
 static void ws_install(void) {
   if (ws_installed) return;
   ws_installed = true;
+  if (&scr_stream_web_pair_hook != NULL) scr_stream_web_pair_hook = ws_stream_web_pair;
   /* Symbol.asyncIterator, which the streams answer async iteration by
    * (scr_dyn_iterable_kind, for await). */
   ScrStr *name = scr_str_new("asyncIterator", 13);

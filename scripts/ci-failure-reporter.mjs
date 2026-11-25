@@ -6,7 +6,8 @@
 //   "other": ["descriptions of unhandled errors, failed hooks, failures outside a test's body and files that
 //             failed outside their tests"] }
 
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { relative } from "node:path";
 
 const describe = (error) => String(error?.message ?? error).split("\n", 1)[0];
@@ -46,13 +47,20 @@ export function failureReport(testModules, unhandledErrors = [], root = process.
 }
 
 export default class CiFailureReporter {
-  constructor({ path = process.env.SCRIPTC_CI_FAILURES, root = process.cwd() } = {}) {
+  constructor({
+    path = process.env.SCRIPTC_CI_FAILURES ??
+      (process.env.SCRIPTC_CI_FAILURE_ARCHIVE
+        ? join(process.env.SCRIPTC_CI_FAILURE_ARCHIVE, "report.json")
+        : undefined),
+    root = process.cwd(),
+  } = {}) {
     this.path = path;
     this.root = root;
   }
 
   onTestRunEnd(testModules, unhandledErrors, reason) {
     if (!this.path) return;
+    mkdirSync(dirname(this.path), { recursive: true });
     writeFileSync(
       this.path,
       JSON.stringify(failureReport(testModules, unhandledErrors, this.root, reason)),

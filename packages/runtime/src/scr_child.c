@@ -3960,7 +3960,7 @@ static ScrSpawnRes *scr_spawn_sync_core_ext(ScrStr *cmd, ScrArr *args, double ti
   ScrArr *run_args = args;
   ScrArr *shell_args = NULL;
   if (shell) {
-    const char *comspec = getenv("COMSPEC");
+    const char *comspec = scr_getenv("COMSPEC");
     if (comspec == NULL || *comspec == '\0') comspec = "cmd.exe";
     run_cmd = scr_str_new(comspec, strlen(comspec));
     shell_args = scr_arr_new(SCR_ELEM_STR, 4);
@@ -9933,6 +9933,10 @@ static void scr_ipc_settle(ScrIpc *ipc) {
   }
   scr_child_stream_drain_now(ipc->reader);
   if (!scr_exc_pending()) scr_ipc_service_one(ipc);
+  /* The process is gone. Node's channel answers isConnected() false and send() false from the 'exit' event on,
+   * even when the pipe's EOF has not been read yet; on macOS the read ordering otherwise leaves it connected and
+   * a send issued from the 'exit' listener reports success. */
+  ipc->connected = false;
 }
 
 /* Node's 'close' waits for the channel's EOF read, not for 'disconnect':

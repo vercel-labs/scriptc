@@ -667,3 +667,64 @@ test("disabled early library cache performs no reads or writes", async () => {
   await expect(readdir(f.root)).rejects.toThrow();
   expect(await readEarlyLibraryCache(null, f.options, null)).toBeNull();
 });
+
+test("a dev library reuses cached LLVM only when an edit keeps source positions", async () => {
+  const f = await fixture();
+  const sourceBefore = "export function value(): number { return 1; }\n";
+  await writeFile(f.source, sourceBefore);
+  const returnStart = sourceBefore.indexOf("return");
+  const semanticMod = {
+    irVersion: 17,
+    sourceFile: f.source,
+    functions: [
+      {
+        name: "__main",
+        params: [],
+        returnType: { kind: "void" },
+        locals: [],
+        body: [],
+        loc: { file: f.source, start: returnStart, end: returnStart + 6 },
+      },
+    ],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadSource(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      bigint: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      x509: false,
+      copying: false,
+      textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
+      dynInvoke: false,
+      fnMemberProps: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+  });
+
+  // A comment whose text changes on the same line leaves every token where
+  // it was, so the cached translation unit's debugger locations still hold.
+  await writeFile(f.source, "export function value(): number { return 1; } // note\n");
+  const kept = await readSemanticLibraryCache(f.root, f.options, null, true);
+  expect(kept).not.toBeNull();
+  expect(kept?.translationUnit).toBe("; generated llvm\n");
+
+  // A comment inserted above the line moves every token down a line: the
+  // cached debugger locations and stack-frame line numbers are stale.
+  await writeFile(f.source, `// inserted comment\n${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null, true)).toBeNull();
+});

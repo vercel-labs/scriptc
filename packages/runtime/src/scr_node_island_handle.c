@@ -1595,13 +1595,10 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
       return NULL;
     }
     if (ref->flags & SCR_NVF_ERROR) {
-      /* An island error the program already holds as an error (it caught
-       * it, or took it as a callback's argument) is that error again
-       * however it arrives, so the round trip of an island error through
-       * the program and back is the identity, as a native error's is. On
-       * another thread it is the error that thread holds for it (a pin
-       * names the thread that made its object). */
-      ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+      /* A V8 error representing a native error comes back as that native
+       * error. Island-origin Errors keep their handles even when a typed
+       * caller also holds a pinned view. */
+      ScrError *pinned = nh_pinned_obj(ref, NH_PIN_NATIVE_ERROR);
       if (pinned != NULL) {
         nh_ref_release(ref);
         ScrDyn *d = scr_dyn_from_error(pinned);
@@ -1663,15 +1660,11 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
 
 /* The ScrError of an island Error handle (+1): the one already pinned to
  * it, else a new one of the nearest intrinsic class, pinned. */
-static ScrError *nh_error_of(const ScrNodeValue *v) {
-  ScrNodeRef *ref = nh_ref_in(v->u.handle, v->flags);
+static ScrError *nh_error_of_ref(ScrNodeRef *ref) {
   ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
   /* The V8 error of a linked native error: that error. */
   if (pinned == NULL) pinned = nh_pinned_obj(ref, NH_PIN_NATIVE_ERROR);
-  if (pinned != NULL) {
-    nh_ref_release(ref);
-    return pinned; /* the lookup's reference is the caller's */
-  }
+  if (pinned != NULL) return pinned; /* the lookup's reference is the caller's */
   NhErrorInfo ni;
   nh_error_info(ref->id, &ni);
   ScrNodeErrorInfo info = ni.info;
@@ -1712,21 +1705,37 @@ static ScrError *nh_error_of(const ScrNodeValue *v) {
   }
   nh_error_info_free(&ni);
   nh_pin(e, NH_PIN_ERROR, ref);
-  nh_ref_release(ref);
   return e;
 }
 
-/* An argument of a native callback (scr_node_island_export.c): island
- * Errors arrive as their pinned ScrError, as thrown ones do, so typed code
- * sees `instanceof RangeError`, `message` and `code`. +1. */
-ScrDyn *scr_ni_arg_in(const ScrNodeValue *v) {
-  if (v->tag == SCR_NV_HANDLE && (v->flags & SCR_NVF_ERROR)) {
-    ScrError *e = nh_error_of(v);
-    ScrDyn *d = scr_dyn_from_error(e);
-    scr_error_release(e);
-    return d;
-  }
-  return scr_ni_value_in(v);
+/* A checked conversion borrows the ref already held by its handle. It did
+ * not receive another bridge value, so it must not consume a worker's
+ * routed-ref slot a second time. */
+static ScrError *nh_dyn_error_of(const ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  return ref != NULL && (ref->flags & SCR_NVF_ERROR) ? nh_error_of_ref(ref) : NULL;
+}
+
+static bool nh_error_instanceof(const ScrDyn *value, int kind) {
+  static const char *const names[SCR_ERR_COUNT] = {
+      [SCR_ERR_ERROR] = "Error", [SCR_ERR_TYPE] = "TypeError",
+      [SCR_ERR_RANGE] = "RangeError", [SCR_ERR_SYNTAX] = "SyntaxError",
+      [SCR_ERR_REFERENCE] = "ReferenceError", [SCR_ERR_EVAL] = "EvalError",
+      [SCR_ERR_URI] = "URIError", [SCR_ERR_AGGREGATE] = "AggregateError",
+  };
+  if (kind < 0 || kind >= SCR_ERR_COUNT || names[kind] == NULL) return false;
+  ScrStr *name = scr_str_new(names[kind], strlen(names[kind]));
+  bool yes = scr_node_island_instanceof_global((ScrDyn *)value, name);
+  scr_str_release(name);
+  return yes;
+}
+
+static ScrDyn *nh_error_value(const ScrError *error) {
+  ScrNodeRef *ref = nh_pinned(error, NH_PIN_ERROR);
+  if (ref == NULL) return NULL;
+  ScrDyn *value = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
+  nh_ref_release(ref); /* the lookup's reference; the new handle holds its own */
+  return value;
 }
 
 /* Leaves a thrown island value pending as a scriptc exception. An Error
@@ -1735,7 +1744,9 @@ ScrDyn *scr_ni_arg_in(const ScrNodeValue *v) {
  * that error again if it crosses back. */
 static void nh_throw_value(const ScrNodeValue *v) {
   if (v->tag == SCR_NV_HANDLE && (v->flags & SCR_NVF_ERROR)) {
-    ScrError *e = nh_error_of(v);
+    ScrNodeRef *ref = nh_ref_in(v->u.handle, v->flags);
+    ScrError *e = nh_error_of_ref(ref);
+    nh_ref_release(ref);
     scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
     return;
   }
@@ -2707,7 +2718,7 @@ static int nh_error_get(const ScrDyn *view, const char *key, size_t len, ScrDyn 
     NhCall c = {.op = NH_GET, .h = ref->id, .a = &k, .out = &value};
     nh_run(&c);
     if (c.threw) nh_throw_value(&value);
-    else *out = scr_ni_arg_in(&value);
+    else *out = scr_ni_value_in(&value);
     nh_routed_done(); /* a worker thread's answer is converted */
   }
   nh_ref_release(ref); /* the lookup's reference */
@@ -3650,6 +3661,9 @@ static const ScrNiDynOps nh_dyn_ops = {
     .set = scr_ni_set,
     .has_own = scr_ni_has_own,
     .is_error = nh_is_error,
+    .error_of = nh_dyn_error_of,
+    .error_value = nh_error_value,
+    .error_instanceof = nh_error_instanceof,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

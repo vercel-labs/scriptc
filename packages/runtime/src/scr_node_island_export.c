@@ -864,7 +864,7 @@ static ScrDyn **ni_args_in(const ScrNodeValue *args, size_t argc, ScrDyn **small
   if (out == NULL) ni_export_oom();
   for (size_t i = 0; i < argc; i++) {
     ScrDyn *repeated = ni_repeated_arg(args, out, i);
-    out[i] = repeated != NULL ? repeated : scr_ni_arg_in(&args[i]);
+    out[i] = repeated != NULL ? repeated : scr_ni_value_in(&args[i]);
   }
   return out;
 }

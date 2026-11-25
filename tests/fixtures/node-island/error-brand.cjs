@@ -14,3 +14,10 @@ exports.error = (detached) => {
 exports.prototypeOnly = () => Object.create(Error.prototype);
 exports.lookalike = () => ({ name: "Error", message: "island", "%error": true });
 exports.reads = () => reads;
+const kept = new TypeError("kept");
+exports.kept = () => kept;
+exports.fail = () => { throw kept; };
+exports.same = (value) => value === kept;
+exports.callWith = (f, value) => f(value);
+exports.reject = () => Promise.reject(kept);
+exports.detach = (value) => { Object.setPrototypeOf(value, null); };

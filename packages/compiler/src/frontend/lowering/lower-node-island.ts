@@ -34,6 +34,8 @@ import {
   DYN,
   DYN_HANDLE_KINDS,
   FOREIGN,
+  F64,
+  RUNTIME_ERROR_CLASSES,
   NULL_T,
   STRING,
   VOID,
@@ -2809,30 +2811,11 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (ts.isBinaryExpression(expr)) {
     const op = expr.operatorToken.kind;
     if (op === ts.SyntaxKind.InstanceOfKeyword) {
-      const errorClass = intrinsicErrorClassOf(lowerer, expr.right);
-      const global = errorClass ?? standardClassOf(lowerer, expr.right);
+      const islandError = lowerIslandErrorInstanceOf(lowerer, expr, loc);
+      if (islandError !== null) return islandError;
+      const global = standardClassOf(lowerer, expr.right);
       if (global !== null && !lowerer.islandInstanceofHandled.has(expr)) {
         const name: IrExpr = { kind: "strLit", value: global, type: STRING, loc };
-        // An island value (an instance of a native subclass of an island
-        // error class, say) answers as in Node. A name takes the pair of
-        // tests below instead: a value typed by the island's declarations
-        // may be the native error an island error became at the boundary
-        // (a callback's parameter), which only the native test knows.
-        if (
-          errorClass !== null &&
-          isForeignExpr(lowerer, expr.left) &&
-          !ts.isIdentifier(withoutParenthesesTypeWrappers(expr.left))
-        ) {
-          lowerer.usesNodeIsland = true;
-          const value = lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN);
-          return {
-            kind: "libCall",
-            fn: "nodeIsland.instanceofGlobal",
-            args: [value, name],
-            type: BOOL,
-            loc,
-          };
-        }
         // A dyn or caught value may hold one: the native test, else Node's.
         const left = withoutParenthesesTypeWrappers(expr.left);
         if (ts.isIdentifier(left)) {
@@ -3762,6 +3745,28 @@ const INTRINSIC_ERRORS = new Set([
   "URIError",
   "AggregateError",
 ]);
+
+/** Both explicit island imports and requireModule can supply a typed
+ * mirror. An authored instanceof observes the original value's current
+ * prototype, even when the left operand has a native Error type. */
+export function lowerIslandErrorInstanceOf(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const name = intrinsicErrorClassOf(lowerer, expr.right);
+  if (name === null || !lowerer.mayRunInNode()) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.errInstanceof",
+    args: [
+      lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN),
+      { kind: "numLit", value: RUNTIME_ERROR_CLASSES.get(`%${name}`)!.kind, type: F64, loc },
+    ],
+    type: BOOL,
+    loc,
+  };
+}
 
 /** The name of the builtin Error class an expression names (the global, not
  * a shadowing binding), or null. */

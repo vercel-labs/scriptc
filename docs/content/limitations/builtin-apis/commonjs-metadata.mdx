@@ -1,3 +1,4 @@
 - **CommonJS metadata:** The module graph is fixed at build time.
   Cache deletion or reloading, metadata writes, `module.paths` mutation, and `require.extensions` are unsupported.
   Read-only access to `module.id`, `filename`, `path`, `paths`, `loaded`, `isPreloading`, `parent`, `children`, `require.main`, and `require.cache` lookup/enumeration compiles.
+  `module.require("<literal>")` resolves from the same module exactly as `require("<literal>")` does; a computed specifier is refused.

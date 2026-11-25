@@ -50,6 +50,7 @@
  * throws an InternalCompilerError naming the unit when the new record
  * differs from the stored one. */
 import { createHash } from "node:crypto";
+import { isRequireCallee } from "../require-callee.js";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { InternalCompilerError } from "../../errors.js";
@@ -549,11 +550,7 @@ function namespaceSites(
     const callee = child.expression;
     const first = child.arguments.nodes[0];
     if (first === undefined || !ts.isStringLiteralLike(first)) return undefined;
-    if (
-      callee.kind === ts.SyntaxKind.ImportKeyword ||
-      (ts.isIdentifier(callee) && callee.text === "require")
-    )
-      add(first, names);
+    if (callee.kind === ts.SyntaxKind.ImportKeyword || isRequireCallee(callee)) add(first, names);
     return undefined;
   });
 }
@@ -605,8 +602,7 @@ function aliasesOf(statement: ts.Statement, names: readonly string[], out: Alias
         !ts.isObjectBindingPattern(declaration.name) ||
         initializer === undefined ||
         !ts.isCallExpression(initializer) ||
-        !ts.isIdentifier(initializer.expression) ||
-        initializer.expression.text !== "require"
+        !isRequireCallee(initializer.expression)
       )
         continue;
       for (const element of declaration.name.elements.nodes)

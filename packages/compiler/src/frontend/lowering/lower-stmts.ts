@@ -3292,6 +3292,23 @@ function lowerVarDeclarator(
       return lowered ? [lowered] : [];
     }
   }
+  // A JSON document required through the module object: Node types
+  // Module#require as `any`, so the binding has no structural type of its
+  // own (the bare require spelling gets one from TypeScript's require-call
+  // analysis). The binding stores the document in its checked-dynamic form,
+  // as any other JS binding of an untyped value does.
+  if (
+    decl.initializer !== undefined &&
+    ts.isIdentifier(decl.name) &&
+    isJsonRequireDecl(lowerer, decl)
+  ) {
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (symbol !== undefined && (mapped === null || mapped.kind === "dyn")) {
+      lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+      lowerer.jsWidenedBindings.add(symbol);
+    }
+  }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
   // resolveValueSymbol routes the reads), but the require itself is

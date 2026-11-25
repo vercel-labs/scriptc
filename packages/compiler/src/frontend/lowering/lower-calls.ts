@@ -141,7 +141,13 @@ import {
 } from "../../ir/ir.js";
 import { lowerProtocolMethodCall } from "./class-protocol-dispatch.js";
 import { MUTABLE_BUFFER_MEMBERS } from "./buffers.js";
-import { isJsSourceFile, isNodeEsmFile, locOf, requireSpecOf } from "../program.js";
+import {
+  isJsSourceFile,
+  isNodeEsmFile,
+  locOf,
+  isRequireCallee,
+  requireSpecOf,
+} from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
 import { lowerJsonRequireCall } from "./json-require.js";
 import { lowerArgumentsObjectCall } from "./arguments-object.js";
@@ -909,9 +915,9 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // module has no `require`, so there the call reads the binding and throws
   // Node's ReferenceError (lowerIdentifierExpr).
   if (
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "require" &&
-    isCjsRequireGlobal(lowerer, expr.expression) &&
+    isRequireCallee(expr.expression) &&
+    (ts.isPropertyAccessExpression(expr.expression) ||
+      isCjsRequireGlobal(lowerer, expr.expression)) &&
     !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
     const module = lowerer.builtinNamespaceModuleOf(expr);

@@ -33,6 +33,7 @@ import {
   isModuleExportsAccess,
   locOf,
   requireBindingEarlyUse7,
+  isRequireCallee,
   requireSpecOf,
   splitRequireCallOf,
 } from "../program.js";
@@ -411,13 +412,14 @@ export function inlineProgramRequireOf(
 ): InlineRequire | null {
   let e = expr;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
-  if (!ts.isCallExpression(e) || !ts.isIdentifier(e.expression)) return null;
+  if (!ts.isCallExpression(e) || !isRequireCallee(e.expression)) return null;
   const spec = requireSpecOf(e);
   if (spec === null || canonicalBuiltinModule(spec) !== null) return null;
   const sf = ts.getSourceFileOfNode(e);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
-  if (!isCjsRequireGlobal(lowerer, e.expression)) return null;
-  if (createRequireCalleeFileOf(lowerer, e.expression) !== null) return null;
+  if (ts.isIdentifier(e.expression) && !isCjsRequireGlobal(lowerer, e.expression)) return null;
+  if (ts.isIdentifier(e.expression) && createRequireCalleeFileOf(lowerer, e.expression) !== null)
+    return null;
   const dep =
     lowerer.facts.importedModule(sf, spec, "require") ??
     lowerer.facts.npmStaticModule(sf, spec, "require");
@@ -1497,11 +1499,16 @@ export function lowerUncompiledRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
 ): IrExpr | null {
-  if (!ts.isIdentifier(call.expression) || call.expression.text !== "require") return null;
+  if (!isRequireCallee(call.expression)) return null;
   const sf = ts.getSourceFileOfNode(call);
-  if (!isCjsJsFile(sf, lowerer.program) || !isCjsRequireGlobal(lowerer, call.expression))
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (ts.isIdentifier(call.expression) && !isCjsRequireGlobal(lowerer, call.expression))
     return null;
-  if (createRequireCalleeFileOf(lowerer, call.expression) !== null) return null;
+  if (
+    ts.isIdentifier(call.expression) &&
+    createRequireCalleeFileOf(lowerer, call.expression) !== null
+  )
+    return null;
   const spec = requireSpecOf(call);
   if (spec === null) {
     lowerer.unsupported(

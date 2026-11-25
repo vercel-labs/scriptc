@@ -5,6 +5,7 @@
  * the link checks, and emitted module init headers must see one graph. */
 
 import * as ts from "./ts7/adapter.js";
+import { isRequireCallee } from "./require-callee.js";
 import { dirname, join, relative, resolve } from "node:path";
 import { nearestPackageType, resolveBareModule } from "./resolve.js";
 import { npmStaticPackageOfPath } from "./npm-static.js";
@@ -222,7 +223,7 @@ export function planNpmStaticReexports(
       const kind =
         node.expression.kind === ts.SyntaxKind.ImportKeyword
           ? "import"
-          : ts.isIdentifier(node.expression) && node.expression.text === "require"
+          : isRequireCallee(node.expression)
             ? "require"
             : null;
       if (kind !== null) edges.calls.push({ spec: arg.text, dep: resolveEdge(sf, arg.text, kind) });

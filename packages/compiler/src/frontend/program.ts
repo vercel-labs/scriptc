@@ -39,6 +39,7 @@
  *    that path (no snapshot pins it). */
 
 import { isFrontendIsland } from "../node-islands/boundary.js";
+import { isRequireCallee } from "./require-callee.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -1160,6 +1161,48 @@ function nodeTypesSupplementRoots7(program: ts.Program, host: ts.Ts7Host): strin
  * checker. Rebuild the native program with each literal project target as
  * an explicit root, to a fixpoint, so the same TS 7 AST/checker world owns
  * their exports and transitive graph. */
+/** The files a `module.require("<literal>")` call loads join the program:
+ * TypeScript's own resolver treats a bare `require("<literal>")` call in a JS
+ * file as a module reference and adds its target, but the module object's
+ * method spelling means nothing to it. The program-module, JSON and opted-in
+ * package targets the call names are roots here, resolved from the calling
+ * file exactly as the require edge resolves them. */
+function moduleRequireProgramRoots7(program: ts.Program): string[] {
+  const known = new Set(program.getSourceFileNames().map((name) => tsgoPath(resolve(name))));
+  const roots = new Set<string>();
+  for (const sf of program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;
+    for (const node of moduleSourceCandidates(program, sf).calls) {
+      if (node.questionDotToken !== undefined) continue;
+      if (node.arguments.nodes.length !== 1) continue;
+      const arg = node.arguments.nodes[0]!;
+      if (!ts.isStringLiteralLike(arg)) continue;
+      // Only the module object's own method: the bare `require` identifier
+      // is TypeScript's own reference and already a root.
+      if (ts.isIdentifier(node.expression) || !isRequireCallee(node.expression)) continue;
+      const spec = arg.text;
+      if (canonicalBuiltinModule(spec) !== null) continue;
+      let target = resolveProjectModule(sf.fileName, spec);
+      if (target === null && !spec.startsWith("#")) {
+        const npm = resolveNpmImport7(sf.fileName, spec, "require");
+        if (
+          npm !== null &&
+          isNpmStaticPackage(npm.packageName) &&
+          isJsSourceFileName(npm.typesFile)
+        ) {
+          target = npm.typesFile;
+        }
+      }
+      // A directory's package.json may name a native addon; the call reports
+      // that boundary itself.
+      if (target === null || target.endsWith(".node")) continue;
+      const normalized = tsgoPath(resolve(target));
+      if (!known.has(normalized)) roots.add(normalized);
+    }
+  }
+  return [...roots];
+}
+
 function createRequireProgramRoots7(program: ts.Program): string[] {
   const known = new Set(program.getSourceFileNames().map((name) => tsgoPath(resolve(name))));
   const roots = new Set<string>();
@@ -1939,6 +1982,7 @@ function loadProgram7(
         ...declarationTwinRoots7(program),
         ...entryPackageProgramRoots7(program, entryPath, packageRoots, options),
         ...createRequireProgramRoots7(program),
+        ...moduleRequireProgramRoots7(program),
         ...boundedDynamicImportRoots7(program),
         ...forkTargetPaths(program, program.getImplementationSourceFiles()),
         ...workerTargetPaths(program, program.getImplementationSourceFiles()),
@@ -2884,10 +2928,11 @@ function jsOpinionOf7(
 }
 
 /** The specifier of a `require("...")` call: the callee is the bare
- * identifier `require` and the single argument a string literal. The one
- * recognizer preflight edges, global collection, and statement lowering
- * share — anything require-shaped it does NOT match (computed specifiers,
- * extra arguments) is not a module edge and fences at its use site. */
+ * identifier `require` (or `module.require`) and the single argument a
+ * string literal. The one recognizer preflight edges, global collection,
+ * and statement lowering share — anything require-shaped it does NOT match
+ * (computed specifiers, extra arguments) is not a module edge and fences at
+ * its use site. */
 function requireSpecOf7(node: ts.Node): string | null {
   let value = node;
   while (
@@ -2900,7 +2945,7 @@ function requireSpecOf7(node: ts.Node): string | null {
     value = value.expression;
   }
   if (!ts.isCallExpression(value)) return null;
-  if (!ts.isIdentifier(value.expression) || value.expression.text !== "require") return null;
+  if (!isRequireCallee(value.expression)) return null;
   if (value.arguments.nodes.length !== 1) return null;
   const arg = value.arguments.nodes[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;
@@ -10086,6 +10131,7 @@ export {
 export { npmPackageNameOf, workspacePackageOfPath } from "./workspace-registry.js";
 
 export {
+  isRequireCallee,
   requireSpecOf7 as requireSpecOf,
   requireCallBindingKind7 as requireCallBindingKind,
   isRequireStatement7 as isRequireStatement,

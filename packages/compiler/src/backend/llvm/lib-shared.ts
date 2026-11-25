@@ -2405,7 +2405,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // queueMicrotask's checked-dynamic form (borrowed dyn; a non-function
   // throws synchronously), the minted setImmediate value, and the
   // timers/promises immediate — all mark the loop live.
-  "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn",
+  "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn_user",
   "timers.checkCallback": "scr_timers_check_callback",
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",

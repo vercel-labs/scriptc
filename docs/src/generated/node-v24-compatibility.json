@@ -55685,7 +55685,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Derived from the exact API rows in this chapter.",
         "verification": "derived"
       }
@@ -56168,7 +56168,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "detail": "Implemented by a dedicated static compiler/runtime path.",
         "verification": "test-backed"
       }

@@ -5,4 +5,4 @@ dynamic-surface.ts:13:38 - error SC2020: 'Number.prototype.toLocaleString at loc
      |                                      ^~~~~~~
   14 | const n = Number.parseFloat("3.14");
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile

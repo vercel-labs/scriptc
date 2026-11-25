@@ -75,4 +75,4 @@ stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString at locale
      |                                           ^~~~~~~
   42 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile

@@ -522,7 +522,7 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   { feature: "consoleOptions", requires: ["inspect"] },
   // scr_formdata.c builds its File entries through scr_blob.c and renders a
   // refused value through the inspect unit.
-  { feature: "formData", requires: ["inspect", "dynAsync"] },
+  { feature: "formData", requires: ["inspect", "dynAsync", "dynInvoke"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

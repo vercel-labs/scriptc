@@ -7,11 +7,10 @@
  * argument, the File's own name, or "blob"), which is what Node stores and
  * what get()/getAll() answer.
  *
- * This unit covers the constructor and append/set/get/getAll/has/delete.
- * The iteration members (entries/keys/values/forEach/[Symbol.iterator]) and
- * the multipart request-body encoding are not implemented yet: the compiler
- * refuses their call sites, and a dynamic-tier call answers Node's
- * "not supported yet" Error. */
+ * The unit covers the constructor, append/set/get/getAll/has/delete, and
+ * the iteration members (entries/keys/values over the live entry list, and
+ * forEach over a snapshot of it). The multipart request-body encoding is
+ * not implemented yet: fetch refuses a FormData body by name. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -96,8 +95,9 @@ static ScrStr *fd_stringify(const ScrDyn *value) {
 /* "N arguments required, but only M found." */
 static void fd_throw_arity(const char *what, size_t required, size_t given) {
   char buf[128];
-  int n = snprintf(buf, sizeof buf, "%s: %zu argument%s required, but only %zu found.", what,
-                   required, required == 1 ? "" : "s", given);
+  /* Node omits "only" when no argument was given at all. */
+  int n = snprintf(buf, sizeof buf, "%s: %zu argument%s required, but %s%zu found.", what,
+                   required, required == 1 ? "" : "s", given > 0 ? "only " : "", given);
   scr_throw_error_msg(SCR_ERR_TYPE, buf, (size_t)n);
 }
 
@@ -303,21 +303,77 @@ static ScrDyn *fd_lookup(ScrFormData *fd, const char *method, ScrDyn *const *arg
   return all;
 }
 
+/* The live iterator step Node's entries/keys/values answer: selection 2
+ * yields [name, value], 1 the names and 0 the values. */
+static ScrDyn *fd_step(void *h, double *index, unsigned selection) {
+  ScrFormData *fd = h;
+  size_t i = (size_t)*index;
+  bool done = i >= fd->len;
+  ScrDyn *value;
+  if (done) {
+    value = scr_dyn_retain(scr_dyn_undefined());
+    *index = (double)fd->len;
+  } else {
+    const FormEntry *e = &fd->entries[i];
+    if (selection == 2) {
+      value = scr_dyn_new_arr();
+      scr_dyn_arr_push(value, scr_dyn_new_str(e->name));
+      scr_dyn_arr_push(value, fd_value_of(e));
+    } else if (selection == 1) {
+      value = scr_dyn_new_str(e->name);
+    } else {
+      value = fd_value_of(e);
+    }
+    *index = (double)(i + 1);
+  }
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "value", 5, value);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
+  return result;
+}
+
 static ScrDyn *fd_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                          size_t argc, const char *what) {
   ScrFormData *fd = ptr;
   (void)self; /* borrowed receiver */
   (void)what;
-  static const char unsupported[] = "FormData iteration is not supported yet";
   if (strcmp(method, "append") == 0) return fd_append(fd, args, argc, false);
   if (strcmp(method, "set") == 0) return fd_append(fd, args, argc, true);
   if (strcmp(method, "get") == 0 || strcmp(method, "getAll") == 0 ||
       strcmp(method, "has") == 0 || strcmp(method, "delete") == 0)
     return fd_lookup(fd, method, args, argc);
-  if (strcmp(method, "entries") == 0 || strcmp(method, "keys") == 0 ||
-      strcmp(method, "values") == 0 || strcmp(method, "forEach") == 0) {
-    scr_throw_error_msg_code(SCR_ERR_ERROR, unsupported, sizeof unsupported - 1, "SC2020");
-    return NULL;
+  if (strcmp(method, "entries") == 0)
+    return scr_dyn_native_handle_iterator(self, 2);
+  if (strcmp(method, "keys") == 0) return scr_dyn_native_handle_iterator(self, 1);
+  if (strcmp(method, "values") == 0) return scr_dyn_native_handle_iterator(self, 0);
+  if (strcmp(method, "forEach") == 0) {
+    char namebuf[64];
+    const char *call = fd_method_name("forEach", namebuf, sizeof namebuf);
+    if (argc < 1) {
+      fd_throw_arity(call, 1, 0);
+      return NULL;
+    }
+    if (!scr_dyn_is_callable(args[0])) {
+      static const char message[] =
+          "Failed to execute 'forEach' on 'FormData': parameter 1 is not of type 'Function'.";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      return NULL;
+    }
+    ScrDyn *this_arg = argc > 1 && args[1] != NULL ? args[1] : scr_dyn_undefined();
+    for (size_t i = 0; i < fd->len; i++) {
+      ScrDyn *value = fd_value_of(&fd->entries[i]);
+      ScrDyn *key = scr_dyn_new_str(fd->entries[i].name);
+      ScrDyn *argv[3] = {value, key, self};
+      scr_dyn_this_push_dyn(this_arg);
+      ScrDyn *result = scr_dyn_call(args[0], argv, 3, "FormData.forEach callback");
+      scr_dyn_this_pop();
+      scr_dyn_release(key);
+      scr_dyn_release(value);
+      if (!result) return NULL;
+      scr_dyn_release(result);
+      if (scr_exc_pending()) return NULL;
+    }
+    return scr_dyn_retain(scr_dyn_undefined());
   }
   /* A name the class does not have. */
   char buf[160];
@@ -362,6 +418,7 @@ static const ScrDynHandleOps fd_ops = {
     .get = fd_op_get,
     .set = fd_op_set,
     .json_empty_object = true,
+    .iter_step = fd_step,
     .to_string_tag = "FormData",
     .methods = fd_methods,
 };

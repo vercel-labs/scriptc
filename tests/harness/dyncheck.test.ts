@@ -421,8 +421,8 @@ console.log(stats[0]!.hits, stats[1]!.hits);
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe(
       [
-        "mapped TypeError expected number at $, got string",
-        "listed TypeError expected number at $, got string",
+        "mapped TypeError expected number | undefined at $.name, got string",
+        "listed TypeError expected number | undefined at $.name, got string",
         "2 2",
         "",
       ].join("\n"),
@@ -559,6 +559,23 @@ console.log("unreachable", c.port);
     );
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got undefined");
+  });
+
+  test("a dictionary read names the property whose value the check rejects", async () => {
+    const r = await compileAndRun(
+      "dictionary-wrong-type",
+      `function read(raw: unknown): void {
+  const params = raw as Record<string, string>;
+  const id: string = params.projectId;
+  console.log(id);
+}
+read({ projectId: 7 });
+`,
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain(
+      "Uncaught TypeError: expected string | undefined at $.projectId, got number",
+    );
   });
 
   test("optional field: a PRESENT wrong-typed key throws with the arms named", async () => {

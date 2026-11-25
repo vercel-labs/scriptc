@@ -4704,6 +4704,54 @@ export class Lowerer {
     return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
   }
 
+  /** The index-signature value type a member read of a checked-dynamic
+   * receiver resolves to, or null. The receiver must declare no member of
+   * that name, and the signature's value must be a typed one that does not
+   * admit undefined. The read is a JavaScript property read even when a
+   * TypeScript assertion typed the value (`const params = raw as
+   * Record<string, string>`): a missing key answers undefined, as a
+   * record's index-signature read does, so the read keeps the undefined
+   * arm rather than validating the missing value as the declared type. */
+  dynIndexSignatureValueRead(
+    e: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): IrType | null {
+    const receiverType = this.checker.getNonNullableType(
+      this.checker.getTypeAtLocation(e.expression),
+    );
+    if ((receiverType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return null;
+    const declaredName = (): string | null => {
+      if (ts.isPropertyAccessExpression(e)) return e.name.text;
+      const key = e.argumentExpression;
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+      if (ts.isNumericLiteral(key)) return String(Number(key.text));
+      return null;
+    };
+    if (!ts.isPropertyAccessExpression(e)) {
+      // A key that may hold a symbol names something no string index
+      // signature answers.
+      const keyType = this.checker.getTypeAtLocation(e.argumentExpression);
+      const arms =
+        (keyType.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(keyType) : [keyType];
+      if (
+        !arms.every(
+          (arm) => (arm.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike)) !== 0,
+        )
+      )
+        return null;
+    }
+    const name = declaredName();
+    if (name !== null && this.checker.getPropertyOfType(receiverType, name) !== undefined)
+      return null;
+    const signature = this.checker
+      .getIndexInfosOfType(receiverType)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (signature === undefined) return null;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || value.kind === "void" || isUnitType(value)) return null;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return null;
+    return value;
+  }
+
   /** The index value of a keyed read of a record's index signature that
    * can answer undefined for a missing key while its checker type does not
    * admit undefined, or null. A literal key naming a declared field is a

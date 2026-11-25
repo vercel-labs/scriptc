@@ -139,6 +139,7 @@ void *scr_net_sock_retain_v(void *p);
 void scr_net_sock_release_v(void *p);
 
 ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, ScrNetConnFn fn); /* +1 */
+ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/, ScrClosure *handler /*moves, nullable*/, ScrNetConnFn fn); /* +1 */
 void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/);
 /* listen({ port, host, ipv6Only, reusePort }): host is an IP literal ("" =
  * the dual-stack any default); ipv6Only sets IPV6_V6ONLY before the bind.

@@ -627,6 +627,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // net.createServer(options[, listener]): Node's ServerOpts ladders —
+  // options itself must be an object, options.highWaterMark and
+  // options.keepAliveInitialDelay numbers, options.blockList a
+  // net.BlockList.
+  "net.createServerOpts",
+  "net.createServerOptsCb",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on

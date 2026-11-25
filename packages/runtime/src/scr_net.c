@@ -557,6 +557,19 @@ struct ScrNetServer {
   bool max_conns_set;
   double max_conns;
   ScrNetLs drop_ls;
+  /* net.createServer(options): Node's ServerOpts, applied to every
+   * accepted socket — allowHalfOpen, pauseOnConnect, noDelay (this
+   * runtime's accept default), keepAlive with its initial delay in
+   * milliseconds, and highWaterMark — plus the inbound blockList (+1,
+   * NULL when none). */
+  bool opts_allow_half_open;
+  bool opts_pause_on_connect;
+  bool opts_keep_alive;
+  bool opts_ka_delay_given;
+  double opts_ka_delay_ms;
+  bool opts_hwm_set;
+  double opts_hwm;
+  ScrDyn *opts_block_list;
   /* server.dropMaxConnection (NULL = undefined): Node reads it only in
    * cluster mode, so here it is a stored value */
   ScrDyn *drop_max_connection;
@@ -941,6 +954,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_dyn_release(s->abort_dispose);
     for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
     scr_dyn_release(s->drop_max_connection);
+    scr_dyn_release(s->opts_block_list);
     scr_dyn_release(s->max_headers_count);
     scr_dyn_release(s->max_requests_per_socket);
     scr_str_release(s->bound_host);
@@ -2335,6 +2349,73 @@ ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, Scr
   return s;
 }
 
+static bool scr_net_dyn_truthy(const ScrDyn *v);
+static bool scr_net_validate_number_dyn(const ScrDyn *v, const char *name);
+
+/* net.createServer(options[, listener]): Node's ServerOpts read the way
+ * its Server constructor reads them — allowHalfOpen, pauseOnConnect,
+ * noDelay and keepAlive for their truthiness, keepAliveInitialDelay and
+ * highWaterMark as numbers, blockList as a net.BlockList (a falsy member
+ * is no list). An options value that is not an object throws Node's
+ * ERR_INVALID_ARG_TYPE; null and undefined mean no option set. +1, or
+ * NULL with the exception pending. */
+ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
+                                         ScrClosure *handler /*moves, nullable*/,
+                                         ScrNetConnFn fn) {
+  const ScrDyn *v = options != NULL ? options : scr_dyn_undefined();
+  ScrDyn *owned = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
+  const ScrDyn *o = owned != NULL ? owned : v;
+  ScrNetServer *s = NULL;
+  if (o->kind == SCR_DYN_UNDEF || o->kind == SCR_DYN_NULL) {
+    /* createServer() and createServer(null): the default option set */
+  } else if (o->kind != SCR_DYN_OBJ && o->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("options", "of type object", o);
+    goto fail;
+  }
+  s = scr_net_server_new();
+  if (o->kind == SCR_DYN_OBJ) {
+    const ScrDyn *m = scr_dyn_obj_get(o, "allowHalfOpen", 13);
+    s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
+    m = scr_dyn_obj_get(o, "pauseOnConnect", 14);
+    s->opts_pause_on_connect = m != NULL && scr_net_dyn_truthy(m);
+    m = scr_dyn_obj_get(o, "keepAlive", 9);
+    s->opts_keep_alive = m != NULL && scr_net_dyn_truthy(m);
+    m = scr_dyn_obj_get(o, "keepAliveInitialDelay", 21);
+    if (m != NULL && m->kind != SCR_DYN_UNDEF) {
+      if (!scr_net_validate_number_dyn(m, "options.keepAliveInitialDelay")) goto fail;
+      s->opts_ka_delay_given = true;
+      s->opts_ka_delay_ms = m->v.num < 0 ? 0 : m->v.num;
+    }
+    m = scr_dyn_obj_get(o, "highWaterMark", 13);
+    if (m != NULL && m->kind != SCR_DYN_UNDEF) {
+      if (m->kind != SCR_DYN_NUM) {
+        scr_dyn_prop_type_fail("options.highWaterMark", "of type number", m);
+        goto fail;
+      }
+      s->opts_hwm_set = true;
+      s->opts_hwm = m->v.num;
+    }
+    m = scr_dyn_obj_get(o, "blockList", 9);
+    if (m != NULL && scr_net_dyn_truthy(m)) {
+      if (!scr_net_is_block_list(m)) {
+        scr_dyn_prop_type_fail("options.blockList", "an net.BlockList", m);
+        goto fail;
+      }
+      s->opts_block_list = scr_dyn_retain((ScrDyn *)m);
+    }
+    /* noDelay: TCP_NODELAY is this runtime's accept default (a documented
+     * divergence shared with the dial path) */
+  }
+  if (handler != NULL) scr_net_ls_add(&s->conn_ls, handler, (void *)fn, false);
+  scr_dyn_release(owned);
+  return s;
+fail:
+  scr_dyn_release(owned);
+  if (handler != NULL) scr_closure_release(handler);
+  if (s != NULL) scr_net_server_release_v(s);
+  return NULL;
+}
+
 /* listen() on a server that is listening: Node throws
  * ERR_SERVER_ALREADY_LISTEN at the call, so a caller that catches it
  * keeps running (the callback it passed, if any, is never registered). */
@@ -3113,6 +3194,28 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     scr_net_nonblock(fd);
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    if (srv->opts_block_list != NULL) {
+      /* net.createServer({ blockList }): Node destroys a connection from a
+       * blocked address before any 'connection' listener runs. */
+      struct sockaddr_storage peer;
+      socklen_t peer_len = sizeof peer;
+      char ip[INET6_ADDRSTRLEN];
+      const char *text = NULL;
+      int family = 0;
+      if (getpeername(fd, (struct sockaddr *)&peer, &peer_len) == 0) {
+        if (peer.ss_family == AF_INET) {
+          text = inet_ntop(AF_INET, &((struct sockaddr_in *)&peer)->sin_addr, ip, sizeof ip);
+          family = 4;
+        } else if (peer.ss_family == AF_INET6) {
+          text = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&peer)->sin6_addr, ip, sizeof ip);
+          family = 6;
+        }
+      }
+      if (text != NULL && scr_net_block_list_blocks(srv->opts_block_list, text, family)) {
+        close(fd);
+        continue;
+      }
+    }
     if (srv->max_conns_set && (double)srv->nconns >= srv->max_conns) {
       /* server.maxConnections: Node closes the connection and emits
        * 'drop' with the addresses instead of 'connection' */
@@ -3131,6 +3234,20 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     sock->fd = fd;
     sock->server = scr_net_server_retain(srv);
     srv->nconns++;
+    /* net.createServer(options): the accepted socket's option set, applied
+     * before the 'connection' listeners see the socket. */
+    if (srv->opts_allow_half_open) sock->allow_half_open = true;
+    if (srv->opts_hwm_set) {
+      sock->hwm = srv->opts_hwm;
+      sock->read_ahead = srv->opts_hwm > 0
+                             ? (srv->opts_hwm >= (double)SIZE_MAX ? SIZE_MAX : (size_t)srv->opts_hwm)
+                             : 0;
+    }
+    if (srv->opts_keep_alive)
+      scr_net_sock_set_keepalive(sock, true, srv->opts_ka_delay_given ? srv->opts_ka_delay_ms : 0);
+    /* pauseOnConnect: the socket starts paused, so its data waits for
+     * resume() (Node's `socket.pause()` before the connection event) */
+    if (srv->opts_pause_on_connect) sock->user_paused = true;
     scr_net_sock_register(sock);
     if (srv->http_timeout_surface && srv->http_timeouts[0] > 0)
       scr_net_sock_set_timeout(sock, srv->http_timeouts[0]);

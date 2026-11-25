@@ -77099,6 +77099,8 @@
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-create-server-block-list.ts",
+          "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
           "tests/corpus/net-listen-argument-shapes.ts",
           "tests/corpus/net-listen-dynamic-arguments.cjs",
@@ -79749,19 +79751,11 @@
       "anchor": "netcreateserveroptions-connectionlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createServer",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createServer",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-create-server-options.ts",
+          "tests/corpus/net-create-server-block-list.ts"
         ]
       },
       "anchorSource": "exact"

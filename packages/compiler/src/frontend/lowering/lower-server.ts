@@ -1176,6 +1176,21 @@ export function lowerNetModuleCall(
       return { kind: "libCall", fn: "net.createServer", args: [], type: NETSERVER_T, loc };
     }
     if (args.length === 1) {
+      // createServer(options): a typed options record (ServerOpts) crosses
+      // as a checked-dynamic value; Node reads allowHalfOpen,
+      // pauseOnConnect, noDelay, keepAlive, keepAliveInitialDelay,
+      // highWaterMark and blockList from it at construction.
+      const optionsType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+      if (optionsType !== null && optionsType.kind === "record") {
+        const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+        return {
+          kind: "libCall",
+          fn: "net.createServerOpts",
+          args: [options],
+          type: NETSERVER_T,
+          loc,
+        };
+      }
       // A provably-non-object, non-function argument (the invalid-input
       // probes: createServer('path'), createServer(0)): Node throws
       // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
@@ -1209,10 +1224,31 @@ export function lowerNetModuleCall(
       );
       return { kind: "libCall", fn: "net.createServerCb", args: [cb], type: NETSERVER_T, loc };
     }
+    if (args.length === 2) {
+      // createServer(options, listener): the ServerOpts record plus the
+      // connection handler (the two-argument form Node documents).
+      const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "connection handlers",
+        1,
+        (p) => p.kind === "netSocket",
+        "use (socket) or ()",
+        [NETSOCKET_T],
+      );
+      return {
+        kind: "libCall",
+        fn: "net.createServerOptsCb",
+        args: [options, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `createServer with ${args.length} arguments`,
       expr,
-      "the supported forms are createServer() and createServer(socket => ...)",
+      "the supported forms are createServer([options][, socket => ...])",
     );
   }
   if (bi.member === "connect" || bi.member === "createConnection") {

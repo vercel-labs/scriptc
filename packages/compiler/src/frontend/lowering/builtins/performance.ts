@@ -567,6 +567,11 @@ function perfEntryRecord(
       const absent = shapeField ? lowerer.absentFieldValue(shapeField, loc) : null;
       if (shapeField && absent?.kind === "fieldAbsent") {
         const present = lowerer.coerceToExpected(number, shapeField.type);
+        /* Node's getters live on the class prototype, so an omitted timing
+         * is `in` the entry (with the value undefined) even though it is no
+         * own property; the slot holds the undefined arm rather than the
+         * absent state, and JSON still drops it. */
+        const undefinedValue = lowerer.wrappedUndefined(shapeField.type, loc) ?? absent;
         values[field.name] = {
           kind: "ternary",
           cond: {
@@ -584,7 +589,7 @@ function perfEntryRecord(
             loc,
           },
           then: present,
-          else_: absent,
+          else_: undefinedValue,
           type: shapeField.type,
           loc,
         };
@@ -608,6 +613,7 @@ function perfEntryRecord(
     const absent = shapeField ? lowerer.absentFieldValue(shapeField, loc) : null;
     if (presenceById !== undefined && shapeField && absent?.kind === "fieldAbsent") {
       const present = lowerer.coerceToExpected(text, shapeField.type);
+      const undefinedValue = lowerer.wrappedUndefined(shapeField.type, loc) ?? absent;
       values[field.name] = {
         kind: "ternary",
         cond: {
@@ -625,7 +631,7 @@ function perfEntryRecord(
           loc,
         },
         then: present,
-        else_: absent,
+        else_: undefinedValue,
         type: shapeField.type,
         loc,
       };

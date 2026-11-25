@@ -38,3 +38,10 @@ for (const field of fields) {
   console.log(field, typeof value, String(value));
 }
 console.log("json", JSON.stringify(entry));
+console.log(
+  "in",
+  "domainLookupStart" in (entry as any),
+  "fetchStart" in (entry as any),
+  "nextHopProtocol" in (entry as any),
+  "responseStatus" in (entry as any),
+);

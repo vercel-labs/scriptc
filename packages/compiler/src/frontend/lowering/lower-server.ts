@@ -2654,6 +2654,43 @@ function lowerNetServerMethodCall(
       loc,
     };
   }
+  if (name === "getTicketKeys" && args.length === 0) {
+    // The server's 48-byte ticket key material: a Buffer, and a fresh
+    // copy per call (Node's getter answers independent copies).
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.serverGetTicketKeys",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(call, value, declared);
+  }
+  if (name === "setTicketKeys") {
+    // Node's validateBuffer ladder runs at runtime (a 48-BYTE view), then
+    // the server re-keys: earlier tickets no longer resume.
+    requireStatementPosition(lowerer, call, "server.setTicketKeys(...)");
+    if (args.length !== 1 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `setTicketKeys with ${args.length} arguments`,
+        call,
+        "the form is setTicketKeys(keys)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const keys = lowerer.lowerExprExpecting(args[0]!, DYN);
+    return {
+      kind: "libCall",
+      fn: "tls.serverSetTicketKeys",
+      args: [receiver, keys],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `server.${name}(...)`);
     const once = boolLit(name === "once", loc);

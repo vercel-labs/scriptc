@@ -104010,8 +104010,10 @@
           "tests/corpus/tls-session-listener-timing.ts",
           "tests/corpus/tls-socket-audit.ts",
           "tests/corpus/tls-socket-extras.ts",
+          "tests/corpus/tls-ticket-keys.ts",
           "tests/corpus/tls-unix-connect.ts",
-          "tests/diagnostics/compat-absent-tls-engine-members.ts"
+          "tests/diagnostics/compat-absent-tls-engine-members.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -104518,8 +104520,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.getTicketKeys",
+        "tests": [
+          "tests/corpus/tls-ticket-keys.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -104631,8 +104637,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.server.setTicketKeys",
+        "tests": [
+          "tests/corpus/tls-ticket-keys.ts",
+          "tests/harness/tls-ticket-keys-rotation.test.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -106653,8 +106663,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "supported",
+        "evidence": "compiler-feature:tls.tls.DEFAULT_ECDH_CURVE",
+        "tests": [
+          "tests/corpus/tls-handshake-events.ts",
+          "tests/corpus/5651-tls-socket-protocol.ts",
+          "tests/corpus/2557-tls-ca-store.ts"
+        ]
       },
       "anchorSource": "exact"
     },

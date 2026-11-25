@@ -202,8 +202,8 @@ void scr_caught_trace_v(void *c, ScrTraceVisit visit, void *ctx);
  * The SuppressedError keeps both snapshots in a side table until its
  * teardown: scr_exc_suppressed_values answers them (borrowed) for the
  * error's `error` (the disposal error) and `suppressed` (the body error)
- * when scr_json.c builds its dyn view, and scr_exc_suppressed_forget
- * releases them. */
+ * when scr_json.c builds its dyn view. Ordinary teardown releases them;
+ * collection traces both snapshots and only unlinks their table entry. */
 void scr_exc_suppress(ScrCaught *suppressed);
 /* An iterator close that threw while `first` was propagating: the close's
  * error is dropped and `first` is raised again (consumed). A generator
@@ -211,6 +211,8 @@ void scr_exc_suppress(ScrCaught *suppressed);
 void scr_exc_keep_first(ScrCaught *first);
 bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
                                const ScrCaught **suppressed);
+void scr_exc_suppressed_trace(const void *error_object, ScrTraceVisit visit, void *ctx);
+void scr_exc_suppressed_unlink(const void *error_object);
 void scr_exc_suppressed_forget(const void *error_object);
 /* Borrows the box; re-raises the saved exception exactly (payload RETAINED
  * — the binding stays live until its scope exits). */

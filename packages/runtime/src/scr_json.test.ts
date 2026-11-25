@@ -67,6 +67,16 @@ test.each([false, true])(
         });
         expect(result.stdout).toBe("checked storage and weak metadata lifetime checks passed\n");
         expect(result.stderr).toBe("");
+        const errors = await exec(binary, ["error-owned-payloads"], {
+          env: {
+            ...process.env,
+            SCR_CYCLE_THRESHOLD: threshold,
+            ASAN_OPTIONS: "detect_leaks=0:halt_on_error=1",
+            UBSAN_OPTIONS: "halt_on_error=1",
+          },
+        });
+        expect(errors.stdout).toBe("native Error owned payload checks passed\n");
+        expect(errors.stderr).toBe("");
       }
     } finally {
       await rm(scratch, { recursive: true, force: true });

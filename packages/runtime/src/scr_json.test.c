@@ -1820,7 +1820,261 @@ static void stream_ref_member_questions(void) {
   assert(!scr_exc_pending());
 }
 
-int main(void) {
+/* Test-only observer: the normal runtime has no pool inspection API. */
+size_t scr_dyn_pooled_count_at(void);
+
+typedef struct ErrorHeapSnapshot {
+  size_t allocated, pooled;
+} ErrorHeapSnapshot;
+
+static ErrorHeapSnapshot error_heap_snapshot(void) {
+  ErrorHeapSnapshot snapshot = {scr_cyc_live, scr_dyn_pooled_count_at()};
+  assert(snapshot.pooled <= snapshot.allocated);
+  return snapshot;
+}
+
+/* Run in a separate process: select traced allocation before any Error
+ * exists. Disposed Dyn pool blocks retain headers, not owned graph edges. */
+static void error_heap_restored(ErrorHeapSnapshot before, const char *phase,
+                                int variant, int gen, int alias) {
+  scr_collect_cycles();
+  assert(!scr_exc_pending());
+  ErrorHeapSnapshot after = error_heap_snapshot();
+  if (after.allocated - after.pooled != before.allocated - before.pooled) {
+    const char *threshold = getenv("SCR_CYCLE_THRESHOLD");
+    fprintf(stderr, "error-owned phase=%s variant=%d gen=%d alias=%d threshold=%s "
+                    "allocated-before=%zu pooled-before=%zu allocated-after=%zu pooled-after=%zu\n",
+            phase, variant, gen, alias, threshold ? threshold : "unset",
+            before.allocated, before.pooled, after.allocated, after.pooled);
+  }
+  assert(after.allocated - after.pooled == before.allocated - before.pooled);
+}
+
+static ScrDyn *error_backedge(ScrError *error) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new_obj(scr_error_retain_v, scr_error_release_v,
+                                    scr_error_trace_arg());
+  scr_box_set_ref(closure->caps[0], scr_error_retain(error));
+  return scr_dyn_new_func(closure, nothing, 0, "func()=>dyn", "error backedge");
+}
+
+static ScrError *error_with_payload(int kind, ScrDyn *payload) {
+  ScrDyn *options = scr_dyn_new_obj();
+  scr_dyn_obj_set(options, "cause", 5, scr_dyn_retain(payload));
+  ScrError *error;
+  if (kind == SCR_ERR_DOMEX) {
+    error = scr_domex_new(NULL, options);
+    /* Both the builtin prefix and the separate cause own a reference. */
+    scr_error_set_cause(error, payload);
+  } else if (kind == SCR_ERR_AGGREGATE) {
+    error = scr_aggregate_new(NULL, options);
+    scr_aggregate_set_errors(error, payload);
+  } else {
+    error = scr_error_new_options(kind, NULL, options);
+  }
+  scr_dyn_release(options);
+  assert(error && !scr_exc_pending());
+  return error;
+}
+
+static void error_payload_cycles(void) {
+  const int kinds[] = {SCR_ERR_ERROR, SCR_ERR_TYPE, SCR_ERR_DOMEX, SCR_ERR_AGGREGATE};
+  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+    for (uint16_t gen = SCR_CYC_NURSERY; gen < SCR_CYC_NGENS; gen++) {
+      for (int alias = 0; alias < 3; alias++) {
+        ErrorHeapSnapshot before = error_heap_snapshot();
+        ScrDyn *payload = scr_dyn_new_arr();
+        scr_cyc_set_gen(scr_cyc_hdr(payload), gen);
+        ScrError *error = error_with_payload(kinds[k], payload);
+        scr_dyn_arr_push(payload, error_backedge(error));
+        ScrError *held = alias == 1 ? scr_error_retain(error) : NULL;
+        scr_error_release(error);
+        if (alias != 2) scr_dyn_release(payload);
+        scr_cyc_collect_scheduled();
+        scr_collect_cycles();
+        if (alias) {
+          assert(payload->kind == SCR_DYN_ARR && payload->v.arr.len == 1);
+          assert(payload->v.arr.items[0]->kind == SCR_DYN_FUNC);
+          assert(error->error_cause == payload);
+          if (kinds[k] == SCR_ERR_DOMEX)
+            assert(((ScrDomException *)error)->cause == payload);
+          if (kinds[k] == SCR_ERR_AGGREGATE)
+            assert(((ScrAggregateError *)error)->errors == payload);
+          if (held) scr_error_release(held);
+          else scr_dyn_release(payload);
+        }
+        error_heap_restored(before, "cycle", kinds[k], gen, alias);
+      }
+    }
+
+    /* Ordinary destruction releases each slot, while a retained child lives. */
+    ErrorHeapSnapshot before = error_heap_snapshot();
+    ScrDyn *payload = scr_dyn_new_arr();
+    ScrError *error = error_with_payload(kinds[k], payload);
+    scr_error_release(error);
+    assert(payload->rc == 1 && payload->kind == SCR_DYN_ARR);
+    scr_dyn_release(payload);
+    error_heap_restored(before, "ordinary", kinds[k], -1, -1);
+  }
+}
+
+typedef struct ErrorSlotWitness {
+  ScrDyn **slot;
+  ScrDyn *expected;
+  int released;
+} ErrorSlotWitness;
+
+static void *error_witness_retain(void *value) { return value; }
+
+static void error_witness_release(void *value) {
+  ErrorSlotWitness *witness = value;
+  /* Runs inside the mutator/destructor, before it returns: stale publication
+   * fails even if the collector's threshold schedule changes. */
+  assert(*witness->slot == witness->expected);
+  witness->released++;
+}
+
+static ScrDyn *error_witness_value(ErrorSlotWitness *witness) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  closure->caps[0] = scr_box_new_obj(error_witness_retain, error_witness_release, NULL);
+  scr_box_set_ref(closure->caps[0], witness);
+  return scr_dyn_new_func(closure, nothing, 0, "func()=>dyn", "slot witness");
+}
+
+static void error_payload_mutations(void) {
+  for (int operation = 0; operation < 8; operation++) {
+    ErrorHeapSnapshot before = error_heap_snapshot();
+    ErrorSlotWitness witness = {0};
+    ScrDyn *previous = error_witness_value(&witness);
+    ScrDyn *replacement = scr_dyn_new_arr();
+    ScrError *error;
+    if (operation == 7) {
+      ScrDyn *options = scr_dyn_new_obj();
+      scr_dyn_obj_set(options, "cause", 5, scr_dyn_retain(previous));
+      error = scr_domex_new(NULL, options);
+      scr_dyn_release(options);
+      witness.slot = &((ScrDomException *)error)->cause;
+    } else if (operation >= 5) {
+      error = scr_aggregate_new(NULL, NULL);
+      scr_aggregate_set_errors(error, previous);
+      witness.slot = &((ScrAggregateError *)error)->errors;
+    } else {
+      error = scr_error_new(SCR_ERR_ERROR, NULL);
+      scr_error_set_cause(error, previous);
+      witness.slot = &error->error_cause;
+    }
+    scr_dyn_release(previous);
+    witness.expected = (operation == 0 || operation == 3 || operation == 5) ? replacement : NULL;
+    switch (operation) {
+    case 0: scr_error_set_cause(error, replacement); break;
+    case 1: scr_error_delete_cause(error); break;
+    case 2: scr_error_define_cause(error, replacement); break;
+    case 3: {
+      ScrDyn *view = scr_dyn_new_obj();
+      scr_dyn_obj_set(view, "cause", 5, scr_dyn_retain(replacement));
+      scr_error_commit_dyn(error, view);
+      scr_dyn_release(view);
+      break;
+    }
+    case 5: scr_aggregate_set_errors(error, replacement); break;
+    default: scr_error_release(error); error = NULL; break;
+    }
+    assert(witness.released == 1);
+    if (error) {
+      if (operation != 1) assert(*witness.slot == replacement);
+      else assert(*witness.slot == NULL);
+      scr_error_release(error);
+    }
+    scr_dyn_release(replacement);
+    error_heap_restored(before, "mutation", operation, -1, -1);
+  }
+
+  /* Release of an old cyclic payload may collect while its owner stays live. */
+  for (int remove = 0; remove < 2; remove++) {
+    ErrorHeapSnapshot before = error_heap_snapshot();
+    ScrDyn *previous = scr_dyn_new_arr(), *replacement = scr_dyn_new_arr();
+    scr_cyc_set_gen(scr_cyc_hdr(previous), SCR_CYC_OLD);
+    ScrError *error = error_with_payload(SCR_ERR_ERROR, previous);
+    scr_dyn_arr_push(previous, error_backedge(error));
+    scr_dyn_release(previous);
+    if (remove) scr_error_delete_cause(error);
+    else scr_error_set_cause(error, replacement);
+    scr_collect_cycles();
+    assert(error->rc == 1);
+    assert(error->error_cause == (remove ? NULL : replacement));
+    scr_error_release(error);
+    scr_dyn_release(replacement);
+    error_heap_restored(before, "cyclic-mutation", remove, -1, -1);
+  }
+}
+
+static void error_suppressed_snapshots(void) {
+  for (int shared = 0; shared < 2; shared++) {
+    for (int alias = 0; alias < 3; alias++) {
+      ErrorHeapSnapshot before = error_heap_snapshot();
+      ScrDyn *body = scr_dyn_new_arr();
+      ScrDyn *disposal = shared ? scr_dyn_retain(body) : scr_dyn_new_arr();
+      scr_throw_ref(scr_dyn_retain(body), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      ScrCaught *body_error = scr_exc_take();
+      scr_throw_ref(scr_dyn_retain(disposal), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+      scr_exc_suppress(body_error);
+      ScrCaught *outer = scr_exc_take();
+      assert(outer->kind == SCR_EXC_OBJ);
+      ScrError *error = outer->payload;
+      uintptr_t address = (uintptr_t)error;
+      const ScrCaught *first, *second;
+      assert(scr_exc_suppressed_values(error, &first, &second));
+      assert(first != second && first->payload == disposal && second->payload == body);
+      ScrCaught *held = alias == 1 ? scr_caught_retain((ScrCaught *)first)
+                         : alias == 2 ? scr_caught_retain((ScrCaught *)second) : NULL;
+      scr_error_set_cause(error, body);
+      scr_dyn_arr_push(body, error_backedge(error));
+      if (!shared) scr_dyn_arr_push(disposal, error_backedge(error));
+      scr_dyn_release(body);
+      scr_dyn_release(disposal);
+      scr_caught_release(outer);
+      scr_cyc_collect_scheduled();
+      scr_collect_cycles();
+      if (held) {
+        const ScrCaught *still_first, *still_second;
+        assert(scr_exc_suppressed_values(error, &still_first, &still_second));
+        assert(still_first == first && still_second == second);
+        assert(first->payload == disposal && second->payload == body);
+        assert(body->v.arr.len == 1 && disposal->v.arr.len == 1);
+        scr_caught_release(held);
+      }
+      error_heap_restored(before, "suppressed", shared, -1, alias);
+      assert(!scr_exc_suppressed_values((const void *)address, &first, &second));
+    }
+  }
+
+  /* Non-cyclic snapshots retain ordinary destruction semantics. */
+  ErrorHeapSnapshot before = error_heap_snapshot();
+  scr_throw_f64(1);
+  ScrCaught *body = scr_exc_take();
+  scr_throw_f64(2);
+  scr_exc_suppress(body);
+  ScrCaught *outer = scr_exc_take();
+  uintptr_t address = (uintptr_t)outer->payload;
+  scr_caught_release(outer);
+  error_heap_restored(before, "suppressed-ordinary", 0, -1, -1);
+  const ScrCaught *first, *second;
+  assert(!scr_exc_suppressed_values((const void *)address, &first, &second));
+}
+
+static int error_owned_payloads(void) {
+  scr_error_set_traced();
+  scr_init();
+  error_payload_cycles();
+  error_payload_mutations();
+  error_suppressed_snapshots();
+  puts("native Error owned payload checks passed");
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "error-owned-payloads") == 0) return error_owned_payloads();
+  assert(argc == 1);
   json_string_boundaries();
   record_frozen_bit();
   json_indent_ownership();

@@ -5,6 +5,7 @@ import { emitWasmModules } from "./wasm-modules.js";
 import { weakTraceTable } from "./alloc.js";
 import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
+import { libHostStateType } from "./lib-host-state.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -996,6 +997,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `%ScrClosure = type { ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr, i32, i32, ptr, ptr }`,
     `%ScrFfiTable = type { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, i8, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
     `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr }`,
+    // The library host-callback state (scr_core.h's ScrLibHostState, built
+    // by lib-host-state.ts): native call sites GEP a channel's fn, ctx and
+    // the callback-depth counter through it instead of calling the
+    // accessors. Only a native library module can name it.
+    ...(emitter.mod.lib !== undefined && !emitter.wasi ? [libHostStateType(emitter.sizeType)] : []),
     // ScrArr mirrors scr_runtime.h field-for-field: { rc, len (i32), cap
     // (i32), elem, cyc, spare, filled, data } (field numbers in
     // SCR_ARR_FIELD), where the dense states follow the cap value slots at

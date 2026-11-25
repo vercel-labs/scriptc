@@ -83,6 +83,12 @@ const void *__sanitizer_get_allocated_begin(const void *p) __attribute__((weak))
 /* scr_json.c: the dynamic nodes this program allocated (SCR_LSAN_IMMORTAL). */
 bool scr_lsan_dyns_has(const void *node);
 size_t __sanitizer_get_allocated_size(const volatile void *p) __attribute__((weak));
+/* Whether any byte of [beg, beg+size) is poisoned. A suspended frame's
+ * redzones (and the padding between its locals) stay poisoned while the
+ * fiber is parked, so the leak scan must not read them: an instrumented
+ * read of a redzone aborts the process instead of scanning it. Weak like
+ * the hooks above. */
+void *__asan_region_is_poisoned(void *beg, size_t size) __attribute__((weak));
 #endif
 #endif
 
@@ -1607,6 +1613,13 @@ static void scr_lsan_scan(ScrLsanScan *s) {
       ScrLsanRange range = s->range[--s->nrange];
       const uintptr_t *word = (const uintptr_t *)range.p;
       for (size_t i = 0; i < range.words && s->budget; i++, s->budget--) {
+        /* A parked frame keeps its redzones (and any inter-local padding)
+         * poisoned: reading one is exactly the fault the sanitizer is
+         * there to report, and it would abort the leak scan it is part
+         * of. Skip those words; the live words around them are scanned. */
+        if (__asan_region_is_poisoned &&
+            __asan_region_is_poisoned((char *)range.p + i * sizeof *word, sizeof *word))
+          continue;
         uintptr_t w = word[i];
         if (!w) continue;
         const void *begin = __sanitizer_get_allocated_begin((const void *)w);

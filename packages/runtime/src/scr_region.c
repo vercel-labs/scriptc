@@ -1167,8 +1167,17 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
 #ifdef SCR_LSAN_IMMORTAL
   if (pinned) {
     /* The first pass queued its walk; settle it, then walk the whole region
-     * again with the leak scan watching. */
+     * again with the leak scan watching. The second traversal starts from
+     * a clean walk: objects visited before the published one are entered
+     * again, and entering an owned single-reference object a second time is
+     * the RC audit's "reached twice" abort (and would double every count
+     * besides). No count is settled here; the pin is final. */
     scr_rgn_drain(w);
+    w->internal = 0;
+    w->src = 0;
+    w->nents = w->nedges = w->nwork = w->singles = 0;
+    if (w->hash) memset(w->hash, 0, w->cap_hash * sizeof *w->hash);
+    for (ScrRgnChunk *c2 = r->chunks; c2; c2 = c2->next) c2->found = 0;
     w->keep_immortal = true;
     SCR_RGN_EACH(r, s2, o2) s2->cls->visit(o2, w);
     scr_rgn_drain(w);

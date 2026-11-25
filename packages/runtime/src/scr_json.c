@@ -1689,11 +1689,26 @@ static void scr_dyn_region_leave(ScrDyn *d) {
  * asks this record, never the bytes at an address: a Buffer holds data the
  * program controls, so a header-shaped word in one must not pass for a node
  * whose fields the scan then dereferences. Every node is recorded when the
- * allocator makes it and dropped when its memory is freed. */
+ * allocator makes it and dropped when its memory is freed.
+ *
+ * The table stores an XOR-masked form of each address, never the pointer
+ * itself: LeakSanitizer treats global memory (and everything reachable from
+ * it) as roots, so a plain node pointer here would keep every leaked
+ * dynamic value reachable and suppress the very report this record exists
+ * to serve. The mask keeps membership exact while no stored word names an
+ * allocation. */
+#define SCR_LSAN_DYN_MASK ((uintptr_t)0xD1B54A32D192ED03ull)
 static void *const scr_lsan_dyns_tomb = (void *)(uintptr_t)1;
 static volatile int scr_lsan_dyns_lock;
 static void **scr_lsan_dyns;
 static size_t scr_lsan_dyns_cap, scr_lsan_dyns_live, scr_lsan_dyns_dead;
+
+/* The stored form of `node`'s address. The tombstone 1 is unreachable: an
+ * allocation begins 16-byte aligned, and the mask is odd, so a masked
+ * begin ends in an even bit pattern that is never exactly 1. */
+static void *scr_lsan_dyns_key(const void *node) {
+  return (void *)((uintptr_t)node ^ SCR_LSAN_DYN_MASK);
+}
 
 static void scr_lsan_dyns_acquire(void) {
   while (__atomic_exchange_n(&scr_lsan_dyns_lock, 1, __ATOMIC_ACQUIRE)) {
@@ -1725,15 +1740,16 @@ static void scr_lsan_dyns_rehash(size_t cap) {
   scr_lsan_dyns_dead = 0;
 }
 void scr_lsan_dyns_add(void *node) {
+  void *key = scr_lsan_dyns_key(node);
   scr_lsan_dyns_acquire();
   if ((scr_lsan_dyns_live + scr_lsan_dyns_dead + 1) * 4 >= scr_lsan_dyns_cap * 3)
     scr_lsan_dyns_rehash(scr_lsan_dyns_cap ? scr_lsan_dyns_cap * 2 : 1024);
   if (scr_lsan_dyns_cap) {
     size_t mask = scr_lsan_dyns_cap - 1;
-    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    size_t i = scr_lsan_dyns_slot(key, scr_lsan_dyns_cap);
     size_t empty = SIZE_MAX;
     while (scr_lsan_dyns[i]) {
-      if (scr_lsan_dyns[i] == node) {
+      if (scr_lsan_dyns[i] == key) {
         scr_lsan_dyns_release();
         return;
       }
@@ -1744,18 +1760,19 @@ void scr_lsan_dyns_add(void *node) {
       i = empty;
       scr_lsan_dyns_dead--;
     }
-    scr_lsan_dyns[i] = node;
+    scr_lsan_dyns[i] = key;
     scr_lsan_dyns_live++;
   }
   scr_lsan_dyns_release();
 }
 void scr_lsan_dyns_remove(const void *node) {
+  void *key = scr_lsan_dyns_key(node);
   scr_lsan_dyns_acquire();
   if (scr_lsan_dyns_cap) {
     size_t mask = scr_lsan_dyns_cap - 1;
-    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    size_t i = scr_lsan_dyns_slot(key, scr_lsan_dyns_cap);
     while (scr_lsan_dyns[i]) {
-      if (scr_lsan_dyns[i] == node) {
+      if (scr_lsan_dyns[i] == key) {
         scr_lsan_dyns[i] = scr_lsan_dyns_tomb;
         scr_lsan_dyns_live--;
         scr_lsan_dyns_dead++;
@@ -1767,13 +1784,14 @@ void scr_lsan_dyns_remove(const void *node) {
   scr_lsan_dyns_release();
 }
 bool scr_lsan_dyns_has(const void *node) {
+  void *key = scr_lsan_dyns_key(node);
   bool found = false;
   scr_lsan_dyns_acquire();
   if (scr_lsan_dyns_cap) {
     size_t mask = scr_lsan_dyns_cap - 1;
-    size_t i = scr_lsan_dyns_slot(node, scr_lsan_dyns_cap);
+    size_t i = scr_lsan_dyns_slot(key, scr_lsan_dyns_cap);
     while (scr_lsan_dyns[i]) {
-      if (scr_lsan_dyns[i] == node) {
+      if (scr_lsan_dyns[i] == key) {
         found = true;
         break;
       }

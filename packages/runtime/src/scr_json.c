@@ -9731,6 +9731,7 @@ bool scr_dyn_ref_is_array(const ScrDyn *d) {
 }
 
 bool scr_dyn_ref_is_error(const ScrDyn *d) {
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->is_error(d);
   if (scr_dyn_generator(d)) return false;
   /* Registered native Error capsules retain their brand even when their
    * public property view omits the internal error marker. */

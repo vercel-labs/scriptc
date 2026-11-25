@@ -308,6 +308,8 @@ typedef struct ScrNiDynOps {
    * an entry added in the middle changes the bytes of programs that have
    * no island at all. */
   int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
+  /* V8 recorded the Error brand when the handle crossed the bridge. */
+  bool (*is_error)(const ScrDyn *value);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 

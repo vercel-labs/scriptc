@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- `Error.isError` recognizes Errors returned by a Node island, including Errors with a detached prototype. The check leaves their property getters untouched.
+
 <!-- release:start -->
 
 ## 0.4.16

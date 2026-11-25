@@ -88,6 +88,10 @@ describe.skipIf(skip)("Node island handles", () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);
 
+  test("Error.isError reads the brand of returned island handles", async () => {
+    expect(await runFixture("error-brand", "error-brand.ts")).toBe("true true false false 0\n");
+  }, 300_000);
+
   test("a program buffer that can move or is detached does not cross into an island", async () => {
     // An island view aliases the program's memory, so a buffer the program
     // can resize or has detached is refused by name where it would cross,

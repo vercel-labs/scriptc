@@ -2822,6 +2822,11 @@ bool scr_ni_is_function(const ScrDyn *value) {
   return ref != NULL && (ref->flags & SCR_NVF_FUNCTION) != 0;
 }
 
+static bool nh_is_error(const ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  return ref != NULL && (ref->flags & SCR_NVF_ERROR) != 0;
+}
+
 /* Its address in a closure's `fn` marks an island function's identity root. */
 static const char nh_identity_mark = 0;
 
@@ -3644,6 +3649,7 @@ static const ScrNiDynOps nh_dyn_ops = {
     .promise_set = nh_promise_set,
     .set = scr_ni_set,
     .has_own = scr_ni_has_own,
+    .is_error = nh_is_error,
 };
 
 __attribute__((constructor)) static void nh_install(void) {

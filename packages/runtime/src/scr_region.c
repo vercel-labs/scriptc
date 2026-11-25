@@ -202,6 +202,10 @@ struct ScrRgnWalk {
   ScrRgnEntry *ents;
   size_t nents, cap_ents;
   size_t singles; /* owned objects walked without an entry */
+  /* Set for the walk of a region that pins (its contents are never freed):
+   * name every dynamic value the walk reaches for LeakSanitizer, whose
+   * reachability scan cannot see the cell word a layout slot holds. */
+  bool keep_immortal;
   size_t *hash; /* open addressing: entry index + 1 */
   size_t cap_hash;
   void **owned; /* the entries' objects, as a set (scr_rgn_owned_set) */
@@ -866,6 +870,7 @@ static void scr_rgn_walk_closure(ScrRgnWalk *w, ScrClosure *c) {
 }
 
 static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
+  if (w->keep_immortal) scr_lsan_immortal(d);
   switch (d->kind) {
   case SCR_DYN_ARR:
     for (size_t i = 0; i < d->v.arr.len; i++)
@@ -1127,14 +1132,29 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
   if (w->hash) memset(w->hash, 0, w->cap_hash * sizeof *w->hash);
   for (ScrRgnChunk *c = r->chunks; c; c = c->next) c->found = 0;
   size_t objects = 0;
+  bool pinned = false;
   SCR_RGN_EACH(r, s, o) {
     if (SCR_RC_COUNT(o) == SCR_RC_IMMORTAL) {
       /* Published: other threads may hold it, uncounted. */
       r->state = SCR_RGN_PINNED;
       t->stats.pinned++;
       if (stats) fprintf(stderr, "scriptc region %llu: pinned: it holds a published object\n", (unsigned long long)r->id);
+#ifndef SCR_LSAN_IMMORTAL
       return false;
+#else
+      /* The region is never freed: its contents are kept for the process's
+       * life, so the pass below names every dynamic value the walk reaches
+       * for LeakSanitizer. Its scan follows plain pointers only and would
+       * report what a published object keeps through a layout slot, whose
+       * word is the cell tag over the box. No counts are settled: the pin
+       * is final. */
+      pinned = true;
+      continue;
+#endif
     }
+#ifdef SCR_LSAN_IMMORTAL
+    if (pinned) continue;
+#endif
 #ifdef SCR_RGN_DEBUG
     if (debug) {
       w->vcls = s->cls;
@@ -1144,6 +1164,18 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
     s->cls->visit(o, w);
     objects++;
   }
+#ifdef SCR_LSAN_IMMORTAL
+  if (pinned) {
+    /* The first pass queued its walk; settle it, then walk the whole region
+     * again with the leak scan watching. */
+    scr_rgn_drain(w);
+    w->keep_immortal = true;
+    SCR_RGN_EACH(r, s2, o2) s2->cls->visit(o2, w);
+    scr_rgn_drain(w);
+    w->keep_immortal = false;
+    return false;
+  }
+#endif
 #ifdef SCR_RGN_DEBUG
   w->vcls = NULL;
 #endif

@@ -56,9 +56,9 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
       expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
-    // A compound assignment stores its number result from the jsval: an
-    // unshared number cell is updated in place.
-    expect(body(llvm, "bump")).toMatch(/store double %t\d+, ptr %t\d+/);
+    // A compound assignment stores its result's jsval word in the slot: the
+    // old word is loaded, the new one stored, and an old cell released.
+    expect(body(llvm, "bump")).toMatch(/store ptr %t\d+, ptr %t\d+/);
     // The helper stays the out-of-line slow path of every site.
     expect(body(llvm, "read")).toMatch(
       /@sc_bf__x25_dyn_class_property_[0-9a-f]+\(ptr %t\d+\) noinline cold/,

@@ -1277,8 +1277,10 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
   if (!absent) {
     n = (size_t)size;
     if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n */
-      size_t h = st->r.hwm;
+      /* Node grows hwm to computeNewHighWaterMark(n): the smallest power
+       * of two at least n, computed from the request rather than from the
+       * current watermark (which may be 0, as highWaterMark: 0 is legal). */
+      size_t h = 1;
       while (h < n) h *= 2;
       st->r.hwm = h;
     }
@@ -1287,7 +1289,7 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
    * absent form is NaN there, which also clears; only read(0) keeps it. */
   if (absent || n != 0) st->r.emitted_readable = false;
   if (!absent && n == 0 && st->r.need_readable &&
-      (st->r.length >= st->r.hwm || st->r.ended)) {
+      ((st->r.hwm != 0 ? st->r.length >= st->r.hwm : st->r.length > 0) || st->r.ended)) {
     if (st->r.length == 0 && st->r.ended) scr_stream_end_readable(s);
     else scr_stream_emit_readable_nt(s);
     return NULL;

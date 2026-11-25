@@ -95,7 +95,7 @@ export function builtinClassAliasOwnsNoSlot(lowerer: Lowerer, symbol: ts.Symbol)
     symbol.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(symbol) : symbol;
   const decl = binding.valueDeclaration;
   if (decl === undefined || !ts.isVariableDeclaration(decl)) return false;
-  if (builtinMemberRequireDecl(decl.name, decl.initializer)) return false;
+  if (builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)) return false;
   if (streamClassAliasDecl(lowerer, decl.name, decl.initializer)) return false;
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return true;
   let init = decl.initializer;

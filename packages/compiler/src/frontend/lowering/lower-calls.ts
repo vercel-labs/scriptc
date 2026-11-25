@@ -1168,7 +1168,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const receiver =
       access &&
       !lowerer.isStdlibGlobal(access.expression, "console") &&
-      requireSpecOf(access.expression) === null &&
+      requireSpecOf(access.expression, lowerer.checker) === null &&
       created?.spec !== "node:console" &&
       created?.spec !== "console"
         ? lowerer.lowerExpr(access.expression)

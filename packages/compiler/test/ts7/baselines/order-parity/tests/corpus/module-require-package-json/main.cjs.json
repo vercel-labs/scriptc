@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-require-package-json/main.cjs"
+ ],
+ "diags": []
+}

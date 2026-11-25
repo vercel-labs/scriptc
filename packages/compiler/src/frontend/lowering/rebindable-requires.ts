@@ -30,7 +30,7 @@ export function collectRebindableRequireDecls(
     if ((stmt.declarationList.flags & ts.NodeFlags.Const) !== 0) continue;
     for (const decl of stmt.declarationList.declarations.nodes) {
       if (!ts.isIdentifier(decl.name) || decl.initializer === undefined) continue;
-      if (requireSpecOf(decl.initializer) === null) continue;
+      if (requireSpecOf(decl.initializer, lowerer.checker) === null) continue;
       byName.set(decl.name.text, decl);
     }
   }

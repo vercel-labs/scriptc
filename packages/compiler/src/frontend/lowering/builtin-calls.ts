@@ -92,7 +92,7 @@ function lowerGracefulify(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc
   while (ts.isParenthesizedExpression(arg)) arg = arg.expression;
   const plain =
     ts.isIdentifier(arg) ||
-    (ts.isCallExpression(arg) && requireSpecOf(arg) !== null) ||
+    (ts.isCallExpression(arg) && requireSpecOf(arg, lowerer.checker) !== null) ||
     (ts.isPropertyAccessExpression(arg) && ts.isIdentifier(arg.expression));
   if (plain) return { kind: "seqExpr", stmts: [], result: dynUndefinedExpr(loc), type: DYN, loc };
   return {

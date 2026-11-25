@@ -1188,6 +1188,15 @@ function moduleRequireProgramRoots7(program: ts.Program): string[] {
       if (canonicalBuiltinModule(spec) !== null) continue;
       let target = resolveProjectModule(sf.fileName, spec);
       if (target === null && !spec.startsWith("#")) {
+        // An installed package's JSON document is data the call reads, as it
+        // is for the bare spelling: the package loader brings the document,
+        // not a module surface.
+        if (spec.endsWith(".json")) {
+          const json = resolveBareModule(sf.fileName, spec, "js-only", "require");
+          if (json !== null && json.typesFile.endsWith(".json")) target = json.typesFile;
+        }
+      }
+      if (target === null && !spec.startsWith("#")) {
         const npm = resolveNpmImport7(sf.fileName, spec, "require");
         if (
           npm !== null &&
@@ -2937,7 +2946,7 @@ function jsOpinionOf7(
  * and statement lowering share — anything require-shaped it does NOT match
  * (computed specifiers, extra arguments) is not a module edge and fences at
  * its use site. */
-function requireSpecOf7(node: ts.Node, checker?: ts.TypeChecker): string | null {
+function requireSpecOf7(node: ts.Node, checker: ts.TypeChecker): string | null {
   let value = node;
   while (
     ts.isParenthesizedExpression(value) ||
@@ -2960,7 +2969,7 @@ function requireSpecOf7(node: ts.Node, checker?: ts.TypeChecker): string | null 
  * (every declarator a require), and the bare side-effect `require("s");`.
  * These lower to NOTHING — the bindings are alias plumbing (tsc models
  * them as import aliases) and the module edge lives in the order walk. */
-function isRequireStatement7(stmt: ts.Statement, checker?: ts.TypeChecker): boolean {
+function isRequireStatement7(stmt: ts.Statement, checker: ts.TypeChecker): boolean {
   if (ts.isExpressionStatement(stmt)) return requireSpecOf7(stmt.expression, checker) !== null;
   if (!ts.isVariableStatement(stmt)) return false;
   const decls = stmt.declarationList.declarations.nodes;
@@ -3290,7 +3299,7 @@ function sourceBinding7(program: ts.Program, ident: ts.Identifier): boolean {
   );
 }
 
-function purePrefixDecl7(decl: ts.VariableDeclaration, checker?: ts.TypeChecker): boolean {
+function purePrefixDecl7(decl: ts.VariableDeclaration, checker: ts.TypeChecker): boolean {
   const init = decl.initializer;
   return (
     init === undefined ||

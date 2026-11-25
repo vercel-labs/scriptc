@@ -66,7 +66,7 @@ function builtinConstantsModuleOf(lowerer: Lowerer, node: ts.Expression): string
     const bi = lowerer.builtinMemberOf(node);
     if (bi) module = bi.module;
     else {
-      const spec = requireSpecOf(node.expression);
+      const spec = requireSpecOf(node.expression, lowerer.checker);
       module = spec !== null ? canonicalBuiltinModule(spec) : null;
     }
   } else if (ts.isIdentifier(node)) {

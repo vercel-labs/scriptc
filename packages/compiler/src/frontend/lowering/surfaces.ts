@@ -4609,7 +4609,7 @@ export function stdlibGlobalAliasNameOf(
   // globalThis.process`. Preflight admits exactly this shape
   // (processModuleAliasRequire7); commander's lib/command.js opens with
   // it.
-  const requireSpec = requireSpecOf(aliasExpr);
+  const requireSpec = requireSpecOf(aliasExpr, lowerer.checker);
   const name =
     requireSpec === "process" || requireSpec === "node:process"
       ? "process"

@@ -353,7 +353,7 @@ export function isFreshExportsReset(lowerer: Lowerer, stmt: ts.ExpressionStateme
   if (!hasExports || !hasModuleExports) return false;
   for (const prior of sf.statements.nodes) {
     if (prior === stmt) break;
-    if (ts.isFunctionDeclaration(prior) || isRequireStatement(prior)) continue;
+    if (ts.isFunctionDeclaration(prior) || isRequireStatement(prior, lowerer.checker)) continue;
     if (ts.isExpressionStatement(prior) && ts.isStringLiteral(prior.expression)) continue;
     return false;
   }

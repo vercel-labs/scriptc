@@ -9808,7 +9808,7 @@ export class Lowerer {
       const interop = tscInteropModuleOf(this, expr);
       if (interop !== null) return cjsNamespaceModule(this, interop.dep) ? interop.dep : null;
     }
-    const directSpec = requireSpecOf(decl.initializer);
+    const directSpec = requireSpecOf(decl.initializer, this.checker);
     if (directSpec !== null) {
       if (isJsonRequireDecl(this, decl)) return null;
       return (
@@ -9832,7 +9832,7 @@ export class Lowerer {
     if (stmt === undefined || !ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent))
       return null;
     if (!isJsSourceFile(stmt.parent) || decl.initializer === undefined) return null;
-    const spec = requireSpecOf(decl.initializer);
+    const spec = requireSpecOf(decl.initializer, this.checker);
     if (spec === null) return null;
     const sf = stmt.parent;
     const dep =
@@ -25248,7 +25248,7 @@ export class Lowerer {
       // createRequire binding, the fallback-typed cast idiom stripped)
       // binds it too.
       if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
-        const spec = requireSpecOf(decl.initializer);
+        const spec = requireSpecOf(decl.initializer, this.checker);
         if (spec !== null) return canonicalBuiltinModule(spec);
         const init = withoutParenthesesTypeWrappers(decl.initializer);
         if (ts.isCallExpression(init)) {
@@ -25274,7 +25274,7 @@ export class Lowerer {
         const name = decl.name;
         if (name === undefined || !ts.isIdentifier(name)) return null;
         const init = decl.parent.parent.initializer;
-        const spec = requireSpecOf(init);
+        const spec = requireSpecOf(init, this.checker);
         const outer =
           spec !== null
             ? canonicalBuiltinModule(spec)
@@ -25290,7 +25290,7 @@ export class Lowerer {
     // off the module object; a supported module's members key the same
     // tables as any namespace binding).
     {
-      const spec = requireSpecOf(expr);
+      const spec = requireSpecOf(expr, this.checker);
       if (spec !== null) return canonicalBuiltinModule(spec);
     }
     // The createRequire spelling of the same inline form:
@@ -25327,7 +25327,7 @@ export class Lowerer {
     if (
       ts.isPropertyAccessExpression(expr) &&
       !expr.questionDotToken &&
-      (ts.isIdentifier(expr.expression) || requireSpecOf(expr.expression) !== null)
+      (ts.isIdentifier(expr.expression) || requireSpecOf(expr.expression, this.checker) !== null)
     ) {
       const outer = this.builtinNamespaceModuleOf(expr.expression);
       if (outer === null) return null;
@@ -25374,7 +25374,7 @@ export class Lowerer {
       if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return "esm";
       // require() and process.getBuiltinModule() answer the CommonJS
       // exports object.
-      if (requireSpecOf(e) !== null) return "cjs";
+      if (requireSpecOf(e, this.checker) !== null) return "cjs";
       const cr = createRequireSpecOf(this, e);
       if (cr !== null && cr.spec !== null) return "cjs";
       if (

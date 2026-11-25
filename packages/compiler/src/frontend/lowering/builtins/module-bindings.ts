@@ -83,7 +83,7 @@ function builtinModuleBindingOf(
       ts.isVariableDeclaration(varDecl) &&
       varDecl.initializer !== undefined
     ) {
-      const spec = requireSpecOf(varDecl.initializer);
+      const spec = requireSpecOf(varDecl.initializer, lowerer.checker);
       let module =
         spec !== null
           ? canonicalBuiltinModule(spec)
@@ -119,7 +119,7 @@ function builtinModuleBindingOf(
     ts.isPropertyAccessExpression(decl.initializer) &&
     !decl.initializer.questionDotToken
   ) {
-    const spec = requireSpecOf(decl.initializer.expression);
+    const spec = requireSpecOf(decl.initializer.expression, lowerer.checker);
     const module = spec !== null ? canonicalBuiltinModule(spec) : null;
     if (module === null) return null;
     return { module, member: decl.initializer.name.text };
@@ -272,10 +272,11 @@ export function isBuiltinEsmNamespaceOf(lowerer: Lowerer, expr: ts.Expression): 
 export function builtinMemberRequireDecl(
   nameNode: ts.Node,
   init: ts.Expression | undefined,
+  checker: ts.TypeChecker,
 ): boolean {
   if (!ts.isIdentifier(nameNode) || !init) return false;
   if (!ts.isPropertyAccessExpression(init) || init.questionDotToken) return false;
-  const spec = requireSpecOf(init.expression);
+  const spec = requireSpecOf(init.expression, checker);
   return spec !== null && canonicalBuiltinModule(spec) !== null;
 }
 
@@ -292,7 +293,7 @@ export function builtinMemberBindingTarget(
   if (
     decl === undefined ||
     !ts.isVariableDeclaration(decl) ||
-    !builtinMemberRequireDecl(decl.name, decl.initializer)
+    !builtinMemberRequireDecl(decl.name, decl.initializer, lowerer.checker)
   )
     return symbol;
   const init = decl.initializer as ts.PropertyAccessExpression;
@@ -341,7 +342,7 @@ export function builtinNamespaceDestructureModuleOf(
   const init = withoutParenthesesTypeWrappers(decl.initializer);
   if (ts.isCallExpression(init)) {
     if (ts.isIdentifier(init.expression) && isCjsRequireGlobal(lowerer, init.expression)) {
-      const spec = requireSpecOf(init);
+      const spec = requireSpecOf(init, lowerer.checker);
       module = spec !== null ? canonicalBuiltinModule(spec) : null;
     } else {
       const cr = createRequireSpecOf(lowerer, init);
@@ -768,7 +769,7 @@ export function fencedBuiltinImportOf(lowerer: Lowerer, ident: ts.Identifier): s
         ? decl.parent.parent
         : decl;
     if (ts.isVariableDeclaration(varDecl) && varDecl.initializer !== undefined) {
-      const spec = requireSpecOf(varDecl.initializer);
+      const spec = requireSpecOf(varDecl.initializer, lowerer.checker);
       if (spec !== null) {
         if (isNativeFfiRequire(lowerer, varDecl.initializer)) return null;
         const isBuiltin = spec.startsWith("node:") || builtinModules.includes(spec);

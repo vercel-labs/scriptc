@@ -19,7 +19,22 @@ export function isCjsModuleReceiver(expr: ts.Expression, checker?: ts.TypeChecke
   if (checker === undefined) return true;
   const symbol = checker.getSymbolAtLocation(expr);
   if (symbol === undefined) return true;
-  return symbol.declarations.every((decl) => ts.getSourceFileOfNode(decl).isDeclarationFile);
+  // A SOURCE shadow is a declaration a program author wrote (a parameter, a
+  // local, an import, a class, a function). Any other declaration — the
+  // standard library's global, or a wrapper declaration the frontend
+  // synthesizes in a source file — keeps the CommonJS module object.
+  return !symbol.declarations.some(
+    (decl) =>
+      !ts.getSourceFileOfNode(decl).isDeclarationFile &&
+      (ts.isVariableDeclaration(decl) ||
+        ts.isParameter(decl) ||
+        ts.isBindingElement(decl) ||
+        ts.isFunctionDeclaration(decl) ||
+        ts.isClassDeclaration(decl) ||
+        ts.isImportSpecifier(decl) ||
+        ts.isNamespaceImport(decl) ||
+        ts.isImportEqualsDeclaration(decl)),
+  );
 }
 
 export function isRequireCallee(expr: ts.Expression, checker?: ts.TypeChecker): boolean {

@@ -76,7 +76,7 @@ export function jsonRequireTarget(
   if (!ts.isCallExpression(value)) return null;
   const callNode = value;
   if (!isCjsRequireCallee(lowerer, callNode.expression)) return null;
-  const spec = requireSpecOf(callNode);
+  const spec = requireSpecOf(callNode, lowerer.checker);
   if (spec === null) return null;
   const sf = ts.getSourceFileOfNode(callNode);
   if (!isCjsJsFile(sf, lowerer.program)) return null;
@@ -104,7 +104,8 @@ export function collectJsonRequires(lowerer: Lowerer, parts: FileParts[]): void 
     if (!ts.sourceTextIncludes(sf, ".json")) continue;
     const calls: ts.CallExpression[] = [];
     ts.walkPreorder(sf, (node) => {
-      if (ts.isCallExpression(node) && requireSpecOf(node) !== null) calls.push(node);
+      if (ts.isCallExpression(node) && requireSpecOf(node, lowerer.checker) !== null)
+        calls.push(node);
       return undefined;
     });
     const created = new Set<JsonRequireModule>();

@@ -379,15 +379,16 @@ static ScrDyn *scr_console_inst_bound_call(ScrClosure *closure, ScrDyn *const *a
 static void scr_console_bound_cleanup(void) {
   ScrConsoleInst *inst = scr_console_bound_list;
   scr_console_bound_list = NULL;
-  /* The list's links are borrowed: releasing one instance's functions can
-   * release its streams, which can run the collector, which can free the
-   * NEXT instance. Hold our own reference on the node being processed and
-   * carry one to the next node across the release. */
-  ScrConsoleInst *held = inst;
-  if (held != NULL) scr_console_inst_retain(held);
+  /* The list's links are borrowed and are not traced edges: releasing one
+   * instance's functions can run the collector, which can free any node of
+   * the rest of the list — holding only the next node is not enough, since
+   * the node after it hangs off a link the collector cannot see. Root every
+   * node first, so the unprocessed list stays reachable while the releases
+   * run, then pop one node at a time. */
+  for (ScrConsoleInst *node = inst; node != NULL; node = node->bound_next)
+    scr_console_inst_retain(node);
   while (inst != NULL) {
     ScrConsoleInst *next = inst->bound_next;
-    if (next != NULL) scr_console_inst_retain(next);
     inst->bound_next = NULL;
     inst->bound_linked = false;
     for (int i = 0; i < 5; i++) {
@@ -395,11 +396,10 @@ static void scr_console_bound_cleanup(void) {
       inst->bound[i] = NULL;
       scr_dyn_release(function);
     }
-    /* Drop our reference to the instance just processed; the collector may
-     * run here, and `next` is held so it survives. */
-    scr_console_inst_release(held);
+    /* The nodes are retained above, so a collection here cannot free the
+     * node we are about to process; this drops the cleanup's own reference. */
+    scr_console_inst_release(inst);
     inst = next;
-    held = next;
   }
 }
 

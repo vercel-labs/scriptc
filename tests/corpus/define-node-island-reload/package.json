@@ -1,0 +1,6 @@
+{
+  "name": "define-node-island-reload",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "island-greeting": "node" } }
+}

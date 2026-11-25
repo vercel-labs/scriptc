@@ -24,14 +24,75 @@
  * Static functions never contain sites (invariant I1): the backend only
  * consults this module for calls in dynamic-tier functions. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
+import type { IrLibFn } from "./builtin-signatures.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
+import { classCaseBranches, isClassCaseDispatch } from "./class-case.js";
 
 export type JsIcSite =
   | { kind: "get"; key: string }
   | { kind: "set"; key: string }
-  | { kind: "keyed" };
+  | { kind: "keyed" }
+  | { kind: "keyedSet" }
+  /** A write under a key that names a string known only at run time. `write`
+   * is the helper's generic tail, `dyn.keySet(BAG(receiver), key, value)`:
+   * the site calls that operation itself for an ordinary object. The site
+   * holds no cache (hasJsIcSite). */
+  | { kind: "namedSet"; write: IrExpr & { kind: "libCall" } };
 
-const CAPSULE_TESTS = new Set(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
+/** The sites of a constant key. */
+type ConstantKeySite = Extract<JsIcSite, { key: string }>;
+
+/** Whether computed access sites index integral numbers without forming the
+ * property key: the backend gives a classified site arms for typed arrays and
+ * strings, and a keyed write with a Number key stores its element directly
+ * (backend/llvm/js-ic.ts). On by default; `SCRIPTC_DYN_INDEX_FASTPATH=0`
+ * selects the key path the sites used before the arms existed. The value
+ * changes emitted code, so the build cache keys on it
+ * (executable/executable-cache.ts). */
+export function dynIndexFastpath(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env["SCRIPTC_DYN_INDEX_FASTPATH"];
+  if (raw === undefined || raw === "" || raw === "1") return true;
+  if (raw === "0") return false;
+  throw new Error(`SCRIPTC_DYN_INDEX_FASTPATH must be 0 or 1, got ${raw}`);
+}
+
+export const DYN_INDEX_FASTPATH: boolean = dynIndexFastpath();
+
+const CAPSULE_TESTS = new Set<IrLibFn>([
+  "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
+  "dyn.typedRefKeyIs",
+  "dyn.classIs",
+]);
+
+/** A class table's branches in the order a receiver that matches none of
+ * them reaches their guards: the body's statements, with a `dyn.classHash`
+ * switch replaced by its cases' branches. The switch selects one of those
+ * branches by the receiver's class key and each branch keeps its own key
+ * test, so a reader treats the switch's cases as the capsule branches they
+ * were lowered from (frontend/lowering/class-dynamic-dispatch.ts). */
+function classTableBranches(body: readonly IrStmt[]): readonly IrStmt[] {
+  if (!body.some((stmt) => isClassDispatch(stmt) || isClassCaseDispatch(stmt))) return body;
+  const branches: IrStmt[] = [];
+  for (const stmt of body) {
+    if (isClassCaseDispatch(stmt)) branches.push(...classCaseBranches(stmt));
+    else if (isClassDispatch(stmt)) {
+      // A case of branches that can complete ends with a `break`.
+      for (const { body: caseBody } of stmt.cases)
+        for (const branch of caseBody) if (branch.kind !== "break") branches.push(branch);
+    } else branches.push(stmt);
+  }
+  return branches;
+}
+
+/** The switch the lowering builds over a generated class table's branches. */
+function isClassDispatch(stmt: IrStmt): stmt is IrStmt & { kind: "switch" } {
+  return (
+    stmt.kind === "switch" &&
+    stmt.disc.kind === "libCall" &&
+    (stmt.disc.fn === "dyn.classHash" || stmt.disc.fn === "dyn.classValueHash")
+  );
+}
 
 /** Classifies the helpers of a module once. */
 export class JsIcSites {
@@ -58,27 +119,68 @@ export class JsIcSites {
     if (!fn.name.startsWith("%dyn.class.")) return null;
     if (fn.async !== undefined || fn.generator !== undefined || fn.captures !== undefined)
       return null;
+    const named = this.namedSet(fn);
+    if (named !== null) return named;
     if (fn.params.some((p) => p.type.kind !== "dyn")) return null;
     const receiver = fn.params[0]?.localId;
     if (receiver === undefined) return null;
     const second = fn.params[1]?.localId;
-    const exits: JsIcSite[] = [];
+    const body = classTableBranches(fn.body);
+    const exits: ConstantKeySite[] = [];
     let i = 0;
-    for (; i < fn.body.length; i++) {
-      const s = fn.body[i]!;
+    for (; i < body.length; i++) {
+      const s = body[i]!;
       if (this.capsuleBranch(s, receiver) || this.rebinding(s, receiver)) continue;
       const exit = this.plainExit(s, receiver, second);
       if (exit === null) break;
       exits.push(exit);
     }
-    const tail = fn.body.slice(i);
+    const tail = body.slice(i);
     let site: JsIcSite | null;
     if (fn.params.length === 1) site = this.getTail(tail, receiver);
-    else if (fn.params.length !== 2 || second === undefined) return null;
-    else site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
-    if (site === null || site.kind === "keyed") return exits.length === 0 ? site : null;
+    else if (fn.params.length === 2 && second !== undefined)
+      site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
+    else if (fn.params.length === 3 && second !== undefined && DYN_INDEX_FASTPATH)
+      site = this.keyedSetTail(tail, receiver, second, fn.params[2]!.localId);
+    else return null;
+    if (
+      site === null ||
+      site.kind === "keyed" ||
+      site.kind === "keyedSet" ||
+      site.kind === "namedSet"
+    )
+      return exits.length === 0 ? site : null;
     // An exit answers plain values with the operation the site caches.
     return exits.every((exit) => exit.kind === site.kind && exit.key === site.key) ? site : null;
+  }
+
+  /** A write helper whose key parameter is a string (`receiver[name] =
+   * value` with a name that is not a constant): capsule branches and
+   * rebindings of the receiver, then `dyn.keySet(BAG(receiver), key, value);
+   * return`. For an ordinary object the helper is that one write. */
+  private namedSet(fn: IrFunction): JsIcSite | null {
+    const [receiver, key, value] = fn.params;
+    if (fn.params.length !== 3 || !receiver || !key || !value) return null;
+    if (receiver.type.kind !== "dyn" || key.type.kind !== "string" || value.type.kind !== "dyn")
+      return null;
+    if (fn.returnType.kind !== "void") return null;
+    const body = classTableBranches(fn.body);
+    const write = body[body.length - 2];
+    const ret = body[body.length - 1];
+    if (write?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return null;
+    const call = write.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySet" || call.args.length !== 3) return null;
+    const [bag, writtenKey, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver.localId)) return null;
+    if (!isVar(writtenKey, key.localId) || !isVar(stored, value.localId)) return null;
+    const branches = body.slice(0, -2);
+    if (
+      !branches.every(
+        (s) => this.capsuleBranch(s, receiver.localId) || this.rebinding(s, receiver.localId),
+      )
+    )
+      return null;
+    return { kind: "namedSet", write: call };
   }
 
   /** `if (!classCapsule(receiver)) { [if (!funcKind(receiver))] OP }`, no
@@ -86,7 +188,11 @@ export class JsIcSites {
    * value no class table matches. OP is `return [js.fromDyn](dynKeyGet(R,
    * K))` or `dyn.keySet(R, K, value); return`, with R the receiver (or a
    * bag of it). */
-  private plainExit(s: IrStmt, receiver: string, value: string | undefined): JsIcSite | null {
+  private plainExit(
+    s: IrStmt,
+    receiver: string,
+    value: string | undefined,
+  ): ConstantKeySite | null {
     const negated = (e: IrExpr, test: "classCapsule" | "funcKind"): boolean =>
       e.kind === "dynTest" && e.test === test && e.negated === true && isVar(e.value, receiver);
     if (s.kind !== "if" || s.else_ !== null || !negated(s.cond, "classCapsule")) return null;
@@ -184,6 +290,61 @@ export class JsIcSites {
     return { kind: "keyed" };
   }
 
+  /** A computed write's helper: the two guards below, then `const s =
+   * String(key); dyn.keySet(BAG(receiver), s, value); return`. A program
+   * that declares classes may look the key up in each class's table first
+   * (dBAG, TODO(fix): remove). Keyed writes are sites only for the integral
+   * element arm (DYN_INDEX_FASTPATH). */
+  private keyedSetTail(
+    tail: IrStmt[],
+    receiver: string,
+    key: string,
+    value: string,
+  ): JsIcSite | null {
+    if (tail.length < 5) return null;
+    const [symbol, nullish, decl] = tail;
+    const write = tail[tail.length - 2];
+    const ret = tail[tail.length - 1];
+    if (!tail.slice(3, -2).every((s) => this.capsuleBranch(s, receiver))) return null;
+    if (!this.setGuard(symbol, "symbol", key, receiver, key, value)) return null;
+    if (!this.setGuard(nullish, "nullish", receiver, receiver, key, value)) return null;
+    if (decl?.kind !== "varDecl") return null;
+    const init = decl.init;
+    if (init?.kind !== "libCall" || init.fn !== "dyn.toStringCoerce") return null;
+    if (!isVar(init.args[0], key)) return null;
+    if (write?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return null;
+    const call = write.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySet" || call.args.length !== 3) return null;
+    const [bag, storedKey, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver) || !isVar(storedKey, decl.localId)) return null;
+    if (!isVar(stored, value)) return null;
+    return { kind: "keyedSet" };
+  }
+
+  /** `if (<test>(tested)) { dyn.keySetComputed(BAG(receiver), key, value);
+   * return }`, with no else: a computed write's first two guards. */
+  private setGuard(
+    s: IrStmt | undefined,
+    test: "symbol" | "nullish",
+    tested: string,
+    receiver: string,
+    key: string,
+    value: string,
+  ): boolean {
+    if (s?.kind !== "if" || s.else_ !== null || s.then.length !== 2) return false;
+    const { cond } = s;
+    if (cond.kind !== "dynTest" || cond.test !== test || cond.negated === true) return false;
+    if (!isVar(cond.value, tested)) return false;
+    const [write, ret] = s.then;
+    if (write?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return false;
+    const call = write.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySetComputed") return false;
+    if (call.args.length !== 3) return false;
+    const [bag, writtenKey, stored] = call.args;
+    if (!bag || !this.bagOf(bag, receiver)) return false;
+    return isVar(writtenKey, key) && isVar(stored, value);
+  }
+
   private guard(
     s: IrStmt | undefined,
     test: "symbol" | "nullish",
@@ -269,9 +430,10 @@ export class JsIcSites {
       fn.captures === undefined
     ) {
       const param = fn.params[0]!.localId;
-      const last = fn.body[fn.body.length - 1];
+      const body = classTableBranches(fn.body);
+      const last = body[body.length - 1];
       identity =
-        fn.body
+        body
           .slice(0, -1)
           .every(
             (s) =>
@@ -297,14 +459,21 @@ function unwrapFromDyn(e: IrExpr | null | undefined): IrExpr | null {
 }
 
 /** Whether a function holds a cache site: a call to a classified helper,
- * a method dispatch, or an object literal member with a constant key. */
+ * a method dispatch, or an object literal member with a constant key. A
+ * write under a run-time name (namedSet) holds no cache: its site calls the
+ * generic write the helper ends in, so it selects none of the tier's
+ * runtime. */
 export function hasJsIcSite(fn: IrFunction, sites: JsIcSites): boolean {
+  const cached = (callee: string): boolean => {
+    const kind = sites.site(callee)?.kind;
+    return kind !== undefined && kind !== "namedSet";
+  };
   const site = (e: IrExpr, inLoop: boolean): boolean =>
     (jsIcMethodSites(fn.name, inLoop) &&
       (e.kind === "dynInvoke" ||
         (e.kind === "dynObjLit" &&
           (e.fields ?? []).some((f) => jsIcLiteralKey(f.key) !== null)))) ||
-    (e.kind === "call" && sites.site(e.callee) !== null);
+    (e.kind === "call" && cached(e.callee));
   const expr = (e: IrExpr, inLoop: boolean): boolean =>
     !site(e, inLoop) &&
     everyExprChild(

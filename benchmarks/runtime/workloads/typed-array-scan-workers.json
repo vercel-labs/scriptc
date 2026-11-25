@@ -2,5 +2,6 @@
   "entry": "workloads/typed-array-scan-workers.ts",
   "args": [
     "3"
-  ]
+  ],
+  "scaleArg": 0
 }

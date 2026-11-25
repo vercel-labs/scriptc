@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/global-object-binding-typeof-guard/install.mjs",
+  "<repo>/tests/corpus/global-object-binding-typeof-guard/main.mjs"
+ ],
+ "diags": []
+}

@@ -66,6 +66,32 @@
     ]
   },
   {
+    "href": "/docs/node-development-loop",
+    "title": "Node.js Development Loop",
+    "headings": [
+      {
+        "text": "Prerequisites",
+        "id": "prerequisites"
+      },
+      {
+        "text": "Run with the load hook",
+        "id": "run-with-the-load-hook"
+      },
+      {
+        "text": "Check edits with coverage",
+        "id": "check-edits-with-coverage"
+      },
+      {
+        "text": "Compare before shipping",
+        "id": "compare-before-shipping"
+      },
+      {
+        "text": "What each step checks",
+        "id": "what-each-step-checks"
+      }
+    ]
+  },
+  {
     "legacy": "/coverage",
     "href": "/docs/coverage",
     "title": "Coverage Reports",
@@ -336,6 +362,32 @@
     ]
   },
   {
+    "href": "/docs/dual-run",
+    "title": "Dual-Run Testing",
+    "headings": [
+      {
+        "text": "Run a suite with the reporter",
+        "id": "run-a-suite-with-the-reporter"
+      },
+      {
+        "text": "Compare one file from a test runner",
+        "id": "compare-one-file-from-a-test-runner"
+      },
+      {
+        "text": "What is compared",
+        "id": "what-is-compared"
+      },
+      {
+        "text": "API",
+        "id": "api"
+      },
+      {
+        "text": "Limits",
+        "id": "limits"
+      }
+    ]
+  },
+  {
     "legacy": "/wasm",
     "href": "/docs/wasm",
     "title": "WebAssembly Modules",
@@ -563,6 +615,10 @@
       {
         "text": "Process arguments and errors",
         "id": "process-arguments-and-errors"
+      },
+      {
+        "text": "Defined environment variables",
+        "id": "defined-environment-variables"
       },
       {
         "text": "Embedded JavaScript engine",

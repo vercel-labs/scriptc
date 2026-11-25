@@ -1,8 +1,9 @@
 import { keyedHelperName } from "./stable-names.js";
-import { forwardedTupleType, pureForwardedValues, stripTypeWrappers } from "./typed-arguments.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
+import { forwardedTupleType, pureForwardedValues } from "./typed-arguments.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import { AstNode } from "../ts7/ast-node.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -171,17 +172,25 @@ export function completeArgs(
   const loweredSpreads = new Map<ts.Expression, IrExpr>();
   const lowerSpread = (arg: ts.SpreadElement): IrExpr =>
     loweredSpreads.get(arg) ?? lowerer.lowerExpr(arg.expression);
+  // The hidden actual-argument array (ParamMode "arguments") is one of the
+  // trailing slots. A signature that also declares a rest parameter packs
+  // both from the same argument list, so the whole list is built as one
+  // dynamic array (dynArgumentPack) even without a runtime-length spread:
+  // the rest slots slice it and the hidden array is the list itself.
+  const argumentsAt = shapes.findIndex((shape) => shape.mode === "arguments");
+  const declaresRest = shapes.some((shape) => shape.mode === "rest" || shape.mode === "dynRest");
   if (
-    runtimeSpreads.length > 0 &&
-    canCompleteRuntimeSpread(lowerer, shapes) &&
-    !spreadsFillTypedRest(
-      lowerer,
-      shapes,
-      argNodes,
-      leading?.length ?? 0,
-      runtimeSpreads,
-      loweredSpreads,
-    )
+    (runtimeSpreads.length > 0 &&
+      canCompleteRuntimeSpread(lowerer, shapes) &&
+      !spreadsFillTypedRest(
+        lowerer,
+        shapes,
+        argNodes,
+        leading?.length ?? 0,
+        runtimeSpreads,
+        loweredSpreads,
+      )) ||
+    (argumentsAt >= 0 && declaresRest && canCompleteRuntimeSpread(lowerer, shapes))
   ) {
     // Runtime-length spreads determine the complete argument list before
     // any parameter default runs. Build it once in source order, then
@@ -258,7 +267,7 @@ export function completeArgs(
     // unknown as Parameters<F>)`) spreads the tuple itself.
     const operand =
       forwardedTupleType(lowerer, arg.expression) !== null
-        ? stripTypeWrappers(arg.expression)
+        ? withoutParenthesesTypeWrappers(arg.expression)
         : arg.expression;
     const value = lowerer.coerceInto(arg.expression, lowerer.lowerExpr(operand), tuple.type);
     const saved = lowerer.declareHiddenLocal("%callSpread", tuple.type);
@@ -295,6 +304,27 @@ export function completeArgs(
     (s) => s.mode === "rest" || s.mode === "dynRest" || s.mode === "arguments",
   );
   const positional = restAt >= 0 ? shapes.slice(0, restAt) : [...shapes];
+  // tsc rejects a TypeScript call that supplies more arguments than the
+  // callee's parameter list, so reaching this with a surplus argument means
+  // the shapes are narrower than the signature the call was checked
+  // against: an override whose extra trailing optional/defaulted parameters
+  // live only on its own body, while the inherited slot (and any virtual
+  // dispatch through it) carries the base arity alone. Refuse rather than
+  // drop the surplus values and their side effects. JavaScript sources are
+  // arity-permissive and keep filling what fits.
+  if (
+    restAt < 0 &&
+    sources.length > shapes.length &&
+    !isJsSourceFile(ts.getSourceFileOfNode(blame))
+  )
+    lowerer.unsupported(
+      "SC1090",
+      blame,
+      "a call supplying more arguments than the native parameter list " +
+        "(an override that declares parameters past the inherited slot arity " +
+        "can only be called on its own type, where the call goes straight to " +
+        "its body — behind a virtual slot, only the inherited arity travels)",
+    );
   if (restAt >= 0 && shapes[restAt]!.mode === "arguments") {
     // JS `arguments` contains every supplied value, including fixed
     // parameters. Store each call expression once, in source order, so
@@ -584,6 +614,77 @@ export function omittedArgFor(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrEx
   return lowerer.wrappedUndefined(type, loc);
 }
 
+/** Complete a call through a value whose type is a checked-dynamic
+ * variadic (`rest` with no ABI spelling): the declared parameters, then
+ * the single synthetic trailing dyn array the value's lifted signature
+ * hides — the same slot the boxed call thunk fills. Callers hold the
+ * slot's ABI open in `callValue` (the last argument carries no declared
+ * parameter). Null when an omitted parameter has no absent spelling: the
+ * boxed lane keeps JavaScript's arity for that shape. */
+export function checkedRestCallArgs(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  funcType: IrType & { kind: "func" },
+  loc: SrcLoc,
+): IrExpr[] | null {
+  const declared = funcType.params;
+  const nodes = call.arguments.nodes;
+  // `arguments` holds every actual argument, so an argument the caller
+  // passed for a declared parameter is also one of its entries. Node passes
+  // the argument once: the parameter and the entry read the same value, and
+  // its side effects run once. Lower it once into a hidden local and pass
+  // the local to both slots.
+  const shared = funcType.argumentsAll === true;
+  if (shared) {
+    for (let i = 0; i < declared.length && i < nodes.length; i++) {
+      const type = declared[i]!;
+      if (type.kind !== "void" && !lowerer.dynConvertible(type)) return null;
+    }
+  }
+  const args: IrExpr[] = [];
+  const values: IrExpr[] = [];
+  for (let i = 0; i < declared.length; i++) {
+    const node = nodes[i];
+    if (!node) {
+      const absent = omittedArgFor(lowerer, declared[i]!, loc);
+      if (!absent) return null;
+      args.push(absent);
+      continue;
+    }
+    const value = lowerer.lowerExprExpecting(node, declared[i]);
+    if (!shared) {
+      args.push(value);
+      continue;
+    }
+    const local = lowerer.declareHiddenLocal("%argument", value.type);
+    const ref = varRef(local.id, local.type, loc);
+    args.push({
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+      result: ref,
+      type: local.type,
+      loc,
+    });
+    values.push(ref);
+  }
+  // `arguments` holds every actual argument; a rest parameter only the
+  // ones the declared parameters do not cover.
+  let tail: IrExpr[];
+  if (shared) {
+    tail = [];
+    for (let i = 0; i < nodes.length; i++) {
+      const value = values[i];
+      const boxed = value ? lowerer.coerceToExpected(value, DYN) : null;
+      if (boxed && !typeEquals(boxed.type, DYN)) return null;
+      tail.push(boxed ?? lowerer.lowerExprExpecting(nodes[i]!, DYN));
+    }
+  } else {
+    tail = nodes.slice(declared.length).map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  }
+  args.push({ kind: "dynArrLit", elems: tail, type: DYN, loc });
+  return args;
+}
+
 /** Complete an indirect static call against its func value ABI. Ordinary
  * fixed-width values retain the historical optional-suffix completion.
  * Typed-rest values reinterpret their final array slot as a rest ParamShape
@@ -605,6 +706,10 @@ export function completeFuncValueArgs(
       mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
     }));
     shapes.push({ type: rest, mode: "rest" });
+    // The value receives the arguments its caller actually passed as a
+    // hidden trailing array (argumentsAll): the rest array only holds the
+    // ones the named parameters do not cover.
+    if (funcType.argumentsAll === true) shapes.push({ type: DYN, mode: "arguments" });
     return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
   }
   // A fixed-tuple spread (`fn(...args)` over a tuple-typed rest binding)
@@ -624,6 +729,22 @@ export function completeFuncValueArgs(
       type,
       mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
     }));
+    // The value reads the arguments its caller actually passed from its
+    // hidden trailing array (argumentsAll), so the slot must be filled.
+    if (funcType.argumentsAll === true) shapes.push({ type: DYN, mode: "arguments" });
+    return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
+  }
+  // A value whose signature can take a different number of arguments than
+  // it names (an optional, defaulted or rest parameter) reads the actual
+  // argument list from its hidden trailing array (argumentsAll). For a dyn
+  // rest that same array is the rest slot, so it carries every supplied
+  // value and is completed once, in source order.
+  if (funcType.argumentsAll === true) {
+    const shapes: ParamShape[] = funcType.params.map((type) => ({
+      type,
+      mode: omittedArgFor(lowerer, type, loc) ? "omittable" : "required",
+    }));
+    shapes.push({ type: DYN, mode: "arguments" });
     return completeArgs(lowerer, call.arguments.nodes, shapes, loc, call);
   }
   const args = call.arguments.nodes.map((arg, index) =>

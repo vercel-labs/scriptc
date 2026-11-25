@@ -1,6 +1,16 @@
 /** Runtime library modes have distinct trap and state ownership contracts. */
 export function withLibraryRuntimeFlavors(matrix) {
-  const omitted = new Set(["scr_async.c", "scr_crypto_async.c", "scr_child.c", "scr_ffi.c"]);
+  // A wasm pack carries the EventTarget unit in every flavor (AbortSignal
+  // dispatches through it, and the wasm build lists it in extraRuntimeSources),
+  // and that unit propagates an abort through the async unit's spawn-after.
+  // Omitting scr_async.c there leaves scr_async_spawn_after and the promise
+  // calls it makes undefined when a library flavor links.
+  const omitted = new Set([
+    ...(matrix.target.object_format === "wasm" ? [] : ["scr_async.c"]),
+    "scr_crypto_async.c",
+    "scr_child.c",
+    "scr_ffi.c",
+  ]);
   const optional = new Set([
     "scr_regex.c",
     "scr_path_win32_relative.c",
@@ -8,6 +18,9 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_assert.c",
     "scr_inspect.c",
     "scr_console_native.c",
+    // The inspect unit reads inspect.colors from the style unit's table, so
+    // a library whose program renders a colored value carries it too.
+    "scr_util_style.c",
     "scr_symbol.c",
     "scr_bigint_assert.c",
     "scr_url_params.c",
@@ -20,6 +33,18 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_bytes_dyn.c",
     "scr_js_value.c",
     "scr_js_object.c",
+    // The buffer views registry: a library whose program resizes, grows or
+    // detaches a buffer names scr_js_buffers_arm from its own object, so the
+    // library flavors must carry the unit the executable flavors compile.
+    "scr_js_buffers.c",
+    // The kept-source read of a record-to-record conversion: a library
+    // whose program projects a record calls it, so the library flavors
+    // carry the same optional unit the executable flavors compile.
+    "scr_record_source_get.c",
+    // The join of an array of strings: a library whose program joins one
+    // calls scr_arr_join_str, so the library flavors carry the same optional
+    // unit the executable flavors compile.
+    "scr_arr_join_str.c",
   ]);
   const libraryUnits = [
     ...matrix.runtime_units.filter(
@@ -33,9 +58,13 @@ export function withLibraryRuntimeFlavors(matrix) {
   ].map((unit) => ({
     ...unit,
     // Libraries run neither workers nor the young-in nursery (an
-    // executable-only experiment).
+    // executable-only experiment), and they carry no promise unit, so no
+    // promise adapter exists for a checked-dynamic key to name.
     variants: unit.variants.filter(
-      (variant) => !variant.defines.includes("SCR_WORKERS") && !variant.defines.includes("SCR_YIN"),
+      (variant) =>
+        !variant.defines.includes("SCR_WORKERS") &&
+        !variant.defines.includes("SCR_YIN") &&
+        !variant.defines.includes("SCR_DYN_PROMISE_KEYS"),
     ),
   }));
   const flavors = { ...matrix.flavors };

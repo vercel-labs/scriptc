@@ -170,13 +170,22 @@ static ScrDyn *scr_assert_dyn_text(const char *text) {
 /* Sets the error's own properties in Node's order. The values move in. */
 static void scr_assert_attach_values(ScrError *e, bool generated, ScrDyn *actual, ScrDyn *expected,
                                      ScrDyn *op, ScrDyn *diff) {
-  scr_error_set_prop(e, "generatedMessage", 16, scr_dyn_new_bool(generated));
+  /* Node assigns generatedMessage, then name, then the rest; the view is
+   * laid out when the first property is attached, so the seed places
+   * generatedMessage before the class name. */
+  scr_error_seed_own_prop("generatedMessage", 16, scr_dyn_new_bool(generated));
+  ScrDyn *view = scr_dyn_from_error(e); /* generatedMessage, then name */
+  scr_dyn_release(view);
   scr_error_set_code(e, "ERR_ASSERTION");
   scr_error_set_prop(e, "code", 4, scr_assert_dyn_text("ERR_ASSERTION"));
   scr_error_set_prop(e, "actual", 6, actual);
   scr_error_set_prop(e, "expected", 8, expected);
   scr_error_set_prop(e, "operator", 8, op);
   scr_error_set_prop(e, "diff", 4, diff);
+  /* A view that already existed does not consume the seed; keep the value,
+   * at the end of the order. */
+  ScrDyn *leftover = scr_error_take_seed();
+  if (leftover) scr_error_set_prop(e, "generatedMessage", 16, leftover);
 }
 
 static ScrError *scr_assert_error(ScrStr *message, bool generated, const char *diff) {
@@ -234,7 +243,7 @@ void scr_assert_message_clear(void) {
   g_message_value = NULL;
 }
 
-void scr_assert_fail(ScrStr *message, bool generated) {
+static void scr_assert_fail_with(ScrStr *message, bool generated, bool generated_from_truthiness) {
   static const char sentinel[] = SCR_ASSERT_VALUE_MESSAGE;
   const size_t n = sizeof sentinel - 1;
   if (g_message_value && message->len >= n && memcmp(message->data, sentinel, n) == 0) {
@@ -248,7 +257,10 @@ void scr_assert_fail(ScrStr *message, bool generated) {
       return;
     }
     ScrStr *text = scr_dyn_string_coerce_js(value);
-    generated = !scr_dyn_truthy(value);
+    /* AssertionError sets generatedMessage to !message; assert.ok overrides
+     * it with its own message == null test, so only the former derives the
+     * flag from the value's truthiness. */
+    if (generated_from_truthiness) generated = !scr_dyn_truthy(value);
     scr_dyn_release(value);
     if (!text) {
       scr_str_release(message);
@@ -263,6 +275,68 @@ void scr_assert_fail(ScrStr *message, bool generated) {
     message = scr_jb_finish(&b);
   }
   ScrError *e = scr_assert_error(message, generated, scr_assert_diff_full() ? "full" : "simple");
+  g_instance_options = 0;
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+void scr_assert_fail(ScrStr *message, bool generated) {
+  scr_assert_fail_with(message, generated, true);
+}
+
+/* assert.fail(actual, expected[, message[, operator[, stackStartFn]]]) —
+ * the deprecated multi-argument form (Node's innerFail). A message that is
+ * an Error is thrown itself; otherwise the AssertionError carries actual,
+ * expected and the operator value, and either the message's String() form
+ * (generatedMessage `!message`, so the empty string counts as generated) or
+ * Node's generated `${inspect(actual)} ${operator} ${inspect(expected)}`
+ * when the message is absent or nullish. The lowering supplies the
+ * operator default ("!=" for exactly two arguments, "fail" otherwise).
+ * Everything moves in. Throws. */
+static ScrStr *scr_assert_cf_inspect(const ScrDyn *d); /* the dyn renderer below */
+
+void scr_assert_deprecated_fail(ScrDyn *actual, ScrDyn *expected, ScrDyn *message,
+                                ScrDyn *operator_value, ScrDyn *default_operator) {
+  /* Node's `operator === undefined ? default : operator`: a null operator
+   * stays null in the property and in the generated message. */
+  if (!operator_value || operator_value == scr_dyn_undefined()) operator_value = default_operator;
+  if (message && (scr_dyn_ref_is_error(message) || scr_dyn_is_error_prototype(message))) {
+    scr_dyn_throw(scr_dyn_retain(message));
+    return;
+  }
+  bool generated;
+  ScrStr *text;
+  if (!message || scr_dyn_is_nullish(message)) {
+    ScrStr *ia = scr_assert_cf_inspect(actual);
+    ScrStr *ib = scr_assert_cf_inspect(expected);
+    ScrStr *op = scr_dyn_string_coerce_js(operator_value);
+    if (scr_exc_pending()) {
+      scr_str_release(ia);
+      scr_str_release(ib);
+      return;
+    }
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_write(&b, ia->data, ia->len);
+    scr_jb_putc(&b, ' ');
+    if (op) scr_jb_write(&b, op->data, op->len);
+    scr_jb_putc(&b, ' ');
+    scr_jb_write(&b, ib->data, ib->len);
+    scr_str_release(ia);
+    scr_str_release(ib);
+    if (op) scr_str_release(op);
+    text = scr_jb_finish(&b);
+    generated = true;
+  } else {
+    text = scr_dyn_string_coerce_js(message);
+    if (scr_exc_pending()) return;
+    generated = !scr_dyn_truthy(message);
+  }
+  ScrError *e = scr_error_new(SCR_ERR_ASSERTION, text);
+  scr_str_release(text);
+  e->name_present = true;
+  scr_assert_attach_values(e, generated, scr_dyn_retain(actual), scr_dyn_retain(expected),
+                           scr_dyn_retain(operator_value),
+                           scr_assert_dyn_text(scr_assert_diff_full() ? "full" : "simple"));
   g_instance_options = 0;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
@@ -282,9 +356,9 @@ void scr_assert_fail_msg(ScrStr *message) { scr_assert_fail(message, true); }
  * string, or the compile-time "The expression evaluated to a falsy
  * value:\n\n  <source text>\n" — the source is a compile-time constant
  * where Node re-reads the file). */
-void scr_assert_ok(bool pass, ScrStr *message, bool generated) {
+void scr_assert_ok(bool pass, ScrStr *message, bool generated, bool generated_from_truthiness) {
   if (pass) return;
-  scr_assert_fail(scr_str_retain(message), generated);
+  scr_assert_fail_with(scr_str_retain(message), generated, generated_from_truthiness);
 }
 
 /* SameValue over doubles — Object.is, the comparison of strictEqual AND
@@ -608,39 +682,14 @@ void scr_assert_ref_eq_fn(const ScrClosure *a, const ScrClosure *b, bool negated
  * back to the whole-value +/- form without context collapsing. */
 
 /* JS SameValue over two dyn values (Object.is — the strictEqual and
- * notStrictEqual comparison). Functions compare by boxed closure: the
- * ScrDyn box is a boundary artifact, the closure IS the JS identity. */
+ * notStrictEqual comparison). SameValue differs from === for numbers
+ * alone; every other value, and every object's identity (the box is a
+ * boundary artifact: a record's view, a function's closure, a handle and a
+ * promise's adapter name the object they box), is strict equality's. */
 static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
-  if (a->kind != b->kind) return false;
-  switch (a->kind) {
-    case SCR_DYN_SYMBOL:
-      return a->v.symbol.value == b->v.symbol.value;
-    case SCR_DYN_UNDEF:
-    case SCR_DYN_NULL:
-      return true;
-    case SCR_DYN_BOOL:
-      return a->v.b == b->v.b;
-    case SCR_DYN_BIGINT:
-      return scr_bigint_eq(a->v.bigint, b->v.bigint);
-    case SCR_DYN_NUM:
-      return scr_assert_same_value_f64(a->v.num, b->v.num);
-    case SCR_DYN_STR:
-      return a->v.str->len == b->v.str->len &&
-             memcmp(a->v.str->data, b->v.str->data, a->v.str->len) == 0;
-    case SCR_DYN_FUNC:
-      return scr_dyn_strict_eq(a, b);
-    case SCR_DYN_HANDLE:
-      /* Identity is the HANDLE (the strict_eq stance). */
-      return a->v.handle.tag == b->v.handle.tag && a->v.handle.ptr == b->v.handle.ptr;
-    case SCR_DYN_PROMISE:
-      /* Identity is the PROMISE (the strict_eq stance). */
-      return a->v.promise == b->v.promise;
-
-    case SCR_DYN_TYPED_REF:
-      return scr_dyn_strict_eq(a, b);
-    default:
-      return a == b; /* ARR/OBJ/BYTES: node identity */
-  }
+  if (a->kind == SCR_DYN_NUM && b->kind == SCR_DYN_NUM)
+    return scr_assert_same_value_f64(a->v.num, b->v.num);
+  return scr_dyn_strict_eq(a, b);
 }
 
 /* Node's strict deep equality over two dyn values: kind-wise — Object.is
@@ -652,6 +701,35 @@ static bool scr_assert_dyn_same_value(const ScrDyn *a, const ScrDyn *b) {
  * JSON-origin dyn values are trees; a keyed-write cycle (h.self = h) has no
  * memo here where Node carries one (documented divergence). */
 static const ScrDyn *scr_assert_loose_error_prop(const ScrDyn *d, const char *key, size_t len);
+
+/* The value a deep comparison reads for own property `ent` of `owner`. Node
+ * reads `owner[key]`, so an accessor answers what its getter returns
+ * (undefined without one). +1; NULL with the getter's exception pending. */
+static ScrDyn *scr_assert_own_value(const ScrDyn *owner, ScrDynProp ent) {
+  if (!ent.accessor) return scr_dyn_retain(ent.value);
+  if (!ent.getter) return scr_dyn_retain(scr_dyn_undefined());
+  /* The getter runs as a method of the object it is read from. */
+  scr_dyn_this_push_dyn(owner);
+  ScrDyn *value = scr_dyn_call(ent.getter, NULL, 0, "get");
+  scr_dyn_this_pop();
+  return value;
+}
+
+/* Compares own property `ea` of `a` with own property `eb` of `b` through
+ * `eq`, the comparison the walk is running. A getter that throws leaves
+ * its exception pending and the answer false: every assertion returns
+ * without a verdict while an exception is pending. */
+static bool scr_assert_own_pair(const ScrDyn *a, ScrDynProp ea, const ScrDyn *b, ScrDynProp eb,
+                                bool (*eq)(const ScrDyn *, const ScrDyn *)) {
+  if (!ea.accessor && !eb.accessor) return eq(ea.value, eb.value);
+  if (scr_exc_pending()) return false;
+  ScrDyn *va = scr_assert_own_value(a, ea);
+  ScrDyn *vb = va ? scr_assert_own_value(b, eb) : NULL;
+  bool same = va && vb && eq(va, vb);
+  scr_dyn_release(va);
+  scr_dyn_release(vb);
+  return same;
+}
 
 static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
   if (a == b) return true;
@@ -701,8 +779,9 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_PROMISE:
       /* Node compares promises structurally (no own props → equal); the
        * honest arm here is identity — two distinct promises with equal
-       * settlements would diverge (documented with the handle stance). */
-      return a->v.promise == b->v.promise;
+       * settlements would diverge (documented with the handle stance). One
+       * promise is itself whichever adapter boxes it (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
     case SCR_DYN_BYTES: {
       /* The prototype gate, unless the Assert instance skips it. */
       if (a->buffer != b->buffer && !scr_assert_skip_prototype()) return false;
@@ -738,11 +817,19 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       } else if (a->null_proto != b->null_proto || a->prototype != b->prototype) {
         return false;
       }
-      if (scr_dyn_obj_count(a) != scr_dyn_obj_count(b)) return false;
+      /* Node compares the enumerable own properties: a non-enumerable one
+       * (a class view's accessor-backed members among them) takes no part. */
+      size_t na = 0, nb = 0;
+      for (size_t i = 0; i < scr_dyn_obj_count(a); i++) na += scr_dyn_obj_prop_at(a, i).enumerable;
+      for (size_t i = 0; i < scr_dyn_obj_count(b); i++) nb += scr_dyn_obj_prop_at(b, i).enumerable;
+      if (na != nb) return false;
       for (size_t i = 0; i < scr_dyn_obj_count(a); i++) {
         ScrDynProp ent = scr_dyn_obj_prop_at(a, i);
-        ScrDyn *bv = scr_dyn_obj_get(b, ent.key, ent.key_len);
-        if (!bv || !scr_assert_dyn_deep_eq(ent.value, bv)) return false;
+        if (!ent.enumerable) continue;
+        size_t j = scr_dyn_obj_index_of(b, ent.key, ent.key_len);
+        if (j == SIZE_MAX) return false;
+        ScrDynProp other = scr_dyn_obj_prop_at(b, j);
+        if (!other.enumerable || !scr_assert_own_pair(a, ent, b, other, scr_assert_dyn_deep_eq)) return false;
       }
       return true;
     }
@@ -794,6 +881,16 @@ static bool scr_assert_loose_counted(ScrDynProp ent) {
   return ent.enumerable && !(ent.key_len == 6 && memcmp(ent.key, "%error", 6) == 0);
 }
 
+/* Whether `a` has enumerable own property `eb` of `b` with a value `eq`
+ * accepts (scr_assert_own_pair). */
+static bool scr_assert_own_entries(const ScrDyn *a, const ScrDyn *b, ScrDynProp eb,
+                                   bool (*eq)(const ScrDyn *, const ScrDyn *)) {
+  size_t i = scr_dyn_obj_index_of(a, eb.key, eb.key_len);
+  if (i == SIZE_MAX) return false;
+  ScrDynProp ea = scr_dyn_obj_prop_at(a, i);
+  return ea.enumerable && scr_assert_own_pair(a, ea, b, eb, eq);
+}
+
 /* keyCheck and objEquiv over two objects' enumerable own keys. */
 static bool scr_assert_loose_keys(const ScrDyn *a, const ScrDyn *b) {
   size_t na = 0, nb = 0;
@@ -803,8 +900,7 @@ static bool scr_assert_loose_keys(const ScrDyn *a, const ScrDyn *b) {
   for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(b, i);
     if (!scr_assert_loose_counted(ent)) continue;
-    const ScrDyn *other = scr_assert_loose_entry(a, ent.key, ent.key_len);
-    if (!other || !scr_assert_loose_eq(other, ent.value)) return false;
+    if (!scr_assert_own_entries(a, b, ent, scr_assert_loose_eq)) return false;
   }
   return true;
 }
@@ -1232,7 +1328,8 @@ static bool scr_assert_loose_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_HANDLE:
       return scr_assert_loose_handle(a, b);
     default:
-      return false; /* promises: identity, checked above */
+      /* Promises: identity, whichever adapter boxes one (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
   }
 }
 
@@ -1278,6 +1375,36 @@ typedef struct {
   size_t len;
 } ScrCfEntry;
 
+/* The growing entry list the container renderers collect into: a render
+ * runs program getters, which can add properties while the table is being
+ * walked, so the list grows as entries are produced instead of being sized
+ * from an up-front count. */
+typedef struct {
+  ScrCfEntry *items;
+  size_t len, cap;
+} ScrCfEntries;
+
+static char *scr_assert_cf_entry_copy(const char *text, size_t len) {
+  char *copy = malloc(len ? len : 1);
+  if (!copy) scr_assert_oom();
+  if (len) memcpy(copy, text, len);
+  return copy;
+}
+
+static void scr_assert_cf_entries_push(ScrCfEntries *list, char *text, size_t len) {
+  if (list->len == list->cap) {
+    size_t cap = list->cap ? list->cap * 2 : 8;
+    if (cap < list->cap || cap > SIZE_MAX / sizeof *list->items) scr_assert_oom();
+    ScrCfEntry *items = realloc(list->items, cap * sizeof *items);
+    if (!items) scr_assert_oom();
+    list->items = items;
+    list->cap = cap;
+  }
+  list->items[list->len].text = text;
+  list->items[list->len].len = len;
+  list->len++;
+}
+
 static int scr_assert_cf_entry_cmp(const void *pa, const void *pb) {
   const ScrCfEntry *a = pa, *b = pb;
   size_t n = a->len < b->len ? a->len : b->len;
@@ -1290,11 +1417,64 @@ static int scr_assert_cf_entry_cmp(const void *pa, const void *pb) {
  * the first line is appended in place. */
 static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent, size_t depth);
 
+/* A property's value in the comparison message. The message inspects with
+ * `getters: true`, so an accessor shows what its getter answers, as
+ * util.inspect's formatProperty does: `[Getter: 1]` for a primitive or
+ * null, `[Getter] { ... }` for an object, `[Getter: <Inspection threw
+ * (message)>]` when the getter throws, and `[Setter]` without a getter. */
+static void scr_assert_cf_entry(ScrAssertBuf *b, const ScrDyn *owner, ScrDynProp ent, size_t indent,
+                                size_t depth) {
+  if (!ent.accessor) {
+    scr_assert_cf_value(b, ent.value, indent, depth);
+    return;
+  }
+  if (!ent.getter) {
+    ab_cstr(b, "[Setter]");
+    return;
+  }
+  const char *label = ent.setter ? "[Getter/Setter" : "[Getter";
+  ab_cstr(b, label);
+  ScrDyn *value = scr_assert_own_value(owner, ent);
+  if (value == NULL || scr_exc_pending()) {
+    scr_dyn_release(value);
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *error = caught ? scr_caught_to_dyn(caught) : NULL;
+    if (caught) scr_caught_release(caught);
+    ab_cstr(b, ": <Inspection threw (");
+    if (error) scr_assert_cf_value(b, error, indent, depth);
+    ab_cstr(b, ")>]");
+    scr_dyn_release(error);
+    return;
+  }
+  switch (value->kind) {
+    case SCR_DYN_OBJ:
+    case SCR_DYN_ARR:
+    case SCR_DYN_BYTES:
+    case SCR_DYN_HANDLE:
+    case SCR_DYN_PROMISE:
+    case SCR_DYN_TYPED_REF:
+    case SCR_DYN_PROXY:
+      ab_cstr(b, "] ");
+      scr_assert_cf_value(b, value, indent, depth);
+      break;
+    default:
+      ab_cstr(b, ": ");
+      scr_assert_cf_value(b, value, indent, depth);
+      ab_char(b, ']');
+      break;
+  }
+  scr_dyn_release(value);
+}
+
 /* A plain or class-instance object: `Cls {`, the null-prototype prefix,
  * or `{`, then its entries. */
 static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent, size_t depth,
                                  const char *cls) {
-  if (scr_dyn_obj_count(d) == 0) {
+  /* The message shows the enumerable own properties, the ones the
+   * comparison reads. */
+  size_t shown = 0;
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) shown += scr_dyn_obj_prop_at(d, i).enumerable;
+  if (shown == 0) {
     if (cls) {
       ab_cstr(b, cls);
       ab_cstr(b, " {}");
@@ -1319,28 +1499,28 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
   } else if (d->null_proto) ab_cstr(b, "[Object: null prototype] ");
   /* Render every entry, then sort the RENDERED texts (Node's
    * sorted:true sorts formatted entries, quotes included). */
-  ScrCfEntry *ents = malloc(scr_dyn_obj_count(d) * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
+  size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+    if (!ent.enumerable) continue;
     ScrAssertBuf eb = {0};
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
-    scr_assert_cf_value(&eb, ent.value, indent + 2, depth - 1);
-    ents[i].text = eb.data ? eb.data : malloc(1);
-    if (!ents[i].text) scr_assert_oom();
-    ents[i].len = eb.len;
+    scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, scr_dyn_obj_count(d), sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_char(b, '{');
-  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+  for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
-    if (i + 1 < scr_dyn_obj_count(d)) ab_char(b, ',');
-    free(ents[i].text);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
+    if (i + 1 < n) ab_char(b, ',');
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');
@@ -1358,6 +1538,10 @@ static const char *scr_assert_cf_bytes_class(ScrBytesElem elem) {
     case SCR_BYTES_U16: return "Uint16Array";
     case SCR_BYTES_I16: return "Int16Array";
     case SCR_BYTES_U8C: return "Uint8ClampedArray";
+#ifdef SCR_JS_OBJECT_MODEL
+    case SCR_BYTES_I64: return "BigInt64Array";
+    case SCR_BYTES_U64: return "BigUint64Array";
+#endif
   }
   return "Uint8Array";
 }
@@ -1391,8 +1575,7 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   }
   if (extra == 0) return;
   if (depth == 0) return;
-  ScrCfEntry *ents = malloc(extra * sizeof *ents);
-  if (!ents) scr_assert_oom();
+  ScrCfEntries ents = {0};
   size_t n = 0;
   for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
@@ -1400,21 +1583,20 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
     ScrAssertBuf eb = {0};
     scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
-    scr_assert_cf_value(&eb, ent.value, indent + 2, depth - 1);
-    ents[n].text = eb.data ? eb.data : malloc(1);
-    if (!ents[n].text) scr_assert_oom();
-    ents[n++].len = eb.len;
+    scr_assert_cf_entry(&eb, d, ent, indent + 2, depth - 1);
+    scr_assert_cf_entries_push(&ents, eb.data ? eb.data : scr_assert_cf_entry_copy("", 0), eb.len);
+    n++;
   }
-  qsort(ents, n, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents.items, n, sizeof *ents.items, scr_assert_cf_entry_cmp);
   ab_cstr(b, " {");
   for (size_t i = 0; i < n; i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
-    ab_bytes(b, ents[i].text, ents[i].len);
+    ab_bytes(b, ents.items[i].text, ents.items[i].len);
     if (i + 1 < n) ab_char(b, ',');
-    free(ents[i].text);
+    free(ents.items[i].text);
   }
-  free(ents);
+  free(ents.items);
   ab_char(b, '\n');
   scr_assert_cf_pad(b, indent);
   ab_char(b, '}');
@@ -1573,6 +1755,15 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
       for (size_t i = 0; i < bs->len; i++) {
         ab_char(b, '\n');
         scr_assert_cf_pad(b, indent + 2);
+#ifdef SCR_JS_OBJECT_MODEL
+        if (scr_bytes_elem_is_bigint(bs->elem)) {
+          ScrDyn *element = scr_bytes_get_bigint(bs, (double)i);
+          scr_assert_cf_value(b, element, indent + 2, 0);
+          scr_dyn_release(element);
+          if (i + 1 < bs->len) ab_char(b, ',');
+          continue;
+        }
+#endif
         char tmp[40];
         size_t n = scr_assert_inspect_f64(scr_bytes_get(bs, (double)i), tmp);
         ab_bytes(b, tmp, n);
@@ -2006,8 +2197,7 @@ static bool scr_assert_partial_keys(const ScrDyn *a, const ScrDyn *b) {
   for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
     ScrDynProp ent = scr_dyn_obj_prop_at(b, i);
     if (!scr_assert_loose_counted(ent)) continue;
-    const ScrDyn *other = scr_assert_loose_entry(a, ent.key, ent.key_len);
-    if (!other || !scr_assert_partial_eq(other, ent.value)) return false;
+    if (!scr_assert_own_entries(a, b, ent, scr_assert_partial_eq)) return false;
   }
   return true;
 }
@@ -2060,8 +2250,7 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
     for (size_t i = 0; i < scr_dyn_obj_count(pb); i++) {
       ScrDynProp ent = scr_dyn_obj_prop_at(pb, i);
       if (!scr_assert_loose_counted(ent)) continue;
-      const ScrDyn *other = pa ? scr_assert_loose_entry(pa, ent.key, ent.key_len) : NULL;
-      if (!other || !scr_assert_partial_eq(other, ent.value)) return false;
+      if (!pa || !scr_assert_own_entries(pa, pb, ent, scr_assert_partial_eq)) return false;
     }
   }
   size_t pos = 0;
@@ -2301,7 +2490,8 @@ static bool scr_assert_partial_eq(const ScrDyn *a, const ScrDyn *b) {
     case SCR_DYN_HANDLE:
       return scr_assert_partial_handle(a, b);
     default:
-      return false; /* promises: identity, checked above */
+      /* Promises: identity, whichever adapter boxes one (strict_eq). */
+      return scr_dyn_strict_eq(a, b);
   }
 }
 
@@ -2512,9 +2702,10 @@ failed:
 
 /* Node's expectedException over an object expected (assert.throws/rejects
  * second argument), in Node's order. The keys are a validation object's
- * own enumerable keys, or every key of an error instance's encoding (the
- * %error marker skipped; name/message/code is its surface, the keys Node
- * adds for an Error), taken once before the comparison. Values are read
+ * own enumerable keys, plus name and message when it is an Error instance
+ * (the two keys Node adds; an error encoding's other slots stay out, as
+ * Node's non-enumerable stack and prototype name/message do), taken once
+ * before the comparison. Values are read
  * when Node's expressions read them, each held only while it is used, so
  * a caught object's getter that changes the validation object is seen as
  * Node sees it.
@@ -2550,14 +2741,23 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
   }
   bool is_error = scr_dyn_obj_get(expected, "%error", 6) != NULL;
   size_t total = scr_dyn_obj_count(expected);
-  ScrStr **keys = total > 0 ? malloc(total * sizeof *keys) : NULL;
-  if (total > 0 && keys == NULL) scr_trap("scriptc: out of memory\n");
+  /* ObjectKeys(expected) is the enumerable own keys; an Error instance adds
+   * `name` and `message` on top (they are own non-enumerable properties, or
+   * inherited from the prototype, in an error's encoding). `stack` and the
+   * %error marker are never compared. */
+  size_t cap = total + (is_error ? 2 : 0);
+  ScrStr **keys = cap > 0 ? malloc(cap * sizeof *keys) : NULL;
+  if (cap > 0 && keys == NULL) scr_trap("scriptc: out of memory\n");
   size_t count = 0;
   for (size_t i = 0; i < total; i++) {
     ScrDynProp e = scr_dyn_obj_prop_at(expected, i);
     if (e.key_len == 6 && memcmp(e.key, "%error", 6) == 0) continue;
-    if (!is_error && !e.enumerable) continue;
+    if (!e.enumerable) continue;
     keys[count++] = scr_str_new(e.key, e.key_len);
+  }
+  if (is_error) {
+    keys[count++] = scr_str_new("name", 4);
+    keys[count++] = scr_str_new("message", 7);
   }
   if (count == 0 && !is_error) {
     free(keys);
@@ -2619,6 +2819,62 @@ void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, b
   scr_dyn_release(have);
   scr_dyn_release(want);
   scr_assert_fail(text, true);
+}
+
+/* Throws ERR_AMBIGUOUS_ARGUMENT (a TypeError) with `text`; ownership of
+ * `text` moves in. */
+static void scr_assert_ambiguous_throw(ScrStr *text) {
+  static const char code_text[] = "ERR_AMBIGUOUS_ARGUMENT";
+  ScrStr *code = scr_str_new(code_text, sizeof code_text - 1);
+  scr_throw_node_coded(SCR_ERR_TYPE, code, text);
+  scr_str_release(code);
+  scr_str_release(text);
+}
+
+/* assert.throws/rejects with a STRING in the expectation position: the
+ * string is the assertion's message (lib/assert.js expectsError), and Node
+ * refuses the call as ambiguous — ERR_AMBIGUOUS_ARGUMENT, a TypeError —
+ * when the value the callback threw would support the other reading: an
+ * object whose `message` is that string, or the string itself. The message
+ * is an ordinary property read, as lib/assert.js's `actual.message` is: an
+ * inherited one counts and a getter runs, its exception propagating as
+ * Node's does. lib/assert.js reads it twice — in the comparison and again in
+ * the diagnostic's quoted text — so a matching getter runs a second time and
+ * a stateful one is quoted by its second answer. The check runs only once
+ * the callback threw; a callback that returned reaches the missing-exception
+ * throw instead. Borrows both. */
+void scr_assert_throws_ambiguous(ScrDyn *actual, ScrStr *message) {
+  const bool object = actual->kind == SCR_DYN_OBJ || actual->kind == SCR_DYN_ARR ||
+                      actual->kind == SCR_DYN_BYTES || actual->kind == SCR_DYN_HANDLE ||
+                      actual->kind == SCR_DYN_PROXY;
+  if (!object) {
+    if (actual->kind != SCR_DYN_STR || !scr_str_eq(actual->v.str, message)) return;
+    ScrAssertBuf b = {0};
+    ab_cstr(&b, "The \"error/message\" argument is ambiguous. The error \"");
+    ab_str(&b, actual->v.str);
+    ab_cstr(&b, "\" is identical to the message.");
+    scr_assert_ambiguous_throw(ab_take(&b));
+    return;
+  }
+  ScrDyn *member = scr_dyn_obj_read(actual, "message", 7);
+  if (member == NULL) return; /* the getter threw: its exception is pending */
+  const bool matched = member->kind == SCR_DYN_STR && scr_str_eq(member->v.str, message);
+  scr_dyn_release(member);
+  if (!matched) return;
+  /* The quoted text is a second read, as the diagnostic's interpolation is
+   * in lib/assert.js: a getter's exception propagates and a stateful getter
+   * answers with its second value. */
+  ScrDyn *quoted = scr_dyn_obj_read(actual, "message", 7);
+  if (quoted == NULL) return; /* pending */
+  ScrStr *text = scr_dyn_string_coerce_js(quoted);
+  scr_dyn_release(quoted);
+  if (text == NULL) return; /* pending: a Symbol answers no string */
+  ScrAssertBuf b = {0};
+  ab_cstr(&b, "The \"error/message\" argument is ambiguous. The error message \"");
+  ab_str(&b, text);
+  ab_cstr(&b, "\" is identical to the message.");
+  scr_str_release(text);
+  scr_assert_ambiguous_throw(ab_take(&b));
 }
 
 /* assert.throws(fn) that did NOT throw / assert.rejects whose promise
@@ -3156,6 +3412,22 @@ ScrError *scr_assert_error_new(ScrDyn *options) {
   scr_str_release(text);
   e->name_present = true;
   scr_assert_attach_values(e, generated, actual, expected, op, diff);
+  /* options.stackStartFn: Node's constructor passes it to
+   * Error.captureStackTrace, so the frames above that function — including
+   * its own — are left out, and a function that is not on the stack leaves
+   * none. The runtime knows the function value by name. */
+  ScrDyn *start_fn = scr_dyn_obj_read(options, "stackStartFn", 12);
+  if (start_fn) {
+    if (start_fn->kind == SCR_DYN_FUNC && start_fn->v.fn.name != NULL &&
+        start_fn->v.fn.name[0] != '\0') {
+      ScrStr *frames = scr_stack_capture_after_name(start_fn->v.fn.name);
+      scr_str_release(e->stack_frames);
+      e->stack_frames = frames;
+      scr_str_release(e->stack);
+      e->stack = NULL;
+    }
+    scr_dyn_release(start_fn);
+  }
   return e;
 }
 

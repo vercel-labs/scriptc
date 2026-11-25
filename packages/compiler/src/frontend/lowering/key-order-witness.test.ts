@@ -15,6 +15,7 @@ import {
   type KeyOrderSegment,
 } from "./key-order-witness.js";
 import type { Lowerer } from "./lowerer.js";
+import { decodeUnitFunction, encodeUnitFunction } from "./unit-journal.js";
 import * as ts from "../ts7/adapter.js";
 
 const loc = { file: "order.ts", start: 0, end: 1 };
@@ -154,6 +155,8 @@ test("values built in two orders each record their literal's order", () => {
   expect(shape.fields.map((x) => x.name)).toEqual([KEY_ORDER_FIELD, "a", "b"]);
   expect(orderIndexOf(ba)).toMatchObject({ kind: "numLit", value: 1 });
   expect(orderIndexOf(aOrder)).toMatchObject({ kind: "numLit", value: 0 });
+  // Each value lists its own order: nothing to report.
+  expect(f.notes.warnings).toEqual([]);
 });
 
 test("a copy of a value with orders stores its source's index", () => {
@@ -220,6 +223,8 @@ test("an unobserved shape keeps today's table", () => {
   );
   f.run([decl("x", f.literal(ab, ["b", "a"]))]);
   expect(f.order(ab)).toEqual(["a", "b"]);
+  // Nothing observes the order, so nothing is reported.
+  expect(f.notes.warnings).toEqual([]);
 });
 
 test("a synthesized construction pins today's table", () => {
@@ -390,6 +395,11 @@ test("a spread of a checked-conversion source cannot be ordered statically", () 
     observe(f.literal(out, ["a", "b", "c"], [spread, { kind: "key", name: "c", definite: true }])),
   ]);
   expect(f.order(out)).toEqual(["c", "a", "b"]);
+  // The observed type keeps one table its values may not follow: SC6014
+  // names it once, by its keys, at the spread.
+  expect(f.notes.warnings.map((w) => [w.code, w.message.split(" natively")[0]])).toEqual([
+    ["SC6014", "objects of this type enumerate their keys as 'c, a, b'"],
+  ]);
 });
 
 test("a late-only optional key follows the keys values are built with", () => {
@@ -994,4 +1004,43 @@ test("a spread of a converted value into a wider shape orders the wider shape", 
   f.run([observe(f.literal(ab, ["b", "a"])), observe(wide)]);
   expect(f.order(ab)).toEqual(["b", "a"]);
   expect(f.order(abc)).toEqual(["b", "a", "c"]);
+});
+
+test("a unit's notes are recorded by function and node, and attach to the function a record carries", () => {
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", F64],
+    ],
+    ["a", "b"],
+  );
+  f.notes.beginUnit();
+  const literal = f.literal(ab, ["b", "a"]);
+  f.notes.observe(ab);
+  const fn: IrFunction = {
+    name: "%unit",
+    params: [],
+    returnType: F64,
+    locals: [],
+    body: [observe(literal)],
+    loc,
+  };
+  f.notes.noteUnit("%unit", [fn]);
+  // The record carries the function, decoded again by the build that
+  // applies it.
+  const carriedText = encodeUnitFunction(fn)!;
+  expect(carriedText).not.toBeNull();
+  const carried = decodeUnitFunction(carriedText);
+  const carriedLiteral = (carried.body[0] as IrStmt & { expr: { value: IrExpr } }).expr.value;
+  const table = f.notes.journalTable((name) => (name === "%unit" ? carried : undefined));
+  const entries = table.entries!(0)!;
+  expect(entries.length).toBe(2);
+  expect(f.notes.literalOf(carriedLiteral)).toBeUndefined();
+  table.apply!(entries);
+  table.attach!();
+  // The decoded node carries the note the lowered one had, and the shape the
+  // unit observed is observed again.
+  expect(f.notes.literalOf(carriedLiteral)).toEqual(f.notes.literalOf(literal));
+  expect(f.notes.observed.has(ab.shapeId)).toBe(true);
 });

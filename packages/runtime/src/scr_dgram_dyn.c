@@ -321,7 +321,7 @@ static void scr_dgram_dynh_unsupported(const char *member, const char *why) {
   int n = snprintf(msg, sizeof msg,
                    "'dgram.Socket.prototype.%s' on a dynamic value is not supported yet%s%s", member,
                    why ? " — " : "", why ? why : "");
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)n);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)n, "SC2020");
 }
 
 /* The message text a typed 'error' listener receives for an emitted
@@ -475,7 +475,7 @@ static ScrDyn *scr_dgram_dynh_invoke(void *h, ScrDyn *self, const char *method,
       scr_jb_puts(&b, "listening for '");
       if (a0->kind == SCR_DYN_STR) scr_jb_write(&b, a0->v.str->data, a0->v.str->len);
       scr_jb_puts(&b, "' on a dynamic dgram Socket is not supported yet");
-      scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+      { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
       return NULL;
     }
     scr_dgram_dyn_on(e, ev, a1, once);
@@ -507,12 +507,19 @@ static ScrDyn *scr_dgram_dynh_invoke(void *h, ScrDyn *self, const char *method,
     const ScrDyn *cb;
     if (!scr_dgram_dyn_bind_args(method, args, argc, &port, &host, &cb)) return NULL;
     bool bind = method[0] == 'b';
-    ScrStr *h2 = host ? scr_str_retain(host) : bind ? scr_str_new("", 0) : scr_str_new("127.0.0.1", 9);
-    /* the callback is once('listening') / once('connect'), registered
-     * before the state checks as Node registers it */
-    if (cb) scr_dgram_dyn_on(e, bind ? SCR_DGRAM_EV_LISTENING : SCR_DGRAM_EV_CONNECT, cb, true);
-    if (bind) scr_dgram_bind(s, port, h2, NULL);
-    else scr_dgram_connect(s, port, h2, NULL);
+    /* An absent host is "" here; the runtime completes bind's wildcard
+     * and connect's loopback for the socket's family. */
+    ScrStr *h2 = host ? scr_str_retain(host) : scr_str_new("", 0);
+    if (bind) {
+      /* the callback is once('listening') */
+      if (cb) scr_dgram_dyn_on(e, SCR_DGRAM_EV_LISTENING, cb, true);
+      scr_dgram_bind(s, port, h2, NULL);
+    } else {
+      /* Node's connect registers the callback as once('connect') and, when
+       * the address is refused, answers the callback instead of emitting
+       * 'error': the dynamic connect form does both. */
+      scr_dgram_connect_dyn(s, port, h2, cb ? scr_dyn_retain((ScrDyn *)cb) : NULL);
+    }
     scr_str_release(h2);
     if (scr_exc_pending()) return NULL;
     return bind ? scr_dyn_retain(self) : scr_dyn_retain(scr_dyn_undefined());
@@ -660,4 +667,11 @@ ScrDgramSocket *scr_dgram_from_dyn(const ScrDyn *d, const ScrDynPath *path, cons
     return NULL;
   }
   return scr_dgram_retain(((ScrDgramDyn *)d->v.handle.ptr)->s);
+}
+
+/* `x instanceof dgram.Socket` for a value only known at run time: true for
+ * a socket handle, false for every other value (Node's prototype walk
+ * answers the same for the boxed socket and for a plain object). */
+bool scr_dgram_is_dyn(const ScrDyn *d) {
+  return d != NULL && d->kind == SCR_DYN_HANDLE && d->v.handle.tag == SCR_DYNH_DGRAM_SOCKET;
 }

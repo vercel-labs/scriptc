@@ -1,0 +1,142 @@
+class-index-signature-fences.ts:15:7 - error SC1090: declaring instance fields in a class that extends 'Open', a class with an index signature (Node creates a subclass's fields after the properties the base constructor added, and a compiled instance lists declared fields first; declare the fields in the class that has the index signature) is not supported yet
+
+  14 | }
+  15 | class Closed extends Open {
+     |       ^~~~~~
+  16 |   own = 2;
+
+class-index-signature-fences.ts:18:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  17 | }
+  18 | console.log(new Closed().own);
+     |             ^~~~~~~~~~~~
+  19 | 
+
+class-index-signature-fences.ts:26:3 - error SC1090: a field initializer that mentions 'this' or calls a function, in a class with an index signature (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first; assign the field in the constructor instead) is not supported yet
+
+  25 |   [key: string]: unknown;
+  26 |   opened = this.stamp("early");
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  27 |   closed = 2;
+
+class-index-signature-fences.ts:33:16 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  32 | }
+  33 | const ledger = new Ledger();
+     |                ^~~~~~~~~~~~
+  34 | console.log(Object.keys(ledger).join(","));
+
+class-index-signature-fences.ts:34:13 - error SC2020: 'Object.keys' is part of the standard library types but has no scriptc lowering yet
+
+  33 | const ledger = new Ledger();
+  34 | console.log(Object.keys(ledger).join(","));
+     |             ^~~~~~~~~~~
+  35 | // directly in an initializer, or in the last one,
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+class-index-signature-fences.ts:39:3 - error SC1090: a field initializer that mentions 'this' or calls a function, in a class with an index signature (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first; assign the field in the constructor instead) is not supported yet
+
+  38 |   first = 1;
+  39 |   second = (this.late = true) ? 2 : 0;
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  40 | }
+
+class-index-signature-fences.ts:41:15 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  40 | }
+  41 | const tally = new Tally();
+     |               ^~~~~~~~~~~
+  42 | console.log(Object.keys(tally).join(","));
+
+class-index-signature-fences.ts:42:13 - error SC2020: 'Object.keys' is part of the standard library types but has no scriptc lowering yet
+
+  41 | const tally = new Tally();
+  42 | console.log(Object.keys(tally).join(","));
+     |             ^~~~~~~~~~~
+  43 | // from a base class's initializer, through a method the class overrides,
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+class-index-signature-fences.ts:51:7 - error SC1090: an index signature in a class that extends 'Shelf', which has a field initializer that mentions 'this' or calls a function (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first) is not supported yet
+
+  50 | }
+  51 | class OpenShelf extends Shelf {
+     |       ^~~~~~~~~
+  52 |   [key: string]: unknown;
+
+class-index-signature-fences.ts:58:15 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  57 | }
+  58 | const shelf = new OpenShelf();
+     |               ^~~~~~~~~~~~~~~
+  59 | console.log(Object.keys(shelf).join(","));
+
+class-index-signature-fences.ts:59:13 - error SC2020: 'Object.keys' is part of the standard library types but has no scriptc lowering yet
+
+  58 | const shelf = new OpenShelf();
+  59 | console.log(Object.keys(shelf).join(","));
+     |             ^~~~~~~~~~~
+  60 | // and from a base constructor that calls out while the class still has
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+class-index-signature-fences.ts:68:7 - error SC1090: an index signature in a class with instance fields below 'Drawer', whose constructor calls a function or hands the instance out (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first) is not supported yet
+
+  67 | }
+  68 | class OpenDrawer extends Drawer {
+     |       ^~~~~~~~~~
+  69 |   depth = 3;
+
+class-index-signature-fences.ts:75:16 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  74 | }
+  75 | const drawer = new OpenDrawer();
+     |                ^~~~~~~~~~~~~~~~
+  76 | console.log(Object.keys(drawer).join(","));
+
+class-index-signature-fences.ts:76:13 - error SC2020: 'Object.keys' is part of the standard library types but has no scriptc lowering yet
+
+  75 | const drawer = new OpenDrawer();
+  76 | console.log(Object.keys(drawer).join(","));
+     |             ^~~~~~~~~~~
+  77 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+class-index-signature-fences.ts:82:1 - error SC1090: compound assignment to unsupported field targets are not supported yet
+
+  81 | open.hits = 1;
+  82 | open.hits += 1;
+     | ^~~~~~~~~
+  83 | open.hits++;
+
+class-index-signature-fences.ts:83:1 - error SC1045: increment/decrement of this member target is not supported yet
+
+  82 | open.hits += 1;
+  83 | open.hits++;
+     | ^~~~~~~~~~~
+  84 | delete open.hits;
+
+  hint: use ++/-- as a standalone statement, or write x = x + 1
+
+class-index-signature-fences.ts:84:1 - error SC1090: 'delete' on 'Open' receivers (process.env keys, pure Record<string, T> keys, and optional record fields delete) are not supported yet
+
+  83 | open.hits++;
+  84 | delete open.hits;
+     | ^~~~~~~~~~~~~~~~
+  85 | open.run = (): number => 1;
+
+class-index-signature-fences.ts:86:13 - error SC1090: method calls like 'open.run' is not supported yet
+
+  85 | open.run = (): number => 1;
+  86 | console.log(open.run());
+     |             ^~~~~~~~~~
+  87 | console.log({ ...open });
+
+class-index-signature-fences.ts:87:15 - error SC1090: object spread of 'Open' sources (only known record shapes spread — narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+
+  86 | console.log(open.run());
+  87 | console.log({ ...open });
+     |               ^~~~~~~
+  88 | 

@@ -1,0 +1,5 @@
+{
+  "name": "jsx-automatic-runtime-npm-package",
+  "private": true,
+  "type": "module"
+}

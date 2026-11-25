@@ -1,0 +1,8 @@
+compat-absent-node-values.ts:7:21 - error SC0001: Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 69 more ...; disconnect(): void; }'.
+
+  6 | // process: the entry module object.
+  7 | console.log(process.mainModule);
+    |                     ^~~~~~~~~~
+  8 | // End with a nonblank context line so diagnostic snapshots carry no trailing whitespace.
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint

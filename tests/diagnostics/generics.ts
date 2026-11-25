@@ -40,8 +40,6 @@ class Box<T> {
     this.v = v;
   }
 }
-// The uninstantiated family as a value: no thunk, no single ctor ABI.
-const BoxAlias = Box;
 // Each specialization resolves the matching concrete base layout while
 // every specialization retains the declaration's JavaScript class identity.
 class Chained<T> extends Box<T> {

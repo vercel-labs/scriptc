@@ -1,0 +1,2 @@
+- **Trace events:** `trace_events.createTracing` validates its options and answers a `Tracing` object whose `categories`, `enabled`, `enable()` and `disable()` behave as Node's, and `trace_events.getEnabledCategories` lists the enabled categories, all as in a Node process run without the `--trace-event-*` flags.
+  A compiled binary carries no trace-event agent, so enabling a category records no trace data.

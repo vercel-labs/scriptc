@@ -32,6 +32,16 @@ export const SCR_ARR_STATES = 16;
 /** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
 export const SCR_ARR_FROZEN = 32;
 
+/** The answers of scr_dyn_index_set (ScrDynIndexSet in scr_dyn.h;
+ * runtime-registries.test.ts checks they agree): the shortcut stored the
+ * element, raised while coercing the value or fencing the receiver, or left
+ * the write to the site's own helper. */
+export const DYN_INDEX_SET = {
+  NOT_HANDLED: 0,
+  STORED: 1,
+  THREW: 2,
+} as const;
+
 /** The bits of ScrClosure.function_kind (SCR_CLOSURE_KIND_* in
  * scr_closure.h; runtime-registries.test.ts checks they agree). */
 export const CLOSURE_KIND = {
@@ -40,6 +50,7 @@ export const CLOSURE_KIND = {
   OWN_PROTOTYPE: 4,
   CHECKED_ADAPTER: 8,
   RECEIVER_FREE: 16,
+  VALUES: 32,
 } as const;
 
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a

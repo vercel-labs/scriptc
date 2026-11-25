@@ -18,6 +18,9 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
     "scr_http2.c",
     "scr_dgram.c",
     "scr_dns_promises.c",
+    // The stub resolver rides the dgram unit's poller and speaks BSD
+    // sockets directly, so it follows the dgram unit out of this pack.
+    "scr_dns_resolve.c",
     "scr_watch.c",
     "scr_tls_ca.c",
     "scr_tls.c",

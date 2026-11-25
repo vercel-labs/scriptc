@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-rebinding-any-undefined-return.mjs"
+ ],
+ "diags": []
+}

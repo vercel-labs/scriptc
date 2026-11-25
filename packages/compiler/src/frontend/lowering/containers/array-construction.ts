@@ -43,6 +43,7 @@ import {
   arrayValueStore,
   arrayValueType,
   optionalElementValue,
+  optionalSlotValue,
   primitiveElement,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
@@ -416,6 +417,16 @@ export function lowerArrayConstructor(
     const contextual = lowerer.checker.getContextualType(expr);
     if (contextual) result = lowerer.mapTypeOf(contextual);
   }
+  // A destination that holds the array as one checked-dynamic value (an
+  // `unknown[]` slot, or `any[]` where localized failure gave it that
+  // layout): the constructor builds an array of untyped elements, and the
+  // slot takes it as the value it is.
+  if (
+    result?.kind === "dyn" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    fillArgumentOfReceiver(expr) === null
+  )
+    result = arrayOf(DYN);
   // `Array(n).fill(v)`: the checker types the length-constructed array as
   // any[], but fill gives every element v's type.
   if (result?.kind !== "array") {
@@ -549,9 +560,32 @@ export function lowerArrayConstructor(
       loc,
     };
   }
+  if (result.optionalElements === true) return lowerOptionalElementArgs(lowerer, args, result, loc);
   return {
     kind: "arrayLit",
     elems: args.map((arg) => lowerer.lowerExprExpecting(arg, result.elem)),
+    type: result,
+    loc,
+  };
+}
+
+/** The elements of an array that admits a present undefined (`(T |
+ * undefined)[]` of a primitive T): an argument that can be undefined at run
+ * time, a union with an undefined arm or a checked-dynamic value that can
+ * hold one (a member read on an indexed object; optionalSlotValue), is
+ * stored as a present undefined rather than converted to T. */
+function lowerOptionalElementArgs(
+  lowerer: Lowerer,
+  nodes: readonly ts.Expression[],
+  result: IrType & { kind: "array" },
+  loc: SrcLoc,
+): IrExpr {
+  const values = nodes.map((node) => optionalSlotValue(lowerer, lowerer.lowerExpr(node), result));
+  if (values.some((value) => optionalElementValue(lowerer, value, result.elem)))
+    return lowerArrayValueItems(lowerer, values, result.elem, result, loc);
+  return {
+    kind: "arrayLit",
+    elems: values.map((value, i) => lowerer.coerceInto(nodes[i]!, value, result.elem)),
     type: result,
     loc,
   };
@@ -587,16 +621,7 @@ export function lowerArrayOfCall(
   // A `(T | undefined)[]` (primitiveElement) stores undefined arguments as
   // present undefined elements.
   if (result.optionalElements === true) {
-    const nodes = call.arguments.nodes;
-    const values = nodes.map((arg) => lowerer.lowerExpr(arg));
-    if (values.some((value) => optionalElementValue(lowerer, value, result.elem)))
-      return lowerArrayValueItems(lowerer, values, result.elem, result, locOf(call));
-    return {
-      kind: "arrayLit",
-      elems: values.map((value, i) => lowerer.coerceInto(nodes[i]!, value, result.elem)),
-      type: result,
-      loc: locOf(call),
-    };
+    return lowerOptionalElementArgs(lowerer, call.arguments.nodes, result, locOf(call));
   }
   return {
     kind: "arrayLit",
@@ -854,7 +879,7 @@ export function lowerCheckedArrayFrom(
 
 export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%builtin.Array.from";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const context = newFnCtx(false, null, null, DYN);
     lowerer.fnStack.push(context);
     try {
@@ -970,7 +995,7 @@ export function lowerArrayFromCall(
     !args.some(ts.isSpreadElement)
   ) {
     const name = "%builtin.Array.fromDirect";
-    if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    if (lowerer.liftedFnNamed(name) === undefined) {
       const context = newFnCtx(false, null, null, DYN);
       lowerer.fnStack.push(context);
       try {

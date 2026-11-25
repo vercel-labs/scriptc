@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8874-node-island-marked-ts-module/legacy.ts",
+  "<repo>/tests/corpus/8874-node-island-marked-ts-module/main.ts"
+ ],
+ "diags": []
+}

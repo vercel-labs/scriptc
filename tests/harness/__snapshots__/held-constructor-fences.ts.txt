@@ -1,0 +1,15 @@
+held-constructor-fences.ts:11:15 - error SC2020: 'the prototype of a held built-in constructor' is part of the standard library types but has no scriptc lowering yet
+
+  10 | const wrapped = new table.text("a");
+  11 | const proto = table.amount.prototype;
+     |               ^~~~~~~~~~~~~~~~~~~~~~
+  12 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+held-constructor-fences.ts:19:29 - error SC1090: variadic function values stored as '() => unknown' in a program that hands a function of that type to 'map' at held-constructor-fences.ts:20:80, which can call it with more than the 0 arguments the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  18 | labels.set(String, "text");
+  19 | const none: () => unknown = table.text;
+     |                             ^~~~~~~~~~
+  20 | console.log(wrapped, proto, build(Number), labels.size, none(), ["a", "b"].map(none));

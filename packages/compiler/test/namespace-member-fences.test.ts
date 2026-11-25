@@ -8,9 +8,12 @@ import { compile } from "../src/index.js";
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
 // Static member calls (`Math.abs(x)`) do not read the namespace objects, so
-// a change to a function member's value fences (SC1090) instead of leaving
-// those calls with the original. New properties and attribute-only changes
-// behave as in Node (corpus 7188).
+// a change to a function member's value fences at run time (SC1090) instead
+// of leaving those calls with the original. The writes here reach the object
+// and the key as values, so the build does not see them: a write it does see
+// is refused there when the program also calls the member, as this one does
+// (SC1092, tests/diagnostics/builtin-member-write*). New properties and
+// attribute-only changes behave as in Node (corpus 7188).
 test("replacing or deleting a namespace member fences", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-namespace-fences-"));
   try {
@@ -18,19 +21,22 @@ test("replacing or deleting a namespace member fences", async () => {
     writeFileSync(
       entry,
       `
-const m = /** @type {any} */ (Math);
-const j = /** @type {any} */ (JSON);
+function set(object, key, value) { object[key] = value; }
+function define(object, key, descriptor) { return Object.defineProperty(object, key, descriptor) === object; }
+function copy(object, source) { return Object.assign(object, source) === object; }
+function remove(object, key) { return delete object[key]; }
+function read(object, key) { return object[key]; }
 function attempt(label, run) {
   try { console.log(label, run()); } catch (error) { console.log(label, error.code); }
 }
-attempt("alias", () => { m.abs = () => 0; return "replaced"; });
-attempt("direct", () => { Math.max = () => 0; return "replaced"; });
-attempt("define", () => Object.defineProperty(m, "min", { value: () => 0 }) === m);
-attempt("same", () => Object.defineProperty(m, "min", { value: Math.min, enumerable: true }) === m);
-attempt("reflect", () => Reflect.set(j, "parse", () => 0));
-attempt("assign", () => Object.assign(m, { floor: 1 }) === m);
-attempt("delete", () => delete m.ceil);
-attempt("added", () => { m.extra = 5; return m.extra; });
+attempt("write", () => { set(Math, "abs", () => 0); return "replaced"; });
+attempt("computed", () => { set(Math, ["m", "ax"].join(""), () => 0); return "replaced"; });
+attempt("define", () => define(Math, "min", { value: () => 0 }));
+attempt("same", () => Object.defineProperty(Math, "min", { value: Math.min, enumerable: true }) === Math);
+attempt("reflect", () => Reflect.set(JSON, ["par", "se"].join(""), () => 0));
+attempt("assign", () => copy(Math, { floor: 1 }));
+attempt("delete", () => remove(Math, "ceil"));
+attempt("added", () => { set(Math, "extra", 5); return read(Math, "extra"); });
 console.log(Math.abs(-1), Math.max(1, 2), Math.min(1, 2), JSON.parse("[3]")[0], Math.floor(1.5), Math.ceil(1.5));
 console.log(Object.keys(Math).join(","));
 `,
@@ -48,8 +54,8 @@ console.log(Object.keys(Math).join(","));
     expect(child.status).toBe(0);
     expect(child.stdout).toBe(
       [
-        "alias SC1090",
-        "direct SC1090",
+        "write SC1090",
+        "computed SC1090",
         "define SC1090",
         "same true",
         "reflect SC1090",

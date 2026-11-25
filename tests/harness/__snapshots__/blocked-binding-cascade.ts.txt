@@ -1,49 +1,49 @@
-blocked-binding-cascade.ts:9:5 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+blocked-binding-cascade.ts:9:5 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
    8 | // battery used Symbol before symbol values grew a lowering.)
-   9 | let w = new WeakRef<object>({});
+   9 | let w = new BigInt64Array(8);
      |     ^
   10 | console.log(typeof w);
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-blocked-binding-cascade.ts:9:9 - error SC2020: 'new WeakRef' is part of the standard library types but has no scriptc lowering yet
+blocked-binding-cascade.ts:9:9 - error SC2020: 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet
 
    8 | // battery used Symbol before symbol values grew a lowering.)
-   9 | let w = new WeakRef<object>({});
-     |         ^~~~~~~~~~~~~~~~~~~~~~~
+   9 | let w = new BigInt64Array(8);
+     |         ^~~~~~~~~~~~~~~~~~~~
   10 | console.log(typeof w);
 
-  hint: deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
 blocked-binding-cascade.ts:10:20 - error SC2004: uses of 'w' inherit the blocker on its declaration
 
-   9 | let w = new WeakRef<object>({});
+   9 | let w = new BigInt64Array(8);
   10 | console.log(typeof w);
      |                    ^
-  11 | w = new WeakRef<object>({});
+  11 | w = new BigInt64Array(8);
 
   hint: the declaration of 'w' did not compile — fix the diagnostic reported there and these sites clear with it
 
 blocked-binding-cascade.ts:11:1 - error SC2004: uses of 'w' inherit the blocker on its declaration
 
   10 | console.log(typeof w);
-  11 | w = new WeakRef<object>({});
+  11 | w = new BigInt64Array(8);
      | ^
   12 | 
 
   hint: the declaration of 'w' did not compile — fix the diagnostic reported there and these sites clear with it
 
-blocked-binding-cascade.ts:16:10 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+blocked-binding-cascade.ts:16:10 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
-  15 | // use itself cascades.
-  16 | function makeWm(): WeakRef<object> {
+  15 | // the value use itself cascades.
+  16 | function makeWm(): BigInt64Array<ArrayBuffer> {
      |          ^~~~~~
-  17 |   return new WeakRef<object>({});
+  17 |   return new BigInt64Array(8);
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 
-blocked-binding-cascade.ts:19:7 - error SC2009: values of type '() => WeakRef<object>' cannot be compiled: the function shape is supported, but its return type 'WeakRef<object>' does not compile
+blocked-binding-cascade.ts:19:7 - error SC2009: values of type '() => BigInt64Array<ArrayBuffer>' cannot be compiled: the function shape is supported, but its return type 'BigInt64Array<ArrayBuffer>' does not compile
 
   18 | }
   19 | const f = makeWm;

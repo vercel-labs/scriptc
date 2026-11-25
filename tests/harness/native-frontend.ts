@@ -145,8 +145,10 @@ export function useNativeFrontend(backend: "llvm" = "llvm"): () => NativeFronten
         profile,
       ],
       // Under the sanitizer this compile alone can take most of 15 minutes
-      // on a loaded macOS runner.
-      { cwd: root, timeout: 1_500_000, maxBuffer: 16 * 1024 * 1024 },
+      // on a loaded macOS runner. Linux CI's whole step now runs within a
+      // minute of the 25-minute cap this used to be, so the compile keeps
+      // room for a slower runner.
+      { cwd: root, timeout: 1_800_000, maxBuffer: 16 * 1024 * 1024 },
     );
     expect(stderr).toBe("");
     const built = JSON.parse(stdout) as Awaited<ReturnType<typeof compile>>;
@@ -299,8 +301,8 @@ export function checkDiagnostics(frontend: NativeFrontend): void {
   writeFileSync(
     source,
     `
-        const values: (string | number)[] = ["wrong"];
-        console.log(values.find((value): value is number => true));
+        const rows: { label: string }[] = [{ label: "kept" }];
+        console.log(rows.find((row): row is { label: string; grams: number } => "grams" in row));
       `,
   );
   const refusal = frontend.lowerRequest("static refusal", { entry: source });

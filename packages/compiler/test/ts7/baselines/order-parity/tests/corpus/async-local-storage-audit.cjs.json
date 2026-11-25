@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/async-local-storage-audit.cjs"
+ ],
+ "diags": []
+}

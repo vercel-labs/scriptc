@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8736-new-set-map-dyn-iterable.cjs"
+ ],
+ "diags": []
+}

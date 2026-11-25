@@ -26,11 +26,12 @@
  * allocation runs in a loop, or a kept value comes from a recursive call
  * or from a call of a function whose group grows. Other groups are small,
  * and opening and dropping their arenas costs more than their frees. */
-import type { IrFunction, IrModule } from "../../ir/ir.js";
+import { isRefCounted, type IrFunction, type IrModule } from "../../ir/ir.js";
 import { contentOf, source, storeOf, storeTarget, type RegionGroups } from "./region-groups.js";
 import {
   argsOf,
   children,
+  forEachNode,
   indexOfNode,
   isExpr,
   refType,
@@ -47,6 +48,11 @@ export interface RegionSites {
    * value the group does not keep and whose callee may allocate: the
    * arena is suspended while they run. */
   heapCalls: Set<Node>;
+  /** Calls whose value may hold a reference into the group of a root that
+   * opens an arena in the same function (RegionGroups.holders) and that open
+   * no arena of their own: the arena is suspended while they run, wherever
+   * one can be open at the call (holdValues). They are heapCalls too. */
+  heldCalls: Set<Node>;
 }
 
 const LOOPS = new Set(["while", "doWhile", "for", "forOf"]);
@@ -263,6 +269,78 @@ function classify(fn: IrFunction, topLocalsKept: boolean): FnSites {
   return out;
 }
 
+/** The functions that may run with no arena open.
+ *
+ * A root and a call region open their arena before the call, so their
+ * callees run in it, and a call the emitter does not suspend leaves it
+ * open, so its callees run in it too, transitively. Everything else may run
+ * with no arena open: a suspended call's callees (heapCalls), everything an
+ * unguarded function calls, every closure body (a callback can be stored
+ * and run after its caller's arena was closed), and every function outside
+ * the plan's `reachable` set, which has no arena at all.
+ *
+ * A call whose targets the call graph cannot name is still bounded by the
+ * module: an indirect call runs a closure value, and every function value
+ * in the module comes from a `closure` node, whose body this walk already
+ * marks unguarded (a reference to a top-level function lowers to a
+ * zero-capture closure); a dynamic construction may run any class's
+ * constructor; and an unresolved virtual call may run any class's method of
+ * that name. */
+export function guardedFunctions(
+  mod: IrModule,
+  groups: RegionGroups,
+  sites: RegionSites,
+): Set<string> {
+  const classes = mod.classes ?? [];
+  const fns = new Map(mod.functions.map((f) => [f.name, f]));
+  const vt = new VirtualTargets(classes);
+  const unguarded = new Set<string>();
+  const queue: string[] = [];
+  const add = (name: string): void => {
+    if (fns.has(name) && !unguarded.has(name)) {
+      unguarded.add(name);
+      queue.push(name);
+    }
+  };
+  const opens = (node: Node): boolean => groups.roots.has(node) || groups.calls.has(node);
+  /** The functions `node` runs, when it may run unguardedly. */
+  const target = (node: Node): void => {
+    if (node.kind === "closure") return add(node.fnName);
+    if (node.kind === "callValue") return; // its value came from a closure node
+    if (node.kind === "newValue") {
+      for (const cls of classes) add(`%${cls.name}.constructor`);
+      return;
+    }
+    const targets = targetsOf(vt, node);
+    if (targets !== null) {
+      for (const name of targets) add(name);
+      return;
+    }
+    // An unresolved virtual call can reach any class's method of that name.
+    if (node.kind === "virtualCall")
+      for (const cls of classes)
+        if (cls.methods?.includes(node.method)) add(`%${cls.name}.${node.method}`);
+  };
+  for (const fn of mod.functions) {
+    const planned = groups.reachable.has(fn.name);
+    if (!planned) add(fn.name);
+    forEachNode(fn.body, (node) => {
+      if (node.kind === "closure") add(node.fnName);
+      else if (callLike(node) && !opens(node))
+        if (!planned || sites.heapCalls.has(node)) target(node);
+    });
+  }
+  while (queue.length > 0) {
+    const fn = fns.get(queue.pop()!);
+    if (fn === undefined) continue;
+    forEachNode(fn.body, (node) => {
+      if (node.kind === "closure") add(node.fnName);
+      else if (callLike(node) && !opens(node)) target(node);
+    });
+  }
+  return unguarded;
+}
+
 /**
  * Narrows `groups` to the roots and call regions worth an arena (with
  * `reachable` recomputed for them) and classifies the allocations of the
@@ -345,5 +423,60 @@ export function planRegionSites(mod: IrModule, groups: RegionGroups): RegionSite
     for (const e of s.dropped)
       if (!groups.roots.has(e) && !groups.calls.has(e) && mayAllocate(e)) heapCalls.add(e);
   }
-  return { arenaSites, heapCalls };
+  const out: RegionSites = { arenaSites, heapCalls, heldCalls: new Set() };
+  holdValues(mod, groups, out);
+  return out;
+}
+
+/** Whether the emitter opens an arena for root `r` (LlEmitter.opensArena). */
+export function opensArena(groups: RegionGroups, r: Node): boolean {
+  return groups.roots.has(r) && (r.kind === "call" || r.kind === "new") && isRefCounted(r.type);
+}
+
+/**
+ * Sends to the heap every value that may hold a reference into the group of
+ * a root that opens an arena (RegionGroups.holders), unless it opens an
+ * arena of its own. Returns whether it suspended a call that was not
+ * suspended before; planArenas runs it again when a root loses its arena.
+ *
+ * Such a value has to let go of the reference before the root's arena is
+ * dropped. On the heap it does: the root's proof keeps the value in the
+ * frame, and the frame releases it first. In an arena it would keep the
+ * reference until that arena is dropped: a caller's, or an enclosing root's,
+ * which can be after the group is gone (`const kept = firstOf(rows())`,
+ * `rows().filter(wide)[1]` in a function that runs in its caller's arena).
+ * A holder that opens an arena of its own keeps it: the emitter drops it
+ * before the arenas of the groups it was made from
+ * (LlEmitter.beginArenaFunction).
+ *
+ * An arena can be open at a holder's call in a function that runs inside
+ * one (an arena-aware function), and in any function between the opening
+ * and the closing of an arena that function opens itself (the holder is
+ * among the operands of a root or a call region): the emitter suspends the
+ * arena in both places (LlEmitter.emitArenaExpr).
+ */
+export function holdValues(mod: IrModule, groups: RegionGroups, sites: RegionSites): boolean {
+  let fns: Map<string, IrFunction> | null = null;
+  let vt: VirtualTargets | null = null;
+  const mayAllocate = (e: Node): boolean => {
+    fns ??= new Map(mod.functions.map((f) => [f.name, f]));
+    vt ??= new VirtualTargets(mod.classes ?? []);
+    const known = fns;
+    const t = targetsOf(vt, e);
+    return t === null || t.some((n) => groups.allocates.has(n) || !known.has(n));
+  };
+  let added = false;
+  for (const r of groups.roots) {
+    if (!opensArena(groups, r)) continue;
+    for (const h of groups.holders(r)) {
+      if (opensArena(groups, h)) continue;
+      sites.arenaSites.delete(h);
+      if (callLike(h) && !sites.heldCalls.has(h) && mayAllocate(h)) {
+        sites.heldCalls.add(h);
+        sites.heapCalls.add(h);
+        added = true;
+      }
+    }
+  }
+  return added;
 }

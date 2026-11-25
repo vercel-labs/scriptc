@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { EXECUTABLE_RUNTIME_SOURCES } from "../../compiler/src/backend/native-toolchain.js";
+import { buildCFixture } from "../test/build-c.js";
 
 const exec = promisify(execFile);
 
@@ -82,20 +83,21 @@ function attempts(stderr: string): {
 describe.skipIf(process.platform === "win32")("counted lifetime regions", () => {
   const build = async (dir: string, name: string, flags: string[]): Promise<string> => {
     const bin = join(dir, name);
-    await exec("clang", [
-      "-std=c11",
-      "-O1",
-      "-pthread",
-      "-Wno-deprecated-declarations",
-      ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
-      ...flags,
-      ...["scr_region.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
+    await buildCFixture({
+      output: bin,
+      flags: [
+        "-std=c11",
+        "-O1",
+        "-pthread",
+        "-Wno-deprecated-declarations",
+        ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
+        ...flags,
+      ],
+      sources: ["scr_region.test.c", ...EXECUTABLE_RUNTIME_SOURCES].map((source) =>
         join(import.meta.dirname, source),
       ),
-      ...(process.platform === "linux" ? ["-lm"] : []),
-      "-o",
-      bin,
-    ]);
+      libraries: process.platform === "linux" ? ["-lm"] : [],
+    });
     return bin;
   };
   const run = async (bin: string, mode: string, extra: Record<string, string> = {}) =>
@@ -177,6 +179,28 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
       expect(retainedStats.other).toEqual(
         sanitized ? ["scriptc RC audit skipped: 5 program-lifetime object(s) never freed"] : [],
       );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // A number or string array whose metadata references a region object: the
+  // walk visits that metadata like release does, so the region is freed
+  // (without the walk the outside-looking reference keeps it, and the
+  // disposal assertion fails).
+  test("array metadata references are walked with the region", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-region-"));
+    try {
+      const bin = await build(dir, "region", ["-fsanitize=undefined"]);
+      const result = await run(bin, "metadata");
+      expect(result.stdout.trim()).toBe("array metadata references are walked with the region");
+      const parsed = attempts(result.stderr);
+      expect(parsed.attempts).toEqual(["1 freed", "2 freed", "3 freed", "4 freed"]);
+      expect(parsed.summaries).toEqual([
+        "scriptc regions: 4 created, 4 released, 4 freed, 0 pinned, 0 kept",
+      ]);
+      expect(parsed.heapPasses).toEqual([0]);
+      expect(parsed.other).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

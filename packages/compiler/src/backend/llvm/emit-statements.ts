@@ -1,4 +1,5 @@
 /* LlEmitter's statement emission: the statement switch, try/catch, switch, loop copies, speculative writes and string self-concatenation. */
+import { isDeferredDiagnosticFence } from "../../ir/deferred-fence.js";
 import { emitInlineArrayInit, inlineFieldTail } from "./inline-arrays.js";
 import { emitLoopBytesHeaders } from "./bytes-headers.js";
 import { noteBytesReceiver } from "./expr-bytes.js";
@@ -8,8 +9,22 @@ import {
   adoptingAwaitOf,
   MAX_BYTES_LOOP_VERSION_DEPTH,
 } from "./emitter.js";
-import { CAUGHT, F64, type IrExpr, type IrStmt, STRING, isRefCounted } from "../../ir/ir.js";
+import {
+  CAUGHT,
+  F64,
+  type IrExpr,
+  type IrStmt,
+  STRING,
+  isRefCounted,
+  keyedRecordFields,
+  typeEquals,
+} from "../../ir/ir.js";
 import { emitStringSliceSnapshot } from "./string-slices.js";
+import {
+  emitStringCursorAdvance,
+  emitStringCursorLoop,
+  matchCursorAdvance,
+} from "./string-cursor-loops.js";
 import {
   canDeferSplitPiece,
   emitSplitCursor,
@@ -97,9 +112,11 @@ import {
 } from "./string-construction.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { LOOPS } from "./loop-state.js";
+import { emitLaneLoop, emitLaneOuter, laneLoopPlan, outerLanePlan } from "./lanes.js";
 import { loopUnrollAttachment, periodicGuardPeriod } from "./periodic-guards.js";
 import { containsLoop, loopAccessesTypedArrays } from "../loop-polls.js";
 import { emitConstantChoice, matchConstantChoice } from "./constant-choices.js";
+import { emitFusedRecordSet } from "./record-entry-fusion.js";
 
 /** A callback loop version copies the loop; keep the copies small. */
 const MAX_CALLBACK_VERSION_COST = 400;
@@ -117,9 +134,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
+      // A binding whose captures copy its value (value-captures.ts) owns
+      // that value like the box it replaces did: closures created later
+      // read the slot, so it takes none of the borrowed forms below.
+      const owning = emitter.valueBindings.has(s.localId);
       if (
         emitter.borrowedMapGets.has(s.localId) &&
         b.kind === "local" &&
+        !owning &&
         s.init?.kind === "mapIntrinsic"
       ) {
         // The map entry's own reference: no retain now, no release at scope
@@ -130,14 +152,29 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           break;
         }
       }
-      if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
+      if (emitter.walkBorrows.has(s.localId) && b.kind === "local" && !owning) {
         // A borrowed walk pointer: no retain now, no release at scope exit.
         const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
         B.line(`store ptr ${v}, ptr ${b.slot}`);
         break;
       }
+      if (emitter.isTreeBorrow(s.localId) && b.kind === "local" && !owning) {
+        // A borrowed tree local: a pointer into a node someone else owns.
+        // A tree has no count to raise, and releasing the local at scope
+        // exit would destroy its owner's subtree, so it gets neither.
+        const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;
+        B.line(`store ptr ${v}, ptr ${b.slot}`);
+        break;
+      }
       const slice = emitter.scalarStringSlices.get(s.localId);
-      if (slice) {
+      // A slice of a string cursor's local: the cursor keeps the string the
+      // local entered its loop with, so a snapshot of that slot would hold
+      // the base rather than the rest the source slices. The declaration
+      // stores the slice the cursor's own read answers instead.
+      if (
+        slice &&
+        !(slice.receiver.kind === "varRef" && emitter.stringCursors.has(slice.receiver.localId))
+      ) {
         const snapshot = emitStringSliceSnapshot(emitter, slice);
         emitter.stringSlices.set(s.localId, snapshot);
         emitter.scopes[emitter.scopes.length - 1]!.push({ slot: snapshot.source, type: STRING });
@@ -280,14 +317,17 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         if (isRefCounted(b.type)) {
           B.line(`store ptr null, ptr ${b.slot}`);
           emitter.scopes[emitter.scopes.length - 1]!.push({ slot: b.slot, type: b.type });
+        } else if (owning) {
+          // The box this slot replaces started zeroed.
+          B.line(`store ${emitter.llType(b.type)} zeroinitializer, ptr ${b.slot}`);
         }
         break;
       }
-      if (emitter.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
+      if (!owning && emitter.loopArrayBorrows.has(s) && s.init.kind === "arrayGet") {
         emitBorrowedArrayRead(emitter, s.init, b.slot);
         break;
       }
-      const holeRead = emitter.loopArrayBorrows.has(s) ? dynHoleRead(s.init) : null;
+      const holeRead = !owning && emitter.loopArrayBorrows.has(s) ? dynHoleRead(s.init) : null;
       if (holeRead && s.init.kind === "ternary") {
         // A hole reads as the immortal undefined value, which needs no owner.
         const present = emitter.emitExpr(s.init.cond);
@@ -307,14 +347,48 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(done);
         break;
       }
+      // The copy of an immutable local that this scope owns (the form
+      // ir/capture-values.ts gives a stable captured binding: reads use the
+      // source, closures name the copy). Both die with the scope, and the
+      // source's last read never moves it away while a closure still names
+      // the copy (local-extents.ts counts the copy as derived), so the copy
+      // borrows instead of holding a second reference.
+      if (owning && b.kind === "local" && isRefCounted(b.type) && s.init.kind === "varRef") {
+        const source = emitter.binding(s.init.localId);
+        const scope = emitter.scopes[emitter.scopes.length - 1]!;
+        if (
+          source.kind === "local" &&
+          source.local !== undefined &&
+          !source.local.mutable &&
+          !source.local.boxed &&
+          !source.local.tdz &&
+          !emitter.isTreeValue(b.type) &&
+          typeEquals(source.type, b.type) &&
+          scope.some(
+            (entry) =>
+              entry.slot === source.slot &&
+              entry.boxed !== true &&
+              entry.lazy !== true &&
+              entry.arena !== true &&
+              typeEquals(entry.type, b.type),
+          )
+        ) {
+          B.line(`store ptr ${emitter.emitReadReceiver(s.init).name}, ptr ${b.slot}`);
+          break;
+        }
+      }
       // A stable lexical alias cannot outlive its unchanged local owner.
       // Whole-value uses still retain their own copies, so returning or
       // storing the alias preserves the ordinary heap representation.
       // Boxed captures, reassigned sources and projections need ownership.
+      // A tree value has one owner and no copy to lend: the alias would be
+      // a second pointer the source's scope exit still destroys.
       if (
         b.kind === "local" &&
         b.local &&
+        !owning &&
         isRefCounted(b.type) &&
+        !emitter.isTreeValue(b.type) &&
         emitter.stableCallBindings.has(s.localId) &&
         (emitter.canBorrowCallArgument(s.init) || emitter.unwrittenAlias(s))
       ) {
@@ -335,6 +409,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "assign": {
+      const cursor = emitter.stringCursors.get(s.localId);
+      if (cursor !== undefined) {
+        const advance = matchCursorAdvance(s.value, s.localId);
+        if (advance === null)
+          throw new InternalCompilerError(
+            `llvm emitter bug: string cursor write to ${s.localId} was not proven`,
+          );
+        emitStringCursorAdvance(emitter, cursor, advance);
+        break;
+      }
       if (emitter.int32Locals.has(s.localId)) {
         emitter.storeInt32Local(s.localId, emitter.emitExpr(s.value), s.value);
         break;
@@ -392,7 +476,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
-      if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
+      if (
+        emitter.walkBorrows.has(s.localId) &&
+        b.kind === "local" &&
+        !emitter.valueBindings.has(s.localId)
+      ) {
         // Rebinding a borrowed walk pointer releases nothing.
         B.line(`store ptr ${emitter.emitReadReceiver(s.value).name}, ptr ${b.slot}`);
         break;
@@ -693,6 +781,35 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         );
       } else if (emitter.publishedTypes?.recordGuarded(s.shapeId) === true)
         emitter.emitPublishedFieldGuard(obj.name, null, s.field);
+      if (s.kind === "recordSet" && emitter.partialFieldMissing(s.shapeId, s.field)) {
+        // A field a partial record view may lack: the view keeps it as a
+        // boxed property when the viewed record does not declare it.
+        const fieldType = emitter
+          .recordShape(s.shapeId)
+          .fields.find((f) => f.name === s.field)!.type;
+        const fieldInline = emitter.recordFieldInline(s.shapeId, s.field);
+        emitter.storePartialField(
+          obj.name,
+          s.shapeId,
+          s.field,
+          fieldType,
+          v,
+          (slot) => {
+            // A result-slot entry fills zeroed caller storage, each field
+            // once; a constructor's first store to its own field fills the
+            // slot `new` left.
+            if (resultSlotStore(emitter.currentFunctionName, s) || emitter.freshFieldStores.has(s))
+              emitter.initField(slot, fieldType, fieldInline, v);
+            else emitter.replaceField(slot, fieldType, fieldInline, v);
+          },
+          // The store owns the value on the slot path; the extra-property
+          // path boxes it (retaining) and gives up the store's reference.
+          () => {
+            if (!fieldInline && isRefCounted(fieldType)) emitter.releaseHeap(v.name, fieldType);
+          },
+        );
+        break;
+      }
       const { ptr, type, inline } =
         s.kind === "fieldSet"
           ? emitter.classFieldPtr(obj.name, s.className, s.field, "compressed")
@@ -744,6 +861,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // whose writes validate and can throw, stay refused), undeclared
       // keys insert/replace in the overflow map. Evaluation order: obj,
       // key, value; the write OWNS the value (+1 moves in).
+      const paired = emitter.recordEntryFusion?.writes.get(s);
+      const pairedIv = paired === undefined ? undefined : emitter.recordShape(s.shapeId).indexValue;
+      if (paired !== undefined && (pairedIv?.kind === "f64" || pairedIv?.kind === "bool")) {
+        // Paired with a fused read of the same object and key binding
+        // (record-entry-fusion.ts): the read already evaluated both and
+        // parked the overflow entry, so the write evaluates only the value
+        // and overwrites the entry's value slot in place. A miss takes the
+        // ordinary insert with the parked map and key.
+        const v = emitter.emitExpr(s.value);
+        const vAcc = pairedIv.kind === "f64" ? "f64" : "bool";
+        if (
+          emitFusedRecordSet(emitter, s, { name: v.name, access: vAcc }, (map, key) =>
+            emitter.mapSet(map, "str", vAcc, key, v.name),
+          )
+        )
+          break;
+        // The paired read took a non-fused lowering: finish with the
+        // ordinary set. Both bindings are plain variables, so reading them
+        // after the value is unobservable.
+        const objFallback = emitter.emitExpr(s.obj);
+        const keyFallback = emitter.emitExpr(s.key);
+        emitter.mapSet(
+          emitter.recordOvfPtr(objFallback.name, s.shapeId),
+          "str",
+          vAcc,
+          keyFallback.name,
+          v.name,
+        );
+        break;
+      }
       const obj = emitter.emitExpr(s.obj);
       const key = emitter.emitExpr(s.key);
       const v = emitter.emitExpr(s.value);
@@ -751,11 +898,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.emitPublishedFieldGuard(obj.name, null, "[key]");
       if (isRefCounted(v.type)) emitter.toHeap(v);
       const shape = emitter.recordShape(s.shapeId);
+      // The fields a key can name (never the hidden key-order index).
+      const keyed = keyedRecordFields(shape);
       // Signature-free shapes dispatch over their (one-typed) declared
       // fields and TRAP on a miss (scr_record_key_miss — JS would add
       // the property, which a monomorphic struct cannot); overflow
       // shapes keep the map insert tail.
-      const iv = shape.indexValue ?? shape.fields[0]?.type;
+      const iv = shape.indexValue ?? keyed[0]?.type;
       if (!iv)
         throw new InternalCompilerError(
           `llvm emitter bug: keyed write on field-free non-overflow shape ${s.shapeId}`,
@@ -777,7 +926,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         // store anything, the documented divergence); undeclared keys
         // insert the dyn value into the overflow map as-is.
         emitter.declare(`declare void @scr_dyn_release(ptr)`);
-        for (const f of shape.fields) {
+        for (const f of keyed) {
           const hit = B.tmp();
           B.line(
             `${hit} = call zeroext i1 ${emitter.literalEquals(f.name)}(ptr ${key.name}) ; ${llvmCommentText(f.name)}`,
@@ -809,7 +958,16 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           const pend = B.tmp();
           for (const line of emitter.pendingTestLines(pend)) B.line(line.trimStart());
           const lw = B.newLabel("rks.w");
-          B.condBr(pend, join, lw);
+          const dropped = emitter.pendingBailReleaseLines(f.type, nv);
+          if (dropped.length === 0) {
+            B.condBr(pend, join, lw);
+          } else {
+            const lp = B.newLabel("rks.p");
+            B.condBr(pend, lp, lw);
+            B.startBlock(lp);
+            for (const line of dropped) B.line(line.trimStart());
+            B.br(join);
+          }
           B.startBlock(lw);
           const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
           if (inline) {
@@ -833,10 +991,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.startBlock(join);
         // MAY THROW exactly when a dyn value can validate against a
         // declared field (stmts.ts's condition).
-        if (shape.fields.length > 0) emitter.emitPendingCheck();
+        if (keyed.length > 0) emitter.emitPendingCheck();
         break;
       }
-      for (const f of shape.fields) {
+      for (const f of keyed) {
         // typeEquals(f.type, iv) — the frontend fences everything else.
         const hit = B.tmp();
         B.line(
@@ -846,19 +1004,32 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         const ln = B.newLabel("rks.n");
         B.condBr(hit, lh, ln);
         B.startBlock(lh);
-        const { ptr, type, inline } = emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
-        if (inline) {
-          // The write owns the moved-in value; the slot copies its bits.
-          emitter.storeField(ptr, type, v.name, true);
-          emitter.releaseHeap(v.name, type);
-        } else if (isRefCounted(type)) {
-          const old = B.tmp();
-          B.line(`${old} = load ptr, ptr ${ptr}`);
-          emitter.storeField(ptr, type, v.name, false);
-          emitter.releaseHeap(old, type);
-        } else {
-          emitter.storeField(ptr, type, v.name, false);
-        }
+        const partial = emitter.partialFieldMissing(s.shapeId, f.name);
+        // A field a partial record view may lack has no slot to address:
+        // its write goes through the view's extra-property store.
+        const field = partial
+          ? { type: f.type, inline: emitter.recordFieldInline(s.shapeId, f.name), ptr: "" }
+          : emitter.recordFieldPtr(obj.name, s.shapeId, f.name);
+        const { ptr, type, inline } = field;
+        const storeAt = (slot: string): void => {
+          if (inline) {
+            // The write owns the moved-in value; the slot copies its bits.
+            emitter.storeField(slot, type, v.name, true);
+            emitter.releaseHeap(v.name, type);
+          } else if (isRefCounted(type)) {
+            const old = B.tmp();
+            B.line(`${old} = load ptr, ptr ${slot}`);
+            emitter.storeField(slot, type, v.name, false);
+            emitter.releaseHeap(old, type);
+          } else {
+            emitter.storeField(slot, type, v.name, false);
+          }
+        };
+        if (partial)
+          emitter.storePartialField(obj.name, s.shapeId, f.name, type, v, storeAt, () => {
+            if (inline || isRefCounted(type)) emitter.releaseHeap(v.name, type);
+          });
+        else storeAt(ptr);
         B.br(join);
         B.startBlock(ln);
       }
@@ -932,6 +1103,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "while": {
+      const cursor = emitter.stringCursorEmitting.has(s)
+        ? undefined
+        : emitter.stringCursorLoops.get(s);
+      if (cursor) {
+        emitStringCursorLoop(emitter, s, cursor);
+        break;
+      }
       const callbacks = callbackVersionBindings(emitter, s);
       if (callbacks) {
         emitCallbackVersionedLoop(emitter, s, callbacks);
@@ -956,6 +1134,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.br(lc);
         B.startBlock(lc);
         enterLoopHeader(emitter, lc);
+        emitter.emitPositionForExpr(s.cond);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
         B.startBlock(lb);
         emitter.jumpTargets.push({
@@ -980,6 +1159,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "doWhile": {
+      const cursor = emitter.stringCursorEmitting.has(s)
+        ? undefined
+        : emitter.stringCursorLoops.get(s);
+      if (cursor) {
+        emitStringCursorLoop(emitter, s, cursor);
+        break;
+      }
       const callbacks = callbackVersionBindings(emitter, s);
       if (callbacks) {
         emitCallbackVersionedLoop(emitter, s, callbacks);
@@ -1008,6 +1194,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         B.br(lc);
         B.startBlock(lc);
         emitter.emitWorkerLoopCheck(workerBudget);
+        emitter.emitPositionForExpr(s.cond);
         B.condBr(emitter.emitCondition(s.cond), lb, exit);
       });
       B.startBlock(le);
@@ -1433,8 +1620,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`${high} = load i64, ptr ${pairedSlots[1]}`);
           B.line(`${open} = icmp ${pairedLoop.inclusive ? "sle" : "slt"} i64 ${low}, ${high}`);
           B.condBr(open, lb, exit);
-        } else if (s.cond) B.condBr(emitter.emitCondition(s.cond), lb, exit);
-        else B.br(lb);
+        } else if (s.cond) {
+          emitter.emitPositionForExpr(s.cond);
+          B.condBr(emitter.emitCondition(s.cond), lb, exit);
+        } else B.br(lb);
         B.startBlock(lb);
         emitter.jumpTargets.push({
           kind: "loop",
@@ -1479,10 +1668,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
               B.line(`${next} = add nsw i64 ${old}, ${counter.step}`);
               B.line(`store i64 ${next}, ptr ${pairedSlots[i]}`);
             });
-          } else if (s.update) emitter.emitStmt(s.update);
+          } else if (s.update) {
+            emitter.emitPositionForStmt(s.update);
+            emitter.emitStmt(s.update);
+          }
           B.br(lc, backEdge);
         }
       };
+      // A planned loop runs whole vectors first and leaves the rest to its
+      // own copies, which start at the counter the lane loop leaves behind
+      // (lanes.ts). The plan is consulted here, before any copy is chosen:
+      // the speculative, int32 and strip-mined copies keep their values in
+      // layouts the lane body does not write.
+      const outer = !stripMined && capturedLets.length === 0 ? outerLanePlan(emitter, s) : null;
+      const lane =
+        outer === null &&
+        integerLoop !== null &&
+        integerSlot !== null &&
+        !stripMined &&
+        capturedLets.length === 0
+          ? laneLoopPlan(emitter, s)
+          : null;
+      if (outer !== null) emitLaneOuter(emitter, outer, B.newLabel("lane.after"));
+      else if (lane !== null)
+        emitLaneLoop(
+          emitter,
+          lane,
+          integerLoop!.limitReceiver,
+          integerSlot!,
+          B.newLabel("lane.after"),
+        );
       emitter.emitLoopCopies(s, capturedLets.length === 0, le, (exit) => {
         // Speculative copies resume iterations inside the copy they enter,
         // which must keep its polls.
@@ -1736,7 +1951,10 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       if (!target || target.contLabel === null)
         throw new InternalCompilerError("llvm emitter bug: continue target not found");
       emitter.emitFinallysForJump(target.finallyDepth, target.frameDepth, target.scopeDepth);
-      if (!B.isTerminated()) B.terminate(`br label %${target.contLabel}`);
+      if (!B.isTerminated()) {
+        emitter.framePositions?.continueLoop(s.label);
+        B.terminate(`br label %${target.contLabel}`);
+      }
       break;
     }
     case "return": {
@@ -1875,14 +2093,36 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       break;
     }
     case "runtimeFence": {
-      // The deferred JS compile fence: throw a catchable Error naming
-      // the construct (message) with the SC code stamped on `code`,
-      // then unwind exactly like `throw`. SCR_ERR_ERROR = 0.
+      // Throw a catchable Error naming the construct (message) with the
+      // SC code stamped on `code`, then unwind exactly like `throw`.
+      // SCR_ERR_ERROR = 0. A fence that stands for a diagnostic the
+      // compiler deferred (ir/deferred-fence.ts) throws through the
+      // runtime's reporter, which names the site on stderr the first time
+      // it fires, keyed by the interned message constant: a handler that
+      // catches the Error cannot hide the refusal. A library keeps the
+      // plain throw: its archive carries no reporter, and what a library
+      // tells its host goes through the host's sink, not the process's
+      // stderr.
       const bytes = Buffer.byteLength(s.message, "utf8");
-      emitter.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`);
-      B.line(
-        `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
-      );
+      if (
+        emitter.mod.lib === undefined &&
+        isDeferredDiagnosticFence(s.code, s.message, s.loc.file)
+      ) {
+        // A site inside its own try/catch (`guarded`) reports only under
+        // SCRIPTC_DEFERRED_REPORT=all: the build named it instead.
+        const reporter = s.guarded === true ? "scr_deferred_fence_guarded" : "scr_deferred_fence";
+        emitter.declare(`declare void @${reporter}(ptr, ${emitter.sizeType}, ptr)`);
+        B.line(
+          `call void @${reporter}(ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      } else {
+        emitter.declare(
+          `declare void @scr_throw_error_msg_code(i32, ptr, ${emitter.sizeType}, ptr)`,
+        );
+        B.line(
+          `call void @scr_throw_error_msg_code(i32 0, ptr ${emitter.cstr(s.message)}, ${emitter.sizeType} ${bytes}, ptr ${emitter.cstr(s.code)})`,
+        );
+      }
       emitter.emitUnwind();
       break;
     }
@@ -1977,6 +2217,7 @@ function storeIntegerTemp(
     local.mutable ||
     local.tdz === true ||
     emitter.captureIds.has(localId) ||
+    emitter.valueBindings.has(localId) ||
     !v.integer
   ) {
     emitter.integerTemps.delete(localId);
@@ -2450,13 +2691,15 @@ function emitVersionedLoop(
     B.startBlock(fast);
     declareAliasScopes(emitter, scoped?.scopes ?? []);
     emitter.bytesBounds = new Set([...originalBounds, ...version.bounds]);
-    // Both fast copies read the string's length the guard took.
-    const length = guard?.length;
-    if (length != null && version.unitLengths.size > 0)
-      emitter.stringLengthReads = new Map([
-        ...originalLengthReads,
-        ...[...version.unitLengths].map((node) => [node, length] as const),
-      ]);
+    // Each fast copy reads the string's length its side of the guard took.
+    const lengthReads = (length: string | null | undefined): void => {
+      if (length != null && version.unitLengths.size > 0)
+        emitter.stringLengthReads = new Map([
+          ...originalLengthReads,
+          ...[...version.unitLengths].map((node) => [node, length] as const),
+        ]);
+    };
+    lengthReads(guard?.length);
     emitter.emitStmt(s);
     B.br(done);
     if (sharedFast !== undefined) {
@@ -2481,6 +2724,7 @@ function emitVersionedLoop(
         ...originalUnitReads,
         ...[...version.stringReads].map((node) => [node, units] as const),
       ]);
+      lengthReads(guard?.unitsLength);
       emitter.emitStmt(s);
       B.br(done);
     }

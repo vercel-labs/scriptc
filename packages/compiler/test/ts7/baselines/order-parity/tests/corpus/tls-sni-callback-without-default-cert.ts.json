@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tls-sni-callback-without-default-cert.ts"
+ ],
+ "diags": []
+}

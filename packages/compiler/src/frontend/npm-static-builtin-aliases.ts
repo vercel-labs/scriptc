@@ -15,12 +15,12 @@
  * of the carried names read the builtin module's members, value uses read
  * the class itself, and a mixture keeps the package's own JavaScript. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 import {
   aliasReplacement,
   applyEdits,
   countDeclarations,
-  unparen,
   type Edit,
 } from "./npm-static-bundled-chunks.js";
 import { BUILTIN_ALIAS_PACKAGES, type BuiltinAlias } from "./builtin-package-aliases.js";
@@ -53,7 +53,7 @@ export function rewriteBuiltinAliasRequires(
       n.arguments.nodes.length !== 1
     )
       return undefined;
-    const arg = unparen(n.arguments.nodes[0]!);
+    const arg = withoutParentheses(n.arguments.nodes[0]!);
     if (!ts.isStringLiteral(arg) && !ts.isNoSubstitutionTemplateLiteral(arg)) return undefined;
     const spec = arg.text;
     if (!BUILTIN_ALIAS_PACKAGES.has(packageNameOfSpecifier(spec))) return undefined;

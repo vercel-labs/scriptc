@@ -24,7 +24,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { genResultRecord, typeKey } from "../../type-mapper.js";
 import { concatStrings, throwTypeError } from "./dynamic-receivers.js";
 import {
@@ -154,6 +154,11 @@ export function lowerGeneratorHelperCall(
   if (!isTerminal && !ITER_STAGES.has(name)) return null;
   if (!isHelperReceiver(lowerer, access.expression)) return null;
   if (!lowerer.isStdlibMember(access)) return null;
+  // A JavaScript call whose typed lowering would refuse runs the runtime's
+  // own helpers on the boxed receiver (slice 3 of the iterator-helpers
+  // design): they validate arguments and close the source as Node does.
+  const runtime = lowerRuntimeHelperCall(lowerer, call);
+  if (runtime) return runtime;
   const loc = locOf(call);
   if (!isTerminal) {
     const argNode = call.arguments.nodes[0];
@@ -263,6 +268,141 @@ export function lowerGeneratorHelperCall(
   );
 }
 
+/** A JavaScript helper call whose typed lowering would refuse: the source
+ * generator's yield channel has no native step form (a generator yielding
+ * 'void'), a callback is not a callable representable value, a take/drop
+ * budget is not a number, a flatMap callback's result has no
+ * representation, the receiver's binding holds checked-dynamic storage, or
+ * the checker's result type does not map. Such a call runs the runtime's
+ * own helpers (scr_json.c) over the boxed receiver: they validate the
+ * arguments, close the source and answer exactly as Node does. A
+ * TypeScript source keeps the refusal, and a call the typed lowering can
+ * compile is untouched. */
+export function helperCallTakesRuntime(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access)) return false;
+  if (call.questionDotToken || access.questionDotToken) return false;
+  const name = access.name.text;
+  const terminal = ITER_TERMINALS.has(name);
+  if (!terminal && !ITER_STAGES.has(name)) return false;
+  if (!isHelperReceiver(lowerer, access.expression)) return false;
+  if (!lowerer.isStdlibMember(access)) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return false;
+  // The stage calls between the chain's source and this call.
+  const stages: StageNode[] = [];
+  let cur: ts.Expression = access.expression;
+  while (isStageCall(lowerer, cur)) {
+    const stageAccess = cur.expression as ts.PropertyAccessExpression;
+    stages.push({
+      name: stageAccess.name.text,
+      argNode: cur.arguments.nodes[0]!,
+      access: stageAccess,
+    });
+    cur = stageAccess.expression;
+  }
+  stages.reverse();
+  const source = lowerer.mapTypeOf(lowerer.typeOf(cur));
+  // No native step form (a generator yielding 'void').
+  if (source?.kind === "generator" && !stepDrivable(source)) return true;
+  // A binding whose checked-dynamic storage holds the receiver (a `let`
+  // reassigned with a helper stage) has no typed generator value to drive.
+  if (source?.kind === "generator" && ts.isIdentifier(cur)) {
+    const symbol = lowerer.resolveValueSymbol(cur);
+    if (symbol && lowerer.jsWidenedBindings.has(symbol)) return true;
+  }
+  const stageTakesRuntime = (s: {
+    name: string;
+    argNode: ts.Expression | undefined;
+    access: ts.PropertyAccessExpression;
+  }): boolean => {
+    const argNode = s.argNode;
+    if (argNode === undefined || ts.isSpreadElement(argNode)) return true;
+    if (s.name === "take" || s.name === "drop")
+      return lowerer.mapTypeOf(lowerer.typeOf(argNode))?.kind !== "f64";
+    const argT = lowerer.typeOf(argNode);
+    const sig = lowerer.checker.getCallSignatures(argT)[0];
+    if (!sig || lowerer.mapTypeOf(argT) === null) return true;
+    // filter's callback result is ToBoolean'd (Node); the typed loop needs
+    // a boolean-valued callback.
+    if (s.name === "filter")
+      return lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(sig))?.kind !== "bool";
+    if (s.name === "flatMap") {
+      const ret = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(sig));
+      return !(
+        ret?.kind === "array" ||
+        ret?.kind === "set" ||
+        ret?.kind === "map" ||
+        ret?.kind === "string" ||
+        (ret?.kind === "generator" && ret.async !== true && stepDrivable(ret))
+      );
+    }
+    return false;
+  };
+  for (const stage of stages) if (stageTakesRuntime(stage)) return true;
+  if (!terminal) {
+    // This call's own stage. Node ignores extra arguments (a stage takes
+    // only its mapper or budget), and the runtime validates a missing or
+    // spread one exactly as the spec does.
+    if (call.arguments.nodes.length > 1) return true;
+    if (stageTakesRuntime({ name, argNode: call.arguments.nodes[0], access })) return true;
+  }
+  if (terminal) {
+    if (name === "toArray") return call.arguments.nodes.length !== 0;
+    const maxArgs = name === "reduce" ? 2 : 1;
+    if (call.arguments.nodes.length > maxArgs) return true;
+    const argNode = call.arguments.nodes[0];
+    if (argNode === undefined || ts.isSpreadElement(argNode)) return true;
+    const argT = lowerer.typeOf(argNode);
+    const sig = lowerer.checker.getCallSignatures(argT)[0];
+    if (!sig || lowerer.mapTypeOf(argT) === null) return true;
+    if (name !== "forEach" && name !== "reduce") {
+      const ret = lowerer.mapTypeOf(lowerer.checker.getReturnTypeOfSignature(sig));
+      if (ret?.kind !== "bool") return true;
+    }
+  }
+  return lowerer.mapTypeOf(lowerer.typeOf(call)) === null;
+}
+
+/** A helper call on a JavaScript binding whose checked-dynamic storage
+ * holds an iterator (a `let` iterator reassigned with a stage): the read is
+ * the checked value, so no typed chain can be driven, and the checked-
+ * dynamic method path would read `filter`/`map` as Array.prototype's on
+ * the boxed receiver. Runs the runtime's helper instead. Claimed before
+ * that path; null for every other receiver. */
+export function lowerWidenedIteratorHelperCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access)) return null;
+  if (!ts.isIdentifier(access.expression)) return null;
+  const symbol = lowerer.resolveValueSymbol(access.expression);
+  if (symbol === null || !lowerer.jsWidenedBindings.has(symbol)) return null;
+  const name = access.name.text;
+  if (!ITER_TERMINALS.has(name) && !ITER_STAGES.has(name)) return null;
+  return lowerRuntimeHelperCall(lowerer, call);
+}
+
+/** The runtime path of a JavaScript helper call: the interned helper
+ * function (the one %Iterator.prototype% holds) invoked over the boxed
+ * receiver, with every argument lowered as a checked value in source
+ * order. Null when the call keeps its typed lowering. */
+function lowerRuntimeHelperCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (!helperCallTakesRuntime(lowerer, call)) return null;
+  const access = call.expression as ts.PropertyAccessExpression;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  return {
+    kind: "dynInvoke",
+    recv: lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN),
+    method: access.name.text,
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
+}
+
 /** `h.return!()` or `h.return?.()` on a helper object. The lib declares
  * return() as optional on iterator objects, and a helper object always
  * has one, so both spellings are the call: the helper completes and closes
@@ -329,16 +469,12 @@ export function lowerIteratorFromCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (access.name.text !== "from" || call.arguments.nodes.length !== 1) return null;
+  if (access.name.text !== "from" || !iteratorFromIsTyped(lowerer, call)) return null;
   const argNode = call.arguments.nodes[0]!;
-  if (ts.isSpreadElement(argNode)) return null;
-  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
-  const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
-  if (resultT?.kind !== "generator" || resultT.async || argT === null) return null;
-  const iterableKinds = ["generator", "array", "string", "bytes", "set", "map"];
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call))!;
+  const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode))!;
+  if (resultT.kind !== "generator") return null;
   const classIterable = iteratesThroughGenerator(lowerer, argT);
-  if (!classIterable && !iterableKinds.includes(argT.kind)) return null;
-  if (argT.kind === "generator" && argT.async) return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(argNode);
   const own = (yieldT: IrType): GenType => ({
@@ -371,6 +507,22 @@ export function lowerIteratorFromCall(
   const result = lowerer.coerceToExpected(iterator, resultT);
   if (!typeEquals(result.type, resultT)) lowerer.badType(call, lowerer.typeOf(call));
   return result;
+}
+
+/** Whether `Iterator.from(arg)` lowers statically: one argument of a
+ * typed built-in iterable (or a class iterable through a generator) whose
+ * result maps to a synchronous generator. Otherwise a JavaScript source
+ * takes the runtime's Iterator.from (iterator-prototype.ts). */
+export function iteratorFromIsTyped(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  if (call.arguments.nodes.length !== 1) return false;
+  const argNode = call.arguments.nodes[0]!;
+  if (ts.isSpreadElement(argNode)) return false;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const argT = lowerer.mapTypeOf(lowerer.typeOf(argNode));
+  if (resultT?.kind !== "generator" || resultT.async || argT === null) return false;
+  const iterableKinds = ["generator", "array", "string", "bytes", "set", "map"];
+  if (!iteratesThroughGenerator(lowerer, argT) && !iterableKinds.includes(argT.kind)) return false;
+  return !(argT.kind === "generator" && argT.async);
 }
 
 /** The interned [K, V] pair a Map's entries yield. */

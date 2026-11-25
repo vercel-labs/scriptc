@@ -16,12 +16,24 @@
  * dyn value) that settle on Node's microtask turn for the Blob's part
  * count. scr_blob_is answers `v instanceof Blob` (kind 0) or `File` (1). */
 ScrDyn *scr_blob_new(ScrDyn *args);
+/* stream/consumers blob(): the collected bytes as a Blob with an empty
+ * type (+1, or NULL with the construction's exception pending). Borrows
+ * the bytes. In the blob unit so the consumers' settlement carries only a
+ * weak reference to it. */
+ScrDyn *scr_sc_blob_value(ScrBytes *all);
 ScrDyn *scr_file_new(ScrDyn *args);
 ScrDyn *scr_blob_slice(ScrDyn *self, ScrDyn *args);
+/* buffer.resolveObjectURL(id): ToString(id), then the Blob registered under
+ * the object URL's id as a fresh handle (+1), or undefined. */
+ScrDyn *scr_buffer_resolve_object_url(const struct ScrDyn *id);
 ScrPromise *scr_blob_text(ScrDyn *self);
 ScrPromise *scr_blob_bytes(ScrDyn *self);
 ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
+/* A Blob or File as a fetch body: the blob's bytes (+1) and its type
+ * (+1, NULL when the Blob has none), which becomes Content-Type. False,
+ * touching neither output, for every other value. */
+bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`
@@ -40,40 +52,97 @@ ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
  * module `id`, Node's sorted export names as enumerable read-only accessors
  * whose getters call `getter` with the name, `Symbol.toStringTag` "Module"
  * (the well-known symbol is `tag_key`), and Node's strict-mode write
- * TypeErrors. Borrows all four; +1 object. */
+ * TypeErrors. A program module's ("file:") id and a builtin's ES module
+ * spelling ("esm:") carry Node's util.types brand; a sub-namespace member's
+ * bare builtin id does not. Borrows all four; +1 object. */
 ScrDyn *scr_module_namespace_dyn_value(ScrStr *id, ScrArr *keys, ScrDyn *getter, ScrDyn *tag_key);
+/* A JavaScript source's namespace taken as a value (moduleNamespaceObject):
+ * the object built from the module's export values, which the runtime keeps
+ * for module `id` and answers to every later request, marked as a module
+ * namespace. Borrows both; +1 object. */
+ScrDyn *scr_module_namespace_copy_value(ScrStr *id, ScrDyn *object);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);
+/* A Console's counter or timer entry: a label and the counter value or the
+ * start reading. The stores are tiny linear tables, as a program holds a
+ * handful of labels at a time (scr_console_native.c). */
+typedef struct ScrConsoleSlot {
+  ScrStr *label;    /* owned */
+  double count;     /* counters */
+  uint64_t started; /* timers: scr_hrtime_ns at console.time */
+} ScrConsoleSlot;
+
+typedef struct ScrConsoleStore {
+  ScrConsoleSlot *slots;
+  size_t len, cap;
+} ScrConsoleStore;
+
+/* One Console's counters, timers and group indentation. Node keeps them
+ * per instance; the global console owns the thread's (scr_console_native.c),
+ * and every Console instance owns the same structure, so a group opened on
+ * one console never indents another's lines. `width` is Node's
+ * groupIndentationWidth (groupIndentation, default 2); `indent` is the
+ * current indentation in spaces. */
+typedef struct ScrConsoleState {
+  ScrConsoleStore counts, timers;
+  size_t width;
+  size_t indent;
+} ScrConsoleState;
+
 /* node:console Console instances: a native handle over the stdout/stderr
  * targets — process stdio (fd 1/2) or a writable stream bound by
  * scr_console_bind (scr_stream.c, which also installs the stream writer so
- * console-only programs never link the stream unit) — and the
- * ignoreErrors flag. new answers a +1 handle with both targets set to
- * the given fds (0 = a stream is bound next); bind retains the stream.
- * write prints `text\n` to the selected target: a stream receives ONE
- * write, wrapped in Node's ignoreErrors handling (a noop 'error' listener
- * around the call, a completion handler that swallows the write's own
- * error, synchronous throws discarded); the global console handle writes
- * the process streams like console.log/error. */
+ * console-only programs never link the stream unit) — the ignoreErrors
+ * flag and the instance's counters, timers and group indentation. new
+ * answers a +1 handle with both targets set to the given fds (0 = a stream
+ * is bound next) and group width; bind retains the stream. write prints
+ * `text\n` to the selected target: a stream receives ONE write, wrapped in
+ * Node's ignoreErrors handling (a noop 'error' listener around the call, a
+ * completion handler that swallows the write's own error, synchronous
+ * throws discarded); the global console handle writes the process streams
+ * like console.log/error. */
 typedef struct ScrConsoleInst {
   size_t rc;
   double fd[2];                /* 1/2 process stdio targets; 0 when stream[i] is bound */
   ScrStream *stream[2];        /* owned */
   ScrClosure *on_written[2];   /* owned: the per-stream completion handlers */
   bool ignore_errors;
+  /* Node's Console options: the inspectOptions record the methods format
+   * with (owned, NULL when the program gave none) and colorMode (0 false,
+   * 1 true, 2 'auto', Node's default). */
+  ScrDyn *inspect_options;
+  int color_mode;
+  ScrConsoleState state;       /* this console's counters, timers and group indentation */
   void (*stream_write)(struct ScrConsoleInst *, int which, ScrStr *line);
   void (*stream_drop)(struct ScrConsoleInst *); /* releases the bound streams */
 } ScrConsoleInst;
-ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors);
+ScrDyn *scr_console_new(double out_fd, double err_fd, bool ignore_errors,
+                        ScrDyn *group_indentation, ScrDyn *inspect_options, ScrDyn *color_mode);
 void scr_console_bind(ScrDyn *console, double which, ScrStream *stream);
 void scr_console_inst_write(ScrDyn *console, ScrStr *text, bool to_stderr);
+/* A Console built with inspectOptions or colorMode: its methods over a
+ * checked-dynamic argument pack, formatted with the instance's options. */
+void scr_console_inst_write_args(ScrDyn *console, double member, ScrDyn *pack);
+void scr_console_inst_write_args_dirxml(ScrDyn *console, ScrDyn *pack);
+ScrStr *scr_console_inst_dir_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_trace_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_assert_args(ScrDyn *console, ScrDyn *pack);
+void scr_console_inst_group_args(ScrDyn *console, ScrDyn *pack, bool collapsed);
 ScrDyn *scr_process_stdio(double fd);
 /* process.stdout/stderr.write(chunk) with a run-time chunk: Node's Writable
  * validation, then a synchronous write. false with an exception pending when
  * the chunk is invalid. */
 bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk);
 bool scr_dyn_process_stdio_is(const ScrDyn *value);
+/* scr_tty_colors.c, called by the SCR_TTY_COLORS build of scr_events.c: the
+ * stream object's getColorDepth or hasColors function for that member name
+ * (+1), NULL for any other name; and the release of both at exit. */
+ScrDyn *scr_tty_colors_method(const char *key, size_t length);
+/* Console colorMode 'auto': Node's shouldColorize over the target — the
+ * environment's FORCE_COLOR first, then the terminal's color depth. */
+bool scr_tty_console_auto_colors(bool is_tty);
+void scr_tty_colors_cleanup(void);
 double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path);
 
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
@@ -94,6 +163,21 @@ ScrDyn *scr_dyn_new_handle(void *h, ScrDynHandleTag tag);
  * identity, no copy); anything else throws the path-annotated catchable
  * TypeError and returns NULL. */
 void *scr_dyn_handle_unbox(const ScrDyn *d, ScrDynHandleTag tag, const ScrDynPath *path, const char *want);
+/* Own properties JavaScript adds to a runtime handle (scr_dyn_handle_props.c,
+ * linked only by programs that add them). `child` is 1 when the program adds
+ * properties to children. */
+void scr_dyn_handle_props_install(double child);
+/* The member names the compiler reroutes through the box,
+ * `<Class>:<name>,<name>;<Class>:*`; a member key outside them (and every
+ * protocol and implicit-conversion name) keeps the member refusal. */
+void scr_dyn_handle_props_grant(ScrStr *grants);
+/* Object.defineProperties with a handle target. */
+ScrDyn *scr_dyn_define_props_hp(ScrDyn *target, ScrDyn *descs);
+/* The graph walkers' refusal: a value whose graph holds a handle with added
+ * properties cannot be printed or compared (+1, or NULL pending). */
+ScrDyn *scr_dyn_handle_props_guard(ScrDyn *value, ScrStr *consumer);
+ScrArr *scr_dyn_handle_props_guard_list(ScrArr *values, ScrStr *consumer);
+void scr_dyn_handle_props_check(ScrDyn *value, ScrStr *consumer);
 /* Keyed read on a HANDLE box (the emitted sc_dyn_key_get's arm): the
  * tag's modeled properties answer boxed values; everything else answers
  * the undefined singleton (the checked-dynamic tree's own-property stance — SEMANTICS.md)

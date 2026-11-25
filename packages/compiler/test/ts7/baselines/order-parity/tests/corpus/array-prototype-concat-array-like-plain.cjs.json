@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-prototype-concat-array-like-plain.cjs"
+ ],
+ "diags": []
+}

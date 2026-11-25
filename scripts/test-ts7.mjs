@@ -24,12 +24,12 @@ if (process.argv.includes("--baselines-only")) {
 }
 
 const ALLOWED_TYPESCRIPT5_IMPORTS = new Set([
-  "packages/compiler/src/frontend/comptime-node.ts",
   "packages/compiler/src/frontend/jsx-source.test.ts",
   "packages/compiler/src/frontend/ts7/world-check.ts",
   "packages/compiler/src/frontend/ts7/source-parser.test.ts",
   "packages/compiler/src/node-islands/effect-gate.ts",
   "packages/compiler/src/library/semantic-source.ts",
+  "packages/compiler/test/import-elision.test.ts",
   "packages/compiler/test/ts7/harness.ts",
   "packages/compiler/test/ts7/resolver-parity.test.ts",
 ]);
@@ -67,8 +67,13 @@ if (missing.length > 0 || unexpected.length > 0) {
 const compilerPackage = JSON.parse(
   readFileSync(resolve(repoRoot, "packages/compiler/package.json"), "utf8"),
 );
-if (compilerPackage.scripts?.build !== "node node_modules/typescript/bin/tsc -p tsconfig.json") {
+if (compilerPackage.scripts?.build !== "node node_modules/tsc-ts/bin/tsc-ts.js -p tsconfig.json") {
   console.error("@scriptc/compiler must build with the TypeScript 7 toolchain");
+  process.exit(1);
+}
+const cliPackage = JSON.parse(readFileSync(resolve(repoRoot, "packages/cli/package.json"), "utf8"));
+if (cliPackage.scripts?.build !== "node node_modules/tsc-ts/bin/tsc-ts.js -p tsconfig.json") {
+  console.error("scriptc must build with the TypeScript 7 toolchain");
   process.exit(1);
 }
 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8879-promise-handler-value-order.ts"
+ ],
+ "diags": []
+}

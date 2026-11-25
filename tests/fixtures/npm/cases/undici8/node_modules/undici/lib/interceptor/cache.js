@@ -1,0 +1,771 @@
+'use strict'
+
+const assert = require('node:assert')
+const { Readable } = require('node:stream')
+const util = require('../core/util')
+const CacheHandler = require('../handler/cache-handler')
+const MemoryCacheStore = require('../cache/memory-cache-store')
+const CacheRevalidationHandler = require('../handler/cache-revalidation-handler')
+const {
+  assertCacheStore,
+  assertCacheMethods,
+  getInterceptorOrigin,
+  makeCacheKey,
+  normalizeHeaders,
+  parseCacheControlHeader,
+  isInvalidOrWildcardVaryHeader,
+  parseVaryHeader,
+  isEtagUsable
+} = require('../util/cache.js')
+const { AbortError } = require('../core/errors.js')
+const { parseHttpDate } = require('../util/date.js')
+
+/**
+ * @param {(string | RegExp)[] | undefined} origins
+ * @param {string} name
+ */
+function assertCacheOrigins (origins, name) {
+  if (origins === undefined) return
+  if (!Array.isArray(origins)) {
+    throw new TypeError(`expected ${name} to be an array or undefined, got ${typeof origins}`)
+  }
+  for (let i = 0; i < origins.length; i++) {
+    const origin = origins[i]
+    if (typeof origin !== 'string' && !(origin instanceof RegExp)) {
+      throw new TypeError(`expected ${name}[${i}] to be a string or RegExp, got ${typeof origin}`)
+    }
+  }
+}
+
+const nop = () => {}
+
+function trimOWS (value) {
+  return value.replace(/^[\t ]+|[\t ]+$/g, '')
+}
+
+function arrayIncludes (array, value) {
+  for (let i = 0; i < array.length; i++) {
+    if (array[i] === value) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function hasPragmaNoCache (headers) {
+  const pragma = headers?.pragma
+  if (!pragma) {
+    return false
+  }
+
+  const values = Array.isArray(pragma) ? pragma : [pragma]
+  for (let i = 0; i < values.length; i++) {
+    const value = values[i]
+    if (typeof value !== 'string') {
+      continue
+    }
+
+    const directives = value.split(',')
+    for (let j = 0; j < directives.length; j++) {
+      if (trimOWS(directives[j]).toLowerCase() === 'no-cache') {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+/**
+ * @typedef {(options: import('../../types/dispatcher.d.ts').default.DispatchOptions, handler: import('../../types/dispatcher.d.ts').default.DispatchHandler) => void} DispatchFn
+ */
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheControlDirectives | undefined} cacheControlDirectives
+ * @param {import('../../types/dispatcher.d.ts').default.RequestOptions} opts
+ * @returns {boolean}
+ */
+function needsRevalidation (result, cacheControlDirectives, { headers = {} }) {
+  // Always revalidate requests with the no-cache request directive.
+  if (cacheControlDirectives?.['no-cache']) {
+    return true
+  }
+
+  // Always revalidate requests with unqualified no-cache response directive.
+  if (result.cacheControlDirectives?.['no-cache'] && !Array.isArray(result.cacheControlDirectives['no-cache'])) {
+    return true
+  }
+
+  // Always revalidate requests with conditional headers.
+  if (headers['if-modified-since'] || headers['if-none-match']) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions['type']} cacheType
+ * @returns {boolean}
+ */
+function staleResponseRequiresRevalidation (result, cacheType) {
+  return result.cacheControlDirectives?.['must-revalidate'] === true ||
+    (cacheType === 'shared' && (
+      result.cacheControlDirectives?.['proxy-revalidate'] === true ||
+      // https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.2.10
+      // s-maxage implies proxy-revalidate for shared caches.
+      result.cacheControlDirectives?.['s-maxage'] !== undefined
+    ))
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions['type']} cacheType
+ * @param {import('../../types/header.d.ts').IncomingHttpHeaders} headers
+ * @returns {boolean}
+ */
+function revalidationResponseDisallowsCachedReuse (cacheType, headers) {
+  if (
+    (headers.vary && isInvalidOrWildcardVaryHeader(headers.vary)) ||
+    (cacheType === 'shared' && Object.hasOwn(headers, 'set-cookie'))
+  ) {
+    return true
+  }
+
+  const cacheControl = headers['cache-control']
+  if (!cacheControl) {
+    return false
+  }
+
+  const cacheControlDirectives = parseCacheControlHeader(cacheControl)
+  return cacheControlDirectives['no-store'] === true ||
+    (cacheType === 'shared' && cacheControlDirectives.private === true)
+}
+
+function revalidationResponseUpdatesCacheControl (headers) {
+  return headers['cache-control'] !== undefined
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {Record<string, string | string[] | null> | undefined} varyDirectives
+ * @returns {boolean}
+ */
+function revalidationResponseAddsVary (result, varyDirectives) {
+  if (!varyDirectives) {
+    return false
+  }
+
+  for (const key in varyDirectives) {
+    if (result.vary == null || !Object.hasOwn(result.vary, key)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function deleteCachedValue (store, cacheKey) {
+  try {
+    store.delete(cacheKey)?.catch?.(nop)
+  } catch {
+    // Fail silently
+  }
+}
+
+function getUsableLastModified (headers) {
+  const lastModified = headers?.['last-modified']
+  if (typeof lastModified === 'string' && parseHttpDate(lastModified)) {
+    return lastModified
+  }
+}
+
+function makeRevalidationHeaders (opts, result) {
+  const headers = {
+    ...opts.headers,
+    'if-modified-since': getUsableLastModified(result.headers) ?? new Date(result.cachedAt).toUTCString()
+  }
+
+  if (result.etag) {
+    headers['if-none-match'] = result.etag
+  }
+
+  if (result.vary) {
+    for (const key in result.vary) {
+      if (result.vary[key] != null) {
+        headers[key] = result.vary[key]
+      }
+    }
+  }
+
+  return headers
+}
+
+function revalidationTargetMatchesCacheKey (cacheKey, context) {
+  const history = context?.history
+  if (!Array.isArray(history) || history.length === 0) {
+    return true
+  }
+
+  try {
+    const cachedUrl = new URL(cacheKey.path, cacheKey.origin)
+    const responseUrl = history[history.length - 1]
+    return responseUrl.origin === cachedUrl.origin &&
+      responseUrl.pathname === cachedUrl.pathname &&
+      responseUrl.search === cachedUrl.search
+  } catch {
+    return false
+  }
+}
+
+function revalidationEtagMatchesCachedValue (result, headers) {
+  if (!Object.hasOwn(headers, 'etag')) {
+    return true
+  }
+
+  const responseEtag = headers.etag
+  const cachedEtag = result.etag
+  if (
+    typeof responseEtag !== 'string' ||
+    typeof cachedEtag !== 'string' ||
+    !isEtagUsable(responseEtag) ||
+    !isEtagUsable(cachedEtag)
+  ) {
+    return false
+  }
+
+  if (!responseEtag.startsWith('W/')) {
+    return responseEtag === cachedEtag
+  }
+
+  const cachedOpaqueTag = cachedEtag.startsWith('W/') ? cachedEtag.slice(2) : cachedEtag
+  return responseEtag.slice(2) === cachedOpaqueTag
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheControlDirectives | undefined} cacheControlDirectives
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions['type']} cacheType
+ * @returns {boolean}
+ */
+function isStale (result, cacheControlDirectives, cacheType) {
+  const now = Date.now()
+  // A zero freshness lifetime (e.g. max-age=0 with a validator) is never fresh,
+  // even when reused within the same millisecond or after a clock step back.
+  // https://www.rfc-editor.org/rfc/rfc9111.html#section-4.2
+  if (now > result.staleAt || result.staleAt <= result.cachedAt) {
+    // Response is stale
+    if (!staleResponseRequiresRevalidation(result, cacheType) && cacheControlDirectives?.['max-stale']) {
+      // There's a threshold where we can serve stale responses, let's see if
+      //  we're in it
+      // https://www.rfc-editor.org/rfc/rfc9111.html#name-max-stale
+      const gracePeriod = result.staleAt + (cacheControlDirectives['max-stale'] * 1000)
+      return now > gracePeriod
+    }
+
+    return true
+  }
+
+  if (cacheControlDirectives?.['min-fresh']) {
+    // https://www.rfc-editor.org/rfc/rfc9111.html#section-5.2.1.3
+
+    // At this point, staleAt is always > now
+    const timeLeftTillStale = result.staleAt - now
+    const threshold = cacheControlDirectives['min-fresh'] * 1000
+
+    return timeLeftTillStale <= threshold
+  }
+
+  return false
+}
+
+/**
+ * Check if we're within the stale-while-revalidate window for a stale response
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions['type']} cacheType
+ * @returns {boolean}
+ */
+function withinStaleWhileRevalidateWindow (result, cacheType) {
+  const staleWhileRevalidate = result.cacheControlDirectives?.['stale-while-revalidate']
+  if (!staleWhileRevalidate || staleResponseRequiresRevalidation(result, cacheType)) {
+    return false
+  }
+
+  const now = Date.now()
+  const staleWhileRevalidateExpiry = result.staleAt + (staleWhileRevalidate * 1000)
+  return now <= staleWhileRevalidateExpiry
+}
+
+/**
+ * @param {DispatchFn} dispatch
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheHandlerOptions} globalOpts
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheKey} cacheKey
+ * @param {import('../../types/dispatcher.d.ts').default.DispatchHandler} handler
+ * @param {import('../../types/dispatcher.d.ts').default.RequestOptions} opts
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheControlDirectives | undefined} reqCacheControl
+ */
+function handleUncachedResponse (
+  dispatch,
+  globalOpts,
+  cacheKey,
+  handler,
+  opts,
+  reqCacheControl
+) {
+  if (reqCacheControl?.['only-if-cached']) {
+    let aborted = false
+
+    const controller = {
+      paused: false,
+      rawHeaders: [],
+      rawTrailers: [],
+      pause () {
+        this.paused = true
+      },
+      resume () {
+        this.paused = false
+      },
+      abort: (reason) => {
+        aborted = true
+        handler.onResponseError?.(controller, reason ?? new AbortError())
+      }
+    }
+
+    try {
+      handler.onRequestStart?.(controller, null)
+
+      if (aborted) {
+        return
+      }
+
+      handler.onResponseStart?.(controller, 504, {}, 'Gateway Timeout')
+      if (aborted) {
+        return
+      }
+
+      handler.onResponseEnd?.(controller, {})
+    } catch (err) {
+      if (typeof handler.onResponseError === 'function') {
+        handler.onResponseError(controller, err)
+      }
+    }
+
+    return true
+  }
+
+  return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+}
+
+/**
+ * @param {import('../../types/dispatcher.d.ts').default.DispatchHandler} handler
+ * @param {import('../../types/dispatcher.d.ts').default.RequestOptions} opts
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult} result
+ * @param {number} age
+ * @param {any} context
+ * @param {boolean} isStale
+ */
+function sendCachedValue (handler, opts, result, age, context, isStale) {
+  // TODO (perf): Readable.from path can be optimized...
+  const stream = util.isStream(result.body)
+    ? result.body
+    : Readable.from(result.body ?? [])
+
+  assert(!stream.destroyed, 'stream should not be destroyed')
+  assert(!stream.readableDidRead, 'stream should not be readableDidRead')
+
+  let aborted = false
+  let abortReason = null
+
+  const controller = {
+    rawHeaders: [],
+    rawTrailers: [],
+    resume () {
+      stream.resume()
+    },
+    pause () {
+      stream.pause()
+    },
+    get paused () {
+      return stream.isPaused()
+    },
+    get aborted () {
+      return aborted
+    },
+    get reason () {
+      return abortReason
+    },
+    abort (reason) {
+      if (aborted) {
+        return
+      }
+      aborted = true
+      abortReason = reason ?? new AbortError()
+      stream.destroy(abortReason)
+    }
+  }
+
+  stream
+    .on('error', function (err) {
+      // Never rethrow: this runs from a stream event on a later tick, where a
+      // throw would crash the process. Like core's Request.onResponseError,
+      // the error is dropped if the handler has no onResponseError.
+      if (!this.readableEnded) {
+        handler.onResponseError?.(controller, err)
+      }
+    })
+    .on('close', function () {
+      if (!this.errored) {
+        try {
+          handler.onResponseEnd?.(controller, {})
+        } catch (err) {
+          // The stream is already closed, so the error can't be routed
+          // through it; report it to the handler directly instead.
+          handler.onResponseError?.(controller, err)
+        }
+      }
+    })
+
+  // Downstream handler calls below run outside the dispatcher's own error
+  // handling (on later ticks for the body, or inside a promise callback for
+  // async stores), so a throw must be converged to a per-request error
+  // instead of escaping as an uncaught exception.
+  try {
+    handler.onRequestStart?.(controller, context)
+  } catch (err) {
+    stream.destroy(err)
+    return
+  }
+
+  if (stream.destroyed) {
+    return
+  }
+
+  // Add the age header
+  // https://www.rfc-editor.org/rfc/rfc9111.html#name-age
+  const headers = { ...result.headers, age: String(age) }
+
+  if (isStale) {
+    // Add warning header
+    //  https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Warning
+    headers.warning = '110 - "response is stale"'
+  }
+
+  controller.rawHeaders = util.toRawHeaders(headers)
+
+  try {
+    handler.onResponseStart?.(controller, result.statusCode, headers, result.statusMessage)
+  } catch (err) {
+    stream.destroy(err)
+    return
+  }
+
+  if (opts.method === 'HEAD') {
+    stream.destroy()
+  } else {
+    stream.on('data', function (chunk) {
+      try {
+        handler.onResponseData?.(controller, chunk)
+      } catch (err) {
+        stream.destroy(err)
+      }
+    })
+  }
+}
+
+/**
+ * @param {DispatchFn} dispatch
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheHandlerOptions} globalOpts
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheKey} cacheKey
+ * @param {import('../../types/dispatcher.d.ts').default.DispatchHandler} handler
+ * @param {import('../../types/dispatcher.d.ts').default.RequestOptions} opts
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheControlDirectives | undefined} reqCacheControl
+ * @param {import('../../types/cache-interceptor.d.ts').default.GetResult | undefined} result
+ */
+function handleResult (
+  dispatch,
+  globalOpts,
+  cacheKey,
+  handler,
+  opts,
+  reqCacheControl,
+  result
+) {
+  if (!result) {
+    return handleUncachedResponse(dispatch, globalOpts, cacheKey, handler, opts, reqCacheControl)
+  }
+
+  // Shared stores may outlive the Undici version that wrote them. Do not
+  // re-serve a Set-Cookie header from an existing shared-cache entry.
+  if (globalOpts.type === 'shared' && Object.hasOwn(result.headers, 'set-cookie')) {
+    if (util.isStream(result.body)) {
+      result.body.on('error', nop).destroy()
+    }
+
+    deleteCachedValue(globalOpts.store, cacheKey)
+    return handleUncachedResponse(dispatch, globalOpts, cacheKey, handler, opts, reqCacheControl)
+  }
+
+  const now = Date.now()
+  if (now > result.deleteAt) {
+    // Response is expired, cache store shouldn't have given this to us
+    return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+  }
+
+  const age = Math.round((now - result.cachedAt) / 1000)
+  const requestMaxAgeExpired = reqCacheControl?.['max-age'] !== undefined && age >= reqCacheControl['max-age']
+
+  const stale = requestMaxAgeExpired || isStale(result, reqCacheControl, globalOpts.type)
+  const revalidate = requestMaxAgeExpired || needsRevalidation(result, reqCacheControl, opts)
+
+  // Check if the response is stale
+  if (stale || revalidate) {
+    if (util.isStream(opts.body) && util.bodyLength(opts.body) !== 0) {
+      // If body is a stream we can't revalidate...
+      // TODO (fix): This could be less strict...
+      return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+    }
+
+    // RFC 5861: If we're within stale-while-revalidate window, serve stale immediately
+    // and revalidate in background, unless immediate revalidation is necessary
+    if (!revalidate && withinStaleWhileRevalidateWindow(result, globalOpts.type)) {
+      // Serve stale response immediately
+      sendCachedValue(handler, opts, result, age, null, true)
+
+      // Start background revalidation (fire-and-forget)
+      queueMicrotask(() => {
+        const headers = makeRevalidationHeaders(opts, result)
+
+        // Background revalidation - update cache if we get new data
+        dispatch(
+          {
+            ...opts,
+            headers
+          },
+          new CacheHandler(globalOpts, cacheKey, {
+            // Silent handler that just updates the cache
+            onRequestStart () {},
+            onRequestUpgrade () {},
+            onResponseStart () {},
+            onResponseData () {},
+            onResponseEnd () {},
+            onResponseError () {}
+          })
+        )
+      })
+
+      return true
+    }
+
+    let withinStaleIfErrorThreshold = false
+    if (!staleResponseRequiresRevalidation(result, globalOpts.type)) {
+      const staleIfErrorExpiry = result.cacheControlDirectives['stale-if-error'] ?? reqCacheControl?.['stale-if-error']
+      if (staleIfErrorExpiry) {
+        withinStaleIfErrorThreshold = now < (result.staleAt + (staleIfErrorExpiry * 1000))
+      }
+    }
+
+    const headers = makeRevalidationHeaders(opts, result)
+    const refetch = () => {
+      if (util.isStream(result.body)) {
+        result.body.on('error', nop).destroy()
+      }
+
+      deleteCachedValue(globalOpts.store, cacheKey)
+      return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+    }
+
+    // We need to revalidate the response
+    return dispatch(
+      {
+        ...opts,
+        headers
+      },
+      new CacheRevalidationHandler(
+        (success, context, statusCode, headers) => {
+          if (success) {
+            if (statusCode === 304) {
+              if (
+                !revalidationTargetMatchesCacheKey(cacheKey, context) ||
+                !revalidationEtagMatchesCachedValue(result, headers) ||
+                revalidationResponseDisallowsCachedReuse(globalOpts.type, headers)
+              ) {
+                return refetch()
+              }
+
+              if (revalidationResponseUpdatesCacheControl(headers)) {
+                deleteCachedValue(globalOpts.store, cacheKey)
+              } else if (revalidationResponseAddsVary(result, headers.vary ? parseVaryHeader(headers.vary, opts.headers) : undefined)) {
+                return refetch()
+              }
+            }
+
+            // TODO: successful revalidation should be considered fresh (not give stale warning).
+            sendCachedValue(handler, opts, result, age, context, stale)
+          } else if (util.isStream(result.body)) {
+            result.body.on('error', nop).destroy()
+          }
+        },
+        new CacheHandler(globalOpts, cacheKey, handler),
+        withinStaleIfErrorThreshold
+      )
+    )
+  }
+
+  // Dump request body.
+  if (util.isStream(opts.body)) {
+    opts.body.on('error', nop).destroy()
+  }
+
+  sendCachedValue(handler, opts, result, age, null, false)
+}
+
+/**
+ * @param {import('../../types/cache-interceptor.d.ts').default.CacheOptions} [opts]
+ * @returns {import('../../types/dispatcher.d.ts').default.DispatcherComposeInterceptor}
+ */
+module.exports = (opts = {}) => {
+  const {
+    store = new MemoryCacheStore(),
+    methods = ['GET'],
+    cacheByDefault = undefined,
+    type = 'shared',
+    origins = undefined
+  } = opts
+
+  if (typeof opts !== 'object' || opts === null) {
+    throw new TypeError(`expected type of opts to be an Object, got ${opts === null ? 'null' : typeof opts}`)
+  }
+
+  assertCacheStore(store, 'opts.store')
+  assertCacheMethods(methods, 'opts.methods')
+  assertCacheOrigins(origins, 'opts.origins')
+
+  if (typeof cacheByDefault !== 'undefined' && typeof cacheByDefault !== 'number') {
+    throw new TypeError(`expected opts.cacheByDefault to be number or undefined, got ${typeof cacheByDefault}`)
+  }
+
+  if (typeof type !== 'undefined' && type !== 'shared' && type !== 'private') {
+    throw new TypeError(`expected opts.type to be shared, private, or undefined, got ${typeof type}`)
+  }
+
+  const globalOpts = {
+    store,
+    methods,
+    cacheByDefault,
+    type
+  }
+
+  const safeMethodsToNotCache = []
+  for (let i = 0; i < util.safeHTTPMethods.length; i++) {
+    const method = util.safeHTTPMethods[i]
+    if (!arrayIncludes(methods, method)) {
+      safeMethodsToNotCache.push(method)
+    }
+  }
+
+  return (dispatch, interceptorOrigin) => {
+    return (opts, handler) => {
+      const requestOrigin = getInterceptorOrigin(opts, interceptorOrigin)
+      if (!requestOrigin || arrayIncludes(safeMethodsToNotCache, opts.method)) {
+        // We cannot safely cache without an authoritative origin, or this is
+        // not a method we want to cache.
+        return dispatch(opts, handler)
+      }
+
+      // Check if origin is in whitelist
+      if (origins !== undefined) {
+        const normalizedRequestOrigin = requestOrigin.toString().toLowerCase()
+        let isAllowed = false
+
+        for (let i = 0; i < origins.length; i++) {
+          const allowed = origins[i]
+          if (typeof allowed === 'string') {
+            if (allowed.toLowerCase() === normalizedRequestOrigin) {
+              isAllowed = true
+              break
+            }
+          } else if (allowed.test(normalizedRequestOrigin)) {
+            isAllowed = true
+            break
+          }
+        }
+
+        if (!isAllowed) {
+          return dispatch(opts, handler)
+        }
+      }
+
+      opts = {
+        ...opts,
+        headers: normalizeHeaders(opts)
+      }
+
+      const reqCacheControl = opts.headers?.['cache-control']
+        ? parseCacheControlHeader(opts.headers['cache-control'])
+        : hasPragmaNoCache(opts.headers)
+          ? { 'no-cache': true }
+          : undefined
+
+      if (reqCacheControl?.['no-store']) {
+        return dispatch(opts, handler)
+      }
+
+      /**
+       * @type {import('../../types/cache-interceptor.d.ts').default.CacheKey}
+       */
+      const cacheKey = makeCacheKey(opts, requestOrigin)
+
+      if (!arrayIncludes(util.safeHTTPMethods, opts.method)) {
+        return dispatch(opts, new CacheHandler(globalOpts, cacheKey, handler))
+      }
+
+      const result = store.get(cacheKey)
+
+      if (result && typeof result.then === 'function') {
+        return result
+          .then(result => handleResult(dispatch,
+            globalOpts,
+            cacheKey,
+            handler,
+            opts,
+            reqCacheControl,
+            result
+          ))
+          .catch((err) => {
+            // Any throw escaping handleResult on the async-store path (e.g. a
+            // rejection from store.get() itself, or a throw in a code path not
+            // converged by sendCachedValue) would otherwise surface as an
+            // unhandled promise rejection and crash the process. Route it to
+            // the handler instead, matching the synchronous store path where
+            // the error propagates to the request() call site.
+            if (typeof handler.onResponseError === 'function') {
+              handler.onResponseError({
+                rawHeaders: [],
+                rawTrailers: [],
+                pause () {},
+                resume () {},
+                get paused () { return false },
+                get aborted () { return false },
+                get reason () { return null },
+                abort () {}
+              }, err)
+            } else {
+              throw err
+            }
+          })
+      } else {
+        return handleResult(
+          dispatch,
+          globalOpts,
+          cacheKey,
+          handler,
+          opts,
+          reqCacheControl,
+          result
+        )
+      }
+    }
+  }
+}

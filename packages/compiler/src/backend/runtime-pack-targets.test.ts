@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
+import { noLinkFeatures } from "./native-link-info-core.js";
 import { loadRuntimePack, type RuntimePackManifest } from "./runtime-pack.js";
 import {
   LINUX_ARM64_GNU_TARGET,
@@ -52,7 +53,7 @@ async function fixture(target: NativeTargetSpec, workers = false) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+    runtime_abi: { version: 52, marker: "scr_runtime_abi_v52" },
     compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
     macros: { executable: [], excluded: ["SCR_LIB"], sanitizer: "external-toolchain-required" },
     flavors: {
@@ -89,52 +90,7 @@ async function fixture(target: NativeTargetSpec, workers = false) {
   return { packagePath };
 }
 
-const features = {
-  regex: false,
-  copying: false,
-  textDecoderLegacy: false,
-  fileHandle: false,
-  fetch: false,
-  zlib: false,
-  assert: false,
-  inspect: false,
-  dynInvoke: false,
-  dc: false,
-  dynAsync: false,
-  events: false,
-  emitter: false,
-  symbol: false,
-  bigint: false,
-  searchParams: false,
-  qs: false,
-  utilPromisify: false,
-  dynBuiltinClass: false,
-  dynBuiltinStream: false,
-  parseArgs: false,
-  stream: false,
-  net: false,
-  http: false,
-  http2: false,
-  dgram: false,
-  dnsPromises: false,
-  dgramDyn: false,
-  textCodecDyn: false,
-  watch: false,
-  watchFile: false,
-  fsBufferBrand: false,
-  foreignFfi: false,
-  nodeTest: false,
-  tls: false,
-  tlsCa: false,
-  cipher: false,
-  ecdh: false,
-  dh: false,
-  pki: false,
-  ed25519: false,
-  x509: false,
-  webcrypto: false,
-  perfLoop: false,
-};
+const features = noLinkFeatures();
 
 test.each([
   MACOS_X64_TARGET,

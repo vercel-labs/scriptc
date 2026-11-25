@@ -6,11 +6,12 @@ Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can
 
 Keyed reads of a `Record` or an index signature return `undefined` for a missing key, as in Node.js, with or without `noUncheckedIndexedAccess`.
 A missing array element or key that reaches storage that cannot hold `undefined`, such as a class field typed `number`, throws a `TypeError`.
+An array converted to an array of another element type, such as an array of narrower records, is copied element by element, and a hole or stored `undefined` that the new element type cannot hold throws a `TypeError`.
 
 Runtime traps cannot be caught.
 User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
 
 Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators.
-The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, async functions and generators that keep a fiber run on 512 KiB stacks, and stackless ones run on the stack that resumes them, so native code usually recurses deeper than Node on threads and somewhat less deeply inside fiber bodies.
+The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, async functions and generators that keep a fiber get an 8 MiB stack on 64-bit native targets (512 KiB on WASI and 32-bit targets), and stackless ones run on the stack that resumes them, so native code usually recurses deeper than Node.
 Recursion inside runtime library operations, such as serializing deeply nested data, is not checked.
 Windows executables, WASI builds and library builds do not check the stack, and exhausting it there terminates the process.

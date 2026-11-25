@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { createNativeLinkInfo, type NativeLinkFeatures } from "./native-link-info.js";
-import { MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
+import { MACOS_ARM64_TARGET, WASM32_WASI_TARGET, WINDOWS_X64_MSVC_TARGET } from "./targets.js";
 import { loadRuntimePack } from "./runtime-pack.js";
 
 vi.mock("./runtime-pack.js", () => ({
@@ -78,6 +78,23 @@ describe("native link info", () => {
       });
       expect(info.runtime_pack.flavor).toBe(optimization);
       expect(info.link.driver_flags.includes("-Wl,--strip-debug")).toBe(optimization === "release");
+    }
+  });
+
+  test("Windows release links drop debug info so unreached runtime COMDATs drop", async () => {
+    for (const optimization of ["release", "speed", "dev"] as const) {
+      const info = await createNativeLinkInfo({
+        programObject: "/out/app.o",
+        target: WINDOWS_X64_MSVC_TARGET,
+        features,
+        ffi: null,
+        optimization,
+      });
+      expect(info.link.driver_flags.includes("-Wl,--strip-debug")).toBe(optimization !== "dev");
+      // The section flags that ask the compiler to keep every runtime
+      // function in its own COMDAT still apply; only the debug-info request
+      // that disables lld-link's elimination goes away.
+      expect(info.link.driver_flags).toContain("-Wl,--gc-sections");
     }
   });
 

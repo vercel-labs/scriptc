@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/promise-all-settled-undefined.ts"
+ ],
+ "diags": []
+}

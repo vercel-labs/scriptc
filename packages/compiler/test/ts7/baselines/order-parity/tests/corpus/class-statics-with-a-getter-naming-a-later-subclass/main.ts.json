@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-statics-with-a-getter-naming-a-later-subclass/dom.ts",
+  "<repo>/tests/corpus/class-statics-with-a-getter-naming-a-later-subclass/main.ts"
+ ],
+ "diags": []
+}

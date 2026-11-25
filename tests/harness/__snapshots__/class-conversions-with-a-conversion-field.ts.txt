@@ -1,0 +1,6 @@
+class-conversions-with-a-conversion-field.ts:20:40 - error SC1090: conversions of 'Sub' instances to primitives (the class has a 'toString' instance property) are not supported yet
+
+  19 | const items: Base[] = [new Base(), new Sub()];
+  20 | console.log(items.map((item) => String(item)).join(" | "), String(new Other()));
+     |                                        ^~~~
+  21 | 

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8717-node-island-program-module-deferred/patch.ts",
+  "<repo>/tests/corpus/8717-node-island-program-module-deferred/read.ts",
+  "<repo>/tests/corpus/8717-node-island-program-module-deferred/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-array-dynamic-boundaries/helpers.js",
+  "<repo>/tests/corpus/typed-array-dynamic-boundaries/main.ts"
+ ],
+ "diags": []
+}

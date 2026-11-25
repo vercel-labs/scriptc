@@ -11,6 +11,7 @@ import {
   corpusCostFiles,
   corpusSelect,
   loadCorpusCosts,
+  parseShardLoads,
   parseShardSpec,
   shardOf,
   shardSelect,
@@ -243,6 +244,41 @@ test("skipUnownedTest runs each test of a suite on exactly one shard, longest ap
   // The two long tests hold shards of their own.
   expect(shards.find((shard) => shard.includes("case 3"))).toEqual(["case 3"]);
   expect(shards.find((shard) => shard.includes("case 7"))).toEqual(["case 7"]);
+});
+
+test("a balance that starts from given loads keeps the partition and avoids the loaded slices", () => {
+  const keys = Array.from({ length: 30 }, (_, index) => `case ${index}`);
+  const weight = (key: string) => (key === "case 4" ? 500 : 10 + Number(key.slice(5)));
+  // Slice 1 already carries more than everything here; slice 2 a little.
+  const start = [10_000, 200, 0, 0];
+  const parts = Array.from({ length: 4 }, (_, index) =>
+    balancedShardSelect(keys, (key) => key, weight, { index: index + 1, count: 4 }, start),
+  );
+  expect(parts.flat().toSorted()).toEqual(keys.toSorted());
+  expect(parts[0]).toEqual([]);
+  // The longest goes to an empty slice, not to the first one, and holds it
+  // alone: it is longer than an even share of the rest.
+  expect(parts[2]).toEqual(["case 4"]);
+  const totals = parts.map(
+    (part, index) => start[index]! + part.reduce((sum, key) => sum + weight(key), 0),
+  );
+  // The slice that started with a little ends level with the empty one.
+  expect(Math.abs(totals[1]! - totals[3]!)).toBeLessThan(10);
+  // Without loads the same items balance from nothing, the longest first.
+  expect(balancedShardSelect(keys, (key) => key, weight, { index: 1, count: 4 })).toContain(
+    "case 4",
+  );
+  expect(() =>
+    balancedShardSelect(keys, (key) => key, weight, { index: 1, count: 4 }, [0, 0, 0]),
+  ).toThrow(/3 entries for 4 slices/);
+});
+
+test("parseShardLoads accepts one whole number per slice and nothing else", () => {
+  expect(parseShardLoads(3, undefined)).toBeUndefined();
+  expect(parseShardLoads(3, "")).toBeUndefined();
+  expect(parseShardLoads(3, "0,1500,20")).toEqual([0, 1500, 20]);
+  for (const raw of ["0,1500", "0,1500,20,4", "0,1.5,2", "0,-1,2", "0, 1,2", "a,b,c", ","])
+    expect(() => parseShardLoads(3, raw), raw).toThrow(/SCRIPTC_TEST_SHARD_LOADS/);
 });
 
 describe("corpusSelect", () => {

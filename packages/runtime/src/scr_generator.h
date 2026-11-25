@@ -80,6 +80,11 @@ void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
 void scr_gen_set_tag(ScrGen *g, const char *tag);
 /* An adapter generator prints with the tag of the generator it adapts. */
 void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
+/* Records the receiver of the call that made `g`, which scr_gen_receiver
+ * answers on the generator's fiber. The spawn wrappers of a program that
+ * reads a generator's `this` call it; no other generator holds one. It
+ * lives in scr_gen_receiver.c, a unit only those programs link. */
+void scr_gen_capture_receiver(ScrGen *g);
 const char *scr_gen_tag(const ScrGen *g);
 /* scr_gen_tag for units that also link without the generator runtime (a
  * library links none): the generator runtime sets it when it creates a
@@ -207,6 +212,7 @@ ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_bytes(ScrDyn *response); /* +1 promise<dyn> */
 ScrDyn *scr_fetch_abort_controller_new(void); /* +1 AbortController handle */
+bool scr_dyn_abort_signal_is(const ScrDyn *value); /* `value instanceof AbortSignal` */
 /* Borrowed number; +1 AbortSignal handle or NULL pending. */
 ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay);
 ScrDyn *scr_fetch_abort_now(ScrDyn *reason); /* borrowed reason; +1 handle */
@@ -255,11 +261,29 @@ typedef struct ScrWebStreamSource {
   bool (*read_into)(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx);
   ScrPromise *(*cancel)(void *ctx, ScrDyn *reason);
   void (*release)(void *ctx);
+  /* Optional: the most bytes the next read_into may produce, so a
+   * type: "bytes" stream can ask the source for no more than the pending
+   * read's view holds instead of losing the rest of a larger chunk. */
+  void (*set_read_limit)(void *ctx, size_t bytes);
 } ScrWebStreamSource;
 /* A checked-dynamic ReadableStream (+1 handle) with a zero high-water mark
  * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
  * reference moves in; the stream releases it when it goes away. */
 ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* The over-source over an explicit queuing strategy: the strategy's
+ * highWaterMark and size (NULL = the default size algorithm) drive the
+ * controller's pulls and desiredSize as new ReadableStream(source, strategy)
+ * does them. A null or undefined strategy keeps the zero high-water mark.
+ * A strategy the check refuses answers NULL with the exception pending and
+ * leaves ctx's reference with the caller; otherwise ctx's reference moves
+ * in. */
+ScrDyn *scr_webstream_readable_over_opts(const ScrWebStreamSource *source, void *ctx,
+                                         ScrDyn *strategy);
+/* The same source as Node's type: "bytes" stream: a BYOB reader hands the
+ * stream its own view and the source's chunks are written into it, with the
+ * controller's auto-allocated reads asked for 16 KiB at a time. ctx's
+ * reference moves in. */
+ScrDyn *scr_webstream_bytes_over(const ScrWebStreamSource *source, void *ctx);
 /* Installs the web stream classes (webstream.install): a program whose
  * JavaScript uses a ReadableStream member the fetch unit's streams lack
  * calls it at startup, which links the classes that fetch bodies then
@@ -272,5 +296,10 @@ void scr_webstream_install(void);
 ScrDyn *scr_webstream_class(double kind);
 /* `value instanceof <class>` for those classes (value borrowed). */
 bool scr_webstream_instanceof(ScrDyn *value, double kind);
+/* `ReadableStream.from(iterable)` (webstream.from): the class's static,
+ * which steps a synchronous or asynchronous iterable, a compiled generator
+ * among them; +1. The call also counts as a runtime iterator step, so a
+ * program that passes a generator here registers its member getters. */
+ScrDyn *scr_webstream_from(ScrDyn *iterable);
 
 #endif /* SCR_GENERATOR_H */

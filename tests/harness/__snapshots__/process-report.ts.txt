@@ -1,0 +1,17 @@
+process-report.ts:5:20 - error SC2020: 'process.report' is part of the standard library types but has no scriptc lowering yet
+
+  4 | // rather than fabricating a report.
+  5 | console.log(typeof process.report.getReport);
+    |                    ^~~~~~~~~~~~~~
+  6 | console.log(process.report.directory);
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+process-report.ts:6:13 - error SC2020: 'process.report' is part of the standard library types but has no scriptc lowering yet
+
+  5 | console.log(typeof process.report.getReport);
+  6 | console.log(process.report.directory);
+    |             ^~~~~~~~~~~~~~
+  7 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

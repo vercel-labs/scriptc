@@ -7,6 +7,17 @@
 
 /* ── console ──────────────────────────────────────────────────────────── */
 
+/* Build-time stdout policy (`--stdout-buffering`): the program object defines
+ * scr_stdout_buffering = 1, overriding the runtime's weak 0. When it is set
+ * and fd 1 is not a terminal, JavaScript-visible stdout bytes stay in the
+ * runtime's buffer until the buffer fills or the runtime settles them at an
+ * observable boundary — a stderr write, the event loop's sleep, a blocking
+ * stdin read, process.kill, process.exit, an uncaught exception, or exit. */
+extern const unsigned char scr_stdout_buffering;
+/* Submit buffered JavaScript-visible stdout. A no-op when the build did not
+ * opt in or stdout is a terminal. */
+void scr_stdout_settle(void);
+
 enum {
   SCR_ARG_F64,  /* a number argument: inspect rendering (-0 prints "-0") */
   SCR_ARG_STR,  /* a string, verbatim */
@@ -29,6 +40,24 @@ typedef struct {
 
 /* Space-joined args + '\n', submitted before return. Borrows string args. */
 void scr_console_log(size_t n, const ScrLogArg *args);
+/* The global console output member's diagnostics channel: publishes the
+ * call's own argument array (spreads already expanded) on console.<member>
+ * (0 log, 1 info, 2 debug, 3 warn, 4 error) when it has subscribers, before
+ * the line is written. The diagnostics_channel unit supplies the publisher
+ * through a weak slot; a program that never imports it pays one null check. */
+void scr_console_publish_args(double member, ScrDyn *args);
+/* The diagnostics_channel unit installs its console publisher here the first
+ * time it creates a channel: a program that never imports
+ * diagnostics_channel has no subscribers and keeps the null check. */
+void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args));
+/* Whether console.<member> (0 log .. 4 error) has a subscriber. False when
+ * the diagnostics_channel unit never installed its probe. */
+bool scr_console_channel_active(double member);
+void scr_console_set_channel_active(bool (*active)(double member));
+/* A private copy of a console argument pack, each element retained: a
+ * channel subscriber can mutate the published array from a formatted
+ * value's hook while the line is formatted. */
+ScrDyn *scr_console_snapshot_pack(ScrDyn *pack);
 /* The stderr twin (console.error AND console.warn — one stream in Node):
  * identical formatting, with stdout settled first so merged (2>&1) output
  * keeps source order. */
@@ -40,6 +69,12 @@ void scr_console_error(size_t n, const ScrLogArg *args);
  * runtime that does not understand them. */
 void scr_console_log_parts(size_t n, const ScrLogArg *args);
 void scr_console_error_parts(size_t n, const ScrLogArg *args);
+/* console.trace: "Trace" (then ": " and the formatted arguments) on stderr
+ * followed by the frames the call captured. The frames are scriptc's own
+ * function and file text (SEMANTICS.md divergence 11), as an uncaught
+ * Error's report has them; the line before them is Node's. Borrows. */
+void scr_console_trace(size_t n, const ScrLogArg *args);
+void scr_console_trace_parts(size_t n, const ScrLogArg *args);
 /* A Console instance's line on fd 1 or 2, without the global console's
  * group indentation, under the instance's ignoreErrors. */
 void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors);
@@ -57,13 +92,39 @@ ScrStr *scr_console_time(ScrStr *label);
 ScrStr *scr_console_time_end(ScrStr *label);
 ScrStr *scr_console_time_log(ScrStr *label);
 void scr_console_group(double delta);
+
+/* The same members on a Console instance: the instance owns its counters,
+ * timers and group indentation, and every line goes to the instance's own
+ * stdout/stderr target (kWriteToConsole). count prints "label: n";
+ * countReset answers the warning text for an unknown (or non-string) label,
+ * "" otherwise; time answers the duplicate-label warning text or "";
+ * timeEnd/timeLog answer the formatted elapsed time, or "" for an unknown
+ * label. group adds (+1) or removes (-1) one indentation step of the
+ * instance's groupIndentationWidth. clear writes the cursor-home and
+ * erase-down sequences when the instance's stdout is a terminal. table
+ * renders and prints Node's table for a dyn value whose cells the instance's
+ * stdout receives. trace prints "Trace[: text]" and the captured frames to
+ * the instance's stderr. An argument that is not a Console instance throws
+ * the "no lowering" boundary like the other instance entries. */
+void scr_console_inst_count(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_count_reset(ScrDyn *console, ScrDyn *label);
+ScrStr *scr_console_inst_time(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_end(ScrDyn *console, ScrStr *label);
+ScrStr *scr_console_inst_time_log(ScrDyn *console, ScrStr *label);
+void scr_console_inst_group(ScrDyn *console, double delta);
+void scr_console_inst_clear(ScrDyn *console);
+void scr_console_inst_table(ScrDyn *console, ScrDyn *data, ScrDyn *properties);
+void scr_console_inst_trace(ScrDyn *console, ScrStr *text);
 void scr_console_clear(void);
 void scr_console_table(ScrDyn *data, ScrDyn *properties);
 ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth);
+ScrStr *scr_console_dir_hidden(ScrDyn *value, double depth);
 /* console.table's cell rendering (scr_inspect.c): Node's _inspect — depth
- * 0 (-1 for objects with more than two keys), maxArrayLength 3, breakLength
- * Infinity. +1. */
-ScrStr *scr_insp_table_cell(ScrDyn *value);
+ * 0 (-1 for objects that are not arrays and hold more than two enumerable
+ * keys), maxArrayLength 3, breakLength Infinity, then the console's own
+ * inspectOptions and colorMode answer. +1, or NULL with the exception
+ * pending. */
+ScrStr *scr_insp_table_cell(ScrDyn *value, ScrDyn *inspect_options, int colors_mode);
 /* Node's getStringWidth over UTF-8 text (the non-ICU tables). */
 size_t scr_insp_display_width(const char *data, size_t len);
 /* process.emitWarning(message) with the default Warning type, emitted on

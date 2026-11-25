@@ -7,14 +7,17 @@
  * construction and `instanceof` view the array as the class object
  * (arrayClassView). */
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { stripTypeWrappers } from "../typed-arguments.js";
 import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../../ir/build.js";
 import { lowerArrayFromCall, lowerArrayOfCall } from "../containers/array-construction.js";
 import { boundedArrayHofHelper } from "../containers/array-callbacks.js";
 import { storedClassValueType, type ClassInfo } from "../lower-classes.js";
+import { isSafeToRepeat } from "../expressions/evaluation-safety.js";
+import { mapExprChildren, mapStmtChildren } from "../../../ir/traverse.js";
+import { v8CalleeText } from "../expressions/narrowing.js";
 import {
   BOOL,
   DYN,
@@ -88,6 +91,30 @@ export function arrayRootOf(info: ClassInfo | null | undefined): ClassInfo | nul
   return null;
 }
 
+/** Whether a class declared `extends Array` over the elements of `array`
+ * declares the field, method or accessor `name`: an array of that type can be one
+ * of its instances. (Whether the class is constructed is known only once
+ * lowering has reached every `new`; the dispatch tests constructed classes
+ * only.) */
+export function arrayClassDeclaresMember(
+  lowerer: Lowerer,
+  array: Extract<IrType, { kind: "array" }>,
+  name: string,
+): boolean {
+  for (const info of lowerer.classes.values()) {
+    const elem = info.extendsArray?.elem;
+    if (elem === undefined || !typeEquals(elem, array.elem)) continue;
+    if (
+      info.fields.has(name) ||
+      lowerer.findMethodOn(info, name) ||
+      lowerer.findMethodOn(info, `get:${name}`) ||
+      lowerer.findMethodOn(info, `set:${name}`)
+    )
+      return true;
+  }
+  return false;
+}
+
 /** The array a class instance is (a reinterpret: the same object). */
 export function arrayOfClassInstance(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrExpr {
   const root = arrayRootOf(info)!;
@@ -103,22 +130,208 @@ export function arrayClassView(info: ClassInfo, value: IrExpr, loc: SrcLoc): IrE
 /** The receiver of a member that `info` declares, read on `value` (the
  * lowered `node`): an array value is viewed as the class object. An array
  * whose elements are not the class's (a species result of another element
- * type, narrowed back to the class by `instanceof`) is refused. */
+ * type, narrowed back to the class by `instanceof`) is refused. An element
+ * read of an array of instances (`live[i].refresh()`) holds the array with
+ * the element hole's unit arm: an absent element throws Node's TypeError
+ * for reading (or setting) `member`, and a present one is the instance. */
 export function arrayClassReceiver(
   lowerer: Lowerer,
   info: ClassInfo,
   value: IrExpr,
-  node: ts.Node,
+  node: ts.Expression,
+  member: string,
+  action: "read" | "set" = "read",
+  deferred?: DeferredArrayClassCheck[],
 ): IrExpr {
-  if (value.type.kind !== "array") return value;
   const root = arrayRootOf(info);
+  if (value.type.kind === "union" && root?.extendsArray !== undefined) {
+    const present = lowerer.runtimeOptionalPropertyReceiver(
+      node,
+      value,
+      arrayOf(root.extendsArray.elem),
+      member,
+      action,
+    );
+    if (present !== null) value = present;
+  }
+  if (value.type.kind !== "array") return value;
   if (root?.extendsArray === undefined || !typeEquals(value.type.elem, root.extendsArray.elem))
     lowerer.unsupported(
       "SC1090",
       node,
       "members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class)",
     );
-  return arrayClassView(info, value, locOf(node));
+  return checkedArrayClassView(lowerer, info, value, node, member, action, deferred);
+}
+
+/** The class test of a method call's receiver that waits for its
+ * arguments (applyDeferredArrayClassCheck): `local` holds the receiver
+ * array, which `value` computes. */
+export interface DeferredArrayClassCheck {
+  local: string;
+  value: IrExpr;
+  info: ClassInfo;
+  message: string;
+  loc: SrcLoc;
+  /** The call whose written arguments evaluate before the TypeError. */
+  call: ts.CallExpression;
+}
+
+/** The class object of `value`, an array the checker types as an instance
+ * of `info`. The class's type is its array type, so a plain array reaches
+ * here as well: one parsed from JSON into a `C[]` parameter, or an array
+ * asserted to be the class (`xs as C`). Only an array whose class is `info`
+ * has the class's fields after its header, so any other array throws the
+ * catchable TypeError: Node's "is not a function" for a method call, and
+ * for a field or accessor, which Node would read as a missing property of
+ * the plain array, a TypeError naming the member. `this` inside the class
+ * (an instance viewed as its array) is an instance already. */
+function checkedArrayClassView(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  node: ts.Expression,
+  member: string,
+  action: "read" | "set",
+  deferred: DeferredArrayClassCheck[] | undefined,
+): IrExpr {
+  const loc = locOf(node);
+  if (
+    value.kind === "upcast" &&
+    value.value.type.kind === "object" &&
+    value.value.type.className === info.def.name
+  )
+    return value.value;
+  const objectType: IrType = { kind: "object", className: info.def.name };
+  const repeat = isSafeToRepeat(value);
+  const stable = repeat ? null : lowerer.declareHiddenLocal("%arrayClassRecv", value.type);
+  const ref = (): IrExpr =>
+    repeat ? value : { kind: "varRef", localId: stable!.id, type: value.type, loc };
+  const access = node.parent;
+  const callExpr =
+    access !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+      ? access.parent
+      : null;
+  const className = info.def.jsName ?? info.def.name;
+  const message = callExpr
+    ? `${v8CalleeText(callExpr.expression)} is not a function`
+    : `Cannot ${action} '${member}' of an array that is not a ${className} instance`;
+  // A method call reads the callee, then evaluates the arguments, and only
+  // then finds the callee is not a function: the call's lowering tests the
+  // class after the arguments (applyDeferredArrayClassCheck).
+  if (callExpr !== null && deferred !== undefined) {
+    const local = lowerer.declareHiddenLocal("%arrayClassRecv", value.type);
+    deferred.push({ local: local.id, value, info, message, loc, call: callExpr });
+    return arrayClassView(info, { kind: "varRef", localId: local.id, type: value.type, loc }, loc);
+  }
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "instanceOf", value: ref(), className: info.def.name, type: BOOL, loc },
+    then: arrayClassView(info, ref(), loc),
+    else_: nodeThrowExpr(1, "", message, objectType, loc),
+    type: objectType,
+    loc,
+  };
+  if (stable === null) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: value, loc }],
+    result,
+    type: objectType,
+    loc,
+  };
+}
+
+/** The method call `result` with its receiver's deferred class test: the
+ * receiver array and each argument evaluate in order into locals, and the
+ * call runs on the class view only when the array is an instance, where
+ * Node's "is not a function" TypeError is thrown otherwise. For a call
+ * shape without the receiver in its first argument, an array that is not
+ * an instance evaluates the arguments on a path of its own before the
+ * TypeError. */
+export function applyDeferredArrayClassCheck(
+  lowerer: Lowerer,
+  result: IrExpr,
+  check: DeferredArrayClassCheck,
+): IrExpr {
+  const { local, value, info, message, loc } = check;
+  const array: IrExpr = { kind: "varRef", localId: local, type: value.type, loc };
+  const isInstance: IrExpr = {
+    kind: "instanceOf",
+    value: array,
+    className: info.def.name,
+    type: BOOL,
+    loc,
+  };
+  const failUnless: IrStmt = {
+    kind: "if",
+    cond: { kind: "unary", op: "!", operand: isInstance, type: BOOL, loc },
+    then: [{ kind: "exprStmt", expr: nodeThrowExpr(1, "", message, { kind: "void" }, loc), loc }],
+    else_: null,
+    loc,
+  };
+  const holdsReceiver = (arg: IrExpr | undefined): boolean => {
+    let e = arg;
+    while (e?.kind === "upcast") e = e.value;
+    return e?.kind === "downcast" && e.value.kind === "varRef" && e.value.localId === local;
+  };
+  let found = false;
+  const rewriteStmt = (stmt: IrStmt): IrStmt => mapStmtChildren(stmt, rewrite, rewriteStmt);
+  const rewrite = (expr: IrExpr): IrExpr => {
+    if (found) return expr;
+    if ((expr.kind === "call" || expr.kind === "virtualCall") && holdsReceiver(expr.args[0])) {
+      found = true;
+      const stmts: IrStmt[] = [{ kind: "varDecl", localId: local, init: value, loc }];
+      const args = expr.args.map((arg, i) => {
+        // A literal keeps its value; any other argument is held, since a
+        // later argument can change what it reads (`m(x, x = 2)`).
+        if (i === 0 || arg.kind === "numLit" || arg.kind === "strLit" || arg.kind === "boolLit")
+          return arg;
+        const held = lowerer.declareHiddenLocal("%arrayClassArg", arg.type);
+        stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
+        return { kind: "varRef", localId: held.id, type: arg.type, loc } as IrExpr;
+      });
+      // A statement throws, so a method that returns nothing needs no value
+      // on the failing path.
+      stmts.push(failUnless);
+      return { kind: "seqExpr", stmts, result: { ...expr, args }, type: expr.type, loc };
+    }
+    return mapExprChildren(expr, rewrite, rewriteStmt);
+  };
+  const rewritten = rewrite(result);
+  if (found) return rewritten;
+  // Another call shape (a method a program can replace through its
+  // prototype reads its slot from the instance before the arguments): an
+  // array that is not an instance evaluates the written arguments, packed
+  // as the dynamic arguments of a call, and then throws, and an instance
+  // runs the call as it was lowered.
+  const effects = lowerer.completeArgs(
+    check.call.arguments.nodes,
+    [{ type: DYN, mode: "dynRest" }],
+    loc,
+    check.call,
+  );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: local, init: value, loc },
+      {
+        kind: "if",
+        cond: { kind: "unary", op: "!", operand: isInstance, type: BOOL, loc },
+        then: [
+          ...effects.map((expr): IrStmt => ({ kind: "exprStmt", expr, loc })),
+          { kind: "exprStmt", expr: nodeThrowExpr(1, "", message, { kind: "void" }, loc), loc },
+        ],
+        else_: null,
+        loc,
+      },
+    ],
+    result,
+    type: result.type,
+    loc,
+  };
 }
 
 function thisArray(info: ClassInfo, thisLocal: IrLocal, loc: SrcLoc): IrExpr {
@@ -631,7 +844,7 @@ export function lowerWithArraySpecies(
   const receiver = lowerer.lowerExpr(access.expression);
   if (receiver.type.kind !== "array") return lower();
   const local = lowerer.declareHiddenLocal("%speciesReceiver", receiver.type);
-  const key = stripTypeWrappers(access.expression);
+  const key = withoutParenthesesTypeWrappers(access.expression);
   lowerer.stagedArguments.set(key, { localId: local.id, type: receiver.type });
   let result: IrExpr | null;
   try {
@@ -639,7 +852,19 @@ export function lowerWithArraySpecies(
   } finally {
     lowerer.stagedArguments.delete(key);
   }
-  if (result === null || result.type.kind !== "array") return result;
+  if (result === null) return result;
+  if (result.type.kind !== "array")
+    // The method lowered through the receiver's checked-dynamic view, not
+    // into an array of its own: no species instance is created, but the
+    // receiver was staged above and must still be evaluated once, in
+    // source order, before the result.
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: receiver, loc }],
+      result,
+      type: result.type,
+      loc,
+    };
   const receiverRef: IrExpr = { kind: "varRef", localId: local.id, type: receiver.type, loc };
   if (mode.callback) {
     // The species constructor runs before the first callback: the

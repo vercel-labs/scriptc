@@ -1,6 +1,8 @@
 import { lowerFileUrlCall, lowerLegacyUrlCall } from "./url.js";
 import { lowerReadlineCreateCall } from "./readline.js";
 import { lowerDiagnosticsChannelCall } from "./async-context.js";
+import { lowerAsyncHooksCall } from "./async-hooks.js";
+import { lowerTraceEventsCall } from "./trace-events.js";
 import { lowerTimersPromisesCall } from "./timers.js";
 import {
   lowerFsCallbackCall,
@@ -8,7 +10,9 @@ import {
   lowerFsLinkOrStatfsCall,
   lowerFsTimestampCall,
   lowerFsVectorOrTruncateCall,
-  lowerFsNumericOpenCall,
+  lowerFsOpenSyncCall,
+  lowerFsModeSyncCall,
+  lowerFsDescriptorSyncCall,
   lowerFsPromisesOpenCall,
   lowerFsRenameCallbackCall,
   lowerFsReadSyncCall,
@@ -22,10 +26,14 @@ import {
   lowerFsStreamCreate,
   lowerFsPromisesMkdirCall,
   lowerFsRemoveCall,
+  lowerFsAppendOptionsCall,
   lowerFsWriteBytesCall,
   lowerFsWriteOptionsCall,
+  lowerFsSyncWriteOptionsCall,
   lowerFsReadPathCall,
+  lowerFsExistsValueCall,
 } from "./filesystem-calls.js";
+import { lowerBuiltinOptionalDefault } from "./arguments.js";
 import { checkFsUrlPaths, isFsPathParam, lowerFallibleFsUrlCall, lowerFsPath } from "./fs-paths.js";
 import { lowerBufferEncodingCall } from "./text-codecs.js";
 import { lowerUtilTypeCall } from "./util-types.js";
@@ -42,12 +50,15 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   STRING,
   type SrcLoc,
   arrayOf,
+  typeEquals,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
+import { withIgnoredArguments } from "./call-arguments.js";
 import {
   lowerFsWatchCall,
   lowerFsReaddirTypesCall,
@@ -87,6 +98,23 @@ export function lowerBuiltinModuleCall(
   );
   if (fallible) return fallible;
   checkFsUrlPaths(lowerer, expr, bi);
+  // accessSync(p, mode?) and truncateSync(p, len?), with their promise
+  // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
+  // An explicit undefined (or a `number | undefined` value) takes the same
+  // default; access alone also treats null as F_OK, while truncate's
+  // validateInteger rejects null with Node's ERR_INVALID_ARG_TYPE. This
+  // runs before the checked-value adapter, which would hand the optional
+  // union to the runtime as a dynamic value it cannot carry.
+  const zeroDefault =
+    bi.module === "fs"
+      ? bi.member === "accessSync" || bi.member === "truncateSync"
+      : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
+  if (zeroDefault) {
+    const second = expr.arguments.nodes[1];
+    const nullIsDefault = bi.member === "accessSync" || bi.member === "access";
+    if (isFsZeroDefaultShape(lowerer, second, nullIsDefault))
+      return lowerFsZeroDefaultCall(lowerer, expr, bi, fn, loc);
+  }
   {
     const checked = jsCheckedBuiltinCall(lowerer, expr, fn, `${bi.module}.${bi.member}`, loc);
     if (checked) return checked;
@@ -132,13 +160,21 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsVectorOrTruncateCall(lowerer, expr, bi, fn, loc, name);
   }
+  if (bi.module === "fs" && bi.member === "openSync")
+    return lowerFsOpenSyncCall(lowerer, expr, loc);
+  if (bi.module === "fs" && (bi.member === "chmodSync" || bi.member === "fchmodSync")) {
+    const lowered = lowerFsModeSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
+  }
   if (
     bi.module === "fs" &&
-    bi.member === "openSync" &&
-    expr.arguments.nodes.length >= 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "f64"
+    (bi.member === "closeSync" ||
+      bi.member === "fsyncSync" ||
+      bi.member === "fdatasyncSync" ||
+      bi.member === "fchownSync")
   ) {
-    return lowerFsNumericOpenCall(lowerer, expr, loc);
+    const lowered = lowerFsDescriptorSyncCall(lowerer, expr, bi.member, loc);
+    if (lowered) return lowered;
   }
   if (bi.module === "zlib") return lowerZlibModuleCall(lowerer, expr, bi, loc);
   if (bi.module === "child_process" && bi.member === "spawnSync") {
@@ -185,6 +221,13 @@ export function lowerBuiltinModuleCall(
   const promiseReaddirTypes = bi.module === "fs/promises" && bi.member === "readdir";
   if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
+  }
+  // fs.existsSync(path) over a value that is not statically a string: a
+  // Buffer, a URL, an `any`, or any other value Node answers false for with
+  // one DEP0187 report. The value form decides the arm at run time.
+  if (bi.module === "fs" && bi.member === "existsSync") {
+    const lowered = lowerFsExistsValueCall(lowerer, expr, loc);
+    if (lowered) return lowered;
   }
   // fs.statSync/fs.lstatSync(path, options) and fs.fstatSync(fd, options):
   // throwIfNoEntry and bigint, routed BEFORE the table completion.
@@ -254,6 +297,14 @@ export function lowerBuiltinModuleCall(
   }
   if (bi.module === "diagnostics_channel") {
     const lowered = lowerDiagnosticsChannelCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  if (bi.module === "async_hooks") {
+    const lowered = lowerAsyncHooksCall(lowerer, expr, bi, loc);
+    if (lowered) return lowered;
+  }
+  if (bi.module === "trace_events") {
+    const lowered = lowerTraceEventsCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
   if (
@@ -327,7 +378,7 @@ export function lowerBuiltinModuleCall(
   ) {
     return lowerFsStreamCreate(lowerer, expr, bi.member, loc);
   }
-  if (bi.module === "fs" && bi.member === "mkdirSync" && expr.arguments.nodes.length === 2) {
+  if (bi.module === "fs" && bi.member === "mkdirSync") {
     return lowerFsMkdirSyncCall(lowerer, expr, loc);
   }
   if (bi.module === "fs/promises" && bi.member === "mkdir" && expr.arguments.nodes.length === 2) {
@@ -339,23 +390,7 @@ export function lowerBuiltinModuleCall(
   if (bi.module === "fs/promises" && bi.member === "rm" && expr.arguments.nodes.length === 2) {
     return lowerFsRemoveCall(lowerer, expr, loc, true);
   }
-  // accessSync(p, mode?) and truncateSync(p, len?), with their promise
-  // spellings: an omitted mode is Node's F_OK (0) and an omitted len is 0.
-  // The mode is an ordinary number — fs.constants.* reads bake to literals.
-  const zeroDefault =
-    bi.module === "fs"
-      ? bi.member === "accessSync" || bi.member === "truncateSync"
-      : bi.module === "fs/promises" && (bi.member === "access" || bi.member === "truncate");
-  if (zeroDefault) {
-    if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
-      lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
-    }
-    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
-    const second: IrExpr = expr.arguments.nodes[1]
-      ? lowerer.lowerExprExpecting(expr.arguments.nodes[1], F64)
-      : { kind: "numLit", value: 0, type: F64, loc };
-    return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
-  }
+  if (zeroDefault) return lowerFsZeroDefaultCall(lowerer, expr, bi, fn, loc);
   // copyFileSync(src, dest, mode?) and copyFile(src, dest, mode?): the
   // mode is libuv's copyfile flag bits (COPYFILE_EXCL = 1, COPYFILE_FICLONE
   // = 2, COPYFILE_FICLONE_FORCE = 4 — fs.constants.* reads bake to
@@ -381,11 +416,14 @@ export function lowerBuiltinModuleCall(
       loc,
     };
   }
+  // The two-argument forms: appendFile appends, writeFile truncates (the
+  // same difference the string forms have). A u8 view takes the byte unit;
+  // a value whose type the call site did not pin down takes the
+  // checked-data unit.
   if (
     bi.module === "fs/promises" &&
-    bi.member === "appendFile" &&
-    expr.arguments.nodes.length === 2 &&
-    lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "bytes"
+    (bi.member === "appendFile" || bi.member === "writeFile") &&
+    expr.arguments.nodes.length === 2
   ) {
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
@@ -409,17 +447,35 @@ export function lowerBuiltinModuleCall(
     const lowered = lowerFsWriteBytesCall(lowerer, expr, bi, loc);
     if (lowered) return lowered;
   }
+  // writeFileSync/appendFileSync with options the plain forms do not cover:
+  // a non-utf8 encoding, a flag from Node's wider table, Buffer data, or
+  // any options on appendFileSync. The plain utf8 forms keep their existing
+  // lowerings (lowerFsWriteOptionsCall answers them).
+  if (
+    bi.module === "fs" &&
+    (bi.member === "writeFileSync" || bi.member === "appendFileSync") &&
+    expr.arguments.nodes.length === 3
+  ) {
+    const lowered = lowerFsSyncWriteOptionsCall(lowerer, expr, loc, bi.member);
+    if (lowered) return lowered;
+  }
   // writeFileSync(p, data, options) / fs.promises.writeFile(p, data,
   // options): the lowered options are a literal
   // `{ mode?: <number>, encoding?: "utf8" }` — the mode is open(2)'s
   // O_CREAT argument (creation only; an existing file keeps its
   // permissions, exactly Node), and the encoding may only spell the
-  // utf8 the runtime writes anyway. String data only — Buffer options
-  // remain outside the static surface.
+  // utf8 the runtime writes anyway.
   const syncWriteOptions = bi.module === "fs" && bi.member === "writeFileSync";
   const promiseWriteOptions = bi.module === "fs/promises" && bi.member === "writeFile";
   if ((syncWriteOptions || promiseWriteOptions) && expr.arguments.nodes.length === 3) {
     return lowerFsWriteOptionsCall(lowerer, expr, loc, promiseWriteOptions);
+  }
+  // appendFileSync(p, data, options): only the encoding can be lowered
+  // here (utf8 is what the runtime appends anyway; the flag a plain append
+  // already uses); `mode` and any other flag keep their fence, since they
+  // change what an append creates.
+  if (bi.module === "fs" && bi.member === "appendFileSync" && expr.arguments.nodes.length === 3) {
+    return lowerFsAppendOptionsCall(lowerer, expr, loc);
   }
   if (fn.variadicPack) {
     // join(...parts) forwards the array itself; mixing spread and plain
@@ -518,6 +574,10 @@ export function lowerBuiltinModuleCall(
   }
   const required = fn.params.length - (fn.defaults?.length ?? undefinedTail);
   const hasSpread = expr.arguments.nodes.some(ts.isSpreadElement);
+  // Node's os functions read the parameters they declare and ignore the
+  // rest; a JavaScript caller still evaluates the extras, in order.
+  const ignoredSurplus =
+    bi.module === "os" && !hasSpread ? expr.arguments.nodes.slice(fn.params.length) : [];
   if (
     bi.module === "url" &&
     ["fileURLToPath", "fileURLToPathBuffer", "pathToFileURL"].includes(bi.member)
@@ -537,7 +597,8 @@ export function lowerBuiltinModuleCall(
   }
   if (
     !hasSpread &&
-    (expr.arguments.nodes.length < required || expr.arguments.nodes.length > fn.params.length)
+    (expr.arguments.nodes.length < required ||
+      (expr.arguments.nodes.length > fn.params.length && ignoredSurplus.length === 0))
   ) {
     lowerer.noLowering(
       `${name} with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
@@ -603,11 +664,13 @@ export function lowerBuiltinModuleCall(
     );
     args = lowerer.completeArgs(expr.arguments.nodes, shapes, loc, expr);
   } else {
-    args = expr.arguments.nodes.map((a, i) =>
-      isFsPathParam(bi.module, bi.member, i)
-        ? lowerFsPath(lowerer, a)
-        : lowerer.lowerExprExpecting(a, fn.params[i]),
-    );
+    args = expr.arguments.nodes
+      .slice(0, fn.params.length)
+      .map((a, i) =>
+        isFsPathParam(bi.module, bi.member, i)
+          ? lowerFsPath(lowerer, a)
+          : lowerer.lowerExprExpecting(a, fn.params[i]),
+      );
     for (let i = args.length; i < fn.params.length; i++) {
       if (!fn.defaults) {
         args.push(dynUndefinedExpr(loc));
@@ -617,5 +680,56 @@ export function lowerBuiltinModuleCall(
       args.push({ kind: "strLit", value: dflt, type: STRING, loc });
     }
   }
-  return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
+  return withIgnoredArguments(lowerer, args, ignoredSurplus, (staged) => ({
+    kind: "libCall",
+    fn: fn.fn,
+    args: staged,
+    type: fn.result,
+    loc,
+  }));
+}
+
+/** Whether an accessSync/truncateSync second argument stays in the
+ * number-defaulting lowering: absent, a number, an explicit undefined, or
+ * a union of those arms (access also admits null, Node's F_OK). Anything
+ * else — a string or a checked-dynamic value — goes to the checked-value
+ * adapter so the runtime answers Node's validation error. */
+function isFsZeroDefaultShape(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  nullIsDefault: boolean,
+): boolean {
+  if (!node) return true;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (!type) return false;
+  const allowed = (arm: IrType): boolean =>
+    typeEquals(arm, F64) || arm.kind === "undefinedT" || (nullIsDefault && arm.kind === "nullT");
+  if (type.kind === "union") {
+    const arms = lowerer.unions.get(type.unionId)?.arms;
+    return arms !== undefined && arms.every(allowed);
+  }
+  return allowed(type);
+}
+
+/** accessSync/truncateSync (and the fs/promises spellings): the optional
+ * mode/len completes to 0, and an explicit undefined or `number |
+ * undefined` value falls back to it after its effects run. */
+function lowerFsZeroDefaultCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  bi: { module: string; member: string },
+  fn: BuiltinModuleFn,
+  loc: SrcLoc,
+): IrExpr {
+  if (expr.arguments.nodes.length < 1 || expr.arguments.nodes.length > 2) {
+    lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
+  }
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
+  const secondArg = expr.arguments.nodes[1];
+  const nullIsDefault = bi.member === "accessSync" || bi.member === "access";
+  const second = secondArg
+    ? lowerBuiltinOptionalDefault(lowerer, secondArg, F64, zero, nullIsDefault)
+    : zero;
+  return { kind: "libCall", fn: fn.fn, args: [path, second], type: fn.result, loc };
 }

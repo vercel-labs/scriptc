@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8952-js-bigint-non-finite-comparisons.js"
+ ],
+ "diags": []
+}

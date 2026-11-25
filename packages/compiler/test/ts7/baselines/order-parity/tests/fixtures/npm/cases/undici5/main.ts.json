@@ -13,6 +13,7 @@
   "<repo>/packages/compiler/shims/undici/core/agent.ts",
   "<repo>/packages/compiler/shims/undici/core/api.ts",
   "<repo>/packages/compiler/shims/undici/core/fetch.ts",
+  "<repo>/packages/compiler/shims/undici/core/proxy-agent.ts",
   "<repo>/packages/compiler/shims/undici/core/errors-v5.ts",
   "<repo>/packages/compiler/shims/undici/v5.ts",
   "<repo>/tests/fixtures/npm/cases/undici5/peers.ts",

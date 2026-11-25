@@ -1,0 +1,25 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/early-error-await-reserved.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0011",
+   "message": "'await' is an operator in this context, not an identifier: an async function body or parameter list, a class static block, and a module's top level parse it as the await keyword",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-await-reserved.js",
+    "start": 521,
+    "end": 526
+   }
+  },
+  {
+   "code": "SC0011",
+   "message": "'await' is an operator in this context, not an identifier: an async function body or parameter list, a class static block, and a module's top level parse it as the await keyword",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/early-error-await-reserved.js",
+    "start": 396,
+    "end": 401
+   }
+  }
+ ]
+}

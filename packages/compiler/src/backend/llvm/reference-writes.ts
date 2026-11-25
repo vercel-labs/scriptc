@@ -8,6 +8,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { borrowsMapMutationReceiver, borrowsMapReadInputs } from "./map-read-lifetimes.js";
@@ -90,7 +91,7 @@ const INERT_LIB_PREFIXES = [
   "stats.",
   "spawnRes.",
 ];
-const INERT_LIB_CALLS = new Set([
+const INERT_LIB_CALLS = new Set<IrLibFn>([
   "dyn.compare",
   // Reads the ambient receiver (a fresh reference to the bound value).
   "dyn.this",
@@ -98,7 +99,11 @@ const INERT_LIB_CALLS = new Set([
   "error.new",
   "error.nodeThrow",
   "dyn.typedRefIs",
+  "dyn.typedRefBrandIs",
   "dyn.typedRefKeyIs",
+  "dyn.classHash",
+  "dyn.classCase",
+  "dyn.classValueHash",
   "dyn.bagGet",
   "json.parse",
   "process.stderrWrite",
@@ -117,6 +122,7 @@ const INERT_LIB_CALLS = new Set([
   "process.cwd",
   "process.argv",
   "process.execArgv",
+  "process.allowedEnvFlags",
   "process.platform",
   "process.execPath",
   "process.isTTY",
@@ -132,7 +138,7 @@ const INERT_LIB_CALLS = new Set([
 ]);
 
 /** jsval conversions (ir/jsval.ts): no user code, no stores. */
-const JS_CONVERSIONS = new Set([
+const JS_CONVERSIONS = new Set<IrLibFn>([
   "js.fromDyn",
   "js.toDyn",
   "js.fromF64",
@@ -143,7 +149,12 @@ const JS_CONVERSIONS = new Set([
 ]);
 
 /** jsval conversions of static primitives. */
-const JS_PRIMITIVE_SOURCES = new Set(["js.fromF64", "js.fromBool", "js.fromStr", "js.fromBigInt"]);
+const JS_PRIMITIVE_SOURCES = new Set<IrLibFn>([
+  "js.fromF64",
+  "js.fromBool",
+  "js.fromStr",
+  "js.fromBigInt",
+]);
 
 /** Array methods that never release an existing element or run user code. */
 const PRESERVING_ARRAY_METHODS = new Set([
@@ -552,6 +563,7 @@ export class ReferenceWrites {
       case "boolLit":
       case "strLit":
       case "unitLit":
+      case "constCell":
       case "varRef":
       case "bin":
       case "unary":

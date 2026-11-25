@@ -1,0 +1,6 @@
+{
+  "name": "worker-island-value",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "crossing-pkg": "node" } }
+}

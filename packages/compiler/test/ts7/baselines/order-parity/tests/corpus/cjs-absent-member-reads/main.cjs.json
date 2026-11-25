@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-absent-member-reads/table.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/conditional.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/prod-a.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/prod-b.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/pick.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/probe-side.cjs",
+  "<repo>/tests/corpus/cjs-absent-member-reads/main.cjs"
+ ],
+ "diags": []
+}

@@ -1,7 +1,9 @@
 /* scriptc runtime — the generator handle's layout, shared by scr_async.c
- * (the generator runtime) and scr_gen_bind.c (the call-time parameter bind,
- * a unit only generators that bind at the call link). scr_async.c includes
- * it after scr_runtime.h. */
+ * (the generator runtime), scr_gen_bind.c (the call-time parameter bind,
+ * a unit only generators that bind at the call link) and
+ * scr_gen_receiver.c (the receiver a generator body reads, a unit only
+ * programs with such a read link). scr_async.c includes it after
+ * scr_runtime.h. */
 #ifndef SCR_GENERATOR_PRIVATE_H
 #define SCR_GENERATOR_PRIVATE_H
 

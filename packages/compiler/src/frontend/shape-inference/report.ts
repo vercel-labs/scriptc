@@ -12,6 +12,8 @@
 import * as ts from "../ts7/adapter.js";
 import { OBJECT_PROTOTYPE_MEMBERS, type Atom } from "./domain.js";
 import { locLabel, type FunctionInfo, type LiteralSite, type ShapeAnalysis } from "./analyze.js";
+import { jsInferenceEnabled } from "../js-inference.js";
+import { isJsSourceFile } from "../program.js";
 
 export interface SiteVerdict {
   readonly site: LiteralSite;
@@ -146,9 +148,18 @@ export function buildShapeReport(analysis: ShapeAnalysis, filter: string): Shape
     o.add(s.keys.join(","));
   }
 
+  // With inference for the program's own JavaScript, the program's literal
+  // sites are judged too: the overlay types those files.
+  const programSites = jsInferenceEnabled();
   const verdicts: SiteVerdict[] = [];
   for (const s of analysis.sites) {
-    if (!s.inPackage && !all && fileFilter === null) continue;
+    if (
+      !s.inPackage &&
+      !all &&
+      fileFilter === null &&
+      !(programSites && isJsSourceFile(s.node.getSourceFile()))
+    )
+      continue;
     const reasons: string[] = [];
     const escapedWhy = analysis.escaped.get(s.atom);
     const escapes = escapedWhy !== undefined;

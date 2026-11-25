@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-chained-require-members/lib.cjs",
+  "<repo>/tests/corpus/cjs-chained-require-members/reader.cjs",
+  "<repo>/tests/corpus/cjs-chained-require-members/main.cjs"
+ ],
+ "diags": []
+}

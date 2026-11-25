@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8829-instance-constructor-replaced.ts"
+ ],
+ "diags": []
+}

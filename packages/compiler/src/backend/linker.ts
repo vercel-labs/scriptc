@@ -7,7 +7,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readSync, realpathSync, statSync } from "node:fs";
-import { copyFile, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -403,6 +403,21 @@ export function missingLinkDriverMessage(
   );
 }
 
+/** Writes the program's start-up symbols for the linker's symbol ordering file
+ * (function-layout.ts): lld places the input sections of the listed symbols
+ * first, in this order. The list is the start-up section's functions followed
+ * by the runtime-pack functions they call, whose code the module text cannot
+ * section; naming them is what keeps that code with the start-up block instead
+ * of a window of the pack per function. Returns no file when the plan has no
+ * start-up symbols. */
+async function startupOrderingFile(plan: NativeLinkPlan, dir: string): Promise<string | null> {
+  if (plan.target.platform !== "linux" || plan.startupSymbols === undefined) return null;
+  if (plan.startupSymbols.length === 0) return null;
+  const path = join(dir, "startup-order.txt");
+  await writeFile(path, plan.startupSymbols.map((symbol) => `${symbol}\n`).join(""));
+  return path;
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -428,11 +443,13 @@ export async function linkNativeExecutable(
     // Linux links with lld when the default driver finds it.
     const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
     const zig = explicitLinker === undefined && plan.target.defaultLinker === "zig";
+    const startupOrder = await startupOrderingFile(plan, privateOutRoot);
     const linkArgs = (withLld: boolean): string[] => {
       const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
       return [
         ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
         ...(withLld ? lld : []),
+        ...(withLld && startupOrder !== null ? [`-Wl,--symbol-ordering-file=${startupOrder}`] : []),
         ...hugeTextLinkerArgs(plan.hugeText === true, (withLld && lld.length !== 0) || zig),
         ...plan.driverFlags,
         ...mapArgs,

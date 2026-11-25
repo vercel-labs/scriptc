@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8760-enum-object-string-mixed.ts"
+ ],
+ "diags": []
+}

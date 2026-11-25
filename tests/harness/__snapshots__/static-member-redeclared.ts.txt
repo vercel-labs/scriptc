@@ -1,0 +1,76 @@
+static-member-redeclared.ts:19:12 - error SC1090: calling 'super.label' in a static member (plain static methods of the base class compile) is not supported yet (instantiating 'viaSuper' with <>)
+
+  18 |   static viaSuper(): string {
+  19 |     return super.label();
+     |            ^~~~~~~~~~~~~
+  20 |   }
+
+static-member-redeclared.ts:31:13 - error SC1090: reading the static 'label' of class 'Sink', which declares a setter and no getter (the read is undefined in JavaScript) is not supported yet
+
+  30 | }
+  31 | console.log(Sink.label());
+     |             ^~~~~~~~~~
+  32 | 
+
+static-member-redeclared.ts:41:28 - error SC1090: the static member 'count' of class 'Uncounted' (static accessors and initializer-less static fields have no lowering, and Function members like .call/.bind/.prototype have no value form) is not supported yet
+
+  40 | }
+  41 | console.log(Counted.count, Uncounted.count);
+     |                            ^~~~~~~~~~~~~~~
+  42 | 
+
+static-member-redeclared.ts:54:13 - error SC1090: method calls like 'Quoted.label' is not supported yet
+
+  53 | }
+  54 | console.log(Quoted.label());
+     |             ^~~~~~~~~~~~~~
+  55 | console.log(Keyed.label());
+
+static-member-redeclared.ts:55:13 - error SC1090: method calls like 'Keyed.label' is not supported yet
+
+  54 | console.log(Quoted.label());
+  55 | console.log(Keyed.label());
+     |             ^~~~~~~~~~~~~
+  56 | 
+
+static-member-redeclared.ts:72:7 - error SC1090: accessors shadowing inherited methods are not supported yet
+
+  71 |   // @ts-expect-error a method redeclared as an accessor
+  72 |   get label(): () => string {
+     |       ^~~~~
+  73 |     return () => "accessor";
+
+static-member-redeclared.ts:78:3 - error SC1090: fields shadowing inherited accessors are not supported yet
+
+  77 |   // @ts-expect-error an accessor redeclared as a field
+  78 |   size = 10;
+     |   ^~~~
+  79 | }
+
+static-member-redeclared.ts:82:3 - error SC1090: methods shadowing inherited accessors are not supported yet
+
+  81 |   // @ts-expect-error an accessor redeclared as a method
+  82 |   area(): number {
+     |   ^~~~
+  83 |     return 20;
+
+static-member-redeclared.ts:86:34 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  85 | }
+  86 | console.log(new Shape().label(), new AccessorOverMethod().size);
+     |                                  ^~~~~~~~~~~~~~~~~~~~~~~~
+  87 | console.log(new FieldOverAccessor().label());
+
+static-member-redeclared.ts:87:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  86 | console.log(new Shape().label(), new AccessorOverMethod().size);
+  87 | console.log(new FieldOverAccessor().label());
+     |             ^~~~~~~~~~~~~~~~~~~~~~~
+  88 | console.log(new MethodOverAccessor().size);
+
+static-member-redeclared.ts:88:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  87 | console.log(new FieldOverAccessor().label());
+  88 | console.log(new MethodOverAccessor().size);
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~
+  89 | 

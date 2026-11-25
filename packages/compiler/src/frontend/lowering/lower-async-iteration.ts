@@ -5,6 +5,7 @@ import { dynUndefinedExpr } from "../../ir/build.js";
  * and a try/finally performs IteratorClose on every abrupt completion while
  * leaving normal exhaustion alone. */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { InternalCompilerError } from "../../errors.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -18,6 +19,7 @@ import {
   NULL_T,
   STRING,
   VOID,
+  WATCHEVENTS_T,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import { extractIteratorValue, type GenType } from "./lower-generators.js";
@@ -49,19 +51,6 @@ interface ClassAsyncIteratorPlan {
   closeResult: IrType | null;
 }
 
-function unwrapExpression(node: ts.Expression): ts.Expression {
-  let expression = node;
-  while (
-    ts.isParenthesizedExpression(expression) ||
-    ts.isAsExpression(expression) ||
-    ts.isTypeAssertion(expression) ||
-    ts.isNonNullExpression(expression)
-  ) {
-    expression = expression.expression;
-  }
-  return expression;
-}
-
 function propertyName(node: ts.ObjectLiteralElementLike): string | null {
   if (!ts.isPropertyAssignment(node) && !ts.isShorthandPropertyAssignment(node)) {
     return null;
@@ -91,7 +80,7 @@ function literalBooleanOption(
     lowerer.unsupported("SC1090", call, `${api} with this argument shape`);
     return fallback;
   }
-  const argument = unwrapExpression(argumentNode);
+  const argument = withoutParenthesesAssertionsNonNull(argumentNode);
   if (!ts.isObjectLiteralExpression(argument)) {
     lowerer.unsupported(
       "SC1090",
@@ -121,7 +110,7 @@ function literalBooleanOption(
         `${api} with a runtime '${option}' value (write '${option}: true' or '${option}: false')`,
       );
     }
-    const value = unwrapExpression(member.initializer);
+    const value = withoutParenthesesAssertionsNonNull(member.initializer);
     if (value.kind === ts.SyntaxKind.TrueKeyword) answer = true;
     else if (value.kind === ts.SyntaxKind.FalseKeyword) answer = false;
     else {
@@ -146,7 +135,7 @@ function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeRead
       return { source: expression, type: direct, destroyOnReturn: true };
     }
   }
-  const call = unwrapExpression(expression);
+  const call = withoutParenthesesAssertionsNonNull(expression);
   if (!ts.isCallExpression(call) || call.questionDotToken) return null;
   const iteratorCall =
     ts.isPropertyAccessExpression(call.expression) &&
@@ -173,7 +162,7 @@ function symbolAsyncIteratorCall(
   lowerer: Lowerer,
   expression: ts.Expression,
 ): ts.CallExpression | null {
-  const call = unwrapExpression(expression);
+  const call = withoutParenthesesAssertionsNonNull(expression);
   if (
     !ts.isCallExpression(call) ||
     call.questionDotToken ||
@@ -182,7 +171,7 @@ function symbolAsyncIteratorCall(
   ) {
     return null;
   }
-  const key = unwrapExpression(call.expression.argumentExpression);
+  const key = withoutParenthesesAssertionsNonNull(call.expression.argumentExpression);
   if (
     !ts.isPropertyAccessExpression(key) ||
     key.name.text !== "asyncIterator" ||
@@ -198,7 +187,7 @@ function webReadablePlan(lowerer: Lowerer, expression: ts.Expression): WebReadab
   if (directElement) {
     return { source: expression, element: directElement, preventCancel: false };
   }
-  const unwrapped = unwrapExpression(expression);
+  const unwrapped = withoutParenthesesAssertionsNonNull(expression);
   const propertyCall =
     ts.isCallExpression(unwrapped) &&
     !unwrapped.questionDotToken &&
@@ -225,6 +214,23 @@ function webReadablePlan(lowerer: Lowerer, expression: ts.Expression): WebReadab
       propertyCall ? "ReadableStream.values" : "ReadableStream[Symbol.asyncIterator]",
     ),
   };
+}
+
+/** `stream.values(...)` or `stream[Symbol.asyncIterator](...)` on a web
+ * ReadableStream — the view `lowerWebReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T>, which the type mapper lowers like any other
+ * async iteration protocol, so the loop checks this first: the stream view
+ * takes its own lowering, not the async-generator one. */
+export function isWebReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return webReadablePlan(lowerer, expression) !== null;
+}
+
+/** `readable.iterator(...)` or `readable[Symbol.asyncIterator](...)` on a
+ * Node readable — the view `lowerNodeReadable` consumes directly. Its TYPE
+ * is AsyncIterableIterator<T> too, and the loop must reach that lowering
+ * rather than lower the call as an async-generator value. */
+export function isNodeReadableIteratorSource(lowerer: Lowerer, expression: ts.Expression): boolean {
+  return nodeReadablePlan(lowerer, expression) !== null;
 }
 
 function classAsyncIteratorPlan(
@@ -1154,7 +1160,161 @@ function lowerReadlineLines(
   }
 }
 
+/** The `fsPromises.watch(path, options)` call an iteration source is, when
+ * the source is that call itself (the only supported shape: Node's async
+ * generator is consumed where it is created). */
+function watchEventsCall(lowerer: Lowerer, expression: ts.Expression): ts.CallExpression | null {
+  const call = withoutParenthesesAssertionsNonNull(expression);
+  if (!ts.isCallExpression(call) || call.questionDotToken) return null;
+  const callee = call.expression;
+  const bi =
+    ts.isPropertyAccessExpression(callee) && !callee.questionDotToken
+      ? lowerer.builtinMemberOf(callee)
+      : ts.isIdentifier(callee)
+        ? lowerer.builtinImportOf(callee)
+        : null;
+  return bi !== null && bi.module === "fs/promises" && bi.member === "watch" ? call : null;
+}
+
+/** `for await (const info of fsPromises.watch(path))`: Node's async
+ * generator waits for an entry, yields it and closes the watch in its
+ * `finally`. The compiled loop is the same shape — a bool promise the
+ * runtime settles when an entry is queued (true) or the watch closed
+ * (false), then a take of the oldest entry — closed in a finally so a
+ * break or a throw ends the watch as the generator's return does. Each
+ * entry arrives as the dynamic `{ eventType, filename }` object the
+ * runtime queued, checked into the record this surface can produce
+ * (dynCheck): it only iterates utf8, where the platform names the entry as
+ * a string, so the record is `{ eventType: string; filename: string | null }`
+ * with no Buffer arm. */
+function lowerWatchEvents(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt {
+  const binding = checkForAwaitBinding(lowerer, stmt);
+  const loc = locOf(stmt);
+  const entryT: IrType & { kind: "record" } = {
+    kind: "record",
+    shapeId: lowerer.shapes.intern(
+      [
+        { name: "eventType", type: STRING },
+        {
+          name: "filename",
+          type: { kind: "union", unionId: lowerer.unions.intern([STRING, NULL_T]) },
+        },
+      ],
+      false,
+      undefined,
+      ["eventType", "filename"],
+    ),
+  };
+  const waitT: IrType = { kind: "promise", inner: BOOL };
+  lowerer.scopes.push(new Map());
+  try {
+    const iter = lowerer.declareHiddenLocal("%faWatch", WATCHEVENTS_T);
+    const promise = lowerer.declareHiddenLocal("%faWatchWait", waitT);
+    const ready = lowerer.declareHiddenLocal("%faWatchReady", BOOL);
+    const raw = lowerer.declareHiddenLocal("%faWatchDyn", DYN);
+    const entry = lowerer.declareLocal(
+      binding.declaration.name,
+      binding.declaration.name.text,
+      entryT,
+      binding.mutable,
+    );
+    const iterRef = (): IrExpr => ({ kind: "varRef", localId: iter.id, type: WATCHEVENTS_T, loc });
+    const body = lowerer.inCtl("loop", () => lowerer.lowerScopedBlock(stmt.statement));
+    const loop: IrStmt = {
+      kind: "while",
+      cond: { kind: "boolLit", value: true, type: BOOL, loc },
+      body: [
+        {
+          kind: "varDecl",
+          localId: promise.id,
+          init: { kind: "libCall", fn: "watchEvents.wait", args: [iterRef()], type: waitT, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: ready.id,
+          init: {
+            kind: "awaitExpr",
+            value: { kind: "varRef", localId: promise.id, type: waitT, loc },
+            type: BOOL,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "if",
+          cond: {
+            kind: "unary",
+            op: "!",
+            operand: { kind: "varRef", localId: ready.id, type: BOOL, loc },
+            type: BOOL,
+            loc,
+          },
+          then: [{ kind: "break", loc }],
+          else_: null,
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: raw.id,
+          init: { kind: "libCall", fn: "watchEvents.take", args: [iterRef()], type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: entry.id,
+          init: {
+            kind: "dynCheck",
+            value: { kind: "varRef", localId: raw.id, type: DYN, loc },
+            type: entryT,
+            loc,
+          },
+          loc,
+        },
+        ...body,
+      ],
+      loc,
+    };
+    return {
+      kind: "block",
+      body: [
+        {
+          kind: "varDecl",
+          localId: iter.id,
+          init: lowerer.lowerExprExpecting(stmt.expression, WATCHEVENTS_T),
+          loc,
+        },
+        {
+          kind: "tryCatch",
+          tryBody: [loop],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "watchEvents.close",
+                args: [iterRef()],
+                type: VOID,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      loc,
+    };
+  } finally {
+    lowerer.scopes.pop();
+  }
+}
+
 export function lowerForAwaitBuiltin(lowerer: Lowerer, stmt: ts.ForOfStatement): IrStmt | null {
+  const watching = watchEventsCall(lowerer, stmt.expression);
+  if (watching) return lowerWatchEvents(lowerer, stmt);
   if (lowerer.mapTypeOf(lowerer.typeOf(stmt.expression))?.kind === "dir")
     return lowerDirEntries(lowerer, stmt);
   const readline = readlinePlan(lowerer, stmt.expression);

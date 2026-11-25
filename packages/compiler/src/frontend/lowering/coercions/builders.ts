@@ -18,6 +18,8 @@ export function buildArrayConversion(
   initial: IrExpr,
   append: (element: IrExpr, index: IrExpr, result: IrExpr) => IrExpr,
   loc: SrcLoc,
+  // Statements that run before each element is read.
+  check: (index: IrExpr) => IrStmt[] = () => [],
 ): IrFunction {
   const input = varRef("a.0", source, loc);
   const result = varRef("out.0", initial.type, loc);
@@ -40,6 +42,7 @@ export function buildArrayConversion(
         loc,
       },
       countedFor(loc, varRef("n.0", F64, loc), (index) => [
+        ...check(index),
         {
           kind: "exprStmt",
           expr: append(
@@ -57,10 +60,13 @@ export function buildArrayConversion(
 }
 
 /** The implementation captures the original function; the factory creates
- * a fresh closure for each adapted value. Keep both boxed slots in sync. */
+ * a fresh closure for each adapted value. Keep both boxed slots in sync.
+ * `source` is the original's type: a function type, or the checked-dynamic
+ * type for an adapter that calls a boxed function (a checked adapter, whose
+ * box is that function again). */
 export function buildFunctionAdapter(
   name: string,
-  source: IrType & { kind: "func" },
+  source: (IrType & { kind: "func" }) | (IrType & { kind: "dyn" }),
   target: IrType & { kind: "func" },
   params: IrParam[],
   locals: IrLocal[],

@@ -170,6 +170,7 @@ function stableLoopValue(
       return (
         (value.op === "+" ||
           value.op === "-" ||
+          value.op === "*" ||
           value.op === "&" ||
           value.op === ">>>" ||
           value.op === "|") &&

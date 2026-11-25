@@ -8,6 +8,7 @@ import {
   type SrcLoc,
 } from "../../../ir/ir.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import type { ClassInfo } from "../lower-classes.js";
@@ -63,16 +64,10 @@ export function builtinMemberClassKind(module: string, member: string): number |
   return MODULE_CLASS_KINDS[module]?.[member] ?? null;
 }
 
-function unparenthesized(node: ts.Expression): ts.Expression {
-  let current = node;
-  while (ts.isParenthesizedExpression(current)) current = current.expression;
-  return current;
-}
-
 /** The kind of a node that names one of those classes: a class value, a
  * builtin module member, or the events and stream modules themselves. */
 export function builtinClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
-  const expr = unparenthesized(node);
+  const expr = withoutParentheses(node);
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (mapped?.kind === "classval") return builtinClassKind(mapped.className);
   const member = ts.isIdentifier(expr)
@@ -88,10 +83,10 @@ export function builtinClassKindOf(lowerer: Lowerer, node: ts.Expression): numbe
 /** Whether evaluating the node can be skipped: a binding or a member of
  * one, or of a builtin require. */
 function referenceOnly(node: ts.Expression): boolean {
-  const expr = unparenthesized(node);
+  const expr = withoutParentheses(node);
   if (ts.isIdentifier(expr)) return true;
   if (ts.isPropertyAccessExpression(expr) && !expr.questionDotToken) {
-    const base = unparenthesized(expr.expression);
+    const base = withoutParentheses(expr.expression);
     return (
       ts.isIdentifier(base) ||
       (ts.isCallExpression(base) &&

@@ -1,7 +1,8 @@
-/* node:test's mock function representation. A Mock<F> is the hybrid
- * record { %call: F, mock: MockFunctionContext<F> } (type-mapper.ts's
- * function-with-properties mapping). The context is a record the wrapper
- * closure and the mock field share:
+/* node:test's mock function representation. A Mock<F> is `F & { mock:
+ * MockFunctionContext<F> }`: the value IS the wrapper closure of type F,
+ * and `mock` is an entry of the closure's own-property table holding the
+ * context (lower-mock.ts). The context is a record the wrapper closure and
+ * the `mock` table entry share:
  *
  *   calls       MockFunctionCall<F>[]  the call log, read as a copy
  *   %impl       F                       the current implementation
@@ -17,7 +18,7 @@
  * type or undefined (a checked-dynamic value for functions returning void
  * or undefined, since a record field cannot have a unit type), and error
  * and this as checked-dynamic values. */
-import { DYN, F64, NULL_T, UNDEFINED_T, VOID, typeKey, type IrType } from "../ir/ir.js";
+import { DYN, F64, NULL_T, UNDEFINED_T, VOID, sortArms, type IrType } from "../ir/ir.js";
 import type { TypeMapperCtx } from "./type-mapper.js";
 
 /** The mock records intern into the type mapper's registries. */
@@ -30,7 +31,7 @@ function orUndefined(t: IrType, reg: MockShapeRegistries): IrType {
   const arms = t.kind === "union" ? [...(reg.unions.get(t.unionId)?.arms ?? [])] : [t];
   if (arms.some((a) => a.kind === "undefinedT")) return t;
   arms.push(UNDEFINED_T);
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: reg.unions.intern(arms) };
 }
 
@@ -51,7 +52,7 @@ function mockArgumentsType(fn: IrType & { kind: "func" }, reg: MockShapeRegistri
     return fn.params[0]!;
   }
   if (fn.params.length === 0) {
-    const arms = [NULL_T, UNDEFINED_T].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+    const arms = sortArms([NULL_T, UNDEFINED_T]);
     return { kind: "array", elem: { kind: "union", unionId: reg.unions.intern(arms) } };
   }
   const fields = fn.params.map((type, i) => ({ name: String(i), type }));
@@ -93,6 +94,10 @@ export function mockContextType(
     { name: "%impl", type: fn },
     { name: "%once", type: { kind: "array", elem: onceEntry } as IrType },
     { name: "%original", type: fn },
+    /* The mock's { times }: how many calls its implementation serves before
+     * restore() brings the original back; -1 without one (Node's Infinity,
+     * since `nextCall + 1 === times` never holds for it). */
+    { name: "%times", type: F64 },
     {
       name: "%unmock",
       type: { kind: "array", elem: { kind: "func", params: [], ret: VOID } } as IrType,
@@ -100,16 +105,4 @@ export function mockContextType(
     { name: "calls", type: { kind: "array", elem: call } as IrType },
   ];
   return { kind: "record", shapeId: reg.shapes.intern(fields, false, undefined, ["calls"]) };
-}
-
-/** Mock<F>: the hybrid record { %call: F, mock: MockFunctionContext<F> },
- * interned as type-mapper.ts's function-with-properties mapping interns it. */
-export function mockType(fn: IrType & { kind: "func" }, reg: MockShapeRegistries): IrType | null {
-  const ctx = mockContextType(fn, reg);
-  if (ctx === null) return null;
-  const fields = [
-    { name: "%call", type: fn },
-    { name: "mock", type: ctx },
-  ];
-  return { kind: "record", shapeId: reg.shapes.intern(fields, false, undefined, ["mock"]) };
 }

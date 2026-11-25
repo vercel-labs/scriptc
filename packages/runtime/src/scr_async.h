@@ -21,8 +21,36 @@ ScrPromise *scr_tp_set_immediate(void);
  * tiebreaks) drives everything after %main returns. See scr_async.c.
  */
 ScrPromise *scr_promise_new(void);
+/* The identity cell of a promise: what a promise adopted across inner types
+ * shares with its source (scr_promise_share_identity) and what a Set or a
+ * Map keys a promise by (scr_promise_map_identity). Each promise that points
+ * at a cell holds one count of it; a promise has none until its first share
+ * or its first key.
+ *
+ * A WeakMap or a WeakSet keys a promise by the same cell. Their unit, the
+ * checked-dynamic core, is linked by programs that have no promise and calls
+ * nothing of this unit, so it reads and creates the cell through the head
+ * below: the first two words of every promise.
+ *
+ * The promises of one cell are one promise to the program, so they have one
+ * answer to "was its rejection handled": `observed` is set when a reaction
+ * attaches to any of them (scr_prom_observe) or when one of them has been
+ * reported, and none of them is reported as unhandled after that.
+ * `transferred` is set when a view first copies its source's rejection and
+ * takes the tracking over (scr_promise_settle_from): from then on the
+ * source's own mark means "a view tracks it", not "a reaction handled it". */
+typedef struct ScrPromiseIdentity {
+  size_t rc;
+  bool observed;
+  bool transferred;
+} ScrPromiseIdentity;
+typedef struct ScrPromiseHead {
+  size_t rc;
+  ScrPromiseIdentity *identity;
+} ScrPromiseHead;
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+void *scr_promise_map_identity(void *promise);
 /* A key every promise sharing `p`'s identity answers (each adapter box of
  * a typed promise), creating the shared cell when `p` has none. */
 const void *scr_promise_identity_key(ScrPromise *p);
@@ -38,17 +66,29 @@ void scr_promise_release_v(void *p);
 typedef struct ScrFiber ScrFiber;
 /* Bytes of each async fiber's native stack (scr_async.c), mapped without a
  * guard page: compiled code checks scr_stack_guard instead, which sits
- * scr_stack_guard_for's reserve above the mapping's start. Deep enough for
- * ordinary recursion inside async bodies and generators once that reserve
- * is taken off; idle and shallow fibers only touch the pages they use.
- * AddressSanitizer's larger frames get more. */
+ * scr_stack_guard_for's reserve above the mapping's start. Idle and shallow
+ * fibers only touch the pages they use, so the mapping costs address space,
+ * not memory.
+ *
+ * A top-level-await module's initialization runs on its fiber until the first
+ * suspension, and that prefix evaluates its whole synchronous import graph:
+ * one large program's module initialization nests constructors and generated
+ * class helpers hundreds of KiB deep, which a 512 KiB fiber cannot hold (the
+ * guard's reserve leaves 384 KiB). 64-bit native targets therefore give a
+ * fiber the same budget as the process's main-thread stack, as AddressSanitizer
+ * builds already did. WASI and 32-bit targets keep the smaller stack, where
+ * address space is scarce. */
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
 #define SCR_FIBER_STACK (8 * 1024 * 1024)
 #endif
 #endif
 #ifndef SCR_FIBER_STACK
+#if defined(__wasi__) || (defined(__SIZEOF_POINTER__) && __SIZEOF_POINTER__ < 8)
 #define SCR_FIBER_STACK (512 * 1024)
+#else
+#define SCR_FIBER_STACK (8 * 1024 * 1024)
+#endif
 #endif
 /* Spawn + run eagerly to the first suspension; returns the promise, +1. */
 ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
@@ -154,16 +194,36 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
  * until the value's promise settled, or taken the non-promise hop. */
 ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
+/* `new Promise(executor)` of a checked-dynamic value whose resolve function
+ * adopts a promise it is given (scr_async_dyn.c). */
+ScrClosure *scr_make_resolve_dyn(ScrPromise *p, ScrClosure *reject);
+void scr_promise_run_executor_dyn(ScrPromise *p, ScrClosure *exec, ScrClosure *resolve,
+                                  ScrClosure *reject);
+/* The same for a typed promise: its resolve closure given a promise where
+ * the static type of the value has a promise arm, and the reject closure
+ * that ends with it (scr_async_dyn.c). */
+void scr_resolve_join(ScrClosure *resolve, ScrClosure *reject);
+void scr_resolve_adopt(ScrClosure *resolve, ScrPromise *source);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
 ScrDyn *scr_await_dyn_value(ScrDyn *v);
 /* .then/.catch/.finally over a dyn promise (scr_dyn_invoke's promise arm
- * and the compiled dyn-receiver path): one reaction fiber per
- * registration — awaits src, runs the checked-dynamic tree handler (non-callable handlers
- * pass the settlement through; a returned dyn promise is adopted), and
- * settles a fresh result promise, answered BOXED (+1). Microtask-exact
- * ordering rides the fiber machinery. */
+ * and the compiled dyn-receiver path): one native reaction per
+ * registration (scr_promise_react) — its job runs the checked-dynamic tree
+ * handler once src settles (non-callable handlers pass the settlement
+ * through; a returned dyn promise is adopted), and settles a fresh result
+ * promise, answered BOXED (+1). */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* When set, that reaction's job calls it in place of its steps. The test
+ * unit sets it to scr_dyn_then_spawn (scr_test.c), which runs the steps on
+ * a fiber of their own: a handler may then wait on the current fiber from
+ * synchronous code, as a node:test subtest started inside it does. Only
+ * that unit references scr_dyn_then_spawn, so a program without tests
+ * links neither it nor the fiber machinery. */
+extern SCR_TL void (*scr_dyn_reaction_spawn)(void *ctx, ScrPromise *src);
+#ifndef __wasi__
+void scr_dyn_then_spawn(void *ctx, ScrPromise *src);
+#endif
 /* A native reaction to a promise's settlement, as PerformPromiseThen with
  * native steps: react(ctx, settled) runs as a reaction job once the promise
  * settles (from the next microtask checkpoint when it already has), in
@@ -178,6 +238,23 @@ typedef struct ScrPromiseReaction {
 /* Subscribes a native reaction to `p` (the descriptor outlives it) and
  * marks `p` handled, as a `then` does. */
 void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* The same without the mark: `p` counts as handled once the reaction's own
+ * steps observe it (scr_promise_settled_now), as it did when a fiber that
+ * awaited it resumed. A rejection already reported as unhandled therefore
+ * raises 'rejectionHandled' in the reaction's turn, never inside the call
+ * that registers it. */
+void scr_promise_react_unmarked(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+/* Queues the reaction's job now, whatever the state of `p`: react(ctx, p)
+ * runs in the next microtask turn, and `p` stays alive until then. It is
+ * the turn of the job that resolves a promise with another one
+ * (NewPromiseResolveThenableJob): its steps subscribe to `p`
+ * (scr_promise_react_unmarked), which may still be pending. The loop needs
+ * nothing for it beyond the reaction job it already runs. */
+void scr_promise_react_next(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
+#ifdef SCR_RC_AUDIT
+/* The dynamic promise unit's pending reactions (scr_async.c). */
+extern SCR_TL long scr_dyn_reactions_pending;
+#endif
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber
@@ -207,6 +284,15 @@ ScrAlsCtx **scr_als_slot(void);
 #endif
 ScrAlsCtx *scr_als_ctx_retain(ScrAlsCtx *c);
 void scr_als_ctx_release(ScrAlsCtx *c);
+/* Live snapshots on this thread (the runtime tests assert a store <-> resource
+ * loop returns to its baseline). */
+long scr_als_live_contexts(void);
+#ifdef SCR_RC_AUDIT
+/* Runtime-test hook: called once while a snapshot's entries are being released
+ * (after the first one), so a test can force a collection pass at the exact
+ * point a snapshot is half-disposed. */
+extern void (*scr_als_ctx_release_probe)(void);
+#endif
 /* After an enterWith: on the main stack, queues the tick that ends it. */
 void scr_als_entered_with(void);
 ScrAlsCtx *scr_als_ctx_alloc(size_t len);
@@ -235,10 +321,122 @@ ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
  * pending for a non-object) and the name it carries (+1). */
 double scr_als_new_options(const ScrDyn *options);
 ScrDyn *scr_als_name(double id);
+/* ── node:trace_events (trace_events.Tracing — scr_async_dyn.c) ───────
+ * A compiled binary carries no trace-event agent, which is what Node's
+ * tracing objects drive; without the agent (Node run without
+ * --trace-event-* flags) what a program observes is the object's own
+ * bookkeeping: its categories string and its enabled flag, plus the
+ * process-wide enabled-categories list. The objects are native handles
+ * (typeof "object", no own keys, `Tracing { enabled: false, categories:
+ * 'v8,node' }`), so member reads and calls ride the checked-dynamic tree.
+ * scr_te_create applies createTracing's checks (options object, the
+ * categories array, its string members, at least one category) and answers
+ * the handle (+1) or NULL with the exception pending;
+ * scr_te_get_enabled_categories answers the sorted, de-duplicated list
+ * (+1) or the undefined value when no tracing object is enabled. */
+ScrDyn *scr_te_create(ScrDyn *options);
+ScrDyn *scr_te_get_enabled_categories(void);
+
 /* AsyncLocalStorage.bind over a dyn function and the dyn completion
  * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
 ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
 ScrDyn *scr_als_snapshot(void);
+/* asyncLocalStorage.withScope(store): the store installed now (Node's
+ * enterWith), with the value getStore() answered before it kept for the
+ * scope's dispose. The result is a native RunScope handle whose dispose()
+ * and [Symbol.dispose] install that previous value again (a second dispose
+ * is a no-op). */
+ScrDyn *scr_als_with_scope(double id, ScrDyn *store);
+
+/* ── AsyncResource (node:async_hooks — scr_async_dyn.c) ───────────────
+ * Resources are process-lived 1-based f64 handles (the Channel story).
+ * A resource keeps the AsyncLocalStorage snapshot active at construction,
+ * the async id it was given, and the id that triggered it.
+ * runInAsyncScope installs that context and id for the call's synchronous
+ * extent; bind/bindStatic answer functions doing the same with their own
+ * arguments. Ids come from one counter whose root is the program's
+ * top-level execution (id 1, trigger 0); a resource built inside another
+ * one's scope answers that resource's id as its trigger. scr_ar_new validates
+ * Node's `type` string and the triggerAsyncId/requireManualDestroy
+ * options (NaN with the exception pending); runInScope/bind/bindStatic
+ * MAY THROW (their calls and Node's argument checks). */
+ScrDyn *scr_ar_new(ScrDyn *type, ScrDyn *options);
+ScrDyn *scr_ar_run_in_scope(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg, ScrDyn *args);
+ScrDyn *scr_ar_bind(ScrDyn *handle, ScrDyn *fn, ScrDyn *this_arg);
+/* AsyncResource.bind(fn[, type[, thisArg]]): `type` falsy takes fn's name,
+ * and a name that is still falsy takes 'bound-anonymous-fn' (Node's). */
+ScrDyn *scr_ar_bind_static(ScrDyn *fn, ScrDyn *type, ScrDyn *this_arg);
+ScrDyn *scr_ar_emit_destroy(ScrDyn *handle); /* answers the handle */
+/* The number of AsyncResource payloads alive: a dropped handle's payload is
+ * freed, so this returns to its old value (the runtime test pins it). */
+size_t scr_ar_live_resources(void);
+double scr_ar_async_id(ScrDyn *handle);
+double scr_ar_trigger_id(ScrDyn *handle);
+/* The execution context's ids: executionAsyncId()/triggerAsyncId(). */
+double scr_ar_execution_id(void);
+double scr_ar_execution_trigger(void);
+/* executionAsyncResource(): the AsyncResource whose runInAsyncScope or
+ * bound call is executing (+1), and a shared plain object elsewhere (+1). */
+ScrDyn *scr_ar_execution_resource(void);
+
+/* ── node:async_hooks execution ids and hooks ─────────────────────────
+ * The always-linked core keeps one execution-id pair and ONE NULL hook
+ * table; nothing allocates or counts ids while the table is NULL, so a
+ * program that never uses async_hooks pays a single predictable test at
+ * each instrumented site (the timer, immediate, tick and promise paths).
+ * The gated dyn-async unit installs the table at startup when the IR uses
+ * async_hooks' libCalls, which is also what turns id allocation on. The
+ * rest of the bookkeeping (the id counter, the execution pair's enter and
+ * leave, the per-resource capture) is private to scr_async.c.
+ *
+ * Ids start at 1 for the program's top-level execution (trigger id 0);
+ * each tracked resource takes the next id and remembers the execution it
+ * was created in as its trigger. Types are the Node resource names the
+ * runtime models ("Timeout", "Immediate", "TickObject", "PROMISE"). The
+ * ids are scriptc's own sequence: Node's counter also numbers its module
+ * loading internals, so only a resource's relations (equality with the id
+ * seen inside its own callback, ids greater than the root) are observable
+ * across implementations. */
+typedef struct ScrAsyncHookOps {
+  /* A tracked resource was created: `id`, its type, the execution id that
+   * created it, and the resource object the hooks receive (a fresh dyn
+   * object for the runtime's own kinds). */
+  void (*init)(double id, const char *type, size_t type_len, double trigger, ScrDyn *resource);
+  void (*before)(double id); /* about to run this resource's callback */
+  void (*after)(double id);  /* the callback returned or threw */
+  void (*destroy)(double id);
+  void (*promise_resolve)(double id); /* a tracked promise settled */
+} ScrAsyncHookOps;
+extern SCR_TL const ScrAsyncHookOps *scr_async_hook_ops; /* NULL: not tracking */
+double scr_async_execution_id(void);
+double scr_async_execution_trigger(void);
+/* The execution-id pair's enter/leave around a resource's callback, and the
+ * counter every resource id comes from. AsyncResource shares the counter and
+ * the pair with the core's tracked kinds, so its scopes answer Node's
+ * executionAsyncId()/triggerAsyncId() and its ids interleave as Node's do. */
+typedef struct {
+  double id;
+  double trigger;
+} ScrAsyncExecState;
+ScrAsyncExecState scr_async_exec_enter(double id, double trigger);
+void scr_async_exec_leave(ScrAsyncExecState prev);
+double scr_async_next_id(void);
+
+/* createHook and the table's installation (scr_async_dyn.c). createHook
+ * validates its five callbacks with Node's ERR_ASYNC_CALLBACK and answers a
+ * 1-based f64 handle (NaN with the exception pending); enable/disable flip
+ * the hook and answer the handle, as Node's methods answer `this`; the
+ * install entry is emitted before the entry of a program whose IR uses
+ * async_hooks. */
+void scr_async_hooks_install(void);
+double scr_ah_create(ScrDyn *options);
+double scr_ah_parts(ScrDyn *init, ScrDyn *before, ScrDyn *after, ScrDyn *destroy,
+                    ScrDyn *promise_resolve);
+double scr_ah_enable(double handle);
+double scr_ah_disable(double handle);
+/* asyncWrapProviders: Node 24's published provider-name → id table as a
+ * null-prototype checked-dynamic object (+1). */
+ScrDyn *scr_ah_providers(void);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask
@@ -253,6 +451,31 @@ void scr_process_off_unhandled_rejection(ScrDyn *fn);
  * the promise as Node's payload. */
 void scr_process_on_rejection_handled(ScrDyn *fn, bool once);
 void scr_process_off_rejection_handled(ScrDyn *fn);
+/* process.setUncaughtExceptionCaptureCallback/…hasUncaughtExceptionCapture-
+ * Callback: the capture callback replaces the 'uncaughtException'
+ * listeners for every uncaught exception (monitors still run first), and
+ * has… reports whether one is set. The setter validates like Node
+ * (ERR_INVALID_ARG_TYPE for a non-function, …ALREADY_SET when one is
+ * active, null clears). */
+bool scr_process_has_uncaught_capture(void);
+void scr_process_set_uncaught_capture(ScrDyn *fn);
+/* process.on/once/off('multipleResolves', fn): the third rejection-event
+ * registry (scr_async_dyn.c). A resolution or rejection that arrives at a
+ * promise which already resolved is reported as ('resolve' | 'reject',
+ * promise, value) — delivered on a nextTick queued at that settle, exactly
+ * Node's resolveErrorResolve/resolveErrorReject — and the first delivery
+ * that reaches a listener emits DEP0160 once per process. Throws Node's
+ * ERR_INVALID_ARG_TYPE for a non-function listener. */
+void scr_process_on_multiple_resolves(ScrDyn *fn, bool once);
+void scr_process_off_multiple_resolves(ScrDyn *fn);
+/* The settle-time hook the registration above installs (NULL while no
+ * listener is registered): `type` 0 = resolve / 1 = reject names the settle
+ * that lost, `value` is what it passed, +1 and owned by the hook.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_multiple_resolves_fn)(ScrPromise *p, int type, ScrDyn *value);
+/* Reports the value an exception cell carries as a losing settle (the
+ * executor-throw-after-settle path). Runtime-internal. */
+void scr_promise_multiple_resolves_note(ScrPromise *p, int type, const ScrExcCell *cell);
 /* The checkpoint delivery hook the registration above installs
  * (scr_async_dyn.c → scr_report_unhandled_rejections; NULL = default
  * report). Runtime-internal. */
@@ -271,6 +494,17 @@ void scr_promise_mark_handled(ScrPromise *p);
 /* A rejected promise's reason as a dyn value (identity-preserving for
  * dyn payloads and %Error instances). +1. */
 ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
+/* Reads a boxed promise for the inspect renderer: whether it is pending,
+ * whether it is rejected, and a settled promise's outcome as a dyn value
+ * (+1: the rejection reason, the fulfillment value otherwise). The box
+ * itself comes from scr_async_dyn.c, which installs this with the box hooks
+ * — the only way an inspector meets a SCR_DYN_PROMISE — so a program
+ * without that unit keeps the pointer NULL. The hook lives in scr_lib.c
+ * (always linked, including the library flavors that omit scr_async.c), so
+ * the inspect unit never references the async unit directly.
+ * Runtime-internal. */
+extern SCR_TL void (*scr_promise_inspect_dyn_fn)(const ScrPromise *p, bool *pending,
+                                                 bool *rejected, ScrDyn **value);
 /* process warnings (scr_lib.c — always linked so any unit can emit a
  * deprecation): dyn listeners plus Node's default stderr report
  * ("(node:pid) [CODE] Name: message" and a detail second line).
@@ -281,6 +515,16 @@ ScrDyn *scr_promise_reason_dyn(const ScrPromise *p);
 void scr_process_on_warning(ScrDyn *fn);
 void scr_process_off_warning(ScrDyn *fn);
 void scr_process_emit_warning(ScrDyn *args);
+/* process.emit(event, ...args): dispatch to the listeners of the process
+ * events registered as checked-dynamic callbacks — the exception families,
+ * 'warning' and the rejection families — answering whether any listener
+ * existed (Node's EventEmitter return). The compiler refuses the typed
+ * listener families, and a name none of these matches answers false. */
+bool scr_process_emit_named(ScrDyn *event, ScrDyn *args);
+/* process.emit('error', ...): no 'error' listener can be registered, so
+ * Node's EventEmitter contract throws — an Error payload throws itself, any
+ * other payload throws ERR_UNHANDLED_ERROR. */
+void scr_process_emit_error(ScrDyn *args);
 void scr_emit_warning(const char *name, const char *code, ScrStr *message);
 /* process.emitWarning = fn (borrowed; the runtime keeps its own
  * reference). Later process.emitWarning(...) calls apply the replacement
@@ -297,17 +541,29 @@ void scr_punycode_warn(bool immediate, bool report);
  * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
  * 10000-call check (scr_buffer_deprecation_count). */
 void scr_buffer_deprecation(void);
+/* assert.fail's deprecated multi-argument form reports DEP0094 once, at
+ * the point Node's deprecate() wrapper reports it. */
+void scr_assert_fail_deprecation(void);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
 extern SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message);
+/* The EventEmitter leak warning with its `emitter`, `count` and `type` own
+ * properties (scr_lib.c; set by the 'warning'-listener registration beside
+ * scr_warning_emit_hook). A raising unit owns the values it passes: `type`
+ * is the event name value, `emitter` an identity-bearing value of the
+ * emitter, `message` the report's text; all are borrowed. Units that
+ * cannot link the dyn-async unit test this hook first and fall back to
+ * scr_warning_emit_hook, then to the default report. */
+extern SCR_TL void (*scr_warning_leak_hook)(ScrDyn *type, double count, ScrDyn *emitter, ScrStr *message);
 /* Node's traceWarningHelperShown: the "(Use `node --trace-warnings ...`"
  * hint follows only the first warning report of the process, whichever
  * unit prints it (scr_lib.c). */
 extern SCR_TL bool scr_warning_trace_hint_shown;
-/* process.noDeprecation (which 0) and process.throwDeprecation (which 1):
- * the stored value (+1; undefined until assigned), the assignment
- * (borrowed), and the truthiness the warning paths test. */
+/* process.noDeprecation (0), process.throwDeprecation (1),
+ * process.traceDeprecation (2) and process.traceProcessWarnings (3): the
+ * stored value (+1; undefined until assigned), the assignment (borrowed),
+ * and the truthiness the warning paths test. */
 ScrDyn *scr_process_deprecation_flag(double which);
 void scr_process_set_deprecation_flag(double which, ScrDyn *value);
 bool scr_process_deprecation_flag_on(int which);
@@ -317,6 +573,10 @@ bool scr_process_deprecation_flag_on(int which);
  * listeners run. scr_warning_new builds the string form's warning value
  * (borrows; +1). */
 void scr_warning_emit_deferred(ScrDyn *warning);
+/* The same tail for the deprecations Node emits through
+ * getDeprecationWarningEmitter, whose fourth argument (the deprecation
+ * constructor) is undefined (DEP0203). */
+void scr_warning_emit_deferred_undefined_ctor(ScrDyn *warning);
 ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code);
 /* The promise-or-absent await's unit arm: one microtask hop, like JS's
  * await of any non-thenable (and like awaiting a settled promise). */
@@ -501,8 +761,9 @@ bool scr_timer_has_ref(double handle);
 void scr_timer_refresh(double handle);
 /* setImmediate/clearImmediate — Node's check phase: FIFO once per loop
  * turn after due timers, immediates queued mid-phase wait for the next
- * turn. The handle is an f64 id in its own space (clearTimeout of an
- * Immediate is a no-op, like Node); the Immediate ref trio mirrors the
+ * turn. The handle is an f64 id from the timer sequence, so its number
+ * names no timeout (clearTimeout of an Immediate is a no-op, like Node);
+ * the Immediate ref trio mirrors the
  * Timeout one (unref'd pending immediates don't keep the loop alive and
  * never fire once nothing reffed remains). scr_timers_teardown sweeps
  * the immediate queue too. */
@@ -515,6 +776,11 @@ double scr_set_immediate(ScrClosure *cb); /* cb ownership moves in */
 void scr_queue_microtask(ScrClosure *cb);
 void scr_queue_microtask_dyn(const ScrDyn *cb);
 void scr_queue_microtask_dyn_als(const ScrDyn *cb);
+/* Node's timer callback gate, raised where the callback is not statically
+ * a function: a non-function throws ERR_INVALID_ARG_TYPE synchronously,
+ * with the "Received ..." rendering, before anything schedules and before
+ * the delay converts. Borrowed. */
+void scr_timers_check_callback(const ScrDyn *cb);
 /* setImmediate AS A dyn VALUE (the traceCallback shape): a minted dyn
  * callable that schedules args[0](args[1..]) on the immediate queue and
  * answers undefined; a non-function first argument throws Node's

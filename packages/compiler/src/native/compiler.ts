@@ -40,18 +40,21 @@ import {
   type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
+import { codegenServerName } from "../backend/codegen-server.js";
 import {
+  failureText,
   NativeCodegenError,
   nativePartitionPaths,
   nativeProgramPartitions,
 } from "../backend/native-codegen-core.js";
-import { llvmRefusalDiag } from "../backend/target-diagnostics.js";
+import { llvmRefusalDiags } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { analyzeWithFrontend } from "../frontend/analysis.js";
 import { analyzeWithVerdictCache } from "../coverage/verdict-cache.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
+import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { loadLibraryProfile } from "../library/library-profile.js";
 import {
   libraryLocalizeSymbols,
@@ -60,8 +63,9 @@ import {
 } from "../library/prepare.js";
 import { clearFenceEvalCaches } from "../library/fence-eval.js";
 import { archiveNativeLibrary, localizeNativeLibrary, linkNativeWasmLibrary } from "./library.js";
-import type { NativeToolchain } from "./toolchain.js";
-import { evaluateNativeComptime } from "./comptime.js";
+import { compilerInstalledPackage, type NativeToolchain } from "./toolchain.js";
+import { setIslandBuildHost } from "../node-islands/host.js";
+import { createComptimeEvaluator } from "../frontend/comptime.js";
 import { contentDigest, fileDigest, partsDigest, type NativeCache } from "./cache.js";
 import {
   nativeProfileKey,
@@ -75,7 +79,13 @@ import {
   type NativeProfileOptions,
 } from "../backend/native-profile.js";
 import { splitLlvmLibraryProgram } from "../backend/llvm/split.js";
-import { prepareNativeExecutable, prepareNativeLibrary } from "./prepare.js";
+import {
+  nativeFrontendExclusions,
+  prepareNativeExecutable,
+  prepareNativeLibrary,
+} from "./prepare.js";
+import { usesLoweredProgram } from "../executable/lowered.js";
+import { readUnchangedBuild, recordUnchangedBuild, unchangedBuildKey } from "./unchanged.js";
 import { buildSanitizedRuntime, sanitizerDriver, sanitizerFlags } from "./sanitizer.js";
 import { inputsWithoutLld, lldLinkerArgs } from "../backend/lld.js";
 import {
@@ -103,6 +113,20 @@ function profileMatchCacheKey(key: string): string {
   return contentDigest(`${key}:profile-match`);
 }
 
+/** Remove a build's staging directory. A sync client (OneDrive and friends)
+ * can still hold a handle on a file the build just wrote, so `rmdir`
+ * answers EPERM/EBUSY on Windows; `rmSync` retries exactly those. A build
+ * whose artifact is already written must not fail because its scratch
+ * directory could not be removed, so a directory left behind is ignored. */
+function removeStagingDir(stage: string): void {
+  try {
+    rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    // Best effort: the artifact is written; a leftover .scriptc-* directory
+    // is a warning the caller has no channel for, not a build failure.
+  }
+}
+
 /** A program's native objects, and how a --profile-use build's profile
  * matched its functions. */
 interface NativeObjects {
@@ -113,9 +137,7 @@ interface NativeObjects {
 function failure(error: unknown, entry: string, sources: Map<string, string>): CompileFailure {
   return {
     ok: false,
-    diagnostics: [
-      nativeCodegenDiag("SC3004", error instanceof Error ? error.message : String(error), entry),
-    ],
+    diagnostics: [nativeCodegenDiag("SC3004", failureText(error), entry)],
     sourceTexts: sources,
   };
 }
@@ -153,25 +175,58 @@ function nativeProfile(options: CompileRequestOptions): NativeProfileOptions | u
   };
 }
 
+/** What a build reports beside its result. */
+interface NativeCompileSink {
+  warnings: ScrDiagnostic[];
+  sources: Map<string, string>;
+  /** The Node islands the build ran (CompileWarnings.islands). */
+  islands?: { packages: string[]; modules: string[] };
+}
+
 /** Shared frontend semantics with native processes for code generation and linking. */
 export class NativeCompiler {
   private readonly frontend: FrontendFactory;
+  /** The shared code generation server this build's helper commands run on,
+   * or null when the build runs the helper as its own process. */
+  private readonly codegenServer: string | null;
 
   constructor(
     readonly toolchain: NativeToolchain,
     private readonly cache: NativeCache | null = null,
+    /** The compiler-level store: derivations of installed files that every
+     * build on this machine shares, even one whose build cache starts empty. */
+    private readonly state: NativeCache | null = null,
   ) {
+    this.codegenServer = codegenServerName(
+      toolchain.helperExecutable,
+      toolchain.compilerVersion,
+      toolchain.target.llvmTriple,
+    );
+    // Island builds (executable/islands.ts) find the libnode pack installed
+    // with this compiler and build their probe host from its runtime sources.
+    setIslandBuildHost({
+      compilerPackage: (name) => compilerInstalledPackage(toolchain, name),
+      runtimeSources: () =>
+        toolchain.runtimeSourceRoot === undefined ? null : join(toolchain.runtimeSourceRoot, "src"),
+    });
     const evaluator = toolchain.comptimeExecutable;
+    const evaluateComptime =
+      evaluator === undefined
+        ? undefined
+        : createComptimeEvaluator(toolchain.ts7Executable, () => {
+            if (!existsSync(evaluator))
+              throw new Error(
+                `the compile-time evaluator ${evaluator} is missing; reinstall scriptc`,
+              );
+            return evaluator;
+          });
     this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
         npmStatic,
         externalTypes,
-        evaluator === undefined
-          ? undefined
-          : (source, timeout) =>
-              evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
+        evaluateComptime,
         libraryNpmStatic,
         options,
       );
@@ -215,14 +270,16 @@ export class NativeCompiler {
     return result;
   }
 
-  /** Runtime pack selections and verified artifact identities, kept in the
-   * cache. */
+  /** Runtime pack selections and verified artifact identities: what selecting
+   * from a pack's files returned depends only on those files, so the
+   * compiler-level store holds it for every build on this machine. Without
+   * that store the build cache holds it, as before. */
   private runtimePackStore(): RuntimePackStore | undefined {
-    const cache = this.cache;
-    if (cache === null) return undefined;
+    const store = this.state ?? this.cache;
+    if (store === null) return undefined;
     return {
-      read: (key) => cache.read("runtime-pack", key)?.toString("utf8") ?? null,
-      write: (key, text) => cache.write("runtime-pack", key, text),
+      read: (key) => store.read("runtime-pack", key)?.toString("utf8") ?? null,
+      write: (key, text) => store.write("runtime-pack", key, text),
     };
   }
 
@@ -282,18 +339,31 @@ export class NativeCompiler {
       compilerVersion: toolchain.compilerVersion,
       target: toolchain.target,
       helper: toolchain.helper,
+      server: this.codegenServer,
       ...this.helperVerification(),
     };
     let key: string | null = null;
     let identity: string | null = null;
     // A build that records block counts runs the helper on every partition.
+    // The helper's identity is needed for the partition cache whether or not
+    // an environment variable names the helper: the partition directory is
+    // keyed by that identity, so a named helper's partitions are as reusable
+    // as an installed one's. Only the whole-object entry below is limited to
+    // the installed helper, whose identity the cache's owner key holds.
+    if (this.cache !== null && profile?.recordBlocks === undefined) {
+      try {
+        identity = nativeFileIdentity(toolchain.helperExecutable);
+      } catch {
+        identity = null;
+      }
+    }
     if (
       this.cache !== null &&
+      identity !== null &&
       process.env["SCRIPTC_LLVM_HELPER"] === undefined &&
       profile?.recordBlocks === undefined
     ) {
       try {
-        identity = nativeFileIdentity(toolchain.helperExecutable);
         key = contentDigest(
           JSON.stringify({
             schema: 1,
@@ -428,20 +498,21 @@ export class NativeCompiler {
   }
 
   compile(entry: string, options: CompileRequestOptions): CompileRequestResult {
-    const sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> } = {
-      warnings: [],
-      sources: new Map(),
-    };
+    const sink: NativeCompileSink = { warnings: [], sources: new Map() };
     const result = this.compileWithWarnings(entry, options, sink);
-    // Divergence warnings ride a successful result (never a failure).
-    if (!result.ok || sink.warnings.length === 0) return result;
-    return { ...result, warnings: sink.warnings, sourceTexts: sink.sources };
+    // Divergence warnings and the islands the build ran ride a successful
+    // result (never a failure).
+    if (!result.ok) return result;
+    const islands = sink.islands === undefined ? {} : { islands: sink.islands };
+    if (sink.warnings.length === 0)
+      return sink.islands === undefined ? result : { ...result, ...islands };
+    return { ...result, ...islands, warnings: sink.warnings, sourceTexts: sink.sources };
   }
 
   private compileWithWarnings(
     entry: string,
     options: CompileRequestOptions,
-    sink: { warnings: ScrDiagnostic[]; sources: Map<string, string> },
+    sink: NativeCompileSink,
   ): CompileRequestResult {
     const timing = compilationTiming();
     const toolchain = this.toolchain;
@@ -450,6 +521,8 @@ export class NativeCompiler {
     const outputKind = options.outputKind ?? "exe";
     const optimization = options.optimization ?? "release";
     entry = resolve(entry);
+    const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
+    const llvmPath = join(options.outDir, `${stem}.ll`);
     let sourceTexts = new Map<string, string>();
     let stage: string | null = null;
     try {
@@ -483,11 +556,52 @@ export class NativeCompiler {
       if (staticRefusal !== null) throw new NativeCodegenError("SC3002", staticRefusal);
       const profile = nativeProfile(options);
       let ffi: FfiProfile | null = null;
+      let ffiBytes: string | null = null;
       if (options.ffiProfilePath !== undefined) {
         const loaded = loadFfiProfile(resolve(options.ffiProfilePath));
         if (!loaded.ok) return { ok: false, diagnostics: loaded.diagnostics, sourceTexts };
         ffi = loaded.profile;
+        ffiBytes = contentDigest(loaded.profileBytes);
       }
+      const exclusions = nativeFrontendExclusions(entry, options);
+      // An unchanged build keeps what the last build of the same inputs left
+      // in place (native/unchanged.ts), before the frontend reads a source. A
+      // build that writes or reads a lowered program always runs.
+      const unchangedKey =
+        outputKind === "exe" && !usesLoweredProgram(options)
+          ? unchangedBuildKey({
+              entry,
+              options,
+              ffi,
+              ffiBytes,
+              toolchain,
+              output,
+              translationUnitPath: llvmPath,
+            })
+          : null;
+      const unchanged =
+        unchangedKey === null ? null : readUnchangedBuild(this.cache, unchangedKey, exclusions);
+      if (unchanged !== null) {
+        timing("unchanged-build-hit");
+        return {
+          ok: true,
+          artifact: {
+            kind: "exe",
+            path: output,
+            translationUnitPath: llvmPath,
+            backend: "llvm",
+            ...(unchanged.profileMatch === undefined
+              ? {}
+              : { profileMatch: unchanged.profileMatch }),
+          },
+          binaryPath: output,
+          llvmPath,
+          backend: "llvm",
+          ...(unchanged.ir === null ? {} : { irPath: join(options.outDir, `${stem}.ir.json`) }),
+        };
+      }
+      // The probes of the lowered frontend, for the record of this build.
+      let probes: FrontendInputSnapshot | null = null;
       const prepared = prepareNativeExecutable(
         entry,
         options,
@@ -496,6 +610,9 @@ export class NativeCompiler {
         this.frontend,
         this.cache,
         timing,
+        (inputs) => {
+          probes = inputs;
+        },
       );
       if (!prepared.ok) return prepared;
       sourceTexts = new Map(prepared.sources);
@@ -503,17 +620,23 @@ export class NativeCompiler {
         sink.warnings = prepared.warnings;
         sink.sources = sourceTexts;
       }
+      if (prepared.islands !== undefined) sink.islands = prepared.islands;
       mkdirSync(dirname(output), { recursive: true });
       stage = mkdtempSync(join(dirname(output), ".scriptc-native-"));
       const stagedOutput = join(stage, basename(output));
-      const stem = basename(entry).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
-      const llvmPath = join(options.outDir, `${stem}.ll`);
       if (outputKind === "ir") {
         writeTextPartsSync(stagedOutput, prepared.ir!);
         renameSync(stagedOutput, output);
         return { ok: true, artifact: { kind: "ir", path: output } };
       }
       const { llvm, features } = prepared;
+      // The runtime pack's selection belongs to the link, not to the program:
+      // a static executable needs the os unit's /etc/passwd build
+      // (SCR_STATIC_PASSWD), and the executable cache keys the selection, so
+      // the static link names it here as the link plan does for the
+      // JavaScript compiler.
+      const linkFeatures =
+        options.staticLink === true ? { ...features, staticLink: true } : features;
       // The executable and object caches key the same LLVM text.
       let llvmDigest: string | undefined;
       const digestLlvm = (): string => (llvmDigest ??= prepared.llvmDigest ?? partsDigest(llvm));
@@ -537,19 +660,28 @@ export class NativeCompiler {
           toolchain.runtimePackRoot,
           target,
           toolchain.compilerVersion,
-          features,
+          linkFeatures,
           optimization,
           "executable",
           this.runtimePackStore(),
         ));
       const executableCache =
         outputKind === "exe"
-          ? openNativeExecutableCache(this.cache, toolchain, digestLlvm, options, ffi, {
-              root: toolchain.runtimePackRoot,
-              features,
-              flavor: optimization,
-              select: selectPack,
-            })
+          ? openNativeExecutableCache(
+              this.cache,
+              toolchain,
+              // The same count emitProgramObject derives from the staged LLVM.
+              nativeProgramPartitions(statSync(llvmInput).size, optimization === "dev"),
+              digestLlvm,
+              options,
+              ffi,
+              {
+                root: toolchain.runtimePackRoot,
+                features: linkFeatures,
+                flavor: optimization,
+                select: selectPack,
+              },
+            )
           : null;
       // An unchanged rebuild keeps the executable the last build left.
       const kept = executableCache?.keep(output) ?? false;
@@ -600,7 +732,7 @@ export class NativeCompiler {
                   toolchain.runtimePackRoot,
                   target,
                   toolchain.compilerVersion,
-                  features,
+                  linkFeatures,
                   optimization,
                   "executable",
                   this.runtimePackStore(),
@@ -674,8 +806,15 @@ export class NativeCompiler {
           stagedOutput,
         ];
         const linkArgs = linkArgsWith(lld.length !== 0);
-        // Host Linux links with lld run the linker job the driver would.
-        const jobs = LinkerJobs.open(this.cache, toolchain, lld, options.sanitize ?? false);
+        // Host Linux links with lld run the linker job the driver would. The
+        // job depends only on the driver and its environment, so the
+        // compiler-level store keeps it across builds.
+        const jobs = LinkerJobs.open(
+          this.state ?? this.cache,
+          toolchain,
+          lld,
+          options.sanitize ?? false,
+        );
         const job = jobs?.link(
           [...plan.inputs, stagedOutput, ...(mapArgs.length === 0 ? [] : [linkMap])],
           stage,
@@ -735,6 +874,45 @@ export class NativeCompiler {
       if (features.intl === true) installNativeRuntimeData(selectPack(), output);
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
+      // A build that found divergence warnings lowers again (their sources
+      // are not part of the record), so it records nothing. Neither does a
+      // program that calls into Node: its libnode pack is not an input the
+      // record observes (the frontend cache entry checks it, prepare.ts).
+      if (
+        unchangedKey !== null &&
+        probes !== null &&
+        sink.warnings.length === 0 &&
+        features.nodeIsland !== true
+      ) {
+        // The pack's artifacts are this executable's link inputs and run-time
+        // data; a pack edited in place changes them, and only their
+        // identities tell.
+        const pack = selectPack();
+        const beside = [
+          ...(features.intl === true
+            ? (pack.selected.data ?? []).map((artifact) =>
+                join(dirname(output), basename(artifact.path)),
+              )
+            : []),
+          // Darwin keeps a dev build's debug information beside the executable.
+          ...(target.platform === "darwin" && optimization === "dev" && options.strip !== true
+            ? [output + ".dSYM"]
+            : []),
+        ];
+        recordUnchangedBuild(this.cache, unchangedKey, exclusions, {
+          probes,
+          output,
+          translationUnitPath: llvmPath,
+          irPath: irPath ?? null,
+          beside,
+          packInputs: [
+            ...pack.selected.runtime,
+            ...pack.selected.archives,
+            ...(features.intl === true ? (pack.selected.data ?? []) : []),
+          ].map((artifact) => join(pack.root, artifact.path)),
+          ...(profileMatch === undefined ? {} : { profileMatch }),
+        });
+      }
       return {
         ok: true,
         artifact: {
@@ -753,7 +931,7 @@ export class NativeCompiler {
       // Keep subclass reads at the catch boundary, where the thrown object
       // retains its class identity and source location.
       if (error instanceof LlvmUnsupportedError)
-        return { ok: false, diagnostics: [llvmRefusalDiag(error, entry)], sourceTexts };
+        return { ok: false, diagnostics: llvmRefusalDiags(error, entry), sourceTexts };
       if (error instanceof NativeCodegenError)
         return {
           ok: false,
@@ -775,7 +953,7 @@ export class NativeCompiler {
         };
       return failure(error, entry, sourceTexts);
     } finally {
-      if (stage !== null) rmSync(stage, { recursive: true, force: true });
+      if (stage !== null) removeStagingDir(stage);
       this.cache?.prune();
       timing("complete");
     }
@@ -914,7 +1092,7 @@ export class NativeCompiler {
       if (error instanceof LlvmUnsupportedError)
         return {
           ok: false,
-          diagnostics: [llvmRefusalDiag(error, options.profilePath)],
+          diagnostics: llvmRefusalDiags(error, options.profilePath),
           sourceTexts,
         };
       if (error instanceof NativeCodegenError)
@@ -940,7 +1118,7 @@ export class NativeCompiler {
         };
       return failure(error, options.profilePath, sourceTexts);
     } finally {
-      if (stage !== null) rmSync(stage, { recursive: true, force: true });
+      if (stage !== null) removeStagingDir(stage);
       this.cache?.prune();
       timing("complete");
     }

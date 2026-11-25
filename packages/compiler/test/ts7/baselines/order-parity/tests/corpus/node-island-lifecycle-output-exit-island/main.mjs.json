@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-output-exit-island/main.mjs"
+ ],
+ "diags": []
+}

@@ -8,6 +8,7 @@ import {
   encodeUnitFunction,
   flagScalar,
   functionTable,
+  irDataTable,
   lowerWaveRecorded,
   mapTable,
   recordUnit,
@@ -43,18 +44,26 @@ const sized: Record<string, readonly string[]> = {
     "recIds",
     "pendingRec",
     "extendedNames",
+    "journalLog",
+    "journalBorn",
+    "journalChanges",
   ],
   unions: ["keyedNameKeys", "byKey", "byId", "armTags", "unions", "recIds", "pendingRec"],
   keyOrder: [
     "literals",
     "copies",
     "methodResults",
+    "merges",
     "widths",
     "sourceProbes",
     "clones",
     "observed",
     "changed",
     "keptSourceShapes",
+    "warnings",
+    "journalLog",
+    "journalWhy",
+    "pendingAttach",
   ],
 };
 
@@ -475,4 +484,42 @@ test("a record lists the held functions it names, with their digests", () => {
     lifted: [["%shared", contentDigest(encodeUnitFunction(functions[0]!)!)]],
   });
   expect(Object.keys(record!.tables)).toEqual(["lifted"]);
+});
+
+/** A wave host over one keyed IR-data table (like builtinCheckedValues) that
+ * `a` adds `%k` to and `b` changes in place, naming it through
+ * UnitEvents.touch when `touch` says so. */
+function rewriteHost(touch: boolean): WaveHost {
+  const values = new Map<string, { loc: number }>();
+  return {
+    tables: [irDataTable("checkedValues", values)],
+    scalars: [],
+    lowerRecorded: (name, events) => {
+      if (name === "a") values.set("%k", { loc: 1 });
+      if (name === "b") {
+        values.set("%k", { loc: 2 });
+        if (touch) events.touch("%k");
+      }
+      return { fn: fn(`%${name}`), poisoned: false };
+    },
+    store: () => {},
+    statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+    resolves: () => true,
+    keep: () => {},
+  };
+}
+
+test("a unit that touches the entry it changes in place keeps the held content", () => {
+  // builtinCheckedValues is written at its location, so a second unit
+  // overwrites the first one's entry; its IR cannot show that write. Touching
+  // the name makes the change the unit's own, which HeldTables.check accepts.
+  const stats = waveStats();
+  expect(() => lowerWaveRecorded(rewriteHost(true), ["a", "b"], stats)).not.toThrow();
+  expect(stats.reasons).toEqual({ "checkedValues:changed": 1 });
+});
+
+test("a unit that changes an entry in place without touching it fails the wave", () => {
+  expect(() => lowerWaveRecorded(rewriteHost(false), ["a", "b"], waveStats())).toThrow(
+    "a unit changed checkedValues entry %k in place without naming it",
+  );
 });

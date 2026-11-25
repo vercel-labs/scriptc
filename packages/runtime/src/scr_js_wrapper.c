@@ -19,6 +19,7 @@
  * thisBooleanValue) or, for the other String methods, apply ToString to the
  * receiver and call the method on the primitive. */
 #include "scr_runtime.h"
+#include "scr_message.h" /* the message format's wrapper half */
 
 #include <math.h>
 #include <stdio.h>
@@ -380,8 +381,29 @@ static ScrDyn *scr_js_wrapper_prototype(int kind, ScrDyn *constructor) {
                                     : scr_js_wrapper_boolean_members;
   for (const ScrJsWrapperMember *m = members; m->name; m++)
     scr_js_wrapper_define_hidden(prototype, m->name, scr_js_wrapper_method_value(m->name, kind, m->length));
+  /* The constructor's own `prototype` member is this object, as in Node:
+   * `Boolean.prototype === Object(true).constructor.prototype`, and every
+   * wrapper's chain ends here. It is non-writable, non-enumerable and
+   * non-configurable, like a builtin constructor's. */
+  scr_dyn_fn_seed_prototype(constructor, scr_dyn_retain(prototype));
   scr_js_wrapper_prototypes[kind] = prototype;
   return prototype;
+}
+
+/* `Number.prototype` / `Boolean.prototype` read as a JavaScript value
+ * (dyn.builtinPrototype): the wrapper unit's prototype object, so the
+ * program that reads the value and the program's wrappers share ONE object
+ * per kind. `kind` spells the constructor the frontend marked ("String",
+ * "Number" or "Boolean"); `constructor` is that compiled constructor value
+ * (borrowed), which receives the prototype. +1. */
+ScrDyn *scr_dyn_builtin_prototype(const ScrStr *kind, ScrDyn *constructor) {
+  for (int k = 0; k < 3; k++) {
+    size_t len = strlen(scr_js_wrapper_names[k]);
+    if (kind->len == len && memcmp(kind->data, scr_js_wrapper_names[k], len) == 0)
+      return scr_dyn_retain(scr_js_wrapper_prototype(k, constructor));
+  }
+  scr_trap("scriptc: unknown builtin prototype kind\n");
+  return NULL;
 }
 
 /* Boolean.prototype as a value in a JavaScript source (+1): the wrapper
@@ -400,6 +422,37 @@ static ScrDyn *scr_js_wrapper_make(int kind, ScrDyn *primitive, ScrDyn *const co
   return object;
 }
 
+/* structuredClone's copy of a wrapper: the same kind over the same
+ * primitive, sharing this thread's prototype of that kind (which exists
+ * because the original does). NULL for a value that is not a wrapper. */
+static ScrDyn *scr_js_wrapper_clone_value(const ScrDyn *value) {
+  ScrJsWrapperSlot *slot = scr_js_wrapper_slot_of(value);
+  if (!slot) return NULL;
+  ScrDyn *const constructors[3] = {NULL, NULL, NULL};
+  ScrDyn *copy = scr_js_wrapper_make(slot->kind, slot->primitive, constructors);
+  scr_js_wrapper_slot_drop(slot);
+  return copy;
+}
+
+static bool scr_js_wrapper_is_value(const ScrDyn *value) {
+  ScrJsWrapperSlot *slot = scr_js_wrapper_slot_of(value);
+  scr_js_wrapper_slot_drop(slot);
+  return slot != NULL;
+}
+
+static const ScrMessageWrapperOps scr_js_wrapper_message_ops = { scr_js_wrapper_is_value };
+
+/* A wrapper's consumers that can copy instead of refusing (structuredClone)
+ * and the message format's refusal: installed by the first wrapper this
+ * thread makes, so a program without one links none of it. */
+static void scr_js_wrapper_install_consumers(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  scr_js_wrapper_clone_hook = scr_js_wrapper_clone_value;
+  scr_message_set_wrapper_ops(&scr_js_wrapper_message_ops);
+}
+
 /* `new String(v)` / `new Number(v)` / `new Boolean(v)`: kind 0, 1 or 2;
  * `value` is the argument (the undefined value is converted like any
  * other: callers pass "", 0 or false for an omitted argument). The
@@ -408,6 +461,7 @@ static ScrDyn *scr_js_wrapper_make(int kind, ScrDyn *primitive, ScrDyn *const co
 ScrDyn *scr_js_wrapper_new(double kind_number, ScrDyn *value, ScrDyn *string_ctor, ScrDyn *number_ctor,
                            ScrDyn *boolean_ctor) {
   int kind = (int)kind_number;
+  scr_js_wrapper_install_consumers();
   ScrDyn *const constructors[3] = { string_ctor, number_ctor, boolean_ctor };
   ScrDyn *primitive = NULL;
   if (kind == SCR_JS_WRAPPER_STRING) {
@@ -438,6 +492,7 @@ ScrDyn *scr_js_wrapper_new(double kind_number, ScrDyn *value, ScrDyn *string_cto
  * wrappers are refused. +1. */
 ScrDyn *scr_js_wrapper_to_object(ScrDyn *value, ScrDyn *string_ctor, ScrDyn *number_ctor,
                                  ScrDyn *boolean_ctor) {
+  scr_js_wrapper_install_consumers();
   ScrDyn *const constructors[3] = { string_ctor, number_ctor, boolean_ctor };
   switch (value->kind) {
   case SCR_DYN_STR: return scr_js_wrapper_make(SCR_JS_WRAPPER_STRING, value, constructors);

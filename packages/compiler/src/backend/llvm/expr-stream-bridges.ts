@@ -13,6 +13,8 @@ import {
   classFieldAttributesName,
   isClassOwnEnumerableFieldName,
   isDirentShape,
+  isPerfEntryShape,
+  isPerfNodeTimingShape,
   KEY_ORDER_FIELD,
   shapeKeyOrders,
   isDynTypedRefType,
@@ -53,7 +55,7 @@ import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
 import { emitLinkedRecordBranches } from "./walkers.js";
-import { registerReplay } from "./emit-journal.js";
+import { registerContentReplay, registerReplay } from "./emit-journal.js";
 
 /** An owned (+1) union value for a nullable-pointer class field slot `p`
  * (the unit arm's immortal instance, or a fresh box around a retained
@@ -99,7 +101,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   const key = typeKey(inner);
   const existing = host.dynPromiseAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_dpa_${host.dynPromiseAdapters.size}`;
+  const sym = host.contentSymbol("sc_dpa_", key);
   host.dynPromiseAdapters.set(key, sym);
   host.journal?.allocated(sym, "dynPromiseAdapter", [inner]);
   host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
@@ -121,6 +123,7 @@ export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): stri
   const ok = B.newLabel("sra.ok");
   B.condBr(pending, fail, ok);
   B.startBlock(fail);
+  for (const line of host.pendingBailReleaseLines(inner, value)) B.line(line.trimStart());
   B.line(`call void @scr_promise_reject_pending(ptr %dst)`);
   B.terminate(`ret void`);
   B.startBlock(ok);
@@ -359,7 +362,12 @@ export function streamTypedRefCommitAdapter(
         ...(compressed
           ? [
               `  %f${index}_oldidx = load i32, ptr %f${index}_ptr`,
-              ...compactRefLoadLines(`%f${index}_oldidx`, `%f${index}_old`, `%f${index}_od`),
+              ...compactRefLoadLines(
+                host.compactRefBase,
+                `%f${index}_oldidx`,
+                `%f${index}_old`,
+                `%f${index}_od`,
+              ),
             ]
           : [`  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`]),
       );
@@ -620,6 +628,16 @@ export function streamTypedRefCommitAdapter(
   return `@${commit}`;
 }
 
+/** Whether `t` is a class rooted at Error. Such an instance has one
+ * checked-dynamic value, the one its to-dyn helper answers from the error
+ * identity cache (scr_dyn_from_error), wherever the instance is boxed: alone,
+ * as a union arm or as an element. A second capsule built around it would not
+ * be in that cache, and the `Error` check of a value would then rebuild a new
+ * error from the capsule's snapshot instead of answering the instance. */
+function errorClassType(host: LlvmEmitterContext, t: IrType): boolean {
+  return t.kind === "object" && host.shapeHost.isErrorClass(t.className);
+}
+
 export function liveDynUnionRefAdapter(
   host: LlvmEmitterContext,
   t: IrType & { kind: "union" },
@@ -631,25 +649,22 @@ export function liveDynUnionRefAdapter(
   if (!union) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of unknown union ${t.unionId}`);
   }
-  // Codec records box as their own handles, by reference, through toDynHelper.
-  const codecArm = (arm: IrType): boolean =>
-    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null;
+  // Codec records box as their own handles, by reference, through toDynHelper,
+  // and an Error-rooted class as its one checked-dynamic value.
+  const selfBoxedArm = (arm: IrType): boolean =>
+    arm.kind === "bytes" ||
+    textCodecRecordClass(arm, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, arm);
   const mutableArms = union.arms
     .map((arm, tag) => ({ arm, tag }))
     .filter(
-      ({ arm }) =>
-        arm.kind !== "bytes" &&
-        !codecArm(arm) &&
-        (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
+      ({ arm }) => !selfBoxedArm(arm) && (streamTypedRefEligible(arm) || isDynTypedRefType(arm)),
     );
-  if (
-    mutableArms.length === 0 &&
-    !union.arms.some((arm) => arm.kind === "bytes" || codecArm(arm))
-  ) {
+  if (mutableArms.length === 0 && !union.arms.some(selfBoxedArm)) {
     throw new InternalCompilerError(`llvm emitter bug: live dyn ref of immutable union ${key}`);
   }
 
-  const sym = `sc_ldu_${host.liveDynUnionRefAdapters.size}`;
+  const sym = host.contentSymbol("sc_ldu_", key);
   host.liveDynUnionRefAdapters.set(key, sym);
   host.journal?.allocated(sym, "liveDynUnionRefAdapter", [t]);
 
@@ -821,10 +836,12 @@ export function streamTypedRefBoxValue(
     return boxed;
   }
   // A codec record boxes as its own handle, by reference (toDynHelper), as
-  // it does outside a live view.
+  // it does outside a live view, and an Error-rooted class as its one
+  // checked-dynamic value.
   if (
     t.kind === "bytes" ||
     textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    errorClassType(host, t) ||
     (!streamTypedRefEligible(t) && !isDynTypedRefType(t))
   ) {
     const valueTy = host.llType(t);
@@ -854,14 +871,11 @@ export function streamTypedRefMaterializeAdapter(
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
-  const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
-  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
+  const numbered = host.contentSymbol("sc_ldr_", adapterKey);
+  const snapshot = `${numbered}_materialize`;
+  const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null", numbered };
   host.liveDynRefAdapters.set(adapterKey, adapter);
-  host.journal?.allocated(
-    snapshot.replace(/_materialize$/, ""),
-    "streamTypedRefMaterializeAdapter",
-    [t],
-  );
+  host.journal?.allocated(numbered, "streamTypedRefMaterializeAdapter", [t]);
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -888,6 +902,10 @@ export function streamTypedRefMaterializeAdapter(
   adapter.commit = `@${snapshot}_commit`;
   adapter.commit = host.streamTypedRefCommitAdapter(t, snapshot);
   const B = new BlockBuilder();
+  // Published with the other symbols: see runtimeStreamViewAlone.
+  const streamView =
+    opsMeta !== undefined && runtimeStreamViewAlone(host, opsMeta) ? "scr_stream_ref_view" : null;
+  if (streamView !== null) adapter.snapshot = streamView;
 
   if (isDynTypedRefType(t)) {
     const meta = host.classMeta.get(t.className);
@@ -898,7 +916,9 @@ export function streamTypedRefMaterializeAdapter(
     }
     if (adapter.classOps !== undefined) liveClassOps(host, snapshot, meta);
     if (adapter.bagClassOps !== undefined) liveBagClassOps(host, snapshot, meta, t);
-    if (meta.hierarchy && meta.children.length) {
+    // Every class below a stream class whose view is the runtime's alone
+    // has that same view.
+    if (streamView === null && meta.hierarchy && meta.children.length) {
       const pre = B.tmp();
       for (const line of classPreLines(meta, classStructSym(t.className), "%p", pre, host.sizeType))
         B.line(line.trimStart());
@@ -1012,6 +1032,17 @@ export function streamTypedRefMaterializeAdapter(
         B.br(afterField);
         B.startBlock(afterField);
       }
+    }
+    // The instance's accessor-backed members answer through their getters.
+    // Own fields are set above, so a field that shadows a getter keeps its
+    // value.
+    if (adapter.classOps !== undefined && (meta.def.viewAccessors?.length ?? 0) > 0) {
+      host.declare(`declare void @scr_dyn_class_view_accessors(ptr, ptr, ptr, ptr, ptr, ptr)`);
+      const rc = vAdapters(host.shapeHost, t);
+      const trace = traceAdapter(host.shapeHost, t) ?? "null";
+      B.line(
+        `call void @scr_dyn_class_view_accessors(ptr ${out}, ptr ${adapter.classOps}, ptr %p, ptr ${rc.retain}, ptr ${rc.release}, ptr ${trace})`,
+      );
     }
     for (const symbol of meta.def.symbolFields ?? []) {
       const field = meta.def.fields.find((field) => field.name === symbol.field)!;
@@ -1161,6 +1192,7 @@ export function streamTypedRefMaterializeAdapter(
     } else if (shape.tuple) {
       host.declare(`declare ptr @scr_dyn_new_arr()`);
       host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+      host.declare(`declare void @scr_dyn_arr_push_hole(ptr)`);
       const out = B.tmp();
       B.line(`${out} = call ptr @scr_dyn_new_arr()`);
       const fields = [...shape.fields].sort((a, b) => Number(a.name) - Number(b.name));
@@ -1177,18 +1209,46 @@ export function streamTypedRefMaterializeAdapter(
           field.type,
           host.inlineUnions.record(field.type),
         );
+        // An ABSENT optional element is a HOLE: length counts it, while
+        // `in`, Object.keys and the own-key probes skip it.
+        let hole: string | null = null;
+        if (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) {
+          const absent = host.fieldAbsentTestIn(B, fieldValue, field.type.unionId);
+          hole = B.newLabel("live.tuple.absent");
+          const set = B.newLabel("live.tuple.set");
+          B.condBr(absent, hole, set);
+          B.startBlock(set);
+        }
         const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
         B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${boxed})`);
+        if (hole !== null) {
+          // A present element pushed its value and goes on to the next
+          // element; only the absent branch pushes the hole.
+          const next = B.newLabel("live.tuple.next");
+          B.br(next);
+          B.startBlock(hole);
+          B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
+          B.br(next);
+          B.startBlock(next);
+        }
       }
       B.terminate(`ret ptr ${out}`);
     } else {
       // A copy linked to its source (IrModule.recordLinks) views as its
       // composed record: the field operations below answer the declared
       // fields from the copy, and the view the source's other properties.
+      // The composed record's live view boxes its records live, and it
+      // holds the copy's own nested records, so writes through the view's
+      // nested records reach the copy's.
       emitLinkedRecordBranches(host.shapeHost, B, t.shapeId, "%p", (sourceT, composed) => {
         const view = B.tmp();
-        B.line(`${view} = call ptr @${host.dyn.toDynHelper(sourceT)}(ptr ${composed})`);
-        return `ret ptr ${view}`;
+        B.line(`${view} = call ptr @${host.liveDynRefAdapter(sourceT).snapshot}(ptr ${composed})`);
+        // The composed record keeps what its source kept (a spread's other
+        // keys), which rejoins the view in their own-key positions.
+        host.declare(`declare ptr @scr_record_source_apply(ptr, ptr)`);
+        const merged = B.tmp();
+        B.line(`${merged} = call ptr @scr_record_source_apply(ptr ${view}, ptr ${composed})`);
+        return `ret ptr ${merged}`;
       });
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
@@ -1209,9 +1269,17 @@ export function streamTypedRefMaterializeAdapter(
       };
       // Published before the field converters, like the array hooks below.
       // A Dirent row reads through its finished view (the prototype and
-      // the non-enumerable %dtype).
+      // the non-enumerable %dtype), and so does a perf_hooks entry row: an
+      // unowned name on a live record capsule (toJSON, a class member) is
+      // otherwise answered from Object.prototype without the view that
+      // carries the entry class's prototype.
       const dirent = isDirentShape(shape);
-      if (!dirent && orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))) {
+      const perfEntry = isPerfEntryShape(shape) || isPerfNodeTimingShape(shape);
+      if (
+        !dirent &&
+        !perfEntry &&
+        orders.every((order) => liveRecordOpsEligible(fieldsOf(order)))
+      ) {
         if (orders.length === 1) {
           adapter.recordOps = `@${snapshot}_rops`;
           liveRecordOps(host, t, snapshot, fieldsOf(orders[0]!));
@@ -1246,6 +1314,14 @@ export function streamTypedRefMaterializeAdapter(
             const set = B.newLabel("live.record.set");
             B.condBr(absent, skip, set);
             B.startBlock(set);
+          } else if (field.optional === true && field.type.kind === "dyn") {
+            // An absent optional checked-dynamic slot contributes no key.
+            const absent = B.tmp();
+            B.line(`${absent} = icmp eq ptr ${fieldValue}, ${host.dynAbsentRef()}`);
+            skip = B.newLabel("live.record.absent");
+            const set = B.newLabel("live.record.set");
+            B.condBr(absent, skip, set);
+            B.startBlock(set);
           }
           const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
           B.line(
@@ -1260,6 +1336,13 @@ export function streamTypedRefMaterializeAdapter(
       if (dirent) {
         host.declare(`declare void @scr_dyn_dirent_finish(ptr)`);
         B.line(`call void @scr_dyn_dirent_finish(ptr ${out})`);
+      }
+      // A perf_hooks entry row's live view takes the entry class prototype
+      // its entryType names, as its copied view does, so instanceof and
+      // util.inspect answer like Node's from either path.
+      if (isPerfEntryShape(shape) || isPerfNodeTimingShape(shape)) {
+        host.declare(`declare void @scr_dyn_perf_entry_finish(ptr)`);
+        B.line(`call void @scr_dyn_perf_entry_finish(ptr ${out})`);
       }
       B.terminate(`ret ptr ${out}`);
     }
@@ -1351,6 +1434,27 @@ export function streamTypedRefMaterializeAdapter(
     B.terminate(`ret ptr ${out}`);
   }
 
+  if (streamView !== null) {
+    // The capsule names the runtime's view function, so the body built
+    // above must be that one call: anything more is a view the runtime's
+    // member tables do not describe.
+    const body = B.render()
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && line !== "entry:");
+    if (
+      body.length !== 2 ||
+      body[0] !== `%t0 = call ptr @scr_stream_dyn_view(ptr %p)` ||
+      body[1] !== `ret ptr %t0`
+    ) {
+      throw new InternalCompilerError(
+        `llvm emitter bug: the view of stream class ${key} is not the runtime's alone`,
+      );
+    }
+    host.declare(`declare ptr @${streamView}(ptr)`);
+    host.journal?.built();
+    return adapter;
+  }
   host.resolveThunkDefs.push(
     `define internal ptr @${snapshot}(ptr %p) ${FN_ATTRS} { ; materialize live stream value ${key}`,
     B.render(),
@@ -1359,6 +1463,29 @@ export function streamTypedRefMaterializeAdapter(
   );
   host.journal?.built();
   return adapter;
+}
+
+/** A runtime stream class whose instances' views are scr_stream_dyn_view's
+ * object and nothing else, for the class and every class below it: no
+ * program subclass, no property bag, no fields, no prototype of the
+ * program's. Its capsules name the runtime's scr_stream_ref_view as their
+ * snapshot adapter, which is how the runtime knows that it can answer a
+ * question about one member from the stream's tables without building the
+ * view (ScrStreamRefHooks). */
+function runtimeStreamViewAlone(host: LlvmEmitterContext, meta: LlClassMeta): boolean {
+  return (
+    !!meta.def.runtime &&
+    RUNTIME_STREAM_CLASSES.has(meta.def.name) &&
+    !host.usesDynBuiltinStream &&
+    !meta.def.instancePrototypeHelper &&
+    !meta.def.prototypeDataHelper &&
+    !meta.def.tracksOwnFields &&
+    meta.def.fields.length === 0 &&
+    (meta.def.symbolFields?.length ?? 0) === 0 &&
+    !liveClassOpsEligible(meta) &&
+    !liveBagClassOpsEligible(meta) &&
+    meta.children.every((child) => runtimeStreamViewAlone(host, child))
+  );
 }
 
 /** Per-element hooks for a live array capsule (ScrDynTypedArrayOps). The
@@ -1434,6 +1561,7 @@ function liveArrayOps(
   const failed = S.newLabel("live.array.failed");
   S.condBr(pending, failed, write);
   S.startBlock(failed);
+  for (const line of host.pendingBailReleaseLines(elem, next)) S.line(line.trimStart());
   S.terminate(`ret i1 true`);
   S.startBlock(write);
   host.declare(
@@ -1502,7 +1630,8 @@ function liveRecordOps(
     .map((field, position) => ({ field, position }))
     .filter(
       ({ field }) =>
-        field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0,
+        (field.type.kind === "union" && undefinedArmTag(field.type, host.unionsById) >= 0) ||
+        (field.optional === true && field.type.kind === "dyn"),
     );
   const hasLabels = optional.map(() => H.newLabel("live.record.has"));
   const always = H.newLabel("live.record.always");
@@ -1514,11 +1643,13 @@ function liveRecordOps(
   optional.forEach(({ field }, k) => {
     H.startBlock(hasLabels[k]!);
     const value = loadField(H, field);
-    const absent = host.fieldAbsentTestIn(
-      H,
-      value,
-      (field.type as IrType & { kind: "union" }).unionId,
-    );
+    let absent: string;
+    if (field.type.kind === "union") {
+      absent = host.fieldAbsentTestIn(H, value, field.type.unionId);
+    } else {
+      absent = H.tmp();
+      H.line(`${absent} = icmp eq ptr ${value}, ${host.dynAbsentRef()}`);
+    }
     const present = H.tmp();
     H.line(`${present} = xor i1 ${absent}, true`);
     H.terminate(`ret i1 ${present}`);
@@ -1608,7 +1739,16 @@ function liveRecordSet(
     for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
     const write = S.newLabel("live.record.write");
     const done = S.newLabel("live.record.done");
-    S.condBr(pending, done, write);
+    const dropped = host.pendingBailReleaseLines(field.type, next);
+    if (dropped.length === 0) {
+      S.condBr(pending, done, write);
+    } else {
+      const stopped = S.newLabel("live.record.stopped");
+      S.condBr(pending, stopped, write);
+      S.startBlock(stopped);
+      for (const line of dropped) S.line(line.trimStart());
+      S.br(done);
+    }
     S.startBlock(write);
     const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
     const fieldPtr = S.tmp();
@@ -1745,9 +1885,53 @@ function liveClassOps(host: LlvmEmitterContext, snapshot: string, meta: LlClassM
       ``,
     );
   }
+  // Accessor-backed members: the view installs each one's getter, so a
+  // field behind a getter copies the value the getter answers instead of
+  // reading undefined (scr_dyn_class_view_accessors).
+  const accessors = meta.def.viewAccessors ?? [];
+  let accessorNames = "null";
+  let accessorGet = "null";
+  if (accessors.length > 0) {
+    accessorNames = `@${snapshot}_anames`;
+    accessorGet = `@${snapshot}_aget`;
+    // Like the string tag: the runtime lends the instance, each thunk takes
+    // its own reference for the helper's owned receiver.
+    const retain = vAdapters(host.shapeHost, { kind: "object", className: meta.def.name }).retain;
+    const thunks: string[] = [];
+    const getters: string[] = [];
+    accessors.forEach((entry, index) => {
+      const thunk = `${snapshot}_aget${index}`;
+      getters.push(`ptr @${thunk}`);
+      thunks.push(
+        `define internal ptr @${thunk}(ptr %p) ${FN_ATTRS} { ; ${entry.member} of ${meta.def.name}`,
+        `entry:`,
+        `  %owned = call ptr ${retain}(ptr %p)`,
+        `  %value = call ptr @${mangleFunction(entry.helper)}(ptr %owned)`,
+        `  ret ptr %value`,
+        `}`,
+        ``,
+      );
+    });
+    const accessorLiterals = accessors.map(
+      (entry) => `ptr ${host.internLiteral(entry.member.slice("get:".length))}`,
+    );
+    host.resolveThunkDefs.push(
+      ...thunks,
+      `${accessorNames} = internal constant [${accessors.length} x ptr] [${accessorLiterals.join(", ")}]`,
+      `@${snapshot}_agetters = internal constant [${accessors.length} x ptr] [${getters.join(", ")}]`,
+      `define internal ptr ${accessorGet}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; accessor-backed members of ${meta.def.name}`,
+      `entry:`,
+      `  %slot = getelementptr inbounds [${accessors.length} x ptr], ptr @${snapshot}_agetters, ${host.sizeType} 0, ${host.sizeType} %i`,
+      `  %getter = load ptr, ptr %slot`,
+      `  %value = call ptr %getter(ptr %p)`,
+      `  ret ptr %value`,
+      `}`,
+      ``,
+    );
+  }
   host.resolveThunkDefs.push(
     `@${names} = internal constant [${members.length} x ptr] [${literals.join(", ")}]`,
-    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag} }`,
+    `@${ops} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr, ${host.sizeType}, ptr, ptr } { ptr ${exact}, ${host.sizeType} ${members.length}, ptr @${names}, ptr ${className}, ptr ${stringTag}, ${host.sizeType} ${accessors.length}, ptr ${accessorNames}, ptr ${accessorGet} }`,
     ``,
   );
 }
@@ -1798,7 +1982,7 @@ function classFieldDynValue(
   else if (compressed) {
     const idx = B.tmp();
     B.line(`${idx} = load i32, ptr ${fieldPtr}`);
-    for (const line of compactRefLoadLines(idx, fieldValue, `${fieldValue}.r`))
+    for (const line of compactRefLoadLines(host.compactRefBase, idx, fieldValue, `${fieldValue}.r`))
       B.line(line.trimStart());
   } else B.line(`${fieldValue} = load ${llFieldType(field.type, false)}, ptr ${fieldPtr}`);
   if (llFieldType(field.type, false) === "i8") {
@@ -1951,7 +2135,7 @@ export function streamFromArrayAdapter(
   const key = typeKey(elem);
   const existing = host.streamFromArrayAdapters.get(key);
   if (existing) return existing;
-  const sym = `sc_sfa_${host.streamFromArrayAdapters.size}`;
+  const sym = host.contentSymbol("sc_sfa_", key);
   host.streamFromArrayAdapters.set(key, sym);
   host.journal?.allocated(sym, "streamFromArrayAdapter", [t]);
   const B = new BlockBuilder();
@@ -1964,9 +2148,19 @@ export function streamFromArrayAdapter(
   const unionRefArms =
     unionDef?.arms
       .map((arm, tag) => ({ arm, tag }))
-      .filter(({ arm }) => isRefCounted(arm) && arm.kind !== "dyn" && arm.kind !== "string") ?? [];
+      .filter(
+        ({ arm }) =>
+          isRefCounted(arm) &&
+          arm.kind !== "dyn" &&
+          arm.kind !== "string" &&
+          !errorClassType(host, arm),
+      ) ?? [];
   const typedRef =
-    isRefCounted(elem) && elem.kind !== "dyn" && elem.kind !== "string" && elem.kind !== "union";
+    isRefCounted(elem) &&
+    elem.kind !== "dyn" &&
+    elem.kind !== "string" &&
+    elem.kind !== "union" &&
+    !errorClassType(host, elem);
   let snapshot = `${sym}_materialize`;
   let value: string;
   if (elem.kind === "f64") {
@@ -2074,16 +2268,23 @@ export function streamFromArrayAdapter(
   return sym;
 }
 
-registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerContentReplay("dynPromiseAdapter", (host, args) =>
+  dynPromiseAdapter(host, args[0] as IrType),
+);
 registerReplay("streamTypedDesc", (host, args) =>
   (streamTypedDesc(host, args[0] as IrType) ?? "").slice(1),
 );
-registerReplay("liveDynUnionRefAdapter", (host, args) =>
+registerContentReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );
-registerReplay("streamTypedRefMaterializeAdapter", (host, args) =>
-  streamTypedRefMaterializeAdapter(host, args[0] as IrType).snapshot.replace(/_materialize$/, ""),
+// The numbered name, not the snapshot: a snapshot that is a runtime function
+// (scr_stream_ref_view, scr_dyn_class_view_unavailable) is no name of this
+// module, and a range's text spells the adapter's other symbols (its commit,
+// its ops tables) from the number.
+registerContentReplay(
+  "streamTypedRefMaterializeAdapter",
+  (host, args) => streamTypedRefMaterializeAdapter(host, args[0] as IrType).numbered,
 );
-registerReplay("streamFromArrayAdapter", (host, args) =>
+registerContentReplay("streamFromArrayAdapter", (host, args) =>
   streamFromArrayAdapter(host, args[0] as IrType & { kind: "array" }),
 );

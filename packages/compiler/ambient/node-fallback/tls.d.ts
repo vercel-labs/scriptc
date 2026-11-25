@@ -19,6 +19,12 @@ declare module "tls" {
     /* new connections serve a context made from `options` */
     setSecureContext(options: TlsOptions): void;
   }
+  /** The value side of the class: `new tls.Server(options[, listener])`
+   * builds the same server createServer does. */
+  export const Server: new (
+    options: TlsOptions,
+    secureConnectionListener?: (socket: TLSSocket) => void,
+  ) => Server;
   export interface TlsOptions {
     /* Optional in the DECLARATION only (real Node programs build these
      * literals with every TLS knob): the lowering still requires both —
@@ -52,6 +58,10 @@ declare module "tls" {
     getCipher(): CipherNameAndProtocol;
     /* whether the handshake resumed a cached session */
     isSessionReused(): boolean;
+    /* derive keying material with the TLS exporter; the result is a Buffer */
+    /** The context is any ArrayBufferView (Buffer, TypedArray, DataView), as
+     * Node's exporter takes it. */
+    exportKeyingMaterial(length: number, label: string, context?: ArrayBufferView): Buffer;
     /* the peer's certificate: {} before the handshake or without one,
      * null once the socket is destroyed; detailed adds issuerCertificate */
     getPeerCertificate(detailed: true): DetailedPeerCertificate;
@@ -62,6 +72,16 @@ declare module "tls" {
     /* a new X509Certificate on each call, or undefined without one */
     getPeerX509Certificate(): import("crypto").X509Certificate | undefined;
     getX509Certificate(): import("crypto").X509Certificate | undefined;
+    /* The SNI name the client requested (a server socket) or the one this
+     * client offered; false without one. */
+    readonly servername: string | false;
+    /* The session a resumption would use; null before one exists. */
+    getSession(): Buffer | null;
+    /* The session ticket a client received (TLS 1.2 carries it in the
+     * handshake, TLS 1.3 once a ticket arrives); undefined without one. */
+    getTLSTicket(): Buffer | undefined;
+    /* Renegotiation is off by default: the call is a no-op. */
+    disableRenegotiation(): void;
   }
   /* A certificate as getPeerCertificate() and X509Certificate's
    * toLegacyObject() answer it: subject and issuer map attribute short
@@ -119,7 +139,11 @@ declare module "tls" {
    * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the
    * runtime fence — the options-record stance's divergence-66 shape). */
+  /** The TLS versions a connection accepts (@types/node's name). */
+  export type SecureVersion = "TLSv1.2" | "TLSv1.3";
   export interface ConnectionOptions {
+    minVersion?: SecureVersion;
+    maxVersion?: SecureVersion;
     port?: number;
     host?: string;
     /* an open socket to run the client handshake over */
@@ -131,6 +155,16 @@ declare module "tls" {
   }
   export function connect(
     options: ConnectionOptions,
+    secureConnectListener?: () => void,
+  ): TLSSocket;
+  export function connect(
+    path: string,
+    options?: ConnectionOptions,
+    secureConnectListener?: () => void,
+  ): TLSSocket;
+  export function connect(
+    port: number,
+    host: string,
     secureConnectListener?: () => void,
   ): TLSSocket;
   export function connect(
@@ -149,7 +183,20 @@ declare module "tls" {
   export interface SecureContext {}
   /* @types/node's name for createSecureContext's options */
   export type SecureContextOptions = TlsOptions;
-  export function createSecureContext(options: TlsOptions): SecureContext;
+  export function createSecureContext(options?: TlsOptions): SecureContext;
+  /** tls.checkServerIdentity(hostname, cert): Node's standalone hostname
+   * verification — undefined when the certificate's DNS/IP subject
+   * alternative names match (a CN only when there are no DNS SANs), the
+   * ERR_TLS_CERT_ALTNAME_INVALID error otherwise. The second form admits
+   * the minimal legacy-certificate shape the function reads. */
+  export function checkServerIdentity(hostname: string, cert: PeerCertificate): Error | undefined;
+  export function checkServerIdentity(
+    hostname: string,
+    cert: {
+      subjectaltname?: string;
+      subject?: { [attribute: string]: string | string[] };
+    },
+  ): Error | undefined;
   /** The CA-store introspection surface (scr_tls_ca.c): per-type cached
    * PEM string arrays. The host bundle stands in for Node's compiled-in
    * Mozilla roots ('bundled', and rootCertificates) AND the platform

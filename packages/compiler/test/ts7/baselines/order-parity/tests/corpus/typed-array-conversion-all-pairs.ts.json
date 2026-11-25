@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-array-conversion-all-pairs.ts"
+ ],
+ "diags": []
+}

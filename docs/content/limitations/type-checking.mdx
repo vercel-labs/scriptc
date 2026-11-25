@@ -4,3 +4,26 @@ Some declarations differ from TypeScript's standard library or `@types/node`: `J
 A program that passes its project's TypeScript check may still use unsupported operations.
 A second preflight using the project's declarations distinguishes those sites from ordinary type errors and reports scriptc diagnostics with rewrite hints.
 Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.
+
+From the nearest `tsconfig.json`, scriptc takes the strictness flags, `paths` and `baseUrl`, the JSX settings, the declaration files that `files` and `include` name, the packages that `types` names, `typeRoots`, and `verbatimModuleSyntax`, `isolatedModules` and `preserveConstEnums` for [import elision](/docs/dependencies#package-resolution).
+A declaration file of the project, such as a shared `types.d.ts`, a workspace package of types or the typings it writes for an untyped package, declares data types the program builds, like the same types written in a `.ts` file.
+A value that a package running in a Node island hands to the program stays that package's object under such a type: the program reads and writes it in place, and copies it only with `structuredClone`, a spread or JSON.
+A project that sets `typeRoots` and no `types` has every package directory of a type root outside `node_modules` loaded, as tsc does through TypeScript 5.9.
+A type root also answers a `/// <reference types>` directive, and an import of a module for which no `node_modules` directory holds declarations.
+In a project that compiles under `moduleResolution: node10` (also spelled `node`, and tsc's choice through TypeScript 5.9 for `module: commonjs` when the setting is absent), a specifier that only the type checker reads (in a declaration file, an `import type` or an `export type`) can name a file that a package's `exports` map does not list, and a package's declarations are also found by path where the map names none, as that project's tsc resolves them.
+A value import of a file the map does not list is refused, as Node.js refuses it at startup.
+A project whose `target` is below ES2022, or that sets `useDefineForClassFields` to `false`, has its parameter properties assigned before its class field initializers run, as in tsc's output; a field declared without an initializer is still an own property that holds `undefined`.
+The other settings keep one meaning.
+`lib` does not change the library above, and no other library is loaded into the program that is compiled.
+A library that `lib` names beside it, such as `dom`, decides only which names type-check.
+A name that only such a library declares is an opaque type in compiled code, and a value of that type is checked dynamically.
+As a value the name is absent at run time, as under Node.js: a read throws `ReferenceError`, `typeof` answers `"undefined"`, and `globalThis.document` is `undefined`.
+A global that Node.js defines is never treated as absent.
+A `/// <reference lib="dom" />` directive in a source file does load the library into the compiled program, where it conflicts with the declarations scriptc bundles for a project without `@types/node`; name the library in `lib` instead.
+TypeScript files are ES modules or CommonJS by Node.js's rules (the file extension and the nearest `package.json`), whatever `module` and `moduleResolution` say, so `import x = require()` and `export =` are refused with `SC0016` in a project that sets `module` to `commonjs`.
+Legacy decorators (`experimentalDecorators`) are refused with `SC0016`, except a class decorator of one parameter, which behaves the same under both decorator semantics.
+A project that does not enable `strict` or `strictNullChecks` is refused with `SC0002`.
+
+TypeScript keeps the type of an assignment across a call, so after `x = undefined` a read of `x` is typed `undefined` even when a function called in between assigns `x` again.
+scriptc reads the stored value there.
+A function without a declared return type that returns such a read is inferred to return `undefined`; scriptc refuses that return with `SC1090`, and a declared return type compiles.

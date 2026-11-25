@@ -2,7 +2,7 @@
 
 These scripts split a large source file into smaller files without changing behavior, and carry open branches across the split. Each transform is deterministic: the same config gives the same result on any version of the tree, and rehoming depends on that.
 
-Run them from a checkout with `node_modules` installed. That checkout is the tools directory (`--tools`) and supplies `typescript` and `oxfmt`.
+Run them from a checkout with `node_modules` installed. That checkout is the tools directory (`--tools`) and supplies `typescript5` (the TypeScript 5 JavaScript API these transforms parse with) and `oxfmt`.
 
 ## Transforms
 

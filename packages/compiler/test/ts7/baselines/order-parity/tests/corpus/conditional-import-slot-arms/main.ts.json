@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/conditional-import-slot-arms/main.ts"],
+  "diags": []
+}

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8717-require-missing-module/present.cjs",
+  "<repo>/tests/corpus/8717-require-missing-module/main.cjs"
+ ],
+ "diags": []
+}

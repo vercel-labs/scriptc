@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/declared-field-literal-key-write.ts"
+ ],
+ "diags": []
+}

@@ -35,7 +35,7 @@ import {
   type NodeIslandReport,
   type UserModuleIsland,
 } from "./summary.js";
-import type { IslandPackage, NodeIslandSet } from "./boundary.js";
+import { type IslandPackage, nodeIslandSet, type NodeIslandSet } from "./boundary.js";
 import { packageDirOf, packageVersionOf } from "./origin.js";
 import { isMarkedUserModule, type NodeIslandPolicy } from "./policy.js";
 import { classRank, reportRank, ruleInfo } from "./rules.js";
@@ -106,7 +106,7 @@ export function reportIslandSet(
       reason: island.reason,
     });
   }
-  return { packages, modules: new Map() };
+  return nodeIslandSet(packages, new Map());
 }
 
 export function buildNodeIslandReport(input: NodeIslandReportInput): NodeIslandReport {

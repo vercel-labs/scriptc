@@ -49,6 +49,32 @@ void scr_crypto_scrypt_async(ScrBytes *password, ScrBytes *salt, double keylen,
   scr_crypto_defer_bytes(value, NULL, cb, fn);
 }
 
+/* A checked-dynamic callback delivered in a later macrotask with
+ * (error, value), or (error) alone when there is no value, as Node's job
+ * completions call it. */
+static void scr_crypto_dyn_callback_run(ScrClosure *self) {
+  ScrDyn *callback = (ScrDyn *)scr_box_get_ref(self->caps[0]);
+  ScrDyn *error = (ScrDyn *)scr_box_get_ref(self->caps[1]);
+  ScrDyn *value = self->ncaps > 2 ? (ScrDyn *)scr_box_get_ref(self->caps[2]) : NULL;
+  ScrDyn *args[2] = {error, value};
+  ScrDyn *result = scr_dyn_call(callback, args, value ? 2 : 1, "callback");
+  if (result) scr_dyn_release(result);
+  scr_dyn_release(callback);
+  scr_dyn_release(error);
+  if (value) scr_dyn_release(value);
+}
+
+void scr_crypto_defer_dyn_callback(ScrDyn *callback, ScrDyn *error, ScrDyn *value) {
+  size_t count = value ? 3 : 2;
+  ScrDyn *values[3] = {callback, error, value};
+  ScrClosure *c = scr_closure_new((void *)scr_crypto_dyn_callback_run, count);
+  for (size_t i = 0; i < count; i++) {
+    c->caps[i] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+    scr_box_set_ref(c->caps[i], values[i]);
+  }
+  scr_loop_defer(c);
+}
+
 /* randomFill(buf, [offset, [size,]] callback) over a typed view: the fill
  * happens now, and the callback receives the same view in a later
  * macrotask, or synchronously when nothing is filled, as in Node. */

@@ -17,13 +17,8 @@
  * never reassigned. Other shapes answer null and keep their existing
  * treatment. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
-
-function unparen(e: ts.Expression): ts.Expression {
-  let x = e;
-  while (ts.isParenthesizedExpression(x)) x = x.expression;
-  return x;
-}
 
 function isDeclarationName(id: ts.Identifier): boolean {
   const p = id.parent;
@@ -147,7 +142,7 @@ export function normalizeCjsExportsVar(sf: ts.SourceFile): string | null {
     const decls = stmt.declarationList.declarations.nodes;
     if (decls.length !== 1) continue;
     const decl = decls[0]!;
-    const init = decl.initializer !== undefined ? unparen(decl.initializer) : undefined;
+    const init = decl.initializer !== undefined ? withoutParentheses(decl.initializer) : undefined;
     if (
       ts.isIdentifier(decl.name) &&
       init !== undefined &&
@@ -170,11 +165,11 @@ export function normalizeCjsExportsVar(sf: ts.SourceFile): string | null {
     if (
       ts.isBinaryExpression(n) &&
       n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isPropertyAccessExpression(unparen(n.left)) &&
-      (unparen(n.left) as ts.PropertyAccessExpression).name.text === "exports" &&
-      ts.isIdentifier((unparen(n.left) as ts.PropertyAccessExpression).expression) &&
-      ((unparen(n.left) as ts.PropertyAccessExpression).expression as ts.Identifier).text ===
-        "module"
+      ts.isPropertyAccessExpression(withoutParentheses(n.left)) &&
+      (withoutParentheses(n.left) as ts.PropertyAccessExpression).name.text === "exports" &&
+      ts.isIdentifier((withoutParentheses(n.left) as ts.PropertyAccessExpression).expression) &&
+      ((withoutParentheses(n.left) as ts.PropertyAccessExpression).expression as ts.Identifier)
+        .text === "module"
     ) {
       ok = false; /* module.exports replaced: the alias no longer names the exports */
       return "stop";

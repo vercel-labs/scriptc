@@ -8,6 +8,7 @@ import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { emitRecordKeyGetOr } from "./expr-records.js";
+import { emitLocalArrayRead } from "./local-array-reads.js";
 import { NULLABLE_NULL, SHAPE_WORD_INDEX, shapeWordHeader } from "./nullable-unions.js";
 import { emitUnionTag } from "./union-repr.js";
 
@@ -126,6 +127,20 @@ function emitLogical(host: LlvmEmitterContext, e: ExprOf<"logical">): LlValue {
 
 function emitTernary(host: LlvmEmitterContext, e: ExprOf<"ternary">): LlValue {
   const B = host.B;
+  // An element of a nullable-union array read as another such union is
+  // one state guard and the loaded pointer itself, mapped to the result's
+  // unit encoding (local-array-reads.ts); the general arms below would
+  // guard the same slot twice.
+  const mapped = host.optionalArrayReads.get(e);
+  if (mapped?.retype) {
+    const slot = B.slot();
+    B.entryAllocas.push(`${slot} = alloca ptr`);
+    const owner = emitLocalArrayRead(host, { ...mapped, borrow: false }, slot);
+    if (!owner) throw new InternalCompilerError("llvm emitter bug: unmapped optional read");
+    const value = B.tmp();
+    B.line(`${value} = load ptr, ptr ${slot}`);
+    return host.own({ name: value, type: e.type });
+  }
   // Exactly one arm evaluates; each arm runs in its own frame and
   // moves the chosen value into the result slot.
   const ty = host.llType(e.type);

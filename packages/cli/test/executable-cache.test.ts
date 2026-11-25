@@ -416,3 +416,53 @@ test.skipIf(process.platform !== "linux")(
   },
   600_000,
 );
+
+test("a cache hit repeats a settings warning the cold build reported", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-config-warning-"));
+  const cacheRoot = join(dir, "cache");
+  const entry = join(dir, "main.ts");
+  const outPath = join(dir, process.platform === "win32" ? "program.exe" : "program");
+  try {
+    await mkdir(cacheRoot, { mode: 0o700 });
+    // An unknown `scriptc` setting is SC8004 on stderr. The CLI's fast path
+    // renders the performance warning only, so a hit that holds any other
+    // warning takes the full compiler: the cache must still repeat it, to the
+    // character, as the cold build printed it.
+    await writeFile(
+      join(dir, "package.json"),
+      '{\n  "scriptc": { "packages": { "encoding": "unloded" } }\n}\n',
+    );
+    await writeFile(entry, 'console.log("one");\n');
+    const build = async (): Promise<string> =>
+      (
+        await execFileAsync(
+          process.execPath,
+          ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+          {
+            env: { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot, SCRIPTC_TIMING: "1" },
+            maxBuffer: 4 * 1024 * 1024,
+          },
+        )
+      ).stderr;
+    // The warning block follows the build's timing lines, which only a cold
+    // build prints.
+    const warningBlock = (stderr: string): string => {
+      const at = stderr.indexOf("warning SC8004");
+      expect(at).toBeGreaterThanOrEqual(0);
+      return stderr.slice(at);
+    };
+
+    const cold = await build();
+    expect(cold).toContain("scriptc lowering");
+    expect(cold).toContain(
+      `package.json 'scriptc.packages.encoding' has the unknown value "unloded"`,
+    );
+    expect((await execFileAsync(outPath, [], { maxBuffer: 1024 * 1024 })).stdout).toBe("one\n");
+
+    const cached = await build();
+    expect(cached).not.toContain("scriptc lowering");
+    expect(warningBlock(cached)).toBe(warningBlock(cold));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 120_000);

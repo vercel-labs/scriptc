@@ -22,12 +22,13 @@ static const uint64_t scr_keccak_rc[24] = {
 
 static uint64_t scr_rotl64(uint64_t x, unsigned n) { return (x << n) | (x >> (64 - n)); }
 
-SCR_DIGEST_ALIGNED static void scr_keccak_f(uint64_t s[25]) {
+SCR_DIGEST_ALIGNED static void scr_keccak_f_rounds(uint64_t s[25], int first) {
   /* Theta, rho, pi, chi and iota with the lanes in locals; the
-   * compiler keeps the unrolled round in registers. */
+   * compiler keeps the unrolled round in registers. `first` skips to a
+   * later round for Keccak-p[1600, n] (TurboSHAKE starts at round 12). */
   uint64_t a[25], b[25], c[5], d[5];
   memcpy(a, s, sizeof a);
-  for (int round = 0; round < 24; round++) {
+  for (int round = first; round < 24; round++) {
     c[0] = a[0] ^ a[5] ^ a[10] ^ a[15] ^ a[20];
     c[1] = a[1] ^ a[6] ^ a[11] ^ a[16] ^ a[21];
     c[2] = a[2] ^ a[7] ^ a[12] ^ a[17] ^ a[22];
@@ -93,13 +94,20 @@ SCR_DIGEST_ALIGNED static void scr_keccak_f(uint64_t s[25]) {
   memcpy(s, a, sizeof a);
 }
 
-static void scr_keccak_absorb_block(uint64_t s[25], const unsigned char *block, size_t rate) {
+static void scr_keccak_f(uint64_t s[25]) { scr_keccak_f_rounds(s, 0); }
+
+static void scr_keccak_absorb_block_rounds(uint64_t s[25], const unsigned char *block,
+                                           size_t rate, int first) {
   for (size_t i = 0; i < rate / 8; i++) {
     uint64_t lane = 0;
     for (int b = 7; b >= 0; b--) lane = (lane << 8) | block[i * 8 + (size_t)b];
     s[i] ^= lane;
   }
-  scr_keccak_f(s);
+  scr_keccak_f_rounds(s, first);
+}
+
+static void scr_keccak_absorb_block(uint64_t s[25], const unsigned char *block, size_t rate) {
+  scr_keccak_absorb_block_rounds(s, block, rate, 0);
 }
 
 void scr_keccak_init(ScrKeccakCtx *ctx, size_t rate, unsigned char pad) {
@@ -146,6 +154,200 @@ void scr_keccak_final(const ScrKeccakCtx *source, unsigned char *out, size_t len
     len -= n;
     if (len != 0) scr_keccak_f(ctx.s);
   }
+}
+
+/* ── KMAC (SP 800-185) ──────────────────────────────────────────────── */
+
+/* left_encode/right_encode: the byte count, then the big-endian bytes. */
+static size_t scr_kmac_left_encode(unsigned char out[9], uint64_t x) {
+  size_t n = 1;
+  while (n < 8 && (x >> (8 * n)) != 0) n++;
+  out[0] = (unsigned char)n;
+  for (size_t i = 0; i < n; i++) out[1 + i] = (unsigned char)(x >> (8 * (n - 1 - i)));
+  return n + 1;
+}
+
+static size_t scr_kmac_right_encode(unsigned char out[9], uint64_t x) {
+  size_t n = 1;
+  while (n < 8 && (x >> (8 * n)) != 0) n++;
+  for (size_t i = 0; i < n; i++) out[i] = (unsigned char)(x >> (8 * (n - 1 - i)));
+  out[n] = (unsigned char)n;
+  return n + 1;
+}
+
+/* encode_string(S) = left_encode(len(S) in bits) || S, absorbed as it
+ * goes; the byte count feeds bytepad's zero padding. The bit length can
+ * differ from the byte length's when a WebCrypto key records a
+ * non-byte-aligned size. */
+static size_t scr_kmac_encode_bits(ScrKeccakCtx *ctx, const unsigned char *s, size_t bits) {
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, (uint64_t)bits);
+  scr_keccak_update(ctx, head, n);
+  size_t bytes = (bits + 7) / 8;
+  if (bytes != 0) scr_keccak_update(ctx, s, bytes);
+  return n + bytes;
+}
+/* encode_string(S) = left_encode(len(S) in bits) || S, absorbed as it
+ * goes; the byte count feeds bytepad's zero padding. */
+
+static size_t scr_kmac_encode_string(ScrKeccakCtx *ctx, const unsigned char *s, size_t len) {
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, (uint64_t)len * 8);
+  scr_keccak_update(ctx, head, n);
+  if (len != 0) scr_keccak_update(ctx, s, len);
+  return n + len;
+}
+
+/* bytepad's zero padding: the bytes absorbed so far modulo the rate. */
+static void scr_kmac_pad_to_rate(ScrKeccakCtx *ctx, size_t absorbed) {
+  static const unsigned char zeros[168];
+  size_t rem = absorbed % ctx->rate;
+  if (rem != 0) scr_keccak_update(ctx, zeros, ctx->rate - rem);
+}
+
+void scr_kmac_init(ScrKeccakCtx *ctx, bool kmac256, const unsigned char *key, size_t keylen,
+                   size_t key_bits, const unsigned char *custom, size_t customlen) {
+  size_t rate = kmac256 ? 136 : 168;
+  scr_keccak_init(ctx, rate, 0x04);
+  /* bytepad(encode_string("KMAC") || encode_string(S), rate) */
+  unsigned char head[9];
+  size_t n = scr_kmac_left_encode(head, rate);
+  scr_keccak_update(ctx, head, n);
+  size_t absorbed = n;
+  absorbed += scr_kmac_encode_string(ctx, (const unsigned char *)"KMAC", 4);
+  absorbed += scr_kmac_encode_string(ctx, custom, customlen);
+  scr_kmac_pad_to_rate(ctx, absorbed);
+  /* bytepad(encode_string(K), rate), with the key's declared bit length
+   * (a WebCrypto key can record one that is not a whole byte count). */
+  (void)keylen;
+  n = scr_kmac_left_encode(head, rate);
+  scr_keccak_update(ctx, head, n);
+  absorbed = n + scr_kmac_encode_bits(ctx, key, key_bits);
+  scr_kmac_pad_to_rate(ctx, absorbed);
+}
+
+void scr_kmac_final(const ScrKeccakCtx *source, size_t out_bytes, size_t bits,
+                    unsigned char *out) {
+  ScrKeccakCtx ctx = *source;
+  unsigned char tail[9];
+  size_t n = scr_kmac_right_encode(tail, (uint64_t)bits);
+  scr_keccak_update(&ctx, tail, n);
+  scr_keccak_final(&ctx, out, out_bytes);
+  size_t extra = bits % 8;
+  if (extra != 0 && out_bytes != 0)
+    out[out_bytes - 1] &= (unsigned char)(0xffu << (8 - extra));
+}
+
+/* cSHAKE (SP 800-185): SHAKE's sponge with the byte-padded
+ * encode_string(N) || encode_string(S) prefix and domain 0x04. With both
+ * empty it is plain SHAKE. */
+void scr_cshake_hash(bool cshake256, const unsigned char *func, size_t func_len,
+                     const unsigned char *custom, size_t custom_len, const unsigned char *data,
+                     size_t data_len, unsigned char *out, size_t out_bytes, size_t bits) {
+  ScrKeccakCtx ctx;
+  size_t rate = cshake256 ? 136 : 168;
+  if (func_len == 0 && custom_len == 0) {
+    scr_keccak_init(&ctx, rate, 0x1f);
+  } else {
+    scr_keccak_init(&ctx, rate, 0x04);
+    unsigned char head[9];
+    size_t n = scr_kmac_left_encode(head, rate);
+    scr_keccak_update(&ctx, head, n);
+    size_t absorbed = n;
+    absorbed += scr_kmac_encode_string(&ctx, func, func_len);
+    absorbed += scr_kmac_encode_string(&ctx, custom, custom_len);
+    scr_kmac_pad_to_rate(&ctx, absorbed);
+  }
+  if (data_len != 0) scr_keccak_update(&ctx, data, data_len);
+  scr_keccak_final(&ctx, out, out_bytes);
+  size_t extra = bits % 8;
+  if (extra != 0 && out_bytes != 0)
+    out[out_bytes - 1] &= (unsigned char)(0xffu << (8 - extra));
+}
+
+/* TurboSHAKE (RFC 9861): the Keccak-p[1600, 12] sponge with the caller's
+ * domain separation byte (0x01..0x7f). */
+void scr_turboshake_hash(bool t256, unsigned char domain, const unsigned char *data, size_t len,
+                         unsigned char *out, size_t out_bytes) {
+  size_t rate = t256 ? 136 : 168;
+  uint64_t s[25] = {0};
+  while (len >= rate) {
+    scr_keccak_absorb_block_rounds(s, data, rate, 12);
+    data += rate;
+    len -= rate;
+  }
+  unsigned char block[168];
+  memset(block, 0, rate);
+  if (len != 0) memcpy(block, data, len);
+  block[len] ^= domain;
+  block[rate - 1] ^= 0x80;
+  scr_keccak_absorb_block_rounds(s, block, rate, 12);
+  unsigned char *out_bytes_end = out + out_bytes;
+  for (size_t off = 0; out + off < out_bytes_end;) {
+    size_t n = (size_t)(out_bytes_end - (out + off));
+    if (n > rate) n = rate;
+    for (size_t i = 0; i < n; i++) out[off + i] = (unsigned char)(s[i / 8] >> (8 * (i % 8)));
+    off += n;
+    if (out + off < out_bytes_end) scr_keccak_f_rounds(s, 12);
+  }
+}
+
+/* RFC 9861's length_encode: the minimal big-endian bytes of x, then the
+ * byte count (no data byte for zero: length_encode(0) is 0x00). */
+static size_t scr_k12_length_encode(unsigned char out[9], uint64_t x) {
+  if (x == 0) {
+    out[0] = 0;
+    return 1;
+  }
+  return scr_kmac_right_encode(out, x);
+}
+
+/* KangarooTwelve (RFC 9861): TurboSHAKE over M || C || length_encode(|C|);
+ * above one 8192-byte chunk the tail chunks become chaining values in a
+ * final node of S_0 || 03 00 00 00 00 00 00 00 || CV_1 .. CV_(n-1) ||
+ * length_encode(n-1) || FF FF, run with domain 0x06. */
+void scr_k12_hash(bool kt256, const unsigned char *custom, size_t custom_len,
+                  const unsigned char *data, size_t data_len, unsigned char *out,
+                  size_t out_bytes) {
+  size_t cv_len = kt256 ? 64 : 32;
+  unsigned char tail[9];
+  size_t tail_len = scr_k12_length_encode(tail, (uint64_t)custom_len);
+  if (custom_len > SIZE_MAX - data_len || data_len + custom_len > SIZE_MAX - tail_len)
+    scr_trap("scriptc: out of memory\n");
+  size_t s_len = data_len + custom_len + tail_len;
+  unsigned char *s = malloc(s_len ? s_len : 1);
+  if (!s) scr_trap("scriptc: out of memory\n");
+  if (data_len) memcpy(s, data, data_len);
+  if (custom_len) memcpy(s + data_len, custom, custom_len);
+  memcpy(s + data_len + custom_len, tail, tail_len);
+  if (s_len <= 8192) {
+    scr_turboshake_hash(kt256, 0x07, s, s_len, out, out_bytes);
+    free(s);
+    return;
+  }
+  size_t chunks = (s_len + 8191) / 8192;
+  unsigned char count[9];
+  size_t count_len = scr_k12_length_encode(count, chunks - 1);
+  size_t final_len = 8192 + 8 + (chunks - 1) * cv_len + count_len + 2;
+  unsigned char *final = malloc(final_len);
+  if (!final) scr_trap("scriptc: out of memory\n");
+  memcpy(final, s, 8192);
+  memset(final + 8192, 0, 8);
+  final[8192] = 0x03;
+  size_t pos = 8192 + 8;
+  for (size_t i = 1; i < chunks; i++) {
+    size_t off = i * 8192;
+    size_t len = s_len - off < 8192 ? s_len - off : 8192;
+    scr_turboshake_hash(kt256, 0x0B, s + off, len, final + pos, cv_len);
+    pos += cv_len;
+  }
+  memcpy(final + pos, count, count_len);
+  pos += count_len;
+  final[pos++] = 0xFF;
+  final[pos++] = 0xFF;
+  scr_turboshake_hash(kt256, 0x06, final, final_len, out, out_bytes);
+  free(final);
+  free(s);
 }
 
 /* ── RIPEMD-160 ─────────────────────────────────────────────────────── */

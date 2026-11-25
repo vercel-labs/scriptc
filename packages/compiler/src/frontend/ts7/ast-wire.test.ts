@@ -1,13 +1,7 @@
 import { expect, test } from "vitest";
 import { AstDecodeError } from "./ast-bytes.js";
-import { AstWireFile, parseAstNodeHandle } from "./ast-wire.js";
-import {
-  AstKind,
-  HEADER_SIZE,
-  KIND_NODE_LIST,
-  NODE_LEN,
-  PROTOCOL_VERSION,
-} from "./ast-schema.generated.js";
+import { AstWireFile, PROTOCOL_VERSION_7_0, parseAstNodeHandle, syntaxKind70 } from "./ast-wire.js";
+import { AstKind, HEADER_SIZE, KIND_NODE_LIST, NODE_LEN } from "./ast-schema.generated.js";
 
 function word(bytes: Uint8Array, offset: number, value: number): void {
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(offset, value, true);
@@ -17,7 +11,7 @@ function word(bytes: Uint8Array, offset: number, value: number): void {
  * data, an empty structured array, and one list with two identifier nodes. */
 function response(): Uint8Array {
   const bytes = new Uint8Array(44 + 16 + 8 + 48 + 4 + NODE_LEN * 5);
-  word(bytes, 0, PROTOCOL_VERSION * 0x1000000);
+  word(bytes, 0, PROTOCOL_VERSION_7_0 * 0x1000000);
   word(bytes, 24, 44);
   word(bytes, 28, 60);
   word(bytes, 32, 68);
@@ -39,7 +33,7 @@ function response(): Uint8Array {
     word(bytes, at + 16, parent);
     word(bytes, at + 20, data);
   };
-  node(1, AstKind.SourceFile, 0, 0, 0x80000000);
+  node(1, syntaxKind70(AstKind.SourceFile), 0, 0, 0x80000000);
   node(2, KIND_NODE_LIST, 1, 0, 2);
   node(3, AstKind.Identifier, 2, 4, 0x40000002);
   node(4, AstKind.Identifier, 2, 0, 0x40000002);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/noinfer-position-values.ts"
+ ],
+ "diags": []
+}

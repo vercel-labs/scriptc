@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { executableOptimizationLinkerArgs } from "../targets.js";
+import { executableHardeningLinkerArgs, executableOptimizationLinkerArgs } from "../targets.js";
 import { readDarwinDebugSymbols } from "../debug-symbols.js";
 import { fileDigest } from "../build-cache.js";
 import { type NativeArtifactDependency, type CcOptions } from "./contracts.js";
@@ -21,6 +21,7 @@ import { CacheInputsChangedError } from "./session.js";
 import {
   type CcDriver,
   executableSectionEliminationFlags,
+  isMuslTarget,
   targetPlatform,
   cacheTargetIdentity,
 } from "./driver.js";
@@ -327,10 +328,14 @@ export function localArtifactIdentity(
       .sort(([a], [b]) => a.localeCompare(b)),
   );
   const executableSectionFlags = executableSectionEliminationFlags(targetPlatform(driver));
-  const executableOptimizationFlags = executableOptimizationLinkerArgs(
-    targetPlatform(driver),
-    opts.optimization ?? "release",
-  );
+  const executableOptimizationFlags = [
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(
+      targetPlatform(driver),
+      opts.optimization ?? "release",
+      isMuslTarget(driver),
+    ),
+  ];
   const hash = createHash("sha256")
     .update("local-artifact-v2\0")
     .update(cacheTargetIdentity(driver))
@@ -351,9 +356,9 @@ export function localArtifactIdentity(
     .update("\0")
     .update(executableSectionFlags.link.join("\x1f"))
     .update("\0");
-  // Only release WASI currently adds an optimization-specific link flag.
-  // Salt that identity so a pre-fix DWARF-bearing output cannot hit, without
-  // invalidating unchanged native and dev artifacts on upgrade.
+  // Only some targets add hardening or optimization-specific link flags.
+  // Salt that identity so an output linked without them cannot hit, without
+  // invalidating the artifacts of targets that add none.
   if (executableOptimizationFlags.length > 0) {
     hash
       .update("optimization-linker-flags\0")

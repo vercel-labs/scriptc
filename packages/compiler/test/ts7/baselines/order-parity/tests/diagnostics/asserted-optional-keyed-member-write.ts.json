@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/asserted-optional-keyed-member-write.ts"
+ ],
+ "diags": []
+}

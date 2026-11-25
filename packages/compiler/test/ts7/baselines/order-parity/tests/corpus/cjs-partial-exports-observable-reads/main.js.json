@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-partial-exports-observable-reads/b.js",
+  "<repo>/tests/corpus/cjs-partial-exports-observable-reads/a.js",
+  "<repo>/tests/corpus/cjs-partial-exports-observable-reads/main.js"
+ ],
+ "diags": []
+}

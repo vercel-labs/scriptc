@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/dynamic-import-attributes.ts"
+ ],
+ "diags": []
+}

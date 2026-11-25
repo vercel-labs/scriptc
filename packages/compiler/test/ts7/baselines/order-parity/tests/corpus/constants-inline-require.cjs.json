@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constants-inline-require.cjs"
+ ],
+ "diags": []
+}

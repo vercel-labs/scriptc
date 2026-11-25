@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { globSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
@@ -12,7 +12,6 @@ import {
   renderExplainDynamic,
   renderExplainIsland,
 } from "@scriptc/compiler";
-import { shardSelect, shardSuffix } from "./shard.js";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const fixture = (name: string) => join(repoRoot, "tests/coverage-fixtures", name);
@@ -86,6 +85,9 @@ test("divergences report as warnings, never as blockers", async () => {
     "SC6002",
     "SC6003",
     "SC6004",
+    // The key-order pass: the spread that keeps the type from recording
+    // each value's order.
+    "SC6014",
   ]);
   expect(coveragePasses(coverage, "blockers")).toBe(true);
   expect(coveragePasses(coverage, "divergences")).toBe(false);
@@ -97,16 +99,65 @@ test("divergences report as warnings, never as blockers", async () => {
 test("record width copies report at every storing site", async () => {
   const { coverage } = analyze(fixture("width-copies.ts"));
   expect(coverage.diagnostics).toEqual([]);
-  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual([
-    "SC6001",
-    "SC6001",
-    "SC6001",
-    "SC6001",
-    "SC6001",
-  ]);
+  // Three sites copy: a parameter that adds an optional property, a later
+  // assignment, and an array element. The empty record type has no field to
+  // copy into, so its binding holds the object itself and `===` is true, as
+  // under Node. The assertions report nothing either: `tagged as Labeled`
+  // and the union arm `blocks[0] as { text: string }` name only members the
+  // value itself stores, so the binding keeps the value's storage and its
+  // writes reach that object (as do the unknown-only views at the end of the
+  // fixture).
+  expect((coverage.divergences ?? []).map((d) => d.code)).toEqual(["SC6001", "SC6001", "SC6001"]);
   await expect(report(fixture("width-copies.ts"))).toMatchFileSnapshot(
     "__snapshots__/coverage-width-copies.txt",
   );
+});
+
+test("a Node island value converted to a native type reports as a copy", async () => {
+  // SC6007: an assertion to an array and to a record a view cannot hold (it
+  // declares a Date), the same through a `const`, a typed binding of an
+  // `any`, a typed callback parameter the callback writes through, and an
+  // island Map keyed by that record type. A record of unknown members, a
+  // structuredClone, a value no island made, a read-only parameter and a Map
+  // of scalars report nothing, and neither does any of the forms with a
+  // record type that becomes a view of the island's object.
+  const entry = fixture("island-copies/main.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  const source = readFileSync(entry, "utf8");
+  const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
+  expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
+    ["SC6007", 12],
+    ["SC6007", 13],
+    ["SC6007", 15],
+    ["SC6007", 16],
+    ["SC6007", 17],
+    ["SC6007", 20],
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-island-copies.txt");
+});
+
+test("a key order the compiler does not follow reports where the type is observed", () => {
+  // SC6014 from the key-order pass, once per record type: a spread that
+  // also sets an optional key its source lacks (in a type built in two
+  // orders), and Object.assign adding two optional keys from a source whose
+  // key order is only known at run time. Object.assign from a literal,
+  // path-dependent assignments and literals in two orders are followed per
+  // value, a type with one order needs nothing, and a type whose order the
+  // program never observes is not reported.
+  const entry = fixture("key-order-untraced.ts");
+  const { coverage } = analyze(entry);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  const source = readFileSync(entry, "utf8");
+  const lineOf = (offset: number): number => source.slice(0, offset).split("\n").length;
+  expect((coverage.divergences ?? []).map((d) => [d.code, lineOf(d.loc.start)])).toEqual([
+    ["SC6014", 14],
+    ["SC6014", 27],
+  ]);
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "divergences")).toBe(false);
 });
 
 test("ordinary code reports no divergence", () => {
@@ -193,8 +244,8 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'measure' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // Nothing calls unused or described: their signatures and bodies report
   // as unreached. described's declared `this` is its receiver, so
@@ -202,9 +253,9 @@ test("the body of a signature-blocked function reports its diagnostics", () => {
   expect(sites(coverage.unreached?.diagnostics ?? [])).toEqual([
     "SC2004 uses of 'extra' inherit the blocker on its declaration",
     "SC2004 uses of 'target' inherit the blocker on its declaration",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet",
-    "SC2020 'new WeakRef' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet",
+    "SC2020 'new BigInt64Array' is part of the standard library types but has no scriptc lowering yet",
   ]);
   // The bodies' statements still count once each, as not static.
   const un = coverage.unreached?.stats;
@@ -233,6 +284,73 @@ test("deferred fences in a module's top-level code report as running at startup"
     ["deferred", 5, true],
     ["deferred", 7, undefined],
   ]);
+});
+
+test("--coverage=reached reports the entry path without an unreached group", () => {
+  const path = fixture("unreached.ts");
+  const full = analyze(path).coverage;
+  const { coverage, sourceTexts } = analyze(path, { coverage: "reached" });
+  expect(coverage.reachedOnly).toBe(true);
+  expect(coverage.unreached).toBeUndefined();
+  // The totals count reached statements only.
+  expect(coverage.stats).toEqual(full.stats);
+  expect(coverage.diagnostics).toEqual([]);
+  const out = renderCoverage(coverage, { root: repoRoot });
+  expect(out).toContain(
+    "note  unreached code was not analyzed; the totals count reached statements only and are not comparable with a full report",
+  );
+  expect(out).not.toContain("in unreached code");
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.coverageMode).toBe("reached");
+  expect(envelope.diagnostics.map((d) => d.scope)).not.toContain("unreached");
+});
+
+test("--coverage=reached still reports the blocked bodies it reaches", () => {
+  const { coverage } = analyze(fixture("blocked-signature-body.ts"), { coverage: "reached" });
+  const full = analyze(fixture("blocked-signature-body.ts")).coverage;
+  const sites = (diags: readonly { code: string; message: string }[]) =>
+    diags.map((d) => `${d.code} ${d.message}`).sort();
+  expect(sites(coverage.diagnostics)).toEqual(sites(full.diagnostics));
+  // measure is called, so its four statements count here; unused and
+  // described are unreached and are not analyzed.
+  expect(coverage.stats.functionsSkipped).toBe(1);
+  expect(coverage.stats.statementsTotal).toBe(4);
+  expect(coverage.stats.statementsFailed).toBe(4);
+  expect(coverage.unreached).toBeUndefined();
+});
+
+test("CLI: --coverage=reached is a coverage option with two values", () => {
+  const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
+  const run = (...args: string[]) =>
+    spawnSync(process.execPath, ["--import", "tsx", scriptcCli, ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, SCRIPTC_NO_CACHE: "1" },
+    });
+  const reached = run("coverage", fixture("unreached.ts"), "--coverage=reached");
+  expect(reached.status).toBe(0);
+  expect(reached.stdout).toContain("unreached code was not analyzed");
+  expect(reached.stdout).not.toContain("in unreached code");
+  const full = run("coverage", fixture("unreached.ts"), "--coverage=full");
+  expect(full.stdout).toContain("in unreached code");
+  expect(full.stdout).not.toContain("unreached code was not analyzed");
+  const unknown = run("coverage", fixture("unreached.ts"), "--coverage=partial");
+  expect(unknown.status).toBe(1);
+  expect(unknown.stderr).toContain('unknown --coverage value "partial" (supported: full, reached)');
+  // The explanation needs the unreached remainder.
+  const explained = run(
+    "coverage",
+    fixture("unreached.ts"),
+    "--coverage=reached",
+    "--explain-dynamic",
+  );
+  expect(explained.status).toBe(1);
+  expect(explained.stderr).toContain(
+    "--coverage=reached cannot be combined with --explain-dynamic",
+  );
+  const build = run("build", fixture("unreached.ts"), "--coverage=reached");
+  expect(build.status).toBe(1);
+  expect(build.stderr).toContain("--coverage is a coverage option");
 });
 
 test("a failed unreached JavaScript statement is always explained", () => {
@@ -306,6 +424,78 @@ test("the diagnostics envelope is versioned and located", () => {
   expect(envelope.diagnostics[0]!.hint.length).toBeGreaterThan(0);
 });
 
+test("type claims list the checked conversions that trust an unverified type", async () => {
+  // One of each: parsed data under an assertion, a value through `any`, a
+  // Node island's values (one read twice, one of a type no island object
+  // converts to, one declared `any`), a function the island calls, and a
+  // package compiled from its JavaScript, and an assertion over a value the
+  // build holds dynamically. The read `size` guards with `typeof` is not a
+  // claim; the one `late` makes before its test is.
+  const entry = fixture("node-islands-type-claims/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-type-claims.txt");
+  const { coverage, sourceTexts } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  const claims = envelope.typeClaims ?? [];
+  expect(
+    claims.map((g) => [
+      g.kind,
+      g.declaration?.selector ?? g.declaration?.name ?? g.package?.name ?? g.claimed[0],
+      g.count,
+      g.sites.map((s) => s.line),
+    ]),
+  ).toEqual([
+    // Throws whenever it runs: first, whatever its count.
+    ["island", "started()", 1, [32]],
+    // A conversion whose failure the program would not see: second.
+    ["parsed", "{ name: string; retries: number }", 3, [52, 14, 15]],
+    ["island", "Session.ttl", 2, [26, 27]],
+    ["parsed", "number", 2, [18, 19]],
+    ["island", "each(visit)", 1, [28]],
+    ["island", "label()", 1, [35]],
+    // `load("p") as Loaded` is a view of the island's object: the claim is
+    // where the program reads a member of it.
+    ["island", "load()", 1, [35]],
+    // `table(2) as Catalog`; `entries`, read back under its declared type,
+    // is not listed.
+    ["untyped", "{ a: { n: number } }", 1, [45]],
+    // `late` converts before it tests the kind: the test guards nothing.
+    ["untyped", "number", 1, [62]],
+    // A compiled package's own conversions: after the program's.
+    ["package", "tc-native", 1, [9]],
+  ]);
+  expect(claims[0]).toMatchObject({
+    nativeOnly: 1,
+    declaration: {
+      package: "tc-island",
+      version: "3.1.0",
+      at: "index.d.ts:8",
+      declaredType: "Date",
+    },
+  });
+  // `readEntry` converts inside a try whose handler ignores the error.
+  expect(claims[1]!.swallowed?.map((s) => s.line)).toEqual([52]);
+  expect(claims[2]!.fix).toContain("scriptc types patch tc-island Session.ttl '<type>'");
+  expect(claims[4]).toMatchObject({ callbacks: 1, claimed: ["(string, number) => void"] });
+  expect(claims[8]).toMatchObject({ binding: { name: "value", line: 61 } });
+  expect(claims[9]).toMatchObject({
+    package: { name: "tc-native", version: "1.4.2" },
+    declarations: [{ selector: "width()", at: "index.js:8", declaredType: "number", count: 1 }],
+  });
+  expect(claims[7]).toMatchObject({ asserted: 1, binding: { name: "table()", line: 40 } });
+  // Never a blocker; its own gate.
+  expect(coveragePasses(coverage, "blockers")).toBe(true);
+  expect(coveragePasses(coverage, "type-claims")).toBe(false);
+});
+
+test("a program that converts only its own values reports no type claims", () => {
+  for (const name of ["no-divergences.ts", "width-copies.ts", "divergences.ts"]) {
+    const { coverage } = analyze(fixture(name));
+    expect(coverage.typeClaims, name).toBeUndefined();
+    expect(coveragePasses(coverage, "type-claims"), name).toBe(true);
+  }
+});
+
 test("CLI: --print=diagnostics and --fail-on set the output and exit status", () => {
   const scriptcCli = join(repoRoot, "packages/cli/src/main.ts");
   const run = (...args: string[]) =>
@@ -324,6 +514,8 @@ test("CLI: --print=diagnostics and --fail-on set the output and exit status", ()
   expect(envelope).toMatchObject({ schemaVersion: 1, success: false });
   expect(run(fixture("divergences.ts"), "--fail-on=blockers").status).toBe(0);
   expect(run(fixture("divergences.ts"), "--fail-on=divergences").status).toBe(1);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=blockers").status).toBe(0);
+  expect(run(fixture("node-islands-type-claims/main.ts"), "--fail-on=type-claims").status).toBe(1);
   // Unreached blockers cannot fail a build, so they never fail the gate.
   expect(run(fixture("unreached.ts"), "--fail-on=blockers").status).toBe(0);
   const bad = run(fixture("mixed.ts"), "--fail-on=everything");
@@ -368,11 +560,11 @@ test("CLI: build --print=diagnostics reports failures and divergence warnings as
     };
     expect(envelope.success).toBe(true);
     expect(envelope.artifact).toBe(join(outDir, "out.ir.json"));
-    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(5).fill("warning"));
+    expect(envelope.diagnostics.map((d) => d.severity)).toEqual(Array(6).fill("warning"));
     const human = build(fixture("divergences.ts"));
     expect(human.status).toBe(0);
     expect(human.stderr).toContain("warning SC6001");
-    expect(human.stderr).toContain("5 warnings: the program compiled");
+    expect(human.stderr).toContain("6 warnings: the program compiled");
   } finally {
     rmSync(outDir, { recursive: true, force: true });
   }
@@ -427,11 +619,84 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
   );
 });
 
+test("--explain-dynamic explains the runtime-optional storage behind a narrowed read", async () => {
+  const { coverage, sourceTexts } = analyze(fixture("runtime-optional-narrowing.ts"), {
+    explainDynamic: true,
+  });
+  const slots = coverage.tiers!.runtimeOptional;
+  // Each binding holds a value an unchecked read can leave undefined, while
+  // the checker types every read with the declared type; the decision names
+  // the read that made the slot optional.
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["count", "number | undefined", "number"],
+    ["label", "string | undefined", "string"],
+    ["first", "number | undefined", "number"],
+  ]);
+  expect(slots.map((s) => s.decisions.map((d) => d.kind))).toEqual([
+    ["binding"],
+    ["binding"],
+    ["pattern-binding"],
+  ]);
+  // A declared optional parameter leaves no hidden absence to report.
+  expect(slots.some((s) => s.name === "value")).toBe(false);
+  const guard = slots[0]!;
+  // The `typeof` guard and the read it guards; the fixture's type alias
+  // references the binding but does not read its storage.
+  expect(guard.reads).toHaveLength(2);
+  for (const read of guard.reads) expect(read.end).toBeGreaterThan(read.start);
+  const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
+  expect(envelope.tiers?.runtimeOptional[0]).toMatchObject({
+    name: "count",
+    storage: "number | undefined",
+    narrowed: "number",
+    decisions: [{ kind: "binding" }],
+  });
+  expect(envelope.tiers?.runtimeOptional[0]?.reads.length).toBe(guard.reads.length);
+  const relative = JSON.parse(
+    JSON.stringify(coverage.tiers).replaceAll(repoRoot + "/", ""),
+  ) as typeof coverage.tiers;
+  await expect(renderExplainDynamic(relative!)).toMatchFileSnapshot(
+    "__snapshots__/coverage-explain-runtime-optional.txt",
+  );
+});
+
+test("--explain-dynamic names the short call that passed undefined to a widened parameter", () => {
+  const { coverage } = analyze(fixture("runtime-optional-parameter.js"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  expect(slots.map((s) => [s.name, s.storage, s.narrowed])).toEqual([
+    ["value", "number | undefined", "number"],
+  ]);
+  expect(slots[0]!.decisions).toMatchObject([
+    { kind: "parameter", detail: "(omitted or undefined argument)" },
+  ]);
+});
+
+test("--explain-dynamic reports shorthand reads and multi-arm guard narrowings", () => {
+  const { coverage } = analyze(fixture("runtime-optional-shorthand.ts"), { explainDynamic: true });
+  const slots = coverage.tiers!.runtimeOptional;
+  // A guard that narrows the slot to several storage arms at once is still a
+  // read below the storage, and every distinct narrowing it reaches is
+  // listed.
+  const item = slots.find((s) => s.name === "item");
+  expect(item?.storage).toBe("string | number | boolean | undefined");
+  expect(item?.narrowed.split(" or ").sort()).toEqual([
+    "boolean | number",
+    "boolean | number | string",
+    "number | string",
+  ]);
+  // An object shorthand reads the binding behind the property it creates, so
+  // a slot whose only read is a shorthand keeps that read.
+  const label = slots.find((s) => s.name === "label");
+  expect(label?.storage).toBe("string | undefined");
+  expect(label?.narrowed).toBe("string");
+  expect(label?.reads).toHaveLength(1);
+});
+
 test("--explain-dynamic lists the type failures localized failure would turn into dynamic slots", async () => {
   const { coverage } = analyze(fixture("localized-failure.ts"), { explainDynamic: true });
   const report = coverage.tiers!.localizedFailure;
   // Locals, fields and parameters degrade (stages L1 and L2), and the
-  // 'any' field compiles; only the refused WeakRef field and its
+  // 'any' field compiles; only the refused BigInt64Array field and its
   // construction remain.
   expect(coverage.dynamicSlots?.map((s) => [s.slot, s.name])).toEqual([
     ["field", "tools"],
@@ -587,6 +852,21 @@ test.each(["3062-runtime-optional-record-guards.ts", "3063-runtime-optional-clas
   },
 );
 
+test("abstract methods without implementations below a receiver stay static", () => {
+  // A direct call with no concrete override below the receiver's static
+  // class lowers to Node's "<callee> is not a function" TypeError, and an
+  // untyped lookup selects the nearest implementation or reads undefined:
+  // neither defers (the class dynamic dispatch's per-class branches used to
+  // ask an abstract declaration for a method value).
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/abstract-methods-without-implementations.ts"),
+  );
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+});
+
 test("coverage preserves function-local class capture environments", () => {
   const { coverage } = analyze(join(repoRoot, "tests/corpus/local-class-unknown.ts"));
   expect(coverage.preflightFailed).toBe(false);
@@ -615,6 +895,57 @@ test("runtime-optional refined unions report blockers without crashing", () => {
   }
 });
 
+test("an array callback's parameter without a lowering is its statement's to lower or refuse", () => {
+  // The analysis that widens callback parameters for missing elements asks
+  // for each parameter's type before any body lowers. A type with no
+  // lowering is not that analysis' to refuse: the callbacks here compile,
+  // each parameter as a dynamic slot, exactly as they do over an array
+  // without holes, and the build and the report agree.
+  const { coverage } = analyze(
+    join(repoRoot, "tests/corpus/9287-array-callback-parameter-without-lowering.ts"),
+  );
+  expect(coverage.preflightFailed).toBe(false);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+  const slots = coverage.dynamicSlots ?? [];
+  expect(slots.filter((s) => s.slot === "param" && s.name === "e")).toHaveLength(9);
+  expect(slots.map((s) => s.name)).toContain("seen");
+});
+
+test("the unreached pass asks about an array type the reachable pass degraded, and reports what a build reports", async () => {
+  // A row type declared by a linked workspace package has no lowering here,
+  // and an array of it in a class field degrades to its canonical form
+  // where the reachable pass commits the field. The unreached pass inherits
+  // that form, so its callback analysis meets a native array whose element
+  // type still has no lowering. That type is the callback statement's to
+  // refuse, as the reachable pass already did: the report ends, and its
+  // errors are the build's, site by site.
+  const program = fixture("workspace-declared-rows/main.ts");
+  const { coverage } = analyze(program);
+  expect(coverage.preflightFailed).toBe(false);
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-coverage-degraded-array-"));
+  try {
+    const built = await compile(program, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    // Whatever the build reports, the report says the same, site by site.
+    // The types a linked workspace package declares compile now, so this
+    // fixture builds and there is nothing to report; while its row type was
+    // refused, these were the build's five errors.
+    const site = (d: { code: string; loc: { file: string; start: number; end: number } }) =>
+      `${d.code} ${d.loc.file.replace(repoRoot + "/", "")}:${d.loc.start}-${d.loc.end}`;
+    const reported = built.ok ? [] : built.diagnostics;
+    expect(coverage.diagnostics.map(site).sort()).toEqual(reported.map(site).sort());
+    expect(built.ok).toBe(true);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+  expect(coverage.unreached?.diagnostics ?? []).toEqual([]);
+});
+
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
   const program = join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts");
   // The class's refusal, as the diagnostics corpus pins it (--tier=static-only).
@@ -636,19 +967,26 @@ test("settled generic rest-order fences count each source statement once", () =>
   expect(coverage.stats.statementsFailed).toBe(2);
 });
 
-test("CommonJS var and let exports that can change after the export keep their refusal", () => {
+test("CommonJS table exports of bindings that can change after the export keep their refusal", () => {
   // JavaScript refusals defer to run time: they are the runtime fences.
+  // `module.exports = counter` stores the value the binding held at that
+  // statement, as Node does, so the whole-export form compiles; a binding
+  // copied into a table has no storage of its own, so a later write would
+  // be invisible to importers and fences instead.
   const { coverage } = analyze(fixture("cjs-mutable-exports/main.js"));
   const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
     .map((d) => /exporting the mutable 'let' binding '(\w+)'/.exec(d.message)?.[1])
     .filter((name) => name !== undefined)
     .sort();
-  expect(refused).toEqual(["counter", "tab", "twice"]);
+  expect(refused).toEqual(["tab", "twice"]);
 });
 
-test("CommonJS namespace reads of exports a re-exported module assigns later keep their refusal", () => {
+test("CommonJS namespace reads of exports a re-exported module assigns later read the end-of-evaluation value", () => {
   // wrapper.cjs re-exports impl.cjs, whose set() assigns `current` after
-  // evaluation; `version` never changes.
+  // evaluation; `version` never changes. Node's namespace keeps impl.cjs's
+  // end-of-evaluation values, so the reads compile to the snapshot slots
+  // registered for the names a re-exported module assigns later
+  // (tests/corpus/cjs-namespace-reexport-later-assignment).
   const { coverage } = analyze(fixture("cjs-namespace-reexports/main.mjs"));
   const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
     .map(
@@ -657,9 +995,8 @@ test("CommonJS namespace reads of exports a re-exported module assigns later kee
           d.message,
         )?.[1],
     )
-    .filter((name) => name !== undefined)
-    .sort();
-  expect(refused).toEqual(["current"]);
+    .filter((name) => name !== undefined);
+  expect(refused).toEqual([]);
 });
 
 test("inferred JavaScript compiles natively", async () => {
@@ -950,8 +1287,9 @@ test("a cycle whose top level calls a builtin with a builtin function value is a
 
 test("Node islands (report-only): one package per class, gap islands first", async () => {
   // ni-gap (a fence inside the native subset), ni-eval (new Function),
-  // ni-ctor (a constructor function, carrying ni-dep), ni-bundled (not
-  // compilable as shipped), ni-typed (native, also reached from ni-ctor).
+  // ni-ctor (a class prototype grown at run time, carrying ni-dep),
+  // ni-bundled (not compilable as shipped), ni-typed (native, also reached
+  // from ni-ctor).
   const entry = fixture("node-islands/main.ts");
   await expect(report(entry)).toMatchFileSnapshot("__snapshots__/coverage-node-islands.txt");
   const { coverage, sourceTexts } = analyze(entry);
@@ -978,7 +1316,7 @@ test("Node islands (report-only): one package per class, gap islands first", asy
   expect(envelope.nodeIslands?.islands.map((i) => [i.package, i.class, i.at?.line])).toEqual([
     ["ni-gap", "gap", 7],
     ["ni-eval", "runtime", 4],
-    ["ni-ctor", "object-model", 9],
+    ["ni-ctor", "object-model", 26],
     ["ni-bundled", "packaging", undefined],
   ]);
   // The gates: the blocker gate is today's build (which refuses
@@ -1006,6 +1344,82 @@ test("a package the policy islands types its values as island handles", async ()
   expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
     ["ni-config", "packaging"],
   ]);
+});
+
+test("an untyped island value stored where its origin is no longer followed is reported", async () => {
+  // An assertion applied to a value the compiler sees comes out of an island
+  // (directly, through a const, a parameter or a return of the program's
+  // functions) is a view of the island's object. Stored in an element, a
+  // container, a reassigned binding, a member, a literal the program keeps,
+  // a class field or a generic helper, the value is read back with no origin,
+  // and an assertion applied to it then copies: SC6007 names each store.
+  const entry = fixture("node-islands-untracked-store/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-untracked-store.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics.filter((d) => d.code !== "SC2013")).toEqual([]);
+  const stores = (coverage.divergences ?? []).filter((d) => d.code === "SC6007");
+  // One per store: the element, the Map value, the `let` and its
+  // reassignment, the member, the two kept literals, the class field and
+  // the generic helper. The snapshot names each line.
+  expect(stores.length).toBe(9);
+  expect((coverage.divergences ?? []).length).toBe(9);
+});
+
+test("a package a build islands by its module-init fence is the same island here", async () => {
+  // ni-sdk constructs a Promise subclass at module initialization, as the
+  // provider SDKs ship it, so a build runs the package in a Node island
+  // (executable/prepare.ts's growth rules). Its declarations then type the
+  // program's request objects as island handles, and the writes, pushes and
+  // reads in main.ts are dynamic operations on them. The analysis grows the
+  // same set from the same pass, so it reports the island and none of those
+  // uses as refusals — a build makes none of them.
+  const entry = fixture("node-islands-fenced-sdk-values/main.ts");
+  await expect(report(entry)).toMatchFileSnapshot(
+    "__snapshots__/coverage-node-islands-fenced-sdk-values.txt",
+  );
+  const { coverage } = analyze(entry);
+  expect(coverage.diagnostics).toEqual([]);
+  expect(coverage.stats.statementsFailed).toBe(0);
+  expect(coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-sdk", "gap"],
+  ]);
+  // The build decides the same island: its SC8001 note names the package the
+  // report lists.
+  const outDir = mkdtempSync(join(tmpdir(), "scriptc-island-fenced-sdk-"));
+  try {
+    const built = await compile(entry, {
+      outputKind: "ir",
+      outPath: join(outDir, "main.ir.json"),
+      outDir,
+    });
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    const islands = (built.warnings ?? []).filter((d) => d.code === "SC8001");
+    expect(islands.map((d) => d.message)).toEqual([expect.stringContaining("ni-sdk")]);
+  } finally {
+    rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("the island reload keeps the define values the analysis started with", () => {
+  // ni-sdk fences at module initialization, so lowering grows it into the
+  // island set and the analysis reloads the program to lower it as a build
+  // does. The reload carries the --define values along: the untaken branch
+  // is resolved away in what the report counts, exactly as in the build.
+  const entry = fixture("node-islands-fenced-sdk-values/define.js");
+  const define = { "process.env.SCRIPTC_COVERAGE_DEFINE": "on" };
+  const withDefine = analyze(entry, { define });
+  const plain = analyze(entry).coverage;
+  expect(withDefine.coverage.nodeIslands?.islands.map((i) => [i.package, i.class])).toEqual([
+    ["ni-sdk", "gap"],
+  ]);
+  const text = [...withDefine.sourceTexts].find(([file]) => file.endsWith("define.js"))?.[1];
+  expect(text).not.toContain("untaken");
+  expect(withDefine.coverage.stats.statementsTotal).toBeLessThan(plain.stats.statementsTotal);
+  expect(withDefine.coverage.stats.statementsFailed).toBe(0);
+  expect(withDefine.coverage.diagnostics).toEqual([]);
 });
 
 test("unknown scriptc settings warn in a build and make the island report unavailable", async () => {
@@ -1078,12 +1492,11 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
   expect(analyze(entry).coverage.nodeIslands).toBeUndefined();
   const { coverage } = analyze(entry, { nodeIslands: { strictUserJs: true } });
   expect(coverage.diagnostics.map((d) => d.code).filter((c) => c.startsWith("SC81"))).toEqual([
+    "SC8103",
     "SC8101",
     "SC8102",
-    "SC8103",
     "SC8104",
     "SC8105",
-    "SC8101",
   ]);
   await expect(
     renderCoverage(
@@ -1093,33 +1506,23 @@ test("--strict-user-js reports R2 constructs in user JavaScript as SC8101–SC81
   ).toMatchFileSnapshot("__snapshots__/coverage-node-islands-user-js.txt");
 });
 
-test(`every corpus program is 100% static (corpus and coverage agree${shardSuffix()})`, async () => {
-  // The differential corpus compiles by definition; coverage must agree.
-
-  // The sweep runs minutes on slow machines and each analyze() blocks the
-  // worker thread — without the periodic yield, vitest's worker RPC starves
-  // ("Timeout calling onTaskUpdate") even while every check passes, and the
-  // default per-test timeout is far too small for a whole-corpus analysis.
-  let n = 0;
-  const flatEntries = shardSelect(
-    ["ts", "js", "mjs", "cjs"]
-      .flatMap((ext) => globSync(join(repoRoot, `tests/corpus/*.${ext}`)))
-      .sort(),
-    (file) => file.slice(repoRoot.length + 1),
-  );
-  for (const file of flatEntries) {
-    const firstLine = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
-    // `// @deferred-fences: N` on the first line: a JS program that
-    // DELIBERATELY carries N runtime-fence statements on untaken paths
-    // (the deferred-fence corpus) — it still passes the differential
-    // oracle because the fences never execute.
-    const deferred = /^\/\/ @deferred-fences:\s*(\d+)\s*$/.exec(firstLine);
-    const { coverage } = analyze(file, {});
-    expect.soft(coverage.diagnostics, file).toEqual([]);
-    // Corpus programs match Node by definition: a divergence warning on one
-    // is a false positive.
-    expect.soft(coverage.divergences ?? [], file).toEqual([]);
-    expect.soft(coverage.stats.statementsFailed, file).toBe(deferred ? Number(deferred[1]) : 0);
-    if (++n % 10 === 0) await new Promise((r) => setImmediate(r));
+test("island packages: package data types and callable handles cross the boundary", () => {
+  // The types-only twin of an island package declares shapes the type
+  // mapper must read as data the program receives, never as a value the
+  // package's implementation produces: a union alias over Node data types
+  // (`Buffer | ArrayBuffer | Buffer[]`, `@types/ws`'s RawData) becomes the
+  // checked dynamic value, and a callable type with no native
+  // representation (`express.json()`'s NextHandleFunction) stays the handle
+  // of the function the island made.
+  for (const [name, pkg] of [
+    ["island-package-type-alias", "frames"],
+    ["island-callable-handle", "bodyish"],
+  ] as const) {
+    const { coverage } = analyze(join(repoRoot, "tests/corpus", name, "main.ts"));
+    expect(coverage.diagnostics, name).toEqual([]);
+    expect(
+      coverage.nodeIslands?.islands.map((i) => i.package),
+      name,
+    ).toContain(pkg);
   }
-}, 600_000);
+});

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/child-property-define-replaces-method/replace.cjs",
+  "<repo>/tests/corpus/child-property-define-replaces-method/main.cjs"
+ ],
+ "diags": []
+}

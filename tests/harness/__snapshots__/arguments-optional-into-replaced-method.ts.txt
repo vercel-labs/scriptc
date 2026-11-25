@@ -1,0 +1,13 @@
+arguments-optional-into-replaced-method.ts:22:29 - error SC1090: 'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on) is not supported yet
+
+  21 |   return function () {
+  22 |     return target.print(...(arguments as unknown as Parameters<Print>));
+     |                             ^~~~~~~~~
+  23 |   } as Print;
+
+arguments-optional-into-replaced-method.ts:28:39 - error SC1090: 'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on) is not supported yet
+
+  27 |   return function () {
+  28 |     return target.print.apply(target, arguments as unknown as Parameters<Print>);
+     |                                       ^~~~~~~~~
+  29 |   } as Print;

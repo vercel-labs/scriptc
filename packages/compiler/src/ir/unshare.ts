@@ -122,3 +122,56 @@ function copyChildlessStmt(node: IrStmt): IrStmt {
       return reparseStmt(node);
   }
 }
+
+/** Gives each function its own nodes where a node is held by more than one
+ * function, writing the copies back into the functions' bodies. Settling a
+ * shared helper's locations rewrites nodes in place: a node the helper holds
+ * together with another function would carry the helper's location into that
+ * function, and a record-decoded copy of the function would not, so the two
+ * builds of one program would differ. Node sharing inside one function is
+ * kept; analyses may rely on it. */
+export function unshareAcrossFunctions(functions: readonly IrFunction[]): void {
+  const owner = new Map<IrExpr | IrStmt, number>();
+  const repeated = new Set<IrExpr | IrStmt>();
+  const affected = new Set<number>();
+  const visit = (node: IrExpr | IrStmt, index: number): void => {
+    const first = owner.get(node);
+    if (first === undefined) owner.set(node, index);
+    else if (first !== index) {
+      repeated.add(node);
+      affected.add(index);
+    }
+  };
+  const findExpr = (node: IrExpr, index: number): boolean => {
+    visit(node, index);
+    return everyExprChild(
+      node,
+      (child) => findExpr(child, index),
+      (child) => findStmt(child, index),
+    );
+  };
+  const findStmt = (node: IrStmt, index: number): boolean => {
+    visit(node, index);
+    return everyStmtChild(
+      node,
+      (child) => findExpr(child, index),
+      (child) => findStmt(child, index),
+    );
+  };
+  functions.forEach((fn, index) => {
+    for (const node of fn.body) findStmt(node, index);
+  });
+  if (affected.size === 0) return;
+  const expr = (node: IrExpr): IrExpr => {
+    const copy = mapExprChildren(node, expr, stmt);
+    return copy !== node || !repeated.has(node) ? copy : copyChildlessExpr(node);
+  };
+  const stmt = (node: IrStmt): IrStmt => {
+    const copy = mapStmtChildren(node, expr, stmt);
+    return copy !== node || !repeated.has(node) ? copy : copyChildlessStmt(node);
+  };
+  for (const index of affected) {
+    const fn = functions[index]!;
+    fn.body = fn.body.map(stmt);
+  }
+}

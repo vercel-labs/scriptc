@@ -67,9 +67,30 @@ export function renderDiagnostic(
       else hi = mid - 1;
     }
     lineNum = lo + 1;
-    colNum = diag.loc.start - lineStarts[lo]! + 1;
+    // What a source shadow inserted into the frame's lines is left out: the
+    // column and the lines are the file's as written.
+    const inserted = diag.inserted ?? [];
+    const insertedIn = (from: number, to: number): number => {
+      let n = 0;
+      for (const [start, length] of inserted)
+        n += Math.max(0, Math.min(to, start + length) - Math.max(from, start));
+      return n;
+    };
+    const written = (n: number): string | undefined => {
+      let text = lines[n - 1];
+      if (text === undefined || inserted.length === 0) return text;
+      const lineStart = lineStarts[n - 1]!;
+      for (let i = inserted.length - 1; i >= 0; i--) {
+        const from = inserted[i]![0] - lineStart;
+        const to = from + inserted[i]![1];
+        if (from >= 0 && to <= text.length) text = text.slice(0, from) + text.slice(to);
+      }
+      return text;
+    };
+    colNum = diag.loc.start - lineStarts[lo]! - insertedIn(lineStarts[lo]!, diag.loc.start) + 1;
+    const spanLength = diag.loc.end - diag.loc.start - insertedIn(diag.loc.start, diag.loc.end);
 
-    const lineText = lines[lineNum - 1] ?? "";
+    const lineText = written(lineNum) ?? "";
     // The window every frame line shows: the whole line, or for a long
     // line FRAME_MAX_WIDTH characters starting FRAME_LEAD before the column.
     const windowStart =
@@ -85,7 +106,7 @@ export function renderDiagnostic(
     };
     const gutterWidth = String(Math.min(lineNum + 1, lines.length)).length;
     const emitLine = (n: number) => {
-      const text = lines[n - 1];
+      const text = written(n);
       if (text === undefined) return;
       frame.push(c(DIM, `  ${String(n).padStart(gutterWidth)} | `) + shown(text));
     };
@@ -96,10 +117,7 @@ export function renderDiagnostic(
       windowStart === 0 && lineText.length <= FRAME_MAX_WIDTH
         ? lineText.length
         : Math.min(lineText.length, windowStart + FRAME_MAX_WIDTH);
-    const spanOnLine = Math.max(
-      1,
-      Math.min(diag.loc.end - diag.loc.start, visibleEnd - (colNum - 1)),
-    );
+    const spanOnLine = Math.max(1, Math.min(spanLength, visibleEnd - (colNum - 1)));
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +
@@ -194,16 +212,97 @@ export function renderConfigWarnings(
   );
 }
 
+/** A build renders at most this many warnings with their source lines. A
+ * large program can copy at hundreds of conversions (SC6001), and a wall
+ * of frames hides the count that matters. */
+export const WARNINGS_RENDERED = 25;
+
+/** A build's SC6201 warning: the program fails at start-up, as under Node. */
+export function renderStartupWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+  opts: RenderOptions = {},
+): string {
+  return (
+    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    "\n\n1 warning: the program compiled, but it fails at start-up, as it does under Node."
+  );
+}
+
+/** The deferred statements a build names (SC6015), one line each. These are
+ * the statements that throw when the program reaches them; a program with
+ * hundreds of deferred sites (a framework's untyped JavaScript) would bury
+ * them past the source-frame limit, so every site is printed, compactly, at
+ * its own line. */
+export function renderDeferredWarnings(
+  diags: readonly ScrDiagnostic[],
+  sourceTextByFile: Map<string, string>,
+): string {
+  const sorted = [...diags].sort(
+    (a, b) => a.loc.file.localeCompare(b.loc.file) || a.loc.start - b.loc.start,
+  );
+  const indexes = new Map<string, LineIndex>();
+  const lines = sorted.map((d) => {
+    const text = sourceTextByFile.get(d.loc.file);
+    let at = "";
+    if (text !== undefined) {
+      let index = indexes.get(d.loc.file);
+      if (index === undefined) {
+        index = lineIndex(text);
+        indexes.set(d.loc.file, index);
+      }
+      const { lineStarts } = index;
+      let lo = 0;
+      let hi = lineStarts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (lineStarts[mid]! <= d.loc.start) lo = mid;
+        else hi = mid - 1;
+      }
+      at = `:${lo + 1}:${d.loc.start - lineStarts[lo]! + 1}`;
+    }
+    // A TypeScript statement's warning wraps the refusal; print the refusal.
+    const wrapped =
+      /^this statement throws when it runs \((.*)\), where it would have completed under Node/s.exec(
+        d.message,
+      );
+    return `  ${d.loc.file}${at}: ${wrapped ? wrapped[1]! : d.message}`;
+  });
+  const n = diags.length;
+  return (
+    (n === 1
+      ? "This statement defers to run time: it throws where it runs, and a program that never reaches it runs as it does under Node.\n"
+      : `These ${n} statements defer to run time: each throws where it runs, and a program that never reaches it runs as it does under Node.\n`) +
+    lines.join("\n")
+  );
+}
+
 export function renderWarnings(
   diags: readonly ScrDiagnostic[],
   sourceTextByFile: Map<string, string>,
   opts: RenderOptions = {},
 ): string {
   const n = diags.filter((d) => !isNodeIslandNoteCode(d.code)).length;
-  const rendered = renderDiagnostics([...diags], sourceTextByFile, opts);
+  // Notes always render; warnings past the limit are counted by code.
+  const shown: ScrDiagnostic[] = [];
+  const hidden = new Map<string, number>();
+  let warnings = 0;
+  for (const d of diags) {
+    if (isNodeIslandNoteCode(d.code) || warnings++ < WARNINGS_RENDERED) shown.push(d);
+    else hidden.set(d.code, (hidden.get(d.code) ?? 0) + 1);
+  }
+  const rendered = renderDiagnostics(shown, sourceTextByFile, opts);
   if (n === 0) return rendered;
+  const rest = n - Math.min(n, WARNINGS_RENDERED);
+  const more =
+    rest === 0
+      ? ""
+      : `\n\n${rest} more warning${rest === 1 ? "" : "s"} not shown (${[...hidden]
+          .map(([code, count]) => `${code} ×${count}`)
+          .join(", ")}); 'scriptc coverage --print=diagnostics' lists every site.`;
   return (
     rendered +
+    more +
     `\n\n${n} warning${n === 1 ? "" : "s"}: the program compiled, but ${n === 1 ? "this site" : "these sites"} can behave differently from Node.`
   );
 }

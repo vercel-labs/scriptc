@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-write-run-time-name-sloppy.cjs"
+ ],
+ "diags": []
+}

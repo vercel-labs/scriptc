@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-subclass-element-receivers/listy.js",
+  "<repo>/tests/corpus/array-subclass-element-receivers/main.ts"
+ ],
+ "diags": []
+}

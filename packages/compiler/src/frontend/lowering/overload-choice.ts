@@ -32,10 +32,11 @@ export function dynamicOverloadChoice(
 
 /** Whether a JavaScript value's checker type rests on an undecided
  * overload (dynamicOverloadChoice): the call itself, an awaited one, a
- * call to an unannotated JS function returning such a value, or a read of
- * an unannotated JS binding initialized with one (destructured or not).
- * Such a value is checked-dynamic wherever the checker's inference would
- * otherwise carry the guess into a binding or a return. */
+ * call to an unannotated JS function returning such a value, a member read
+ * off such a value, or a read of an unannotated JS binding initialized
+ * with one (destructured or not). Such a value is checked-dynamic
+ * wherever the checker's inference would otherwise carry the guess into a
+ * member, a binding or a return. */
 export function guessedOverloadValue(lowerer: Lowerer, expr: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(expr) || ts.isAwaitExpression(expr)) expr = expr.expression;
   if (ts.isCallExpression(expr) || ts.isNewExpression(expr)) {
@@ -51,6 +52,14 @@ export function guessedOverloadValue(lowerer: Lowerer, expr: ts.Expression): boo
       returnsGuessedOverloadValue(lowerer, decl)
     );
   }
+  // A member read off such a value: the member's type is the resolved
+  // overload's guess too (`generateKeyPairSync("rsa-pss", options)`
+  // resolves to the PEM overload, so `.publicKey` is its `string` although
+  // the call may answer the KeyObject pair).
+  if (ts.isPropertyAccessExpression(expr) || ts.isElementAccessExpression(expr))
+    return (
+      isJsSourceFile(ts.getSourceFileOfNode(expr)) && guessedOverloadValue(lowerer, expr.expression)
+    );
   return ts.isIdentifier(expr) && guessedOverloadIdentifier(lowerer, expr);
 }
 

@@ -1,0 +1,50 @@
+class-index-signature-constructor-order.ts:16:7 - error SC1090: an index signature in a class with instance fields below 'Parcel', whose constructor calls a function or hands the instance out (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first) is not supported yet
+
+  15 | }
+  16 | class Crate extends Parcel {
+     |       ^~~~~
+  17 |   [key: string]: unknown;
+
+class-index-signature-constructor-order.ts:34:7 - error SC1090: an index signature in a class with instance fields below 'Pallet', whose constructor calls a function or hands the instance out (a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first) is not supported yet
+
+  33 | }
+  34 | class Stack extends Pallet {
+     |       ^~~~~
+  35 |   [key: string]: unknown;
+
+class-index-signature-constructor-order.ts:46:7 - error SC1090: an index signature in a class with instance fields below 'Envelope', whose constructor uses a field declared with 'declare' (it exists only once it is assigned; a property written through the signature before the declared fields all exist is listed by Node before the later fields, and a compiled instance lists declared fields first) is not supported yet
+
+  45 | }
+  46 | class Folder extends Envelope {
+     |       ^~~~~~
+  47 |   [key: string]: unknown;
+
+class-index-signature-constructor-order.ts:65:15 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  64 | }
+  65 | const crate = new Crate();
+     |               ^~~~~~~~~~~
+  66 | const stack = new Stack();
+
+class-index-signature-constructor-order.ts:66:15 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  65 | const crate = new Crate();
+  66 | const stack = new Stack();
+     |               ^~~~~~~~~~~
+  67 | const folder = new Folder();
+
+class-index-signature-constructor-order.ts:67:16 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  66 | const stack = new Stack();
+  67 | const folder = new Folder();
+     |                ^~~~~~~~~~~~
+  68 | const drawer = new Drawer();
+
+class-index-signature-constructor-order.ts:69:13 - error SC2004: uses of 'crate' inherit the blocker on its declaration
+
+  68 | const drawer = new Drawer();
+  69 | console.log(crate.first, stack.height, folder.tabs, drawer.depth);
+     |             ^~~~~
+  70 | 
+
+  hint: the declaration of 'crate' did not compile — fix the diagnostic reported there and these sites clear with it

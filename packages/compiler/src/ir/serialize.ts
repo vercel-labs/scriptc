@@ -4,7 +4,7 @@
  * Compiler-scale artifacts are larger than one host string can hold (V8 caps
  * strings at 2^29 - 24 UTF-16 units, and the self-hosted compiler's IR is
  * already close to it). The compact encoding is therefore produced as ordered
- * text parts and decoded from bytes one function at a time; neither direction
+ * text parts and decoded from bytes in ranges of functions; neither direction
  * materializes the complete document as a single string. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
 import { decodeModuleBinary, isIrEncoding } from "./codec.js";
@@ -110,14 +110,27 @@ export function serializeModule(mod: IrModule, compact = false): string {
 
 function decodeNumber(_key: string, value: unknown): unknown {
   if (typeof value === "object" && value !== null && "$nonfinite" in value) {
-    const tag = (value as { $nonfinite: string }).$nonfinite;
-    if (tag === "inf") return Infinity;
-    if (tag === "-inf") return -Infinity;
-    if (tag === "-0") return -0;
-    if (tag === "nan") return NaN;
-    throw new Error(`Invalid IR number sentinel: ${String(tag)}`);
+    return sentinelNumber((value as { $nonfinite: string }).$nonfinite);
   }
   return value;
+}
+
+function sentinelNumber(tag: string): number {
+  if (tag === "inf") return Infinity;
+  if (tag === "-inf") return -Infinity;
+  if (tag === "-0") return -0;
+  if (tag === "nan") return NaN;
+  throw new Error(`Invalid IR number sentinel: ${String(tag)}`);
+}
+
+const SENTINEL_KEY = '"$nonfinite"';
+
+/** Parse one piece of an IR encoding: a document, or one of its functions.
+ * The reviver runs for every value of the piece it parses and holds a
+ * larger image of the result, so a piece that spells no sentinel key parses
+ * plainly. */
+function parsePiece(text: string): unknown {
+  return text.includes(SENTINEL_KEY) ? JSON.parse(text, decodeNumber) : JSON.parse(text);
 }
 
 function checkedVersion(mod: IrModule): IrModule {
@@ -131,24 +144,30 @@ function checkedVersion(mod: IrModule): IrModule {
 
 /** A function from its compact encoding (encodeFunction). */
 export function deserializeFunction(json: string): IrFunction {
-  // Only an encoding that holds a number sentinel needs the reviver.
-  return (
-    json.includes('"$nonfinite"') ? JSON.parse(json, decodeNumber) : JSON.parse(json)
-  ) as IrFunction;
+  return parsePiece(json) as IrFunction;
 }
 
+/** A module from its encoding. An encoding that spells a sentinel decodes
+ * through deserializeModuleBytes, which runs the reviver over only the
+ * functions that hold one: the rest of a compiler-scale module is most of
+ * the document, and the whole-document reviver costs several times the
+ * parse and holds a larger image of it. */
 export function deserializeModule(json: string): IrModule {
-  return checkedVersion(JSON.parse(json, decodeNumber) as IrModule);
+  return checkedVersion(
+    (json.includes(SENTINEL_KEY)
+      ? deserializeModuleBytes(Buffer.from(json, "utf8"))
+      : JSON.parse(json)) as IrModule,
+  );
 }
 
 /** A node as it reads back from the compact encoding: a fresh object, as
  * is every node inside it. */
 export function reparseExpr(node: IrExpr): IrExpr {
-  return JSON.parse(JSON.stringify(node, encodeNumber), decodeNumber) as IrExpr;
+  return parsePiece(JSON.stringify(node, encodeNumber)) as IrExpr;
 }
 
 export function reparseStmt(node: IrStmt): IrStmt {
-  return JSON.parse(JSON.stringify(node, encodeNumber), decodeNumber) as IrStmt;
+  return parsePiece(JSON.stringify(node, encodeNumber)) as IrStmt;
 }
 
 const QUOTE = 0x22;
@@ -269,29 +288,74 @@ function functionSpans(bytes: Buffer): FunctionSpans | null {
   return null;
 }
 
+/** The byte size of one parsed range of functions (decodeFunctions). A
+ * parse call costs about the same fixed work whatever it reads, so functions
+ * are parsed in ranges this large rather than one at a time. */
+const FUNCTION_CHUNK_BYTES = 2 * 1024 * 1024;
+
+/** The index of the function whose range holds `offset` (functionSpans). */
+function functionAt(starts: readonly number[], offset: number): number {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >> 1;
+    if (starts[middle]! <= offset) low = middle;
+    else high = middle - 1;
+  }
+  return low;
+}
+
+/** The functions of the document in `bytes`, in order. A function that
+ * spells the sentinel key is parsed alone, with the reviver; the runs between
+ * such functions spell no sentinel key and are parsed as arrays of whole
+ * functions, without one. */
+function decodeFunctions(bytes: Buffer, spans: FunctionSpans): IrFunction[] {
+  const count = spans.starts.length;
+  const sentinel: boolean[] = [];
+  for (let index = 0; index < count; index++) sentinel.push(false);
+  const key = Buffer.from(SENTINEL_KEY, "utf8");
+  let offset = bytes.indexOf(key, count === 0 ? spans.close : spans.starts[0]!);
+  while (offset >= 0 && offset < spans.close) {
+    sentinel[functionAt(spans.starts, offset)] = true;
+    offset = bytes.indexOf(key, offset + 1);
+  }
+  const functions: IrFunction[] = [];
+  let index = 0;
+  while (index < count) {
+    if (sentinel[index]!) {
+      functions.push(
+        parsePiece(bytes.toString("utf8", spans.starts[index]!, spans.ends[index]!)) as IrFunction,
+      );
+      index++;
+      continue;
+    }
+    let end = index;
+    while (
+      end + 1 < count &&
+      !sentinel[end + 1]! &&
+      spans.ends[end]! - spans.starts[index]! < FUNCTION_CHUNK_BYTES
+    )
+      end++;
+    const text = bytes.toString("utf8", spans.starts[index]!, spans.ends[end]!);
+    for (const fn of JSON.parse(`[${text}]`) as IrFunction[]) functions.push(fn);
+    index = end + 1;
+  }
+  return functions;
+}
+
 /** Decode an IR artifact: the binary encoding (codec.ts), or UTF-8 JSON
  * (compact or readable) without materializing it as one string: the header
- * and each function are parsed separately.
+ * and ranges of functions are parsed separately.
  * Split points are ASCII structural bytes, so every range is valid UTF-8. */
 export function deserializeModuleBytes(bytes: Buffer): IrModule {
   if (isIrEncoding(bytes)) return decodeModuleBinary(bytes);
   const spans = functionSpans(bytes);
-  if (spans === null) return deserializeModule(bytes.toString("utf8"));
+  if (spans === null) return checkedVersion(parsePiece(bytes.toString("utf8")) as IrModule);
   const mod = checkedVersion(
-    JSON.parse(
+    parsePiece(
       bytes.toString("utf8", 0, spans.open + 1) + bytes.toString("utf8", spans.close),
-      decodeNumber,
     ) as IrModule,
   );
-  const functions: IrFunction[] = [];
-  for (let index = 0; index < spans.starts.length; index++) {
-    functions.push(
-      JSON.parse(
-        bytes.toString("utf8", spans.starts[index]!, spans.ends[index]!),
-        decodeNumber,
-      ) as IrFunction,
-    );
-  }
-  mod.functions = functions;
+  mod.functions = decodeFunctions(bytes, spans);
   return mod;
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9751-fs-read-stream-signal.ts"
+ ],
+ "diags": []
+}

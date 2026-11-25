@@ -1,0 +1,6 @@
+{
+  "name": "define-island-environment-write",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "env-setter": "node" } }
+}

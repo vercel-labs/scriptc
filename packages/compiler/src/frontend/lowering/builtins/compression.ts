@@ -1,3 +1,4 @@
+import { refuseCallbackThis } from "../callback-arg.js";
 import { lowerBuiltinByteInput, errorFirstBytesCallback } from "./arguments.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -44,6 +45,9 @@ const ZLIB_CALLBACK_FNS: Readonly<Record<string, IrLibFn | undefined>> = {
 /* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
 const BROTLI_DECODE = 8;
 const BROTLI_ENCODE = 9;
+/* Node's ZSTD_COMPRESS and ZSTD_DECOMPRESS modes. */
+const ZSTD_COMPRESS = 10;
+const ZSTD_DECOMPRESS = 11;
 
 /** The Brotli one-shots: every form takes the options entries. */
 const BROTLI_SYNC_MEMBERS: ReadonlySet<string> = new Set([
@@ -55,29 +59,53 @@ const BROTLI_CALLBACK_MEMBERS: ReadonlySet<string> = new Set([
   "brotliDecompress",
 ]);
 
-/** A Brotli mode connects the codec (scr_brotli.c) to the zlib engine
- * before any module initializer runs. */
-function noteBrotliMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
-  if (mode !== BROTLI_DECODE && mode !== BROTLI_ENCODE) return;
+/** The zstd one-shots: every form takes the options entries. */
+const ZSTD_SYNC_MEMBERS: ReadonlySet<string> = new Set(["zstdCompressSync", "zstdDecompressSync"]);
+const ZSTD_CALLBACK_MEMBERS: ReadonlySet<string> = new Set(["zstdCompress", "zstdDecompress"]);
+
+/** A Brotli or zstd mode connects the codec (scr_brotli.c, scr_zstd.c) to
+ * the zlib engine before any module initializer runs. */
+export function noteCodecMode(lowerer: Lowerer, mode: number, loc: SrcLoc): void {
+  const fn: IrLibFn | undefined =
+    mode === BROTLI_DECODE || mode === BROTLI_ENCODE
+      ? "zlib.brotliInstall"
+      : mode === ZSTD_COMPRESS || mode === ZSTD_DECOMPRESS
+        ? "zlib.zstdInstall"
+        : undefined;
+  if (fn === undefined) return;
   const installs = (stmt: IrStmt): boolean =>
-    stmt.kind === "exprStmt" &&
-    stmt.expr.kind === "libCall" &&
-    stmt.expr.fn === "zlib.brotliInstall";
+    stmt.kind === "exprStmt" && stmt.expr.kind === "libCall" && stmt.expr.fn === fn;
   if (lowerer.mainPrelude.some(installs)) return;
   lowerer.mainPrelude.push({
     kind: "exprStmt",
-    expr: { kind: "libCall", fn: "zlib.brotliInstall", args: [], type: VOID, loc },
+    expr: { kind: "libCall", fn, args: [], type: VOID, loc },
     loc,
   });
 }
 
 const ZLIB_STREAM_CLASS = "%Transform";
-const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
+export const ZLIB_STREAM_T: IrType = { kind: "object", className: ZLIB_STREAM_CLASS };
 
-/** A zlib data argument, lowered once: Buffer/Uint8Array bytes, a string
- * (UTF-8 encoded here), or a checked-dynamic value (the JS lane's untyped
- * data, which the runtime converts after validating the options — Node's
- * order). Other static types keep the byte-input fence. */
+/** A typed array or DataView of another element kind as the u8 view the
+ * static zlib libCalls read. Node reads a view's bytes, not its elements
+ * (it converts a non-Uint8Array view with `Buffer.from(buffer.buffer,
+ * byteOffset, byteLength)`), and bytes.bufferSource is exactly that
+ * no-copy u8 view of the same memory range. */
+function zlibByteView(lowerer: Lowerer, node: ts.Expression, value: IrExpr): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "bytes.bufferSource",
+    args: [lowerer.coerceInto(node, value, DYN)],
+    type: BYTES_U8,
+    loc: locOf(node),
+  };
+}
+
+/** A zlib data argument, lowered once: Buffer/Uint8Array bytes, another
+ * view's bytes, a string (UTF-8 encoded here), or a checked-dynamic value
+ * (an ArrayBuffer, the JS lane's untyped data, which the runtime converts
+ * after validating the options — Node's order). Other static types keep
+ * the byte-input fence. */
 function zlibInput(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -85,7 +113,10 @@ function zlibInput(
 ): { value: IrExpr; dyn: boolean } {
   const value = lowerer.lowerExpr(node);
   if (value.type.kind === "dyn") return { value, dyn: true };
-  if (value.type.kind === "bytes" && value.type.elem === "u8") return { value, dyn: false };
+  if (value.type.kind === "bytes") {
+    if (value.type.elem === "u8") return { value, dyn: false };
+    return { value: zlibByteView(lowerer, node, value), dyn: false };
+  }
   if (value.type.kind === "string") {
     return {
       value: {
@@ -98,11 +129,47 @@ function zlibInput(
       dyn: false,
     };
   }
+  // A value that is one of several kinds (`string | Buffer`, or a string
+  // that may be undefined): the runtime reads the kind the value has, with
+  // Node's TypeError for one that is no byte input.
+  if (value.type.kind === "union" && lowerer.dynConvertible(value.type)) {
+    const boxed = lowerer.coerceToExpected(value, DYN);
+    if (boxed.type.kind === "dyn") return { value: boxed, dyn: true };
+  }
   lowerer.noLowering(
     `zlib byte input of '${lowerer.fmt(value.type)}' values`,
     node,
-    "string and Buffer/Uint8Array values are supported",
+    "strings, Buffers, TypedArrays, DataViews and ArrayBuffers are supported",
   );
+}
+
+/** Whether `call` resolves to the `info: true` overload of a zlib
+ * convenience method — the ones that answer Node's { buffer, engine }
+ * object. The checker's own resolution decides, so the lowering and the
+ * static type agree: an options value that does not statically carry
+ * info (an `any` value) resolves to the Buffer overload and keeps the
+ * runtime options ladder, whose refusal still covers it. */
+function zlibInfoCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  const options =
+    lowerer.checker.getResolvedSignature(call)?.declaration?.parameters?.nodes[1]?.type;
+  if (options === undefined) return false;
+  const info = lowerer.checker.getPropertyOfType(
+    lowerer.checker.getTypeFromTypeNode(options),
+    "info",
+  );
+  if (!info) return false;
+  /* `boolean` is the union `true | false`, so the info overload is the one
+   * that admits `true` and not `false`: the general overload's `info?:
+   * boolean` holds both and stays the Buffer form. */
+  const declared = lowerer.checker.getTypeOfSymbol(info);
+  const parts = declared.isUnionType() ? ts.constituentTypes(declared) : [declared];
+  let admitsTrue = false;
+  for (const part of parts) {
+    if ((part.flags & ts.TypeFlags.BooleanLiteral) === 0) continue;
+    if ((part as ts.BooleanLiteralType).value !== true) return false;
+    admitsTrue = true;
+  }
+  return admitsTrue;
 }
 
 /** A zlib options argument as the dyn value the runtime ladder reads. */
@@ -146,7 +213,7 @@ export function lowerZlibStreamNew(
   }
   const options =
     args[0] !== undefined ? zlibOptionsValue(lowerer, args[0], what, loc) : dynUndefinedExpr(loc);
-  noteBrotliMode(lowerer, mode, loc);
+  noteCodecMode(lowerer, mode, loc);
   return {
     kind: "libCall",
     fn: "zlib.streamNew",
@@ -230,6 +297,7 @@ export function lowerZlibStreamMethodCall(
   const isFunc = (node: ts.Expression): boolean =>
     lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "func";
   const callback = (node: ts.Expression): IrExpr => {
+    refuseCallbackThis(lowerer, node, `a zlib ${member} callback`, "the stream");
     const cb = lowerer.lowerExprExpecting(node, funcOf([], VOID));
     if (cb.type.kind !== "func" || cb.type.params.length > 0) {
       lowerer.noLowering(
@@ -317,13 +385,21 @@ const ZLIB_ONE_SHOT_MODES: Readonly<Record<string, number | undefined>> = {
   brotliCompressSync: BROTLI_ENCODE,
   brotliDecompress: BROTLI_DECODE,
   brotliCompress: BROTLI_ENCODE,
+  zstdDecompressSync: ZSTD_DECOMPRESS,
+  zstdCompressSync: ZSTD_COMPRESS,
+  zstdDecompress: ZSTD_DECOMPRESS,
+  zstdCompress: ZSTD_COMPRESS,
 };
 
 /** True for a zlib callback one-shot util.promisify converts (deflate,
- * inflate, deflateRaw, inflateRaw, gzip, gunzip, unzip, brotliCompress and
- * brotliDecompress). */
+ * inflate, deflateRaw, inflateRaw, gzip, gunzip, unzip, brotliCompress,
+ * brotliDecompress, zstdCompress and zstdDecompress). */
 export function isPromisifiedZlibMember(member: string): boolean {
-  return ZLIB_CALLBACK_FNS[member] !== undefined || BROTLI_CALLBACK_MEMBERS.has(member);
+  return (
+    ZLIB_CALLBACK_FNS[member] !== undefined ||
+    BROTLI_CALLBACK_MEMBERS.has(member) ||
+    ZSTD_CALLBACK_MEMBERS.has(member)
+  );
 }
 
 /** A call through `promisify(zlib.gzip)` and the other callback one-shots:
@@ -348,7 +424,21 @@ export function lowerPromisifiedZlibCall(
     );
   }
   const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
-  noteBrotliMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
+  noteCodecMode(lowerer, ZLIB_ONE_SHOT_MODES[member]!, loc);
+  if (zlibInfoCall(lowerer, expr)) {
+    // `info: true`: the promise settles with Node's { buffer, engine }.
+    return {
+      kind: "libCall",
+      fn: input.dyn ? "zlib.infoPromiseDyn" : "zlib.infoPromise",
+      args: [
+        numLit(ZLIB_ONE_SHOT_MODES[member]!, loc),
+        input.value,
+        zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${member}`, loc),
+      ],
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+  }
   return {
     kind: "libCall",
     fn: input.dyn ? "zlib.promiseDyn" : "zlib.promise",
@@ -364,7 +454,7 @@ export function lowerPromisifiedZlibCall(
   };
 }
 
-const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
+export const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createDeflate: 1,
   createInflate: 2,
   createGzip: 3,
@@ -374,6 +464,8 @@ const ZLIB_STREAM_FACTORIES: Readonly<Record<string, number | undefined>> = {
   createUnzip: 7,
   createBrotliDecompress: BROTLI_DECODE,
   createBrotliCompress: BROTLI_ENCODE,
+  createZstdDecompress: ZSTD_DECOMPRESS,
+  createZstdCompress: ZSTD_COMPRESS,
 };
 
 export function lowerZlibModuleCall(
@@ -396,8 +488,13 @@ export function lowerZlibModuleCall(
       loc,
     );
   }
-  if (BROTLI_SYNC_MEMBERS.has(bi.member) || BROTLI_CALLBACK_MEMBERS.has(bi.member)) {
-    return lowerBrotliOneShot(lowerer, expr, bi.member, loc);
+  if (
+    BROTLI_SYNC_MEMBERS.has(bi.member) ||
+    BROTLI_CALLBACK_MEMBERS.has(bi.member) ||
+    ZSTD_SYNC_MEMBERS.has(bi.member) ||
+    ZSTD_CALLBACK_MEMBERS.has(bi.member)
+  ) {
+    return lowerCodecOneShot(lowerer, expr, bi.member, loc);
   }
   const syncFn = ZLIB_SYNC_FNS[bi.member];
   if (syncFn !== undefined) {
@@ -405,6 +502,20 @@ export function lowerZlibModuleCall(
       lowerer.noLowering(`${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
     }
     const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
+    if (zlibInfoCall(lowerer, expr)) {
+      // { buffer, engine } in place of the Buffer (Node's `info` option).
+      return {
+        kind: "libCall",
+        fn: input.dyn ? "zlib.infoSyncDyn" : "zlib.infoSync",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
+        ],
+        type: DYN,
+        loc,
+      };
+    }
     if (input.dyn) {
       return {
         kind: "libCall",
@@ -494,6 +605,21 @@ export function lowerZlibModuleCall(
     }
     const input = zlibInput(lowerer, expr.arguments.nodes[0]!, loc);
     const dynData = input.dyn;
+    if (zlibInfoCall(lowerer, expr)) {
+      // The callback receives { buffer, engine } as a checked value.
+      return {
+        kind: "libCall",
+        fn: dynData ? "zlib.infoCbDyn" : "zlib.infoCb",
+        args: [
+          numLit(ZLIB_ONE_SHOT_MODES[bi.member]!, loc),
+          input.value,
+          zlibOptionsValue(lowerer, expr.arguments.nodes[1]!, `zlib.${bi.member}`, loc),
+          errorFirstBytesCallback(lowerer, expr.arguments.nodes[2]!, "zlib"),
+        ],
+        type: VOID,
+        loc,
+      };
+    }
     if (expr.arguments.nodes.length === 3 || dynData) {
       // (data, options, callback): Node validates the options before the
       // callback and the input, so the runtime ladder runs first.
@@ -546,10 +672,10 @@ export function lowerZlibModuleCall(
 }
 
 /** brotliCompressSync(data[, options]), brotliCompress(data[, options],
- * callback) and the decompress pair: the options entries with Node's
- * BROTLI_ENCODE or BROTLI_DECODE mode, an absent options value passing
- * undefined. */
-function lowerBrotliOneShot(
+ * callback), the decompress pair, and the zstd four: the options entries
+ * with Node's BROTLI_ENCODE/BROTLI_DECODE or ZSTD_COMPRESS/ZSTD_DECOMPRESS
+ * mode, an absent options value passing undefined. */
+function lowerCodecOneShot(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   member: string,
@@ -557,7 +683,7 @@ function lowerBrotliOneShot(
 ): IrExpr {
   const args = expr.arguments.nodes;
   const mode = ZLIB_ONE_SHOT_MODES[member]!;
-  const sync = BROTLI_SYNC_MEMBERS.has(member);
+  const sync = BROTLI_SYNC_MEMBERS.has(member) || ZSTD_SYNC_MEMBERS.has(member);
   if (sync ? args.length === 0 || args.length > 2 : args.length !== 2 && args.length !== 3) {
     lowerer.noLowering(
       `zlib.${member} with ${args.length} arguments`,
@@ -572,7 +698,29 @@ function lowerBrotliOneShot(
   const options = withOptions
     ? zlibOptionsValue(lowerer, args[1]!, `zlib.${member}`, loc)
     : dynUndefinedExpr(loc);
-  noteBrotliMode(lowerer, mode, loc);
+  noteCodecMode(lowerer, mode, loc);
+  if (zlibInfoCall(lowerer, expr)) {
+    return sync
+      ? {
+          kind: "libCall",
+          fn: input.dyn ? "zlib.infoSyncDyn" : "zlib.infoSync",
+          args: [numLit(mode, loc), input.value, options],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: input.dyn ? "zlib.infoCbDyn" : "zlib.infoCb",
+          args: [
+            numLit(mode, loc),
+            input.value,
+            options,
+            errorFirstBytesCallback(lowerer, args[2]!, "zlib"),
+          ],
+          type: VOID,
+          loc,
+        };
+  }
   if (sync) {
     return {
       kind: "libCall",

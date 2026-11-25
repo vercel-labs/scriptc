@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-polyfill-guard-operand-positions.ts"
+ ],
+ "diags": []
+}

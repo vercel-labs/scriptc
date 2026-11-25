@@ -1,0 +1,1 @@
+["0","0","OPTIONS * HTTP/1.1\r\nHost: a\r\nX-Fold: a\r\n b\r\nSet-Cookie: q\r\nSet-Cookie: r\r\n\r\n"]

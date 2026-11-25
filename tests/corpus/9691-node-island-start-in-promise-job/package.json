@@ -1,0 +1,1 @@
+{ "name": "island-start-in-promise-job", "private": true, "type": "module", "scriptc": { "packages": { "turn-kit": "node" } } }

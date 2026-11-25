@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8705-js-handle-shadowed-members.js"
+ ],
+ "diags": []
+}

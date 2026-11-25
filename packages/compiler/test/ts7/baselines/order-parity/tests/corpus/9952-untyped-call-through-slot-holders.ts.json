@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9952-untyped-call-through-slot-holders.ts"
+ ],
+ "diags": []
+}

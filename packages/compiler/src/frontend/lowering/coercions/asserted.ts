@@ -17,7 +17,17 @@ import { unionRetagHelper } from "./unions.js";
  * - A record or array whose member types the assertion narrows (`models as
  *   Model<"one">[]` on a union-element array): the checked deep conversion
  *   a cast of an unknown value takes, which validates the value member by
- *   member and names the deepest failing path. */
+ *   member and names the deepest failing path.
+ * - A record or array beside unit arms asserted to a type it has no
+ *   structural conversion into (`result as Sub` on `Base | undefined`, Sub
+ *   declaring required members Base lacks): the unit arms throw the
+ *   TypeError of a lying assertion, and the one value arm takes that same
+ *   checked deep conversion.
+ * - Several records or arrays with no unit beside them, none with a
+ *   structural conversion into T (`load as Freight` on `Letter | Parcel`,
+ *   in the instance of a generic function whose test sends only freight
+ *   down that branch): the value takes the checked deep conversion as it
+ *   stands. */
 export function assertedConversion(
   lowerer: Lowerer,
   expr: IrExpr,
@@ -31,14 +41,73 @@ export function assertedConversion(
     if (!from) return null;
     const values = from.arms.filter((arm) => !isUnitType(arm));
     const kept = values.filter((arm) => convertsInto(lowerer, arm, asserted, loc));
-    if (kept.length === 0 || kept.length === values.length) return null;
+    if (kept.length === 0) {
+      // No arm reaches T by a structural conversion. One record or array
+      // beside units is the value T names: extract it (a unit contradicts
+      // the assertion) and check it into T member by member, then place
+      // the result in the slot as a value of T.
+      const arm = values.length === 1 ? values[0]! : null;
+      // Several records or arrays and no unit, none of which is T's (a
+      // generic function's instance asserting its parameter to the type
+      // another instance holds, in the branch only that instance takes): the
+      // value is checked into T as it stands, and whatever arm it holds
+      // throws unless it has T's members. Beside a unit the union keeps its
+      // refusal: the scan that refuses a write through the checked copy
+      // (divergences.ts, widthCopyBetween) reads a union of records only.
+      if (
+        arm === null &&
+        values.length > 1 &&
+        values.length === from.arms.length &&
+        values.every((value) => value.kind === "record" || value.kind === "array") &&
+        checkedDeepConvertible(lowerer, expr.type, asserted)
+      ) {
+        const slot = lowerer.widthLiftPlan(asserted, expected);
+        if (slot === null) return null;
+        return lowerer.applyWidthLift(
+          slot,
+          checkedDeepConversion(lowerer, expr, asserted),
+          expected,
+          loc,
+        );
+      }
+      if (arm === null || (arm.kind !== "record" && arm.kind !== "array")) return null;
+      if (!checkedDeepConvertible(lowerer, arm, asserted)) return null;
+      // Planned before any helper is interned, so a slot T does not reach
+      // leaves the program as it was.
+      const place = lowerer.widthLiftPlan(asserted, expected);
+      if (place === null) return null;
+      const helper = lowerer.narrowedArmHelper(from.id, arm, loc);
+      if (!helper) return null;
+      const claimed = checkedDeepConversion(
+        lowerer,
+        lowerer.checkedNarrowCall(helper, expr, arm, loc),
+        asserted,
+      );
+      return lowerer.applyWidthLift(place, claimed, expected, loc);
+    }
+    if (kept.length === values.length) return null;
     if (asserted.kind === "union" && expected.kind === "union") {
       // The arms T excludes trap; the others (units included) re-tag.
       const trappable = new Set<number>();
       from.arms.forEach((arm, tag) => {
         if (!isUnitType(arm) && !kept.includes(arm)) trappable.add(tag);
       });
-      const helper = unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
+      // An excluded ARRAY arm the asserted type's tuple arm takes (`type as
+      // Handler | [Handler]` over `Ctor | readonly Ctor[]`) converts through
+      // the checked lane instead of trapping.
+      const destination = lowerer.unions.get(expected.unionId);
+      const checked =
+        destination !== undefined &&
+        [...trappable].some((tag) => {
+          const arm = from.arms[tag]!;
+          return (
+            arm.kind === "array" &&
+            destination.arms.filter((to) => lowerer.checkedWidthLift(arm, to) !== null).length === 1
+          );
+        });
+      const helper = checked
+        ? unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable, undefined, true)
+        : unionRetagHelper(lowerer, from.id, expected.unionId, loc, trappable);
       return helper ? { kind: "call", callee: helper, args: [expr], type: expected, loc } : null;
     }
     // A record or array T holds one arm's values: extract that arm (every
@@ -52,19 +121,37 @@ export function assertedConversion(
     const converted = lowerer.coerceToExpected(narrowed, expected);
     return typeEquals(converted.type, expected) ? converted : null;
   }
-  if (expected.kind !== "record" && expected.kind !== "array") return null;
+  if (!checkedDeepConvertible(lowerer, expr.type, expected)) return null;
+  return checkedDeepConversion(lowerer, expr, expected);
+}
+
+/** Whether a value of `source` can take the checked deep conversion into
+ * `expected`: a record without an index signature or an array, reached
+ * from a value the checked-dynamic representation holds. */
+function checkedDeepConvertible(lowerer: Lowerer, source: IrType, expected: IrType): boolean {
+  if (expected.kind !== "record" && expected.kind !== "array") return false;
   if (expected.kind === "record" && lowerer.shapes.get(expected.shapeId)?.indexValue !== undefined)
-    return null;
-  if (
-    !lowerer.dynConvertible(expr.type) ||
-    !canDynCheckTo(
+    return false;
+  return (
+    // A module namespace has no static conversion into a record, but its
+    // dynamic value does: the box reads the namespace's members live.
+    (lowerer.dynConvertible(source) || source.kind === "moduleNs") &&
+    canDynCheckTo(
       expected,
       (id) => lowerer.shapes.get(id),
       (id) => lowerer.unions.get(id),
     )
-  )
-    return null;
-  return { kind: "dynCheck", value: lowerer.coerceToExpected(expr, DYN), type: expected, loc };
+  );
+}
+
+/** The checked deep conversion itself (checkedDeepConvertible held). */
+function checkedDeepConversion(lowerer: Lowerer, expr: IrExpr, expected: IrType): IrExpr {
+  return {
+    kind: "dynCheck",
+    value: lowerer.coerceToExpected(expr, DYN),
+    type: expected,
+    loc: expr.loc,
+  };
 }
 
 /** True when a value of `arm` has a structural conversion into `target`:

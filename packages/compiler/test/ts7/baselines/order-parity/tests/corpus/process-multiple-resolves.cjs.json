@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-multiple-resolves.cjs"
+ ],
+ "diags": []
+}

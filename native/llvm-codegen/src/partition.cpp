@@ -555,7 +555,8 @@ bool dominatedPartitions(ArrayRef<uint64_t> FunctionBytes) {
 
 std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
                                                       unsigned Count,
-                                                      bool SkipDominated) {
+                                                      bool SkipDominated,
+                                                      unsigned Jobs) {
   if (Count < 2)
     return std::nullopt;
   std::vector<StringRef> Header, Types, Attributes, NamedMetadata;
@@ -839,7 +840,7 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Root = I;
     Roots[I] = Root;
   }
-  // The x86-64-v3 copy of a --cpu-dispatch build's function (`<name>.v3`),
+  // The x86-64-v3 copy of a function with CPU copies (`<name>.v3`),
   // with the chain that ends at it, is placed with the chain of its baseline
   // copy (`<name>.base`), so that the helper can compare the two copies
   // after optimization (cpu-copies.h).
@@ -1015,7 +1016,12 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
       Line(Text.drop_front(Text.find(" = ")));
     }
   };
-  DefaultThreadPool Pool(hardware_concurrency());
+  ThreadPoolStrategy Strategy = hardware_concurrency();
+  if (Jobs != 0) {
+    Strategy.ThreadsRequested = Jobs;
+    Strategy.Limit = true;
+  }
+  DefaultThreadPool Pool(Strategy);
   for (unsigned P = 0; P < Count; ++P)
     Pool.async([&Assemble, P] { Assemble(P); });
   Pool.wait();

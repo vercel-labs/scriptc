@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-namespace-reexport-later-assignment/impl.cjs",
+  "<repo>/tests/corpus/cjs-namespace-reexport-later-assignment/wrapper.cjs",
+  "<repo>/tests/corpus/cjs-namespace-reexport-later-assignment/main.mjs"
+ ],
+ "diags": []
+}

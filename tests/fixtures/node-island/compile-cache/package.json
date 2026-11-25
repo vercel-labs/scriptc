@@ -1,0 +1,1 @@
+{ "name": "compile-cache", "private": true, "type": "module", "scriptc": { "packages": { "cache-pkg": "node" } } }

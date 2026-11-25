@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/esm-cycle-class-extends/boot.ts",
+  "<repo>/tests/corpus/esm-cycle-class-extends/events.ts",
+  "<repo>/tests/corpus/esm-cycle-class-extends/main.ts"
+ ],
+ "diags": []
+}

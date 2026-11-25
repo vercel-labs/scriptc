@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/create-require-held-loader-members.ts"
+ ],
+ "diags": []
+}

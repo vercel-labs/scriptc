@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9438-error-name-through-intersection.ts"
+ ],
+ "diags": []
+}

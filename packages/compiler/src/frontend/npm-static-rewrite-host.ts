@@ -9,11 +9,14 @@ import {
   trackedReadFile,
 } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
+import { SCRIPTC_CONDITION } from "./scriptc-condition.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { isBundlerCjsCandidate, rewriteBundlerCjsSyntax } from "./npm-static-rewrite-syntax.js";
 import { lowerBundledEsmInits } from "./npm-static-bundled-esm.js";
 
-const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
+// The scriptc condition leads, as in every world scriptc resolves: the
+// module whose shape this probes is the one the program compiles.
+const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default", SCRIPTC_CONDITION]);
 
 /** Node's file-first CJS probes over an ABSOLUTE base (the dist-tree
  * subset: exact, .js/.cjs, /index.js, package.json "main" for

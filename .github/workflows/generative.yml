@@ -1,0 +1,84 @@
+name: Generative lanes
+
+# The corpus is differential, but it holds the shapes someone thought to
+# write. These two lanes make programs nobody wrote and hold them to the same
+# oracle: a program that builds with no SC60xx warning prints what Node
+# prints.
+#
+#   generate     seeded program generators (tests/harness/generative/generators.mjs)
+#   metamorphic  meaning-preserving rewrites of corpus programs
+#                (tests/harness/generative/rewrites.mjs)
+#
+# Both find failures today, so they run here every night instead of on pull
+# requests. tests/harness/generative/baseline.json lists every known failure;
+# a run fails for a failure that is not listed and for a listed one that now
+# passes, so the baseline shrinks as fixes land and a new silent divergence
+# shows up the next morning. A pull request that fixes listed failures
+# deletes their entries; `node tests/harness/generative/run.mjs scoreboard`
+# prints what is left by category.
+on:
+  schedule:
+    # Nightly, off the hour and apart from the profile refresh.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run at a time. A manual run restarts a nightly one.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  lane:
+    name: ${{ matrix.lane }}
+    if: github.repository == 'vercel-labs/scriptc'
+    runs-on: ubuntu-24.04
+    # A build and both runs of one program take about eight seconds. On a
+    # runner's 4 cores that is about twenty minutes for 600 generated
+    # programs, and about an hour and a half for nine rewrites of the 318
+    # corpus programs the baseline lists.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [generate, metamorphic]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm --filter @scriptc/compiler --filter scriptc build
+      # The islands generator's programs call into Node through a libnode
+      # pack; without SCRIPTC_LIBNODE the lane would leave them out.
+      - uses: ./.github/actions/libnode
+        if: matrix.lane == 'generate'
+      - name: Run the generators
+        if: matrix.lane == 'generate'
+        run: node tests/harness/generative/run.mjs generate --jobs 4
+      - name: Rewrite corpus programs
+        if: matrix.lane == 'metamorphic'
+        run: node tests/harness/generative/run.mjs metamorphic --jobs 4
+      # The failing programs with both outputs, so a new failure can be
+      # reduced without running the lane again. They are written inside the
+      # checkout, where island programs resolve @scriptc/node.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: generative-${{ matrix.lane }}
+          path: .scriptc/generative
+          include-hidden-files: true
+          retention-days: 14

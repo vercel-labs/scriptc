@@ -107547,7 +107547,7 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/2597-dgram-send-ladders.cjs",
@@ -107557,9 +107557,23 @@
           "tests/corpus/compat-dgram-socket.ts",
           "tests/corpus/compat-errors-net.mjs",
           "tests/corpus/dgram-address-state-errors.ts",
+          "tests/corpus/dgram-bind-fd.ts",
           "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
           "tests/corpus/dgram-memberships.ts",
+          "tests/corpus/dgram-options-audit.ts",
           "tests/corpus/dgram-send-callback.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-signal.ts",
           "tests/corpus/dgram-socket-class.ts",
           "tests/corpus/dgram-sync-members.mjs",
           "tests/corpus/dgram-udp6.ts"
@@ -107608,10 +107622,27 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:dgram.createSocket",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.dgram.createSocket",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-signal.ts",
+          "tests/corpus/dgram-bind-fd.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-options-audit.ts"
         ]
       },
       "anchorSource": "exact"
@@ -107862,10 +107893,27 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.bind",
+        "status": "supported",
+        "evidence": "compiler-feature:dgram.socket.bind",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/dgram-socket-class.ts",
+          "tests/corpus/dgram-bind-options.ts",
+          "tests/corpus/dgram-block-list-receive.ts",
+          "tests/corpus/dgram-block-list-send.ts",
+          "tests/corpus/dgram-block-list-edges.ts",
+          "tests/corpus/dgram-block-list-bind.ts",
+          "tests/corpus/compat-dgram-socket.mjs",
+          "tests/corpus/compat-dgram-socket.ts",
+          "tests/corpus/dgram-signal.ts",
+          "tests/corpus/dgram-bind-fd.ts",
+          "tests/corpus/dgram-signal-close-removes-listener.cjs",
+          "tests/corpus/dgram-custom-lookup.ts",
+          "tests/corpus/dgram-lookup-lifecycle.cjs",
+          "tests/corpus/dgram-lookup-error-identity.ts",
+          "tests/corpus/dgram-lookup-error-identity.cjs",
+          "tests/corpus/dgram-implicit-bind-failure.ts",
+          "tests/corpus/dgram-lookup-capture.ts",
+          "tests/corpus/dgram-options-audit.ts"
         ]
       },
       "anchorSource": "exact"

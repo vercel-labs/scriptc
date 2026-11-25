@@ -750,8 +750,10 @@ struct ScrH2Stream {
   bool ready_state;     /* client: Node has initialized the stream (past IDLE) */
   bool ready_emitted;   /* the 'ready' event fired (once per stream) */
   /* stream.setTimeout's own idle timer (independent of the session socket's):
-   * armed only while the stream is open. */
+   * armed only while the stream is open; activity refreshes it until it
+   * fires, after which it is done (Node's idle-timer shape). */
   double timeout_handle; /* 0 = none */
+  double timeout_ms;     /* the configured idle delay (0 = no timer) */
   /* The header blocks this stream sent, as Node reports them: sentHeaders,
    * sentInfoHeaders (a list) and sentTrailers. */
   ScrDyn *sent_headers_dom;
@@ -919,6 +921,7 @@ ScrH2Stream *scr_http2_stream_retain(ScrH2Stream *st) {
 static void scr_h2_stream_free(ScrH2Stream *st);
 static bool scr_h2_file_pump(ScrH2Stream *st);
 static void scr_h2_stream_fire_ready(ScrH2Stream *st);
+static void scr_h2_stream_touch_timeout(ScrH2Stream *st);
 static void scr_h2_file_close(ScrH2Stream *st);
 static ScrDyn *scr_h2_pairs_to_dom(ScrArr *pairs /*borrowed, nullable*/, double status);
 static ScrArr *scr_h2_dom_to_pairs(const ScrDyn *headers);
@@ -1848,6 +1851,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     }
     ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
     if (!st || st->destroyed) break; /* late DATA on a gone stream: drop */
+    if (n > 0) scr_h2_stream_touch_timeout(st);
     if (st->compat_req != NULL) {
       /* the compat req owns the READ side: DATA feeds req 'data',
        * END_STREAM fires req 'end' — the stream's own queue stays empty */
@@ -2366,6 +2370,7 @@ static void scr_h2_stream_flush(ScrH2Stream *st) {
 }
 
 static void scr_h2_stream_send(ScrH2Stream *st, const char *data, size_t n) {
+  scr_h2_stream_touch_timeout(st);
   if (st->destroyed || scr_h2_stream_local_closed(st)) return;
   scr_h2_buf_put(&st->wbuf, data, n);
   scr_h2_stream_flush(st);
@@ -3364,12 +3369,20 @@ void scr_http2_stream_set_timeout(ScrH2Stream *st, double msecs) {
     scr_clear_interval(st->timeout_handle);
     st->timeout_handle = 0;
   }
+  st->timeout_ms = msecs > 0 ? msecs : 0;
   if (!(msecs > 0) || st->destroyed || st->close_emitted) return;
   ScrClosure *tick = scr_closure_new((void *)&scr_h2_stream_timeout_tick, 1);
   tick->caps[0] = scr_box_new_obj(scr_http2_stream_retain_v, scr_http2_stream_release_v, NULL);
   scr_box_set_ref(tick->caps[0], scr_http2_stream_retain(st));
   double handle = scr_set_timeout_handle(tick, msecs);
   if (handle > 0) st->timeout_handle = handle;
+}
+
+/* Stream activity refreshes the idle timer (Node's stream timeout is
+ * idle-based: activity postpones it, including after it fired — the event
+ * listener hears each idle period; a setTimeout callback is once). */
+static void scr_h2_stream_touch_timeout(ScrH2Stream *st) {
+  if (st->timeout_ms > 0) scr_http2_stream_set_timeout(st, st->timeout_ms);
 }
 
 void scr_http2_stream_set_timeout_cb(ScrH2Stream *st, double msecs, ScrClosure *cb /*moves*/) {

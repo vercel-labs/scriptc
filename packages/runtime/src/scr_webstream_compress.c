@@ -439,6 +439,10 @@ static int ws_comp_pump_steps(WsCompState *s) {
         ws_comp_abandon(s);
         return -1;
       }
+      /* Enqueueing can settle a read synchronously and run hooks that
+       * cancel the stream: the cancel clears the controller and releases
+       * the engine. Re-check both before touching either again. */
+      if (!s->controller || !s->engine) return 0;
       /* The chunk satisfied the read request that pulled for it: settle
        * that pull so the reader's next read reaches the engine. */
       if (!scr_webstream_controller_has_request(s->controller))
@@ -607,7 +611,7 @@ static ScrDyn *ws_comp_invoke(void *ptr, ScrDyn *self, const char *method, ScrDy
   (void)method;
   (void)args;
   (void)argc;
-  scr_dyn_release(self);
+  (void)self; /* a borrowed receiver: the caller owns it */
   char buf[160];
   int n = snprintf(buf, sizeof buf, "%s is not a function", what);
   scr_throw_error_msg(SCR_ERR_TYPE, buf, (size_t)n);

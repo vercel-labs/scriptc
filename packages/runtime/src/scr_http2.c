@@ -2840,11 +2840,17 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
   size_t max_frame = s->peer_max_frame ? s->peer_max_frame : SCR_H2_DEFAULT_MAX_FRAME;
   while (st->file_remaining > 0 && !st->destroyed) {
     if (s->sock != NULL && scr_net_sock_writable_length(s->sock) >= SCR_H2_FILE_BACKLOG_BYTES) {
+      /* the transfer is alive (socket backlog), just not sending right now */
+      scr_h2_stream_touch_timeout(st);
       scr_h2_file_schedule_retry(st);
       return false;
     }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
-    if (window <= 0) return false;
+    if (window <= 0) {
+      /* flow-control-blocked: the queued body is still activity */
+      scr_h2_stream_touch_timeout(st);
+      return false;
+    }
     size_t chunk = (size_t)window;
     if (chunk > max_frame) chunk = max_frame;
     if ((scr_h2_file_off)chunk > st->file_remaining) chunk = (size_t)st->file_remaining;
@@ -2868,6 +2874,7 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
       break;
     }
     scr_h2_send_frame(s, SCR_H2_F_DATA, 0, st->id, buf, (size_t)n);
+    scr_h2_stream_touch_timeout(st);
     free(buf);
     st->file_off += n;
     st->file_remaining -= n;

@@ -6282,6 +6282,10 @@ static void scr_hjob_free(uint32_t token) {
  * a new turn first. */
 static SCR_TL uint32_t *scr_hosted_due = NULL;
 static SCR_TL size_t scr_hosted_due_len = 0, scr_hosted_due_cap = 0;
+/* Nonzero while scr_loop_run_hosted replays the interrupted turn's due
+ * entries: the destroy drain waits for the whole batch, as Node's destroy
+ * phase follows a timers phase rather than each of its callbacks. */
+static SCR_TL int scr_hosted_due_depth = 0;
 
 static void scr_hosted_due_push(uint32_t token) {
   if (scr_hosted_due_len == scr_hosted_due_cap) {
@@ -6729,6 +6733,15 @@ static void scr_hosted_deciding_tick(void) {
  * at the promise-job checkpoint that rejects it, before the turn's ticks
  * (the loop pass's root check), so it is decided at once. */
 void scr_loop_hosted_microtasks_done(void) {
+  /* Node owns the loop from here on, so its microtask checkpoint is where
+   * the destroy phase runs: the ids the callback's microtasks queued are
+   * drained after their ticks and jobs, and never while the pre-handover
+   * due batch still has timers to run. */
+  if (scr_hosted_due_depth == 0 && scr_async_checkpoint_idle != NULL) {
+    scr_async_checkpoint_idle();
+    if (scr_exc_pending()) scr_hosted_settle_exception();
+    if (scr_exc_pending()) return;
+  }
   /* A handler native code attached since the last checkpoint raises its
    * 'rejectionHandled' now, in this turn's tick phase. */
   if (!scr_drain_rejection_handled()) scr_hosted_settle_exception();
@@ -7034,6 +7047,7 @@ static void scr_loop_run_hosted(bool first_checkpoint) {
   if (scr_async_checkpoint_idle != NULL) scr_async_checkpoint_idle();
   /* The interrupted phase's work, each followed by Node's checkpoint. A
    * due entry cleared meanwhile is gone (or its token reused, not due). */
+  scr_hosted_due_depth++;
   for (size_t i = 0; i < scr_hosted_due_len; i++) {
     uint32_t token = scr_hosted_due[i];
     if (token == 0 || token > scr_hjobs_len || !scr_hjobs[token - 1].due) continue;
@@ -7041,8 +7055,13 @@ static void scr_loop_run_hosted(bool first_checkpoint) {
     if (kind == SCR_HJ_IMMEDIATE) scr_hjobs[token - 1].due = false;
     scr_loop_hosted_run(kind, token);
     scr_loop_hosted->checkpoint(0);
-    if (scr_async_checkpoint_idle != NULL) scr_async_checkpoint_idle();
   }
+  scr_hosted_due_depth--;
+  /* The replayed batch is one timers phase: its callbacks' microtasks are
+   * done, so Node's destroy phase runs here, after every due entry rather
+   * than between them. A destroy hook may queue more work; it runs in the
+   * checkpoint the caller has already passed. */
+  if (scr_async_checkpoint_idle != NULL) scr_async_checkpoint_idle();
   free(scr_hosted_due);
   scr_hosted_due = NULL;
   scr_hosted_due_len = scr_hosted_due_cap = 0;
@@ -7173,10 +7192,13 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed; /* in a rejection listener */
     if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0 || scr_rjh_pending())
       continue;
-    /* Node's async destroy phase sits between the checkpoint and the next
-     * turn's timers and I/O, after every tick and microtask queued so far
-     * has run. A destroy hook may queue more work: start the turn again. */
-    if (scr_async_checkpoint_idle != NULL) {
+    /* Node's async destroy phase sits between a turn's startup checkpoint
+     * and its timers and I/O, after every tick and microtask queued so far
+     * has run. A turn restarted by a callback's checkpoint (a timer or I/O
+     * callback queued a microtask) is not this boundary: the rest of its
+     * timers phase still runs, so its destroys wait for the turn's end
+     * below, as Node's timers phase completes before its destroy phase. */
+    if (!timer_snapshot_taken && scr_async_checkpoint_idle != NULL) {
       scr_async_checkpoint_idle();
       if (scr_exc_pending()) return false;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
@@ -7812,10 +7834,25 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       scr_loop_io_open = true;
       scr_loop_io_batches = 0;
     }
-    /* This turn is complete. Everything armed during it (I/O callbacks,
-     * timer callbacks, the check phase) is eligible for the next one; the
-     * next turn recaptures after its own startup checkpoint. */
+    /* This turn is complete: its timer, poll and check callbacks have run,
+     * so the destroy ids their microtasks queued reach Node's destroy phase
+     * now, before the next turn's startup checkpoint. A destroy hook may
+     * queue work; the next turn's checkpoint drains it first. */
+    if (scr_async_checkpoint_idle != NULL) {
+      scr_async_checkpoint_idle();
+      if (scr_exc_pending()) return false;
+    }
+    /* Everything armed during the turn (I/O callbacks, timer callbacks, the
+     * check phase) is eligible for the next one; the next turn recaptures
+     * after its own startup checkpoint. */
     timer_snapshot_taken = false;
+    if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+  }
+  /* The loop ran dry: Node's teardown runs the destroy hooks the last
+   * turn's callbacks queued before the process ends. */
+  if (scr_async_checkpoint_idle != NULL && !scr_exc_pending()) {
+    scr_async_checkpoint_idle();
+    if (scr_exc_pending()) return false;
   }
   return rejection_failed;
 }

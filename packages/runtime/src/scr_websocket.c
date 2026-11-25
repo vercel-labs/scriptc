@@ -48,6 +48,12 @@
 
 #define SCR_WS_ACCEPT_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
+/* Node's global WebSocket caps a message's payload and its fragment count
+ * (the dispatcher's webSocket options default to 128 MiB and 131072), so a
+ * peer cannot make the client buffer without bound. */
+#define SCR_WS_MAX_PAYLOAD ((size_t)128 * 1024 * 1024)
+#define SCR_WS_MAX_FRAGMENTS 131072
+
 enum {
   SCR_WS_CONNECTING = 0,
   SCR_WS_OPEN = 1,
@@ -85,6 +91,7 @@ typedef struct ScrWs {
   unsigned char *frag; /* owned: a fragmented message's payload so far */
   size_t frag_len;     /* its used bytes */
   size_t frag_cap;     /* its allocated byte capacity (geometric growth) */
+  size_t frag_frames;  /* its frames so far, capped like Node's parser */
   unsigned char *buf; /* owned: received bytes not yet parsed */
   size_t buf_len;
   size_t buf_cap;
@@ -235,14 +242,17 @@ static void scr_ws_fail_impl(ScrWs *ws) {
   scr_str_release(empty);
 }
 
-/* A protocol violation: a 1002 close goes out when the socket still
- * writes; the application sees Node's failed-connection pair (error, then
- * close 1006, unclean). */
-static void scr_ws_fail_protocol_impl(ScrWs *ws) {
+/* A connection-failing condition that still has a socket: the named close
+ * goes out when the socket still writes; the application sees Node's
+ * failed-connection pair (error, then close 1006, unclean). */
+static void scr_ws_fail_close_impl(ScrWs *ws, int code) {
   if (ws->discard) return;
   if (ws->sock != NULL && !ws->close_sent) {
     /* A client masks every frame it sends, close frames included. */
-    static const unsigned char payload[2] = {0x03, 0xea}; /* close 1002 */
+    const unsigned char payload[2] = {
+        (unsigned char)((unsigned)code >> 8),
+        (unsigned char)((unsigned)code & 0xff),
+    };
     scr_ws_send_frame(ws, SCR_WS_OP_CLOSE, payload, sizeof payload);
     ws->close_sent = true;
   }
@@ -252,6 +262,19 @@ static void scr_ws_fail_protocol_impl(ScrWs *ws) {
   ScrStr *empty = scr_str_new("", 0);
   scr_ws_emit_close(ws, 1006, empty, false);
   scr_str_release(empty);
+}
+
+/* A protocol violation (1002). */
+static void scr_ws_fail_protocol_impl(ScrWs *ws) { scr_ws_fail_close_impl(ws, 1002); }
+
+/* A message over Node's payload or fragment limit (1009 or 1008). */
+static void scr_ws_fail_limit_impl(ScrWs *ws, int code) { scr_ws_fail_close_impl(ws, code); }
+
+static void scr_ws_fail_limit(ScrWs *ws, int code) {
+  if (ws == NULL) return;
+  scr_ws_retain_v(ws);
+  scr_ws_fail_limit_impl(ws, code);
+  scr_ws_release_v(ws);
 }
 
 /* RFC 3629: no overlong forms, surrogates or values above U+10FFFF, and no
@@ -513,6 +536,15 @@ static void scr_ws_parse(ScrWs *ws) {
       scr_ws_fail_protocol(ws);
       return;
     }
+    if (!control) {
+      /* Node's payload cap, counted over the whole message: a declared
+       * frame is rejected from its header, before its body is buffered. */
+      size_t prior = opcode == SCR_WS_OP_CONTINUATION ? ws->frag_len : 0;
+      if (length > (uint64_t)(SCR_WS_MAX_PAYLOAD - prior)) {
+        scr_ws_fail_limit(ws, 1009);
+        return;
+      }
+    }
     if (avail < offset + (size_t)length) break;
     scr_ws_handle_frame(ws, fin, opcode, p + offset, (size_t)length);
     if (ws->discard || ws->sock == NULL) return;
@@ -537,6 +569,10 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
     return;
   case SCR_WS_OP_TEXT:
   case SCR_WS_OP_BINARY:
+    /* Node dispatches no message once close() was called: frames still
+     * buffered after the handler that closed are discarded, while control
+     * frames (the peer's ping or close) are still answered. */
+    if (ws->ready_state != SCR_WS_OPEN) return;
     if (ws->frag_opcode != 0) {
       scr_ws_fail_protocol(ws);
       return;
@@ -546,6 +582,7 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
       return;
     }
     ws->frag_opcode = opcode;
+    ws->frag_frames = 1;
     if (length > 0) {
       size_t cap = 4096;
       while (cap < length) {
@@ -563,10 +600,28 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
     }
     return;
   case SCR_WS_OP_CONTINUATION:
+    if (ws->ready_state != SCR_WS_OPEN) {
+      /* The rest of a message that was arriving when close() was called is
+       * not delivered; drop the partial reassembly with it. */
+      free(ws->frag);
+      ws->frag = NULL;
+      ws->frag_len = 0;
+      ws->frag_cap = 0;
+      ws->frag_opcode = 0;
+      ws->frag_frames = 0;
+      return;
+    }
     if (ws->frag_opcode == 0) {
       scr_ws_fail_protocol(ws);
       return;
     }
+    if (ws->frag_frames >= SCR_WS_MAX_FRAGMENTS) {
+      /* Node's fragment cap: the peer cannot keep the reassembly alive
+       * with an unbounded number of frames. */
+      scr_ws_fail_limit(ws, 1008);
+      return;
+    }
+    ws->frag_frames++;
     if (length > 0) {
       size_t need = ws->frag_len + length;
       if (need < ws->frag_len) {
@@ -600,6 +655,7 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
       ws->frag_len = 0;
       ws->frag_cap = 0;
       ws->frag_opcode = 0;
+      ws->frag_frames = 0;
       scr_ws_deliver(ws, message_opcode, whole, whole_len);
       free(whole);
     }
@@ -672,33 +728,34 @@ static ScrStr *scr_ws_accept_for(ScrStr *key) {
 
 /* Whether `chosen` (the server's Sec-WebSocket-Protocol) names exactly one
  * of the offered subprotocols; an absent one is right when none was
- * offered. Stores the negotiated value in ws->protocol. */
+ * offered. Stores the negotiated value in ws->protocol.
+ *
+ * The value must equal one offered token as a whole: a response that lists
+ * several tokens (or pads one) is not a selected protocol, and Node rejects
+ * it, as it rejects a response when the client offered protocols and the
+ * server selected none. */
 static bool scr_ws_protocol_ok(ScrWs *ws, ScrStr *chosen) {
-  if (chosen == NULL || chosen->len == 0) return ws->offered->len == 0;
-  if (ws->offered->len == 0) return false;
-  size_t start = 0;
-  for (size_t i = 0; i <= chosen->len; i++) {
-    if (i != chosen->len && chosen->data[i] != ',') continue;
-    size_t begin = start;
-    size_t end = i;
-    while (begin < end && (chosen->data[begin] == ' ' || chosen->data[begin] == '\t')) begin++;
-    while (end > begin && (chosen->data[end - 1] == ' ' || chosen->data[end - 1] == '\t')) end--;
+  if (chosen == NULL) return ws->offered->len == 0;
+  if (ws->offered->len == 0 || chosen->len == 0) return false;
+  size_t at = 0;
+  for (;;) {
+    size_t begin = at;
+    while (at < ws->offered->len && ws->offered->data[at] != ',') at++;
+    size_t end = at;
+    /* The request value is built as "a, b": only the joining space is
+     * insignificant, and offered tokens never contain one. */
+    while (begin < end && ws->offered->data[begin] == ' ') begin++;
+    while (end > begin && ws->offered->data[end - 1] == ' ') end--;
     size_t token_len = end - begin;
-    if (token_len > 0) {
-      for (size_t at = 0; at + token_len <= ws->offered->len; at++) {
-        if (memcmp(ws->offered->data + at, chosen->data + begin, token_len) != 0) continue;
-        bool left_ok = at == 0 || ws->offered->data[at - 1] == ',' || ws->offered->data[at - 1] == ' ';
-        size_t after = at + token_len;
-        bool right_ok = after == ws->offered->len || ws->offered->data[after] == ',' ||
-                        ws->offered->data[after] == ' ';
-        if (!left_ok || !right_ok) continue;
-        ScrStr *value = scr_str_new((const char *)chosen->data + begin, token_len);
-        scr_str_release(ws->protocol);
-        ws->protocol = value;
-        return true;
-      }
+    if (token_len == chosen->len &&
+        memcmp(ws->offered->data + begin, chosen->data, token_len) == 0) {
+      ScrStr *value = scr_str_new((const char *)chosen->data, chosen->len);
+      scr_str_release(ws->protocol);
+      ws->protocol = value;
+      return true;
     }
-    start = i + 1;
+    if (at == ws->offered->len) break;
+    at++; /* the comma */
   }
   return false;
 }
@@ -985,6 +1042,13 @@ static ScrDyn *scr_ws_method_value(size_t which) {
 
 static ScrDyn *scr_ws_get(void *ptr, const char *key, size_t len) {
   ScrWs *ws = ptr;
+  /* The interface constants are readable on an instance too: Node answers
+   * `ws.OPEN` from the prototype, so a guard such as
+   * `ws.readyState === ws.OPEN` works. */
+  if (len == 10 && memcmp(key, "CONNECTING", 10) == 0) return scr_dyn_new_num(SCR_WS_CONNECTING);
+  if (len == 4 && memcmp(key, "OPEN", 4) == 0) return scr_dyn_new_num(SCR_WS_OPEN);
+  if (len == 7 && memcmp(key, "CLOSING", 7) == 0) return scr_dyn_new_num(SCR_WS_CLOSING);
+  if (len == 6 && memcmp(key, "CLOSED", 6) == 0) return scr_dyn_new_num(SCR_WS_CLOSED);
   if (len == 3 && memcmp(key, "url", 3) == 0) return scr_dyn_new_str(ws->url);
   if (len == 10 && memcmp(key, "readyState", 10) == 0) return scr_dyn_new_num(ws->ready_state);
   if (len == 8 && memcmp(key, "protocol", 8) == 0) return scr_dyn_new_str(ws->protocol);

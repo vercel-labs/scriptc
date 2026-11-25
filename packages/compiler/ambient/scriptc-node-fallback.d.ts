@@ -1423,6 +1423,10 @@ declare var CloseEvent: {
  * handle: the lowering supports construction, the readyState constants and
  * instanceof, and the members below dispatch at run time. */
 interface WebSocket extends EventTarget {
+  readonly CONNECTING: 0;
+  readonly OPEN: 1;
+  readonly CLOSING: 2;
+  readonly CLOSED: 3;
   readonly url: string;
   readonly readyState: number;
   readonly protocol: string;

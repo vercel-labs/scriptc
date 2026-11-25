@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   type AllocHost,
   disposeHookLoadLines,
+  emitCoroFrameAlloc,
+  emitCoroFrameFree,
   emitObjectAlloc,
   emitObjectFree,
   emitSegmentFree,
@@ -283,5 +285,42 @@ describe("emitted object allocation", () => {
     expect(disposeHookLoadLines(host(true), "%t1")).toEqual([
       "  %t1 = load ptr, ptr @scr_weak_dispose_hook",
     ]);
+  });
+});
+
+describe("emitted coroutine frames", () => {
+  test("keep the out-of-line calls where inlining is off", () => {
+    const h = host(false);
+    expect(emitCoroFrameAlloc(h, "%size")).toEqual({
+      lines: ["  %cfa.o = call ptr @scr_rt_calloc(i64 %size)"],
+      frame: "%cfa.o",
+    });
+    expect(emitCoroFrameFree(h, "%frame")).toEqual(["  call void @scr_rt_free(ptr %frame)"]);
+  });
+
+  test("take the small-block fast paths and clear a recycled block", () => {
+    const h = host(true);
+    const plan = emitCoroFrameAlloc(h, "%size");
+    expect(plan.frame).toBe("%cfa.f");
+    expect(plan.lines).toContain(
+      "  %cfa.f = phi ptr [ %cfa.b, %cfa.pop ], [ %cfa.p, %cfa.carve ], [ %cfa.o, %cfa.slow ]",
+    );
+    expect(plan.lines).toContain(
+      "  call void @llvm.memset.p0.i64(ptr align 8 %cfa.b, i8 0, i64 %cfa.n, i1 false)",
+    );
+    expectSingleDefinitions(plan.lines);
+  });
+
+  test("return a finished frame to its size class's free list", () => {
+    const sliced = { ...host(true), windowMap: true };
+    const slice = emitCoroFrameFree(sliced, "%frame");
+    expect(slice).toContain("  %cff.sc = lshr i64 %cff.so, 28");
+    expect(slice).toContain("  call void @scr_rt_free(ptr %frame)");
+    expectSingleDefinitions(slice);
+
+    const chunk = emitCoroFrameFree(host(true), "%frame");
+    expect(chunk).toContain("  %cff.mine = icmp ult i32 %cff.x, 256");
+    expect(chunk).toContain("  call void @scr_rt_free(ptr %frame)");
+    expectSingleDefinitions(chunk);
   });
 });

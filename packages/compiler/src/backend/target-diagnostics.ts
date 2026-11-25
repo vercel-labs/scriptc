@@ -222,11 +222,15 @@ export function moduleWasiUnavailableSurface(
         node.fn === "webcrypto.encrypt" ||
         node.fn === "webcrypto.decrypt" ||
         node.fn === "webcrypto.wrapKey" ||
-        node.fn === "webcrypto.unwrapKey"
+        node.fn === "webcrypto.unwrapKey" ||
+        node.fn === "webcrypto.encapsulateBits" ||
+        node.fn === "webcrypto.encapsulateKey" ||
+        node.fn === "webcrypto.decapsulateBits" ||
+        node.fn === "webcrypto.decapsulateKey"
       ) {
         found = {
           surface:
-            "WebCrypto encrypt, decrypt, wrapKey and unwrapKey (the wasm32-wasi runtime does not include the mbedTLS library)",
+            "WebCrypto encrypt, decrypt, wrapKey, unwrapKey and ML-KEM encapsulate/decapsulate (the wasm32-wasi runtime does not include the mbedTLS library)",
           loc,
         };
         return false;

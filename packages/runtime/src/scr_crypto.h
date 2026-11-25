@@ -371,6 +371,13 @@ ScrPromise *scr_webcrypto_wrap(ScrDyn *args, ScrWebCryptoAesFn aes);
 ScrPromise *scr_webcrypto_unwrap(ScrDyn *args, ScrWebCryptoAesFn aes);
 ScrPromise *scr_webcrypto_wrap_key(ScrDyn *args);
 ScrPromise *scr_webcrypto_unwrap_key(ScrDyn *args);
+/* ML-KEM's encapsulateBits/encapsulateKey and decapsulateBits/decapsulateKey
+ * fulfill with { sharedKey, ciphertext } (the *Key forms import the shared
+ * secret as the requested key type) on a later loop turn. */
+ScrPromise *scr_webcrypto_encapsulate_bits(ScrDyn *args);
+ScrPromise *scr_webcrypto_encapsulate_key(ScrDyn *args);
+ScrPromise *scr_webcrypto_decapsulate_bits(ScrDyn *args);
+ScrPromise *scr_webcrypto_decapsulate_key(ScrDyn *args);
 /* deriveBits and deriveKey (PBKDF2 and HKDF) over node:crypto's KDF core:
  * deriveBits fulfills with an ArrayBuffer (at once for a zero length) and
  * deriveKey with a CryptoKey of the derived key type, on a later loop

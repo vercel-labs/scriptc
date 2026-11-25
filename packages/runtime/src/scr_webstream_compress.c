@@ -48,7 +48,6 @@ typedef struct WsCompState {
   bool finishing; /* flush began: drain the backlog, then finish the engine */
   bool drain;     /* the last step filled its output buffer: more is due */
   bool pumping;   /* a pump is on the stack: enqueues may pull again */
-  bool junk;      /* the decoder ended before its input: trailing junk */
   ScrDyn *controller; /* +1, the transform controller while a job runs */
   ScrPromise *pending_write; /* +1, a write waiting for the backlog to drain */
   ScrPromise *pending_flush; /* +1, close waiting for the output to drain */
@@ -380,7 +379,6 @@ static void ws_comp_junk(WsCompState *s) {
   s->in_len = 0;
   s->in_off = 0;
   s->drain = false;
-  s->junk = false;
   ws_comp_release_promises(s, error, true);
   if (controller) {
     scr_webstream_controller_fail(controller, error);
@@ -407,10 +405,6 @@ static void ws_comp_abandon(WsCompState *s) {
  * stream and waits for the reader for a bomb). Returns -1 with the
  * exception pending when enqueueing failed. */
 static int ws_comp_pump_steps(WsCompState *s) {
-  if (s->junk) {
-    ws_comp_junk(s);
-    return 0;
-  }
   if (!s->out) {
     s->out = malloc(WS_COMP_OUT);
     if (!s->out) ws_comp_oom();
@@ -457,14 +451,10 @@ static int ws_comp_pump_steps(WsCompState *s) {
     }
     /* The decoder stopped with output space left and input unread: the
      * compressed stream ended and bytes follow it. A chunk this step made
-     * is delivered first (a reader sees the stream's bytes before the
-     * error); the error follows on the next step. */
+     * already went to a waiting read, so the stream's bytes arrive before
+     * the error; the error settles every other request now (a deferred
+     * error would wait for a pump that nothing triggers). */
     if (s->decompressing && took < in_left && made < WS_COMP_OUT) {
-      if (made && !s->finishing) {
-        s->junk = true;
-        return 0;
-      }
-      /* A flush fails now, as Node's close does; its queued output is moot. */
       ws_comp_junk(s);
       return 0;
     }
@@ -510,10 +500,14 @@ static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_
       ws_comp_backlog(s, in->data, in->len);
       ws_comp_bind(s, controller);
       s->drain = false;
+      /* Produce what the readable side can take now: a reader already
+       * waiting must not wait for another pull to start the engine, and a
+       * backlog past its cap would otherwise never drain. */
+      int pumped = ws_comp_pump(s);
       if (s->in_len - s->in_off > WS_COMP_BACKLOG) {
         s->pending_write = scr_promise_new();
         result = scr_dyn_new_promise(s->pending_write);
-      } else if (ws_comp_pump(s) == 0) {
+      } else if (pumped == 0) {
         result = scr_dyn_retain(scr_dyn_undefined());
       }
     } else {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compression-streams-cancel-pending-write.ts"
+ ],
+ "diags": []
+}

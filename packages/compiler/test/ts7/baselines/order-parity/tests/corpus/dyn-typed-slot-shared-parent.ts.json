@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-typed-slot-shared-parent.ts"
+ ],
+ "diags": []
+}

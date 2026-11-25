@@ -190,6 +190,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
+  "stream.duplexBodyValue",
   "stream.handleStream",
   "stream.handleWritable",
   "stream.pipeDyn",

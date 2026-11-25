@@ -58,6 +58,7 @@ export const streamSignatures = defineLibFnSignatures({
    * which must be async iterable: ERR_INVALID_RETURN_VALUE naming the
    * stage ("transform[i]") otherwise. Answers the value (+1). */
   "stream.dynTransformResult": { argTypes: [DYN, STRING], result: DYN },
+  "stream.duplexBodyValue": { argTypes: [DYN], result: DYN },
   /** A checked-dynamic pipeline() stage taken as a stream: a native stream
    * (+1), or Duplex.from of a value that is not stream-like or a function
    * (an iterable), which the pipeline uses without piping into it. Other

@@ -165,6 +165,10 @@ struct ScrDyn *scr_stream_dyn_source_value(const struct ScrDyn *value, bool retu
 /* An untyped function stage's result before the last pipeline stage: the
  * async iterable itself (+1), or NULL with ERR_INVALID_RETURN_VALUE. */
 struct ScrDyn *scr_stream_dyn_transform_result(const struct ScrDyn *value, const ScrStr *label);
+/* duplexify's function body: the value the function answered, when it is
+ * a synchronous or asynchronous iterable or a native readable stream
+ * (+1), else NULL with the "body" form of ERR_INVALID_RETURN_VALUE. */
+struct ScrDyn *scr_stream_duplex_body_value(const struct ScrDyn *value);
 /* Handles that are Transforms (ScrDynHandleOps.transform: Cipheriv and
  * Decipheriv). scr_stream_of_handle: the handle's Transform (+1), built on
  * first use, or NULL when the value is not such a handle.

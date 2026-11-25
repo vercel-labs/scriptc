@@ -1228,6 +1228,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.dynSourceValue": "scr_stream_dyn_source_value",
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",
+  "stream.duplexBodyValue": "scr_stream_duplex_body_value",
   "stream.handleStream": "scr_stream_handle",
   "stream.handleWritable": "scr_stream_handle",
   "stream.pipeDyn": "scr_stream_pipe_dyn",

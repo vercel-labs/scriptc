@@ -4893,6 +4893,7 @@ function lowerH2SessionMethodCall(
         if (p.kind !== "union") return false;
         const arms = lowerer.unions.get(p.unionId)?.arms ?? [];
         return (
+          arms.length === 2 &&
           arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
           arms.some((a) => a.kind === "undefinedT")
         );

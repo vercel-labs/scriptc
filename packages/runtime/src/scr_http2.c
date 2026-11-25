@@ -1201,7 +1201,6 @@ static ScrH2Stream *scr_h2_stream_new(ScrH2Session *sess, int32_t id) {
   st->id = id;
   st->file_fd = -1;
   st->sess = scr_http2_session_retain(sess);
-  if (id > sess->last_proc_stream_id) sess->last_proc_stream_id = id;
   if (sess->client) st->als = scr_als_capture();
   st->send_window = sess->peer_init_window ? (int64_t)sess->peer_init_window : SCR_H2_DEFAULT_WINDOW;
   st->recv_window = sess->local_settings.initial_window_size
@@ -3710,6 +3709,10 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     }
     st = scr_h2_stream_new(s, stream_id);
     s->max_created_stream_id = stream_id;
+    /* goaway()'s default lastStreamID is the last PEER stream processed
+     * (nghttp2's last_proc_stream_id): the peer's own ids — a client's
+     * locally initiated requests do not count. */
+    if (stream_id > s->last_proc_stream_id) s->last_proc_stream_id = stream_id;
     if (end_stream) {
       st->end_recv = true;
       st->end_after_headers = true;
@@ -4593,6 +4596,13 @@ void scr_http2_session_set_timeout(ScrH2Session *s, double msecs) {
 
 void scr_http2_session_set_timeout_cb(ScrH2Session *s, double msecs, ScrClosure *cb /*moves*/) {
   if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* a zero (or negative) idle timeout disables the timer and does NOT
+   * register the callback — Node's setTimeout(0, cb) shape. */
+  if (!(msecs > 0)) {
+    if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
     scr_closure_release(cb);
     return;
   }

@@ -21,6 +21,8 @@ function run(
       lines.push(`${label} session`);
       if (!withTimeout) return;
       session.on("timeout", () => lines.push(`${label} timeout event`));
+      // a zero timeout disables the timer and drops the callback (Node)
+      session.setTimeout(0, () => lines.push(`${label} zero callback`));
       session.setTimeout(20, () => lines.push(`${label} timeout cb`));
       // the underlying socket's loop reference (Node answers undefined)
       session.ref();
@@ -74,7 +76,47 @@ function run(
   });
 }
 
+function runClientDefault(): Promise<void> {
+  return new Promise((resolve) => {
+    const server = http2.createServer();
+    server.on("session", (opened) => {
+      opened.on("goaway", (code: number, lastStreamID: number) => {
+        lines.push(`client-default goaway ${code} ${lastStreamID} none`);
+      });
+    });
+    server.on("stream", (stream) => {
+      lines.push("client-default stream");
+      setTimeout(() => {
+        stream.respond({ ":status": 200 });
+        stream.end("ok");
+      }, 60);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      client.on("error", () => {});
+      const request = client.request({ ":path": "/" });
+      request.on("response", (responseHeaders) => {
+        lines.push(`client-default response ${responseHeaders[":status"]}`);
+        // the client's default lastStreamID counts PEER streams only: the
+        // server opened none, so the frame carries 0
+        client.goaway();
+      });
+      request.on("data", (chunk) => lines.push(`client-default data ${String(chunk)}`));
+      request.on("end", () => {
+        // let the GOAWAY frame reach the server before tearing down
+        setTimeout(() => {
+          client.destroy();
+          server.close(() => resolve());
+        }, 50);
+      });
+      request.resume();
+      request.end();
+    });
+  });
+}
+
 await run("timed", (session) => session.goaway(), true);
 await run("opaque", (session) => session.goaway(0, 1, Buffer.from("bye")), false);
+await runClientDefault();
 
 for (const line of lines) console.log(line);

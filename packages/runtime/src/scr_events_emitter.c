@@ -1734,6 +1734,27 @@ static void scr_ee_unhandled_error(const ScrDyn *er) {
   scr_str_release(message);
 }
 
+static void scr_ee_unheard_value(const ScrDyn *er, ScrStr *(*render)(ScrDyn *, double, double)) {
+  if (scr_dyn_err_instanceof(er, SCR_ERR_ERROR)) {
+    scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
+  } else if (render) {
+    ScrStr *shown = render((ScrDyn *)er, 0, 2);
+    if (scr_exc_pending()) {
+      /* A throwing inspect: Node quotes the payload's string conversion
+       * instead, whose own throw propagates. */
+      if (shown) scr_str_release(shown);
+      scr_exc_clear();
+      shown = scr_dyn_string_coerce_js(er);
+    }
+    if (shown) {
+      scr_ee_throw_unhandled(shown->data, shown->len, er);
+      scr_str_release(shown);
+    }
+  } else {
+    scr_ee_unhandled_error(er);
+  }
+}
+
 /* emit('error', ...) through an untyped value: errorMonitor first; with no
  * 'error' listener an Error payload throws itself and anything else throws
  * ERR_UNHANDLED_ERROR, Node's contract; otherwise listeners receive the
@@ -1747,26 +1768,7 @@ static bool scr_ee_emit_error_dyn(ScrEmitter *em, ScrStr *name, ScrDyn *const *a
   bool had = false;
   if (!scr_ee_has(em->reg, "error")) {
     scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, err != NULL, err);
-    if (!scr_exc_pending()) {
-      if (err) {
-        scr_dyn_throw(scr_dyn_retain((ScrDyn *)er));
-      } else if (render) {
-        ScrStr *shown = render((ScrDyn *)er, 0, 2);
-        if (scr_exc_pending()) {
-          /* A throwing inspect: Node quotes the payload's string conversion
-           * instead, whose own throw propagates. */
-          if (shown) scr_str_release(shown);
-          scr_exc_clear();
-          shown = scr_dyn_string_coerce_js(er);
-        }
-        if (shown) {
-          scr_ee_throw_unhandled(shown->data, shown->len, er);
-          scr_str_release(shown);
-        }
-      } else {
-        scr_ee_unhandled_error(er);
-      }
-    }
+    if (!scr_exc_pending()) scr_ee_unheard_value(er, render);
   } else {
     had = scr_ee_emit_mixed_va(em, name, args, argc, err != NULL, err);
   }
@@ -1846,12 +1848,28 @@ static void scr_ee_emit_error_monitor_va(ScrEmitter *em, ...) {
   va_end(ap);
 }
 
+static ScrStr *scr_ee_inspect_island_error(ScrDyn *value, double recurse, double depth) {
+  return scr_ni_dyn_ops->inspect(value, recurse, depth);
+}
+
+static void scr_ee_unheard_typed_error(ScrError *err) {
+  /* A monitor can change an island Error's prototype. Its type admitted
+   * it at the boundary; the original value decides what Node throws now. */
+  ScrDyn *value = scr_ni_dyn_ops ? scr_ni_dyn_ops->error_value(err) : NULL;
+  if (value) {
+    scr_ee_unheard_value(value, &scr_ee_inspect_island_error);
+    scr_dyn_release(value);
+    return;
+  }
+  scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
+                scr_error_trace_arg());
+}
+
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err) {
   if (!scr_ee_has(em->reg, "error")) {
     scr_ee_emit_error_monitor_va(em, err);
     if (scr_exc_pending()) return false;
-    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
-                  scr_error_trace_arg());
+    scr_ee_unheard_typed_error(err);
     return false;
   }
   return scr_ee_emit_va(em, name, err);
@@ -1862,8 +1880,7 @@ bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
   if (!scr_ee_has(em->reg, "error")) {
     scr_ee_emit_mixed_va(em, SCR_EE_ERROR_MONITOR, args, argc, 1, err);
     if (scr_exc_pending()) return false;
-    scr_throw_obj(scr_error_retain(err), &scr_error_retain_v, &scr_error_release_v,
-                  scr_error_trace_arg());
+    scr_ee_unheard_typed_error(err);
     return false;
   }
   return scr_ee_emit_mixed_va(em, name, args, argc, 1, err);

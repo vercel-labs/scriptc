@@ -88,6 +88,12 @@ describe.skipIf(skip)("Node island handles", () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
   }, 300_000);
 
+  test("an unhandled typed island Error uses its prototype after errorMonitor", async () => {
+    expect(await runFixture("error-emitter-policy", "error-emitter-policy.mts")).toBe(
+      "ERR_UNHANDLED_ERROR true false\n",
+    );
+  }, 300_000);
+
   test("checked, caught and callback island Errors keep the original value", async () => {
     expect(await runFixture("error-identity", "error-identity.mts")).toBe(
       "cast true true true\ncatch true true\ncallback true 0\nreject true\ndetached true false false\n",

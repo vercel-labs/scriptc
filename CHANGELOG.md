@@ -5,6 +5,7 @@ All notable changes to scriptc will be documented in this file.
 ## Unreleased
 
 - `Error.isError` recognizes Errors returned by a Node island, including Errors with a detached prototype. Checked casts, callbacks and promise rejections preserve the original object. Brand checks and callbacks taking `unknown` leave its property getters untouched.
+- An unhandled `error` event carrying a typed Node island Error follows the object's prototype after the `errorMonitor` callbacks run. When a monitor detaches the prototype, the emitter throws `ERR_UNHANDLED_ERROR` with the original object as its context.
 
 <!-- release:start -->
 

@@ -523,12 +523,16 @@ function splitTestArgs(
  * `fn.name`, "<anonymous>" when unnamed). The function value is evaluated
  * once, where the call's argument evaluates, and the same value registers
  * the test or suite. */
-function runtimeNameOfValue(lowerer: Lowerer, fnValue: IrExpr, loc: SrcLoc): IrExpr {
+function runtimeNameOfValue(
+  lowerer: Lowerer,
+  fnValue: IrExpr,
+  loc: SrcLoc,
+): { name: IrExpr; fn: IrExpr } {
   const fnLocal = lowerer.declareHiddenLocal("%testBody", fnValue.type);
   const nameLocal = lowerer.declareHiddenLocal("%testName", STRING);
   const fnRef = (): IrExpr => varRef(fnLocal.id, fnValue.type, loc);
   const read = varRef(nameLocal.id, STRING, loc);
-  return {
+  const name: IrExpr = {
     kind: "seqExpr",
     stmts: [
       { kind: "varDecl", localId: fnLocal.id, init: fnValue, loc },
@@ -559,6 +563,7 @@ function runtimeNameOfValue(lowerer: Lowerer, fnValue: IrExpr, loc: SrcLoc): IrE
     type: STRING,
     loc,
   };
+  return { name, fn: fnRef() };
 }
 
 /** Whether a registration takes its name from the function at run time:
@@ -647,7 +652,9 @@ function lowerRegistration(
         fnNode!,
         "pass the test's name: a body that takes the TestContext cannot have its name read from the function yet",
       );
-    name = runtimeNameOfValue(lowerer, preLoweredBody.cb, loc);
+    const named = runtimeNameOfValue(lowerer, preLoweredBody.cb, loc);
+    preLoweredBody = { cb: named.fn, flags: preLoweredBody.flags };
+    name = named.name;
   } else {
     name = lowerTestName(lowerer, expr, what, nameNode, fnNode, loc);
   }
@@ -775,8 +782,9 @@ function lowerSuite(
   let preLoweredSuiteBody: IrExpr | null = null;
   let name: IrExpr;
   if (takesRuntimeName(lowerer, split.nameNode, split.fnNode, split.optionsNode)) {
-    preLoweredSuiteBody = lowerer.lowerExpr(split.fnNode!);
-    name = runtimeNameOfValue(lowerer, preLoweredSuiteBody, loc);
+    const named = runtimeNameOfValue(lowerer, lowerer.lowerExpr(split.fnNode!), loc);
+    preLoweredSuiteBody = named.fn;
+    name = named.name;
   } else {
     name = lowerTestName(lowerer, expr, what, split.nameNode, split.fnNode, loc);
   }

@@ -65,6 +65,15 @@ export function mobileRuntimeConfig(name, env = process.env, platform = process.
       object_format: "elf",
       minimum_os: "Android 26",
     },
-    targetArgs: ["--target=aarch64-linux-android26", "--sysroot", join(toolchain, "sysroot")],
+    // Android loads an app's native code as a shared library, so the pack's
+    // objects must be position independent even though they ship as an
+    // archive: linking them into lib<name>.so otherwise fails with
+    // "relocation R_AARCH64_ADR_PREL_PG_HI21 ... recompile with -fPIC".
+    targetArgs: [
+      "--target=aarch64-linux-android26",
+      "--sysroot",
+      join(toolchain, "sysroot"),
+      "-fPIC",
+    ],
   };
 }

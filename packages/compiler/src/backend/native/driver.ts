@@ -270,10 +270,13 @@ export function resolveCc(
       argv: ["zig", "cc"],
       target,
       zigTarget,
+      // The embedder links the archive into an app's lib<name>.so, so every
+      // object must be position independent.
       targetArgs: [
         "-target",
         zigTarget,
         "-D_GNU_SOURCE",
+        "-fPIC",
         "-isystem",
         join(sysroot, "usr", "include"),
         "-isystem",

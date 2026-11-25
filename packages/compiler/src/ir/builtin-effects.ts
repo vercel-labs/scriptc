@@ -644,6 +644,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionSettingsCb0",
   "http2.sessionSettingsDynCb",
   "http2.sessionOnSettingsDyn",
+  "http2.sessionSetLocalWindowSize",
   "http2.sessionPing",
   "http2.sessionPingPayload",
   "http2.getPackedSettings",

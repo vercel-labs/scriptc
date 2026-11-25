@@ -469,7 +469,9 @@ interface LinkFeatureRequirement {
  * scr_symbol.c, and its object keeps those functions when Windows links
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
-  { feature: "http2", requires: ["http", "net"] },
+  // scr_http2.c reports DEP0194 (stream.priority) through scr_emit_warning
+  // (scr_async_dyn.c, Node's process warning report and listeners).
+  { feature: "http2", requires: ["http", "net", "dynAsync"] },
   // scr_dgram.c reads the options' net.BlockList members through scr_net.c's
   // matcher (createSocket's checks and the send/connect filters), so the
   // block-list unit comes with the dgram unit.

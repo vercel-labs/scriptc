@@ -499,6 +499,9 @@ declare module "http2" {
     readonly localSettings: any;
     readonly remoteSettings: any;
     goaway(code?: number, lastStreamID?: number, opaqueData?: Uint8Array): void;
+    /* Node validates the argument and applies no observable change (the
+     * local settings record and the peer's view stay as they were). */
+    setLocalWindowSize(windowSize: number): void;
     on(event: "close" | "timeout", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(

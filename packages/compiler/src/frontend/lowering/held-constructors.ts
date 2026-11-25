@@ -46,6 +46,13 @@ import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
 import type { Lowerer, LowerResult } from "./lowerer.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
+const PRIMITIVE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set([
+  "String",
+  "Number",
+  "Boolean",
+  "BigInt",
+]);
+
 /** Whether the program writes a primitive constructor as a value anywhere
  * (held-constructors.ts's comparison exists for those programs). Decided
  * before lowering from the symbols of value positions: an identifier that
@@ -74,7 +81,22 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
           parent.expression === node
         )
           return;
-        if (ts.isPropertyAccessExpression(parent) && parent.name === node) return;
+        if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+          const access = parent.parent;
+          // A callee is not a held value, exactly like a bare `Number(...)`.
+          if (
+            access !== undefined &&
+            (ts.isCallExpression(access) || ts.isNewExpression(access)) &&
+            access.expression === parent
+          )
+            return;
+          // A member name is not a value, but `globalThis.Number` (and a
+          // cast of the global object) names the constructor itself: resolve
+          // the access as a whole rather than its name.
+          if (PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, parent) ?? ""))
+            found = true;
+          return;
+        }
         if (
           (ts.isPropertyAssignment(parent) ||
             ts.isPropertyDeclaration(parent) ||
@@ -108,9 +130,7 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
           } else return;
         }
       }
-      const name = stdlibGlobalNameOf(lowerer, node);
-      if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
-        found = true;
+      if (PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, node) ?? "")) found = true;
     });
     if (found) return true;
   }

@@ -78,6 +78,17 @@ console.log("name" in read, Object.keys(read).length, read("4") + 1);
   expect(result.errors).toEqual([]);
 });
 
+// A constructor read through the global object is the same held value: the
+// scan that decides the program's fact must see `globalThis.Number` where it
+// sees a bare `Number`, or the comparison pass a caller needs never runs.
+test("a constructor read from the global object arms the comparison pass", async () => {
+  const result = await compileSource(`function get() { return globalThis.Number; }
+const named = "name" in get();
+console.log(named, get()("4") + 1);
+`);
+  expect(result.errors).toEqual([]);
+});
+
 // A statement whose refusal waits for it to run, or that hands a held
 // constructor to an operation the runtime refuses, is named by the build:
 // a TypeScript program is otherwise told at build time what does not compile.

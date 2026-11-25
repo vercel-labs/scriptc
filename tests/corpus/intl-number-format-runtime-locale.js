@@ -33,3 +33,23 @@ function formatIn(locale) {
 }
 console.log("undefined-locale", formatIn(undefined));
 console.log("runtime-locale", formatIn("de-DE"));
+
+// A computed locale is read as a locale list (ECMA-402's
+// CanonicalizeLocaleList): a value without a list length, such as a number,
+// a boolean or a plain object, names the empty list and selects the default
+// locale, as it does in Node; a non-empty list is not modelled and is
+// refused; null is not an object.
+for (const text of ['"42"', "{}", "true", "[]"]) {
+  const value = JSON.parse(text);
+  try {
+    console.log("list-shape", text, new Intl.NumberFormat(value).format(1234.5));
+  } catch (error) {
+    console.log("list-shape", text, error.name, error.message);
+  }
+}
+try {
+  new Intl.NumberFormat(JSON.parse("null"));
+  console.log("null", "no throw");
+} catch (error) {
+  console.log("null", error.name, error.message);
+}

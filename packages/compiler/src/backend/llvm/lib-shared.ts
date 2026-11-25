@@ -82,6 +82,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "icu.dateTimeFormatNew": "scr_intl_date_time_format_new",
   "icu.dateTimeFormatFormat": "scr_intl_date_time_format_format",
   "icu.dateToLocale": "scr_intl_date_to_locale",
+  "icu.localeValue": "scr_intl_locale_value",
   "weakMap.promiseKey": "scr_dyn_new_promise",
   "weakMap.is": "scr_weak_map_is",
   "weakSet.is": "scr_weak_set_is",

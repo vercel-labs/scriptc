@@ -184,6 +184,20 @@ test("an undefined or dynamic locale selects the default locale", async () => {
   ).toContain("icu.numberFormatNew");
 });
 
+test("a computed locale is resolved by ECMA-402's locale-list rules in the runtime", async () => {
+  // Not ToString: a value without a locale list length, such as
+  // JSON.parse("42") or JSON.parse("{}"), names the empty list and selects
+  // the default locale in Node, where "42"/"[object Object]" would be an
+  // invalid tag.
+  const calls = await intlCalls(`
+    const dynamic = JSON.parse("42");
+    console.log(new Intl.NumberFormat(dynamic).format(1));
+    export {};
+  `);
+  expect(calls).toContain("icu.localeValue");
+  expect(calls).toContain("icu.numberFormatNew");
+});
+
 test("an empty locale tag is passed to the runtime, which raises Node's RangeError", async () => {
   // The argument expressions all evaluate first; the runtime validates the
   // tag when the formatter is built, as Node does.

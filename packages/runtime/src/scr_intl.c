@@ -867,6 +867,38 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   return true;
 }
 
+/* The tag a locales argument the program computed stands for: ECMA-402's
+ * CanonicalizeLocaleList, as far as this runtime models it. Undefined and
+ * a value whose locale-list length is absent or zero (a number, a boolean,
+ * a plain object, an empty array) name the empty list, which selects the
+ * default locale, as Node does; a string is its own tag, validated by the
+ * formatter's own locale step; null is not an object, which Node refuses
+ * with the TypeError below; a non-empty list is locale negotiation, which
+ * is not modelled and is refused by name rather than answered with another
+ * locale. +1 string; NULL with the exception pending. */
+ScrStr *scr_intl_locale_value(ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_NULL) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value != NULL && value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
+  double length = 0;
+  if (value != NULL && value->kind == SCR_DYN_ARR) {
+    length = scr_dyn_arr_len(value);
+  } else if (value != NULL && value->kind == SCR_DYN_OBJ) {
+    /* ToObject(locales).length: a getter may run and may throw. */
+    const ScrDyn *entry = scr_dyn_obj_get(value, "length", sizeof "length" - 1);
+    if (scr_exc_pending()) return NULL;
+    if (entry != NULL && entry->kind == SCR_DYN_NUM) length = entry->v.num;
+  }
+  if (length > 0) {
+    scr_intl_refuse("a locales list computed at run time");
+    return NULL;
+  }
+  return scr_str_new(SCR_INTL_DEFAULT_TAG, strlen(SCR_INTL_DEFAULT_TAG));
+}
+
 /* ── Intl.NumberFormat ────────────────────────────────────────────────
  * The constructor's options resolve by ECMA-402's steps into the settings
  * V8 hands ICU's number formatter, spelled as a number skeleton (the

@@ -56,11 +56,13 @@ function isUndefinedArgument(lowerer: Lowerer, arg: ts.Expression): boolean {
 }
 
 /** The locales argument of `what`: the locale the runtime builds the
- * formatter at — the default locale (the empty tag) for an absent or
- * undefined argument, a literal tag, or a string the program computes. The
- * runtime canonicalizes the tag with ICU and refuses a structurally invalid
- * one with Node's RangeError; lists of locales are locale negotiation and
- * stay refused. */
+ * formatter at — the default locale for an absent or undefined argument, a
+ * literal tag, or a value the program computes, which the runtime resolves
+ * by ECMA-402's CanonicalizeLocaleList (a value without a locale list
+ * length selects the default locale, null is Node's TypeError). The runtime
+ * canonicalizes the tag with ICU and refuses a structurally invalid one
+ * with Node's RangeError; non-empty lists are locale negotiation and stay
+ * refused. */
 function intlLocale(
   lowerer: Lowerer,
   arg: ts.Expression | undefined,
@@ -106,41 +108,20 @@ function intlLocale(
       arg,
       "choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string",
     );
-  // An undefined locale selects the default locale, as Node treats an
-  // absent locales argument; a checked-dynamic value is converted with
-  // ToString after that test, so an object reaches the runtime as Node's
-  // "[object Object]" and takes the invalid-tag RangeError.
+  // A checked-dynamic locale is not converted with ToString: ECMA-402
+  // reads it as a locale list (CanonicalizeLocaleList), where a value
+  // without a list length — a number, a boolean, a plain object — is the
+  // empty list and selects the default locale, exactly as an absent
+  // argument does in Node. The runtime resolves the value once, so its
+  // reads run once, where the argument stands in the evaluation order.
   if (value.type.kind === "dyn") {
-    // The expression evaluates once: the test and the conversion both read
-    // the held value, so its side effects run once and the tag tested is
-    // the tag converted.
     const held = lowerer.declareHiddenLocal("%localeValue", DYN);
     const heldRef = varRef(held.id, DYN, locOf(arg));
     return {
       locale: {
-        kind: "ternary",
-        cond: {
-          kind: "strEq",
-          negated: false,
-          left: {
-            kind: "libCall",
-            fn: "dyn.typeof",
-            args: [heldRef],
-            type: STRING,
-            loc: locOf(arg),
-          },
-          right: { kind: "strLit", value: "undefined", type: STRING, loc: locOf(arg) },
-          type: BOOL,
-          loc: locOf(arg),
-        },
-        then: defaultMarker(),
-        else_: {
-          kind: "libCall",
-          fn: "dyn.toStringCoerce",
-          args: [heldRef],
-          type: STRING,
-          loc: locOf(arg),
-        },
+        kind: "libCall",
+        fn: "icu.localeValue",
+        args: [heldRef],
         type: STRING,
         loc: locOf(arg),
       },
@@ -260,12 +241,23 @@ export function lowerIntlFormatterNew(
   if (args.length > 2) lowerer.noLowering(`${what} with ${args.length} arguments`, node);
   const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, which);
+  // ECMA-402 canonicalizes the locales argument inside the constructor, after
+  // both arguments are evaluated. A runtime-resolved locale (icu.localeValue)
+  // reads its list length and throws for null there, so it must run after the
+  // options object's initializers: the options evaluate into a local first.
+  let effects = locale.effects;
+  let optionsArg = options;
+  if (locale.locale.kind === "libCall" && locale.locale.fn === "icu.localeValue") {
+    const held = lowerer.declareHiddenLocal("%localeOptions", DYN);
+    effects = [...effects, { kind: "varDecl", localId: held.id, init: options, loc }];
+    optionsArg = varRef(held.id, DYN, loc);
+  }
   return withEffects(
-    locale.effects,
+    effects,
     {
       kind: "libCall",
       fn: which === "NumberFormat" ? "icu.numberFormatNew" : "icu.dateTimeFormatNew",
-      args: [locale.locale, options],
+      args: [locale.locale, optionsArg],
       type: DYN,
       loc,
     },

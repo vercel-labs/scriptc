@@ -42,6 +42,14 @@ ScrStr *scr_intl_date_locale_time_string(double ms);
  * `isWordLike`, as Node's word segments do. +1 handle. */
 ScrDyn *scr_intl_segmenter_word_new(ScrStr *locale);
 
+/* A locales argument the program computed (a checked-dynamic value): the
+ * tag the formatter builds at. Undefined and a value without a locale-list
+ * length name the empty list, which selects the default locale; a string
+ * is its own tag; null is Node's TypeError; a non-empty list is locale
+ * negotiation and is refused by name. +1 string; NULL with the exception
+ * pending. */
+ScrStr *scr_intl_locale_value(ScrDyn *value);
+
 /* Intl.NumberFormat: `new Intl.NumberFormat(locale, options)` (and the
  * call without `new`), `format(x)` on its result, and
  * Number.prototype.toLocaleString(locale, options), which constructs the

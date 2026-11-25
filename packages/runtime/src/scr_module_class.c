@@ -78,7 +78,10 @@ static const ScrDynHandleClass scr_module_class_kt = {
   .construct = scr_module_class_construct,
 };
 
-static bool scr_module_class_ready;
+/* Thread-local: scr_dyn_handle_class_install fills thread-local class
+ * tables (scr_dyn_handle_class.c), so each thread installs the class in its
+ * own tables and a worker does not inherit the main thread's registration. */
+static SCR_TL bool scr_module_class_ready;
 
 static void scr_module_class_ensure(void) {
   if (scr_module_class_ready) return;

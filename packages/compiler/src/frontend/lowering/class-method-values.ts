@@ -890,6 +890,7 @@ function arrayClassMethodReceiver(owner: ClassInfo, elem: IrType, loc: SrcLoc): 
 /** Complete adapters after all native class bodies and instantiations exist. */
 export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunction[]): void {
   const byName = new Map(functions.map((fn) => [fn.name, fn]));
+  const receiverless = new Set<string>();
   for (const fn of [...functions]) {
     if (
       fn.name.startsWith(METHOD_RECEIVER_PREFIX) &&
@@ -979,7 +980,13 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
       fn.body.unshift(...branches);
     }
     if (!fn.name.startsWith("%method.value:")) continue;
-    const target = byName.get(fn.name.slice("%method.value:".length));
+    // An island's exact-return variant carries the suffix in its helper name;
+    // its call is the same method, and a method that never reads `this` must
+    // stay callable detached there too.
+    const methodName = fn.name.slice("%method.value:".length);
+    const target = byName.get(
+      methodName.endsWith(".exact") ? methodName.slice(0, -".exact".length) : methodName,
+    );
     const thisParam = target?.params[0];
     if (!target || !thisParam || target.async || target.generator) continue;
     const usesThis =
@@ -1001,18 +1008,23 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
     // class captures it needs no class environment, so the detached copy
     // drops the (empty) capture list, which requires a receiver.
     const name = `%method.receiverless:${target.name}`;
-    const { classCaptures: _classCaptures, ...detached } = target;
-    // The copy owns its parameter and local records: later passes retype a
-    // function's locals in place (the jsval promotion), one function at a
-    // time.
-    functions.push({
-      ...detached,
-      name,
-      params: target.params.slice(1).map((param) => ({ ...param })),
-      locals: target.locals
-        .filter((local) => local.id !== thisParam.localId)
-        .map((local) => ({ ...local })),
-    });
+    // A native method value and an island's exact variant of the same method
+    // share one detached copy.
+    if (!byName.has(name) && !receiverless.has(name)) {
+      receiverless.add(name);
+      const { classCaptures: _classCaptures, ...detached } = target;
+      // The copy owns its parameter and local records: later passes retype a
+      // function's locals in place (the jsval promotion), one function at a
+      // time.
+      functions.push({
+        ...detached,
+        name,
+        params: target.params.slice(1).map((param) => ({ ...param })),
+        locals: target.locals
+          .filter((local) => local.id !== thisParam.localId)
+          .map((local) => ({ ...local })),
+      });
+    }
     fn.body = transformStmtList(fn.body, {
       stmt: (stmt) => stmt,
       expr: (expr) =>

@@ -366,9 +366,72 @@ function modeAndPath(dir) {
     } catch (err) {
       console.log("nul", err.name, err.code, err.message);
     }
-    fs.rmSync(dir, { recursive: true, force: true });
-    console.log("done");
+    asyncOpenError(dir);
   });
+}
+
+// The default stream's open rides the threadpool in Node: a failure is an
+// 'error' event after the constructor returns, not a throw, and a later
+// write answers the out-of-range descriptor error.
+function asyncOpenError(dir) {
+  const missing = join(dir, "missing", "deeper", "x.log");
+  const s = new fs.Utf8Stream({ dest: missing });
+  const events = [];
+  s.on("ready", () => events.push("ready"));
+  s.on("error", (error) => {
+    events.push("error:" + error.code);
+    console.log("async open", s.fd, events.join(","));
+    try {
+      s.write("x");
+      console.log("async write ok");
+    } catch (err) {
+      console.log("async write", err.name, err.code);
+    }
+    mkdirReopen(dir);
+  });
+  console.log("async constructed", s.fd);
+}
+
+// reopen() with mkdir: true creates the destination's directory, as the
+// first open does.
+function mkdirReopen(dir) {
+  const file = join(dir, "made", "by", "reopen.log");
+  const s = new fs.Utf8Stream({ dest: join(dir, "start.log"), sync: true, mkdir: true });
+  let readies = 0;
+  s.on("ready", () => {
+    if (readies++ !== 0) return;
+    s.reopen(file);
+    s.write("made");
+    console.log("mkdir reopen", fs.existsSync(join(dir, "made", "by")), s.file === file);
+    s.end();
+  });
+  s.on("close", () => {
+    console.log("mkdir reopen file", JSON.stringify(fs.readFileSync(file, "utf8")));
+    descriptorInheritance(dir);
+  });
+}
+
+// A log descriptor the stream opened is close-on-exec: a spawned child does
+// not inherit the writable file. /proc is the Linux observation point.
+function descriptorInheritance(dir) {
+  if (process.platform !== "linux") {
+    console.log("descriptor inheritance skipped");
+    finish(dir);
+    return;
+  }
+  const file = join(dir, "cloexec.log");
+  const s = new fs.Utf8Stream({ dest: file, sync: true });
+  // /proc/self/fdinfo reports the descriptor's flags, O_CLOEXEC included.
+  const info = fs.readFileSync("/proc/self/fdinfo/" + s.fd, "utf8");
+  const flags = parseInt(info.match(/flags:\s+(\d+)/)[1], 8);
+  console.log("descriptor inheritance", (flags & 524288) !== 0 ? "closed" : "inherited");
+  s.destroy();
+  finish(dir);
+}
+
+function finish(dir) {
+  fs.rmSync(dir, { recursive: true, force: true });
+  console.log("done");
 }
 
 run();

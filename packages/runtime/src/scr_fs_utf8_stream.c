@@ -29,6 +29,7 @@
  */
 #include "scr_runtime.h"
 
+#include <errno.h>
 #include <fcntl.h>
 
 /* Windows has no FIFOs and its CRT has no O_NONBLOCK; the flag is a no-op
@@ -36,6 +37,27 @@
 #ifndef O_NONBLOCK
 #define O_NONBLOCK 0
 #endif
+
+/* A log file the stream opens must not be inherited by a spawned child:
+ * Node's opens are close-on-exec, and a child that outlives the service's
+ * privileges must not keep a writable descriptor to it. */
+#if defined(_WIN32)
+#define SCR_U8_NOINHERIT _O_NOINHERIT
+#elif defined(O_CLOEXEC)
+#define SCR_U8_NOINHERIT O_CLOEXEC
+#else
+#define SCR_U8_NOINHERIT 0
+#endif
+
+/* The fallback for a libc without O_CLOEXEC: set it on the descriptor the
+ * open returned. */
+static void scr_u8_close_on_exec(int fd) {
+#if !defined(_WIN32) && !defined(O_CLOEXEC)
+  if (fd >= 0) (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+#else
+  (void)fd;
+#endif
+}
 
 typedef enum {
   SCR_U8_READY,
@@ -63,6 +85,7 @@ typedef struct ScrU8FlushCb {
 typedef struct ScrUtf8Stream {
   size_t rc;
   double fd; /* Node keeps the number after close (#fd is not reset) */
+  int retired_fd; /* a descriptor reopen() replaced while a worker wrote */
   ScrStr *file;
   ScrDyn *mode_value; /* options.mode as given (+1): the getter's value, and
                        * what each open parses (Node parses at the open) */
@@ -72,6 +95,9 @@ typedef struct ScrUtf8Stream {
   bool ending;       /* end() ran */
   bool ready_queued; /* a 'ready' emission is queued */
   bool drain_queued; /* a sync-mode 'drain' tick is queued */
+  bool open_failed;  /* the asynchronous open failed and reported it */
+  bool close_pending; /* destroy/end waits for the write on the worker */
+  ScrDyn *open_error; /* owned: the deferred open's error value */
   int content_mode;  /* 0 = utf8, 1 = buffer */
   size_t max_length, min_length, hwm;
   double periodic_flush;
@@ -105,12 +131,17 @@ static ScrUtf8Stream *scr_u8_retain(ScrUtf8Stream *s) {
 static void scr_u8_release(ScrUtf8Stream *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc != 0) return;
+  if (s->retired_fd >= 0 && s->retired_fd != 1 && s->retired_fd != 2) {
+    scr_fs_close((double)s->retired_fd);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
   if (!s->closed && s->fd >= 0 && s->fd != 1 && s->fd != 2) {
     scr_fs_close(s->fd);
     if (scr_exc_pending()) scr_exc_clear();
   }
   scr_str_release(s->file);
   scr_dyn_release(s->mode_value);
+  scr_dyn_release(s->open_error);
   scr_u8_listener_drop(s->listeners);
   while (s->flush_cbs != NULL) {
     ScrU8FlushCb *next = s->flush_cbs->next;
@@ -180,6 +211,7 @@ static void scr_u8_emit(ScrUtf8Stream *s, int event, ScrDyn *arg) {
 static void scr_u8_step_ready(ScrClosure *self);
 static void scr_u8_step_release(ScrClosure *self);
 static void scr_u8_step_close(ScrClosure *self);
+static void scr_u8_step_open_error(ScrClosure *self);
 static void scr_u8_flush_cbs_run(ScrUtf8Stream *s);
 static bool scr_u8_parse_mode(const ScrDyn *value, double *out);
 
@@ -345,6 +377,7 @@ static bool scr_u8_write_out(ScrUtf8Stream *s, size_t *written) {
 
 static void scr_u8_actual_write(ScrUtf8Stream *s);
 static void scr_u8_begin_close(ScrUtf8Stream *s);
+static void scr_u8_finish_close(ScrUtf8Stream *s);
 
 /* The flush callbacks a drain completes. Node answers them from the drain
  * listener it registered, i.e. right after the event's listeners. */
@@ -368,7 +401,19 @@ static void scr_u8_flush_cbs_run(ScrUtf8Stream *s) {
 /* The completion of one flush (Node's #release): report the bytes, then
  * either flush what is left, close for an ending stream, or announce the
  * drain. */
+/* Closes the descriptor a reopen() replaced once no worker write uses it. */
+static void scr_u8_close_retired(ScrUtf8Stream *s) {
+  int fd = s->retired_fd;
+  if (fd < 0) return;
+  s->retired_fd = -1;
+  if (fd != 1 && fd != 2) {
+    scr_fs_close((double)fd);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+}
+
 static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
+  scr_u8_close_retired(s);
   ScrDyn *count = scr_dyn_new_num((double)written);
   /* The flush is still in flight for the listeners, as in Node's #release:
    * an end() they call sets #ending and waits for this completion instead
@@ -402,22 +447,125 @@ static void scr_u8_release_done(ScrUtf8Stream *s, size_t written) {
   if (!scr_exc_pending()) scr_u8_flush_cbs_run(s);
 }
 
+/* One asynchronous flush on the shared worker pool. The bytes are copied out
+ * of the stream's buffer before the job starts, so writes that arrive while it
+ * runs accumulate separately, exactly as Node's buffer does while a threadpool
+ * write is in flight. Only the worker performs the syscall; the completion
+ * (events, accounting, the next flush, close) runs on the main thread. */
+typedef struct ScrU8WriteJob {
+  ScrUtf8Stream *s; /* +1 */
+  int fd;
+  uint8_t *data; /* owned snapshot of the flushed bytes */
+  size_t len;
+  size_t at; /* bytes written so far */
+  size_t units; /* the accounting units this flush carried */
+  bool fsync;
+  int error; /* 0 or errno */
+} ScrU8WriteJob;
+
+static void scr_u8_job_work(void *p) {
+  ScrU8WriteJob *job = p;
+  while (job->at < job->len) {
+    int64_t wrote = scr_fs_raw_write(job->fd, job->data + job->at, job->len - job->at, -1);
+    if (wrote < 0) {
+      job->error = (int)-wrote;
+      break;
+    }
+    if (wrote == 0) {
+      /* A zero-byte write on a descriptor that should accept data: report it
+       * rather than spin. */
+      job->error = EIO;
+      break;
+    }
+    job->at += (size_t)wrote;
+  }
+  if (job->error == 0 && job->fsync) {
+    int r = scr_fs_raw_fsync(job->fd);
+    if (r < 0) job->error = -r;
+  }
+}
+
+static void scr_u8_job_destroy(void *p) {
+  ScrU8WriteJob *job = p;
+  scr_u8_release(job->s);
+  free(job->data);
+  free(job);
+}
+
+static void scr_u8_job_after(void *p) {
+  ScrU8WriteJob *job = p;
+  ScrUtf8Stream *s = job->s;
+  scr_u8_close_retired(s);
+  if (scr_exc_pending()) {
+    s->writing = false;
+    s->release_units = 0;
+    return;
+  }
+  if (s->close_pending) {
+    /* destroy()/end() ran while this flush was on the pool: the descriptor
+     * is still open so the write could finish, and the close starts now. */
+    s->writing = false;
+    s->release_units = 0;
+    scr_u8_finish_close(s);
+    return;
+  }
+  if (job->error != 0) {
+    /* Node emits a threadpool write failure as 'error', not as a throw from
+     * write(), and leaves the stream open. */
+    s->writing = false;
+    s->release_units = 0;
+    s->len = s->len >= job->units ? s->len - job->units : 0;
+    ScrError *error = scr_fs_error(job->error, "write", s->file);
+    ScrDyn *value = scr_dyn_from_error(error);
+    scr_error_release(error);
+    scr_u8_emit(s, SCR_U8_ERROR, value);
+    scr_dyn_release(value);
+    return;
+  }
+  scr_u8_release_done(s, job->at);
+}
+
 /* Flush the buffer: synchronously in sync mode (the 'write' event fires at
  * the call, as writeSync's completion does), otherwise as a deferred
  * completion carrying the byte count. */
 static void scr_u8_actual_write(ScrUtf8Stream *s) {
   if (s->writing || s->closed || s->fd < 0) return;
-  size_t written = 0;
   size_t units = s->len; /* everything buffered is in this flush */
-  if (!scr_u8_write_out(s, &written)) return;
-  s->writing = true;
-  s->release_units = units;
+  size_t written = 0;
   if (s->sync) {
+    if (!scr_u8_write_out(s, &written)) return;
+    s->writing = true;
+    s->release_units = units;
     scr_u8_release_done(s, written);
     return;
   }
+#if defined(SCR_LIB) || defined(__wasi__)
+  /* No worker pool: the flush runs here, then its completion keeps the
+   * deferred timing. Compiled services take the worker path below, where a
+   * supplied pipe descriptor cannot block the event loop. */
+  if (!scr_u8_write_out(s, &written)) return;
+  s->writing = true;
+  s->release_units = units;
   s->release_bytes = written;
   scr_u8_defer(s, scr_u8_step_release);
+#else
+  ScrU8WriteJob *job = calloc(1, sizeof *job);
+  if (job == NULL) scr_u8_oom();
+  job->s = scr_u8_retain(s);
+  job->fd = (int)s->fd;
+  job->len = s->fill;
+  job->units = units;
+  job->fsync = s->fsync;
+  if (job->len != 0) {
+    job->data = malloc(job->len);
+    if (job->data == NULL) scr_u8_oom();
+    memcpy(job->data, s->buf, job->len);
+  }
+  s->fill = 0; /* the snapshot owns the bytes now */
+  s->writing = true;
+  s->release_units = units;
+  scr_work_submit(job, scr_u8_job_work, scr_u8_job_after, scr_u8_job_destroy);
+#endif
 }
 
 static void scr_u8_step_release(ScrClosure *self) {
@@ -431,6 +579,24 @@ static void scr_u8_step_ready(ScrClosure *self) {
   if (s != NULL && !scr_exc_pending()) {
     s->ready_queued = false;
     scr_u8_emit(s, SCR_U8_READY, NULL);
+  }
+  scr_u8_release(s);
+}
+
+/* The asynchronous open's failure: Node reports it as an 'error' event, so a
+ * caller that constructs the stream and then attaches its listener still sees
+ * it. The stream keeps its descriptor at -1; a write after the failure is
+ * Node's out-of-range error for a negative fd. */
+static void scr_u8_step_open_error(ScrClosure *self) {
+  ScrUtf8Stream *s = scr_u8_step_stream(self);
+  if (s != NULL && !scr_exc_pending()) {
+    s->open_failed = true;
+    ScrDyn *error = s->open_error;
+    s->open_error = NULL;
+    if (error != NULL) {
+      scr_u8_emit(s, SCR_U8_ERROR, error);
+      scr_dyn_release(error);
+    }
   }
   scr_u8_release(s);
 }
@@ -468,6 +634,19 @@ static void scr_u8_begin_close(ScrUtf8Stream *s) {
   s->closed = true;
   s->len = 0;
   s->fill = 0;
+  /* A flush on the worker still writes to this descriptor: the close waits
+   * for its completion (scr_u8_job_after) instead of racing it. */
+  if (s->writing) {
+    s->close_pending = true;
+    return;
+  }
+  scr_u8_finish_close(s);
+}
+
+/* Closes the descriptor and defers the 'close' step. Called once no worker
+ * write can still reach the descriptor. */
+static void scr_u8_finish_close(ScrUtf8Stream *s) {
+  s->close_pending = false;
   if (s->fd >= 0 && s->fd != 1 && s->fd != 2) {
     scr_fs_close(s->fd);
     if (scr_exc_pending()) scr_exc_clear();
@@ -490,6 +669,14 @@ static ScrDyn *scr_u8_write(ScrUtf8Stream *s, const ScrDyn *data) {
   if (s->closed) {
     static const char message[] = "Invalid state: Utf8Stream is destroyed";
     scr_u8_throw_invalid_state(message, sizeof message - 1);
+    return NULL;
+  }
+  if (s->open_failed) {
+    /* Node's write validates the descriptor: a stream whose open failed has
+     * fd -1, and a write answers the same out-of-range error. */
+    static const char message[] =
+        "The value of \"fd\" is out of range. It must be >= 0 && <= 2147483647. Received -1";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, message, sizeof message - 1, "ERR_OUT_OF_RANGE");
     return NULL;
   }
   ScrBytes *bytes = scr_u8_data(s, data);
@@ -640,20 +827,39 @@ static ScrDyn *scr_u8_reopen(ScrUtf8Stream *s, const ScrDyn *file) {
     scr_str_release(path);
     return NULL;
   }
+  /* mkdir: true creates the destination's directory for a reopen too, as
+   * the first open does. Node creates it before the open. */
+  if (s->mkdir) {
+    ScrStr *dir = scr_path_dirname(path);
+    scr_fs_mkdir_recursive(dir);
+    scr_str_release(dir);
+    if (scr_exc_pending()) {
+      scr_str_release(path);
+      return NULL;
+    }
+  }
   /* Node takes the new path before it opens it, and opens before it lets
    * the descriptor it replaces go: a failed open (or a mode rejected at
    * the open) leaves the stream writing to the descriptor it already had,
    * never to a closed one. */
   scr_str_release(s->file);
   s->file = path;
-  double fd = scr_fs_open_flags(path, O_WRONLY | O_CREAT | O_NONBLOCK | (s->append ? O_APPEND : O_TRUNC),
-                                mode);
+  double fd = scr_fs_open_flags(
+      path, O_WRONLY | O_CREAT | O_NONBLOCK | SCR_U8_NOINHERIT | (s->append ? O_APPEND : O_TRUNC),
+      mode);
   if (scr_exc_pending()) return NULL;
-  if (s->fd >= 0 && s->fd != 1 && s->fd != 2) {
-    scr_fs_close(s->fd);
-    if (scr_exc_pending()) scr_exc_clear();
-  }
+  scr_u8_close_on_exec((int)fd);
+  /* A write on the worker captured the old descriptor: it stays open until
+   * that completion, so its fd number cannot be reused under the worker. */
+  int previous = (int)s->fd;
   s->fd = fd;
+  if (previous >= 0 && previous != 1 && previous != 2) {
+    if (s->writing) s->retired_fd = previous;
+    else {
+      scr_fs_close((double)previous);
+      if (scr_exc_pending()) scr_exc_clear();
+    }
+  }
   scr_u8_queue_ready(s, s->sync);
   return scr_dyn_retain(scr_dyn_undefined());
 }
@@ -687,6 +893,7 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
   if (s == NULL) scr_u8_oom();
   s->rc = 1;
   s->fd = -1;
+  s->retired_fd = -1;
   s->append = true;
   /* Node's #hwm: writes answer false once the buffer reaches it. */
   s->hwm = 16387;
@@ -768,12 +975,27 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
      * waiting for one. Node's default (sync: false) waits on the thread
      * pool, so it opens once a writer arrives; the bytes and errors that
      * follow are otherwise the same. */
-    double fd = scr_fs_open_flags(s->file, O_WRONLY | O_CREAT | O_NONBLOCK | (s->append ? O_APPEND : O_TRUNC),
-                                  mode);
+    double fd = scr_fs_open_flags(
+        s->file,
+        O_WRONLY | O_CREAT | O_NONBLOCK | SCR_U8_NOINHERIT | (s->append ? O_APPEND : O_TRUNC),
+        mode);
     if (scr_exc_pending()) {
+      if (s->sync) {
+        /* openSync semantics: the constructor reports the failure. */
+        scr_u8_release(s);
+        return NULL;
+      }
+      /* Node's default open rides the threadpool and reports a failure as
+       * an 'error' event, so the constructor must not throw before the
+       * caller can attach its listener. */
+      s->open_error = scr_caught_to_dyn(scr_exc_take());
+      s->fd = -1;
+      ScrDyn *box = scr_dyn_new_handle(s, SCR_DYNH_UTF8_STREAM);
+      scr_u8_defer(s, scr_u8_step_open_error);
       scr_u8_release(s);
-      return NULL;
+      return box;
     }
+    scr_u8_close_on_exec((int)fd);
     s->fd = fd;
   }
 

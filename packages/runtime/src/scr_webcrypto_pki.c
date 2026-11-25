@@ -683,6 +683,10 @@ static ScrDyn *sw_import(const ScrDyn *args) {
       sw_unsupported_usage(kind, name);
       goto done;
     }
+    if (kem_private && usages == 0) {
+      scr_throw_domex("SyntaxError", "Usages cannot be empty when importing a private key.");
+      goto done;
+    }
     ScrPkiKey *kem = NULL;
     if (is_jwk) {
       const ScrDyn *kty = sw_jwk_member(jwk, "kty");
@@ -1547,9 +1551,11 @@ static ScrDyn *sw_get_public_key(ScrDyn *key_value, long usages) {
    * wrapping for RSA-OAEP, and none for a key-agreement key (its public
    * key is only a peer). */
   unsigned allowed = sw_is_derive_kind(k->kind) ? 0
-                     : k->kind == SW_OAEP
-                         ? (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY)
-                         : SCR_WC_USAGE_VERIFY;
+                     : k->kind == SW_MLKEM
+                         ? SW_KEM_ENCAP
+                         : k->kind == SW_OAEP
+                             ? (SCR_WC_USAGE_ENCRYPT | SCR_WC_USAGE_WRAP_KEY)
+                             : SCR_WC_USAGE_VERIFY;
   if ((unsigned)usages & ~allowed) {
     sw_unsupported_usage(k->kind, sw_key_name(k));
     return NULL;

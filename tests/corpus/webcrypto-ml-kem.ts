@@ -197,3 +197,30 @@ console.log(
     .encapsulateKey({ name: "ML-KEM-768" }, pair.publicKey, { name: "BOGUS" }, true, ["encrypt"])
     .then(() => "resolved", failure),
 );
+
+// getPublicKey derives the encapsulating public half, which takes the
+// encapsulation usages and never verify; a private key imports only with
+// at least one decapsulating usage, while a public key may carry none.
+const derived = await crypto.subtle.getPublicKey(pair.privateKey, [
+  "encapsulateKey",
+  "encapsulateBits",
+]);
+console.log("getPublicKey", derived.type, derived.usages.join(","), derived.extractable);
+console.log(
+  "getPublicKey verify",
+  await crypto.subtle
+    .getPublicKey(pair.privateKey, ["verify"])
+    .then(() => "resolved", failure),
+);
+console.log(
+  "import private empty",
+  await crypto.subtle
+    .importKey("raw-seed", rawSeed, { name: "ML-KEM-768" }, true, [])
+    .then(() => "resolved", failure),
+);
+console.log(
+  "import public empty",
+  await crypto.subtle
+    .importKey("raw-public", rawPublic, { name: "ML-KEM-768" }, true, [])
+    .then((key) => `${key.type},${key.usages.length}`, failure),
+);

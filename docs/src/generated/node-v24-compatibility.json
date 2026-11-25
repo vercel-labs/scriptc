@@ -43689,9 +43689,9 @@
         "inherited": true
       },
       "static": {
-        "status": "unreviewed",
-        "detail": "Not yet classified; tracked as open parity work.",
-        "verification": "unreviewed"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {
@@ -43850,9 +43850,9 @@
         "inherited": true
       },
       "static": {
-        "status": "unreviewed",
-        "detail": "Not yet classified; tracked as open parity work.",
-        "verification": "unreviewed"
+        "status": "partial",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
+        "verification": "test-backed"
       }
     },
     {

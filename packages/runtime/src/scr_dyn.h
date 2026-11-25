@@ -201,6 +201,7 @@ typedef enum {
   X(MESSAGE_PORT, 36) \
   X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
   X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
+  X(MODULE_CLASS, 63) /* node:module's Module class object (scr_module_class.c) */ \
   X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NAVIGATOR, 83) /* Node's navigator global (scr_node_builtin.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
@@ -290,7 +291,6 @@ typedef enum {
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
 #define SCR_DYNH_UNASSIGNED(Z) \
-  Z(63) /* skipped: claimed by a branch that took another number */
 
 /* One member per pinned tag, sized value + 1, so its size is the largest
  * pinned value + 1: the new tags are numbered from there. Never instantiated. */

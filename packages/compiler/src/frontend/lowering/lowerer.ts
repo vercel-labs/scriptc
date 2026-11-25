@@ -17313,12 +17313,13 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts): the type mapper raises constructorTouches for
-    // every mapping that reaches a constructor's function type, and
-    // lowerExpr for every value that holds one, in any pass. A diagnostic
-    // made before the program's first constructor value is not marked for
-    // that reason alone: ordering changes which unit lowers first, not
-    // whether the refusal involves a constructor.
+    // (held-constructors.ts): lowerExpr raises constructorTouches for every
+    // value it lowers that holds one, and the type mapper for every mapping
+    // that reaches a constructor's function type, in any pass. Both count
+    // from the first statement lowered, since lowering order is not
+    // evaluation order, so a diagnostic made before the program writes its
+    // first constructor value is marked only when its own statement met one;
+    // the mark counts only if the program turns out to hold a constructor.
     if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report

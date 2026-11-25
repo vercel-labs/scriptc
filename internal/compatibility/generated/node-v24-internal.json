@@ -64031,6 +64031,7 @@
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-server-close.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-properties.ts",
           "tests/corpus/http2-stream-readbacks.ts",
@@ -65044,8 +65045,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'goaway'",
+        "tests": [
+          "tests/corpus/http2-server-close.ts"
+        ]
       },
       "anchorSource": "exact"
     },

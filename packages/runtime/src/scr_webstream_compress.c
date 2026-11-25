@@ -490,7 +490,7 @@ static int ws_comp_pump(WsCompState *s) {
  * writable and readable sides are independent). Only a write past the
  * backlog's cap waits for the engine to catch up. */
 static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
+  WsCompState *s = scr_box_get_ref(closure->caps[0]); /* +1, released below */
   ScrDyn *chunk = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
   ScrDyn *controller = argc > 1 && args[1] != NULL ? args[1] : scr_dyn_undefined();
   ScrDyn *result = NULL;
@@ -522,7 +522,7 @@ static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_
 /* close(): the finish flush waits for the reader only when the output
  * exceeds what a flush may queue without one. */
 static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
+  WsCompState *s = scr_box_get_ref(closure->caps[0]); /* +1, released below */
   ScrDyn *controller = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
   ScrDyn *result = NULL;
   if (s->engine) {
@@ -543,7 +543,7 @@ static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t ar
 /* cancel/abort: the engine and the backlog go now rather than with the
  * stream's collection. */
 static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  WsCompState *s = ws_comp_retain(scr_box_get_ref(closure->caps[0]));
+  WsCompState *s = scr_box_get_ref(closure->caps[0]); /* +1, released below */
   ScrDyn *reason = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
   ScrDyn *controller = s->controller;
   s->controller = NULL;

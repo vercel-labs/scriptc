@@ -52,6 +52,7 @@ for (const pkg of [
   "libnode-linux-arm64-gnu",
   "libnode-darwin-arm64",
   "libnode-darwin-x64",
+  "libnode-win32-x64",
 ]) {
   const path = manifest(pkg);
   const json = read(path);

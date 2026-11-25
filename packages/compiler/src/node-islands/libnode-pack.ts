@@ -27,6 +27,7 @@ const PACK_PACKAGES: Readonly<Record<string, string>> = {
   "linux-arm64-gnu": "@scriptc/libnode-linux-arm64-gnu",
   "macos-arm64": "@scriptc/libnode-darwin-arm64",
   "macos-x64": "@scriptc/libnode-darwin-x64",
+  "windows-x64-msvc": "@scriptc/libnode-win32-x64",
 };
 
 export type LibnodePlacement =
@@ -74,17 +75,21 @@ export class LibnodePackError extends Error {
 }
 
 /** The libnode pack package for a native target, or null when Node islands
- * have no pack there (musl, Windows, WASI and mobile targets). */
+ * have no pack there (musl, WASI and mobile targets). */
 export function libnodePackPackage(targetName: string): string | null {
   return PACK_PACKAGES[targetName] ?? null;
 }
 
-/** The native target name of the host, as libnodePackPackage takes it. */
+/** The native target name of the host, as libnodePackPackage takes it. A
+ * Windows target is the MSVC one the compiler emits for, whatever C runtime
+ * the runtime pack is built against. */
 export function hostLibnodeTarget(
   platform: string = process.platform,
   arch: string = process.arch,
 ): string {
-  return platform === "darwin" ? `macos-${arch}` : `${platform}-${arch}-gnu`;
+  if (platform === "darwin") return `macos-${arch}`;
+  if (platform === "win32") return `windows-${arch}-msvc`;
+  return `${platform}-${arch}-gnu`;
 }
 
 /** Validates a `nodeIslands.libnode` value; a string result is the reason

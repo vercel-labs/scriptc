@@ -54,7 +54,7 @@ console.log(page.phase.length);
 `,
   );
   expect(code).toBe(1);
-  expect(stderr).toContain("TypeError: expected string at $, got undefined");
+  expect(stderr).toContain("TypeError: expected string at $.phase, got undefined");
 });
 
 test("a member the derivation adds stores on the built-in object", async () => {
@@ -82,5 +82,5 @@ console.log(page.status.length);
 `,
   );
   expect(code).toBe(1);
-  expect(stderr).toContain("TypeError: expected string at $, got number");
+  expect(stderr).toContain("TypeError: expected string at $.status, got number");
 });

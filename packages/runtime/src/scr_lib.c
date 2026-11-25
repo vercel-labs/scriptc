@@ -284,11 +284,14 @@ static void scr_module_registry_cleanup(void) {
 extern void scr_census_write(void) __attribute__((weak));
 #endif
 
+static void scr_process_config_teardown(void);
+
 static void scr_lib_cleanup(void) {
 #if defined(__linux__) && !defined(SCR_LIB)
   if (scr_census_write != NULL) scr_census_write();
 #endif
   scr_module_registry_cleanup();
+  scr_process_config_teardown();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
   free(scr_lib_argv_owned);
@@ -584,6 +587,82 @@ void scr_module_fail(double module_id) {
   m->in_cache = false;
   m->loaded = false;
   scr_module_dyn_refresh(m);
+}
+
+/* process.config: the build configuration Node reports. A compiled binary
+ * has no gyp build of its own, so the object carries the shape Node's has —
+ * frozen, with `variables` and `target_defaults` — and the values this
+ * build can answer honestly: its architecture and the shared-library and
+ * OpenSSL switches the runtime is built with. +1, one object per process. */
+static SCR_TL ScrDyn *scr_process_config_obj = NULL;
+
+/* Whether the ICU unit is linked (scr_intl.c installs this from its
+ * constructor): the always-linked storage keeps a binary without ICU free
+ * of any reference to that unit. Process-wide, not thread-local: a worker
+ * must see the constructor's store too. */
+double (*scr_intl_i18n_support_fn)(void) = NULL;
+
+/* The cached configuration leaves with the process: scr_lib_cleanup runs
+ * before the RC audit (its atexit handler is registered later, and atexit is
+ * LIFO), so the singleton is released there whatever registered first. */
+static void scr_process_config_teardown(void) {
+  scr_dyn_release(scr_process_config_obj);
+  scr_process_config_obj = NULL;
+}
+
+ScrDyn *scr_process_config(void) {
+  if (scr_process_config_obj) return scr_dyn_retain(scr_process_config_obj);
+  ScrDyn *variables = scr_dyn_new_obj();
+  ScrStr *arch = scr_process_arch();
+  scr_dyn_obj_set(variables, "host_arch", 9, scr_dyn_new_str(arch));
+  scr_dyn_obj_set(variables, "target_arch", 11, scr_dyn_new_str(arch));
+  scr_str_release(arch);
+  scr_dyn_obj_set(variables, "node_shared", 11, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_shared_libuv", 17, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_use_openssl", 16, scr_dyn_new_bool(true));
+  /* The one variable a binary answers from what it links: v8_enable_i18n_support is 1
+   * when the ICU unit is part of the build (its constructor installed the hook). */
+  double i18n = scr_intl_i18n_support_fn && scr_intl_i18n_support_fn() != 0.0 ? 1.0 : 0.0;
+  scr_dyn_obj_set(variables, "v8_enable_i18n_support", 22, scr_dyn_new_num(i18n));
+  ScrDyn *target = scr_dyn_new_obj();
+  ScrDyn *include_dirs = scr_dyn_new_arr();
+  ScrDyn *libraries = scr_dyn_new_arr();
+  ScrDyn *defines = scr_dyn_new_arr();
+  ScrDyn *cflags = scr_dyn_new_arr();
+  scr_dyn_release(scr_dyn_freeze_data(include_dirs));
+  scr_dyn_release(scr_dyn_freeze_data(libraries));
+  scr_dyn_release(scr_dyn_freeze_data(defines));
+  scr_dyn_release(scr_dyn_freeze_data(cflags));
+  scr_dyn_obj_set(target, "include_dirs", 12, include_dirs);
+  scr_dyn_obj_set(target, "libraries", 9, libraries);
+  scr_dyn_obj_set(target, "defines", 7, defines);
+  scr_dyn_obj_set(target, "cflags", 6, cflags);
+  ScrStr *release = scr_str_new("Release", 7);
+  scr_dyn_obj_set(target, "default_configuration", 21, scr_dyn_new_str(release));
+  ScrDyn *configurations = scr_dyn_new_obj();
+  const char *const modes[2] = {"Release", "Debug"};
+  for (int i = 0; i < 2; i++) {
+    ScrDyn *mode = scr_dyn_new_obj();
+    /* Node's configuration is deeply frozen, the variables objects and the
+     * configurations entries included. */
+    ScrDyn *mode_variables = scr_dyn_new_obj();
+    scr_dyn_release(scr_dyn_freeze_data(mode_variables));
+    scr_dyn_obj_set(mode, "variables", 9, mode_variables);
+    scr_dyn_obj_set(mode, "v8_enable_v8_checks", 19, scr_dyn_new_num(i == 0 ? 0 : 1));
+    scr_dyn_release(scr_dyn_freeze_data(mode));
+    scr_dyn_obj_set(configurations, modes[i], strlen(modes[i]), mode);
+  }
+  scr_dyn_release(scr_dyn_freeze_data(configurations));
+  scr_dyn_obj_set(target, "configurations", 14, configurations);
+  scr_str_release(release);
+  ScrDyn *config = scr_dyn_new_obj();
+  scr_dyn_obj_set(config, "variables", 9, variables);
+  scr_dyn_obj_set(config, "target_defaults", 15, target);
+  scr_dyn_release(scr_dyn_freeze_data(variables));
+  scr_dyn_release(scr_dyn_freeze_data(target));
+  scr_dyn_release(scr_dyn_freeze_data(config));
+  scr_process_config_obj = scr_dyn_retain(config);
+  return config;
 }
 
 ScrStr *scr_module_filename(double module_id) {

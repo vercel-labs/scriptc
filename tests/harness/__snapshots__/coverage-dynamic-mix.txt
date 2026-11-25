@@ -5,6 +5,6 @@ scriptc coverage tests/coverage-fixtures/dynamic-mix.ts
     in dynamic tier     2  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   blockers:
-      ×1  SC2020  'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
+      ×1  SC2020  'Number.prototype.toLocaleString with a locale list' is part of the standard library types but has no scriptc lowering yet
           at tests/coverage-fixtures/dynamic-mix.ts:6:35
-          hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+          hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string

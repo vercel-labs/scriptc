@@ -143,22 +143,53 @@ test("a checked-dynamic format argument is read by the runtime", async () => {
   ).toContain("icu.numberFormatFormatDyn");
 });
 
-test("locales other than the default, en-US and en are refused by name", async () => {
-  expect(await refusalOf(`console.log(new Intl.NumberFormat("de-DE").format(1)); export {};`)).toBe(
-    `SC2020: 'Intl.NumberFormat at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet`,
-  );
+test("literal and runtime locale strings compile; a locale list is refused", async () => {
   expect(
-    await refusalOf(`
+    await intlCalls(`console.log(new Intl.NumberFormat("de-DE").format(1)); export {};`),
+  ).toContain("icu.numberFormatNew");
+  expect(
+    await intlCalls(`
+      declare const locale: string;
+      const nf = new Intl.NumberFormat(locale);
+      console.log(nf.format(1));
+      export {};
+    `),
+  ).toContain("icu.numberFormatNew");
+  expect(
+    await intlCalls(`
       declare const locale: string;
       console.log(new Date(0).toLocaleDateString(locale));
       export {};
     `),
-  ).toBe(
-    `SC2020: 'Date.prototype.toLocaleDateString with a non-literal locale' is part of the standard library types but has no scriptc lowering yet`,
-  );
+  ).toContain("icu.dateToLocale");
   expect(
     await refusalOf(`console.log((1).toLocaleString(["en-US", "de-DE"], {})); export {};`),
-  ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a non-literal locale'/);
+  ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a locale list'/);
+});
+
+test("an undefined or dynamic locale selects the default locale", async () => {
+  expect(
+    await intlCalls(`
+      declare const locale: string | undefined;
+      console.log(new Intl.NumberFormat(locale).format(1));
+      export {};
+    `),
+  ).toContain("icu.numberFormatNew");
+  expect(
+    await intlCalls(`
+      const dynamic = JSON.parse('"en-US"');
+      console.log(new Intl.NumberFormat(dynamic).format(1));
+      export {};
+    `),
+  ).toContain("icu.numberFormatNew");
+});
+
+test("an empty locale tag is passed to the runtime, which raises Node's RangeError", async () => {
+  // The argument expressions all evaluate first; the runtime validates the
+  // tag when the formatter is built, as Node does.
+  expect(await intlCalls(`console.log(new Intl.NumberFormat("").format(1)); export {};`)).toContain(
+    "icu.numberFormatNew",
+  );
 });
 
 test("the members and inputs the formatters do not have are refused by name", async () => {

@@ -69,4 +69,12 @@ export const moduleSignatures = defineLibFnSignatures({
   "module.dynObjectOrAbsent": { argTypes: [F64], result: DYN },
   "module.dynOf": { argTypes: [DYN], result: DYN },
   "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
+  /** node:module's source-map support (scr_lib.c). A compiled program
+   * registers no source map, so the record answers the flags the program
+   * set (Node's frozen { enabled, nodeModules, generatedCode }) and
+   * findSourceMap answers undefined, as Node does for a file whose map was
+   * never parsed. */
+  "module.sourceMapsSupport": { argTypes: [], result: DYN },
+  "module.setSourceMapsSupport": { argTypes: [DYN, DYN], result: VOID },
+  "module.findSourceMap": { argTypes: [DYN], result: DYN },
 });

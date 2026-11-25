@@ -122,7 +122,11 @@ export function renderDiagnostic(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +
         c(
-          isWarningCode(diag.code) || isNodeIslandNoticeCode(diag.code) ? YELLOW : RED,
+          diag.severity === "error"
+            ? RED
+            : isWarningCode(diag.code) || isNodeIslandNoticeCode(diag.code)
+              ? YELLOW
+              : RED,
           "^" + "~".repeat(spanOnLine - 1),
         ),
     );
@@ -131,9 +135,13 @@ export function renderDiagnostic(
 
   // Node island notices of a successful build: SC8020 warns, SC8001 and
   // SC8021 are notes.
-  const note = isNodeIslandNoteCode(diag.code);
+  const note = isNodeIslandNoteCode(diag.code) && diag.severity !== "error";
   const warning = isWarningCode(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
-  const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
+  const severity = note
+    ? c(CYAN, "note")
+    : diag.severity === "error" || (diag.severity !== "warning" && !warning)
+      ? c(RED, "error")
+      : c(YELLOW, "warning");
   out.push(
     `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,
   );

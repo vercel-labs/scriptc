@@ -28,6 +28,8 @@ export { checkerCacheIdentity } from "./frontend/ts7/checker-backend.js";
 export { readCoverageVerdict } from "./coverage/verdict-startup.js";
 export { coverageEnvelope, coveragePasses, renderCoverage } from "./coverage/report.js";
 export { isPerformanceCode, renderPerformanceWarnings } from "./diagnostics/dynamic-tier.js";
+export { strictErrors, strictIslandError } from "./diagnostics/strict.js";
+export { renderDiagnostics } from "./diagnostics/render.js";
 export {
   buildWarnings,
   renderBuildWarnings,

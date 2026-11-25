@@ -123,6 +123,9 @@ export interface ScrDiagnostic {
   code: DiagnosticCode;
   message: string;
   loc: SrcLoc;
+  /** Set when the diagnostic's severity differs from what its code implies:
+   * strict mode promotes a performance or divergence finding to an error. */
+  severity?: "error" | "warning";
   milestone?: Milestone;
   hint?: string;
   /** Embedder-authored guidance riding a refusal (the ask-5 teaching

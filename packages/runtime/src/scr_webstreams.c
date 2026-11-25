@@ -1976,10 +1976,13 @@ static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
         }
         ws_rcontroller_error(t->branch2->controller, error);
         if (scr_exc_pending()) scr_exc_clear();
-        scr_promise_release(ws_readable_cancel(t->reader->stream, error));
+        ScrPromise *cancel = ws_readable_cancel(t->reader->stream, error);
         /* Both branches are done here: a branch that asked to cancel
-         * before this chunk settles now instead of staying pending. */
-        ws_deferred_resolve_undefined(&t->cancel_promise);
+         * before this chunk settles with the source's cancellation, as the
+         * tee's own cancel does — pending while its callback is, rejected
+         * if it rejects — instead of staying pending. */
+        ws_deferred_resolve_promise(&t->cancel_promise, cancel);
+        scr_promise_release(cancel);
         scr_dyn_release(error);
       }
       if (scr_exc_pending()) scr_exc_clear();

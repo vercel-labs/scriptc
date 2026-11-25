@@ -40,6 +40,9 @@ test(
       'cloned false {"n":1}',
       "cancel-left err DataCloneError resolved",
       "cancel-right true function",
+      "cancel-waits pending",
+      "cancel-waits-after resolved",
+      "cancel-rejects rejected source cancel failed",
     ]);
   },
 );

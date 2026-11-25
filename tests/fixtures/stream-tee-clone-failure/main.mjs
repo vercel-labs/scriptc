@@ -86,3 +86,60 @@ console.log("cloned", producer === copy, JSON.stringify(copy));
   );
   console.log("cancel-right", first === chunk, typeof first.fn);
 }
+
+// The canceled branch settles with the source's cancellation: pending while
+// its callback is pending, rejected if it rejects.
+{
+  let release;
+  const source = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ fn: () => 1 });
+    },
+    cancel() {
+      return new Promise((resolve) => {
+        release = resolve;
+      });
+    },
+  });
+  const [left, right] = ReadableStreamTee(source, true);
+  const cancellation = left.getReader().cancel("stop");
+  let state = "pending";
+  cancellation.then(() => {
+    state = "resolved";
+  }, () => {
+    state = "rejected";
+  });
+  await right.getReader().read().then(
+    () => "value",
+    (error) => `err ${error.name}`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  console.log("cancel-waits", state);
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  console.log("cancel-waits-after", state);
+}
+{
+  const source = new ReadableStream({
+    start(controller) {
+      controller.enqueue({ fn: () => 1 });
+    },
+    cancel() {
+      return Promise.reject(new Error("source cancel failed"));
+    },
+  });
+  const [left, right] = ReadableStreamTee(source, true);
+  const cancellation = left.getReader().cancel("stop");
+  let state = "pending";
+  cancellation.then(() => {
+    state = "resolved";
+  }, (error) => {
+    state = `rejected ${error.message}`;
+  });
+  await right.getReader().read().then(
+    () => "value",
+    (error) => `err ${error.name}`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  console.log("cancel-rejects", state);
+}

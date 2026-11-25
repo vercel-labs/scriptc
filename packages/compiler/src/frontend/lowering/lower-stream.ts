@@ -5811,6 +5811,16 @@ function lowerIterableSource(
   } else {
     value = lowerer.lowerExpr(node);
   }
+  return lowerIterableSourceValue(lowerer, value, loc);
+}
+
+/** The source stage over an already-lowered pipeline source value: the
+ * generator the pipeline reads. */
+function lowerIterableSourceValue(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): { closure: IrExpr; out: SyncGenType } | null {
   const srcT = value.type;
   const elemT: IrType | null =
     srcT.kind === "func" && srcT.ret.kind === "generator"
@@ -5915,6 +5925,79 @@ function lowerIterableSource(
   return {
     closure: { kind: "call", callee: maker, args: [value], type: funcOf([], out), loc },
     out,
+  };
+}
+
+/** A source stage that also hands the source value itself to the next
+ * function stage, as Node's makeAsyncIterable passes an iterable on: the
+ * stage still answers the generator the pipeline reads, and a plain stage
+ * after it takes the value the source was declared with. */
+function handoffSourceStage(
+  lowerer: Lowerer,
+  inner: IrExpr,
+  out: SyncGenType,
+  value: IrExpr,
+  cell: IrLocal,
+  loc: SrcLoc,
+): IrExpr {
+  const genT = funcOf([], out);
+  const key = `pipelineSourceHandoff:${typeKey(value.type)}:${typeKey(out)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = `%stream.pipelineSourceHandoff.${lowerer.valueHelpers.size}`;
+    lowerer.valueHelpers.set(key, name);
+    const frame = new LiftedFrame(loc);
+    const valueId = frame.local("value", DYN, false);
+    const cellId = frame.local("cell", DYN, false);
+    const genId = frame.local("gen", genT, false);
+    const body: IrStmt[] = [
+      handoffPut(varRef(cellId, DYN, loc), varRef(valueId, DYN, loc), loc),
+      {
+        kind: "return",
+        value: { kind: "callValue", callee: varRef(genId, genT, loc), args: [], type: out, loc },
+        loc,
+      },
+    ];
+    for (const id of [valueId, cellId, genId]) frame.locals.find((l) => l.id === id)!.boxed = true;
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      returnType: out,
+      captures: [
+        { localId: valueId, name: "value", type: DYN },
+        { localId: cellId, name: "cell", type: DYN },
+        { localId: genId, name: "gen", type: genT },
+      ],
+      locals: frame.locals,
+      body,
+      loc,
+    });
+  }
+  const valueLocal = lowerer.declareHiddenLocal("%pipelineSrc", DYN);
+  const genLocal = lowerer.declareHiddenLocal("%pipelineGen", genT);
+  valueLocal.boxed = true;
+  genLocal.boxed = true;
+  cell.boxed = true;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: valueLocal.id,
+        init: { kind: "dynFrom", value, type: DYN, loc },
+        loc,
+      },
+      { kind: "varDecl", localId: genLocal.id, init: inner, loc },
+    ],
+    result: {
+      kind: "closure",
+      fnName: name,
+      captures: [valueLocal.id, cell.id, genLocal.id],
+      type: genT,
+      loc,
+    },
+    type: genT,
+    loc,
   };
 }
 
@@ -6087,13 +6170,38 @@ function lowerPipelineStages(
       !preLowered?.has(j) &&
       (syncSourceFn || (fn === null && iterableSourceType(lowerer, arg) !== null))
     ) {
-      const source =
-        (syncSourceFn ? undefined : plan?.preSource) ??
-        lowerIterableSource(lowerer, arg, syncSourceFn ? fn : null, loc);
+      // A source value followed by a function stage hands that value to the
+      // stage itself, as Node's makeAsyncIterable passes an iterable on; the
+      // source stage still answers the generator the pipeline reads. A
+      // source function's own result and a checked-dynamic plan's source
+      // keep the generator.
+      let source: { closure: IrExpr; out: SyncGenType } | null;
+      let handed: IrExpr | null = null;
+      const webElem =
+        !syncSourceFn && fn === null ? staticReadableStreamElementType(lowerer, arg) : null;
+      if (syncSourceFn) {
+        source = lowerIterableSource(lowerer, arg, fn, loc);
+      } else if (plan?.preSource !== undefined) {
+        source = plan.preSource;
+      } else if (webElem !== null) {
+        const value: IrExpr = lowerer.lowerExprExpecting(arg, DYN);
+        source = lowerWebStreamSourceValue(lowerer, value, webElem, loc);
+        if (givesToNext) handed = value;
+      } else {
+        const value = lowerer.lowerExpr(arg);
+        source = lowerIterableSourceValue(lowerer, value, loc);
+        if (givesToNext) handed = value;
+      }
       if (source === null) lowerer.noLowering("pipeline over this source", arg);
+      let closure = source!.closure;
+      if (handed !== null) {
+        takes = true;
+        handoffCell ??= lowerer.declareHiddenLocal("%pipelineHandoff", DYN);
+        closure = handoffSourceStage(lowerer, closure, source!.out, handed, handoffCell, loc);
+      }
       positions += 1;
       argOrder.push({ list: stages, index: stages.length });
-      stages.push(source!.closure);
+      stages.push(closure);
       srcT = source!.out;
       continue;
     }

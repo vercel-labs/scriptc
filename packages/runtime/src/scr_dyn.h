@@ -1869,6 +1869,24 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
  * over the same primitive, or NULL when `value` is not a wrapper. Installed
  * by the wrapper unit, so a program without one keeps the refusal. */
 extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
+/* The wrapper unit's primitive prototype of a kind (0 String, 1 Number,
+ * 2 Boolean), +1: the object X.prototype reads, so Object.getPrototypeOf(prim)
+ * answers it. NULL when the program links no wrapper unit. */
+extern ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind);
+/* The collection unit's class prototype of a Map, Set, WeakMap or WeakSet
+ * value (+1), NULL for any other value. Installed by scr_dyn_collections.c. */
+extern ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value);
+/* Function.prototype as a value (+1), installed by the untyped-invoke unit
+ * (scr_dyn_invoke.c), which owns it; NULL when the program links no unit
+ * that can hold a function prototype. */
+extern ScrDyn *(*scr_dyn_function_proto_hook)(void);
+/* Date.prototype as a value (+1), installed by scr_dyn_stdlib_prototype.c,
+ * which owns it; NULL when the program links no standard-library prototype
+ * unit (it cannot name Date.prototype then). */
+extern ScrDyn *(*scr_dyn_date_proto_hook)(void);
+/* Object.getPrototypeOf's answer for a primitive: its wrapper prototype
+ * where the program has one, else the per-kind cached ordinary object. +1. */
+ScrDyn *scr_dyn_primitive_prototype(double kind);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
@@ -2403,6 +2421,14 @@ ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *m
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* The invoke unit installs itself here when it links: units that may call a
+ * dynamic method only for a value form (the wrapper prototype's generic
+ * string methods called through their function value) reach it through this
+ * pointer, so they do not make the whole invoke unit a link dependency of
+ * every program that boxes a primitive. NULL means the program links no
+ * untyped-call support, and the caller raises its own refusal. */
+extern ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                    size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with
  * *handled false for a name it does not implement. */

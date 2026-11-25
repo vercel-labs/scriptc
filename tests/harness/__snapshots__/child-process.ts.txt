@@ -57,7 +57,7 @@ child-process.ts:55:24 - error SC2020: 'execFile option 'input'' is part of the 
      |                        ^~~~~~~~~~
   56 | execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 
-  hint: encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
+  hint: encoding: 'utf8', maxBuffer, cwd, env, timeout, killSignal, signal, windowsHide, windowsVerbatimArguments, and shell: true are the supported options in the callback form
 
 child-process.ts:60:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 

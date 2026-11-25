@@ -45,7 +45,7 @@ console.log("absent", d.toLocaleDateString(absent));
 console.log("present", d.toLocaleDateString(present as string), (1234.5).toLocaleString(present as string));
 
 // Malformed tags raise Node's RangeError, catchably.
-for (const bad of ["", "en_US", "x-private", "abcd", "en--US", "root", "en-a-bb-a-cc", "en-x"]) {
+for (const bad of ["", "en_US", "x-private", "abcd", "en--US", "root", "en-a-bb-a-cc", "en-x", "de-DE-1901-1901", "sl-rozaj-rozaj"]) {
   try {
     console.log("bad", JSON.stringify(bad), "->", d.toLocaleTimeString(bad));
   } catch (error) {
@@ -63,6 +63,19 @@ try {
 } catch (error) {
   console.log("empty", (error as Error).name);
 }
+
+// A locale expression runs in its argument position: one that changes the
+// Date changes the time value the formatter reads afterwards.
+const mutated = new Date(Date.UTC(2020, 0, 2, 15, 4, 5));
+console.log(
+  "mutated",
+  mutated.toLocaleTimeString(
+    (() => {
+      mutated.setTime(Date.UTC(2021, 5, 6, 7, 8, 9));
+      return "de-DE";
+    })(),
+  ),
+);
 
 // The options argument still reaches the resolved locale's formatter, and an
 // invalid Date answers before the locale is looked at.

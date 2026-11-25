@@ -474,11 +474,20 @@ export function lowerDateToLocale(
   const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, "DateTimeFormat");
   const fn: IrLibFn = locale.dynamic ? "icu.dateToLocaleDynLocale" : "icu.dateToLocale";
+  // A computed locale is evaluated in its argument position — after the
+  // receiver and before the options — and the time value is read only after
+  // both arguments have run, as Node's method does. A locale expression that
+  // mutates the Date therefore changes what is formatted, and an options
+  // getter runs after the locale rather than before it.
+  const tag = locale.dynamic ? lowerer.declareHiddenLocal("%localeTag", DYN) : null;
+  const tagStmts: IrStmt[] =
+    tag === null ? [] : [{ kind: "varDecl", localId: tag.id, init: locale.locale, loc }];
   return {
     kind: "seqExpr",
     stmts: [
       { kind: "varDecl", localId: receiver.id, init: date, loc },
       ...locale.effects,
+      ...tagStmts,
       { kind: "varDecl", localId: held.id, init: options, loc },
     ],
     result: {
@@ -493,7 +502,7 @@ export function lowerDateToLocale(
           loc,
         },
         { kind: "numLit", value: DATE_LOCALE_KINDS[name]!, type: F64, loc },
-        locale.locale,
+        tag === null ? locale.locale : varRef(tag.id, DYN, loc),
         varRef(held.id, DYN, loc),
       ],
       type: STRING,

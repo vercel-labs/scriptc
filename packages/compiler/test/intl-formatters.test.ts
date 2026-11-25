@@ -143,22 +143,36 @@ test("a checked-dynamic format argument is read by the runtime", async () => {
   ).toContain("icu.numberFormatFormatDyn");
 });
 
-test("locales other than the default, en-US and en are refused by name", async () => {
-  expect(await refusalOf(`console.log(new Intl.NumberFormat("de-DE").format(1)); export {};`)).toBe(
-    `SC2020: 'Intl.NumberFormat at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet`,
-  );
+test("a locale decided at run time takes the dyn-locale entry point", async () => {
+  // A literal tag is passed to the string-locale form; a computed one is
+  // validated and negotiated by the runtime through the dyn-locale form.
   expect(
-    await refusalOf(`
+    await intlCalls(`console.log(new Intl.NumberFormat("de-DE").format(1)); export {};`),
+  ).toEqual(expect.arrayContaining(["icu.numberFormatNew", "icu.numberFormatFormat"]));
+  expect(
+    await intlCalls(`
       declare const locale: string;
       console.log(new Date(0).toLocaleDateString(locale));
       export {};
     `),
-  ).toBe(
-    `SC2020: 'Date.prototype.toLocaleDateString with a non-literal locale' is part of the standard library types but has no scriptc lowering yet`,
+  ).toEqual(["icu.dateToLocaleDynLocale"]);
+  expect(
+    await intlCalls(`
+      declare const locale: string | undefined;
+      console.log((1).toLocaleString(locale), new Intl.DateTimeFormat(locale).format(0));
+      export {};
+    `),
+  ).toEqual(
+    expect.arrayContaining([
+      "icu.numToLocaleStringDynLocale",
+      "icu.dateTimeFormatNewDynLocale",
+      "icu.dateTimeFormatFormat",
+    ]),
   );
+  // A list of locales is still refused by name.
   expect(
     await refusalOf(`console.log((1).toLocaleString(["en-US", "de-DE"], {})); export {};`),
-  ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a non-literal locale'/);
+  ).toMatch(/^SC2020: 'Number\.prototype\.toLocaleString with a list of locales'/);
 });
 
 test("the members and inputs the formatters do not have are refused by name", async () => {

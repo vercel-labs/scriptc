@@ -812,6 +812,19 @@ static bool scr_intl_tag_run(const char *s, size_t n, bool (*pred)(unsigned char
   return true;
 }
 
+/** Two same-length subtags equal under ECMA-402's canonical casing (variants
+ * compare case-insensitively). */
+static bool scr_intl_tag_same(const char *a, const char *b, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    unsigned char x = (unsigned char)a[i];
+    unsigned char y = (unsigned char)b[i];
+    if (x >= 'A' && x <= 'Z') x = (unsigned char)(x - 'A' + 'a');
+    if (y >= 'A' && y <= 'Z') y = (unsigned char)(y - 'A' + 'a');
+    if (x != y) return false;
+  }
+  return true;
+}
+
 /** ECMA-402's IsStructurallyValidLanguageTag: the Unicode locale identifier
  * grammar (language (script)? (region)? (variant)* (extension)* (privateuse)?),
  * with grandfathered and private-use-only tags invalid, a language of four
@@ -837,6 +850,12 @@ static bool scr_intl_language_tag_valid(const char *s, size_t n) {
   bool private_use_needs_subtag = false;
   char singletons[36];
   size_t nsing = 0;
+  /* Variant subtags already seen, by offset into `s`: ECMA-402 rejects a
+   * tag that repeats one ("de-1901-1901"), which ICU would otherwise parse
+   * only part of and format as if it were valid. */
+  size_t variant_at[64];
+  size_t variant_len[64];
+  size_t nvariants = 0;
   while (i < n) {
     if (s[i] != '-') return false;
     i++;
@@ -886,6 +905,13 @@ static bool scr_intl_language_tag_valid(const char *s, size_t n) {
     }
     if (((len >= 5 && len <= 8) || (len == 4 && scr_intl_tag_digit((unsigned char)t[0]))) &&
         scr_intl_tag_run(t, len, scr_intl_tag_alnum)) {
+      for (size_t k = 0; k < nvariants; k++)
+        if (variant_len[k] == len && scr_intl_tag_same(s + variant_at[k], t, len)) return false;
+      if (nvariants < sizeof variant_at / sizeof *variant_at) {
+        variant_at[nvariants] = start;
+        variant_len[nvariants] = len;
+        nvariants++;
+      }
       variant = true;
       continue;
     }
@@ -954,8 +980,12 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   text[tag->len] = '\0';
   char icu[ULOC_FULLNAME_CAPACITY];
   UErrorCode status = U_ZERO_ERROR;
-  uloc_forLanguageTag(text, icu, (int32_t)sizeof icu, NULL, &status);
-  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING) {
+  int32_t parsed = 0;
+  uloc_forLanguageTag(text, icu, (int32_t)sizeof icu, &parsed, &status);
+  /* A partial parse is not a valid tag: ICU stops at the first subtag it
+   * does not take, and formatting the prefix would silently drop the rest. */
+  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING ||
+      (size_t)parsed != tag->len) {
     scr_intl_throw_bad_locale();
     return false;
   }

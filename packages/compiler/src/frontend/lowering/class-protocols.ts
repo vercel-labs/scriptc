@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { isRequireCallee } from "../require-callee.js";
 import {
   activeNodeIslands,
   isForeignType,
@@ -3010,12 +3011,7 @@ function importBoundNames(source: ts.SourceFile): ReadonlySet<string> {
       for (const declaration of statement.declarationList.declarations.nodes) {
         let init = declaration.initializer;
         while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-        if (
-          init !== undefined &&
-          ts.isCallExpression(init) &&
-          ts.isIdentifier(init.expression) &&
-          init.expression.text === "require"
-        )
+        if (init !== undefined && ts.isCallExpression(init) && isRequireCallee(init.expression))
           bound(declaration.name);
       }
     }

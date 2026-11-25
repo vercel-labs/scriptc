@@ -3,6 +3,7 @@ import {
   cjsExportStatementObjectWrites,
   lowerCjsExportsObjectWrite,
 } from "./cjs-exports-object-value.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
@@ -3041,6 +3042,21 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
  * snapshots (a nested declaration included — Node reads each pattern
  * element from the exports object once, so a binding never tracks a later
  * export write or re-runs a getter). */
+/** The callee of a require call, unwrapping the parentheses and type
+ * wrappers requireSpecOf accepts (`(require("./m"))` is the same require). */
+function requireCalleeOf(init: ts.Expression): ts.Expression | null {
+  let value = init;
+  while (
+    ts.isParenthesizedExpression(value) ||
+    ts.isAsExpression(value) ||
+    ts.isTypeAssertion(value) ||
+    ts.isSatisfiesExpression(value) ||
+    ts.isNonNullExpression(value)
+  )
+    value = value.expression;
+  return ts.isCallExpression(value) ? value.expression : null;
+}
+
 function lowerRequireDeclaration(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
@@ -3292,6 +3308,23 @@ function lowerVarDeclarator(
       return lowered ? [lowered] : [];
     }
   }
+  // A JSON document required through the module object: Node types
+  // Module#require as `any`, so the binding has no structural type of its
+  // own (the bare require spelling gets one from TypeScript's require-call
+  // analysis). The binding stores the document in its checked-dynamic form,
+  // as any other JS binding of an untyped value does.
+  if (
+    decl.initializer !== undefined &&
+    ts.isIdentifier(decl.name) &&
+    isJsonRequireDecl(lowerer, decl)
+  ) {
+    const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
+    if (symbol !== undefined && (mapped === null || mapped.kind === "dyn")) {
+      lowerer.runtimeOptionalBindingTypes.set(symbol, DYN);
+      lowerer.jsWidenedBindings.add(symbol);
+    }
+  }
   // CommonJS require declarations (JS files): at the module's top
   // level the BINDINGS are alias plumbing (no storage;
   // resolveValueSymbol routes the reads), but the require itself is
@@ -3301,9 +3334,12 @@ function lowerVarDeclarator(
   // load nothing). Binding requires anywhere else would need lazily-
   // initialized alias storage this model doesn't represent; named
   // fence.
+  const requireCallee = decl.initializer === undefined ? null : requireCalleeOf(decl.initializer);
   if (
     decl.initializer !== undefined &&
+    requireCallee !== null &&
     requireSpecOf(decl.initializer) !== null &&
+    isCjsRequireCallee(lowerer, requireCallee) &&
     !isNativeFfiRequire(lowerer, decl.initializer) &&
     !isJsonRequireDecl(lowerer, decl) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl))

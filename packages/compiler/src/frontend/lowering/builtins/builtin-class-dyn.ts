@@ -1,4 +1,5 @@
 import { numLit } from "../../../ir/build.js";
+import { isRequireCallee } from "../../require-callee.js";
 import {
   BOOL,
   DYN,
@@ -90,8 +91,7 @@ function referenceOnly(node: ts.Expression): boolean {
     return (
       ts.isIdentifier(base) ||
       (ts.isCallExpression(base) &&
-        ts.isIdentifier(base.expression) &&
-        base.expression.text === "require" &&
+        isRequireCallee(base.expression) &&
         base.arguments.nodes.length === 1 &&
         ts.isStringLiteral(base.arguments.nodes[0]!))
     );

@@ -15,6 +15,7 @@
  * of the carried names read the builtin module's members, value uses read
  * the class itself, and a mixture keeps the package's own JavaScript. */
 import * as ts from "./ts7/syntax.js";
+import { isRequireCallee } from "./require-callee.js";
 import { withoutParentheses } from "./outer-expressions.js";
 import { tokenStartOfNode } from "./ts7/node-functions.js";
 import {
@@ -46,12 +47,7 @@ export function rewriteBuiltinAliasRequires(
   ts.walkPreorder(sf, (n) => {
     if (n.kind >= ts.SyntaxKind.FirstJSDocNode && n.kind <= ts.SyntaxKind.LastJSDocNode)
       return "skip";
-    if (
-      !ts.isCallExpression(n) ||
-      !ts.isIdentifier(n.expression) ||
-      n.expression.text !== "require" ||
-      n.arguments.nodes.length !== 1
-    )
+    if (!ts.isCallExpression(n) || !isRequireCallee(n.expression) || n.arguments.nodes.length !== 1)
       return undefined;
     const arg = withoutParentheses(n.arguments.nodes[0]!);
     if (!ts.isStringLiteral(arg) && !ts.isNoSubstitutionTemplateLiteral(arg)) return undefined;

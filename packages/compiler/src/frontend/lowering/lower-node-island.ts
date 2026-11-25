@@ -17,6 +17,7 @@
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { isRequireCallee } from "../require-callee.js";
 import { resolveFrom } from "../../node-islands/host.js";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
@@ -3181,12 +3182,12 @@ function lowerIslandLoadCall(
   if (expr.arguments.nodes.length !== 1 || arg === undefined || !ts.isStringLiteralLike(arg))
     return undefined;
   const isImport = expr.expression.kind === ts.SyntaxKind.ImportKeyword;
-  const isRequire =
-    ts.isIdentifier(expr.expression) &&
-    expr.expression.text === "require" &&
-    !lowerer.checker
-      .getSymbolAtLocation(expr.expression)
-      ?.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile);
+  const isRequire = ts.isIdentifier(expr.expression)
+    ? expr.expression.text === "require" &&
+      !lowerer.checker
+        .getSymbolAtLocation(expr.expression)
+        ?.declarations.some((d) => !ts.getSourceFileOfNode(d).isDeclarationFile)
+    : isRequireCallee(expr.expression);
   if (!isImport && !isRequire) return undefined;
   const file = ts.getSourceFileOfNode(expr).fileName;
   const path = islandModuleFile(islands, file, arg.text, isImport ? "import" : "require");
@@ -3690,8 +3691,7 @@ function requireInitSpecOf(checker: ts.TypeChecker, decl: ts.VariableDeclaration
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (
     !ts.isCallExpression(init) ||
-    !ts.isIdentifier(init.expression) ||
-    init.expression.text !== "require" ||
+    !isRequireCallee(init.expression) ||
     init.arguments.nodes.length !== 1
   )
     return null;

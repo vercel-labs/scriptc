@@ -1,4 +1,5 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
+import { isRequireCallee } from "../require-callee.js";
 import { writeFileSync } from "node:fs";
 import { unshareAcrossFunctions } from "../../ir/unshare.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
@@ -9274,11 +9275,7 @@ export class Lowerer {
           ? spec.text
           : null;
       }
-      if (
-        ts.isIdentifier(value.expression) &&
-        value.expression.text === "require" &&
-        value.arguments.nodes.length === 1
-      ) {
+      if (isRequireCallee(value.expression) && value.arguments.nodes.length === 1) {
         const spec = value.arguments.nodes[0]!;
         if (ts.isStringLiteralLike(spec) && this.externalTypes.has(spec.text)) return spec.text;
       }

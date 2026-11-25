@@ -1,4 +1,5 @@
 import * as ts from "./ts7/syntax.js";
+import { isRequireCallee } from "./require-callee.js";
 
 /** One specifier's call-site kinds within a module — the edge-kind record
  * the walk's per-kind semantics act on. A specifier can appear under
@@ -184,9 +185,7 @@ export function sourceImportsOfFile(sf: ts.SourceFile): { spec: string; typeOnly
         arg !== undefined &&
         ts.isStringLiteralLike(arg) &&
         (n.expression.kind === ts.SyntaxKind.ImportKeyword ||
-          (ts.isIdentifier(n.expression) &&
-            n.expression.text === "require" &&
-            n.arguments.nodes.length === 1))
+          (isRequireCallee(n.expression) && n.arguments.nodes.length === 1))
       ) {
         out.push({ spec: arg.text, typeOnly: false });
       }

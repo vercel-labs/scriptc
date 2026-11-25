@@ -22,6 +22,7 @@
  * return, or a binding of the bundle other than the pure helpers copied
  * beside it). Anything else answers a degrade reason. */
 import * as ts from "./ts7/syntax.js";
+import { isRequireCallee } from "./require-callee.js";
 import { withoutParentheses } from "./outer-expressions.js";
 import { helperTokens } from "./helper-tokens.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
@@ -911,8 +912,7 @@ function forwarderSpec(chunk: Chunk): string | null {
   const call = withoutParentheses(e.right);
   if (
     !ts.isCallExpression(call) ||
-    !ts.isIdentifier(call.expression) ||
-    call.expression.text !== "require" ||
+    !isRequireCallee(call.expression) ||
     call.arguments.nodes.length !== 1 ||
     !ts.isStringLiteral(call.arguments.nodes[0]!)
   )

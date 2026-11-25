@@ -10,6 +10,7 @@
  * too; inferred checked values validate at the ordinary return boundary. */
 
 import * as ts from "./ts7/syntax.js";
+import { isRequireCallee } from "./require-callee.js";
 import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 
 export interface NpmStaticOverloadParameter {
@@ -635,8 +636,7 @@ function requireSpecifier(expression: ts.Expression | undefined): string | null 
       : undefined;
   return expression !== undefined &&
     ts.isCallExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    expression.expression.text === "require" &&
+    isRequireCallee(expression.expression) &&
     expression.arguments.nodes.length === 1 &&
     argument !== undefined &&
     ts.isStringLiteralLike(argument)

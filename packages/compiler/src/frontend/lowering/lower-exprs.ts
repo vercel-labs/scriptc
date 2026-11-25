@@ -3194,6 +3194,7 @@ const NODE_CONSTRUCTOR_GLOBALS: ReadonlySet<string> = new Set([
   "TransformStream",
   "URL",
   "URLSearchParams",
+  "WebSocket",
   "WritableStream",
 ]);
 

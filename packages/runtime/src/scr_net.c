@@ -830,6 +830,11 @@ struct ScrNetSocket {
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* The active reader's own context when it differs from the protocol
+   * context above (the WebSocket client keeps the HTTP parser's context
+   * registered for teardown while reading frames itself). NULL means the
+   * callbacks receive native_ctx. */
+  void *native_reader_ctx;
   /* transport layer (scr_tls.c): reads/writes redirect through the ops
    * once set; writes buffer and readiness drives the handshake until
    * t_est. Sits BELOW the protocol layer — an https socket carries both
@@ -1842,7 +1847,7 @@ static void scr_net_sock_eof(ScrNetSocket *s) {
   s->fin_seen = true;
   scr_net_sock_update_read(s);
   if (s->native_eof) {
-    s->native_eof(s->native_ctx);
+    s->native_eof(s->native_reader_ctx != NULL ? s->native_reader_ctx : s->native_ctx);
     if (scr_exc_pending()) return;
   }
   if (s->encoding != NULL && (s->data_ls.n > 0 || s->pipe_dst != NULL)) {
@@ -1876,7 +1881,7 @@ static void scr_net_sock_eof(ScrNetSocket *s) {
  * a callback threw (the caller bails; the loop surfaces it). */
 static bool scr_net_sock_deliver(ScrNetSocket *s, const char *buf, size_t n) {
   if (s->native_data) {
-    s->native_data(s->native_ctx, buf, n);
+    s->native_data(s->native_reader_ctx != NULL ? s->native_reader_ctx : s->native_ctx, buf, n);
     if (scr_exc_pending()) return false;
     /* the protocol layer OWNS this chunk exclusively — an upgrade
      * handover inside the call (native reader cleared, 'data' listeners
@@ -2759,7 +2764,7 @@ static void scr_net_server_close_http_connections(ScrNetServer *s, bool idle_onl
   while (sock) {
     ScrNetSocket *next = sock->next;
     if (sock->server == s && sock->native_idle != NULL && sock->fd >= 0 &&
-        (!idle_only || sock->native_idle(sock->native_ctx))) {
+        (!idle_only || sock->native_idle(sock->native_reader_ctx != NULL ? sock->native_reader_ctx : sock->native_ctx))) {
       scr_net_sock_retain(sock);
       scr_net_sock_destroy(sock);
       scr_net_sock_release(sock);
@@ -8741,6 +8746,18 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
   s->native_idle = NULL;
   s->native_ctx = ctx;
   s->native_ctx_free = ctx_free;
+  s->native_reader_ctx = ctx;
+  scr_net_sock_update_read(s);
+}
+
+void scr_net_sock_set_native_reader_keep_ctx(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                              ScrNetNativeEventFn eof,
+                                              ScrNetNativeEventFn closed, void *reader_ctx) {
+  s->native_data = data;
+  s->native_eof = eof;
+  s->native_closed = closed;
+  s->native_idle = NULL;
+  s->native_reader_ctx = reader_ctx;
   scr_net_sock_update_read(s);
 }
 
@@ -8759,6 +8776,7 @@ void scr_net_sock_clear_native_reader(ScrNetSocket *s) {
   s->native_closed = NULL;
   s->native_idle = NULL; /* upgraded and CONNECT sockets are outside HTTP close sweeps */
   s->native_http_timeout = NULL;
+  s->native_reader_ctx = NULL;
   scr_net_sock_update_read(s);
 }
 
@@ -9186,7 +9204,7 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
     if (scr_exc_pending()) return false;
   }
   if (sock->native_closed) {
-    sock->native_closed(sock->native_ctx);
+    sock->native_closed(sock->native_reader_ctx != NULL ? sock->native_reader_ctx : sock->native_ctx);
     if (scr_exc_pending()) return false;
   }
   {
@@ -9280,7 +9298,7 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
   if (sock->pending_err) {
     ScrStr *msg = sock->pending_err;
     sock->pending_err = NULL;
-    /* the protocol layer gets first claim (the http conn/client owns
+      /* the protocol layer gets first claim (the http conn/client owns
      * the error story: 'error' on the req, or Node's server-side
      * teardown without an event); unconsumed errors fall through to the socket's own
      * listeners — and the unhandled-'error' exit */
@@ -9460,8 +9478,9 @@ static bool scr_net_sock_keeps_alive(ScrNetSocket *s) {
 static bool scr_net_pending(void) {
   for (ScrNetServer *srv = scr_net_servers; srv; srv = srv->next)
     if (!srv->unrefd) return true;
-  for (ScrNetSocket *sock = scr_net_socks; sock; sock = sock->next)
+  for (ScrNetSocket *sock = scr_net_socks; sock; sock = sock->next) {
     if (scr_net_sock_keeps_alive(sock)) return true;
+  }
   return scr_net_proto_pending();
 }
 

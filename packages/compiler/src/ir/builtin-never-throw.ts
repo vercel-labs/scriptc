@@ -44,6 +44,7 @@ import { watchEventsNeverThrow } from "./builtin-never-throw/watchEvents.js";
 import { watcherNeverThrow } from "./builtin-never-throw/watcher.js";
 import { weakMapNeverThrow } from "./builtin-never-throw/weakMap.js";
 import { weakRefNeverThrow } from "./builtin-never-throw/weakRef.js";
+import { websocketNeverThrow } from "./builtin-never-throw/websocket.js";
 import { webstreamNeverThrow } from "./builtin-never-throw/webstream.js";
 import { workerNeverThrow } from "./builtin-never-throw/worker.js";
 import { zlibNeverThrow } from "./builtin-never-throw/zlib.js";
@@ -105,6 +106,7 @@ export const NEVER_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   ...watcherNeverThrow,
   ...weakMapNeverThrow,
   ...weakRefNeverThrow,
+  ...websocketNeverThrow,
   ...webstreamNeverThrow,
   ...workerNeverThrow,
   ...zlibNeverThrow,

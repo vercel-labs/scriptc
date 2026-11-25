@@ -656,6 +656,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   // programs additionally stamp the httpReq/httpRes ops — the C main's
   // install lines, gated on the same predicates native/executable.ts links by.
   const usesNet = runtimeFeatures.net;
+  /** The global WebSocket client dials through the net unit: its loop hooks
+   * and its socket machinery are installed like node:net's. */
+  const usesWebSocket = runtimeFeatures.webSocket === true;
   const usesNetLookup = runtimeFeatures.netLookup;
   const usesDgram = runtimeFeatures.dgram;
   // The stub resolver (dns.Resolver, resolve*, reverse, setServers): its
@@ -751,10 +754,8 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
-  if (usesNet) {
-    emitter.declare(`declare void @scr_net_install()`);
-    emitter.declare(`declare void @scr_net_dyn_install()`);
-  }
+  if (usesNet || usesWebSocket) emitter.declare(`declare void @scr_net_install()`);
+  if (usesNet) emitter.declare(`declare void @scr_net_dyn_install()`);
   if (usesDgram) emitter.declare(`declare void @scr_dgram_install()`);
   if (usesDnsResolve) emitter.declare(`declare void @scr_dns_resolve_install()`);
   if (usesHttp2) emitter.declare(`declare void @scr_http2_dyn_install()`);
@@ -826,6 +827,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const runsLoop =
     emitter.usesTimers ||
     emitter.usesPromises ||
+    usesWebSocket ||
     emitter.ffiHasForeignCallback ||
     emitter.mod.functions.some((f) => f.async === true || f.generator !== undefined);
   const uncaughtReleases = entryMayThrow && !asyncEntry ? exitReleaseLines("gu") : [];
@@ -1564,6 +1566,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     ...(usesSymbolFor ? [`  call void @scr_sym_for_install()`] : []),
     ...(usesToPrimitiveNumber ? [`  call void @scr_dyn_to_primitive_number_install()`] : []),
     ...(usesNet ? [`  call void @scr_net_install()`, `  call void @scr_net_dyn_install()`] : []),
+    ...(usesWebSocket && !usesNet ? [`  call void @scr_net_install()`] : []),
     ...(usesNetLookup ? [`  call void @scr_net_lookup_install()`] : []),
     ...(usesHttp ? [`  call void @scr_http_dyn_install()`] : []),
     ...(usesDgram ? [`  call void @scr_dgram_install()`] : []),

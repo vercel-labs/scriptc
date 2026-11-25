@@ -95,6 +95,13 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data, Sc
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *));
 /* The upgrade handover: clear the reader's fn pointers, keep the ctx. */
 void scr_net_sock_clear_native_reader(ScrNetSocket *s);
+/* Install reader callbacks while the registered protocol context (and its
+ * free hook) stays with the socket, freed at its death: the upgrade
+ * handover, where a parser hands the socket to a frame reader without
+ * orphaning its own context. The callbacks receive `reader_ctx`. */
+void scr_net_sock_set_native_reader_keep_ctx(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                              ScrNetNativeEventFn eof,
+                                              ScrNetNativeEventFn closed, void *reader_ctx);
 /* The accepting server (BORROWED; NULL on client sockets) — the protocol
  * layer's receiver for server-level fires ('request': this === server). */
 ScrNetServer *scr_net_sock_server(ScrNetSocket *s);

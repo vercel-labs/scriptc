@@ -184,8 +184,7 @@ function buildFetchCompatProfile() {
       {
         id: "stdlib.fetch.request-init.body",
         name: "RequestInit.body",
-        conversion:
-          "string, Uint8Array, ReadableStream, Blob, File, or null; a FormData body is refused by name",
+        conversion: "string, Uint8Array, ReadableStream, Blob, File, FormData, or null",
         evidence: [
           fixture("static"),
           fixture("static-stream"),
@@ -959,11 +958,6 @@ function buildFetchCompatProfile() {
         ),
       ],
       excludedInterfaces: [
-        {
-          name: "FormData bodies",
-          reason:
-            "fetch request bodies do not accept FormData values; its multipart encoding is not implemented",
-        },
         {
           name: "WritableStream/TransformStream",
           reason:

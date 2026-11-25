@@ -18,9 +18,9 @@
 #include <string.h>
 
 typedef struct FormEntry {
-  ScrStr *name;     /* owned */
-  ScrStr *filename; /* owned */
-  ScrDyn *value;    /* +1: a string dyn or a File handle */
+  ScrStr *name; /* owned */
+  ScrDyn *value; /* +1: a string dyn or a File handle (whose name is the
+                  * part's filename) */
 } FormEntry;
 
 typedef struct ScrFormData {
@@ -39,7 +39,6 @@ static void *fd_retain(void *p) {
 
 static void fd_entry_drop(FormEntry *e) {
   if (e->name) scr_str_release(e->name);
-  if (e->filename) scr_str_release(e->filename);
   if (e->value) scr_dyn_release(e->value);
   memset(e, 0, sizeof *e);
 }
@@ -203,7 +202,6 @@ static void fd_push(ScrFormData *fd, ScrStr *name, ScrDyn *value) {
   }
   FormEntry *e = &fd->entries[fd->len++];
   e->name = name;
-  e->filename = NULL;
   e->value = value; /* takes ownership */
 }
 
@@ -449,6 +447,138 @@ static void fd_install(void) {
   if (fd_installed) return;
   fd_installed = true;
   scr_dyn_handle_class_install(SCR_DYNH_FORM_DATA, &fd_ops, &fd_class);
+}
+
+/* ── the multipart request-body encoding ────────────────────────────
+ * undici's serializer: one recorded part per entry, CRLF line endings, the
+ * name and filename escaped (\r, \n and " percent-encoded) and string
+ * values with normalized line feeds, a random boundary, and the
+ * multipart/form-data content type that carries it. */
+typedef struct FdBuf {
+  unsigned char *data;
+  size_t len, cap;
+} FdBuf;
+
+static void fd_buf_add(FdBuf *b, const void *p, size_t n) {
+  if (b->len + n > b->cap) {
+    size_t cap = b->cap ? b->cap : 256;
+    while (cap < b->len + n) cap *= 2;
+    unsigned char *grown = realloc(b->data, cap);
+    if (!grown) fd_oom();
+    b->data = grown;
+    b->cap = cap;
+  }
+  if (n) memcpy(b->data + b->len, p, n);
+  b->len += n;
+}
+
+static void fd_buf_str(FdBuf *b, const char *s) { fd_buf_add(b, s, strlen(s)); }
+
+/* formdataEscape(normalizeLinefeeds(text)): a \r\n, a lone \r or a lone \n
+ * becomes %0D%0A, and a double quote %22. */
+static void fd_buf_escaped(FdBuf *b, const ScrStr *s) {
+  for (size_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (c == '\r') {
+      if (i + 1 < s->len && s->data[i + 1] == '\n') i++;
+      fd_buf_str(b, "%0D%0A");
+    } else if (c == '\n') {
+      fd_buf_str(b, "%0D%0A");
+    } else if (c == '"') {
+      fd_buf_str(b, "%22");
+    } else {
+      fd_buf_add(b, &c, 1);
+    }
+  }
+}
+
+/* formdataEscape(text) without the line-feed normalization: the filename's
+ * form. */
+static void fd_buf_escaped_raw(FdBuf *b, const ScrStr *s) {
+  for (size_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (c == '\r') fd_buf_str(b, "%0D");
+    else if (c == '\n') fd_buf_str(b, "%0A");
+    else if (c == '"') fd_buf_str(b, "%22");
+    else fd_buf_add(b, &c, 1);
+  }
+}
+
+/* normalizeLinefeeds(text): every line ending becomes CRLF. */
+static void fd_buf_normalized(FdBuf *b, const ScrStr *s) {
+  for (size_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (c == '\r') {
+      if (i + 1 < s->len && s->data[i + 1] == '\n') i++;
+      fd_buf_str(b, "\r\n");
+    } else if (c == '\n') {
+      fd_buf_str(b, "\r\n");
+    } else {
+      fd_buf_add(b, &c, 1);
+    }
+  }
+}
+
+ScrBytes *scr_formdata_encode(const ScrDyn *form, ScrStr **content_type) {
+  ScrFormData *fd = form->v.handle.ptr;
+  unsigned long long random = (unsigned long long)(scr_hrtime_ns() ^ (unsigned long long)rand());
+  char boundary[64];
+  snprintf(boundary, sizeof boundary, "----formdata-undici-0%011llu", random % 100000000000ULL);
+  FdBuf out = {0};
+  for (size_t i = 0; i < fd->len; i++) {
+    const FormEntry *e = &fd->entries[i];
+    fd_buf_str(&out, "--");
+    fd_buf_str(&out, boundary);
+    fd_buf_str(&out, "\r\nContent-Disposition: form-data; name=\"");
+    fd_buf_escaped(&out, e->name);
+    fd_buf_str(&out, "\"");
+    if (e->value->kind == SCR_DYN_STR) {
+      fd_buf_str(&out, "\r\n\r\n");
+      fd_buf_normalized(&out, e->value->v.str);
+      fd_buf_str(&out, "\r\n");
+      continue;
+    }
+    /* Every Blob or File append stores a File, so the part carries its
+     * name; the type falls back to octet-stream as undici does. */
+    ScrBytes *bytes = NULL;
+    ScrStr *type = NULL;
+    if (!scr_blob_body_info(e->value, &bytes, &type)) {
+      free(out.data);
+      return NULL;
+    }
+    fd_buf_str(&out, "; filename=\"");
+    ScrStr *filename = NULL;
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(e->value);
+    ScrDyn *read = ops->get ? ops->get(e->value->v.handle.ptr, "name", 4) : NULL;
+    if (read) {
+      if (read->kind == SCR_DYN_STR) filename = scr_str_retain(read->v.str);
+      scr_dyn_release(read);
+    }
+    if (filename) {
+      fd_buf_escaped_raw(&out, filename);
+      scr_str_release(filename);
+    } else {
+      fd_buf_str(&out, "blob");
+    }
+    fd_buf_str(&out, "\"\r\nContent-Type: ");
+    if (type && type->len > 0) fd_buf_add(&out, type->data, type->len);
+    else fd_buf_str(&out, "application/octet-stream");
+    fd_buf_str(&out, "\r\n\r\n");
+    fd_buf_add(&out, bytes->data, bytes->len);
+    fd_buf_str(&out, "\r\n");
+    scr_str_release(type);
+    scr_bytes_release(bytes);
+  }
+  fd_buf_str(&out, "--");
+  fd_buf_str(&out, boundary);
+  fd_buf_str(&out, "--\r\n");
+  ScrBytes *encoded = scr_bytes_new(SCR_BYTES_U8, (double)out.len);
+  if (out.len) memcpy(encoded->data, out.data, out.len);
+  free(out.data);
+  char header[128];
+  int n = snprintf(header, sizeof header, "multipart/form-data; boundary=%s", boundary);
+  *content_type = scr_str_new(header, (size_t)n);
+  return encoded;
 }
 
 ScrDyn *scr_formdata_new(void) {

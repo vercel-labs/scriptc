@@ -12,5 +12,9 @@ ScrDyn *scr_formdata_new(void);
 ScrDyn *scr_formdata_class(void);
 /* `value instanceof FormData` (value borrowed). */
 bool scr_formdata_instanceof(ScrDyn *value, double kind);
+/* The multipart/form-data encoding Node sends for a FormData body: the body
+ * bytes (+1) and the content type carrying the boundary (+1), or NULL with
+ * the exception pending. The form is a FormData handle (borrowed). */
+ScrBytes *scr_formdata_encode(const ScrDyn *form, ScrStr **content_type);
 
 #endif /* SCR_FORMDATA_H */

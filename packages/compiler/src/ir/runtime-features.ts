@@ -2323,7 +2323,12 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
    * type as Node does. Every other program keeps the default fetch unit,
    * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+  /* FormData's entries are Blob/File values and its request bodies ride the
+   * web-bodies fetch variant, so the class selects that build too. */
+  webBodies: rule({
+    prefixes: ["blob."],
+    fns: ["formdata.new", "formdata.class", "formdata.is"],
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same

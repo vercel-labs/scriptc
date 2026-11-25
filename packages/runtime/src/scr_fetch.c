@@ -6767,6 +6767,10 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
 #ifdef SCR_WEB_BODIES
     if (sf_blob_body(body, &body_bytes, &web_type)) {
       /* extractBody: the blob's bytes are the body, its type applies below. */
+    } else if (body->kind == SCR_DYN_HANDLE && body->v.handle.tag == SCR_DYNH_FORM_DATA) {
+      /* A FormData body is its multipart encoding, its type the boundary's. */
+      body_bytes = scr_formdata_encode(body, &web_type);
+      if (!body_bytes) goto fail;
     } else
 #endif
     if (body->kind == SCR_DYN_BYTES) {
@@ -7584,6 +7588,26 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
     body = coerced_body;
     form_body = true;
   }
+#ifdef SCR_WEB_BODIES
+  /* A FormData body is its multipart encoding, sent as multipart/form-data
+   * with the boundary in the content type (extract a body). */
+  if (body_present && body->kind == SCR_DYN_HANDLE &&
+      body->v.handle.tag == SCR_DYNH_FORM_DATA) {
+    ScrStr *form_type = NULL;
+    ScrBytes *encoded = scr_formdata_encode(body, &form_type);
+    if (!encoded) {
+      scr_dyn_release(coerced_body);
+      scr_str_release(web_type);
+      return sf_reject_now(promise, "fetch failed");
+    }
+    coerced_body = scr_dyn_new_bytes(encoded);
+    scr_bytes_release(encoded);
+    body = coerced_body;
+    form_body = true;
+    scr_str_release(web_type);
+    web_type = form_type;
+  }
+#endif
   if (body_present && !form_body && body->kind != SCR_DYN_STR &&
       body->kind != SCR_DYN_BYTES && !body_stream) {
     ScrStr *text = scr_dyn_string_coerce_js(body);

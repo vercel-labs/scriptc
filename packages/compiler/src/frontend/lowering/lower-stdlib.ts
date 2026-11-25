@@ -431,26 +431,6 @@ function fenceRequestInitProperty(
   }
 }
 
-/** Whether a RequestInit body value is certainly a FormData: every
- * non-nullish arm of its type is the stdlib FormData, whose multipart
- * encoding the native fetch does not implement. Blob and File arms are
- * BodyInit's supported forms, and a union that also holds a string or bytes
- * arm stays compilable because the value at run time may be one of those. */
-function definiteFormDataBody(lowerer: Lowerer, type: ts.Type): boolean {
-  const base = lowerer.checker.getBaseTypeOfLiteralType(type);
-  const arms = base.isUnionType() ? ts.constituentTypes(base) : [base];
-  let seen = false;
-  for (const arm of arms) {
-    if ((arm.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0)
-      continue;
-    const sym = arm.getAliasSymbol() ?? arm.getSymbol();
-    if (sym === undefined || ts.symbolName(sym) !== "FormData" || !lowerer.isStdlibSymbol(sym))
-      return false;
-    seen = true;
-  }
-  return seen;
-}
-
 function fenceRequestInitObject(
   lowerer: Lowerer,
   init: ts.ObjectLiteralExpression,
@@ -478,18 +458,6 @@ function fenceRequestInitObject(
         (type.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0
       ) {
         return;
-      }
-      // Node sends a FormData body as a multipart encoding. The native fetch
-      // has none, and its USVString fallback would send "[object FormData]"
-      // under text/plain, a silent divergence: refuse the type by name.
-      // Blob and File bodies send their bytes and type, as Node does.
-      if (row.member === "body" && definiteFormDataBody(lowerer, type)) {
-        lowerer.noLowering(
-          "RequestInit body 'FormData' in a static build",
-          blame,
-          "the native fetch sends string, Uint8Array, ReadableStream, Blob, File, or null bodies; a FormData body needs multipart encoding, which the native fetch does not implement",
-          memberSym(),
-        );
       }
     }
     if (row.status === "static") return;

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { expect, test } from "vitest";
@@ -13,8 +13,9 @@ test("baseline preflight reports every missing fixture before loading the compil
   };
   try {
     mkdirSync(join(root, "scripts"));
-    for (const name of ["test-ts7.mjs", "ts7-order-fixtures.mjs"]) {
-      copyFileSync(join(import.meta.dirname, "../../scripts", name), join(root, "scripts", name));
+    for (const name of ["test-ts7.mjs", "ts7-order-fixtures.mjs", "ts7-shard.mjs"]) {
+      const source = join(import.meta.dirname, "../../scripts", name);
+      if (existsSync(source)) copyFileSync(source, join(root, "scripts", name));
     }
     const fixtures = [
       "tests/corpus/plain.ts",

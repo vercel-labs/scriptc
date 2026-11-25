@@ -1221,19 +1221,21 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
   });
 
   test("a code-keyed teachings entry rides a non-fence refusal as the attributed note", async () => {
+    // The surface is the refusal the static tier makes in every environment: a locale call now lowers
+    // through the ICU-enabled runtime pack, where the graph-wide async_free gate (SC4005) answers instead.
     const diags = await refusal(
-      `export function f(): number { return (1234.5).toLocaleString("de-DE").length; }\n`,
+      `import { createRequire } from "node:module";\nexport function f(): number { return createRequire("/x") === undefined ? 0 : 1; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {
-          teachings: { SC2020: "locale comes from the host; never infer it in a core" },
+          teachings: { SC2020: "module state is the host's; request it as an effect" },
         },
       },
       emission,
     );
     expect(diags[0]!.code).toBe("SC2020");
     expect(diags[0]!.note).toBe(
-      "from the 'refusal-fixture' profile: locale comes from the host; never infer it in a core",
+      "from the 'refusal-fixture' profile: module state is the host's; request it as an effect",
     );
   });
 

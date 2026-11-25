@@ -130,7 +130,7 @@ static ScrDyn *scr_console_method_call(ScrClosure *closure, ScrDyn *const *args,
    * same channel as a direct call: the arguments become a pack, a
    * subscriber can retain it, and the line is formatted from a snapshot. */
   int index = scr_console_member_index(member->name, strlen(member->name));
-  const ScrDyn *const *values = args;
+  ScrDyn *const *values = args;
   size_t count = argc;
   ScrDyn *snapshot = NULL;
   if (index >= 0 && scr_console_channel_active((double)index)) {

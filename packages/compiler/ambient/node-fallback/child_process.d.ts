@@ -380,6 +380,9 @@ declare module "child_process" {
    * SIGTERM when absent), and `maxBuffer` bounds the capture. */
   export interface ExecAsyncOptions extends Omit<ExecSyncOptions, "encoding"> {
     encoding?: "utf8" | "utf-8";
+    /* Aborts the call: the callback receives an AbortError with empty
+     * captures, as @types/node's CommonExecOptions.signal does. */
+    signal?: AbortSignal;
   }
   export type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
   /* The callback form starts an asynchronous child and captures utf8

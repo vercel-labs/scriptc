@@ -213,7 +213,19 @@ export const cpSignatures = defineLibFnSignatures({
    * ERR_OUT_OF_RANGE, sanitizeKillSignal's ERR_UNKNOWN_SIGNAL) before the
    * child starts. The callback contract is cp.execFile's. */
   "cp.execFileOpts": {
-    argTypes: [STRING, arrayOf(STRING), null, BOOL, STRING, BOOL, arrayOf(STRING), F64, STRING],
+    argTypes: [
+      STRING,
+      arrayOf(STRING),
+      null,
+      BOOL,
+      STRING,
+      BOOL,
+      arrayOf(STRING),
+      F64,
+      STRING,
+      DYN,
+      BOOL,
+    ],
     result: CHILD_T,
   },
   // spawn's options form: per-slot stdio modes (0 ignore / 1 inherit /

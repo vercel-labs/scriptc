@@ -3042,6 +3042,12 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.stream.web.ReadableStreamTee",
+      "kind": "node-builtin",
+      "name": "stream/web.ReadableStreamTee",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.string_decoder",
       "kind": "node-builtin",
       "name": "string_decoder",

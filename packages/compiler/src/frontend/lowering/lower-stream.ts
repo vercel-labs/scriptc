@@ -4292,6 +4292,26 @@ export function lowerStreamModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr | null {
+  if (bi.module === "stream/web") {
+    // ReadableStreamTee(stream[, cloneForBranch2]): the module's one
+    // function export beside the web stream classes, which lower through
+    // the globals' own paths. It answers the default tee's two branches,
+    // the second reading a structuredClone of each chunk when the flag is
+    // truthy.
+    if (bi.member !== "ReadableStreamTee") return null;
+    const args = call.arguments.nodes;
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `ReadableStreamTee with ${args.length} arguments`,
+        call,
+        "the supported form is ReadableStreamTee(stream, cloneForBranch2)",
+      );
+    }
+    const source = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const clone =
+      args[1] === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(args[1]!, DYN);
+    return { kind: "libCall", fn: "webstream.tee", args: [source, clone], type: DYN, loc };
+  }
   if (bi.module === "stream/promises") {
     const args = call.arguments.nodes;
     // finished(stream) → a pending void promise the terminal watcher

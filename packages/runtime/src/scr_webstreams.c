@@ -1901,6 +1901,9 @@ struct WsTee {
   ScrDyn *pending_chunk;
   ScrDyn *source_error; /* the error the source stream errored with */
   bool request_live;
+  /* ReadableStreamTee(stream, true)'s cloneForBranch2: the second branch
+   * receives a structuredClone of each chunk instead of the chunk itself. */
+  bool clone2;
 };
 
 static void ws_tee_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -1951,9 +1954,46 @@ static void ws_tee_forward_chunk(void *ctx, ScrDyn *unused) {
   t->reading = false;
   ScrDyn *value = t->pending_chunk;
   t->pending_chunk = NULL;
+  /* cloneForBranch2 clones before either branch sees the chunk, so the two
+   * branches never share the producer's object. A chunk structuredClone
+   * refuses (one with a function member, a proxy) therefore errors both
+   * branches with that error and cancels the source: Node's own tee throws
+   * the DataCloneError out of its microtask instead, an uncaught exception
+   * that ends the process (Node 24.22.1 and later). */
+  ScrDyn *second = value;
+  /* A canceled second branch needs no copy: the first branch reads the
+   * chunk itself, as it does without cloneForBranch2. */
+  if (t->clone2 && !t->canceled2) {
+    second = scr_structured_clone(value, NULL);
+    if (second == NULL) {
+      ScrCaught *caught = scr_exc_take();
+      ScrDyn *error = caught != NULL ? scr_caught_to_dyn(caught) : NULL;
+      scr_caught_release(caught);
+      if (error != NULL) {
+        if (!t->canceled1) {
+          ws_rcontroller_error(t->branch1->controller, error);
+          if (scr_exc_pending()) scr_exc_clear();
+        }
+        ws_rcontroller_error(t->branch2->controller, error);
+        if (scr_exc_pending()) scr_exc_clear();
+        ScrPromise *cancel = ws_readable_cancel(t->reader->stream, error);
+        /* Both branches are done here: a branch that asked to cancel
+         * before this chunk settles with the source's cancellation, as the
+         * tee's own cancel does — pending while its callback is, rejected
+         * if it rejects — instead of staying pending. */
+        ws_deferred_resolve_promise(&t->cancel_promise, cancel);
+        scr_promise_release(cancel);
+        scr_dyn_release(error);
+      }
+      if (scr_exc_pending()) scr_exc_clear();
+      scr_dyn_release(value);
+      return;
+    }
+  }
   if (!t->canceled1) ws_rcontroller_deliver(t->branch1->controller, value);
   if (scr_exc_pending()) scr_exc_clear();
-  if (!t->canceled2) ws_rcontroller_deliver(t->branch2->controller, value);
+  if (!t->canceled2) ws_rcontroller_deliver(t->branch2->controller, second);
+  if (second != value) scr_dyn_release(second);
   if (scr_exc_pending()) scr_exc_clear();
   scr_dyn_release(value);
 }
@@ -2057,12 +2097,14 @@ static void ws_tee_source_error(WsTee *t, ScrDyn *error) {
   ws_queue_microtask(ws_tee_source_errored, ws_retain(t));
 }
 
-/* readableStreamDefaultTee: false with the exception pending. */
-static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2) {
+/* readableStreamDefaultTee: false with the exception pending. `clone2` is
+ * ReadableStreamTee's cloneForBranch2, which tee() itself never sets. */
+static bool ws_readable_tee_ex(WsReadable *s, bool clone2, WsReadable **out1, WsReadable **out2) {
   WsReader *reader = ws_reader_new(s, false);
   if (!reader) return false;
   WsTee *t = ws_obj_new(sizeof *t, &ws_tee_type);
   t->reader = reader;
+  t->clone2 = clone2;
   ws_deferred_init(&t->cancel_promise);
   /* Each branch's controller holds the tee as its source until it clears
    * its algorithms, and the tee holds the branches. */
@@ -2075,6 +2117,53 @@ static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2)
   *out2 = ws_readable_retain(t->branch2);
   ws_tee_release(t);
   return true;
+}
+
+/* tee(): the branches of the default tee, which never clones. */
+static bool ws_readable_tee(WsReadable *s, WsReadable **out1, WsReadable **out2) {
+  return ws_readable_tee_ex(s, false, out1, out2);
+}
+
+/* node:stream/web's ReadableStreamTee(stream[, cloneForBranch2]) (the
+ * webstream.tee libCall): the two branches tee() makes, with the second
+ * branch reading a structuredClone of each chunk when cloneForBranch2 is
+ * truthy (Node's fetch tees a body's stream this way). The argument check
+ * raises Node's TypeError from the call itself; +1. */
+ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone) {
+  /* The class this tee and its receiver conversion belong to, and the
+   * fetch body tag's alias to it, are installed here: a program can tee a
+   * Response body before it ever used a web stream class, and the body is
+   * a valid argument once the class exists. */
+  ws_install();
+  /* The stream this class's tee runs on: a web stream this unit made, or a
+   * fetch body's handle through the web view the fetch unit makes for it.
+   * A fetch body's pointer is that unit's stream, never a WsReadable, so
+   * only a handle of this class reaches the tee below. */
+  ScrDyn *receiver = NULL;
+  if (stream == NULL || !scr_dyn_handle_class_receiver(SCR_DYNH_WS_READABLE, stream, &receiver) ||
+      receiver == NULL) {
+    if (scr_exc_pending()) return NULL; /* the view's own failure */
+    scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
+    return NULL;
+  }
+  /* Only a handle of this class carries the stream the tee reads: a view
+   * an alias answers with is checked like the argument itself. */
+  if (receiver->kind != SCR_DYN_HANDLE || receiver->v.handle.tag != SCR_DYNH_WS_READABLE) {
+    scr_dyn_release(receiver);
+    scr_dyn_arg_type_fail("stream", "an instance of ReadableStream", stream);
+    return NULL;
+  }
+  bool clone2 = clone != NULL && clone->kind != SCR_DYN_UNDEF && scr_dyn_truthy(clone);
+  WsReadable *a, *b;
+  bool ok = ws_readable_tee_ex(receiver->v.handle.ptr, clone2, &a, &b);
+  scr_dyn_release(receiver); /* the tee's reader holds the stream */
+  if (!ok) return NULL;
+  ScrDyn *pair = scr_dyn_new_arr();
+  scr_dyn_arr_push(pair, ws_stream_box(a));
+  scr_dyn_arr_push(pair, ws_stream_box(b));
+  ws_readable_release(a);
+  ws_readable_release(b);
+  return pair;
 }
 
 /* ── ReadableStream.from (readableStreamFromIterable) ─────────────── */

@@ -107,6 +107,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams settle their promises with dyn values.
   "webstream.class",
   "webstream.from",
+  "webstream.tee",
   "webstream.instanceOf",
   "webstream.install",
   "dyn.promiseAll",
@@ -2048,6 +2049,7 @@ const RUNTIME_FEATURE_RULES = {
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
       "webstream.from",
+      "webstream.tee",
       "webstream.instanceOf",
       "webstream.install",
       // Readable.toWeb links scr_webstreams.c, which invokes the source's

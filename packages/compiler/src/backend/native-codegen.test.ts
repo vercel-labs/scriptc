@@ -22,6 +22,7 @@ import {
 import {
   failureText,
   nativeBuildPartitions,
+  nativeCodegenAvailableBytes,
   nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
@@ -128,21 +129,35 @@ function request(
 
 test("caps codegen lanes by the memory available", () => {
   const bytes = 512 * 1024 * 1024;
-  // A partition lane parses a partition (a core's worth of the module) and
-  // may hold 16 times its text: 64 MB each, ample memory: every thread.
+  // A lane parses and optimizes one of the module's 64 partitions and may
+  // hold 16 times its 8 MB, or the 192 MB floor: 2 GB gives every thread a
+  // lane; dividing by the thread count instead would model 64 MB lanes and
+  // run a fraction of them.
   expect(nativeCodegenJobs(bytes, 64, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
-  // Eight lanes would take 8 GB: a smaller host runs fewer at once.
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(1);
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(6);
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(8);
+  // A few large partitions peak higher: two 256 MB partitions are 4 GB lanes,
+  // so a smaller host gives the build fewer of them.
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(1);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 16 * 2 ** 30, parallelism: 8 })).toBe(3);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
   // An unoptimized build's lanes peak lower, and one partition compiles alone.
   expect(
-    nativeCodegenJobs(bytes, 64, {
-      availableBytes: 6 * 2 ** 30,
+    nativeCodegenJobs(bytes, 2, {
+      availableBytes: 8 * 2 ** 30,
       parallelism: 8,
       unoptimized: true,
     }),
-  ).toBe(7);
+  ).toBe(2);
   expect(nativeCodegenJobs(bytes, 1, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(1);
+});
+
+test("measures macOS memory by its physical memory", () => {
+  // macOS reports only free and inactive pages as available.
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(16 * 2 ** 30);
+  // A host that reports more than its physical memory keeps that report.
+  expect(nativeCodegenAvailableBytes(32 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(32 * 2 ** 30);
+  // Other hosts keep what the process measured.
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "linux")).toBe(2 * 2 ** 30);
 });
 
 test("reuses an artifact for the same module name from another directory", async () => {

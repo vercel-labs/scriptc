@@ -3742,8 +3742,17 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
           }
         }
         if (expect != NULL && scr_h2_expects_continue(expect)) {
-          if (srv->check_continue_ls.n > 0) listeners = &srv->check_continue_ls;
-          else auto_continue = true;
+          /* A once registration mirrored into the HTTP/1 parser's list may
+           * have been consumed there: its entry here is dead. Prune it (the
+           * callback releases now) and route by the live listeners left —
+           * with none the server answers 100 itself and the request takes
+           * the normal path, as Node does. */
+          scr_net_ls_prune(&srv->check_continue_ls);
+          if (scr_net_ls_has_live(&srv->check_continue_ls)) {
+            listeners = &srv->check_continue_ls;
+          } else {
+            auto_continue = true;
+          }
         }
       }
       size_t split = srv->compat_placed && srv->compat_pos < srv->stream_ls.n

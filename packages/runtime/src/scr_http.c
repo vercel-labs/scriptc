@@ -5161,6 +5161,9 @@ static bool scr_http_conn_parse_head(ScrHttpConn *conn, size_t head_len, bool *o
   }
   if (expect != NULL) {
     if (scr_http_expects_continue(expect)) {
+      /* The mirror of a once registration consumed through the h2 dispatch
+       * is dead here: prune it (releasing its callback) before choosing. */
+      scr_net_ls_prune(&conn->srv->check_continue_ls);
       if (scr_net_ls_has_live(&conn->srv->check_continue_ls)) handlers = &conn->srv->check_continue_ls;
       else scr_http_res_write_continue(res);
     } else if (scr_net_ls_has_live(&conn->srv->check_expectation_ls)) {

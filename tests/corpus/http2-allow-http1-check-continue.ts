@@ -2,6 +2,11 @@
 // options are not a literal: the same 'checkContinue' listener must take
 // HTTP/1.1 requests through the compat parser and HTTP/2 requests through
 // the h2 dispatch, so 'request' never runs for a rejected request.
+//
+// A once listener is one registration mirrored into both parsers: the first
+// protocol to answer consumes it, and the other must not stall — with no
+// live listener left the server answers 100 itself and takes the request
+// path, as Node does.
 import * as fs from "node:fs";
 import * as http2 from "node:http2";
 import * as https from "node:https";
@@ -18,24 +23,13 @@ function secureOptions() {
   return { allowHTTP1: true, key, cert };
 }
 
-let requestRuns = 0;
-const server = http2.createSecureServer(secureOptions());
-server.on("request", (req, res) => {
-  requestRuns++;
-  lines.push(`request ${req.httpVersion} ${req.headers.expect === undefined ? "no-expect" : String(req.headers.expect)}`);
-  res.writeHead(200, { "content-type": "text/plain" });
-  res.end("request body");
-});
-server.on("checkContinue", (req, res) => {
-  lines.push(`checkContinue ${req.httpVersion} ${String(req.headers.expect)}`);
-  res.writeHead(417, { "content-type": "text/plain" });
-  res.end("rejected body");
-});
+function listen(server: http2.Http2SecureServer): Promise<number> {
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve((server.address() as AddressInfo).port));
+  });
+}
 
-await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-const port = (server.address() as AddressInfo).port;
-
-function h1Request(expect: boolean): Promise<void> {
+function h1Request(port: number, expect: boolean, label: string): Promise<void> {
   return new Promise((resolve) => {
     const headers: Record<string, string> = { "content-type": "text/plain" };
     if (expect) headers.expect = "100-continue";
@@ -48,21 +42,21 @@ function h1Request(expect: boolean): Promise<void> {
           body += chunk;
         });
         response.on("end", () => {
-          lines.push(`h1 ${expect ? "expect" : "plain"} status ${response.statusCode} body ${body}`);
+          lines.push(`${label} h1 ${expect ? "expect" : "plain"} status ${response.statusCode} body ${body}`);
           resolve();
         });
       },
     );
-    request.on("continue", () => lines.push("h1 continue"));
+    request.on("continue", () => lines.push(`${label} h1 continue`));
     request.on("error", (error) => {
-      lines.push(`h1 error ${String((error as NodeJS.ErrnoException).code)}`);
+      lines.push(`${label} h1 error ${String((error as NodeJS.ErrnoException).code)}`);
       resolve();
     });
     request.end("x");
   });
 }
 
-function h2Request(expect: boolean): Promise<void> {
+function h2Request(port: number, expect: boolean, label: string): Promise<void> {
   return new Promise((resolve) => {
     const client = http2.connect(`https://localhost:${port}`, { ca });
     const headers: http2.OutgoingHttpHeaders = { ":path": "/", ":method": "POST" };
@@ -70,6 +64,9 @@ function h2Request(expect: boolean): Promise<void> {
     const request = client.request(headers);
     let status = 0;
     let body = "";
+    request.on("headers", (informational) => {
+      lines.push(`${label} h2 headers ${String(informational[":status"])}`);
+    });
     request.on("response", (responseHeaders) => {
       status = Number(responseHeaders[":status"]);
     });
@@ -78,18 +75,55 @@ function h2Request(expect: boolean): Promise<void> {
       body += chunk;
     });
     request.on("end", () => {
-      lines.push(`h2 ${expect ? "expect" : "plain"} status ${status} body ${body}`);
+      lines.push(`${label} h2 ${expect ? "expect" : "plain"} status ${status} body ${body}`);
       client.close(() => resolve());
     });
     request.end("x");
   });
 }
 
-await h1Request(true);
-await h1Request(false);
-await h2Request(true);
-await h2Request(false);
+let requestRuns = 0;
+const server = http2.createSecureServer(secureOptions());
+server.on("request", (req, res) => {
+  requestRuns++;
+  lines.push(
+    `request ${req.httpVersion} ${req.headers.expect === undefined ? "no-expect" : String(req.headers.expect)}`,
+  );
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("request body");
+});
+server.on("checkContinue", (req, res) => {
+  lines.push(`checkContinue ${req.httpVersion} ${String(req.headers.expect)}`);
+  res.writeHead(417, { "content-type": "text/plain" });
+  res.end("rejected body");
+});
+const port = await listen(server);
 
+await h1Request(port, true, "both");
+await h1Request(port, false, "both");
+await h2Request(port, true, "both");
+await h2Request(port, false, "both");
 lines.push(`request handler runs ${requestRuns}`);
 await new Promise<void>((resolve) => server.close(() => resolve()));
+
+let onceRuns = 0;
+const onceServer = http2.createSecureServer(secureOptions());
+onceServer.on("request", (req, res) => {
+  onceRuns++;
+  lines.push(`once request ${req.httpVersion} ${String(req.headers.expect)}`);
+  res.writeHead(200, { "content-type": "text/plain" });
+  res.end("once request body");
+});
+onceServer.once("checkContinue", (req, res) => {
+  lines.push(`once checkContinue ${req.httpVersion} ${String(req.headers.expect)}`);
+  res.writeHead(417, { "content-type": "text/plain" });
+  res.end("once rejected body");
+});
+const oncePort = await listen(onceServer);
+
+await h1Request(oncePort, true, "once");
+await h2Request(oncePort, true, "once");
+lines.push(`once request handler runs ${onceRuns}`);
+await new Promise<void>((resolve) => onceServer.close(() => resolve()));
+
 for (const line of lines) console.log(line);

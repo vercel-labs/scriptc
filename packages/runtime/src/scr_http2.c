@@ -840,6 +840,9 @@ struct ScrH2Session {
   bool goaway_sent, goaway_recv;
   bool goaway_final_sent; /* the graceful close's second GOAWAY went out */
   uint32_t goaway_code;
+  /* The first GOAWAY's last-stream id: RFC 9113 6.8 forbids increasing it
+   * in a later GOAWAY, so the shutdown notice repeats it (nghttp2). */
+  uint32_t goaway_last_stream_id;
   ScrNetSocket *sock;   /* +1; dropped (NULLed) when the socket closes */
   ScrH2SrvCtx *srv;     /* +1; NULL on client sessions */
   /* frame reassembly */
@@ -1203,8 +1206,15 @@ static void scr_h2_send_window_update(ScrH2Session *s, int32_t stream_id, uint32
 
 static void scr_h2_send_goaway_inner(ScrH2Session *s, uint32_t code, bool again) {
   if (s->goaway_sent && !again) return;
+  /* RFC 9113 6.8: a GOAWAY's last stream identifier MUST NOT increase
+   * across frames. A peer can open a stream the server has not answered yet
+   * between the close's first GOAWAY and the shutdown notice; that stream is
+   * refused, not advertised as processed, so the notice repeats the first
+   * frame's id (nghttp2's last_proc_stream_id behavior). */
+  uint32_t last =
+      s->goaway_sent ? s->goaway_last_stream_id : (uint32_t)s->last_recv_stream_id;
   s->goaway_sent = true;
-  uint32_t last = (uint32_t)s->last_recv_stream_id;
+  s->goaway_last_stream_id = last;
   uint8_t p[8] = {
     (uint8_t)(last >> 24) & 0x7f, (uint8_t)(last >> 16), (uint8_t)(last >> 8), (uint8_t)last,
     (uint8_t)(code >> 24), (uint8_t)(code >> 16), (uint8_t)(code >> 8), (uint8_t)code,

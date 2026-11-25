@@ -1344,9 +1344,14 @@ export function processFunctionMemberValue(
   // The POSIX credential readers as values (`process.getuid ? process.getuid()
   // : 501`): a function value that calls the same runtime reader through the
   // same native callable-value wrapper every module function value uses. Node
-  // has no such member on Windows, so a Windows target reads undefined.
+  // has no such member on Windows, so a Windows target reads undefined — and
+  // WASI has no uid/gid process model either, so its readers are absent there
+  // too (their runtime entry points throw the missing-member TypeError, and a
+  // truthy value would make a feature-detected call throw instead of taking
+  // the fallback).
   if (PROCESS_CREDENTIAL_FNS.has(member)) {
-    if (lowerer.targetPlatform === "win32") return dynUndefinedExpr(loc);
+    if (lowerer.targetPlatform === "win32" || lowerer.targetPlatform === "wasi")
+      return dynUndefinedExpr(loc);
     const fn = PROCESS_CREDENTIAL_FNS.get(member)!;
     return lowerer.lowerNativeCallableValue(
       {

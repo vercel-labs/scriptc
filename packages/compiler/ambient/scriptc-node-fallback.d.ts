@@ -1789,6 +1789,9 @@ interface Response {
    * direct use and points at bytes(). */
   arrayBuffer(): Promise<ArrayBuffer>;
   bytes(): Promise<Uint8Array>;
+  /* The body collected into a Blob whose type is the response's content
+   * type ("" when it carries none). */
+  blob(): Promise<Blob>;
   /* A copy whose body is one branch of the body's tee; the original keeps
    * the other. */
   clone(): Response;

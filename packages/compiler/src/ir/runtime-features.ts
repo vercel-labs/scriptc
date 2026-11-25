@@ -2321,9 +2321,20 @@ const RUNTIME_FEATURE_RULES = {
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
-   * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+   * type as Node does. A body read that produces a Blob (Response.blob and
+   * Request.blob, the lowered call or the member-table dispatch) builds one
+   * too, and the value it hands back is a body the same way. Every other
+   * program keeps the default fetch unit, byte for byte. */
+  webBodies: rule({
+    prefixes: ["blob."],
+    fns: ["fetch.responseBlob"],
+    expr: (node) =>
+      (node.kind === "dynInvoke" && node.method === "blob") ||
+      (node.kind === "dynCall" &&
+        node.callee.kind === "dynKeyGet" &&
+        node.callee.key.kind === "strLit" &&
+        node.callee.key.value === "blob"),
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same

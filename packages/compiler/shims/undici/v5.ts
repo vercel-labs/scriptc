@@ -3,8 +3,9 @@
 // Programs whose installed undici is 5.x compile this module in its place
 // (see packages/compiler/src/frontend/package-shims.ts). It implements the
 // HTTP/1.1 client subset over node:net / node:tls: Dispatcher, Client, Pool,
-// Agent, request(), buildConnector, errors, the global dispatcher, fetch and
-// the diagnostics_channel publications. Anything else undici exports is not
+// Agent, ProxyAgent (HTTP CONNECT tunnels), request(), buildConnector,
+// errors, the global dispatcher, fetch and the diagnostics_channel
+// publications. Anything else undici exports is not
 // declared here, so using it is a compile-time error.
 import { Agent as CoreAgent } from "./core/agent.ts";
 import {
@@ -17,9 +18,11 @@ import { Client as CoreClient } from "./core/client.ts";
 import { buildConnector as coreBuildConnector } from "./core/connector.ts";
 import { Dispatcher } from "./core/dispatcher.ts";
 import type { ResponseData } from "./core/dispatcher.ts";
-import { undiciFetch } from "./core/fetch.ts";
-import type { UndiciRequestInit } from "./core/fetch.ts";
+import { installGlobalFetchDispatcher, undiciFetch } from "./core/fetch.ts";
+import type { UndiciFetchInit } from "./core/fetch.ts";
 import { Pool as CorePool, PoolStats as CorePoolStats } from "./core/pool.ts";
+import { ProxyAgent as CoreProxyAgent } from "./core/proxy-agent.ts";
+import type { ProxyAgentOptions } from "./core/proxy-agent.ts";
 import type {
   AgentOptions,
   ClientOptions,
@@ -84,6 +87,16 @@ export declare namespace Agent {
   type DispatchOptions = import("./core/types.ts").DispatchOptions;
 }
 
+export class ProxyAgent extends CoreProxyAgent {
+  constructor(options: ProxyAgent.Options | string) {
+    super(options, profile, (agentOptions: AgentOptions) => new Agent(agentOptions));
+  }
+}
+
+export declare namespace ProxyAgent {
+  type Options = ProxyAgentOptions;
+}
+
 export function buildConnector(options?: buildConnector.BuildOptions): buildConnector.connector {
   return coreBuildConnector(options ?? {});
 }
@@ -110,9 +123,13 @@ export function request(
   return coreRequest(url, options, () => new Agent(), profile);
 }
 
-export function fetch(input: string | URL, init?: UndiciRequestInit): Promise<Response> {
+export function fetch(input: string | URL, init?: UndiciFetchInit): Promise<Response> {
   return undiciFetch(input, init, () => new Agent(), profile);
 }
+
+// The global fetch sends a request whose init carries a dispatcher of this
+// package through it.
+installGlobalFetchDispatcher(() => new Agent(), profile);
 
 // undici's Headers is the WHATWG class the runtime implements natively.
 export import Headers = globalThis.Headers;

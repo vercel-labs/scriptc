@@ -41,7 +41,7 @@ const KEY_OBJECT_METHODS = new Set(["export", "equals", "toCryptoKey"]);
 const SIGNER_METHODS = new Set(["update", "sign", "verify"]);
 
 /** Whether a value's checker type is node:crypto's Sign or Verify. */
-function isSignerValue(lowerer: Lowerer, node: ts.Expression): boolean {
+export function isSignerValue(lowerer: Lowerer, node: ts.Expression): boolean {
   const type = lowerer.typeOf(node);
   const sym = type.getAliasSymbol() ?? type.getSymbol();
   return (
@@ -64,6 +64,20 @@ export function lowerKeyObjectCall(lowerer: Lowerer, call: ts.CallExpression): I
   if (!keyMethod && !(SIGNER_METHODS.has(method) && isSignerValue(lowerer, access.expression)))
     return null;
   if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  if (method === "toCryptoKey") {
+    /* WebCrypto owns the conversion, so the call lowers through its unit:
+     * the key and the method's arguments travel as one dyn array. */
+    const loc = locOf(call);
+    const elems = [lowerer.lowerExprExpecting(access.expression, DYN)];
+    for (const arg of call.arguments.nodes) elems.push(lowerer.lowerExprExpecting(arg, DYN));
+    return {
+      kind: "libCall",
+      fn: "webcrypto.keyObjectToCryptoKey",
+      args: [{ kind: "dynArrLit", elems, type: DYN, loc }],
+      type: DYN,
+      loc,
+    };
+  }
   return {
     kind: "dynInvoke",
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
@@ -72,5 +86,29 @@ export function lowerKeyObjectCall(lowerer: Lowerer, call: ts.CallExpression): I
     args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc: locOf(call),
+  };
+}
+
+/** `KeyObject.from(cryptoKey)` on node:crypto's KeyObject class: WebCrypto
+ * owns the conversion, so the call lowers through its unit. */
+export function lowerKeyObjectFromCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  if (callee.name.text !== "from" || !isKeyObjectClass(lowerer, callee.expression)) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const loc = locOf(call);
+  return {
+    kind: "libCall",
+    fn: "webcrypto.keyObjectFrom",
+    args: [
+      {
+        kind: "dynArrLit",
+        elems: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        type: DYN,
+        loc,
+      },
+    ],
+    type: DYN,
+    loc,
   };
 }

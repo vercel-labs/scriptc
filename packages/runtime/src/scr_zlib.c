@@ -453,11 +453,19 @@ void scr_zlib_options_drop(ScrZlibOptions *o) {
   o->codec_state = NULL;
 }
 
-const ScrZlibBrotliHooks *scr_zlib_brotli_hooks = NULL;
+const ScrZlibCodecHooks *scr_zlib_brotli_hooks = NULL;
+const ScrZlibCodecHooks *scr_zlib_zstd_hooks = NULL;
 
-/* Node's BROTLI_DECODE and BROTLI_ENCODE modes. */
-static bool scr_zlib_brotli_mode(int mode) {
-  return mode == 8 || mode == 9;
+/* The mode's codec hooks: Brotli's BROTLI_DECODE and BROTLI_ENCODE (8, 9),
+ * zstd's ZSTD_COMPRESS and ZSTD_DECOMPRESS (10, 11), or NULL for zlib. */
+static const ScrZlibCodecHooks *scr_zlib_codec_hooks(int mode) {
+  if (mode == 8 || mode == 9) return scr_zlib_brotli_hooks;
+  if (mode == 10 || mode == 11) return scr_zlib_zstd_hooks;
+  return NULL;
+}
+
+static bool scr_zlib_codec_mode(int mode) {
+  return mode == 8 || mode == 9 || mode == 10 || mode == 11;
 }
 
 static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibOptions *out);
@@ -466,9 +474,10 @@ static bool scr_zlib_options_parse_object(int mode, const ScrDyn *opts, ScrZlibO
  * slot by reference) is read through its materialized view, as a plain
  * object is. */
 bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out) {
-  if (scr_zlib_brotli_mode(mode)) {
-    if (!scr_zlib_brotli_hooks) scr_trap("scriptc: the Brotli codec is not linked\n");
-    return scr_zlib_brotli_hooks->options(mode, opts, out);
+  if (scr_zlib_codec_mode(mode)) {
+    const ScrZlibCodecHooks *hooks = scr_zlib_codec_hooks(mode);
+    if (!hooks) scr_trap("scriptc: the codec is not linked\n");
+    return hooks->options(mode, opts, out);
   }
   if (opts == NULL || opts->kind != SCR_DYN_TYPED_REF) return scr_zlib_options_parse_object(mode, opts, out);
   ScrDyn *view = scr_dyn_typed_ref_materialize(opts);
@@ -550,30 +559,52 @@ bool scr_zlib_base_options(const ScrDyn *o, double flush_max, ScrZlibOptions *ou
     scr_dyn_prop_type_fail("options.rejectGarbageAfterEnd", "of type boolean", rg);
     return false;
   }
-  if (out->chunk_size > 4294967295.0) {
+  /* ZlibBase allocates its chunkSize-sized output buffer when the stream is
+   * constructed, so Buffer.allocUnsafe's ladder answers the size: one past
+   * the buffer limit (kMaxLength) is ERR_OUT_OF_RANGE on "size", and a
+   * request the allocator refuses is ERR_MEMORY_ALLOCATION_FAILED. Node
+   * keeps that buffer; the stream and one-shot paths allocate their own, so
+   * the probe here is freed again. */
+  if (out->chunk_size > 9007199254740991.0) {
     scr_zlib_options_drop(out);
-    static const char msg[] = "a zlib chunkSize above 4294967295 is not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+    char recv[48], msg[160];
+    scr_num_received(out->chunk_size, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"size\" is out of range. It must be >= 0 && <= "
+                       "9007199254740991. Received %s",
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
     return false;
   }
+  void *chunk_probe = out->chunk_size > (double)SIZE_MAX ? NULL : malloc((size_t)out->chunk_size);
+  if (chunk_probe == NULL) {
+    scr_zlib_options_drop(out);
+    static const char msg[] = "Failed to allocate memory";
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_MEMORY_ALLOCATION_FAILED");
+    return false;
+  }
+  free(chunk_probe);
   const ScrDyn *info = scr_zlib_opt(o, "info");
   out->info = info != NULL && scr_dyn_truthy(info);
   return true;
 }
 
 ScrZlibEngine *scr_zlib_engine_from_options(int mode, ScrZlibOptions *o) {
-  if (scr_zlib_brotli_mode(mode)) return scr_zlib_brotli_hooks->engine(mode, o);
+  if (scr_zlib_codec_mode(mode)) return scr_zlib_codec_hooks(mode)->engine(mode, o);
   return scr_zlib_engine_new(mode, (int)o->level, (int)o->window_bits, (int)o->mem_level,
                              (int)o->strategy, o->dict ? o->dict->data : NULL,
                              o->dict ? o->dict->len : 0, o->reject_garbage);
 }
 
-/* Node's error for an engine failure: Error(message) with errno and code. */
+/* Node's error for an engine failure: Error(message) with errno and code,
+ * except a codec's trailing-junk report, which Node raises as the
+ * ERR_TRAILING_JUNK_AFTER_STREAM_END TypeError. */
 ScrError *scr_zlib_error_new(const ScrZlibError *ze) {
+  bool junk = ze->code != NULL && strcmp(ze->code, "ERR_TRAILING_JUNK_AFTER_STREAM_END") == 0;
   ScrStr *message = scr_str_new(ze->message, strlen(ze->message));
-  ScrError *err = scr_error_new(SCR_ERR_ERROR, message);
+  ScrError *err = scr_error_new(junk ? SCR_ERR_TYPE : SCR_ERR_ERROR, message);
   scr_str_release(message);
-  err->system_errno = ze->err;
+  err->system_errno = junk ? 0 : ze->err; /* Node's TypeError carries no errno */
   scr_error_set_code(err, ze->code);
   return err;
 }
@@ -584,14 +615,25 @@ ScrError *scr_zlib_error_new(const ScrZlibError *ze) {
 typedef struct {
   unsigned char *data;
   size_t len, cap;
+  /* The input bytes the engine consumed, which is what Node's bytesWritten
+   * reports: a decoder stops at the end of its stream, so trailing bytes
+   * (padding zeros included) stay unconsumed. */
+  size_t consumed;
   int status; /* 0 ok, 1 engine error, 2 past maxOutputLength, 3 trailing data */
   ScrZlibError err;
 } ScrZlibRun;
 
+/* Feeds the input with *flush* and, when *finish* differs, runs one last
+ * iteration with an empty input and *finish*. The callback and promise forms
+ * reach the engine the way Node's streams do: a write with the flush kind,
+ * then an end with the finish kind. */
 static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_len, uint32_t chunk,
-                         int flush, double max_output, bool reject, ScrZlibRun *out) {
+                         int flush, int finish, double max_output, bool reject,
+                         ScrZlibRun *out) {
   uint32_t in_off = 0, avail_in_before = (uint32_t)in_len, avail_out_before = chunk;
   uint32_t offset = 0, avail_in_after = 0, avail_out_after = 0;
+  int phase = flush;
+  bool finishing = finish == flush;
   for (;;) {
     if (out->len + avail_out_before > out->cap) {
       size_t cap = out->cap ? out->cap : chunk;
@@ -601,7 +643,7 @@ static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_le
       out->data = grown;
       out->cap = cap;
     }
-    scr_zlib_engine_work(e, flush, in + in_off, avail_in_before, out->data + out->len,
+    scr_zlib_engine_work(e, phase, in + in_off, avail_in_before, out->data + out->len,
                          avail_out_before);
     if (scr_zlib_engine_error(e, &out->err)) {
       out->status = 1;
@@ -622,10 +664,16 @@ static void scr_zlib_run(ScrZlibEngine *e, const unsigned char *in, size_t in_le
     } else {
       avail_out_before = chunk - offset;
     }
-    if (avail_out_after != 0) break;
     in_off += in_delta;
     avail_in_before = avail_in_after;
+    if (!finishing && avail_in_after == 0) {
+      phase = finish;
+      finishing = true;
+      continue;
+    }
+    if (avail_out_after != 0) break;
   }
+  out->consumed = in_off;
   if (avail_in_after > 0 && reject) out->status = 3;
 }
 
@@ -652,9 +700,12 @@ static ScrError *scr_zlib_run_error(const ScrZlibRun *run, double max_output) {
 
 static bool scr_zlib_refuse_info(const ScrZlibOptions *o) {
   if (!o->info) return false;
-  static const char msg[] =
-      "the zlib option 'info' is not supported yet (it returns the engine object)";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  /* The statically undecidable form: an options value whose `info` type is
+   * not the literal true (an `any` or `boolean` value) resolves to the
+   * Buffer overload, whose result type cannot carry the engine object. */
+  static const char msg[] = "the zlib option 'info' is not supported through a non-literal "
+                            "value; write info: true in the options object to get { buffer, engine }";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return true;
 }
 
@@ -662,7 +713,7 @@ static bool scr_zlib_refuse_info(const ScrZlibOptions *o) {
  * TypedArray, DataView or ArrayBuffer contributes its bytes, and anything
  * else throws Node's ERR_INVALID_ARG_TYPE — zlibBufferSync's "buffer"
  * check, or the stream write's "chunk" check for the callback forms. */
-static ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback) {
+ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     if (!materialized) return NULL;
@@ -688,7 +739,7 @@ static ScrBytes *scr_zlib_input_dyn(const ScrDyn *v, bool callback) {
   return NULL;
 }
 
-static ScrBytes *scr_zlib_sync_run(int mode, const ScrBytes *data, ScrZlibOptions *o);
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o, size_t *consumed);
 
 ScrBytes *scr_zlib_sync_opts_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
   int mode = (int)mode_d;
@@ -703,7 +754,7 @@ ScrBytes *scr_zlib_sync_opts_dyn(double mode_d, ScrDyn *data, ScrDyn *opts) {
     scr_zlib_options_drop(&o);
     return NULL;
   }
-  ScrBytes *out = scr_zlib_sync_run(mode, input, &o);
+  ScrBytes *out = scr_zlib_run_opts(mode, input, &o, NULL);
   scr_bytes_release(input);
   return out;
 }
@@ -716,18 +767,21 @@ ScrBytes *scr_zlib_sync_opts(double mode_d, const ScrBytes *data, ScrDyn *opts) 
     scr_zlib_options_drop(&o);
     return NULL;
   }
-  return scr_zlib_sync_run(mode, data, &o);
+  return scr_zlib_run_opts(mode, data, &o, NULL);
 }
 
-/* Runs the whole input and drops *o. */
-static ScrBytes *scr_zlib_sync_run(int mode, const ScrBytes *data, ScrZlibOptions *o_) {
+/* Runs the whole input and drops *o. *consumed, when non-NULL, receives the
+ * input bytes the engine consumed (the decoding stream's end, before any
+ * trailing bytes). */
+ScrBytes *scr_zlib_run_opts(int mode, const ScrBytes *data, ScrZlibOptions *o_, size_t *consumed) {
   SCR_BYTES_SNAPSHOT(data);
   ScrZlibOptions o = *o_;
   ScrZlibEngine *e = scr_zlib_engine_from_options(mode, &o);
-  ScrZlibRun run = {NULL, 0, 0, 0, {NULL, NULL, 0}};
-  scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush, o.max_output,
-               o.reject_garbage, &run);
+  ScrZlibRun run = {NULL, 0, 0, 0, 0, {NULL, NULL, 0}};
+  scr_zlib_run(e, data->data, data->len, (uint32_t)o.chunk_size, (int)o.finish_flush,
+               (int)o.finish_flush, o.max_output, o.reject_garbage, &run);
   ScrBytes *result = NULL;
+  if (consumed != NULL) *consumed = run.consumed;
   if (run.status != 0) {
     ScrError *err = scr_zlib_run_error(&run, o.max_output);
     scr_throw_obj(err, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
@@ -749,18 +803,24 @@ typedef struct {
   size_t len;
   uint32_t chunk;
   int flush;
+  int finish;
   double max_output;
   bool reject;
   ScrZlibRun run;
   ScrClosure *cb;
   ScrZlibBytesFn fn;
   ScrPromise *promise; /* the promise form settles this instead of calling cb */
+  /* The `info: true` forms: the engine object the result carries (owned,
+   * and consumed by info_build) and the callback form's dyn-valued fn. */
+  void *info_engine;
+  ScrZlibInfoBuildFn info_build;
+  ScrZlibDynFn dfn;
 } ScrZlibOptsOp;
 
 static void scr_zlib_opts_work(void *payload) {
   ScrZlibOptsOp *op = payload;
-  scr_zlib_run(op->eng, op->data, op->len, op->chunk, op->flush, op->max_output, op->reject,
-               &op->run);
+  scr_zlib_run(op->eng, op->data, op->len, op->chunk, op->flush, op->finish, op->max_output,
+               op->reject, &op->run);
 }
 
 static void scr_zlib_opts_after(void *payload) {
@@ -769,6 +829,18 @@ static void scr_zlib_opts_after(void *payload) {
     ScrBytes *value = scr_bytes_new(SCR_BYTES_U8, (double)op->run.len);
     value->is_buffer = true; /* Node returns a Buffer */
     if (op->run.len) memcpy(value->data, op->run.data, op->run.len);
+    if (op->info_build) {
+      /* moves the engine and value */
+      ScrDyn *result = op->info_build(op->info_engine, (double)op->run.consumed, value);
+      op->info_engine = NULL;
+      if (op->promise) {
+        /* moves result */
+        scr_promise_fulfill_ref(op->promise, result, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+        return;
+      }
+      op->dfn(op->cb, NULL, result);
+      return;
+    }
     if (op->promise) {
       /* moves value */
       scr_promise_fulfill_ref(op->promise, value, &scr_bytes_retain_v, &scr_bytes_release_v, NULL);
@@ -783,6 +855,11 @@ static void scr_zlib_opts_after(void *payload) {
     scr_promise_reject_pending(op->promise);
     return;
   }
+  if (op->dfn) {
+    op->dfn(op->cb, err, NULL);
+    scr_error_release(err);
+    return;
+  }
   op->fn(op->cb, err, NULL);
   scr_error_release(err);
 }
@@ -792,13 +869,18 @@ static void scr_zlib_opts_destroy(void *payload) {
   scr_zlib_engine_free(op->eng);
   free(op->data);
   free(op->run.data);
+  /* An error settled the callback or promise before the result was built,
+   * leaving the engine object unconsumed. */
+  if (op->info_engine) op->info_build(op->info_engine, 0, NULL);
   if (op->cb) scr_closure_release(op->cb);
   if (op->promise) scr_promise_release(op->promise);
   free(op);
 }
 
 static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
-                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise);
+                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise,
+                                  void *info_engine, ScrZlibInfoBuildFn info_build,
+                                  ScrZlibDynFn dfn);
 
 static bool scr_zlib_async_options(int mode, ScrDyn *opts, ScrZlibOptions *o, ScrClosure *cb) {
   if (!scr_zlib_options_parse(mode, opts, o)) {
@@ -817,7 +899,8 @@ void scr_zlib_codec_async_opts(const ScrBytes *data, double mode_d, ScrDyn *opts
                                ScrZlibBytesFn fn) {
   int mode = (int)mode_d;
   ScrZlibOptions o;
-  if (scr_zlib_async_options(mode, opts, &o, cb)) scr_zlib_async_submit(mode, data, &o, cb, fn, NULL);
+  if (scr_zlib_async_options(mode, opts, &o, cb))
+    scr_zlib_async_submit(mode, data, &o, cb, fn, NULL, NULL, NULL, NULL);
 }
 
 void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
@@ -831,7 +914,7 @@ void scr_zlib_codec_async_opts_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, Sc
     scr_closure_release(cb);
     return;
   }
-  scr_zlib_async_submit(mode, input, &o, cb, fn, NULL);
+  scr_zlib_async_submit(mode, input, &o, cb, fn, NULL, NULL, NULL, NULL);
   scr_bytes_release(input);
 }
 
@@ -844,7 +927,7 @@ ScrPromise *scr_zlib_codec_promise(const ScrBytes *data, double mode_d, ScrDyn *
     scr_promise_reject_pending(promise);
     return promise;
   }
-  scr_zlib_async_submit(mode, data, &o, NULL, NULL, scr_promise_retain(promise));
+  scr_zlib_async_submit(mode, data, &o, NULL, NULL, scr_promise_retain(promise), NULL, NULL, NULL);
   return promise;
 }
 
@@ -862,14 +945,87 @@ ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode_d, ScrDyn *opts
     scr_promise_reject_pending(promise);
     return promise;
   }
-  scr_zlib_async_submit(mode, input, &o, NULL, NULL, scr_promise_retain(promise));
+  scr_zlib_async_submit(mode, input, &o, NULL, NULL, scr_promise_retain(promise), NULL, NULL, NULL);
+  scr_bytes_release(input);
+  return promise;
+}
+
+/* The `info: true` forms: the engine object arrives built (and its options
+ * already validated) from scr_zlib_stream.c, so an error here only settles
+ * the call and lets the builder release it. */
+void scr_zlib_info_async_submit(const ScrBytes *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                                ScrZlibDynFn fn, void *engine, ScrZlibInfoBuildFn build) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) {
+    build(engine, 0, NULL);
+    scr_closure_release(cb);
+    return;
+  }
+  scr_zlib_async_submit(mode, data, &o, cb, NULL, NULL, engine, build, fn);
+}
+
+void scr_zlib_info_async_submit_dyn(ScrDyn *data, double mode_d, ScrDyn *opts, ScrClosure *cb,
+                                    ScrZlibDynFn fn, void *engine, ScrZlibInfoBuildFn build) {
+  int mode = (int)mode_d;
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) {
+    build(engine, 0, NULL);
+    scr_closure_release(cb);
+    return;
+  }
+  ScrBytes *input = scr_zlib_input_dyn(data, true);
+  if (!input) {
+    scr_zlib_options_drop(&o);
+    build(engine, 0, NULL);
+    scr_closure_release(cb);
+    return;
+  }
+  scr_zlib_async_submit(mode, input, &o, cb, NULL, NULL, engine, build, fn);
+  scr_bytes_release(input);
+}
+
+ScrPromise *scr_zlib_info_promise_submit(const ScrBytes *data, double mode_d, ScrDyn *opts,
+                                         void *engine, ScrZlibInfoBuildFn build) {
+  int mode = (int)mode_d;
+  ScrPromise *promise = scr_promise_new();
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) {
+    build(engine, 0, NULL);
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  scr_zlib_async_submit(mode, data, &o, NULL, NULL, scr_promise_retain(promise), engine, build, NULL);
+  return promise;
+}
+
+ScrPromise *scr_zlib_info_promise_submit_dyn(ScrDyn *data, double mode_d, ScrDyn *opts,
+                                             void *engine, ScrZlibInfoBuildFn build) {
+  int mode = (int)mode_d;
+  ScrPromise *promise = scr_promise_new();
+  ScrZlibOptions o;
+  if (!scr_zlib_options_parse(mode, opts, &o)) {
+    build(engine, 0, NULL);
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  ScrBytes *input = scr_zlib_input_dyn(data, true);
+  if (!input) {
+    scr_zlib_options_drop(&o);
+    build(engine, 0, NULL);
+    scr_promise_reject_pending(promise);
+    return promise;
+  }
+  scr_zlib_async_submit(mode, input, &o, NULL, NULL, scr_promise_retain(promise), engine, build, NULL);
   scr_bytes_release(input);
   return promise;
 }
 
 /* Moves cb (or the +1 promise) and drops *o_. */
 static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions *o_,
-                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise) {
+                                  ScrClosure *cb, ScrZlibBytesFn fn, ScrPromise *promise,
+                                  void *info_engine, ScrZlibInfoBuildFn info_build,
+                                  ScrZlibDynFn dfn) {
   SCR_BYTES_SNAPSHOT(data);
   ScrZlibOptions o = *o_;
   ScrZlibOptsOp *op = calloc(1, sizeof *op);
@@ -880,12 +1036,16 @@ static void scr_zlib_async_submit(int mode, const ScrBytes *data, ScrZlibOptions
   if (data->len) memcpy(op->data, data->data, data->len);
   op->len = data->len;
   op->chunk = (uint32_t)o.chunk_size;
-  op->flush = (int)o.finish_flush;
+  op->flush = (int)o.flush;
+  op->finish = (int)o.finish_flush;
   op->max_output = o.max_output;
   op->reject = o.reject_garbage;
   op->cb = cb;
   op->fn = fn;
   op->promise = promise; /* +1, moves */
+  op->info_engine = info_engine; /* moves */
+  op->info_build = info_build;
+  op->dfn = dfn;
   scr_zlib_options_drop(&o);
   scr_work_submit(op, &scr_zlib_opts_work, &scr_zlib_opts_after, &scr_zlib_opts_destroy);
 }

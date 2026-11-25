@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/async-iterable-predicate-member-call.ts"
+ ],
+ "diags": []
+}

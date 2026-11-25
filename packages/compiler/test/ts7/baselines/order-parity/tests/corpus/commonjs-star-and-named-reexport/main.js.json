@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/lib.cjs",
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/star.js",
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/named.js",
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/both.js",
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/both-named-first.js",
+  "<repo>/tests/corpus/commonjs-star-and-named-reexport/main.js"
+ ],
+ "diags": []
+}

@@ -1,4 +1,6 @@
 `WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage.
+A promise is a key too: the same promise is one key whether it is held through its typed binding, a wider promise type, or an untyped value.
+Entries keyed by a promise are released some time after the promise is gone, when later promise keys are added.
 Copied values, other native handles, and symbol keys are unsupported.
 Constructor seeds support arrays; custom iterators and detached methods are unsupported.
 Weak collections do not retain their keys, but values that refer back to a key can keep it alive until deletion or collection release.
@@ -10,7 +12,8 @@ Memory that a package frees only from a cleanup callback is not reclaimed until 
 For example, a wasm-bindgen package frees the WebAssembly memory behind a wrapper object from its cleanup callback, so a long-running server that drops such wrappers without calling their `free()` method keeps that memory.
 Call `free()` on wrappers the program no longer needs.
 Symbol targets and unregister tokens are unsupported.
-`WeakRef` is unsupported.
+`WeakRef` keeps its target alive for as long as the `WeakRef` itself, so `deref()` always answers the target, which is Node.js's answer for a target the collector has not freed.
+Constructing one checks its target as Node.js does: an object or a symbol outside the global registry, and a `TypeError` otherwise.
 
 Memory uses reference counting.
 Acyclic values are freed deterministically, and cycles are collected at defined collection points.

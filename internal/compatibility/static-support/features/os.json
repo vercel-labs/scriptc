@@ -1,0 +1,9 @@
+[
+    { "chapter": "os", "symbols": ["os.availableParallelism", "os.arch", "os.endianness", "os.freemem", "os.hostname", "os.loadavg", "os.machine", "os.platform", "os.release", "os.totalmem", "os.type", "os.uptime", "os.version", "EOL", "devNull"], "status": "supported", "evidence": ["tests/corpus/os-host-facts-exact.ts", "tests/corpus/5140-os-host-facts.ts", "tests/corpus/1353-os-basics.ts", "tests/corpus/2096-os-type.ts", "tests/corpus/4598-os-available-parallelism.ts", "tests/corpus/1537-os-release-spawnsync-stdio.ts"] },
+    { "chapter": "os", "symbols": ["os.networkInterfaces"], "status": "supported", "evidence": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts"] },
+    { "chapter": "os", "symbols": ["constants"], "status": "supported", "evidence": ["tests/corpus/5141-os-constants.ts"] },
+    { "chapter": "os", "symbols": ["os.cpus"], "status": "supported", "evidence": ["tests/corpus/5140-os-host-facts.ts", "tests/corpus/os-cpus-rows.cjs"] },
+    { "chapter": "os", "symbols": ["os.getPriority", "os.setPriority"], "status": "supported", "evidence": ["tests/corpus/5140-os-host-facts.ts", "tests/corpus/5883-os-set-priority.ts", "tests/corpus/os-priority-numeric-arguments.cjs", "tests/corpus/os-priority-callable.cjs"] },
+    { "chapter": "os", "symbols": ["os.userInfo"], "status": "supported", "evidence": ["tests/corpus/1540-os-userinfo.ts", "tests/corpus/os-userinfo-passwd-entry.ts", "tests/corpus/9204-os-user-info-buffer.ts", "tests/corpus/os-user-info-encoding.ts", "tests/corpus/os-userinfo-options.cjs", "tests/harness/os-homedir-passwd.test.ts"] },
+    { "chapter": "os", "symbols": ["os.homedir", "os.tmpdir"], "status": "supported", "evidence": ["tests/corpus/1353-os-basics.ts", "tests/corpus/os-homedir-env-cascade.ts", "tests/corpus/os-tmpdir-homedir-env.cjs", "tests/harness/os-homedir-passwd.test.ts"] }
+]

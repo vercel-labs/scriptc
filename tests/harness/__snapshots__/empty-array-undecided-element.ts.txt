@@ -1,0 +1,44 @@
+empty-array-undecided-element.ts:8:25 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'string[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  7 | const o = { files: [] };
+  8 | const names: string[] = o.files;
+    |                         ^~~~~~~
+  9 | const sizes: number[] = o.files;
+
+  hint: give the literal its type where it is written, for example `[] as string[]`, or annotate the object or binding that holds it
+
+empty-array-undecided-element.ts:9:25 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'number[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+   8 | const names: string[] = o.files;
+   9 | const sizes: number[] = o.files;
+     |                         ^~~~~~~
+  10 | names.push("x");
+
+  hint: give the literal its type where it is written, for example `[] as number[]`, or annotate the object or binding that holds it
+
+empty-array-undecided-element.ts:16:24 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'string[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  15 | const key = "items" as const;
+  16 | const held: string[] = p[key];
+     |                        ^~~~~~
+  17 | held.push("y");
+
+  hint: give the literal its type where it is written, for example `[] as string[]`, or annotate the object or binding that holds it
+
+empty-array-undecided-element.ts:22:34 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'string[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  21 | const NONE = [] as const;
+  22 | const texts: readonly string[] = NONE;
+     |                                  ^~~~
+  23 | const counts: readonly number[] = NONE;
+
+  hint: give the literal its type where it is written, for example `[] as string[]`, or annotate the object or binding that holds it
+
+empty-array-undecided-element.ts:23:35 - error SC2015: an empty array written with no element type ('[]', which the checker types 'never[]') cannot be used as 'number[]' here: it is one array under every name, so its element type is decided where it is written, and this use did not decide it (the same array is also used with another element type, or it reaches this use through a path the compiler does not follow)
+
+  22 | const texts: readonly string[] = NONE;
+  23 | const counts: readonly number[] = NONE;
+     |                                   ^~~~
+  24 | console.log(texts.length, counts.length);
+
+  hint: give the literal its type where it is written, for example `[] as number[]`, or annotate the object or binding that holds it

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-inspect-default-options-mutating-getters.cjs"
+ ],
+ "diags": []
+}

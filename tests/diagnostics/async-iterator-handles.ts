@@ -1,11 +1,11 @@
 import { Readable } from "node:stream";
 
-// Direct for-await consumption compiles, while the returned native iterator
-// objects are not yet first-class static values.
+// The web stream's values() iterator is a first-class static value; the
+// node Readable's iterator() handle is not.
 const nodeIterator = Readable.from(["a"]).iterator();
 const webIterator = ReadableStream.from([1]).values();
 console.log(nodeIterator, webIterator);
-// Direct loop consumption remains available without materializing either handle.
+// Direct loop consumption remains available without materializing the node handle.
 
 // Cleanup policy changes the emitted graph and must therefore be a literal.
 async function consume(flag: boolean): Promise<void> {

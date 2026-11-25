@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/bounded-import-spread-argument.ts"
+ ],
+ "diags": []
+}

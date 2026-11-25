@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8786-stdout-write-bind-stream-slots/sink.js",
+  "<repo>/tests/corpus/8786-stdout-write-bind-stream-slots/main.ts"
+ ],
+ "diags": []
+}

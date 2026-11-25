@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8863-checked-record-widening.ts"
+ ],
+ "diags": []
+}

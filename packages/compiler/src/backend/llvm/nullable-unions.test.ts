@@ -100,8 +100,7 @@ test("Set elements and Map keys over identity arms keep their pointer representa
   const program = new NullableUnions(module(unions, { globals }));
   expect(program.single("au")).not.toBeNull();
   expect(program.shapes("abnu")).toMatchObject({ unitTag: 3, nullTag: 2 });
-  // Strings compare by value, and functions by identity root: such keys stay boxed.
-  expect(program.get("su")).toBeNull();
+  // Functions compare by identity root: such keys stay boxed.
   expect(program.get("fu")).toBeNull();
   // Library builds keep them boxed.
   const library = new NullableUnions(
@@ -109,6 +108,63 @@ test("Set elements and Map keys over identity arms keep their pointer representa
   );
   expect(library.get("au")).toBeNull();
   expect(library.get("abnu")).toBeNull();
+  expect(library.get("su")).toBeNull();
+  expect(library.usesUnitKeys).toBe(false);
+});
+
+test("a union of a string and unit arms stays the string pointer as a Map key and a Set element", () => {
+  const union = (unionId: string): IrType => ({ kind: "union", unionId });
+  const string: IrType = { kind: "string" };
+  const unions: IrUnionDef[] = [
+    { id: "su", arms: [string, UNDEFINED_T] },
+    { id: "sn", arms: [NULL_T, string] },
+    { id: "snu", arms: [string, NULL_T, UNDEFINED_T] },
+    { id: "sf", arms: [string, F64] },
+    { id: "sfu", arms: [string, F64, UNDEFINED_T] },
+    { id: "au", arms: [a, UNDEFINED_T] },
+  ];
+  const keyed = (ids: string[]): Partial<IrModule> => ({
+    globals: ids.map((id, index) => ({
+      id: `%g.${id}`,
+      name: id,
+      type:
+        index % 2 === 0
+          ? ({ kind: "set", elem: union(id) } as IrType)
+          : ({ kind: "map", key: union(id), value: F64 } as IrType),
+      mutable: false,
+    })),
+  });
+  const program = new NullableUnions(module(unions, keyed(["su", "sn", "snu", "sf", "sfu"])));
+  // The collection stores string keys (string-union-keys.ts), so the union
+  // is the string pointer in every position of the program.
+  expect(program.stringKey(union("su"))).toMatchObject({ refTag: 0, unitTag: 1, nullTag: -1 });
+  expect(program.stringKey(union("sn"))).toMatchObject({ refTag: 1, unitTag: 0, nullTag: -1 });
+  expect(program.stringKey(union("snu"))).toMatchObject({ refTag: 0, unitTag: 2, nullTag: 1 });
+  expect(program.usesUnitKeys).toBe(true);
+  expect(program.usesNullSentinel).toBe(true);
+  // A second value arm keeps the box, keyed or not.
+  expect(program.get("sf")).toBeNull();
+  expect(program.get("sfu")).toBeNull();
+  expect(program.stringKey(union("sf"))).toBeNull();
+  // Other pointer unions and other types are not string keys.
+  expect(program.single("au")).not.toBeNull();
+  expect(program.stringKey(union("au"))).toBeNull();
+  expect(program.stringKey(string)).toBeNull();
+  // Without a collection keyed by one, a module defines no key strings.
+  const unkeyed = new NullableUnions(module(unions));
+  expect(unkeyed.stringKey(union("su"))).not.toBeNull();
+  expect(unkeyed.usesUnitKeys).toBe(false);
+  // A union kept as a box (the test option) keys its collection as a box.
+  const kept = new NullableUnions(
+    module(unions, keyed(["su"])),
+    true,
+    undefined,
+    true,
+    new Set(["su"]),
+  );
+  expect(kept.get("su")).toBeNull();
+  expect(kept.stringKey(union("su"))).toBeNull();
+  expect(kept.usesUnitKeys).toBe(false);
 });
 
 test("unions of records alone stay shape unions as Map keys and Set elements", () => {

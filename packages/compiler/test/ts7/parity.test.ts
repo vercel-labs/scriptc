@@ -42,6 +42,14 @@ import {
 } from "./harness.js";
 import type { TwoWorlds } from "./harness.js";
 import { ALL_BATTERIES } from "./fixtures.js";
+import { TypeFormatFlags } from "../../src/frontend/ts7/enums.js";
+
+/** Both printers elide part of a large type by default, at different
+ * budgets: 5.9.3 leaves a run of members out with a count ("... 14 more
+ * ..."), and 7.1 writes "..." where it has already written the same nested
+ * type. Truncation is a display budget, so both sides print in full. */
+const NO_TRUNCATION_5 = ts5.TypeFormatFlags.NoTruncation;
+const NO_TRUNCATION_7 = TypeFormatFlags.NoTruncation;
 
 const host = new Ts7Host();
 const worldsByName = new Map<string, TwoWorlds>();
@@ -296,9 +304,10 @@ for (const battery of ALL_BATTERIES) {
             ts5.isNonNullExpression(n);
           if (!valueish) continue;
           if (ts5.isPartOfTypeNode(n)) continue; // finding 3's filter
-          const t5 = w().c5.typeToString(w().c5.getTypeAtLocation(n));
+          const t5 = w().c5.typeToString(w().c5.getTypeAtLocation(n), undefined, NO_TRUNCATION_5);
           const t7raw = w().c7.getTypeAtLocation(n7[i]!);
-          const t7 = t7raw === undefined ? "<none>" : w().c7.typeToString(t7raw);
+          const t7 =
+            t7raw === undefined ? "<none>" : w().c7.typeToString(t7raw, undefined, NO_TRUNCATION_7);
           if (t5.includes("unresolved")) continue; // error-type spellings differ
           if (canonTypeText(t5) !== canonTypeText(t7)) {
             expect.fail(
@@ -450,8 +459,8 @@ test("getAwaitedType shim agrees with 5.9.3 across the async battery (pinned lim
     const t7 = w.c7.getTypeAtLocation(n7[i]!);
     if (t7 === undefined) continue;
     const a7 = w.c7.getAwaitedType(t7);
-    const s5 = a5 === undefined ? "<none>" : w.c5.typeToString(a5);
-    const s7 = a7 === undefined ? "<none>" : w.c7.typeToString(a7);
+    const s5 = a5 === undefined ? "<none>" : w.c5.typeToString(a5, undefined, NO_TRUNCATION_5);
+    const s7 = a7 === undefined ? "<none>" : w.c7.typeToString(a7, undefined, NO_TRUNCATION_7);
     if (canonTypeText(s5) !== canonTypeText(s7)) {
       // The shim's DOCUMENTED limitation (checker.ts): a union whose arms
       // unwrap to more than one distinct type identity cannot be rebuilt

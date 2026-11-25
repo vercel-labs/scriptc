@@ -1,0 +1,10 @@
+[
+    { "chapter": "async_context", "parent": "Asynchronous context tracking", "signatures": ["Class: `AsyncResource`"], "status": "supported", "evidence": ["tests/corpus/async-resource.cjs", "tests/corpus/async-resource-destroy-scope.cjs"] },
+    { "chapter": "async_context", "parent": "Class: `AsyncResource`", "signatures": ["`asyncResource.bind(fn[, thisArg])`", "`asyncResource.runInAsyncScope(fn[, thisArg, ...args])`", "`asyncResource.emitDestroy()`", "`asyncResource.asyncId()`", "`asyncResource.triggerAsyncId()`"], "status": "supported", "evidence": ["tests/corpus/async-resource.cjs", "tests/corpus/async-resource-destroy-scope.cjs"] },
+    { "chapter": "async_context", "parent": "Class: `AsyncLocalStorage`", "signatures": ["`asyncLocalStorage.withScope(store)`"], "status": "supported", "evidence": ["tests/corpus/async-local-storage-with-scope.cjs"] },
+    { "chapter": "async_context", "parent": "Asynchronous context tracking", "signatures": ["Class: `RunScope`"], "status": "supported", "evidence": ["tests/corpus/async-local-storage-with-scope.cjs"] },
+    { "chapter": "async_context", "parent": "Class: `RunScope`", "signatures": ["`scope.dispose()`"], "status": "supported", "evidence": ["tests/corpus/async-local-storage-with-scope.cjs"] },
+    { "chapter": "async_context", "parent": "Class: `AsyncLocalStorage`", "signatures": ["`name` Type: {string}"], "status": "supported", "evidence": ["tests/corpus/compat-core-members.mjs", "tests/corpus/compat-core-members.ts", "tests/corpus/async-local-storage-audit.cjs"] },
+    { "chapter": "async_context", "parent": "Class: `AsyncLocalStorage`", "signatures": ["Usage with `async/await`"], "status": "not-applicable" },
+    { "chapter": "async_context", "parent": "Class: `AsyncResource`", "signatures": ["Using `AsyncResource` for a `Worker` thread pool", "Integrating `AsyncResource` with `EventEmitter`"], "status": "not-applicable" }
+]

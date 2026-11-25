@@ -15,6 +15,7 @@
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
  *     "wasm": ["build/module.wasm"],
+ *     "source": true,                    // installed elsewhere: program source
  *     "typePatches": {                   // frontend/type-patches/layer.ts
  *       "commander@^15.0.0": {
  *         "declarations": { "HelpContext.helpWidth": "| undefined" }
@@ -68,7 +69,9 @@ export interface NodeIslandsSetting {
   speculativeStart: boolean;
   /** Environment variables whose build-time values a deferred island
    * module's boot guards may record in the executable (snapshot.ts). A
-   * deferred load that reads any other variable stays eager. */
+   * load that reads any other variable that is set at build time stays
+   * eager. A variable that is unset at build time needs no listing: its
+   * guard records only that it was unset. */
   publicEnv: string[];
 }
 
@@ -219,6 +222,13 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
       }),
     );
   };
+
+  // `source` is a package's own declaration that its files are program
+  // sources when another program installs it (frontend/resolve.ts,
+  // isSourcePackagePath). The project's own files already are.
+  const source = root["source"];
+  if (source !== undefined && typeof source !== "boolean")
+    problem(["source"], `must be true or false, not ${shown(source)}`, "use a boolean");
 
   const packages = root["packages"];
   if (packages !== undefined) {

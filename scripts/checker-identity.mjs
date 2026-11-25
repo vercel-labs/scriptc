@@ -3,7 +3,7 @@
 // SCRIPTC_CHECKER=tsgo) and fails unless both give the same IR and the same diagnostics. The text of a checker panic
 // is the checker's own (Go's runtime error for tsgo, tsc-ts's for tsc-ts), so it is compared as `panic: …`.
 //
-// Usage: node scripts/checker-identity.mjs [--jobs <n>] [--optimization release|dev] [--filter <substring>]
+// Usage: node scripts/checker-identity.mjs [--jobs <n>] [--optimization release|dev] [--filter <substring>] [--shard <i/n>]
 //
 // It needs `pnpm build`. Each checker compiles in its own worker processes, which read SCRIPTC_CHECKER when they
 // start their servers.
@@ -18,8 +18,26 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const corpusDir = join(repoRoot, "tests/corpus");
 const checkers = ["tsgo", "tsc-ts"];
 
-if (process.argv[2] === "--worker") await worker(process.argv.slice(3));
-else await main();
+/** The entries one shard of `i/n` compiles: a stable partition by the sorted program order, so the shards' union
+ * is every program exactly once. An empty shard keeps the whole set. */
+export function shardEntries(entries, shard) {
+  if (shard === "") return entries;
+  const match = /^(\d+)\/(\d+)$/.exec(shard);
+  if (match === null) throw new Error('--shard must look like "i/n"');
+  const index = Number(match[1]);
+  const total = Number(match[2]);
+  if (index < 1 || index > total || total < 1)
+    throw new Error(`--shard ${shard} is outside 1..${total}`);
+  return entries.filter((_, position) => position % total === index - 1);
+}
+
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  if (process.argv[2] === "--worker") await worker(process.argv.slice(3));
+  else await main();
+}
 
 async function main() {
   const { values } = parseArgs({
@@ -30,18 +48,22 @@ async function main() {
       },
       optimization: { type: "string", default: "release" },
       filter: { type: "string", default: "" },
+      shard: { type: "string", default: "" },
     },
   });
   if (values.optimization !== "release" && values.optimization !== "dev")
     throw new Error("--optimization must be release or dev");
   // The entries llvm-differential.test.ts compiles.
-  const entries = ["ts", "js", "mjs", "cjs"]
-    .flatMap((ext) => [
-      ...globSync(join(corpusDir, `*.${ext}`)),
-      ...globSync(join(corpusDir, `*/main.${ext}`)),
-    ])
-    .filter((file) => file.includes(values.filter))
-    .sort();
+  const entries = shardEntries(
+    ["ts", "js", "mjs", "cjs"]
+      .flatMap((ext) => [
+        ...globSync(join(corpusDir, `*.${ext}`)),
+        ...globSync(join(corpusDir, `*/main.${ext}`)),
+      ])
+      .filter((file) => file.includes(values.filter))
+      .sort(),
+    values.shard,
+  );
   const jobs = Math.max(1, Number(values.jobs));
   const outRoot = mkdtempSync(join(tmpdir(), "scriptc-checker-identity-"));
   try {
@@ -89,7 +111,7 @@ async function main() {
       process.exitCode = 1;
     } else {
       console.log(
-        `${entries.length} programs: tsgo and tsc-ts give the same LLVM IR and diagnostics (${values.optimization}).`,
+        `${entries.length} programs: tsgo and tsc-ts give the same LLVM IR and diagnostics (${values.optimization}${values.shard === "" ? "" : `, shard ${values.shard}`}).`,
       );
     }
   } finally {

@@ -1,7 +1,7 @@
 // Two VALUES pinned from one generic declaration at different signatures
-// compare by identity: JavaScript has one function object, the compiled
-// program has one closure per signature, so the comparison is refused
-// instead of answering `false`.
+// compare by identity: JavaScript has one function object, so the comparison
+// answers equal when const initializers trace to that declaration; a value
+// read through a property initializer is refused instead of answering `false`.
 function ident<T>(x: T): T {
   return x;
 }

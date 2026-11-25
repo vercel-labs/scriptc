@@ -77,6 +77,9 @@ void *scr_net_server_get_http_ctx(ScrNetServer *s);
  * drops its own request/upgrade/connect lists there (the settle-releases-
  * listeners story across the layer seam). */
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *));
+/* the native context's settle hook: releases the listeners it owns that can
+ * no longer fire once the server settles */
+void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *));
 bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
 /* The dyn-dispatch hook for HTTP server events: scr_http.c registers it
  * at scr_http_dyn_install, and the netServer handle ops route
@@ -97,6 +100,9 @@ ScrNetServer *scr_net_sock_server(ScrNetSocket *s);
  * supported yet" Error;
  * unknown names throw Node's ERR_UNKNOWN_ENCODING. May throw. */
 void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/);
+/* The untyped form: a missing or undefined encoding means utf8, a non-string
+ * is Node's argument TypeError. May throw. */
+void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/);
 bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
@@ -115,6 +121,10 @@ void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size
  * liveness test, `sweep` runs at every net sweep top. */
 void scr_net_set_proto_sweep(bool (*pending)(void), void (*sweep)(void));
 void scr_net_fire_err(ScrNetLs *l, ScrStr *msg); /* unhandled => exit(1) */
+/* Node's system error (errno, code, syscall and the address, port or
+ * hostname) for a failure message of this unit's shape; NULL for any other
+ * message, +1 otherwise. */
+ScrError *scr_net_system_error(ScrStr *msg);
 
 ScrNetServer *scr_net_server_retain(ScrNetServer *s);
 void scr_net_server_release(ScrNetServer *s);
@@ -143,6 +153,7 @@ double scr_net_server_port(ScrNetServer *s); /* address().port */
 bool scr_net_server_listening(ScrNetServer *s);
 void scr_net_sock_set_ref(ScrNetSocket *s, bool ref);
 void scr_net_sock_move_writes(ScrNetSocket *from, ScrNetSocket *to);
+bool scr_net_sock_peer_closed(ScrNetSocket *s);
 void scr_net_server_set_ref(ScrNetServer *s, bool ref);
 bool scr_net_sock_has_ref(ScrNetSocket *s);
 double scr_net_server_keep_alive_ms(ScrNetServer *s);
@@ -153,6 +164,8 @@ double scr_net_server_idle_ms(ScrNetServer *s);
  * keepAliveTimeoutBuffer. Typed reads validate that no dynamic write left
  * a non-number in the ordinary JS property slot. */
 double scr_net_server_timeout_get(ScrNetServer *s, double field);
+/* As the HTTP timeout checker reads a field: a non-number reads 0. */
+double scr_net_server_timeout_raw(ScrNetServer *s, double field);
 void scr_net_server_timeout_set(ScrNetServer *s, double field, double value);
 void scr_net_server_set_timeout_plain(ScrNetServer *s, double ms);
 void scr_net_server_set_timeout_cb(ScrNetServer *s, double ms, ScrClosure *cb /*moves*/, ScrNetConnFn fn);
@@ -177,6 +190,17 @@ void scr_net_server_close_all_connections(ScrNetServer *s);
 void scr_net_server_close_idle_connections(ScrNetServer *s);
 ScrDyn *scr_net_server_max_connections_get(ScrNetServer *s); /* +1 */
 void scr_net_server_max_connections_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+/* http.Server's maxHeadersCount / maxRequestsPerSocket: ordinary writable
+ * properties of any value (the getters answer +1: null / 0 until set). The
+ * raw views are borrowed for the HTTP layer's numeric coercions (NULL =
+ * unset); the scalar setters back the static lowerings. */
+ScrDyn *scr_net_server_max_headers_count_get(ScrNetServer *s);
+void scr_net_server_max_headers_count_set(ScrNetServer *s, const ScrDyn *value /*borrowed*/);
+const ScrDyn *scr_net_server_max_headers_count_raw(const ScrNetServer *s);
+ScrDyn *scr_net_server_max_requests_per_socket_get(ScrNetServer *s);
+void scr_net_server_max_requests_per_socket_set(ScrNetServer *s,
+                                                const ScrDyn *value /*borrowed*/);
+const ScrDyn *scr_net_server_max_requests_per_socket_raw(const ScrNetServer *s);
 void scr_net_server_on_drop(ScrNetServer *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*borrowed*/);
 /* The REAL close behind `wrapper.close.bind(wrapper)` — never consults
@@ -209,26 +233,79 @@ enum {
   SCR_NET_OFF_CONNECTION = 4,
   SCR_NET_OFF_TIMEOUT = 5,
   SCR_NET_OFF_DROP = 6,
+  SCR_NET_OFF_NEW_LISTENER = 7,
+  SCR_NET_OFF_CLIENT_ERROR = 8,
+  /* The TLS handshake-complete list ('secureConnection'), which fires
+   * beside the 'connection' list but is a separate registry. */
+  SCR_NET_OFF_SECURE_CONNECTION = 9,
 };
 void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
+/* server.listeners(event): a +1 closure array of the event's listeners in
+ * registration order, each the function value the program registered
+ * (Node's identity semantics). `kind` selects the list (SCR_NET_OFF_*). */
+ScrArr *scr_net_server_listeners(ScrNetServer *s, double kind);
+/* The list-order +1 array behind every listeners() entry point (net lists
+ * and the http lists in scr_http.c). */
+ScrArr *scr_net_ls_closure_array(ScrNetLs *l);
+/* EventEmitter removal: the LAST entry standing for the same function
+ * (through any adapter) leaves the list — Node's removeListener order. */
+void scr_net_ls_remove_last(ScrNetLs *l, ScrClosure *cb /*borrowed*/);
+/* server.on('newListener', cb): Node's meta event, fired with the event
+ * name BEFORE a listener joins its list. */
+void scr_net_server_on_new_listener(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn,
+                                    bool once);
+void scr_net_new_listener_thunk0(ScrClosure *cb, ScrStr *name);
+void scr_net_new_listener_thunk1(ScrClosure *cb, ScrStr *name);
+/* The add-time notify the registration entry points run (scr_http.c's
+ * server handlers included). No-op when no 'newListener' listener is
+ * registered. */
+void scr_net_server_notify_new_listener(ScrNetServer *s, const char *event);
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 /* 'secureConnection' — the deferred-connection list (TLS handshake
  * timing); released unread on a server without deferral (a plain net
  * server never fires it, like Node). */
 void scr_net_server_on_secure_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
+/* A listener for an event this server never fires: registered, inert. */
+void scr_net_server_on_inert(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
 ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
 ScrNetSocket *scr_net_connect_checked(double port, ScrStr *host /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/); /* +1 */
+/* new net.Socket([options]): an unconnected socket (+1, or NULL with the
+ * throw pending). allowHalfOpen and signal lower; a descriptor (a number
+ * argument or options.fd) and the readable/writable sides throw the
+ * lowering fence. */
+ScrNetSocket *scr_net_sock_construct(const ScrDyn *options,
+                                     ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                     const ScrStr *fence);
+/* socket.connect(port[, host][, connectListener]): an idle socket dials
+ * (port and host validated first). */
+void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
+                               ScrClosure *cb /*moves, nullable*/);
 bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);
 /* connect with a validated autoSelectFamilyAttemptTimeout option: the
  * budget runs Node's validateInt32-from-1 ladder (ERR_OUT_OF_RANGE /
  * ERR_INVALID_ARG_TYPE) and is then inert — the single dial has nothing
  * to time. +1, or NULL with the throw pending. */
 ScrNetSocket *scr_net_connect_attempt(double port, ScrStr *host /*borrowed*/, const ScrDyn *t /*borrowed*/);
-/* net.connect/createConnection over a RUNTIME option bag (computed
- * keys): Node-order validation (objectMode trio, port, host,
- * autoSelectFamily, attempt budget), then the compiler-rendered fence —
- * always leaves an exception pending. Borrowed. */
-void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence);
+/* net.connect/createConnection over dynamic arguments (a runtime option
+ * bag or positional values the compiler cannot type): Node's normalizeArgs
+ * — the Socket constructor's ladder, the module's timeout, connect()'s
+ * missing-argument check and lookupAndConnect's validation — then the dial
+ * with the options this runtime models (family, hints, local bind, fd,
+ * signal, blockList, keepAlive, typeOfService, attempt budget). Parts that
+ * stay unmodeled (an onread interface, a caller lookup) fence after their
+ * validation. +1, or NULL with an exception pending; `cb` moves. */
+ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                                  ScrClosure *cb /*moves, nullable*/,
+                                  ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *),
+                                  const ScrStr *fence);
+/* Server.prototype.listen over dynamic arguments: Node's normalizeArgs,
+ * the already-listening check, the bound-socket adoption, then the option
+ * bag's signal, fd, port and path in Node's order (with the backlog and
+ * the ipv6Only/reusePort flags). `fence` reports the parts still
+ * unmodeled (an adopted handle) after their validation. `cb` moves. */
+void scr_net_listen_dyn(ScrNetServer *s, const ScrDyn *a0, const ScrDyn *a1, const ScrDyn *a2,
+                        ScrClosure *cb /*moves, nullable*/,
+                        ScrDyn *(*add_abort)(ScrDyn *, ScrDyn *), const ScrStr *fence);
 /* The port of listen(arg[, ...]) for a checked-dynamic first argument
  * (Node's normalizeArgs and validatePort): 0 for a function, undefined or
  * null; ERR_SOCKET_BAD_PORT pending for a bad port; the fence pending for
@@ -241,7 +318,8 @@ double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence);
 
 ScrStr *scr_net_blocking_lookup(ScrStr *host /*borrowed*/);
 ScrNetSocket *scr_net_connect_lookup(double port, ScrStr *host /*borrowed*/,
-                                      ScrClosure *lookup /*moves*/, void *answer_fn); /* +1 */
+                                      ScrClosure *lookup /*moves*/, void *answer_fn,
+                                      const ScrDyn *attempt /*borrowed, nullable*/); /* +1 */
 void scr_net_lookup_answer(ScrClosure *self, bool has_err, ScrStr *msg /*borrowed, nullable*/,
                             ScrArr *ips /*borrowed, nullable*/);
 /* write(): Node's Writable answer — false when the bytes the write left
@@ -269,6 +347,9 @@ ScrNetSocket *scr_net_sock_pause(ScrNetSocket *s);            /* +1: chaining */
 ScrNetSocket *scr_net_sock_resume(ScrNetSocket *s);           /* +1: chaining */
 void scr_net_sock_hold(ScrNetSocket *s, bool hold); /* protocol read hold (not pause) */
 ScrNetSocket *scr_net_sock_set_nodelay(ScrNetSocket *s, bool enable); /* +1: chaining */
+/* socket.setNoDelay(enable) with the argument as written: missing or
+ * undefined means true (Node's Boolean(enable === undefined ? true : it)). */
+ScrNetSocket *scr_net_sock_set_nodelay_dyn(ScrNetSocket *s, const ScrDyn *enable /*borrowed*/);
 void scr_net_sock_set_keepalive(ScrNetSocket *s, bool enable, double delay_ms);
 void scr_net_sock_destroy_soon(ScrNetSocket *s);
 void scr_net_sock_on_finish(ScrNetSocket *s, ScrClosure *cb /*moves*/);
@@ -278,7 +359,7 @@ bool scr_net_sock_readable(ScrNetSocket *s);
 /* The deferred dial (the http agent's maxSockets queue): the socket
  * registers "connecting" and buffers writes; dial_start runs the dial. */
 ScrNetSocket *scr_net_connect_deferred(double port, ScrStr *host /*borrowed, nullable*/); /* +1 */
-ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/, const ScrDyn *lookup /*borrowed*/); /* +1, NULL on throw */
+ScrNetSocket *scr_net_connect_lookup_dyn(double port, ScrStr *host /*borrowed*/, const ScrDyn *lookup /*borrowed*/, const ScrDyn *attempt /*borrowed, nullable*/); /* +1, NULL on throw */
 /* A client socket for the Unix socket at `path`, dialed now or (deferred)
  * by scr_net_sock_dial_start. A failure is the deferred 'error'. */
 ScrNetSocket *scr_net_connect_path(ScrStr *path /*borrowed*/, bool deferred); /* +1 */
@@ -289,7 +370,12 @@ ScrNetSocket *scr_net_connect_path_checked(ScrStr *path /*borrowed*/, bool pipe_
 /* server.listen(path[, cb]): a Unix-socket server, its file removed at close. */
 void scr_net_listen_path(ScrNetServer *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_dial_start(ScrNetSocket *s);
+/* Whether the socket's dial is still waiting to be started: a request that
+ * queued for an agent slot holds its socket before it connects. */
+bool scr_net_sock_dial_pending(ScrNetSocket *s);
 void scr_net_sock_set_timeout(ScrNetSocket *s, double ms);
+ScrDyn *scr_net_sock_timeout_get(ScrNetSocket *s); /* +1 */
+bool scr_net_sock_allow_half_open(ScrNetSocket *s);
 void scr_net_sock_on_timeout(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
 ScrStr *scr_net_sock_remote_address(ScrNetSocket *s); /* +1 or NULL (undefined arm) */
 double scr_net_sock_remote_port(ScrNetSocket *s);    /* NaN = undefined */
@@ -309,6 +395,14 @@ ScrDyn *scr_net_socket_address_parse(const ScrDyn *input);
 bool scr_net_is_socket_address(const ScrDyn *value);
 ScrDyn *scr_net_block_list_new(const ScrDyn *args);
 bool scr_net_is_block_list(const ScrDyn *value);
+bool scr_net_block_list_blocks(const ScrDyn *list, const char *ip, int family);
+/* net.BoundSocket: construction validates its options and binds (TCP or a
+ * Unix-socket path); server.listen(bound[, cb]) adopts the descriptor. All
+ * +1, borrowed arguments; may throw. */
+ScrDyn *scr_net_bound_socket_new(const ScrDyn *args);
+bool scr_net_is_bound_socket(const ScrDyn *value);
+void scr_net_listen_bound(ScrNetServer *s, const ScrDyn *bound);
+void scr_net_listen_bound_cb(ScrNetServer *s, const ScrDyn *bound, ScrClosure *cb /*moves, nullable*/);
 ScrDyn *scr_net_block_list_private_ranges(void);
 /* server.dropMaxConnection: a stored value (+1 get, borrowed set). */
 ScrDyn *scr_net_server_drop_max_connection_get(ScrNetServer *s);
@@ -322,7 +416,39 @@ void scr_net_sock_on_ready(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once)
 void scr_net_sock_on_close_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/, bool once);
 void scr_net_sock_on_write_flush_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
 void scr_net_sock_on_finish_dyn(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/);
-ScrNetSocket *scr_net_sock_set_keepalive_ret(ScrNetSocket *s, bool enable, double delay_ms); /* +1 */
+/* socket.setKeepAlive([enable][, initialDelay][, interval][, count]):
+ * Node's positional form (its object form when enable is an object) —
+ * Boolean(enable), milliseconds truncated to seconds, interval only when
+ * not undefined, count passed through. Answers the socket (+1), or NULL
+ * with the exception pending when a ToNumber throws. */
+ScrNetSocket *scr_net_sock_set_keepalive_args_ret(ScrNetSocket *s, const ScrDyn *enable,
+                                                  const ScrDyn *delay, const ScrDyn *interval,
+                                                  const ScrDyn *count); /* +1 */
+/* socket.setKeepAlive({ enable, initialDelay, interval, count }): Node's
+ * option form — Boolean(enable), ~~(delay/1000) seconds, the optional
+ * interval (seconds) and count. False with the exception pending when a
+ * value's ToNumber throws. */
+bool scr_net_sock_set_keepalive_opts(ScrNetSocket *s, const ScrDyn *options /*borrowed*/);
+/* socket.getTypeOfService() / setTypeOfService(tos): Node's 0..255
+ * integer ladder (throws), the cached value before a handle exists, and
+ * the ErrnoException of a failing getsockopt/setsockopt. The setter
+ * answers the socket (+1), Node's chaining. */
+double scr_net_sock_get_tos(ScrNetSocket *s);
+ScrNetSocket *scr_net_sock_set_tos(ScrNetSocket *s, double tos);
+/* socket.bufferSize: the unsent bytes of a socket with a handle, or
+ * undefined (NULL dyn) before one exists. */
+ScrDyn *scr_net_sock_buffer_size(ScrNetSocket *s); /* +1 */
+/* socket.autoSelectFamilyAttemptedAddresses: +1 array of "$ip:$port"
+ * under a multi-address dial, undefined (Node's absent property) before
+ * such a dial starts. */
+ScrDyn *scr_net_sock_attempted_addresses(ScrNetSocket *s); /* +1 */
+/* The happy-eyeballs attempt events ('connectionAttempt' = 0,
+ * 'connectionAttemptFailed' = 1, 'connectionAttemptTimeout' = 2). */
+void scr_net_sock_on_attempt(ScrNetSocket *s, const ScrDyn *listener /*borrowed*/,
+                             double which, bool once);
+/* server[Symbol.asyncDispose](): resolves at once for a server that never
+ * listened, otherwise awaits the close. +1 promise. */
+ScrPromise *scr_net_server_async_dispose(ScrNetServer *s);
 void scr_net_sock_set_timeout_checked(ScrNetSocket *s, double ms);
 void scr_net_sock_set_timeout_cb(ScrNetSocket *s, double ms, ScrClosure *cb /*moves*/);
 double scr_net_is_ip(const ScrDyn *input);
@@ -417,6 +543,14 @@ void scr_net_sock_adopt_start(ScrNetSocket *t);
  * transport handshake, or fires 'connect'; any other status fails the
  * socket with "Proxy response (<status>) !== 200 when HTTP Tunneling". */
 void scr_net_sock_set_tunnel(ScrNetSocket *s, const char *request, size_t len);
+/* The tunnel's failure report: `status` is the proxy's status code (-1 when
+ * the head is not an HTTP status line), `head`/`head_len` the response head.
+ * The formatter writes the socket error's text; without one the runtime's
+ * own (undici's) wording is used. */
+typedef void (*ScrNetTunnelMsgFn)(void *ctx, int status, const char *head, size_t head_len,
+                                  char *out, size_t cap);
+void scr_net_sock_set_tunnel_ex(ScrNetSocket *s, const char *request, size_t len,
+                                ScrNetTunnelMsgFn msg_fn, void *ctx);
 /* The status code of a CONNECT response head (head[0..len) ends with the
  * blank line), or -1 when it does not start with an HTTP/1.x status
  * line; and undici's message for a status other than 200 (or -1). */
@@ -466,6 +600,7 @@ void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool
  * tls.createServer's handler is the 'secureConnection' event, fired with
  * the socket only once the TLS layer stands (Node's timing). */
 void scr_net_server_defer_connections(ScrNetServer *s);
+bool scr_net_server_is_tls(const ScrNetServer *s);
 /* The current native-connection hook (the https wrapper reads the http
  * parser installer it is about to wrap). */
 void scr_net_server_get_native_conn(ScrNetServer *s, ScrNetNativeConnFn *fn, void **ctx, void (**ctx_free)(void *));

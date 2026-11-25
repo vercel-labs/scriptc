@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8927-delete-undeclared-key-beside-wider-types.ts"
+ ],
+ "diags": []
+}

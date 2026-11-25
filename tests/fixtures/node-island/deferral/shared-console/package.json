@@ -1,0 +1,1 @@
+{ "name": "deferral-shared-console", "private": true, "type": "module", "scriptc": { "packages": { "token-reader": "node", "token-echo": "node" } } }

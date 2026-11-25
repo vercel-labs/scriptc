@@ -15,7 +15,7 @@ import {
   type RuntimePackManifest,
   type RuntimePackMode,
 } from "../backend/runtime-pack-core.js";
-import { LRE_SOURCES, zlibInputs } from "../backend/vendor-inputs.js";
+import { LRE_SOURCES, zlibInputs, zstdInputs } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -139,6 +139,7 @@ export function buildSanitizedRuntime(
   const zlib = join(vendor, "zlib");
   const mbedtls = join(vendor, "mbedtls");
   const brotli = join(vendor, "brotli", "c");
+  const zstd = join(vendor, "zstd");
   const manifest = runtimePackManifest(selection);
   const cacheIdentity = contentDigest(
     JSON.stringify({
@@ -186,6 +187,8 @@ export function buildSanitizedRuntime(
     join(mbedtls, "include"),
     "-I",
     join(brotli, "include"),
+    "-I",
+    join(zstd, "lib"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
   // The units and variants the pack selection chose, compiled from source.
@@ -221,6 +224,39 @@ export function buildSanitizedRuntime(
       archives.push(join(selection.root, archive.path));
       continue;
     }
+    if (name === "mlkem") {
+      // ML-KEM is one source compiled once per parameter set, the way the
+      // pack builds it (packages/runtime-pack-common's mlkemArchive), so it
+      // cannot ride the loop below's one args list per archive.
+      const directory = join(vendor, "mlkem-native");
+      const levels = [
+        [512, "mlkem512", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+        [768, "mlkem768", "MLK_CONFIG_MULTILEVEL_WITH_SHARED"],
+        [1024, "mlkem1024", "MLK_CONFIG_MULTILEVEL_NO_SHARED"],
+      ] as const;
+      const objects = levels.map(([set, level, shared]) =>
+        compile(join(directory, "mlkem_native.c"), `mlkem-${level}.o`, [
+          "-std=c11",
+          "-I",
+          directory,
+          "-I",
+          join(directory, "src"),
+          `-DMLK_CONFIG_PARAMETER_SET=${set}`,
+          "-DMLK_CONFIG_MULTILEVEL_BUILD",
+          `-D${shared}`,
+        ]),
+      );
+      const output = join(stage, "libscriptc-mlkem.a");
+      runNativeTool(
+        toolchain.archiver ?? "ar",
+        [...(toolchain.archiverArgs ?? []), "rcs", output, ...objects],
+        undefined,
+        { ...process.env, ZERO_AR_DATE: "1" },
+      );
+      requireNativeArtifact(output);
+      archives.push(output);
+      continue;
+    }
     let sources: readonly string[];
     let directory: string;
     let args: string[];
@@ -249,6 +285,11 @@ export function buildSanitizedRuntime(
         )
         .sort();
       args = ["-std=c11", "-I", join(brotli, "include")];
+    } else if (name === "zstd") {
+      const inputs = zstdInputs(toolchain.target.llvmTriple);
+      directory = join(zstd, "lib");
+      sources = inputs.sources;
+      args = ["-std=c11", ...inputs.defines.map((define) => "-D" + define), "-I", directory];
     } else throw new NativeCodegenError("SC3003", `unsupported runtime vendor archive: ${name}`);
     const objects = sources.map((source) =>
       compile(

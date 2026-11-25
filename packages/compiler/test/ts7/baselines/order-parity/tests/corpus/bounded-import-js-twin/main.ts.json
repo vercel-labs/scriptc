@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bounded-import-js-twin/twin.ts",
+  "<repo>/tests/corpus/bounded-import-js-twin/main.ts"
+ ],
+ "diags": []
+}

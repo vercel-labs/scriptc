@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9406-global-symbol-shared-modules/setter.mjs",
+  "<repo>/tests/corpus/9406-global-symbol-shared-modules/reader.mjs",
+  "<repo>/tests/corpus/9406-global-symbol-shared-modules/main.mjs"
+ ],
+ "diags": []
+}

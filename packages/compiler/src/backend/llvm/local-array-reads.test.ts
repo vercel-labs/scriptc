@@ -954,3 +954,219 @@ test("an optional read at a proven integer index skips the double round trip", (
   expect(workBody(module, 64)).toContain("local.array.value");
   expect(workBody(module, 32)).toContain("local.array.exact");
 });
+
+/** `(cell | null)[]` read as `cell | null | undefined`: the lowered helper
+ * reads the element and retags it through a lifted union conversion. */
+function retagFixture(): IrModule {
+  const narrow: IrType = { kind: "union", unionId: "narrow" };
+  const wide: IrType = { kind: "union", unionId: "wide" };
+  const elements = arrayOf(narrow);
+  const readParams = [
+    { localId: "a", name: "a", type: elements },
+    { localId: "i", name: "i", type: F64 },
+  ];
+  const retag: IrFunction = {
+    name: "%union.retag",
+    params: [{ localId: "u.0", name: "u", type: narrow }],
+    returnType: wide,
+    locals: [{ id: "u.0", name: "u", type: narrow, mutable: false }],
+    loc,
+    body: [
+      {
+        kind: "return",
+        loc,
+        value: {
+          kind: "unionRetype",
+          fromId: "narrow",
+          unionId: "wide",
+          tags: [0, 1],
+          value: ref("u.0", narrow),
+          type: wide,
+          loc,
+        },
+      },
+    ],
+  };
+  const read: IrFunction = {
+    name: "read",
+    params: readParams,
+    returnType: wide,
+    locals: readParams.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+    loc,
+    body: [
+      {
+        kind: "return",
+        loc,
+        value: {
+          kind: "ternary",
+          type: wide,
+          loc,
+          cond: {
+            kind: "bin",
+            op: "===",
+            left: {
+              kind: "arrayState",
+              arr: ref("a", elements),
+              index: ref("i", F64),
+              type: F64,
+              loc,
+            },
+            right: num(1),
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "call",
+            callee: "%union.retag",
+            args: [
+              {
+                kind: "arrayGet",
+                arr: ref("a", elements),
+                index: ref("i", F64),
+                type: narrow,
+                loc,
+              },
+            ],
+            type: wide,
+            loc,
+          },
+          else_: {
+            kind: "unionWrap",
+            unionId: "wide",
+            tag: 2,
+            value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+            type: wide,
+            loc,
+          },
+        },
+      },
+    ],
+  };
+  const work: IrFunction = {
+    name: "work",
+    params: readParams,
+    returnType: F64,
+    locals: readParams.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+    loc,
+    body: [{ kind: "return", value: num(0), loc }],
+  };
+  return {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
+    unions: [
+      { id: "narrow", arms: [{ kind: "nullT" }, element] },
+      { id: "wide", arms: [{ kind: "nullT" }, element, UNDEFINED_T] },
+    ],
+    functions: [
+      { name: "main", params: [], returnType: VOID, locals: [], body: [], loc },
+      read,
+      retag,
+      work,
+    ],
+  };
+}
+
+function retagReads(mod: IrModule) {
+  const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
+  const unions = new Map(mod.unions!.map((union) => [union.id, union]));
+  return new OptionalArrayReads(functions, unions, (id) => id === "narrow" || id === "wide");
+}
+
+function called(body: IrModule["functions"][number]): IrExpr {
+  const ret = body.body[0];
+  if (!ret || ret.kind !== "return" || !ret.value) throw new Error("missing return");
+  return ret.value;
+}
+
+test("a nullable element read through a retag is one guard and a direct map", () => {
+  const mod = retagFixture();
+  expect(validateModule(mod)).toEqual([]);
+  const read = retagReads(mod).get({
+    kind: "call",
+    callee: "read",
+    args: [ref("a", arrayOf({ kind: "union", unionId: "narrow" })), num(0)],
+    type: { kind: "union", unionId: "wide" },
+    loc,
+  });
+  expect(read?.retype).toEqual({ fromId: "narrow", unionId: "wide", tags: [0, 1] });
+  expect(read?.presentTag).toBe(1);
+  expect(read?.missingTag).toBe(2);
+  // The ternary itself is recognized, so every use (a conversion, a call
+  // argument, a local initializer) takes the fused read.
+  expect(retagReads(mod).get(called(mod.functions[1]!))?.retype?.fromId).toBe("narrow");
+  const ir = emitLlvmModule(mod);
+  const helper = /^define internal ptr @sc_bf_read\([^]*?^}/m.exec(ir)![0];
+  // One state computation: the guard and the slot load share it.
+  expect(helper).toContain("local.array.dense");
+  expect(helper).not.toContain("arr.state.");
+  expect(helper).not.toContain("union_retag");
+  // The source NULL is `null`; the result spells it with the sentinel.
+  expect(helper).toContain("@sc_nullable_null");
+  expect(helper).toMatch(/= select i1 %t\d+, ptr @sc_nullable_null, ptr %t\d+/);
+  // A present slot may hold NULL, so the cold path reads the state first.
+  expect(helper).toContain("@scr_arr_state");
+  expect(helper).toContain("@scr_arr_borrow_ref");
+  expect(helper).not.toContain("@scr_arr_peek_ref");
+  expect(helper).toContain("store ptr null, ptr %s"); // the missing arm
+});
+
+test("the lifted union retag itself keeps the pointer and maps the null arm", () => {
+  const mod = retagFixture();
+  const ir = emitLlvmModule(mod);
+  const retag = /^define internal ptr @sc_bf__x25_union_retag\([^]*?^}/m.exec(ir)!;
+  expect(retag[0]).toContain("@sc_nullable_null");
+  expect(retag[0]).not.toContain("sc_bad_tag");
+  expect(retag[0]).not.toContain("switch");
+});
+
+test("only the whole-body retype retag joins the read", () => {
+  // A helper whose body guards the conversion (`if (isTag)') keeps the
+  // ordinary path: its value may hold an arm the retype does not list.
+  const mod = retagFixture();
+  const retag = mod.functions[2]!;
+  retag.body.unshift({
+    kind: "if",
+    cond: {
+      kind: "unionIsTag",
+      unionId: "narrow",
+      tag: 1,
+      negated: false,
+      value: ref("u.0", { kind: "union", unionId: "narrow" }),
+      type: BOOL,
+      loc,
+    },
+    then: retag.body.slice(),
+    else_: null,
+    loc,
+  });
+  const reads = retagReads(mod);
+  expect(
+    reads.get({
+      kind: "call",
+      callee: "read",
+      args: [ref("a", arrayOf({ kind: "union", unionId: "narrow" })), num(0)],
+      type: { kind: "union", unionId: "wide" },
+      loc,
+    }),
+  ).toBeNull();
+});
+
+test("a conversion that would have to rebuild an arm stays off the read path", () => {
+  const mod = retagFixture();
+  // `tags` no longer names the reference arm: the payload cannot pass
+  // through, so the read keeps the general ternary.
+  const retype = called(mod.functions[2]!) as IrExpr & { kind: "unionRetype" };
+  if (retype.kind !== "unionRetype") throw new Error("missing retype");
+  retype.tags = [0];
+  expect(
+    retagReads(mod).get({
+      kind: "call",
+      callee: "read",
+      args: [ref("a", arrayOf({ kind: "union", unionId: "narrow" })), num(0)],
+      type: { kind: "union", unionId: "wide" },
+      loc,
+    }),
+  ).toBeNull();
+});

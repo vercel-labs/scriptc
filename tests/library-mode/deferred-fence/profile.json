@@ -1,0 +1,14 @@
+{
+  "profile_format": 1,
+  "name": "conformance-deferred-fence",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "kd_",
+    "init_symbol": "kd_init",
+    "sink_register_symbol": "kd_set_panic_sink",
+    "collect_symbol": "kd_collect",
+    "result_reset_symbol": null
+  },
+  "exports": [{ "export": "run", "symbol": "kd_run", "params": ["f64"], "returns": "f64" }]
+}

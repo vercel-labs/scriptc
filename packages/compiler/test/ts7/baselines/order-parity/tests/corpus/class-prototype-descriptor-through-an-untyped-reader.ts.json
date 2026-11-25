@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-prototype-descriptor-through-an-untyped-reader.ts"
+ ],
+ "diags": []
+}

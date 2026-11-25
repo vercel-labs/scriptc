@@ -24,9 +24,30 @@ export class ProgramAnalysis {
   readonly moduleSourceCandidates = new Map<SourceFile, ModuleSourceCandidates>();
   /** The modules of every import cycle the exact initialization rule admitted. */
   readonly exactCycleMembers = new Set<SourceFile>();
+  /** CommonJS modules of require() cycles whose partially-initialized
+   * exports are observable: their exports object is the live
+   * checked-dynamic object Node hands a requiring module mid-cycle. */
+  readonly partialCjsCycleMembers = new Set<SourceFile>();
+  /** ES modules a require() call targets: each carries a %evaluating flag,
+   * so require() of one that is still evaluating throws Node's
+   * ERR_REQUIRE_CYCLE_MODULE at the call. */
+  readonly requireEsmTargets = new Set<SourceFile>();
   cycleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Whether some program file can name node:child_process (namesChildProcess). */
   namesChildProcess: boolean | null = null;
+  /** Which member names a typed member call passes its holder for
+   * (member-call-receivers.ts): null until the census is taken; `any` is
+   * false for a program with no function that reads its call's receiver. */
+  memberCallReceivers: { any: boolean; all: boolean; names: Set<string>; keyed: boolean } | null =
+    null;
+  /** Member names some implementation file writes, by name, for the void
+   * truthiness rule (tsc-codes.ts methodNameWritten): a member the program
+   * never writes keeps its undefined-returning dispatch. */
+  readonly methodNameWrites = new Map<string, boolean>();
+  /** Directories whose `lib.*.d.ts` files the checker holds as default
+   * libraries, and those already asked about (isBundledLibraryFile). */
+  readonly bundledLibraryDirectories = new Set<string>();
+  readonly checkedLibraryDirectories = new Set<string>();
   moduleEarlyBindings: EarlyBindingsMemo | null = null;
   /** Top-level require declarations: the first reference to their bindings
    * that code running before the require can reach (requireEarlyReference). */
@@ -53,8 +74,13 @@ export class ProgramAnalysis {
     this.prunedNpmReexports.clear();
     this.moduleSourceCandidates.clear();
     this.exactCycleMembers.clear();
+    this.partialCjsCycleMembers.clear();
+    this.requireEsmTargets.clear();
     this.cycleEarlyBindings = null;
     this.namesChildProcess = null;
+    this.methodNameWrites.clear();
+    this.bundledLibraryDirectories.clear();
+    this.checkedLibraryDirectories.clear();
     this.moduleEarlyBindings = null;
     this.requireEarlyReferences.clear();
     this.requireFirstRunnable.clear();

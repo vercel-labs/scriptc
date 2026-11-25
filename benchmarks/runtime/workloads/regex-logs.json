@@ -2,5 +2,6 @@
   "entry": "workloads/regex-logs.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

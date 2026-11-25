@@ -1,4 +1,15 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -8,7 +19,15 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
+import {
+  failureText,
+  nativeBuildPartitions,
+  nativeCodegenJobs,
+  nativeHelperFailureMessage,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./native-codegen-core.js";
+import { nativeCodegenDiag } from "../diagnostics/diagnostic.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -23,6 +42,9 @@ async function fakePackage(
     protocol?: string;
     packageVersion?: string;
     emitFailure?: boolean;
+    emitExitStatus?: number;
+    emitSignal?: string;
+    emitStderr?: string;
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
@@ -65,13 +87,19 @@ while [ "$#" -gt 0 ]; do
 done
 ${options.changePackageDuringEmit === true ? `printf '\\n' >> '${packageJson}'` : ""}
 ${
-  options.emitFailure === true
-    ? 'printf \'%s\\n\' \'{"ok":false,"code":"verification_failed","message":"bad module"}\' >&2; exit 1'
-    : options.emptyOutput === true
-      ? ': > "$output"'
-      : options.missingOutput === true
-        ? ":"
-        : 'for each in $outputs; do cp "$input" "$each"; done'
+  options.emitExitStatus !== undefined
+    ? `exit ${options.emitExitStatus}`
+    : options.emitSignal !== undefined
+      ? `kill -${options.emitSignal} $$`
+      : options.emitStderr !== undefined
+        ? `printf '%s\\n' '${options.emitStderr}' >&2; exit 1`
+        : options.emitFailure === true
+          ? 'printf \'%s\\n\' \'{"ok":false,"code":"verification_failed","message":"bad module"}\' >&2; exit 1'
+          : options.emptyOutput === true
+            ? ': > "$output"'
+            : options.missingOutput === true
+              ? ":"
+              : 'for each in $outputs; do cp "$input" "$each"; done'
 }
 ${options.profileReport === undefined ? "" : `printf '%s\\n' '${options.profileReport}'`}
 `,
@@ -97,6 +125,51 @@ function request(
     cacheRoot: join(root, "cache"),
   };
 }
+
+test("caps codegen lanes by the memory available", () => {
+  const bytes = 512 * 1024 * 1024;
+  // A partition lane parses a partition (a core's worth of the module) and
+  // may hold 16 times its text: 64 MB each, ample memory: every thread.
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
+  // Eight lanes would take 8 GB: a smaller host runs fewer at once.
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(1);
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(6);
+  // An unoptimized build's lanes peak lower, and one partition compiles alone.
+  expect(
+    nativeCodegenJobs(bytes, 64, {
+      availableBytes: 6 * 2 ** 30,
+      parallelism: 8,
+      unoptimized: true,
+    }),
+  ).toBe(7);
+  expect(nativeCodegenJobs(bytes, 1, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(1);
+});
+
+test("reuses an artifact for the same module name from another directory", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson));
+  // A second app's copy of the same code has a different absolute path but
+  // the same module source file name; only the directories differ, so the
+  // artifact is the same.
+  await emitNativeArtifact({ ...request(pkg.root, pkg.packageJson), sourcePath: "/other/app.ts" });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(1);
+});
+
+test("does not reuse an artifact for the same module under another source name", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson));
+  // The source file name is the module's source name and prefixes its
+  // local-function profile identities, so another name is another artifact.
+  const other = join(pkg.root, "other.o");
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, other),
+    sourcePath: "/other/main.ts",
+  });
+  expect(await readFile(other, "utf8")).toContain("define i32 @answer");
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+});
 
 test("resolves the build host's platform helper", async () => {
   const pkg = await fakePackage();
@@ -333,9 +406,21 @@ test("reports a missing platform package as an actionable installation diagnosti
 });
 
 test.skipIf(process.platform === "win32")(
-  "reports unreadable or non-executable helper binaries as installation failures",
+  "repairs a writable helper binary installed without execute bits",
   async () => {
-    for (const mode of [0o111, 0o644]) {
+    const pkg = await fakePackage();
+    await chmod(pkg.bin, 0o644);
+    const output = join(pkg.root, "repaired.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect((await stat(pkg.bin)).mode & 0o111).not.toBe(0);
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports an unreadable or read-only helper binary as an installation failure",
+  async () => {
+    for (const mode of [0o111, 0o444]) {
       const pkg = await fakePackage();
       await chmod(pkg.bin, mode);
       await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
@@ -385,6 +470,39 @@ test("translates structured helper failures and preserves an existing output", a
   expect(await readFile(output, "utf8")).toBe("caller artifact\n");
 });
 
+test.skipIf(process.platform === "win32")(
+  "reports the exit status of a helper that fails without a diagnostic",
+  async () => {
+    const pkg = await fakePackage({ emitExitStatus: 3 });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("exit status 3"),
+    });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports the signal that ended a helper that printed nothing",
+  async () => {
+    const pkg = await fakePackage({ emitSignal: "SEGV" });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("signal SIGSEGV"),
+    });
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "reports what a helper printed when it ends without a diagnostic",
+  async () => {
+    const pkg = await fakePackage({ emitStderr: "dyld: Library not loaded: libLLVM.dylib" });
+    await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
+      diagnosticCode: "SC3004",
+      message: expect.stringContaining("dyld: Library not loaded: libLLVM.dylib"),
+    });
+  },
+);
+
 test("rejects a successful helper that leaves an empty staged output", async () => {
   const pkg = await fakePackage({ emptyOutput: true });
   await expect(emitNativeArtifact(request(pkg.root, pkg.packageJson))).rejects.toMatchObject({
@@ -425,23 +543,41 @@ test("sanitized native artifacts fail before helper resolution", async () => {
   ).rejects.toMatchObject({ diagnosticCode: "SC3002", detailCode: "sanitize_unsupported" });
 });
 
-test("program partitions depend only on module size", () => {
+test("program partitions follow module size and the host's threads", () => {
   const kilobyte = 1024;
   const megabyte = 1024 * kilobyte;
-  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
-  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
+  const sixteen = 16;
+  expect(nativeProgramPartitions(128 * kilobyte, false, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, false, sixteen)).toBe(8);
+  // Two partitions per thread, up to the most an executable uses, while the
+  // module has MIN_PARTITION_BYTES of text for each.
+  expect(nativeProgramPartitions(megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(100 * megabyte, false, sixteen)).toBe(32);
+  // A module the threads cannot divide finely still keeps its 4 MiB
+  // partitions, so a host with few threads divides it as before.
+  expect(nativeProgramPartitions(1024 * megabyte, false, sixteen)).toBe(64);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
-  expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
-  expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  expect(nativeProgramPartitions(512 * kilobyte, false, sixteen)).toBe(16);
+  expect(nativeProgramPartitions(256 * kilobyte, false, sixteen)).toBe(8);
+  // A module too small to fill the host's threads at MIN_PARTITION_BYTES each
+  // gets the partitions its text pays for, and a host with few threads keeps
+  // the smallest divided programs at eight.
+  expect(nativeProgramPartitions(256 * kilobyte, false, 64)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, false, 64)).toBe(32);
+  expect(nativeProgramPartitions(20 * megabyte, false, 64)).toBe(64);
+  expect(nativeProgramPartitions(20 * megabyte, false, 4)).toBe(8);
+  expect(nativeProgramPartitions(200 * megabyte, false, 4)).toBe(64);
+  expect(nativeProgramPartitions(200 * megabyte, false, 2)).toBe(64);
+  expect(nativeProgramPartitions(megabyte, false, 1)).toBe(8);
   // Unoptimized (dev) programs are divided from 64 KiB.
-  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
-  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
-  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
-  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
-  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
+  expect(nativeProgramPartitions(64 * kilobyte, true, sixteen)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true, sixteen)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true, sixteen)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true, sixteen)).toBe(32);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true, 4)).toBe(4);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",
@@ -451,6 +587,22 @@ test("program partitions depend only on module size", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
+});
+
+test("a dispatching build compiles the module whole", () => {
+  const kilobyte = 1024;
+  const megabyte = 1024 * kilobyte;
+  // A module's own text would divide, and the copies only add to it, but the
+  // copies and the functions they call stay one object so LLVM can inline
+  // between them.
+  expect(nativeBuildPartitions(4 * megabyte, { cpuDispatch: true })).toBe(1);
+  expect(nativeBuildPartitions(4 * megabyte, { cpuDispatch: true, unoptimized: true })).toBe(1);
+  // Every other build keeps the partitions of its size.
+  expect(nativeBuildPartitions(4 * megabyte, {})).toBe(nativeProgramPartitions(4 * megabyte));
+  expect(nativeBuildPartitions(4 * megabyte, { unoptimized: true })).toBe(
+    nativeProgramPartitions(4 * megabyte, true),
+  );
+  expect(nativeBuildPartitions(4 * megabyte, { singleObject: true })).toBe(1);
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {
@@ -509,4 +661,157 @@ test("LLVM text parts are written as one file and the helper reads a private cop
   expect(dirname(input)).toBe(dirname(output));
   expect(await readFile(output, "utf8")).toBe(parts.join(""));
   await expect(stat(input)).rejects.toThrow();
+});
+
+/** Every object the native cache family holds for this package. */
+async function cachedObjects(root: string): Promise<string[]> {
+  const files: string[] = [];
+  const walk = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.name.endsWith(".o")) files.push(path);
+    }
+  };
+  await walk(join(root, "cache", "native-codegen-v1"));
+  return files.sort();
+}
+
+function identityRecordPath(root: string): string {
+  return join(root, ".scriptc", "identity.json");
+}
+
+function digestOf(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+test("uses the recorded helper identity and keys the cache exactly as hashing does", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recorded = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(recorded.digest).toBe(digestOf(await readFile(pkg.bin)));
+  const hashedKeys = await cachedObjects(pkg.root);
+  expect(hashedKeys).toHaveLength(1);
+
+  // The same build without a record hashes the binary and finds the same entry.
+  await rm(join(pkg.root, ".scriptc"), { recursive: true, force: true });
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  expect(await cachedObjects(pkg.root)).toEqual(hashedKeys);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    recorded.digest,
+  );
+});
+
+test("a recorded digest keys the cache, and a stale digest is rehashed", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "recorded.o");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const record = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  const realKeys = await cachedObjects(pkg.root);
+
+  // A valid record whose digest is not the binary's own can only reach the
+  // cache key if the build took the digest from the record.
+  await writeFile(
+    identityRecordPath(pkg.root),
+    `${JSON.stringify({ ...record, digest: "0".repeat(64) })}\n`,
+  );
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+  const recordedKeys = await cachedObjects(pkg.root);
+  expect(recordedKeys).toHaveLength(realKeys.length + 1);
+  expect(await readFile(identityRecordPath(pkg.root), "utf8")).toContain("0".repeat(64));
+
+  // A record the installed files no longer match costs one hash and is replaced.
+  await utimes(pkg.bin, new Date(2020, 0, 1), new Date(2020, 0, 1));
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "touched.o")));
+  const rewritten = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(rewritten.digest).toBe(record.digest);
+  expect(rewritten.dependencies).not.toEqual(record.dependencies);
+});
+
+test("a replaced helper is rehashed and a corrupt record falls back to hashing", async () => {
+  const pkg = await fakePackage();
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "first.o")));
+  const first = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+
+  await writeFile(pkg.bin, `${await readFile(pkg.bin, "utf8")}# replaced\n`);
+  await chmod(pkg.bin, 0o755);
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "second.o")));
+  const replaced = JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8"));
+  expect(replaced.digest).toBe(digestOf(await readFile(pkg.bin)));
+  expect(replaced.digest).not.toBe(first.digest);
+
+  await writeFile(identityRecordPath(pkg.root), "{ not a record\n");
+  await emitNativeArtifact(request(pkg.root, pkg.packageJson, join(pkg.root, "third.o")));
+  expect(JSON.parse(await readFile(identityRecordPath(pkg.root), "utf8")).digest).toBe(
+    replaced.digest,
+  );
+});
+
+test.skipIf(process.platform === "win32")(
+  "an install that cannot hold the record still builds",
+  async () => {
+    const pkg = await fakePackage();
+    await writeFile(join(pkg.root, ".scriptc"), "not a directory\n");
+    const output = join(pkg.root, "read-only.o");
+    await emitNativeArtifact(request(pkg.root, pkg.packageJson, output));
+    expect(await readFile(output, "utf8")).toContain("define i32 @answer");
+  },
+);
+
+test("an error without a message names what failed and where it was thrown", () => {
+  class Refusal extends Error {
+    override name = "Refusal";
+  }
+  const unnamed = failureText(new Refusal());
+  expect(unnamed).toContain("internal compiler error (Refusal)");
+  expect(unnamed).toContain("native-codegen.test");
+  expect(failureText(new Error("the linker ran out of memory"))).toBe(
+    "the linker ran out of memory",
+  );
+  expect(failureText("not an error")).toBe("not an error");
+});
+
+test("a native-helper diagnostic never reports an empty message", () => {
+  for (const code of ["SC3002", "SC3003", "SC3004"] as const) {
+    const diagnostic = nativeCodegenDiag(code, "   ", "entry.ts");
+    expect(diagnostic.code).toBe(code);
+    expect(diagnostic.message.trim()).not.toBe("");
+  }
+  expect(nativeCodegenDiag("SC3004", "the helper wrote no object", "entry.ts").message).toBe(
+    "the helper wrote no object",
+  );
+});
+
+test("a helper diagnostic with a blank reason reports how the helper ended", () => {
+  // A native panic can answer its structured diagnostic with a code and an
+  // empty message. The build must still name the failure instead of ending
+  // the message at its colon.
+  const structured = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    code: 1,
+    stderr: '{"code":"emit_failed","message":""}',
+  });
+  expect(structured.code).toBe("emit_failed");
+  expect(structured.message.trim()).not.toBe("");
+  expect(structured.message).toContain("exit status 1");
+  expect(structured.message).toContain("gave no reason");
+  const signal = nativeHelperFailureMessage({
+    message: "Command failed: scriptc-llvm-codegen emit",
+    signal: "SIGKILL",
+    stderr: '{"message":"   "}',
+  });
+  expect(signal.message).toContain("signal SIGKILL");
+  expect(signal.message.trim()).not.toBe("");
+  // A structured message is still reported verbatim.
+  expect(
+    nativeHelperFailureMessage({ message: "Command failed", stderr: '{"message":"boom"}' }).message,
+  ).toBe("boom");
+});
+
+test("a non-Error thrown without text still names the internal failure", () => {
+  expect(failureText("")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("   ")).toBe("internal compiler error (a non-Error value was thrown)");
+  expect(failureText("plain text")).toBe("plain text");
 });

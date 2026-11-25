@@ -52,11 +52,12 @@ export function isTimersPromisesIntervalCall(
   return bi?.module === "timers/promises" && bi.member === "setInterval";
 }
 
-/** timers/promises.setInterval(delay, value), the first Node API built on
- * the generic async-generator protocol. The supported form has an explicit
- * value and no AbortSignal options. It lowers to a generated typed async
- * generator whose loop awaits the existing promise timeout then yields the
- * retained value; creating the iterator remains lazy. */
+/** timers/promises.setInterval(delay, value[, options]), the first Node API
+ * built on the generic async-generator protocol. It lowers to a generated
+ * typed async generator whose loop awaits the existing promise timeout then
+ * yields the retained value; creating the iterator remains lazy. Options are
+ * setTimeout's: `ref` (true when absent) and `signal`, the latter rejecting
+ * the wait with an AbortError when it aborts. */
 export function lowerTimersPromisesSetInterval(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -67,15 +68,16 @@ export function lowerTimersPromisesSetInterval(
   if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", expr, "spread arguments");
   }
-  if (expr.arguments.nodes.length !== 2) {
+  if (expr.arguments.nodes.length < 2 || expr.arguments.nodes.length > 3) {
     lowerer.noLowering(
       `timers/promises.setInterval with ${expr.arguments.nodes.length} arguments`,
       expr,
-      "the lowered form is setInterval(delay, value) with an explicit yielded value; AbortSignal options are not supported yet",
+      "the lowered form is setInterval(delay, value[, options]) with an explicit yielded value",
     );
   }
   const delayNode = expr.arguments.nodes[0]!;
   const valueNode = expr.arguments.nodes[1]!;
+  const optionsNode = expr.arguments.nodes[2];
   const delay = lowerer.lowerExpr(delayNode);
   const ms =
     delay.kind === "unitLit"
@@ -85,9 +87,12 @@ export function lowerTimersPromisesSetInterval(
   const genT = timersPromisesIntervalType(lowerer, expr);
   if (genT === null) lowerer.badType(expr, lowerer.typeOf(expr));
   const yielded = lowerer.coerceInto(valueNode, value, genT.yieldT);
+  const { ref, signal } = timersPromisesOptions(lowerer, "setInterval", optionsNode, loc);
   const fnName = lowerer.closureName(loc, "_tpInterval");
   const msParam: IrLocal = { id: "%tp.ms", name: "delay", type: F64, mutable: false };
   const valueParam: IrLocal = { id: "%tp.value", name: "value", type: genT.yieldT, mutable: false };
+  const refParam: IrLocal = { id: "%tp.ref", name: "ref", type: BOOL, mutable: false };
+  const signalParam: IrLocal = { id: "%tp.signal", name: "signal", type: DYN, mutable: false };
   const promiseVoid: IrType = { kind: "promise", inner: VOID };
   const msRef = (): IrExpr => ({ kind: "varRef", localId: msParam.id, type: F64, loc });
   const valueRef = (): IrExpr => ({
@@ -96,14 +101,40 @@ export function lowerTimersPromisesSetInterval(
     type: genT.yieldT,
     loc,
   });
+  const params = [msParam, valueParam];
+  const callArgs: IrExpr[] = [ms, yielded];
+  if (optionsNode !== undefined) {
+    params.push(refParam);
+    callArgs.push(ref);
+  }
+  if (signal !== null) {
+    params.push(signalParam);
+    callArgs.push(signal);
+  }
+  // The iterated wait settles a void promise, so the timer's own fire is the
+  // only settlement the loop observes.
+  const waitValue: IrExpr = {
+    kind: "intrinsic",
+    name: "promise.resolve",
+    args: [],
+    type: promiseVoid,
+    loc,
+  };
+  const waitFn =
+    signal !== null ? "tp.setTimeoutSignal" : optionsNode ? "tp.setTimeoutValue" : "tp.setTimeout";
+  const waitArgs: IrExpr[] = [msRef()];
+  if (waitFn !== "tp.setTimeout") {
+    waitArgs.push(waitValue);
+    waitArgs.push({ kind: "varRef", localId: refParam.id, type: BOOL, loc });
+  }
+  if (waitFn === "tp.setTimeoutSignal") {
+    waitArgs.push({ kind: "varRef", localId: signalParam.id, type: DYN, loc });
+  }
   const fn: IrFunction = {
     name: fnName,
-    params: [
-      { localId: msParam.id, name: msParam.name, type: msParam.type },
-      { localId: valueParam.id, name: valueParam.name, type: valueParam.type },
-    ],
+    params: params.map((p) => ({ localId: p.id, name: p.name, type: p.type })),
     returnType: VOID,
-    locals: [msParam, valueParam],
+    locals: params,
     async: true,
     generator: generatorMeta(lowerer, genT),
     body: [
@@ -115,13 +146,7 @@ export function lowerTimersPromisesSetInterval(
             kind: "exprStmt",
             expr: {
               kind: "awaitExpr",
-              value: {
-                kind: "libCall",
-                fn: "tp.setTimeout",
-                args: [msRef()],
-                type: promiseVoid,
-                loc,
-              },
+              value: { kind: "libCall", fn: waitFn, args: waitArgs, type: promiseVoid, loc },
               type: VOID,
               loc,
             },
@@ -139,7 +164,7 @@ export function lowerTimersPromisesSetInterval(
     loc,
   };
   lowerer.liftedFns.push(fn);
-  return { kind: "call", callee: fnName, args: [ms, yielded], type: genT, loc };
+  return { kind: "call", callee: fnName, args: callArgs, type: genT, loc };
 }
 
 /** True when `node`'s checker type is the timer `Timeout` handle (the
@@ -147,7 +172,9 @@ export function lowerTimersPromisesSetInterval(
  * not name, so a user's own `Timeout` never matches. The handle maps to
  * f64, so the method calls below can't tell it from a plain number by IR
  * type alone; this is the discriminator. */
-function isTimerHandleTyped(
+/** Whether `node`'s static type is the standard library's Timeout or
+ * Immediate handle (the numeric timer id at run time). */
+export function isTimerHandleTyped(
   lowerer: Lowerer,
   node: ts.Expression,
   name: "Timeout" | "Immediate",
@@ -212,14 +239,69 @@ export function lowerTimeoutMethodCall(
     const handle = lowerer.lowerExprExpecting(access.expression, F64);
     return { kind: "libCall", fn: "timers.refresh", args: [handle], type: F64, loc };
   }
+  if (name === "close" && call.arguments.nodes.length === 0 && !isImmediate) {
+    // Node's legacy cancel: clearTimeout(this), returning the handle.
+    // Like clearTimeout it is mock-aware (mock.timers' Timeout.close
+    // clears the mock entry).
+    const handle = lowerer.lowerExprExpecting(access.expression, F64);
+    return { kind: "libCall", fn: "timers.close", args: [handle], type: F64, loc };
+  }
   lowerer.noLowering(
     `${isImmediate ? "Immediate" : "Timeout"}.${name}`,
     call,
     isImmediate
       ? "unref(), ref(), and hasRef() are the supported Immediate methods"
-      : "unref(), ref(), hasRef(), and refresh() are the supported Timeout methods",
+      : "unref(), ref(), hasRef(), refresh(), and close() are the supported Timeout methods",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** `t[Symbol.dispose]()` / `t[Symbol.toPrimitive]()` and their
+ * `t["close"]()` spelling on a timer handle, which the property-access
+ * path never reaches. Both handles share the numeric id; Node's
+ * Symbol.dispose clears (undefined result) and Symbol.toPrimitive answers
+ * the id. Null when the receiver isn't a handle or the key isn't one of
+ * these members. */
+export function lowerTimerElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || call.questionDotToken) return null;
+  if (call.arguments.nodes.length !== 0) return null;
+  const isTimeout = isTimeoutTyped(lowerer, access.expression);
+  const isImmediate = !isTimeout && isTimerHandleTyped(lowerer, access.expression, "Immediate");
+  if (!isTimeout && !isImmediate) return null;
+  const loc = locOf(call);
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  const symbolName = ts.isPropertyAccessExpression(key)
+    ? lowerer.stdlibGlobalMember(key, "Symbol")
+    : null;
+  const stringKey = ts.isPropertyAccessExpression(key) ? null : lowerer.foldedStringKeyOf(key);
+  if (symbolName === "toPrimitive") {
+    // The id itself; Node returns it unchanged and clearing still works.
+    return lowerer.lowerExprExpecting(access.expression, F64);
+  }
+  if (stringKey === "close" && !isImmediate) {
+    // The property spelling that reaches here only through a string key.
+    const handle = lowerer.lowerExprExpecting(access.expression, F64);
+    return { kind: "libCall", fn: "timers.close", args: [handle], type: F64, loc };
+  }
+  if (symbolName !== "dispose") return null;
+  // Node's Timeout.prototype[SymbolDispose] and Immediate.prototype
+  // [SymbolDispose] call the module's own clearTimeout/clearImmediate, not
+  // the global functions mock.timers replaces: they act on the handle
+  // whatever owns it, mock entry or loop timer. The call answers undefined
+  // (unlike close()), which its own entry points declare as a void result
+  // so a used value stays undefined.
+  return {
+    kind: "libCall",
+    fn: isImmediate ? "timers.immediateDispose" : "timers.dispose",
+    args: [lowerer.lowerExprExpecting(access.expression, F64)],
+    type: VOID,
+    loc,
+  };
 }
 
 // node:timers/promises — setTimeout([delay[, value[, options]]]) and

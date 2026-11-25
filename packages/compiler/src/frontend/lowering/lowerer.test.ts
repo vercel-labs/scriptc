@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expect, test, vi } from "vitest";
 import {
   DYN,
@@ -54,6 +57,25 @@ test("keeps narrowing evidence local to each conversion request", () => {
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([0]))).toBeNull();
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([1]))).toBe(helper);
   expect(lowerer.unionRetagHelper(from, to, loc, new Set([1, 0]))).toBe(helper);
+});
+
+test("a class route checks the stored base arm before viewing the subclass", () => {
+  const lowerer = context();
+  const animal: IrType & { kind: "object" } = { kind: "object", className: "Animal" };
+  const dog: IrType & { kind: "object" } = { kind: "object", className: "Dog" };
+  const from = lowerer.unions.intern([animal, F64]);
+  const to = lowerer.unions.intern([dog, F64]);
+  const routes = new Map([
+    [lowerer.armTag(from, animal), [{ tag: lowerer.armTag(to, dog), arm: dog }]],
+  ]);
+  const helper = lowerer.unionRetagHelper(from, to, loc, undefined, routes);
+  expect(helper).not.toBeNull();
+  const body = JSON.stringify(lowerer.liftedFns.find((fn) => fn.name === helper)?.body);
+  expect(body).toContain('"kind":"instanceOf"');
+  expect(body).toContain('"kind":"downcast"');
+  expect(lowerer.unionRetagHelper(from, to, loc, undefined, routes)).toBe(helper);
+  // Without the route the base arm has no destination and the plan declines.
+  expect(lowerer.unionRetagHelper(from, to, loc)).toBeNull();
 });
 
 test("replans after a recursive union gains its final arms", () => {
@@ -348,4 +370,182 @@ test("a union record arm routes into an index-signature arm by overflow capture"
   );
   expect(lowerer.unionRetagHelper(from, to, loc)).toBe(helper);
   expect(lowerer.liftedFns.filter((fn) => fn.name === capture)).toHaveLength(1);
+});
+
+test("a destination declaring required members the source lacks takes the checked widening", () => {
+  const lowerer = context();
+  const source = record(
+    lowerer.shapes.intern([{ name: "role", type: STRING }], false, undefined, ["role"]),
+  );
+  const target = record(
+    lowerer.shapes.intern(
+      [
+        { name: "content", type: STRING },
+        { name: "role", type: STRING },
+        { name: "timestamp", type: F64 },
+      ],
+      false,
+      undefined,
+      ["role", "content", "timestamp"],
+    ),
+  );
+  // The relation the whole lowering asks speculatively keeps its base
+  // answer: no plan, so no existing conversion changes.
+  expect(lowerer.widthLiftPlan(source, target)).toBeNull();
+  expect(lowerer.checkedWidthLift(source, target)).toEqual({ how: "checkedWiden" });
+  // The apply half crosses the value as a live capsule and checks it
+  // against the destination.
+  const value: IrType = source;
+  const applied = lowerer.applyWidthLift(
+    { how: "checkedWiden" },
+    { kind: "varRef", localId: "v.0", type: value, loc },
+    target,
+    loc,
+  );
+  expect(applied).toEqual({
+    kind: "dynCheck",
+    value: {
+      kind: "dynFrom",
+      value: { kind: "varRef", localId: "v.0", type: value, loc },
+      liveRef: true,
+      type: DYN,
+      loc,
+    },
+    type: target,
+    loc,
+  });
+});
+
+test("the checked widening declines a destination field the source declares differently", () => {
+  const lowerer = context();
+  const source = record(lowerer.shapes.intern([{ name: "role", type: STRING }]));
+  const target = record(
+    lowerer.shapes.intern([
+      { name: "content", type: STRING },
+      { name: "role", type: F64 },
+    ]),
+  );
+  expect(lowerer.widthLiftPlan(source, target)).toBeNull();
+  // A destination member the source lacks that is optional stays the
+  // field-copy plan's own absent completion.
+  const completed = lowerer.shapes.intern(
+    [
+      {
+        name: "content",
+        type: { kind: "union", unionId: lowerer.unions.intern([STRING, UNDEFINED_T]) },
+      },
+      { name: "role", type: STRING },
+    ],
+    false,
+    undefined,
+    ["role", "content"],
+  );
+  expect(lowerer.widthLiftPlan(source, record(completed))).toEqual({ how: "width" });
+});
+
+test("the checked widening stays out of the union plan", () => {
+  const lowerer = context();
+  const source = record(lowerer.shapes.intern([{ name: "role", type: STRING }]));
+  const wider = record(
+    lowerer.shapes.intern([
+      { name: "content", type: STRING },
+      { name: "role", type: STRING },
+    ]),
+  );
+  const exact: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([source, UNDEFINED_T]),
+  };
+  const mixed: IrType = {
+    kind: "union",
+    unionId: lowerer.unions.intern([wider, UNDEFINED_T]),
+  };
+  expect(lowerer.widthLiftPlan(source, exact)).toEqual({
+    how: "wrap",
+    tag: lowerer.armTag(exact.unionId, source),
+  });
+  // A destination union whose arms only fit through the checked widening
+  // keeps the base answer: the widening is asked for by name at the
+  // conversion site that refused, never as a speculative plan a union
+  // conversion would build the code of a compiling program around.
+  expect(lowerer.widthLiftPlan(source, mixed)).toBeNull();
+  expect(lowerer.checkedWidthLift(source, wider)).toEqual({ how: "checkedWiden" });
+});
+
+test("a lifted function is found by name through the index, never by scanning the list", () => {
+  // Lowerer.liftedFnNamed answers `liftedFns.find((fn) => fn.name === name)`
+  // from an index. A scan reads every lifted function of the program, tens of
+  // thousands in a large one, at each lookup.
+  const scan =
+    /\bliftedFns\s*\.\s*(?:some|find|findIndex|findLast|findLastIndex)\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\1\.name\s*===/g;
+  // A site that asks more than "is there a function of this name", with the
+  // reason the index does not answer it.
+  const otherQuestions = new Map([
+    // Whether any function of the name has captures, not only the first.
+    ["frontend/lowering/native-ffi.ts", 1],
+  ]);
+  const sourceRoot = fileURLToPath(new URL("../..", import.meta.url));
+  const found = new Map<string, number>();
+  const visit = (dir: string): void => {
+    for (const name of readdirSync(dir).sort()) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) visit(path);
+      else if (name.endsWith(".ts") && !name.endsWith(".test.ts")) {
+        const count = readFileSync(path, "utf8").match(scan)?.length ?? 0;
+        if (count > 0) found.set(relative(sourceRoot, path).split("\\").join("/"), count);
+      }
+    }
+  };
+  visit(sourceRoot);
+  expect([...found]).toEqual([...otherQuestions]);
+});
+
+test("the lifted-function index answers what a scan of the list answers", () => {
+  const lowerer = context();
+  const named = (name: string): IrFunction => ({
+    name,
+    params: [],
+    returnType: VOID,
+    locals: [],
+    body: [],
+    loc,
+  });
+  const scanned = (name: string) => lowerer.liftedFns.find((fn) => fn.name === name);
+  const before = lowerer.liftedFns.length;
+  expect(lowerer.liftedFnNamed("%helper.a")).toBeUndefined();
+  const first = named("%helper.a");
+  lowerer.liftedFns.push(first, named("%helper.b"), named("%helper.a"));
+  // The first function of a name, as `find` returns it, and a function pushed
+  // after an earlier lookup.
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(scanned("%helper.a"));
+  expect(lowerer.liftedFnNamed("%helper.b")).toBe(scanned("%helper.b"));
+  expect(lowerer.liftedFnNamed("%helper.c")).toBeUndefined();
+  expect(lowerer.liftedFnNamed(undefined)).toBeUndefined();
+  const later = named("%helper.c");
+  lowerer.liftedFns.push(later);
+  expect(lowerer.liftedFnNamed("%helper.c")).toBe(later);
+  // record-links.ts removes helpers from the middle of the list
+  // (restoreStringConversions): the functions behind them move down, and one
+  // pushed afterwards lands where the index had already been.
+  lowerer.liftedFns.splice(before + 1, 1);
+  const afterRemoval = named("%helper.d");
+  lowerer.liftedFns.push(afterRemoval);
+  for (const name of ["%helper.a", "%helper.b", "%helper.c", "%helper.d"])
+    expect(lowerer.liftedFnNamed(name)).toBe(scanned(name));
+  expect(lowerer.liftedFnNamed("%helper.b")).toBeUndefined();
+  expect(lowerer.liftedFnNamed("%helper.d")).toBe(afterRemoval);
+  // Removing the first of two functions with one name leaves the second.
+  lowerer.liftedFns.splice(before, 1);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(scanned("%helper.a"));
+  expect(lowerer.liftedFnNamed("%helper.a")).not.toBe(first);
+  lowerer.liftedFns.splice(before, 0, first);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  // The unit journal cuts the list back and tells the index.
+  const table = lowerer.journalTables().find((entry) => entry.name === "liftedFns")!;
+  table.truncate!(before + 1);
+  expect(lowerer.liftedFns).toEqual([...lowerer.liftedFns.slice(0, before), first]);
+  expect(lowerer.liftedFnNamed("%helper.a")).toBe(first);
+  expect(lowerer.liftedFnNamed("%helper.b")).toBeUndefined();
+  expect(lowerer.liftedFnNamed("%helper.c")).toBeUndefined();
 });

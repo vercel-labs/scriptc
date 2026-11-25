@@ -1,0 +1,6 @@
+class-field-self-reaching-union-stringify.ts:16:28 - error SC1090: JSON.stringify of '(...)[] | boolean | number | null | { [key: string]: ... } | string | undefined' values (Node's stringify of bare undefined is not a string at all — narrow with '!== undefined' first, model absence with a null arm, or use an optional record field ('{ a?: string }'), which drops from the output like Node's) are not supported yet
+
+  15 | notebook.add({ k: [1, undefined] });
+  16 | console.log(JSON.stringify(notebook.latest));
+     |                            ^~~~~~~~~~~~~~~
+  17 | 

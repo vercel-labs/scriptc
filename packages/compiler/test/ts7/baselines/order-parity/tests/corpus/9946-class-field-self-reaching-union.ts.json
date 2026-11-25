@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9946-class-field-self-reaching-union.ts"
+ ],
+ "diags": []
+}

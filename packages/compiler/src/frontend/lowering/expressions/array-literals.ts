@@ -4,6 +4,11 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, neverTaintedJsType } from "../lowerer.js";
 import { notIterableSpelling } from "../iterable-spelling.js";
 import {
+  emptyArrayLiteralPlaceType,
+  isUntypedArrayType,
+  untypedArrayExprType,
+} from "../empty-array-places.js";
+import {
   BOOL,
   DYN,
   F64,
@@ -34,9 +39,15 @@ import { generatorDrain } from "../iterator-adapters.js";
 import { isMimeParamsIterable } from "../builtins/mime.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
-import { arrayValueStore, primitiveElement } from "../array-values.js";
+import {
+  arrayValueStore,
+  optionalSlotValue,
+  primitiveElement,
+  unionReadAsArray,
+} from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
+import { withoutParentheses } from "../../outer-expressions.js";
 
 /** The arm an EMPTY `[]` literal builds as: `arms`' first array arm, or
  * null when the literal is not empty (an element selects the arm) or no
@@ -58,6 +69,53 @@ export function emptyArrayLiteralArm(
   if (!ts.isArrayLiteralExpression(value) || value.elements.nodes.length > 0) return null;
   const arm = arms.find((candidate) => candidate.kind === "array");
   return (arm as (IrType & { kind: "array" }) | undefined) ?? null;
+}
+
+/** A fresh array literal that is an operand of an expression whose own
+ * value is the checked-dynamic array (`unknown[]`, `any[]`, `unknown`): the
+ * default of `list ?? []` or `list || []`, an arm of `c ? list : []`, the
+ * default of a destructured member. Written directly into such a slot a
+ * literal is the dynamic array (lowerExprExpecting: it has no typed aliases,
+ * and the slot's type lets the program store any value in it). Reached
+ * through one of these operators it lowered as a typed literal boxed live,
+ * of `never`'s number elements when empty, so a later `push` of a value the
+ * static type allows threw "expected number at $[0]". The operand builds as
+ * the literal written into the slot does. Null for any other operand, for a
+ * literal with a spread or a hole, and where the whole expression has a
+ * typed value. */
+export function dynamicArrayOperand(
+  lowerer: Lowerer,
+  operand: ts.Expression,
+  whole: ts.Expression,
+): IrExpr | null {
+  const literal = withoutParentheses(operand);
+  if (!ts.isArrayLiteralExpression(literal)) return null;
+  if (
+    literal.elements.nodes.some(
+      (element) => ts.isSpreadElement(element) || ts.isOmittedExpression(element),
+    )
+  )
+    return null;
+  // The checker's own type of the whole expression says so: an array of
+  // `unknown` or `any` elements, or `unknown`/`any` itself. A precise type
+  // whose value merely happens to be held checked-dynamic (an iterator or
+  // an array, a typed array behind an untyped read) keeps its typed
+  // literal: the program can only store what that type allows.
+  const type = lowerer.checker.getNonNullableType(lowerer.typeOf(whole));
+  const untyped = (part: ts.Type): boolean => {
+    if ((part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+    if (!lowerer.checker.isArrayType(part)) return false;
+    const element = lowerer.checker.getTypeArguments(part as ts.TypeReference)[0];
+    return (
+      element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    );
+  };
+  if (!(type.isUnionType() ? ts.constituentTypes(type).every(untyped) : untyped(type))) return null;
+  // `any` and `any[]` have no mapping of their own; their values are held
+  // checked-dynamic all the same.
+  const own = lowerer.mapTypeOf(type);
+  if (own !== null && own.kind !== "dyn") return null;
+  return lowerer.lowerExprExpecting(literal, DYN);
 }
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
@@ -85,6 +143,38 @@ export function jsHoldsDynObject(lowerer: Lowerer, expr: ts.Expression): boolean
   return false;
 }
 
+/** `derived` is `base` or extends it (`class Dog extends Animal`). */
+function classIsOrExtends(lowerer: Lowerer, derived: string, base: string): boolean {
+  for (let info = lowerer.classes.get(derived) ?? null; info; info = info.base) {
+    if (info.def.name === base) return true;
+  }
+  return false;
+}
+
+/** A JavaScript array literal whose inferred element type spells ONE class
+ * constructor while the literal names a constructor that type REJECTS
+ * (`const classes = [A, B]`: tsc's best common type is the first element's
+ * `typeof A`). The literal is a fresh array of every constructor it names,
+ * so a file-scope binding holds the checked-dynamic array: the spelled
+ * element type would check each element against A's class key and reject B
+ * at module init. A subclass element keeps the spelled class's layout —
+ * the class value dispatch already accepts it, and its static element type
+ * gives the better diagnostics — so only a rejected element counts. */
+export function jsHoldsMixedClassConstructors(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isArrayLiteralExpression(expr)) return false;
+  const own = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (own?.kind !== "array" || own.elem.kind !== "classval") return false;
+  let mixed = false;
+  for (const element of expr.elements.nodes) {
+    if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) return false;
+    const elementType = lowerer.mapTypeOf(lowerer.typeOf(element));
+    if (elementType?.kind !== "classval") return false;
+    if (!classIsOrExtends(lowerer, elementType.className, own.elem.className)) mixed = true;
+  }
+  return mixed;
+}
+
 /** The literal is the source of an array destructuring: an assignment's
  * right side or a declaration's initializer under an array pattern. */
 function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
@@ -108,9 +198,10 @@ function isPatternSource(expr: ts.ArrayLiteralExpression): boolean {
  * `[]` with no contextual array type (`return []` in an async function,
  * whose contextual type is `string[] | PromiseLike<string[]>`; `{ files: [] }`).
  * It holds no element, as the empty tuple does, so it builds as the
- * unit-only element array, and an array slot receives it through the
- * checked empty-array lift. never's f64 element mapping would make it a
- * `number[]`, which no `string[]` slot accepts. */
+ * unit-only element array, and a typed array slot that receives the
+ * literal itself builds the slot's empty array instead (widthCoerce).
+ * never's f64 element mapping would make it a `number[]`, which no
+ * `string[]` slot accepts. */
 function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
   if (expr.elements.nodes.length > 0 || isJsSourceFile(ts.getSourceFileOfNode(expr))) return false;
   const own = lowerer.typeOf(expr);
@@ -135,6 +226,20 @@ function mayHoldUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
   return parts.some((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
 }
 
+/** The contextual type an inferred destructuring pattern supplies to a
+ * literal under it: a positional tuple whose positions are `any` (the
+ * checker's placeholder for "the pattern binds this position"). */
+function patternTupleContext(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): boolean {
+  const ctx = lowerer.checker.getContextualType(expr);
+  return (
+    ctx !== undefined &&
+    lowerer.checker.isTupleType(ctx) &&
+    lowerer.checker
+      .getTypeArguments(ctx as ts.TypeReference)
+      .some((type) => (type.flags & ts.TypeFlags.Any) !== 0)
+  );
+}
+
 export function lowerArrayLiteral(
   lowerer: Lowerer,
   expr: ts.ArrayLiteralExpression,
@@ -151,6 +256,28 @@ export function lowerArrayLiteral(
   let mapped = expected ?? lowerer.mapTypeOf(tsType);
   if (expected === undefined && ctxType === undefined && emptyNeverLiteral(lowerer, expr))
     mapped = arrayOf(unitOnlyUnion(lowerer.unions));
+  // The empty array of a property (`content: []`) is built as the array
+  // type decided for that property (empty-array-places.ts), whatever
+  // untyped context the literal sits in (a callback result the checker
+  // inferred from this very literal).
+  if (expected === undefined && expr.elements.nodes.length === 0) {
+    const place = emptyArrayLiteralPlaceType(lowerer, expr);
+    if (place?.kind === "array") mapped = place;
+  }
+  // `[...o.files]` over an untyped empty array (`{ files: [] }`): the
+  // checker types the copy `never[]` too, and it holds what the array
+  // holds, so it has the array's element type (empty-array-places.ts).
+  if (
+    expected === undefined &&
+    ctxType === undefined &&
+    mapped?.kind === "array" &&
+    expr.elements.nodes.length > 0 &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    isUntypedArrayType(lowerer.checker, tsType)
+  ) {
+    const copied = untypedArrayExprType(lowerer, expr);
+    if (copied?.kind === "array") mapped = copied;
+  }
   // Inferred JavaScript arrays can contain unrelated constructors with
   // structurally equal checker types. Their native class ABIs still differ.
   if (
@@ -356,6 +483,22 @@ export function lowerArrayLiteral(
     )
   )
     mapped = DYN;
+  // An element the checker types as only `undefined` or `null` while the
+  // binding it reads holds another value (NarrowingStability
+  // restoredNothingRead: `let c = void 0; c = 4; [c]`): the checker's element
+  // type cannot hold the value, so the literal is checked-dynamic.
+  if (
+    !expected &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+    mapped?.kind !== "dyn" &&
+    expr.elements.nodes.some(
+      (element) =>
+        !ts.isSpreadElement(element) &&
+        !ts.isOmittedExpression(element) &&
+        lowerer.narrowing.restoredNothingRead(element) !== null,
+    )
+  )
+    mapped = DYN;
   // An EMPTY literal under a CONST ASSERTION whose type queries panicked
   // (tsgo's readonly-[] TupleType conversion) uses a unit-element array,
   // mapType's own `[] as const` rule.
@@ -388,6 +531,64 @@ export function lowerArrayLiteral(
     if (shape?.tuple) {
       const spread = expr.elements.nodes.find(ts.isSpreadElement);
       if (spread) {
+        // A destructuring pattern supplies this positional context, and one
+        // of the positions can spread a VARIABLE-length array (`[...m, 0,
+        // 0, 1]` into nine targets): the value's length is the spread's, so
+        // no fixed shape holds it. The literal builds the array it is, and
+        // the pattern reads it by index — absent positions answer undefined
+        // and extra ones drop, exactly as Node's destructuring of it does.
+        if (
+          patternTupleContext(lowerer, expr) &&
+          expr.elements.nodes.some(
+            (el) =>
+              ts.isSpreadElement(el) && !lowerer.checker.isTupleType(lowerer.typeOf(el.expression)),
+          )
+        ) {
+          // The element type comes from the positions themselves, not from
+          // the pattern's contextual tuple (whose `any` positions map to the
+          // checked-dynamic tree): a dynamic element would turn a missing
+          // position into the checked read's TypeError instead of the
+          // undefined Node binds. A spread contributes its array's element
+          // type (a fixed tuple spread its positions); mixed positions keep
+          // a union, and an unreadable set stays dynamic.
+          const candidates: IrType[] = [];
+          const note = (t: IrType | null, arm = false): void => {
+            if (t === null) return;
+            if (t.kind === "union") {
+              for (const inner of lowerer.unions.get(t.unionId)?.arms ?? []) note(inner, true);
+              return;
+            }
+            // A position that is itself the unit value adds no element type;
+            // a unit ARM of the source's element type is a real value.
+            if (isUnitType(t) && !arm) return;
+            if (!candidates.some((c) => typeEquals(c, t))) candidates.push(t);
+          };
+          for (const el of expr.elements.nodes) {
+            if (ts.isOmittedExpression(el)) continue;
+            const mappedEl = lowerer.mapTypeOf(
+              lowerer.typeOf(ts.isSpreadElement(el) ? el.expression : el),
+            );
+            if (mappedEl === null) continue;
+            if (!ts.isSpreadElement(el)) {
+              note(mappedEl);
+              continue;
+            }
+            if (mappedEl.kind === "array") {
+              note(mappedEl.elem);
+              continue;
+            }
+            const spreadShape =
+              mappedEl.kind === "record" ? lowerer.shapes.get(mappedEl.shapeId) : undefined;
+            if (spreadShape?.tuple) for (const field of spreadShape.fields) note(field.type);
+          }
+          const elem: IrType =
+            candidates.length === 0
+              ? DYN
+              : candidates.length === 1
+                ? candidates[0]!
+                : { kind: "union", unionId: lowerer.unions.intern(candidates) };
+          return lowerArrayLiteral(lowerer, expr, arrayOf(elem) as IrType & { kind: "array" });
+        }
         return lowerTupleSpreadLiteral(lowerer, expr, mapped, shape);
       }
       if (expr.elements.nodes.length !== shape.fields.length) {
@@ -401,6 +602,24 @@ export function lowerArrayLiteral(
       const fields = expr.elements.nodes.map((el, i) => {
         const fieldType = byName.get(String(i));
         if (!fieldType) lowerer.badType(el, lowerer.typeOf(el));
+        // A HOLE (`[x = 23] = [,]`, `f([,])` through a tuple parameter):
+        // the positional field reads as the undefined every read of a hole
+        // answers, and the property does not exist, so `in`, Object.keys
+        // and the own-key probes skip it — the field's absent state. A
+        // position typed without undefined keeps the element's own
+        // refusal, since a hole is not a value the field can hold.
+        if (ts.isOmittedExpression(el)) {
+          const absent = lowerer.absentFieldValue(fieldType, locOf(el));
+          if (absent !== null) return { name: String(i), value: absent };
+          return {
+            name: String(i),
+            value: lowerer.coerceInto(
+              el,
+              { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc: locOf(el) },
+              fieldType,
+            ),
+          };
+        }
         return { name: String(i), value: lowerer.lowerExprExpecting(el, fieldType) };
       });
       return { kind: "recordLit", fields, type: mapped, loc };
@@ -488,21 +707,30 @@ export function lowerArrayLiteral(
       needsStateBuild = true;
     }
   }
+  // A spread before an element shifts that element's array index away
+  // from its literal position by an amount only known at run time.
+  const firstSpread = expr.elements.nodes.findIndex((n) => ts.isSpreadElement(n));
   const elems: IrExpr[] = expr.elements.nodes.map((el, i): IrExpr => {
     if (ts.isSpreadElement(el)) {
       // `[...xs, b]`: xs must be an array of the literal's own element
       // type — its elements copy in at construction (a fresh array,
       // JS-exact). Iterables that aren't arrays (strings, Sets, Maps)
-      // and mismatched element types stay fenced. A TERNARY source gets
-      // the literal's own type as its expected type (the conditional-
-      // spread idiom — tsc surfaces no contextual type through spreads,
-      // and the arm literals must BUILD as this element type).
+      // and mismatched element types stay fenced. A TERNARY or ARRAY
+      // LITERAL source gets the literal's own type as its expected type
+      // (the conditional-spread idiom — tsc surfaces no contextual type
+      // through spreads, and the arm literals must BUILD as this element
+      // type). The array literal case covers a source of empty array
+      // literals (`[...[[], []]]` into a `string[][]` literal): tsc infers
+      // `never[][]`, which scriptc represents as `number[][]`, while the
+      // slot types each empty array as the literal's element type.
       let srcNode: ts.Expression = el.expression;
       while (ts.isParenthesizedExpression(srcNode)) srcNode = srcNode.expression;
       lowerer.fenceStaticHeadersIteration(el.expression);
       let src = ts.isConditionalExpression(srcNode)
         ? lowerTernary(lowerer, srcNode, type)
-        : lowerer.lowerExpr(el.expression);
+        : ts.isArrayLiteralExpression(srcNode)
+          ? lowerer.lowerArrayLiteral(srcNode, type)
+          : lowerer.lowerExpr(el.expression);
       src = lowerCollectionSpread(lowerer, src, el.expression) ?? src;
       // `[...new SymbolIterator]`: a CLASS ITERABLE drains through its
       // own protocol into a fresh element array (classIteratorDrainCall
@@ -627,6 +855,13 @@ export function lowerArrayLiteral(
           type,
         );
       }
+      // A union of tuples and arrays whose every arm converts to the
+      // literal's array type: the array the value converts to spreads
+      // (unionReadAsArray).
+      if (!typeEquals(src.type, type)) {
+        const array = unionReadAsArray(lowerer, el.expression, src, type, locOf(el.expression));
+        if (array) src = array;
+      }
       if (!typeEquals(src.type, type)) {
         lowerer.unsupported(
           "SC1090",
@@ -687,7 +922,7 @@ export function lowerArrayLiteral(
         ts.isPropertyAccessExpression(el.expression) &&
         (el.expression.name.text === "pop" || el.expression.name.text === "shift"));
     if (directOptionalCandidate) {
-      const raw = lowerer.lowerExpr(el);
+      const raw = optionalSlotValue(lowerer, lowerer.lowerExpr(el), type);
       if (!typeEquals(raw.type, type.elem)) {
         needsStateBuild = true;
         return raw;
@@ -695,6 +930,29 @@ export function lowerArrayLiteral(
       lowered = raw;
     } else {
       lowered = lowerer.lowerExprExpecting(el, type.elem);
+      // A checked-dynamic element of a `(T | undefined)[]` can hold
+      // undefined, which a check against T rejects although the element
+      // type admits it: convert against the optional element type and let
+      // the store keep the present undefined.
+      if (
+        type.optionalElements === true &&
+        primitiveElement(type.elem) &&
+        lowered.kind === "dynCheck" &&
+        lowered.value.type.kind === "dyn"
+      ) {
+        const optional: IrType = {
+          kind: "union",
+          unionId: lowerer.unions.intern([type.elem, UNDEFINED_T]),
+        };
+        needsStateBuild = true;
+        const checked = lowerer.coerceInto(el, lowered.value, optional);
+        if (checked.kind !== "dynCheck") return checked;
+        // The check runs where the literal stores its element, so a
+        // failure names that position ($[0]) rather than the root. An
+        // element after a spread keeps the root: the spread moves its
+        // array index by an amount only known at run time.
+        return firstSpread < 0 || i < firstSpread ? { ...checked, pathIndex: i } : checked;
+      }
     }
     if (!typeEquals(lowered.type, type.elem)) lowerer.badType(el, lowerer.typeOf(el));
     return lowered;
@@ -814,6 +1072,25 @@ function lowerTupleSpreadLiteral(
     if (!ts.isSpreadElement(element)) {
       const expected = byName.get(String(fields.length));
       if (!expected) lowerer.badType(element, lowerer.typeOf(element));
+      if (ts.isOmittedExpression(element)) {
+        // A HOLE beside a spread is still a hole: the field's absent state,
+        // as in a literal without a spread, so `in`, Object.keys and the
+        // own-key probes skip the index. The absent state is a constant
+        // and only legal as a direct field write, so it takes no temp. A
+        // position typed without undefined keeps the element's refusal.
+        const absent = lowerer.absentFieldValue(expected, locOf(element));
+        if (absent !== null) {
+          fields.push({ name: String(fields.length), value: absent });
+          continue;
+        }
+        append(element, {
+          kind: "unitLit",
+          unit: "undefined",
+          type: UNDEFINED_T,
+          loc: locOf(element),
+        });
+        continue;
+      }
       append(element, lowerer.lowerExprExpecting(element, expected));
       continue;
     }
@@ -887,7 +1164,7 @@ export function checkedIteratorPack(
   loc: SrcLoc,
 ): IrExpr {
   const name = "%iterator.pack.checked";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });
     const flag = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: BOOL, loc });
     const property = (key: string): IrExpr => ({

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-values-with-other-constructor-parameters.ts"
+ ],
+ "diags": []
+}

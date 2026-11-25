@@ -1,7 +1,7 @@
-unmappable-declaration-initializer.ts:8:9 - error SC2020: 'WeakRef<object>' is part of the standard library types but has no scriptc lowering yet
+unmappable-declaration-initializer.ts:8:9 - error SC2020: 'BigInt64Array<ArrayBuffer>' is part of the standard library types but has no scriptc lowering yet
 
   7 | function run(): void {
-  8 |   const ref: WeakRef<object> = touch() as unknown as WeakRef<object>;
+  8 |   const ref: BigInt64Array<ArrayBuffer> = touch() as unknown as BigInt64Array<ArrayBuffer>;
     |         ^~~
   9 | }
 

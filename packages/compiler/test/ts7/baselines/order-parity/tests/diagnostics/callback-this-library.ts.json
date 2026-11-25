@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/callback-this-library.ts"
+ ],
+ "diags": []
+}

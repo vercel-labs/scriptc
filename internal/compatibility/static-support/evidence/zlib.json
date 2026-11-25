@@ -1,0 +1,15 @@
+{
+    "node-builtin.zlib": ["tests/corpus/1404-zlib-crypto-bytes.ts", "tests/corpus/2921-zlib-callbacks.ts", "tests/corpus/3115-zlib-static-compression-levels.ts", "tests/corpus/5370-zlib-stream-roundtrip.ts", "tests/corpus/5371-zlib-stream-chunking.cjs", "tests/corpus/5373-zlib-stream-options.cjs", "tests/corpus/5378-zlib-sync-options.cjs", "tests/corpus/5379-zlib-callback-options.ts", "tests/corpus/5415-zlib-dynamic-inputs.cjs"],
+    "node-builtin.zlib.brotliCompressSync": ["tests/corpus/7714-zlib-brotli-compress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.brotliCompress": ["tests/corpus/7714-zlib-brotli-compress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.createBrotliCompress": ["tests/corpus/7714-zlib-brotli-compress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.brotliDecompressSync": ["tests/corpus/7715-zlib-brotli-decompress.cjs", "tests/corpus/7716-zlib-brotli.ts", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.brotliDecompress": ["tests/corpus/7715-zlib-brotli-decompress.cjs", "tests/corpus/7716-zlib-brotli.ts", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.createBrotliDecompress": ["tests/corpus/7715-zlib-brotli-decompress.cjs", "tests/corpus/7716-zlib-brotli.ts", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.zstdCompressSync": ["tests/corpus/zstd-compress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.zstdCompress": ["tests/corpus/zstd-compress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.createZstdCompress": ["tests/corpus/zstd-streams.ts", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.zstdDecompressSync": ["tests/corpus/zstd-decompress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.zstdDecompress": ["tests/corpus/zstd-decompress.cjs", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"],
+    "node-builtin.zlib.createZstdDecompress": ["tests/corpus/zstd-streams.ts", "tests/corpus/zlib-codec-params.ts", "tests/corpus/zlib-brotli-zstd-one-shots.ts"]
+}

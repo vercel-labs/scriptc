@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/emitter-leak-warning-replacement.mjs"
+ ],
+ "diags": []
+}

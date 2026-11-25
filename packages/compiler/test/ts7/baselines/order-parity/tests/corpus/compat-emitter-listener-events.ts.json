@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compat-emitter-listener-events.ts"
+ ],
+ "diags": []
+}

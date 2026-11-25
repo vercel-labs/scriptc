@@ -1,4 +1,4 @@
-// Generated from typescript@7.0.2 by scripts/generate-ts7-ast-schema.mjs.
+// Generated from typescript@7.1.0-beta by scripts/generate-ts7-ast-schema.mjs.
 // TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 
@@ -15,7 +15,7 @@ export type PseudoLiteralSyntaxKind = SyntaxKind.TemplateHead | SyntaxKind.Templ
 
 export type PunctuationSyntaxKind = SyntaxKind.OpenBraceToken | SyntaxKind.CloseBraceToken | SyntaxKind.OpenParenToken | SyntaxKind.CloseParenToken | SyntaxKind.OpenBracketToken | SyntaxKind.CloseBracketToken | SyntaxKind.DotToken | SyntaxKind.DotDotDotToken | SyntaxKind.SemicolonToken | SyntaxKind.CommaToken | SyntaxKind.QuestionDotToken | SyntaxKind.LessThanToken | SyntaxKind.LessThanSlashToken | SyntaxKind.GreaterThanToken | SyntaxKind.LessThanEqualsToken | SyntaxKind.GreaterThanEqualsToken | SyntaxKind.EqualsEqualsToken | SyntaxKind.ExclamationEqualsToken | SyntaxKind.EqualsEqualsEqualsToken | SyntaxKind.ExclamationEqualsEqualsToken | SyntaxKind.EqualsGreaterThanToken | SyntaxKind.PlusToken | SyntaxKind.MinusToken | SyntaxKind.AsteriskToken | SyntaxKind.AsteriskAsteriskToken | SyntaxKind.SlashToken | SyntaxKind.PercentToken | SyntaxKind.PlusPlusToken | SyntaxKind.MinusMinusToken | SyntaxKind.LessThanLessThanToken | SyntaxKind.GreaterThanGreaterThanToken | SyntaxKind.GreaterThanGreaterThanGreaterThanToken | SyntaxKind.AmpersandToken | SyntaxKind.BarToken | SyntaxKind.CaretToken | SyntaxKind.ExclamationToken | SyntaxKind.TildeToken | SyntaxKind.AmpersandAmpersandToken | SyntaxKind.BarBarToken | SyntaxKind.QuestionToken | SyntaxKind.ColonToken | SyntaxKind.AtToken | SyntaxKind.QuestionQuestionToken | SyntaxKind.BacktickToken | SyntaxKind.HashToken | SyntaxKind.EqualsToken | SyntaxKind.PlusEqualsToken | SyntaxKind.MinusEqualsToken | SyntaxKind.AsteriskEqualsToken | SyntaxKind.AsteriskAsteriskEqualsToken | SyntaxKind.SlashEqualsToken | SyntaxKind.PercentEqualsToken | SyntaxKind.LessThanLessThanEqualsToken | SyntaxKind.GreaterThanGreaterThanEqualsToken | SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken | SyntaxKind.AmpersandEqualsToken | SyntaxKind.BarEqualsToken | SyntaxKind.BarBarEqualsToken | SyntaxKind.AmpersandAmpersandEqualsToken | SyntaxKind.QuestionQuestionEqualsToken | SyntaxKind.CaretEqualsToken;
 
-export type KeywordSyntaxKind = SyntaxKind.BreakKeyword | SyntaxKind.CaseKeyword | SyntaxKind.CatchKeyword | SyntaxKind.ClassKeyword | SyntaxKind.ConstKeyword | SyntaxKind.ContinueKeyword | SyntaxKind.DebuggerKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.DeleteKeyword | SyntaxKind.DoKeyword | SyntaxKind.ElseKeyword | SyntaxKind.EnumKeyword | SyntaxKind.ExportKeyword | SyntaxKind.ExtendsKeyword | SyntaxKind.FalseKeyword | SyntaxKind.FinallyKeyword | SyntaxKind.ForKeyword | SyntaxKind.FunctionKeyword | SyntaxKind.IfKeyword | SyntaxKind.ImportKeyword | SyntaxKind.InKeyword | SyntaxKind.InstanceOfKeyword | SyntaxKind.NewKeyword | SyntaxKind.NullKeyword | SyntaxKind.ReturnKeyword | SyntaxKind.SuperKeyword | SyntaxKind.SwitchKeyword | SyntaxKind.ThisKeyword | SyntaxKind.ThrowKeyword | SyntaxKind.TrueKeyword | SyntaxKind.TryKeyword | SyntaxKind.TypeOfKeyword | SyntaxKind.VarKeyword | SyntaxKind.VoidKeyword | SyntaxKind.WhileKeyword | SyntaxKind.WithKeyword | SyntaxKind.ImplementsKeyword | SyntaxKind.InterfaceKeyword | SyntaxKind.LetKeyword | SyntaxKind.PackageKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.StaticKeyword | SyntaxKind.YieldKeyword | SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsKeyword | SyntaxKind.AssertsKeyword | SyntaxKind.AssertKeyword | SyntaxKind.AnyKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.AwaitKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.ConstructorKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.GetKeyword | SyntaxKind.ImmediateKeyword | SyntaxKind.InferKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.IsKeyword | SyntaxKind.KeyOfKeyword | SyntaxKind.ModuleKeyword | SyntaxKind.NamespaceKeyword | SyntaxKind.NeverKeyword | SyntaxKind.OutKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.RequireKeyword | SyntaxKind.NumberKeyword | SyntaxKind.ObjectKeyword | SyntaxKind.SatisfiesKeyword | SyntaxKind.SetKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.TypeKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UniqueKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.UsingKeyword | SyntaxKind.FromKeyword | SyntaxKind.GlobalKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.OfKeyword | SyntaxKind.DeferKeyword;
+export type KeywordSyntaxKind = SyntaxKind.BreakKeyword | SyntaxKind.CaseKeyword | SyntaxKind.CatchKeyword | SyntaxKind.ClassKeyword | SyntaxKind.ConstKeyword | SyntaxKind.ContinueKeyword | SyntaxKind.DebuggerKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.DeleteKeyword | SyntaxKind.DoKeyword | SyntaxKind.ElseKeyword | SyntaxKind.EnumKeyword | SyntaxKind.ExportKeyword | SyntaxKind.ExtendsKeyword | SyntaxKind.FalseKeyword | SyntaxKind.FinallyKeyword | SyntaxKind.ForKeyword | SyntaxKind.FunctionKeyword | SyntaxKind.IfKeyword | SyntaxKind.ImportKeyword | SyntaxKind.InKeyword | SyntaxKind.InstanceOfKeyword | SyntaxKind.NewKeyword | SyntaxKind.NullKeyword | SyntaxKind.ReturnKeyword | SyntaxKind.SuperKeyword | SyntaxKind.SwitchKeyword | SyntaxKind.ThisKeyword | SyntaxKind.ThrowKeyword | SyntaxKind.TrueKeyword | SyntaxKind.TryKeyword | SyntaxKind.TypeOfKeyword | SyntaxKind.VarKeyword | SyntaxKind.VoidKeyword | SyntaxKind.WhileKeyword | SyntaxKind.WithKeyword | SyntaxKind.ImplementsKeyword | SyntaxKind.InterfaceKeyword | SyntaxKind.LetKeyword | SyntaxKind.PackageKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.StaticKeyword | SyntaxKind.YieldKeyword | SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsKeyword | SyntaxKind.AssertsKeyword | SyntaxKind.AssertKeyword | SyntaxKind.AnyKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.AwaitKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.ConstructorKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.GetKeyword | SyntaxKind.ImmediateKeyword | SyntaxKind.InferKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.IsKeyword | SyntaxKind.KeyOfKeyword | SyntaxKind.ModuleKeyword | SyntaxKind.NamespaceKeyword | SyntaxKind.NeverKeyword | SyntaxKind.OutKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.RequireKeyword | SyntaxKind.NumberKeyword | SyntaxKind.ObjectKeyword | SyntaxKind.SatisfiesKeyword | SyntaxKind.SetKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.TypeKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UniqueKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.UsingKeyword | SyntaxKind.FromKeyword | SyntaxKind.GlobalKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.OfKeyword | SyntaxKind.DeferKeyword | SyntaxKind.SourceKeyword;
 
 export type ModifierSyntaxKind = SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.ConstKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.ExportKeyword | SyntaxKind.InKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.OutKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.StaticKeyword;
 
@@ -23,13 +23,13 @@ export type KeywordTypeSyntaxKind = SyntaxKind.AnyKeyword | SyntaxKind.BigIntKey
 
 export type KeywordExpressionSyntaxKind = SyntaxKind.NullKeyword | SyntaxKind.TrueKeyword | SyntaxKind.FalseKeyword | SyntaxKind.ThisKeyword | SyntaxKind.SuperKeyword | SyntaxKind.ImportKeyword;
 
-export type TokenSyntaxKind = SyntaxKind.Unknown | SyntaxKind.EndOfFile | SyntaxKind.SingleLineCommentTrivia | SyntaxKind.MultiLineCommentTrivia | SyntaxKind.NewLineTrivia | SyntaxKind.WhitespaceTrivia | SyntaxKind.ConflictMarkerTrivia | SyntaxKind.NonTextFileMarkerTrivia | SyntaxKind.NumericLiteral | SyntaxKind.BigIntLiteral | SyntaxKind.StringLiteral | SyntaxKind.JsxText | SyntaxKind.JsxTextAllWhiteSpaces | SyntaxKind.RegularExpressionLiteral | SyntaxKind.NoSubstitutionTemplateLiteral | SyntaxKind.TemplateHead | SyntaxKind.TemplateMiddle | SyntaxKind.TemplateTail | SyntaxKind.OpenBraceToken | SyntaxKind.CloseBraceToken | SyntaxKind.OpenParenToken | SyntaxKind.CloseParenToken | SyntaxKind.OpenBracketToken | SyntaxKind.CloseBracketToken | SyntaxKind.DotToken | SyntaxKind.DotDotDotToken | SyntaxKind.SemicolonToken | SyntaxKind.CommaToken | SyntaxKind.QuestionDotToken | SyntaxKind.LessThanToken | SyntaxKind.LessThanSlashToken | SyntaxKind.GreaterThanToken | SyntaxKind.LessThanEqualsToken | SyntaxKind.GreaterThanEqualsToken | SyntaxKind.EqualsEqualsToken | SyntaxKind.ExclamationEqualsToken | SyntaxKind.EqualsEqualsEqualsToken | SyntaxKind.ExclamationEqualsEqualsToken | SyntaxKind.EqualsGreaterThanToken | SyntaxKind.PlusToken | SyntaxKind.MinusToken | SyntaxKind.AsteriskToken | SyntaxKind.AsteriskAsteriskToken | SyntaxKind.SlashToken | SyntaxKind.PercentToken | SyntaxKind.PlusPlusToken | SyntaxKind.MinusMinusToken | SyntaxKind.LessThanLessThanToken | SyntaxKind.GreaterThanGreaterThanToken | SyntaxKind.GreaterThanGreaterThanGreaterThanToken | SyntaxKind.AmpersandToken | SyntaxKind.BarToken | SyntaxKind.CaretToken | SyntaxKind.ExclamationToken | SyntaxKind.TildeToken | SyntaxKind.AmpersandAmpersandToken | SyntaxKind.BarBarToken | SyntaxKind.QuestionToken | SyntaxKind.ColonToken | SyntaxKind.AtToken | SyntaxKind.QuestionQuestionToken | SyntaxKind.BacktickToken | SyntaxKind.HashToken | SyntaxKind.EqualsToken | SyntaxKind.PlusEqualsToken | SyntaxKind.MinusEqualsToken | SyntaxKind.AsteriskEqualsToken | SyntaxKind.AsteriskAsteriskEqualsToken | SyntaxKind.SlashEqualsToken | SyntaxKind.PercentEqualsToken | SyntaxKind.LessThanLessThanEqualsToken | SyntaxKind.GreaterThanGreaterThanEqualsToken | SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken | SyntaxKind.AmpersandEqualsToken | SyntaxKind.BarEqualsToken | SyntaxKind.BarBarEqualsToken | SyntaxKind.AmpersandAmpersandEqualsToken | SyntaxKind.QuestionQuestionEqualsToken | SyntaxKind.CaretEqualsToken | SyntaxKind.Identifier | SyntaxKind.PrivateIdentifier | SyntaxKind.JSDocCommentTextToken | SyntaxKind.BreakKeyword | SyntaxKind.CaseKeyword | SyntaxKind.CatchKeyword | SyntaxKind.ClassKeyword | SyntaxKind.ConstKeyword | SyntaxKind.ContinueKeyword | SyntaxKind.DebuggerKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.DeleteKeyword | SyntaxKind.DoKeyword | SyntaxKind.ElseKeyword | SyntaxKind.EnumKeyword | SyntaxKind.ExportKeyword | SyntaxKind.ExtendsKeyword | SyntaxKind.FalseKeyword | SyntaxKind.FinallyKeyword | SyntaxKind.ForKeyword | SyntaxKind.FunctionKeyword | SyntaxKind.IfKeyword | SyntaxKind.ImportKeyword | SyntaxKind.InKeyword | SyntaxKind.InstanceOfKeyword | SyntaxKind.NewKeyword | SyntaxKind.NullKeyword | SyntaxKind.ReturnKeyword | SyntaxKind.SuperKeyword | SyntaxKind.SwitchKeyword | SyntaxKind.ThisKeyword | SyntaxKind.ThrowKeyword | SyntaxKind.TrueKeyword | SyntaxKind.TryKeyword | SyntaxKind.TypeOfKeyword | SyntaxKind.VarKeyword | SyntaxKind.VoidKeyword | SyntaxKind.WhileKeyword | SyntaxKind.WithKeyword | SyntaxKind.ImplementsKeyword | SyntaxKind.InterfaceKeyword | SyntaxKind.LetKeyword | SyntaxKind.PackageKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.StaticKeyword | SyntaxKind.YieldKeyword | SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsKeyword | SyntaxKind.AssertsKeyword | SyntaxKind.AssertKeyword | SyntaxKind.AnyKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.AwaitKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.ConstructorKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.GetKeyword | SyntaxKind.ImmediateKeyword | SyntaxKind.InferKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.IsKeyword | SyntaxKind.KeyOfKeyword | SyntaxKind.ModuleKeyword | SyntaxKind.NamespaceKeyword | SyntaxKind.NeverKeyword | SyntaxKind.OutKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.RequireKeyword | SyntaxKind.NumberKeyword | SyntaxKind.ObjectKeyword | SyntaxKind.SatisfiesKeyword | SyntaxKind.SetKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.TypeKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UniqueKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.UsingKeyword | SyntaxKind.FromKeyword | SyntaxKind.GlobalKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.OfKeyword | SyntaxKind.DeferKeyword;
+export type TokenSyntaxKind = SyntaxKind.Unknown | SyntaxKind.EndOfFile | SyntaxKind.SingleLineCommentTrivia | SyntaxKind.MultiLineCommentTrivia | SyntaxKind.NewLineTrivia | SyntaxKind.WhitespaceTrivia | SyntaxKind.ConflictMarkerTrivia | SyntaxKind.NonTextFileMarkerTrivia | SyntaxKind.NumericLiteral | SyntaxKind.BigIntLiteral | SyntaxKind.StringLiteral | SyntaxKind.JsxText | SyntaxKind.JsxTextAllWhiteSpaces | SyntaxKind.RegularExpressionLiteral | SyntaxKind.NoSubstitutionTemplateLiteral | SyntaxKind.TemplateHead | SyntaxKind.TemplateMiddle | SyntaxKind.TemplateTail | SyntaxKind.OpenBraceToken | SyntaxKind.CloseBraceToken | SyntaxKind.OpenParenToken | SyntaxKind.CloseParenToken | SyntaxKind.OpenBracketToken | SyntaxKind.CloseBracketToken | SyntaxKind.DotToken | SyntaxKind.DotDotDotToken | SyntaxKind.SemicolonToken | SyntaxKind.CommaToken | SyntaxKind.QuestionDotToken | SyntaxKind.LessThanToken | SyntaxKind.LessThanSlashToken | SyntaxKind.GreaterThanToken | SyntaxKind.LessThanEqualsToken | SyntaxKind.GreaterThanEqualsToken | SyntaxKind.EqualsEqualsToken | SyntaxKind.ExclamationEqualsToken | SyntaxKind.EqualsEqualsEqualsToken | SyntaxKind.ExclamationEqualsEqualsToken | SyntaxKind.EqualsGreaterThanToken | SyntaxKind.PlusToken | SyntaxKind.MinusToken | SyntaxKind.AsteriskToken | SyntaxKind.AsteriskAsteriskToken | SyntaxKind.SlashToken | SyntaxKind.PercentToken | SyntaxKind.PlusPlusToken | SyntaxKind.MinusMinusToken | SyntaxKind.LessThanLessThanToken | SyntaxKind.GreaterThanGreaterThanToken | SyntaxKind.GreaterThanGreaterThanGreaterThanToken | SyntaxKind.AmpersandToken | SyntaxKind.BarToken | SyntaxKind.CaretToken | SyntaxKind.ExclamationToken | SyntaxKind.TildeToken | SyntaxKind.AmpersandAmpersandToken | SyntaxKind.BarBarToken | SyntaxKind.QuestionToken | SyntaxKind.ColonToken | SyntaxKind.AtToken | SyntaxKind.QuestionQuestionToken | SyntaxKind.BacktickToken | SyntaxKind.HashToken | SyntaxKind.EqualsToken | SyntaxKind.PlusEqualsToken | SyntaxKind.MinusEqualsToken | SyntaxKind.AsteriskEqualsToken | SyntaxKind.AsteriskAsteriskEqualsToken | SyntaxKind.SlashEqualsToken | SyntaxKind.PercentEqualsToken | SyntaxKind.LessThanLessThanEqualsToken | SyntaxKind.GreaterThanGreaterThanEqualsToken | SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken | SyntaxKind.AmpersandEqualsToken | SyntaxKind.BarEqualsToken | SyntaxKind.BarBarEqualsToken | SyntaxKind.AmpersandAmpersandEqualsToken | SyntaxKind.QuestionQuestionEqualsToken | SyntaxKind.CaretEqualsToken | SyntaxKind.Identifier | SyntaxKind.PrivateIdentifier | SyntaxKind.JSDocCommentTextToken | SyntaxKind.BreakKeyword | SyntaxKind.CaseKeyword | SyntaxKind.CatchKeyword | SyntaxKind.ClassKeyword | SyntaxKind.ConstKeyword | SyntaxKind.ContinueKeyword | SyntaxKind.DebuggerKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.DeleteKeyword | SyntaxKind.DoKeyword | SyntaxKind.ElseKeyword | SyntaxKind.EnumKeyword | SyntaxKind.ExportKeyword | SyntaxKind.ExtendsKeyword | SyntaxKind.FalseKeyword | SyntaxKind.FinallyKeyword | SyntaxKind.ForKeyword | SyntaxKind.FunctionKeyword | SyntaxKind.IfKeyword | SyntaxKind.ImportKeyword | SyntaxKind.InKeyword | SyntaxKind.InstanceOfKeyword | SyntaxKind.NewKeyword | SyntaxKind.NullKeyword | SyntaxKind.ReturnKeyword | SyntaxKind.SuperKeyword | SyntaxKind.SwitchKeyword | SyntaxKind.ThisKeyword | SyntaxKind.ThrowKeyword | SyntaxKind.TrueKeyword | SyntaxKind.TryKeyword | SyntaxKind.TypeOfKeyword | SyntaxKind.VarKeyword | SyntaxKind.VoidKeyword | SyntaxKind.WhileKeyword | SyntaxKind.WithKeyword | SyntaxKind.ImplementsKeyword | SyntaxKind.InterfaceKeyword | SyntaxKind.LetKeyword | SyntaxKind.PackageKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.StaticKeyword | SyntaxKind.YieldKeyword | SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsKeyword | SyntaxKind.AssertsKeyword | SyntaxKind.AssertKeyword | SyntaxKind.AnyKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.AwaitKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.ConstructorKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.GetKeyword | SyntaxKind.ImmediateKeyword | SyntaxKind.InferKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.IsKeyword | SyntaxKind.KeyOfKeyword | SyntaxKind.ModuleKeyword | SyntaxKind.NamespaceKeyword | SyntaxKind.NeverKeyword | SyntaxKind.OutKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.RequireKeyword | SyntaxKind.NumberKeyword | SyntaxKind.ObjectKeyword | SyntaxKind.SatisfiesKeyword | SyntaxKind.SetKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.TypeKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UniqueKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.UsingKeyword | SyntaxKind.FromKeyword | SyntaxKind.GlobalKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.OfKeyword | SyntaxKind.DeferKeyword | SyntaxKind.SourceKeyword;
 
 export type JsxTokenSyntaxKind = SyntaxKind.LessThanSlashToken | SyntaxKind.EndOfFile | SyntaxKind.ConflictMarkerTrivia | SyntaxKind.JsxText | SyntaxKind.JsxTextAllWhiteSpaces | SyntaxKind.OpenBraceToken | SyntaxKind.LessThanToken;
 
 export type JSDocNodeSyntaxKind = SyntaxKind.JSDocTypeExpression | SyntaxKind.JSDocNameReference | SyntaxKind.JSDocAllType | SyntaxKind.JSDocNullableType | SyntaxKind.JSDocNonNullableType | SyntaxKind.JSDocOptionalType | SyntaxKind.JSDocVariadicType | SyntaxKind.JSDoc | SyntaxKind.JSDocText | SyntaxKind.JSDocTypeLiteral | SyntaxKind.JSDocSignature | SyntaxKind.JSDocLink | SyntaxKind.JSDocLinkCode | SyntaxKind.JSDocLinkPlain | SyntaxKind.JSDocUnknownTag | SyntaxKind.JSDocAugmentsTag | SyntaxKind.JSDocImplementsTag | SyntaxKind.JSDocDeprecatedTag | SyntaxKind.JSDocPublicTag | SyntaxKind.JSDocPrivateTag | SyntaxKind.JSDocProtectedTag | SyntaxKind.JSDocReadonlyTag | SyntaxKind.JSDocOverrideTag | SyntaxKind.JSDocCallbackTag | SyntaxKind.JSDocOverloadTag | SyntaxKind.JSDocParameterTag | SyntaxKind.JSDocReturnTag | SyntaxKind.JSDocThisTag | SyntaxKind.JSDocTypeTag | SyntaxKind.JSDocTemplateTag | SyntaxKind.JSDocTypedefTag | SyntaxKind.JSDocSeeTag | SyntaxKind.JSDocPropertyTag | SyntaxKind.JSDocThrowsTag | SyntaxKind.JSDocSatisfiesTag | SyntaxKind.JSDocImportTag;
 
-export type ImportPhaseModifierSyntaxKind = SyntaxKind.TypeKeyword | SyntaxKind.DeferKeyword;
+export type ImportPhaseModifierSyntaxKind = SyntaxKind.TypeKeyword | SyntaxKind.DeferKeyword | SyntaxKind.SourceKeyword;
 
 export type PostfixUnaryOperator = SyntaxKind.PlusPlusToken | SyntaxKind.MinusMinusToken;
 
@@ -138,7 +138,7 @@ export interface JSDocTypeBase extends Node {
 }
 
 export interface DeclarationBase extends Node {
-  readonly kind: SyntaxKind.VariableDeclaration | SyntaxKind.Parameter | SyntaxKind.BindingElement | SyntaxKind.MissingDeclaration | SyntaxKind.FunctionDeclaration | SyntaxKind.ClassDeclaration | SyntaxKind.ClassExpression | SyntaxKind.InterfaceDeclaration | SyntaxKind.TypeAliasDeclaration | SyntaxKind.EnumMember | SyntaxKind.EnumDeclaration | SyntaxKind.ImportDeclaration | SyntaxKind.NamespaceImport | SyntaxKind.ExportAssignment | SyntaxKind.NamespaceExportDeclaration | SyntaxKind.NamespaceExport | SyntaxKind.ExportSpecifier | SyntaxKind.CallSignature | SyntaxKind.ConstructSignature | SyntaxKind.Constructor | SyntaxKind.GetAccessor | SyntaxKind.SetAccessor | SyntaxKind.IndexSignature | SyntaxKind.MethodSignature | SyntaxKind.MethodDeclaration | SyntaxKind.PropertySignature | SyntaxKind.PropertyDeclaration | SyntaxKind.SemicolonClassElement | SyntaxKind.ClassStaticBlockDeclaration | SyntaxKind.NoSubstitutionTemplateLiteral | SyntaxKind.BinaryExpression | SyntaxKind.ArrowFunction | SyntaxKind.FunctionExpression | SyntaxKind.CallExpression | SyntaxKind.ObjectLiteralExpression | SyntaxKind.SpreadAssignment | SyntaxKind.PropertyAssignment | SyntaxKind.ShorthandPropertyAssignment | SyntaxKind.MappedType | SyntaxKind.TypeLiteral | SyntaxKind.NamedTupleMember | SyntaxKind.FunctionType | SyntaxKind.ConstructorType | SyntaxKind.JsxAttributes | SyntaxKind.JsxAttribute | SyntaxKind.JSDocSignature | SyntaxKind.ModuleDeclaration | SyntaxKind.ImportEqualsDeclaration | SyntaxKind.ExportDeclaration | SyntaxKind.ImportClause | SyntaxKind.ImportSpecifier | SyntaxKind.TypeParameter | SyntaxKind.JSDocTypeLiteral;
+  readonly kind: SyntaxKind.VariableDeclaration | SyntaxKind.Parameter | SyntaxKind.BindingElement | SyntaxKind.MissingDeclaration | SyntaxKind.FunctionDeclaration | SyntaxKind.ClassDeclaration | SyntaxKind.ClassExpression | SyntaxKind.InterfaceDeclaration | SyntaxKind.TypeAliasDeclaration | SyntaxKind.EnumMember | SyntaxKind.EnumDeclaration | SyntaxKind.NotEmittedTypeElement | SyntaxKind.ImportDeclaration | SyntaxKind.NamespaceImport | SyntaxKind.ExportAssignment | SyntaxKind.NamespaceExportDeclaration | SyntaxKind.NamespaceExport | SyntaxKind.ExportSpecifier | SyntaxKind.CallSignature | SyntaxKind.ConstructSignature | SyntaxKind.Constructor | SyntaxKind.GetAccessor | SyntaxKind.SetAccessor | SyntaxKind.IndexSignature | SyntaxKind.MethodSignature | SyntaxKind.MethodDeclaration | SyntaxKind.PropertySignature | SyntaxKind.PropertyDeclaration | SyntaxKind.SemicolonClassElement | SyntaxKind.ClassStaticBlockDeclaration | SyntaxKind.NoSubstitutionTemplateLiteral | SyntaxKind.BinaryExpression | SyntaxKind.ArrowFunction | SyntaxKind.FunctionExpression | SyntaxKind.CallExpression | SyntaxKind.ObjectLiteralExpression | SyntaxKind.SpreadAssignment | SyntaxKind.PropertyAssignment | SyntaxKind.ShorthandPropertyAssignment | SyntaxKind.MappedType | SyntaxKind.TypeLiteral | SyntaxKind.NamedTupleMember | SyntaxKind.FunctionType | SyntaxKind.ConstructorType | SyntaxKind.JsxAttributes | SyntaxKind.JsxAttribute | SyntaxKind.JsxSpreadAttribute | SyntaxKind.JSDocSignature | SyntaxKind.ModuleDeclaration | SyntaxKind.ImportEqualsDeclaration | SyntaxKind.ExportDeclaration | SyntaxKind.ImportClause | SyntaxKind.ImportSpecifier | SyntaxKind.TypeParameter | SyntaxKind.JSDocTypeLiteral;
 }
 
 export interface ModifiersBase extends Node {
@@ -186,9 +186,9 @@ export interface LiteralLikeNodeBase extends Node {
 }
 
 export interface LiteralExpressionBase extends Node {
+  readonly flags: NodeFlags;
   readonly text: string;
   readonly tokenFlags: TokenFlags;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.StringLiteral | SyntaxKind.NumericLiteral | SyntaxKind.BigIntLiteral | SyntaxKind.RegularExpressionLiteral;
 }
 
@@ -260,7 +260,7 @@ export interface QualifiedName extends Node {
   readonly flags: NodeFlags;
   readonly kind: SyntaxKind.QualifiedName;
   readonly left: EntityName;
-  readonly right: Identifier;
+  readonly right: MemberName;
 }
 
 export interface ComputedPropertyName extends Node {
@@ -485,7 +485,7 @@ export interface HeritageClause extends Node {
   readonly flags: NodeFlags;
   readonly kind: SyntaxKind.HeritageClause;
   readonly token: SyntaxKind.ExtendsKeyword | SyntaxKind.ImplementsKeyword;
-  readonly types: NodeArray<ExpressionWithTypeArguments>;
+  readonly types: NodeArray<HeritageClauseElement>;
 }
 
 export interface InterfaceDeclaration extends Node {
@@ -639,6 +639,7 @@ export interface ConstructorDeclaration extends Node {
 }
 
 export interface GetAccessorDeclaration extends Node {
+  readonly flags: NodeFlags;
   readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
@@ -648,11 +649,11 @@ export interface GetAccessorDeclaration extends Node {
   readonly type: TypeNode | undefined;
   readonly asteriskToken: AsteriskToken | undefined;
   readonly body: FunctionBody | undefined;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.GetAccessor;
 }
 
 export interface SetAccessorDeclaration extends Node {
+  readonly flags: NodeFlags;
   readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
@@ -662,7 +663,6 @@ export interface SetAccessorDeclaration extends Node {
   readonly type: TypeNode | undefined;
   readonly asteriskToken: AsteriskToken | undefined;
   readonly body: FunctionBody | undefined;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.SetAccessor;
 }
 
@@ -748,30 +748,30 @@ export interface KeywordExpression<TKind extends KeywordExpressionSyntaxKind = K
 }
 
 export interface StringLiteral extends Node {
+  readonly flags: NodeFlags;
   readonly text: string;
   readonly tokenFlags: TokenFlags;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.StringLiteral;
 }
 
 export interface NumericLiteral extends Node {
+  readonly flags: NodeFlags;
   readonly text: string;
   readonly tokenFlags: TokenFlags;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.NumericLiteral;
 }
 
 export interface BigIntLiteral extends Node {
+  readonly flags: NodeFlags;
   readonly text: string;
   readonly tokenFlags: TokenFlags;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.BigIntLiteral;
 }
 
 export interface RegularExpressionLiteral extends Node {
+  readonly flags: NodeFlags;
   readonly text: string;
   readonly tokenFlags: TokenFlags;
-  readonly flags: NodeFlags;
   readonly kind: SyntaxKind.RegularExpressionLiteral;
 }
 
@@ -1569,6 +1569,7 @@ export interface ModuleDeclaration extends Node {
   readonly kind: SyntaxKind.ModuleDeclaration;
   readonly keyword: SyntaxKind.ModuleKeyword | SyntaxKind.NamespaceKeyword;
   readonly name: ModuleName;
+  readonly attributes: TypeLiteralNode | undefined;
 }
 
 export interface ImportEqualsDeclaration extends Node {
@@ -1676,13 +1677,15 @@ export type Statement = StatementBase;
 
 export type TypeNode = TypeNodeBase | ExpressionWithTypeArguments;
 
+export type HeritageClauseElement = ExpressionWithTypeArguments | TypeReferenceNode;
+
 export type BlockOrExpression = Block | Expression;
 
 export type NodeBody = Block | Expression | ModuleBlock | ModuleDeclaration;
 
 export type AccessExpression = PropertyAccessExpression | ElementAccessExpression;
 
-export type DeclarationName = Identifier | PrivateIdentifier | StringLiteral | NumericLiteral | BigIntLiteral | NoSubstitutionTemplateLiteral | ComputedPropertyName | BindingPattern | ElementAccessExpression;
+export type DeclarationName = Identifier | PrivateIdentifier | StringLiteral | NumericLiteral | BigIntLiteral | NoSubstitutionTemplateLiteral | ComputedPropertyName | BindingPattern | PropertyAccessExpression | ElementAccessExpression;
 
 export type ModuleName = Identifier | StringLiteral;
 
@@ -1985,6 +1988,8 @@ export type ClassElementList = NodeArray<ClassElement>;
 export type TypeElementList = NodeArray<TypeElement>;
 
 export type ExpressionWithTypeArgumentsList = NodeArray<ExpressionWithTypeArguments>;
+
+export type HeritageClauseElementList = NodeArray<HeritageClauseElement>;
 
 export type EnumMemberList = NodeArray<EnumMember>;
 

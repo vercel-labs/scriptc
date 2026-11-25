@@ -27,6 +27,9 @@ struct EmitOptions {
   std::vector<std::string> ImportBitcode;
   // Private directory for reusable partition artifacts; empty disables reuse.
   std::string CacheDirectory;
+  // The most partitions the build compiles at once (0: one per hardware
+  // thread). The caller caps it to the memory it has for code generation.
+  unsigned Jobs = 0;
   // Instruments the program for IR profiling. The instrumented executable
   // writes raw profiles to this path pattern (LLVM_PROFILE_FILE overrides it
   // at run time). Empty: no instrumentation. With ProfileUse, the program is

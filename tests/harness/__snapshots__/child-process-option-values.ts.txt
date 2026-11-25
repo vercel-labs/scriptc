@@ -1,0 +1,44 @@
+child-process-option-values.ts:11:47 - error SC2020: 'execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  10 | 
+  11 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+     |                                               ^~~~~~~~~~~~~~~~~~~~~
+  12 | exec("echo", { windowsHide: hidden() }, () => {});
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:12:16 - error SC2020: 'exec option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  11 | execFile("/bin/echo", [], { encoding: "utf8", windowsHide: hidden() }, () => {});
+  12 | exec("echo", { windowsHide: hidden() }, () => {});
+     |                ^~~~~~~~~~~~~~~~~~~~~
+  13 | 
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:21:29 - error SC2020: 'the promisified execFile option 'windowsHide' with a value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  20 | 
+  21 | void run("/bin/echo", [], { windowsHide: hidden() });
+     |                             ^~~~~~~~~~~~~~~~~~~~~
+  22 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+
+  hint: pass a literal or a plain binding (this form has no place to run the expression)
+
+child-process-option-values.ts:22:31 - error SC2020: 'execFileSync with a conditional env spread beside an option value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  21 | void run("/bin/echo", [], { windowsHide: hidden() });
+  22 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+     |                               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 | spawnSync("/bin/echo", [], { stdio: mode, windowsHide: hidden() });
+
+  hint: bind the computed option value to a constant before the call
+
+child-process-option-values.ts:23:28 - error SC2020: 'spawnSync with a runtime stdio value and a windowsHide value that must be evaluated' is part of the standard library types but has no scriptc lowering yet
+
+  22 | execFileSync("/bin/echo", [], { windowsHide: hidden(), ...(spare ? { env: { TRAY: "x" } } : {}) });
+  23 | spawnSync("/bin/echo", [], { stdio: mode, windowsHide: hidden() });
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 | 
+
+  hint: pass stdio as a "pipe"/"ignore"/"inherit" literal, or bind the windowsHide value to a constant before the call

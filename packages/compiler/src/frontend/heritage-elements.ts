@@ -19,6 +19,17 @@ export function isHeritageElement(node: ts.Node): node is HeritageElement {
   return ts.isExpressionWithTypeArguments(node) || isHeritageTypeReference(node);
 }
 
+/** The element of a class declaration's `extends` clause, which is always an
+ * ExpressionWithTypeArguments. */
+export function extendsElementOf(
+  decl: ts.ClassLikeDeclaration,
+): ts.ExpressionWithTypeArguments | undefined {
+  const element = decl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0];
+  return element !== undefined && ts.isExpressionWithTypeArguments(element) ? element : undefined;
+}
+
 /** The name or expression a heritage clause element refers to: its
  * expression (an ExpressionWithTypeArguments) or its type name (a
  * TypeReference). */

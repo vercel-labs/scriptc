@@ -3,8 +3,8 @@ import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { analyzeInChild, compileInChild } from "./self-hosting-compiler-process.js";
-import { expect, test } from "vitest";
+import { compileInChild } from "./self-hosting-compiler-process.js";
+import { afterAll, beforeAll, expect, test } from "vitest";
 import { ts7Executable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
 import type { FrontendProgramRequest } from "../fixtures/self-hosting/frontend-program-cases.js";
 
@@ -364,70 +364,105 @@ function verify(reports: Report[]): void {
   expect(get("npm-restored").order).toEqual(get("npm-static").order);
 }
 
+// One build lowers the fixture's ~23k statements and emits them: measured
+// after the analyze pass stopped repeating that lowering, as a single file on
+// 32 vCPU, 104-107 s plain and 203-206 s sanitized (a sanitized build compiles
+// the ASan runtime from C source, which is what the extra minutes buy). The CI
+// lane measured 172 s sanitized in its cost-balanced queue: four CPUs, one
+// worker, the corpus running beside it. The budgets leave that lane about a
+// 3x band and still stop a hung frontend. The setup case is the Node oracle's
+// load, which needs seconds, so it keeps the default 300 s hook budget.
+const buildTimeout = sanitize ? 600_000 : 300_000;
+
+const directory = mkdtempSync(join(tempRoot, "scriptc-frontend-program-"));
+const request = join(directory, "request.json");
+const profile = join(directory, "ffi.json");
+let nodeStdout = "";
+let nodeStderr = "";
+let nodeReports: Report[] = [];
+
+// The Node oracle loads and preflights every case; its reports are the
+// differential baseline the native client must reproduce. It runs once, in
+// setup, so each case below reports its own budget.
+beforeAll(async () => {
+  const object = join(directory, "process.o");
+  execFileSync("clang", [
+    "-std=c11",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    ...(sanitize ? ["-fsanitize=address"] : []),
+    "-c",
+    join(nativeSources, "ts7-process.c"),
+    "-o",
+    object,
+  ]);
+  writeFileSync(
+    profile,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(join(nativeSources, "ts7-process.ffi.json"), "utf8")),
+      libraries: [object],
+    }),
+  );
+  const expected = join(directory, "node.json");
+  writeFileSync(request, JSON.stringify(inputs(directory)));
+  const node = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", oracle, ts7Executable(), request, expected],
+    { encoding: "utf8", timeout: 90_000 },
+  );
+  nodeStdout = node.stdout;
+  nodeStderr = node.stderr;
+  expect(node.stdout).toBe("");
+  expect(node.stderr).toBe("");
+  nodeReports = JSON.parse(readFileSync(expected, "utf8")) as Report[];
+  verify(nodeReports);
+});
+
+afterAll(() => {
+  rmSync(directory, { recursive: true, force: true });
+});
+
 for (const backend of ["llvm"] as const) {
-  test(`production program loading and preflight run without Node (${backend})`, async () => {
-    const directory = mkdtempSync(join(tempRoot, "scriptc-frontend-program-"));
-    try {
-      const object = join(directory, "process.o");
-      execFileSync("clang", [
-        "-std=c11",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        ...(sanitize ? ["-fsanitize=address"] : []),
-        "-c",
-        join(nativeSources, "ts7-process.c"),
-        "-o",
-        object,
-      ]);
-      const profile = join(directory, "ffi.json");
-      writeFileSync(
-        profile,
-        JSON.stringify({
-          ...JSON.parse(readFileSync(join(nativeSources, "ts7-process.ffi.json"), "utf8")),
-          libraries: [object],
-        }),
-      );
-      const request = join(directory, "request.json");
-      const expected = join(directory, "node.json");
+  test(
+    `production program loading and preflight run without Node (${backend})`,
+    async () => {
+      // Restore the edits the Node run made to the case files.
       writeFileSync(request, JSON.stringify(inputs(directory)));
-      const node = await execFileAsync(
-        process.execPath,
-        ["--import", "tsx", oracle, ts7Executable(), request, expected],
-        { encoding: "utf8", timeout: 90_000 },
+      const built = await compileInChild(
+        entry,
+        {
+          backend,
+          optimization: "dev",
+          sanitize,
+          ffiProfilePath: profile,
+          outDir: directory,
+          outPath: join(directory, process.platform === "win32" ? "frontend.exe" : "frontend"),
+        },
+        { timeout: buildTimeout },
       );
-      expect(node.stdout).toBe("");
-      expect(node.stderr).toBe("");
-      const nodeReports = JSON.parse(readFileSync(expected, "utf8")) as Report[];
-      verify(nodeReports);
-      // Restore edits made by the Node run before starting the native client.
-      writeFileSync(request, JSON.stringify(inputs(directory)));
-      const coverage = await analyzeInChild(entry, { ffiProfilePath: profile });
-      expect(coverage.preflightFailed, JSON.stringify(coverage.diagnostics)).toBe(false);
-      expect(coverage.stats.statementsFailed, JSON.stringify(coverage.diagnostics)).toBe(0);
-      expect(coverage.stats.functionsSkipped).toBe(0);
-      const built = await compileInChild(entry, {
-        backend,
-        optimization: "dev",
-        sanitize,
-        ffiProfilePath: profile,
-        outDir: directory,
-        outPath: join(directory, process.platform === "win32" ? "frontend.exe" : "frontend"),
-      });
       if (!built.ok)
         throw new Error(built.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      // The build's own frontend pass is the coverage check: a build fails on
+      // a preflight diagnostic, and the stats below are what a second
+      // analyze() pass would lower the same program again to compute. They
+      // are absent only on an executable cache hit, which this case's fresh
+      // temporary outDir keeps out of reach.
+      if (built.stats === undefined)
+        throw new Error("the build lowered the program but reported no lowering stats");
+      expect(built.stats.statementsFailed).toBe(0);
+      expect(built.stats.functionsSkipped).toBe(0);
       const report = join(directory, "native.json");
       const run = await execFileAsync(built.binaryPath, [ts7Executable(), request, report], {
         encoding: "utf8",
         timeout: 90_000,
       });
-      expect(run.stdout).toBe(node.stdout);
-      expect(run.stderr).toBe(node.stderr);
+      expect(run.stdout).toBe(nodeStdout);
+      expect(run.stderr).toBe(nodeStderr);
       const nativeReports = JSON.parse(readFileSync(report, "utf8")) as Report[];
       expect(nativeReports).toEqual(nodeReports);
       verify(nativeReports);
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  });
+    },
+    buildTimeout,
+  );
 }

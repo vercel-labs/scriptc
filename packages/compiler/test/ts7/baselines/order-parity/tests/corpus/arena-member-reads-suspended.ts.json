@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arena-member-reads-suspended.ts"
+ ],
+ "diags": []
+}

@@ -7,6 +7,7 @@
 import * as http from "node:http";
 import * as tls from "node:tls";
 import * as fs from "node:fs";
+import * as net from "node:net";
 
 // The Agent lowers to a checked-dynamic handle now — but only from a
 // LITERAL options object; a runtime options value cannot be walked.
@@ -14,14 +15,20 @@ const agentOpts: http.AgentOptions = { maxSockets: 1 };
 const agent = new http.Agent(agentOpts);
 http.get({ port: 80, agent }, () => {});
 
-// agent: false needs a LITERAL headers object to inject Connection: close
-// into; a record variable cannot be checked for a user connection header.
+// agent: false with a dialer (which has no agent slot) needs a LITERAL
+// headers object to inject Connection: close into; a record variable
+// cannot be checked for a user connection header.
 const dynHeaders: Record<string, string> = { "x-a": "1" };
-http.get({ port: 80, agent: false, headers: dynHeaders }, () => {});
+http.get({ createConnection: () => net.connect(80), agent: false, headers: dynHeaders }, () => {});
 
 // Documented client options with no lowering fence by name.
 http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});
 http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
+
+// Three arguments: only the URL form has a middle options value
+// (request(url, options, cb)), so the options-first spelling with a
+// trailing callback fences.
+http.get({ port: 80 }, () => {}, () => {});
 
 // An UNDOCUMENTED key Node would ignore — but Node still evaluates the
 // value, so an effectful one cannot silently drop.
@@ -36,9 +43,9 @@ tls.createServer({ cert: "c", key: "k", ciphers: "TLS_AES_128_GCM_SHA256" }, () 
 tls.createServer({ cert: "c", key: "k", ticketKeys: new Uint8Array(48) }, () => {});
 
 // fs.watch: the options that would CHANGE behavior fence by name; the
-// stated defaults are accepted (corpus 1751).
-fs.watch("/tmp", { recursive: true }, () => {});
-fs.watch("/tmp", { persistent: false }, () => {});
+// stated defaults are accepted (corpus 1751), and `persistent` is lowered
+// (corpus fs-watch-ref-unref).
+fs.watch("/tmp", { encoding: "buffer" }, () => {});
 
 
 // A bare __proto__: value entry is not an ordinary undocumented key: it

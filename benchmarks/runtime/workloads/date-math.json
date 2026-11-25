@@ -2,5 +2,6 @@
   "entry": "workloads/date-math.ts",
   "args": [
     "40"
-  ]
+  ],
+  "scaleArg": 0
 }

@@ -1,0 +1,112 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"OCSPRequest\"' is not assignable to parameter of type '\"checkContinue\" | \"checkExpectation\" | \"request\"'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 754,
+    "end": 767
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"OCSPResponse\"' is not assignable to parameter of type '\"checkContinue\" | \"checkExpectation\" | \"request\"'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 790,
+    "end": 804
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"newSession\"' is not assignable to parameter of type '\"checkContinue\" | \"checkExpectation\" | \"request\"'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 827,
+    "end": 839
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"resumeSession\"' is not assignable to parameter of type '\"checkContinue\" | \"checkExpectation\" | \"request\"'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 862,
+    "end": 877
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'enableTrace' does not exist on type 'TLSSocket'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1085,
+    "end": 1096
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'getFinished' does not exist on type 'TLSSocket'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1107,
+    "end": 1118
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'getPeerFinished' does not exist on type 'TLSSocket'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1129,
+    "end": 1144
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'getSharedSigalgs' does not exist on type 'TLSSocket'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1155,
+    "end": 1171
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'getCiphers' does not exist on type 'typeof import(\"node:tls\")'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1338,
+    "end": 1348
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'getCiphers' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'DEFAULT_CIPHERS' does not exist on type 'typeof import(\"node:tls\")'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1369,
+    "end": 1384
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'DEFAULT_CIPHERS' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  },
+  {
+   "code": "SC0001",
+   "message": "Property 'getCertificateCompressionAlgorithms' does not exist on type 'typeof import(\"node:tls\")'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-tls-engine-members.ts",
+    "start": 1403,
+    "end": 1438
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'getCertificateCompressionAlgorithms' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

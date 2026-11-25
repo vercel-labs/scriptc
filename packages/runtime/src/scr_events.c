@@ -10,9 +10,6 @@
  * zero bytes and keep their exact historical link line. */
 #define _XOPEN_SOURCE 700
 #include "scr_runtime.h"
-#ifdef SCR_NODE_ISLANDS
-#include "scr_node_island.h"
-#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -78,16 +75,24 @@ void scr_child_err_thunk_error(ScrClosure *cb, ScrStr *msg) {
  * deliveries between two loop turns coalesce into one dispatch (the
  * kernel coalesces pending non-RT signals the same way). */
 
+/* Island code's event delivery, installed by scr_node_island.c when a
+ * program links it. This unit cannot name scr_node_island_emit: every
+ * program that uses process events links it, and only an island program
+ * links that one. */
+static void (*scr_island_emit)(uint32_t event, uint32_t listener, ScrStr *name, int arg);
+
+void scr_events_set_island_emit(void (*fn)(uint32_t, uint32_t, ScrStr *, int)) {
+  scr_island_emit = fn;
+}
+
 typedef struct {
   ScrDyn *cb; /* owned; checked callable */
   ScrStr *name; /* aliases of one signum remain distinct event names */
   bool once;
   uint64_t id;
-#ifdef SCR_NODE_ISLANDS
   /* Nonzero: a listener island code added (its cb is undefined); the
    * delivery calls it through the bridge at this position. */
   uint32_t island;
-#endif
 } ScrSigListener;
 
 typedef struct ScrSigReg {
@@ -242,11 +247,10 @@ void scr_signal_on(ScrStr *name, ScrDyn *cb, bool once) {
     reg->ls = realloc(reg->ls, reg->cap * sizeof *reg->ls);
     if (!reg->ls) scr_events_oom();
   }
-  reg->ls[reg->n++] = (ScrSigListener){scr_dyn_retain(cb), scr_str_retain(name), once, ++scr_sig_id};
+  reg->ls[reg->n++] = (ScrSigListener){scr_dyn_retain(cb), scr_str_retain(name), once, ++scr_sig_id, 0};
 #endif
 }
 
-#ifdef SCR_PROCESS_EXTRAS
 /* process.prependListener(<signal>, cb): the same listener in FRONT of the
  * signal's existing registrations (Node's EventEmitter order). The append
  * path above registers it and the new entry then moves to the front, so the
@@ -272,7 +276,6 @@ void scr_signal_prepend(ScrStr *name, ScrDyn *cb) {
   reg->ls[0] = entry;
 #endif
 }
-#endif
 
 static void scr_sig_reg_drop(ScrSigReg *reg) {
   if (reg->sig > 0) {
@@ -316,7 +319,6 @@ void scr_signal_off(ScrStr *name, ScrDyn *cb) {
   }
 }
 
-#ifdef SCR_NODE_ISLANDS
 /* Island code's signal listeners (scr_node_island.c forwards Node's
  * newListener/removeListener for signal events here): each takes its place
  * in the registry like a native listener, so scriptc owns every signal
@@ -371,7 +373,6 @@ void scr_signal_off_island(uint32_t island) {
     }
   }
 }
-#endif
 
 /* Snapshot all pending deliveries before invoking user code. No live
  * registry pointer survives a callback: off() can remove this signal or
@@ -408,13 +409,10 @@ static void scr_signals_drain(void) {
           if (found) break;
         }
       }
-#ifdef SCR_NODE_ISLANDS
-      if (snap[i].island != 0) {
-        scr_node_island_emit(SCR_NODE_ISLAND_EVENT_SIGNAL, snap[i].island, snap[i].name,
-                             scr_signal_from_name(snap[i].name));
-      } else
-#endif
-      {
+      if (snap[i].island != 0 && scr_island_emit != NULL) {
+        scr_island_emit(SCR_EVENTS_ISLAND_SIGNAL, snap[i].island, snap[i].name,
+                        scr_signal_from_name(snap[i].name));
+      } else {
         ScrDyn *args[2] = {scr_dyn_new_str(snap[i].name), scr_dyn_new_num(scr_signal_from_name(snap[i].name))};
         ScrDyn *result = scr_dyn_call(snap[i].cb, args, 2, "listener");
         scr_dyn_release(result);
@@ -446,23 +444,18 @@ static void scr_signals_drain(void) {
  * listener it is treated as EOF (piped fd 0 read errors are not
  * meaningfully reachable). */
 
-#ifdef SCR_STDIO_EXTENDED
-/* What a 'data' listener receives (the SCR_STDIO_EXTENDED variant, linked
- * by programs that use setEncoding, string data listeners or 'resize'):
- * raw chunks (typed Buffer listeners and the runtime's own consumers), the
- * decoded string (typed string listeners, which need setEncoding), or
- * whichever Node delivers (checked-dynamic listeners: the string once an
- * encoding is set, else the Buffer). */
+/* What a 'data' listener receives: raw chunks (typed Buffer listeners and
+ * the runtime's own consumers), the decoded string (typed string
+ * listeners, which need setEncoding), or whichever Node delivers
+ * (checked-dynamic listeners: the string once an encoding is set, else the
+ * Buffer). */
 enum { SCR_STDIN_DATA_BYTES, SCR_STDIN_DATA_STRING, SCR_STDIN_DATA_DYN };
 
-#endif
 typedef struct {
   ScrClosure *cb; /* owned */
   void (*fn)(ScrClosure *cb, ScrBytes *chunk); /* adapter: chunk borrowed */
-#ifdef SCR_STDIO_EXTENDED
   void (*str_fn)(ScrClosure *cb, ScrStr *text); /* STRING/DYN: text borrowed */
   unsigned char kind;
-#endif
   bool once;
 } ScrStdinDataL;
 
@@ -487,6 +480,11 @@ static SCR_TL ScrPromise *scr_stdin_waiter = NULL; /* parked for-await next() */
 static SCR_TL bool scr_stdin_eof = false;
 static SCR_TL bool scr_stdin_destroyed = false;
 static SCR_TL bool scr_stdin_paused = false;
+/* Node's handle refcount for stdin: unref() lets the process exit with a
+ * consumer still registered; a consumer still polls while the loop is
+ * awake for other work, exactly Node's unref'd socket. ref() restores the
+ * default. */
+static SCR_TL bool scr_stdin_refed = true;
 static SCR_TL bool scr_stdin_resumed = false;
 static SCR_TL bool scr_stdin_read_eof = false;
 /* Input held for read() and later consumers, as Node's BufferList: the
@@ -503,6 +501,10 @@ static SCR_TL ScrStdinEndL *scr_stdin_readable = NULL;
 static SCR_TL size_t scr_stdin_nreadable = 0, scr_stdin_readable_cap = 0;
 static SCR_TL bool scr_stdin_readable_need = false;
 static SCR_TL bool scr_stdin_readable_queued = false;
+/* A 'readable' listener outlived the input: Node keeps the stream in paused
+ * mode after 'end' (the listener stays registered and isPaused() keeps
+ * answering true), even though this runtime releases the listener tables. */
+static SCR_TL bool scr_stdin_readable_mode = false;
 
 /* Appends an arrived chunk (moves) to the held input. */
 static void scr_stdin_hold(ScrBytes *chunk) {
@@ -564,7 +566,6 @@ static void scr_stdin_drop_held(void) {
   scr_stdin_buffered = 0;
 }
 
-#ifdef SCR_STDIO_EXTENDED
 /* process.stdin.setEncoding(enc): the canonical encoding name (NULL until
  * set) and the StringDecoder's packed pending partial sequence, so a
  * multibyte character split across reads decodes whole, as Node's
@@ -614,24 +615,6 @@ void scr_stdin_set_encoding(ScrStr *enc) {
   scr_str_release(previous);
   scr_stdin_dec_pending = 0;
 }
-#else
-void scr_stdin_on_data(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrBytes *),
-                        bool once) {
-  if (scr_stdin_eof || scr_stdin_destroyed) {
-    scr_closure_release(cb); /* never fires again, like Node post-'end' */
-    return;
-  }
-  if (scr_stdin_ndata == scr_stdin_data_cap) {
-    scr_stdin_data_cap = scr_stdin_data_cap ? scr_stdin_data_cap * 2 : 2;
-    scr_stdin_data = realloc(scr_stdin_data, scr_stdin_data_cap * sizeof *scr_stdin_data);
-    if (!scr_stdin_data) scr_events_oom();
-  }
-  scr_stdin_data[scr_stdin_ndata].cb = cb;
-  scr_stdin_data[scr_stdin_ndata].fn = fn;
-  scr_stdin_data[scr_stdin_ndata].once = once;
-  scr_stdin_ndata++;
-}
-#endif
 
 void scr_stdin_on_end(ScrClosure *cb /*moves*/, bool once) {
   if (scr_stdin_eof || scr_stdin_destroyed) {
@@ -693,7 +676,7 @@ static void scr_stdin_queue_readable(void) {
 
 /* Adding a 'readable' listener starts reading ahead to the 64 KiB mark; a
  * buffer that already holds input fires the event at once (next tick). */
-static void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
+void scr_stdin_on_readable(ScrClosure *cb /*moves*/, bool once) {
   if (scr_stdin_eof || scr_stdin_destroyed) {
     scr_closure_release(cb);
     return;
@@ -772,7 +755,11 @@ static bool scr_stdin_watching(void) {
          (!scr_stdin_read_eof && scr_stdin_read_demand > scr_stdin_buffered);
 }
 
-bool scr_stdin_pending(void) { return scr_stdin_watching(); }
+/* The loop's keep-alive test: a consumer keeps the process alive only
+ * while the stream is ref'd (Node's handle refcount). The poll/watch test
+ * stays scr_stdin_watching, so an unref'd stream still reads while other
+ * work keeps the loop awake. */
+bool scr_stdin_pending(void) { return scr_stdin_refed && scr_stdin_watching(); }
 
 static void scr_stdin_drop_listeners(void) {
   for (size_t i = 0; i < scr_stdin_ndata; i++) scr_closure_release(scr_stdin_data[i].cb);
@@ -807,11 +794,9 @@ static void scr_stdin_settle_done(void) {
 /* EOF/teardown shared tail: 'end' fires (snapshot; once semantics are
  * moot — everything drops right after), the parked promise settles done,
  * and every listener is released. */
-#ifdef SCR_STDIO_EXTENDED
 static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text);
-#endif
+
 static void scr_stdin_finish(bool fire_end) {
-#ifdef SCR_STDIO_EXTENDED
   if (fire_end && scr_stdin_encoding != NULL && scr_stdin_ndata > 0) {
     /* The decoder's end() flush reaches the string listeners before 'end'. */
     ScrStr *tail = scr_strdec_end(scr_stdin_encoding, scr_stdin_dec_pending);
@@ -820,7 +805,6 @@ static void scr_stdin_finish(bool fire_end) {
     scr_str_release(tail);
     if (scr_exc_pending()) fire_end = false;
   }
-#endif
   scr_stdin_eof = true;
   if (fire_end) {
     size_t n = scr_stdin_nend;
@@ -839,8 +823,41 @@ static void scr_stdin_finish(bool fire_end) {
     free(snap);
   }
   scr_stdin_settle_done();
+  if (scr_stdin_nreadable) scr_stdin_readable_mode = true;
   scr_stdin_drop_listeners();
 }
+
+/* process.stdin.pause()/resume(): Node's flowing flag. While paused,
+ * arrived input buffers for read() and the 'readable' event instead of
+ * reaching 'data' listeners; resume() delivers buffered input to them
+ * again (`resumed` also feeds a flowing stream with no listener, as
+ * Node's resume() discards it). */
+void scr_stdin_pause(void) {
+  scr_stdin_paused = true;
+  scr_stdin_resumed = false;
+}
+
+void scr_stdin_resume(void) {
+  scr_stdin_paused = false;
+  scr_stdin_resumed = true;
+}
+
+/* process.stdin.ref()/unref(): Node's handle refcount. unref() means a
+ * registered consumer no longer keeps the process alive (data still
+ * arrives while other work holds the loop); ref() is the default. */
+void scr_stdin_ref(void) { scr_stdin_refed = true; }
+void scr_stdin_unref(void) { scr_stdin_refed = false; }
+
+/* process.stdin.isPaused(): Node's Readable#isPaused answers true in
+ * paused mode, which a 'readable' listener pins — resume() does not take
+ * the stream out of it, and 'end' does not either — and false before
+ * anything set flowing. */
+bool scr_stdin_is_paused(void) {
+  return scr_stdin_paused || scr_stdin_readable_mode || scr_stdin_nreadable > 0;
+}
+
+/* process.stdin.readableLength: the bytes waiting in the buffer. */
+double scr_stdin_readable_length(void) { return (double)scr_stdin_buffered; }
 
 /* process.stdin.destroy(): tear the stream down — nothing fires after,
  * the loop stops watching, and a parked for-await ends. */
@@ -981,14 +998,12 @@ static void scr_stdin_service(void) {
   scr_stdin_arrived(chunk);
 }
 
-#ifdef SCR_STDIO_EXTENDED
 static void scr_stdin_deliver(ScrBytes *chunk) {
   if (scr_stdin_ndata > 0 && scr_stdin_encoding != NULL) {
     /* Node's readable decodes once, in the stream: every listener sees
      * the same string, and a read holding only a partial sequence emits
      * nothing. */
-    ScrStr *text = scr_strdec_write(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
-    scr_stdin_dec_pending = scr_strdec_next(scr_stdin_encoding, scr_stdin_dec_pending, chunk);
+    ScrStr *text = scr_strdec_stream_write(scr_stdin_encoding, chunk, &scr_stdin_dec_pending);
     if (text->len > 0) scr_stdin_deliver_parts(chunk, text);
     scr_str_release(text);
     return;
@@ -997,9 +1012,6 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
 }
 
 static void scr_stdin_deliver_parts(ScrBytes *chunk, ScrStr *text) {
-#else
-static void scr_stdin_deliver(ScrBytes *chunk) {
-#endif
   if (scr_stdin_ndata > 0) {
     size_t nd = scr_stdin_ndata;
     ScrStdinDataL *snap = malloc(nd * sizeof *snap);
@@ -1020,7 +1032,6 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
           }
         }
       }
-#ifdef SCR_STDIO_EXTENDED
       if (!scr_exc_pending()) {
         if (snap[i].kind == SCR_STDIN_DATA_BYTES) {
           if (chunk != NULL) snap[i].fn(snap[i].cb, chunk);
@@ -1038,13 +1049,6 @@ static void scr_stdin_deliver(ScrBytes *chunk) {
     }
     free(snap);
   } else if (scr_stdin_waiter && chunk != NULL) {
-#else
-      if (!scr_exc_pending()) snap[i].fn(snap[i].cb, chunk);
-      scr_closure_release(snap[i].cb);
-    }
-    free(snap);
-  } else if (scr_stdin_waiter) {
-#endif
     ScrPromise *p = scr_stdin_waiter;
     scr_stdin_waiter = NULL;
     /* Node's stdin yields Buffers. */
@@ -1065,31 +1069,21 @@ typedef struct {
   bool *error_once;
   size_t nerrors;
   ScrDyn *write_error;
-#ifdef SCR_STDIO_EXTENDED
   /* 'resize' listeners (stdout/stderr) and the size they last saw. */
   ScrDyn **resizes;
   bool *resize_once;
   size_t nresizes;
   double columns, rows;
-#endif
 } ScrStdio;
 
 static SCR_TL ScrStdio scr_stdio_streams[3] = {{.fd = 0}, {.fd = 1}, {.fd = 2}};
-#ifdef SCR_STDIO_EXTENDED
 enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
        STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE,
-       STDIO_SET_ENCODING, STDIO_METHOD_COUNT };
+       STDIO_SET_ENCODING, STDIO_REF, STDIO_UNREF, STDIO_METHOD_COUNT };
 static const char *const scr_stdio_names[] = {
   "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize",
-  "setEncoding"
+  "setEncoding", "ref", "unref"
 };
-#else
-enum { STDIO_WRITE, STDIO_ON, STDIO_ONCE, STDIO_OFF, STDIO_PAUSE, STDIO_RESUME,
-       STDIO_IS_PAUSED, STDIO_READ, STDIO_RAW, STDIO_DESTROY, STDIO_WINDOW_SIZE, STDIO_METHOD_COUNT };
-static const char *const scr_stdio_names[] = {
-  "write", "on", "once", "removeListener", "pause", "resume", "isPaused", "read", "setRawMode", "destroy", "getWindowSize"
-};
-#endif
 static SCR_TL ScrDyn *scr_stdio_methods[STDIO_METHOD_COUNT];
 static SCR_TL bool scr_stdio_initialized;
 
@@ -1116,13 +1110,11 @@ static void scr_stdio_data(ScrClosure *cb, ScrBytes *bytes) {
   scr_stdio_fire(cb, chunk, 1);
   scr_dyn_release(chunk);
 }
-#ifdef SCR_STDIO_EXTENDED
 static void scr_stdio_data_text(ScrClosure *cb, ScrStr *text) {
   ScrDyn *chunk = scr_dyn_new_str(text);
   scr_stdio_fire(cb, chunk, 1);
   scr_dyn_release(chunk);
 }
-#endif
 static void scr_stdio_end(ScrClosure *cb) { scr_stdio_fire(cb, NULL, 0); }
 static void scr_stdio_readable(ScrClosure *cb) { scr_stdio_fire(cb, NULL, 0); }
 static void scr_stdio_error(ScrClosure *cb, ScrStr *message) {
@@ -1157,39 +1149,55 @@ static void scr_stdio_write_done(ScrClosure *cb) {
   scr_dyn_release(arg);
 }
 
+/* 'error' on a process output stream after a failed write. Node destroys
+ * the stream with the error once the write callback has run, and the
+ * destroy emits 'error' from a tick of its own: a tick the program queued
+ * after the failed write runs before the listeners do. With no listener
+ * the error is thrown from that tick, uncaught. */
+static void scr_stdio_error_emit(ScrClosure *cb) {
+  ScrDyn *error = scr_box_get_ref(cb->caps[0]);
+  ScrStdio *stream = &scr_stdio_streams[(int)scr_box_get_f64(cb->caps[1])];
+  size_t count = stream->nerrors;
+  ScrDyn **listeners = count ? malloc(count * sizeof *listeners) : NULL;
+  if (count && !listeners) scr_events_oom();
+  size_t kept = 0;
+  for (size_t i = 0; i < count; i++) {
+    listeners[i] = scr_dyn_retain(stream->errors[i]);
+    if (stream->error_once[i]) scr_dyn_release(stream->errors[i]);
+    else {
+      stream->errors[kept] = stream->errors[i];
+      stream->error_once[kept++] = false;
+    }
+  }
+  stream->nerrors = kept;
+  if (!count) scr_dyn_throw(scr_dyn_retain(error));
+  for (size_t i = 0; i < count; i++) {
+    if (!scr_exc_pending()) {
+      scr_dyn_this_push(stream, SCR_DYNH_STDIO);
+      ScrDyn *result = scr_dyn_call(listeners[i], &error, 1, "error listener");
+      scr_dyn_this_pop();
+      scr_dyn_release(result);
+    }
+    scr_dyn_release(listeners[i]);
+  }
+  free(listeners);
+  scr_dyn_release(error);
+}
+
 static void scr_stdio_write_failed(ScrClosure *cb) {
   ScrDyn *callback = scr_box_get_ref(cb->caps[0]);
   ScrDyn *error = scr_box_get_ref(cb->caps[1]);
-  ScrStdio *stream = &scr_stdio_streams[(int)scr_box_get_f64(cb->caps[2])];
   if (callback->kind == SCR_DYN_FUNC) {
     ScrDyn *result = scr_dyn_call(callback, &error, 1, "write callback");
     scr_dyn_release(result);
   }
   if (!scr_exc_pending()) {
-    size_t count = stream->nerrors;
-    ScrDyn **listeners = count ? malloc(count * sizeof *listeners) : NULL;
-    if (count && !listeners) scr_events_oom();
-    size_t kept = 0;
-    for (size_t i = 0; i < count; i++) {
-      listeners[i] = scr_dyn_retain(stream->errors[i]);
-      if (stream->error_once[i]) scr_dyn_release(stream->errors[i]);
-      else {
-        stream->errors[kept] = stream->errors[i];
-        stream->error_once[kept++] = false;
-      }
-    }
-    stream->nerrors = kept;
-    if (!count) scr_throw_ref(scr_dyn_retain(error), scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
-    for (size_t i = 0; i < count; i++) {
-      if (!scr_exc_pending()) {
-        scr_dyn_this_push(stream, SCR_DYNH_STDIO);
-        ScrDyn *result = scr_dyn_call(listeners[i], &error, 1, "error listener");
-        scr_dyn_this_pop();
-        scr_dyn_release(result);
-      }
-      scr_dyn_release(listeners[i]);
-    }
-    free(listeners);
+    ScrClosure *emit = scr_closure_new((void *)scr_stdio_error_emit, 2);
+    emit->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+    scr_box_set_ref(emit->caps[0], scr_dyn_retain(error));
+    emit->caps[1] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(emit->caps[1], scr_box_get_f64(cb->caps[2]));
+    scr_next_tick(emit);
   }
   scr_dyn_release(callback);
   scr_dyn_release(error);
@@ -1222,13 +1230,32 @@ static void scr_stdio_finish_read(void) {
     scr_stdin_finish(true);
 }
 
-static ScrDyn *scr_stdio_read(ScrDyn *size) {
-  bool all = size->kind == SCR_DYN_UNDEF;
-  if (!all && (size->kind != SCR_DYN_NUM || !isfinite(size->v.num) ||
-      size->v.num < 0 || size->v.num > 1073741824 || floor(size->v.num) != size->v.num))
-    return scr_stdio_refusal("read size");
+/* process.stdin.read([size]) over the held input — the shared body of the
+ * typed and the checked-dynamic calls. `all` is the no-argument form. A
+ * size argument follows Node's coercion: Readable#read parses it with
+ * parseInt, so it truncates toward zero, and a magnitude of 1e21 or more
+ * stringifies to exponent form, which parses as +-1; NaN (undefined,
+ * Infinity, -Infinity) reads everything held, and a non-positive result
+ * reads nothing. A parsed size above the 1 GiB high-water mark throws
+ * Node's ERR_OUT_OF_RANGE. Answers the chunk (+1), or NULL when nothing
+ * can be taken yet — the stream then reads ahead to what the read wanted
+ * (or Node's 64 KiB default) and fires 'readable' when it arrives. */
+ScrBytes *scr_stdin_read_bytes(bool all, double size) {
   size_t available = scr_stdin_buffered;
-  size_t wanted = all ? available : (size_t)size->v.num;
+  size_t wanted = available;
+  if (!all) {
+    if (!isnan(size) && !isinf(size)) {
+      double n = fabs(size) >= 1e21 ? copysign(1.0, size) : trunc(size);
+      if (n > 1073741824.0) {
+        char message[96];
+        int length = snprintf(message, sizeof message,
+                              "The value of \"size\" is out of range. It must be <= 1GiB. Received %.0f", n);
+        scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)length, "ERR_OUT_OF_RANGE");
+        return NULL;
+      }
+      wanted = n <= 0 ? 0 : (size_t)n;
+    }
+  }
   if (scr_stdin_read_eof && wanted > available) wanted = available;
   if (wanted == 0 || wanted > available) {
     if (!scr_stdin_eof && !scr_stdin_destroyed) {
@@ -1236,20 +1263,27 @@ static ScrDyn *scr_stdio_read(ScrDyn *size) {
       scr_stdin_read_demand = wanted > 65536 ? wanted : 65536;
       if (scr_stdin_read_eof) scr_next_tick_raw(scr_stdio_finish_read);
     }
-    return scr_dyn_new_null();
+    return NULL;
   }
   ScrBytes *chunk = scr_stdin_take(wanted);
   bool rest = scr_stdin_buffered > 0;
   scr_stdin_read_demand = 65536;
   if (!rest && !scr_stdin_read_eof) scr_stdin_readable_need = true;
   scr_stdin_deliver(chunk);
+  if (scr_stdin_read_eof && !rest) scr_next_tick_raw(scr_stdio_finish_read);
+  return chunk;
+}
+
+static ScrDyn *scr_stdio_read(ScrDyn *size) {
+  bool all = size->kind == SCR_DYN_UNDEF;
+  if (!all && size->kind != SCR_DYN_NUM) return scr_stdio_refusal("read size");
+  ScrBytes *chunk = scr_stdin_read_bytes(all, all ? 0.0 : size->v.num);
+  if (!chunk) return scr_exc_pending() ? NULL : scr_dyn_new_null();
   ScrDyn *result = scr_dyn_new_chunk(chunk);
   scr_bytes_release(chunk);
-  if (scr_stdin_read_eof && !rest) scr_next_tick_raw(scr_stdio_finish_read);
   return result;
 }
 
-#ifdef SCR_STDIO_EXTENDED
 /* 'resize' on a TTY stdout/stderr: Node's tty.WriteStream listens for
  * SIGWINCH and emits 'resize' when the window size changed. The signal
  * listener does not keep the loop alive, and a non-TTY stream never
@@ -1315,6 +1349,17 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
         break;
       }
     }
+    /* The SIGWINCH handler exists for these listeners alone, so the last
+     * one leaving unregisters it and releases it: a closed readline
+     * interface must hold nothing when the program exits. */
+    if (scr_stdio_winch != NULL && scr_stdio_streams[1].nresizes == 0 &&
+        scr_stdio_streams[2].nresizes == 0) {
+      ScrStr *winch = scr_str_new("SIGWINCH", 8);
+      scr_signal_off(winch, scr_stdio_winch);
+      scr_str_release(winch);
+      scr_dyn_release(scr_stdio_winch);
+      scr_stdio_winch = NULL;
+    }
     return;
   }
   if (stream->nresizes == 0) {
@@ -1337,15 +1382,18 @@ static void scr_stdio_resize_listener(ScrStdio *stream, ScrDyn *listener, bool r
 #endif
 }
 
-#endif
+/* The listener a readline terminal interface keeps on a process output:
+ * a function value of the runtime's own, in the same list the program's
+ * listeners use, so a resize fires them all in registration order. */
+void scr_stdio_resize_listen(double fd, ScrDyn *listener, bool remove) {
+  if (fd != 1 && fd != 2) return;
+  scr_stdio_resize_listener(&scr_stdio_streams[fd == 2 ? 2 : 1], listener, remove, false);
+}
 
-#ifdef SCR_STDIO_WRITE_SLOT
 /* stream.write(chunk[, encoding][, callback]) on a process output stream:
  * Node's Writable.write validation, then a synchronous descriptor write.
- * Returns +1 (true/false) or NULL with an exception pending. The typed
- * write-slot build factors it out of scr_stdio_method so the dynamic-chunk
- * entry point below shares it; every other build keeps the method's own
- * body, byte for byte. */
+ * Returns +1 (true/false) or NULL with an exception pending.
+ * scr_stdio_method and the dynamic-chunk entry point below share it. */
 static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_t argc) {
   ScrDyn *arg = argc ? args[0] : scr_dyn_undefined();
   ScrDyn *result = NULL;
@@ -1356,24 +1404,38 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
     scr_dyn_arg_type_fail("cb", "of type function", callback);
     return NULL;
   }
+  /* Node resolves the encoding before it looks at the chunk: a name that is
+   * no Buffer encoding (in any ASCII case) throws ERR_UNKNOWN_ENCODING, for a
+   * byte chunk too; an empty name is the default. */
+  ScrStr *enc = NULL;
+  if (encoding->kind == SCR_DYN_STR) {
+    if (encoding->v.str->len > 0) {
+      enc = scr_bytes_normalize_encoding(encoding->v.str);
+      if (!enc) return NULL;
+    }
+  } else if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL) {
+    return scr_stdio_refusal("write encoding");
+  }
   if (arg->kind == SCR_DYN_NULL) {
     const char *m = "May not write null values to stream";
     scr_throw_error_msg_code(SCR_ERR_TYPE, m, strlen(m), "ERR_STREAM_NULL_VALUES");
+    if (enc) scr_str_release(enc);
     return NULL;
   }
-  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8)
+  if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem != SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     return scr_stdio_refusal("write of a typed array other than Uint8Array");
+  }
   ScrBytes *bytes = NULL;
   if (arg->kind == SCR_DYN_STR) {
-    if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL && encoding->kind != SCR_DYN_STR) {
-      return scr_stdio_refusal("write encoding");
-    }
-    ScrStr *enc = encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
+    if (!enc) enc = scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str(arg->v.str, enc);
     scr_str_release(enc);
   } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
+    if (enc) scr_str_release(enc);
     bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
   } else {
+    if (enc) scr_str_release(enc);
     scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
     return NULL;
   }
@@ -1387,7 +1449,49 @@ static ScrDyn *scr_stdio_write_call(ScrStdio *stream, ScrDyn *const *args, size_
   if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
   return scr_dyn_new_bool(true);
 }
-#endif
+
+/* process.stdout.write(text) / process.stderr.write(text) at an untyped
+ * call site: the one-string-argument form of the write method above,
+ * without the dynamic call's receiver value, method read and chunk boxing.
+ * A replaced write still receives the call, with the string as its only
+ * argument and the stream as `this`; an unreplaced one reaches the
+ * descriptor through scr_stdio_write_raw, whose chunk is the string's
+ * UTF-8 with each lone surrogate as U+FFFD, exactly what
+ * scr_bytes_from_str produced here. */
+ScrDyn *scr_stdio_write_str_dyn(double fd, const ScrStr *data) {
+  ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
+  if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The replacement may assign process.stdout.write during its own call —
+     * restoring the built-in method, for one — which releases the slot's
+     * reference to the function that is running and to its captured
+     * bindings. The call keeps its own until it returns. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
+    ScrDyn *chunk = scr_dyn_new_str((ScrStr *)data);
+    ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
+    scr_dyn_this_push_dyn(self);
+    ScrDyn *result = scr_dyn_call(write, &chunk, 1,
+                                  stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(chunk);
+    scr_dyn_release(write);
+    return result;
+  }
+  int error;
+  if (__builtin_expect(scr_wtf8_any(), 0) && !data->ascii) {
+    char *owned;
+    const char *bytes = scr_str_utf8(data, &owned);
+    error = scr_stdio_write_raw(stream->fd, bytes, data->len);
+    scr_str_utf8_end(owned);
+  } else {
+    error = scr_stdio_write_raw(stream->fd, data->data, data->len);
+  }
+  if (error) {
+    scr_stdio_queue_write_error(stream, scr_dyn_undefined(), error);
+    return scr_dyn_new_bool(false);
+  }
+  return scr_dyn_new_bool(true);
+}
 
 static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
   int method = (int)scr_box_get_f64(cb->caps[0]);
@@ -1406,42 +1510,7 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     scr_dyn_arr_push(result, columns);
     scr_dyn_arr_push(result, rows);
   } else if (method == STDIO_WRITE && stream->fd != 0) {
-#ifdef SCR_STDIO_WRITE_SLOT
     result = scr_stdio_write_call(stream, args, argc);
-#else
-    ScrDyn *encoding = argc > 1 ? args[1] : scr_dyn_undefined();
-    ScrDyn *callback = argc > 2 ? args[2] : scr_dyn_undefined();
-    if (encoding->kind == SCR_DYN_FUNC) { callback = encoding; encoding = scr_dyn_undefined(); }
-    if (callback->kind != SCR_DYN_UNDEF && callback->kind != SCR_DYN_NULL && callback->kind != SCR_DYN_FUNC) {
-      scr_dyn_arg_type_fail("cb", "of type function", callback);
-      goto done;
-    }
-    ScrBytes *bytes = NULL;
-    if (arg->kind == SCR_DYN_STR) {
-      if (encoding->kind != SCR_DYN_UNDEF && encoding->kind != SCR_DYN_NULL && encoding->kind != SCR_DYN_STR) {
-        result = scr_stdio_refusal("write encoding");
-        goto done;
-      }
-      ScrStr *enc = encoding->kind == SCR_DYN_STR ? scr_str_retain(encoding->v.str) : scr_str_new("utf8", 4);
-      bytes = scr_bytes_from_str(arg->v.str, enc);
-      scr_str_release(enc);
-    } else if (arg->kind == SCR_DYN_BYTES && arg->v.bytes->elem == SCR_BYTES_U8) {
-      bytes = arg->v.bytes->shared ? scr_bytes_copy(arg->v.bytes) : scr_bytes_retain(arg->v.bytes);
-    } else {
-      scr_dyn_arg_type_fail("chunk", "of type string or an instance of Buffer, TypedArray, or DataView", arg);
-      goto done;
-    }
-    if (!bytes) goto done;
-    int error = scr_stdio_write_raw(stream->fd, bytes->data, bytes->len);
-    scr_bytes_release(bytes);
-    if (error) {
-      scr_stdio_queue_write_error(stream, callback, error);
-      result = scr_dyn_new_bool(false);
-      goto done;
-    }
-    if (callback->kind == SCR_DYN_FUNC) scr_next_tick(scr_stdio_callback(callback, (void *)scr_stdio_write_done));
-    result = scr_dyn_new_bool(true);
-#endif
   } else if (method == STDIO_ON || method == STDIO_ONCE || method == STDIO_OFF) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     if (listener->kind != SCR_DYN_FUNC) {
@@ -1454,18 +1523,13 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     bool error = arg->kind == SCR_DYN_STR && arg->v.str->len == 5 && memcmp(event, "error", 5) == 0;
     bool readable = stream->fd == 0 && arg->kind == SCR_DYN_STR && arg->v.str->len == 8 &&
                     memcmp(event, "readable", 8) == 0;
-#ifdef SCR_STDIO_EXTENDED
     bool resize = stream->fd != 0 && arg->kind == SCR_DYN_STR && arg->v.str->len == 6 &&
                   memcmp(event, "resize", 6) == 0;
     if ((!data && !end && !error && !readable && !resize) || (stream->fd != 0 && !error && !resize)) {
-#else
-    if ((!data && !end && !error && !readable) || (stream->fd != 0 && !error)) {
-#endif
       result = scr_stdio_refusal("event");
       goto done;
     }
     bool remove = method == STDIO_OFF, once = method == STDIO_ONCE;
-#ifdef SCR_STDIO_EXTENDED
     if (resize) {
       scr_stdio_resize_listener(stream, listener, remove, once);
     } else if (stream->fd == 0) {
@@ -1473,11 +1537,6 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
         if (data)
           scr_stdin_add_data(scr_stdio_callback(listener, (void *)scr_stdio_data), scr_stdio_data,
                              scr_stdio_data_text, SCR_STDIN_DATA_DYN, once);
-#else
-    if (stream->fd == 0) {
-      if (!remove) {
-        if (data) scr_stdin_on_data(scr_stdio_callback(listener, (void *)scr_stdio_data), scr_stdio_data, once);
-#endif
         if (end) scr_stdin_on_end(scr_stdio_callback(listener, (void *)scr_stdio_end), once);
         if (readable) scr_stdin_on_readable(scr_stdio_callback(listener, (void *)scr_stdio_readable), once);
         if (error) scr_stdin_on_error(scr_stdio_callback(listener, (void *)scr_stdio_error), scr_stdio_error, once);
@@ -1514,17 +1573,21 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
     }
     result = scr_dyn_retain(self);
   } else if (stream->fd == 0 && (method == STDIO_PAUSE || method == STDIO_RESUME)) {
-    scr_stdin_paused = method == STDIO_PAUSE;
-    scr_stdin_resumed = method == STDIO_RESUME;
+    if (method == STDIO_PAUSE) scr_stdin_pause();
+    else scr_stdin_resume();
+    result = scr_dyn_retain(self);
+  } else if (stream->fd == 0 && (method == STDIO_REF || method == STDIO_UNREF)) {
+    /* Node answers `this`; the dynamic call hands the receiver back. */
+    if (method == STDIO_REF) scr_stdin_ref();
+    else scr_stdin_unref();
     result = scr_dyn_retain(self);
   } else if (stream->fd == 0 && method == STDIO_IS_PAUSED) {
-    result = scr_dyn_new_bool(scr_stdin_paused);
+    result = scr_dyn_new_bool(scr_stdin_is_paused());
   } else if (stream->fd == 0 && method == STDIO_READ) {
     result = scr_stdio_read(arg);
   } else if (stream->fd == 0 && method == STDIO_RAW) {
     scr_process_stdin_set_raw_mode(scr_dyn_truthy(arg));
     if (!scr_exc_pending()) result = scr_dyn_retain(self);
-#ifdef SCR_STDIO_EXTENDED
   } else if (stream->fd == 0 && method == STDIO_SET_ENCODING) {
     ScrStr *enc = scr_strdec_encoding(arg);
     if (enc) {
@@ -1532,7 +1595,6 @@ static ScrDyn *scr_stdio_method(ScrClosure *cb, ScrDyn *const *args, size_t argc
       scr_str_release(enc);
       result = scr_dyn_retain(self);
     }
-#endif
   } else if (stream->fd == 0 && method == STDIO_DESTROY && argc == 0) {
     scr_stdin_destroy();
     result = scr_dyn_retain(self);
@@ -1552,7 +1614,7 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     return dimension < 0 ? scr_dyn_retain(scr_dyn_undefined()) : scr_dyn_new_num(dimension);
   }
   if (stream->fd == 0 && length == 14 && memcmp(key, "readableLength", 14) == 0)
-    return scr_dyn_new_num((double)scr_stdin_buffered);
+    return scr_dyn_new_num(scr_stdin_readable_length());
   if (stream->fd == 0 && length == 5 && memcmp(key, "isRaw", 5) == 0)
     return scr_process_is_tty(0) ? scr_dyn_new_bool(scr_process_stdin_raw()) : scr_dyn_retain(scr_dyn_undefined());
   if (stream->fd == 0 && length == 9 && memcmp(key, "destroyed", 9) == 0) return scr_dyn_new_bool(scr_stdin_destroyed);
@@ -1566,6 +1628,13 @@ static ScrDyn *scr_stdio_get(void *ptr, const char *key, size_t length) {
     if (i >= STDIO_PAUSE && stream->fd != 0) return scr_stdio_refusal(scr_stdio_names[i]);
     return scr_dyn_retain(scr_stdio_methods[i]);
   }
+#ifdef SCR_TTY_COLORS
+  /* tty.WriteStream's getColorDepth and hasColors (scr_tty_colors.c), in the
+   * build a program that names them selects: like getWindowSize, a stream
+   * that is no terminal is a net.Socket or a file stream in Node and has
+   * neither. */
+  if (stream->fd != 0 && scr_process_is_tty(stream->fd)) return scr_tty_colors_method(key, length);
+#endif
   return NULL;
 }
 
@@ -1643,6 +1712,9 @@ static bool scr_stdio_intercept(int fd, const void *data, size_t length, int fla
 
 static void scr_stdio_cleanup(void) {
   scr_stdio_write_hook = NULL;
+#ifdef SCR_TTY_COLORS
+  scr_tty_colors_cleanup();
+#endif
   for (int i = 0; i < 3; i++) {
     ScrStdio *stream = &scr_stdio_streams[i];
     scr_weak_dispose_inline(stream);
@@ -1653,16 +1725,12 @@ static void scr_stdio_cleanup(void) {
     for (size_t j = 0; j < stream->nerrors; j++) scr_dyn_release(stream->errors[j]);
     free(stream->errors); free(stream->error_once);
     stream->errors = NULL; stream->error_once = NULL; stream->nerrors = 0;
-#ifdef SCR_STDIO_EXTENDED
     for (size_t j = 0; j < stream->nresizes; j++) scr_dyn_release(stream->resizes[j]);
     free(stream->resizes); free(stream->resize_once);
     stream->resizes = NULL; stream->resize_once = NULL; stream->nresizes = 0;
-#endif
   }
-#ifdef SCR_STDIO_EXTENDED
   scr_dyn_release(scr_stdio_winch);
   scr_stdio_winch = NULL;
-#endif
   for (int i = 0; i < STDIO_METHOD_COUNT; i++) {
     scr_dyn_release(scr_stdio_methods[i]);
     scr_stdio_methods[i] = NULL;
@@ -1687,14 +1755,12 @@ ScrDyn *scr_process_stdio(double fd) {
       ScrClosure *cb = scr_closure_new(NULL, 1);
       cb->caps[0] = scr_box_new(SCR_BOX_F64);
       scr_box_set_f64(cb->caps[0], i);
-#ifdef SCR_STDIO_WRITE_SLOT
       // Node's process.stdout.write is an anonymous (bound) function:
       // .name is "" there, while the other stream methods carry their names.
       scr_stdio_methods[i] = scr_dyn_new_func(
-          cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", i == STDIO_WRITE ? "" : scr_stdio_names[i]);
-#else
-      scr_stdio_methods[i] = scr_dyn_new_func(cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", scr_stdio_names[i]);
-#endif
+          cb, scr_stdio_method,
+          i == STDIO_WRITE ? 3 : (i == STDIO_REF || i == STDIO_UNREF) ? 0 : 1, "",
+          i == STDIO_WRITE ? "" : scr_stdio_names[i]);
     }
     scr_stdio_console_handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_stdio_console_error_handler, 1, "", "");
     scr_stdio_write_hook = scr_stdio_intercept;
@@ -1711,20 +1777,35 @@ double scr_dyn_process_stdio_fd(const ScrDyn *value, const ScrDynPath *path) {
   return stream ? stream->fd : 0;
 }
 
-#ifdef SCR_STDIO_WRITE_SLOT
 /* process.stdout/stderr.write(chunk) with a run-time chunk: the stream
  * method's own validation and write, without creating the stream value
- * or installing the write hook. False with an exception pending when the
- * chunk is invalid. */
+ * or installing the write hook. A replaced write receives the call, with
+ * the chunk as its only argument and the stream as `this`, as in
+ * scr_stdio_write_str_dyn: the call site cannot know that nothing replaced
+ * it (a replacement through an alias, or one a Node island installed).
+ * False with an exception pending when the chunk is invalid or the
+ * replacement threw. */
 bool scr_process_stdio_write_dyn(double fd, ScrDyn *chunk) {
   ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
-  ScrDyn *result = scr_stdio_write_call(stream, &chunk, 1);
+  ScrDyn *result;
+  if (stream->write && !scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    /* The call keeps the replacement alive: it may restore the stream. */
+    ScrDyn *write = scr_dyn_retain(stream->write);
+    ScrDyn *self = scr_dyn_new_handle(stream, SCR_DYNH_STDIO);
+    scr_dyn_this_push_dyn(self);
+    result = scr_dyn_call(write, &chunk, 1,
+                          stream->fd == 2 ? "process.stderr.write" : "process.stdout.write");
+    scr_dyn_this_pop();
+    scr_dyn_release(self);
+    scr_dyn_release(write);
+  } else {
+    result = scr_stdio_write_call(stream, &chunk, 1);
+  }
   if (!result) return false;
   bool accepted = scr_dyn_truthy(result);
   scr_dyn_release(result);
   return accepted;
 }
-#endif
 
 /* ── the process 'exit' event ─────────────────────────────────────────
  * Listeners run SYNCHRONOUSLY when the process exits: at the end of a
@@ -1744,9 +1825,7 @@ typedef struct {
   ScrClosure *cb; /* owned */
   void (*fn)(ScrClosure *cb, double code); /* adapter: 0-param or (code) */
   bool once;
-#ifdef SCR_NODE_ISLANDS
   uint32_t island; /* nonzero: island code's listener (cb and fn NULL) */
-#endif
 } ScrExitListener;
 
 static SCR_TL ScrExitListener *scr_exit_ls = NULL;
@@ -1757,37 +1836,71 @@ void scr_run_exit_listeners(double code) {
   if (scr_exit_ran) return; /* process.exit inside a listener: no recursion */
   scr_exit_ran = true;
   scr_process_in_exit = true; /* process._exiting — Node's flag */
-  for (size_t i = 0; i < scr_exit_n; i++) {
+  if (scr_island_emit != NULL && scr_context_is_main()) {
+    /* Island code's process._exiting too, before any listener runs (a no-op
+     * until Node is loaded; listener 0 names none). Node runs on the main
+     * thread only: a worker thread's exit is not the process's. The hook is
+     * set only in a program that links the island units. */
+    ScrStr *exit_name = scr_str_new("exit", 4);
+    scr_island_emit(SCR_EVENTS_ISLAND_EXIT, 0, exit_name, (int)code);
+    scr_str_release(exit_name);
+  }
+  /* Node's emitter clones the listener list before emitting. A listener
+   * that unregisters another — the finalizer registry's own 'exit'
+   * listener does, when its last pending ref is unregistered from inside
+   * the drain — must not shift the list under this walk: the removed
+   * listener still runs this time, and the listeners after it are not
+   * skipped. The snapshot holds its own closure references for the same
+   * reason. */
+  size_t n = scr_exit_n;
+  ScrExitListener *snap = n > 0 ? malloc(n * sizeof *snap) : NULL;
+  if (n > 0 && snap == NULL) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_exit_ls[i];
+    if (snap[i].cb != NULL) snap[i].cb = scr_closure_retain(snap[i].cb);
+  }
+  for (size_t i = 0; i < n; i++) {
 #ifdef SCR_WORKERS
     if (scr_context_stopping()) break;
 #endif
-#ifdef SCR_NODE_ISLANDS
-    if (scr_exit_ls[i].island != 0) {
+    if (snap[i].island != 0 && scr_island_emit != NULL) {
       ScrStr *exit_name = scr_str_new("exit", 4);
-      scr_node_island_emit(SCR_NODE_ISLAND_EVENT_EXIT, scr_exit_ls[i].island, exit_name, (int)code);
+      scr_island_emit(SCR_EVENTS_ISLAND_EXIT, snap[i].island, exit_name, (int)code);
       scr_str_release(exit_name);
-    } else
-#endif
-    scr_exit_ls[i].fn(scr_exit_ls[i].cb, code);
+    } else {
+      snap[i].fn(snap[i].cb, code);
+    }
 #ifdef SCR_WORKERS
     /* The listener may have unwound for a stop request (checkpoint installs
      * the sentinel its cell may not show yet). */
     if (scr_context_checkpoint()) break;
 #endif
     if (scr_exc_pending()) {
-      /* Node: a throw in an 'exit' listener is fatal (exit code 7). */
+      /* Node: a throw in an 'exit' listener is reported and the process
+       * leaves with the code it was already leaving with — process.exitCode
+       * when the program set one (0 included), else 1 (unset reads as
+       * undefined and an abnormal termination is 1). The remaining
+       * listeners do not run. */
+      int status = (int)code;
+      if (status == 0 && !scr_process_has_exit_code()) status = 1;
       scr_exc_print_uncaught();
+      scr_stdout_settle();
       fflush(stdout);
 #ifdef SCR_WORKERS
-      if (!scr_context_is_main()) { scr_context_stop(7); break; }
+      if (!scr_context_is_main()) { scr_context_stop(status); break; }
 #endif
-      _Exit(7);
+      _Exit(status);
     }
   }
+  /* The snapshot's own references, then whatever the registry still
+   * holds: a listener that unregistered itself (or another) during the
+   * emission already released that entry. */
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].cb != NULL) scr_closure_release(snap[i].cb);
+  }
+  free(snap);
   for (size_t i = 0; i < scr_exit_n; i++) {
-#ifdef SCR_NODE_ISLANDS
     if (scr_exit_ls[i].cb == NULL) continue;
-#endif
     scr_closure_release(scr_exit_ls[i].cb);
   }
   free(scr_exit_ls);
@@ -1813,13 +1926,10 @@ void scr_process_on_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, doub
   scr_exit_ls[scr_exit_n].cb = cb;
   scr_exit_ls[scr_exit_n].fn = fn;
   scr_exit_ls[scr_exit_n].once = once;
-#ifdef SCR_NODE_ISLANDS
   scr_exit_ls[scr_exit_n].island = 0;
-#endif
   scr_exit_n++;
 }
 
-#ifdef SCR_PROCESS_EXTRAS
 /* process.stdin.isRaw: the raw-mode flag of a TTY stdin (1/0); a
  * pipe-backed stdin has no such flag and answers Node's undefined, which
  * the emitter's union construction spells -1. */
@@ -1842,9 +1952,7 @@ void scr_process_prepend_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *,
   memmove(scr_exit_ls + 1, scr_exit_ls, (scr_exit_n - 1) * sizeof *scr_exit_ls);
   scr_exit_ls[0] = entry;
 }
-#endif
 
-#ifdef SCR_NODE_ISLANDS
 /* Island code's 'exit' listeners, at their registration position among
  * the program's own. */
 void scr_process_on_exit_island(uint32_t island) {
@@ -1868,13 +1976,10 @@ void scr_process_off_exit_island(uint32_t island) {
     }
   }
 }
-#endif
 
 void scr_process_off_exit(ScrClosure *cb /*borrowed*/) {
   for (size_t i = 0; i < scr_exit_n; i++) {
-#ifdef SCR_NODE_ISLANDS
     if (scr_exit_ls[i].cb == NULL) continue;
-#endif
     if (scr_closure_identity_equal(scr_exit_ls[i].cb, cb)) {
       scr_closure_release(scr_exit_ls[i].cb);
       memmove(scr_exit_ls + i, scr_exit_ls + i + 1, (scr_exit_n - i - 1) * sizeof *scr_exit_ls);
@@ -1894,6 +1999,408 @@ void scr_exit_thunk_code(ScrClosure *cb, double code) {
   ((void (*)(ScrClosure *, double))cb->fn)(cb, code);
 }
 
+/* ── the process 'beforeExit' event ───────────────────────────────────
+ * Emitted by the loop each time it runs out of ref'd work (scr_async.c
+ * calls through scr_process_before_exit_hook), with process.exitCode as
+ * the argument — 0 while unset, exactly Node's integer. Node re-enters
+ * the loop when the listeners scheduled more work and emits again at the
+ * next exhaustion; a listener that schedules only nextTicks or microtasks
+ * does not cause another emission (they run in the emit's own checkpoint,
+ * then the loop's liveness test still fails). `once` entries leave the
+ * registry before their callback runs (Node's onceWrapper), and the
+ * emission walks a snapshot of the list (EventEmitter clones a
+ * multi-listener list), so one an earlier listener removed still runs
+ * this time while one added now waits for the next exhaustion. A throwing
+ * listener leaves its exception pending for the loop's ordinary uncaught
+ * path, exactly a macrotask throw. Each thread's loop emits it, as in
+ * Node: a worker that registers a listener sees one emission when its own
+ * loop runs dry. */
+
+typedef struct {
+  ScrClosure *cb; /* owned */
+  void (*fn)(ScrClosure *cb, double code); /* adapter: 0-param or (code) */
+  bool once;
+} ScrBeforeExitListener;
+
+static SCR_TL ScrBeforeExitListener *scr_bx_ls = NULL;
+static SCR_TL size_t scr_bx_n = 0, scr_bx_cap = 0;
+
+/* Hands the closure reference of entry i to the caller (for an `off` or a
+ * fired `once` entry). */
+static ScrClosure *scr_bx_take(size_t i) {
+  ScrClosure *cb = scr_bx_ls[i].cb;
+  memmove(scr_bx_ls + i, scr_bx_ls + i + 1, (scr_bx_n - i - 1) * sizeof *scr_bx_ls);
+  scr_bx_n--;
+  return cb;
+}
+
+/* Listeners a program leaves registered at exit are Node-legitimate (the
+ * event simply never fires again); release them with the rest of the
+ * unit's exit-time cleanup or the RC audit counts them as leaks. */
+static void scr_bx_drop(void) {
+  for (size_t i = 0; i < scr_bx_n; i++) {
+    if (scr_bx_ls[i].cb != NULL) scr_closure_release(scr_bx_ls[i].cb);
+  }
+  free(scr_bx_ls);
+  scr_bx_ls = NULL;
+  scr_bx_n = scr_bx_cap = 0;
+}
+
+bool scr_run_before_exit_listeners(double code) {
+  if (scr_bx_n == 0) return false;
+  size_t n = scr_bx_n;
+  ScrBeforeExitListener *snap = malloc(n * sizeof *snap);
+  if (!snap) scr_events_oom();
+  for (size_t i = 0; i < n; i++) {
+    snap[i] = scr_bx_ls[i];
+    snap[i].cb = scr_closure_retain(scr_bx_ls[i].cb);
+  }
+  for (size_t i = 0; i < n; i++) {
+    if (snap[i].once) {
+      /* The wrapper drops itself first, so a listener re-added by this
+       * callback survives and an `off` from it finds the entry gone. The
+       * snapshot still calls it (EventEmitter's cloned list), holding its
+       * own reference. */
+      for (size_t j = 0; j < scr_bx_n; j++) {
+        if (scr_bx_ls[j].once && scr_bx_ls[j].cb != NULL &&
+            scr_closure_identity_equal(scr_bx_ls[j].cb, snap[i].cb)) {
+          scr_closure_release(scr_bx_take(j));
+          break;
+        }
+      }
+    }
+    snap[i].fn(snap[i].cb, code);
+    if (scr_exc_pending()) break; /* the loop reports it as a macrotask throw */
+  }
+  for (size_t i = 0; i < n; i++) scr_closure_release(snap[i].cb);
+  free(snap);
+  return true;
+}
+
+void scr_process_on_before_exit(ScrClosure *cb /*moves*/,
+                                void (*fn)(ScrClosure *, double), bool once) {
+  if (scr_bx_n == scr_bx_cap) {
+    scr_bx_cap = scr_bx_cap ? scr_bx_cap * 2 : 2;
+    ScrBeforeExitListener *grown = realloc(scr_bx_ls, scr_bx_cap * sizeof *scr_bx_ls);
+    if (!grown) scr_events_oom();
+    scr_bx_ls = grown;
+  }
+  scr_bx_ls[scr_bx_n++] = (ScrBeforeExitListener){cb, fn, once};
+}
+
+/* process.prependListener("beforeExit", cb): the same listener in FRONT
+ * of the registry's existing entries, Node's EventEmitter order. */
+void scr_process_prepend_before_exit(ScrClosure *cb /*moves*/,
+                                     void (*fn)(ScrClosure *, double)) {
+  size_t before = scr_bx_n;
+  scr_process_on_before_exit(cb, fn, false);
+  if (scr_bx_n != before + 1) return;
+  ScrBeforeExitListener entry = scr_bx_ls[scr_bx_n - 1];
+  memmove(scr_bx_ls + 1, scr_bx_ls, (scr_bx_n - 1) * sizeof *scr_bx_ls);
+  scr_bx_ls[0] = entry;
+}
+
+void scr_process_off_before_exit(ScrClosure *cb /*borrowed*/) {
+  for (size_t i = 0; i < scr_bx_n; i++) {
+    if (scr_bx_ls[i].cb == NULL) continue;
+    if (scr_closure_identity_equal(scr_bx_ls[i].cb, cb)) {
+      scr_closure_release(scr_bx_take(i));
+      return;
+    }
+  }
+}
+
+/* ── process.finalization ─────────────────────────────────────────────
+ * register/registerBeforeExit/unregister: the program hands an object and a
+ * callback to run when the process exits (or, for the second, at each
+ * 'beforeExit' emission). Node keeps the pairs in two Sets of WeakRefs and
+ * installs its own process listener the first time a set gains an entry, so
+ * the callbacks run at their registration position among the program's own
+ * listeners; a new registration made from inside a callback runs in the same
+ * drain (both drains walk until empty), and unregister drops by object
+ * identity. The node:internal/process/finalization source behind these
+ * rules is short enough to reproduce faithfully:
+ *
+ *  - register/registerBeforeExit validate the object Node's validateObject
+ *    does (any non-null non-array object, including functions) and do NOT
+ *    validate the callback — Node calls it at exit time, so a non-function
+ *    callback throws its "fn is not a function" there.
+ *  - unregister warns even when it does nothing, answers early (undefined)
+ *    while no registration exists, and otherwise renders V8's plain
+ *    TypeError for a token that is not an object, function or symbol
+ *    ("Invalid unregisterToken ('null')" and friends).
+ *  - the three methods each report one ExperimentalWarning per feature.
+ *
+ * Divergence (SEMANTICS.md): the refs are strong. RC keeps the object alive
+ * until the program drops it, where V8 would finalize it whenever it gets
+ * around to it — at latest at exit either way, so every callback the event
+ * lists still run every time. */
+
+typedef struct {
+  ScrDyn *ref; /* owned */
+  ScrDyn *cb; /* owned; may be a non-function (validated at fire time) */
+} ScrFinEntry;
+
+static SCR_TL ScrFinEntry *scr_fin_exit_ls = NULL;
+static SCR_TL size_t scr_fin_exit_n = 0, scr_fin_exit_cap = 0;
+static SCR_TL ScrFinEntry *scr_fin_bx_ls = NULL;
+static SCR_TL size_t scr_fin_bx_n = 0, scr_fin_bx_cap = 0;
+/* The process listeners the first registration installed (Node's install). */
+static SCR_TL ScrClosure *scr_fin_exit_cb = NULL;
+static SCR_TL ScrClosure *scr_fin_bx_cb = NULL;
+static SCR_TL ScrDyn *scr_fin_object = NULL;
+static SCR_TL bool scr_fin_warned_register = false;
+static SCR_TL bool scr_fin_warned_before_exit = false;
+static SCR_TL bool scr_fin_warned_unregister = false;
+
+static void scr_fin_warn(const char *feature, bool *shown) {
+  if (*shown) return;
+  *shown = true;
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, feature);
+  scr_jb_puts(&b, " is an experimental feature and might change at any time");
+  ScrStr *message = scr_jb_finish(&b);
+  ScrDyn *warning = scr_warning_new(message, "ExperimentalWarning", NULL);
+  scr_str_release(message);
+  scr_warning_emit_deferred(warning);
+  scr_dyn_release(warning);
+}
+
+/* Node's validateObject(obj, 'obj', kValidateObjectAllowFunction): any
+ * non-null object, functions included, arrays excluded. `new Array(n)`
+ * crosses the boundary as a typed reference capsule, so the array test is
+ * the Array.isArray predicate rather than the box kind. */
+static bool scr_fin_ref_ok(const ScrDyn *ref) {
+  switch (ref->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_BIGINT:
+    return false;
+  default:
+    return !(ref->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(ref));
+  }
+}
+
+static void scr_fin_push(ScrFinEntry **ls, size_t *n, size_t *cap, ScrDyn *ref, ScrDyn *cb) {
+  if (*n == *cap) {
+    size_t grown_cap = *cap ? *cap * 2 : 4;
+    ScrFinEntry *grown = realloc(*ls, grown_cap * sizeof **ls);
+    if (!grown) scr_events_oom();
+    *ls = grown;
+    *cap = grown_cap;
+  }
+  (*ls)[(*n)++] = (ScrFinEntry){scr_dyn_retain(ref), scr_dyn_retain(cb)};
+}
+
+/* onExit/onBeforeExit: drain the event's list, releasing each pair as it
+ * fires. A callback that registers another ref finds it appended to the same
+ * list and this loop reaches it in the same drain (Node's Set iteration); one
+ * that unregisters a later pair removes it before it is reached. A throw
+ * leaves the exception pending and stops the drain, like Node's propagating
+ * `fn(obj, event)`. */
+static void scr_fin_drain(ScrFinEntry **ls, size_t *n, const char *event_name) {
+  if (*n == 0) return;
+  ScrStr *name = scr_str_new(event_name, strlen(event_name));
+  ScrDyn *event = scr_dyn_new_str(name);
+  scr_str_release(name);
+  size_t i = 0;
+  while (i < *n) {
+    ScrFinEntry entry = (*ls)[i];
+    memmove(*ls + i, *ls + i + 1, (*n - i - 1) * sizeof **ls);
+    (*n)--;
+    ScrDyn *argv[2] = {entry.ref, event};
+    ScrDyn *result = scr_dyn_call(entry.cb, argv, 2, "fn");
+    scr_dyn_release(result);
+    scr_dyn_release(entry.ref);
+    scr_dyn_release(entry.cb);
+    if (scr_exc_pending()) break;
+  }
+  scr_dyn_release(event);
+}
+
+static void scr_fin_fire_exit(ScrClosure *cb) {
+  (void)cb;
+  scr_fin_drain(&scr_fin_exit_ls, &scr_fin_exit_n, "exit");
+}
+
+static void scr_fin_fire_before_exit(ScrClosure *cb) {
+  (void)cb;
+  scr_fin_drain(&scr_fin_bx_ls, &scr_fin_bx_n, "beforeExit");
+}
+
+/* install(event): the first registration for an event adds its process
+ * listener at the current position in that event's list. The exit list can
+ * already be swept (registering from inside an exit listener), in which case
+ * nothing is installed and the entry simply never runs — Node's emitter
+ * clones its list per emission the same way. */
+static void scr_fin_install(bool before_exit) {
+  if (before_exit) {
+    if (scr_fin_bx_cb != NULL) return;
+    ScrClosure *cb = scr_closure_new((void *)scr_fin_fire_before_exit, 0);
+    scr_process_on_before_exit(cb, scr_exit_thunk0, false);
+    scr_fin_bx_cb = cb;
+  } else {
+    if (scr_fin_exit_cb != NULL || scr_exit_ran) return;
+    ScrClosure *cb = scr_closure_new((void *)scr_fin_fire_exit, 0);
+    scr_process_on_exit(cb, scr_exit_thunk0, false);
+    scr_fin_exit_cb = cb;
+  }
+}
+
+/* uninstall(event): once both sets are empty, Node removes its process
+ * listeners and drops the registry — so a later unregister answers early
+ * instead of reaching V8's token check. */
+static void scr_fin_uninstall(void) {
+  if (scr_fin_exit_n > 0 || scr_fin_bx_n > 0) return;
+  if (scr_fin_exit_cb != NULL) {
+    scr_process_off_exit(scr_fin_exit_cb);
+    scr_fin_exit_cb = NULL;
+  }
+  if (scr_fin_bx_cb != NULL) {
+    scr_process_off_before_exit(scr_fin_bx_cb);
+    scr_fin_bx_cb = NULL;
+  }
+}
+
+/* The registry exists while any pair is registered (Node's `registry` is a
+ * FinalizationRegistry created by the first _register and nulled when both
+ * sets empty out). */
+static bool scr_fin_registry_exists(void) { return scr_fin_exit_n > 0 || scr_fin_bx_n > 0; }
+
+/* V8's FinalizationRegistry.prototype.unregister token check: objects,
+ * functions and symbols are tokens; every other primitive is rejected with
+ * the token rendered by ToString. */
+static bool scr_fin_token_invalid(const ScrDyn *token) {
+  switch (token->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_BIGINT:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static void scr_fin_invalid_token(const ScrDyn *token) {
+  /* V8 builds its message with `${token}`: ToString, so a string token is
+   * unquoted and a bigint loses its suffix. */
+  ScrStr *text = scr_dyn_string_coerce_js(token);
+  if (text == NULL) text = scr_str_new("undefined", 9); /* unreachable: primitives */
+  ScrStr *prefix = scr_str_new("Invalid unregisterToken ('", 26);
+  ScrStr *suffix = scr_str_new("')", 2);
+  ScrStr *parts[3] = {prefix, text, suffix};
+  ScrStr *message = scr_str_concat_parts(parts, 3);
+  scr_str_release(prefix);
+  scr_str_release(text);
+  scr_str_release(suffix);
+  scr_throw_error(SCR_ERR_TYPE, message);
+}
+
+static void scr_fin_remove(ScrFinEntry **ls, size_t *n, const ScrDyn *token) {
+  for (size_t i = 0; i < *n;) {
+    if (scr_dyn_same_value((*ls)[i].ref, token)) {
+      scr_dyn_release((*ls)[i].ref);
+      scr_dyn_release((*ls)[i].cb);
+      memmove(*ls + i, *ls + i + 1, (*n - i - 1) * sizeof **ls);
+      (*n)--;
+    } else {
+      i++;
+    }
+  }
+}
+
+static ScrDyn *scr_fin_register_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.register", &scr_fin_warned_register);
+  ScrDyn *ref = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *cb = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (!scr_fin_ref_ok(ref)) {
+    scr_dyn_arg_type_fail("obj", "of type object", ref);
+    return NULL;
+  }
+  scr_fin_install(false);
+  scr_fin_push(&scr_fin_exit_ls, &scr_fin_exit_n, &scr_fin_exit_cap, ref, cb);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_fin_register_before_exit_call(ScrClosure *closure, ScrDyn *const *args,
+                                                 size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.registerBeforeExit", &scr_fin_warned_before_exit);
+  ScrDyn *ref = argc > 0 ? args[0] : scr_dyn_undefined();
+  ScrDyn *cb = argc > 1 ? args[1] : scr_dyn_undefined();
+  if (!scr_fin_ref_ok(ref)) {
+    scr_dyn_arg_type_fail("obj", "of type object", ref);
+    return NULL;
+  }
+  scr_fin_install(true);
+  scr_fin_push(&scr_fin_bx_ls, &scr_fin_bx_n, &scr_fin_bx_cap, ref, cb);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_fin_unregister_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure;
+  scr_fin_warn("process.finalization.unregister", &scr_fin_warned_unregister);
+  ScrDyn *token = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (!scr_fin_registry_exists()) return scr_dyn_undefined();
+  if (scr_fin_token_invalid(token)) {
+    scr_fin_invalid_token(token);
+    return NULL;
+  }
+  scr_fin_remove(&scr_fin_exit_ls, &scr_fin_exit_n, token);
+  scr_fin_remove(&scr_fin_bx_ls, &scr_fin_bx_n, token);
+  scr_fin_uninstall();
+  return scr_dyn_undefined();
+}
+
+/* The stable object every process.finalization read answers, like Node's. */
+ScrDyn *scr_process_finalization(void) {
+  if (scr_fin_object != NULL) return scr_dyn_retain(scr_fin_object);
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, "register", 8,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_register_call, 2,
+                                   "(obj, fn)", "register"));
+  scr_dyn_obj_set(object, "registerBeforeExit", 18,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_register_before_exit_call, 2,
+                                   "(obj, fn)", "registerBeforeExit"));
+  scr_dyn_obj_set(object, "unregister", 10,
+                  scr_dyn_new_func(scr_closure_new(NULL, 0), scr_fin_unregister_call, 1, "(obj)",
+                                   "unregister"));
+  scr_fin_object = object;
+  return scr_dyn_retain(object);
+}
+
+/* Pairs a program leaves registered are Node-legitimate, not leaks (an
+ * explicit process.exit() never emits beforeExit); the exit-event drain has
+ * already emptied the exit list by the time this runs. */
+static void scr_fin_cleanup(void) {
+  for (size_t i = 0; i < scr_fin_exit_n; i++) {
+    scr_dyn_release(scr_fin_exit_ls[i].ref);
+    scr_dyn_release(scr_fin_exit_ls[i].cb);
+  }
+  free(scr_fin_exit_ls);
+  scr_fin_exit_ls = NULL;
+  scr_fin_exit_n = scr_fin_exit_cap = 0;
+  for (size_t i = 0; i < scr_fin_bx_n; i++) {
+    scr_dyn_release(scr_fin_bx_ls[i].ref);
+    scr_dyn_release(scr_fin_bx_ls[i].cb);
+  }
+  free(scr_fin_bx_ls);
+  scr_fin_bx_ls = NULL;
+  scr_fin_bx_n = scr_fin_bx_cap = 0;
+  if (scr_fin_object != NULL) {
+    scr_dyn_release(scr_fin_object);
+    scr_fin_object = NULL;
+  }
+}
+
 /* The runtime-provided stdin data adapters. */
 void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk) {
   (void)chunk;
@@ -1903,11 +2410,9 @@ void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk) {
   /* The listener owns its +1 param per the universal convention. */
   ((void (*)(ScrClosure *, ScrBytes *))cb->fn)(cb, scr_bytes_retain(chunk));
 }
-#ifdef SCR_STDIO_EXTENDED
 void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text) {
   ((void (*)(ScrClosure *, ScrStr *))cb->fn)(cb, scr_str_retain(text));
 }
-#endif
 
 
 /* ── the loop hooks (see scr_async.c) ─────────────────────────────────── */
@@ -1918,7 +2423,10 @@ static bool scr_events_pending(void) { return scr_stdin_pending(); }
  * the worker's mailbox, which the worker unit waits on while
  * scr_stdin_fed_waiting answers true. */
 static bool scr_events_watching(void) {
-  return (scr_context_is_main() && scr_sig_watched > 0) || (!scr_stdin_fed && scr_stdin_pending());
+  /* scr_stdin_watching, not pending: an unref'd stream still wants the
+   * poll sleep while other work keeps the loop alive. */
+  return (scr_context_is_main() && scr_sig_watched > 0) ||
+         (!scr_stdin_fed && scr_stdin_watching());
 }
 
 /* One dispatch pass at a loop turn: wake-pipe bytes are consumed (safe
@@ -1937,14 +2445,22 @@ static void scr_events_dispatch(void) {
 static int scr_events_pollfds(int out[2]) {
   int n = 0;
   if (scr_context_is_main() && scr_sig_watched > 0 && scr_wake_pipe[0] >= 0) out[n++] = scr_wake_pipe[0];
-  if (scr_context_is_main() && scr_stdin_pending()) out[n++] = 0;
+  if (scr_context_is_main() && scr_stdin_watching()) out[n++] = 0;
   return n;
 }
 
 /* The atexit half of the 'exit' event: normal termination reports the
  * abnormal-exit hint (0 unless the uncaught/unhandled reporters noted 1 —
- * exactly when main returns 1). */
-static void scr_exit_atexit(void) { scr_run_exit_listeners((double)scr_exit_code_hint_get()); }
+ * exactly when main returns 1). Node reads process.exitCode after the
+ * listeners have run, so a listener that assigns it selects the status the
+ * process leaves with; when that happens the run finishes through the normal
+ * exit sequence, whose _Exit carries the listener's status. */
+static void scr_exit_atexit(void) {
+  double code = (double)scr_exit_code_hint_get();
+  scr_run_exit_listeners(code);
+  int final = scr_exit_code_hint_get();
+  if (final != (int)code && scr_context_is_main()) scr_process_exit((double)final);
+}
 
 /* Exit-time registry cleanup: listeners a program leaves registered at
  * exit are Node-legitimate, not leaks — signal handlers for the process's
@@ -1955,6 +2471,8 @@ static void scr_exit_atexit(void) { scr_run_exit_listeners((double)scr_exit_code
  * a clean heap. */
 static void scr_events_cleanup_atexit(void) {
   if (scr_context_is_main()) scr_sig_cleanup();
+  scr_fin_cleanup();
+  scr_bx_drop();
   scr_stdin_settle_done();
   scr_stdin_drop_listeners();
   scr_stdin_drop_held();
@@ -1980,5 +2498,6 @@ void scr_events_install(void) {
   scr_loop_set_events(&scr_events_pending, &scr_events_watching, &scr_events_dispatch,
                        &scr_events_pollfds);
   scr_process_exit_hook = &scr_run_exit_listeners;
+  scr_process_before_exit_hook = &scr_run_before_exit_listeners;
   scr_stdin_destroy_hook = &scr_stdin_destroy;
 }

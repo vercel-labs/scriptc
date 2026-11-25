@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9953-untyped-call-through-slot-js/caller.mjs",
+  "<repo>/tests/corpus/9953-untyped-call-through-slot-js/declared.mjs",
+  "<repo>/tests/corpus/9953-untyped-call-through-slot-js/main.ts"
+ ],
+ "diags": []
+}

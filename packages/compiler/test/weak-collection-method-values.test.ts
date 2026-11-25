@@ -117,7 +117,9 @@ try { console.log(absent(true).delete); } catch (e) { console.log(e.name); }
   // Node throws from the read itself, naming the unit and the member, so the
   // nullish arm is a keyed read that raises it, not the method value.
   expect(reads.nullish).toBe(2);
-  expect(reads.throwKeys).toEqual(["has", "delete"]);
+  // The reads sit in their property helpers, which the module orders by
+  // name, not in source order.
+  expect([...reads.throwKeys].sort()).toEqual(["delete", "has"]);
   expect(reads.methods).toEqual(["WeakMap", "WeakSet"]);
   expect(reads.kindTests).toBe(0);
 });

@@ -1,0 +1,25 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-bigint-compound-target.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Operator '+=' cannot be applied to types 'bigint' and '{}'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-bigint-compound-target.js",
+    "start": 406,
+    "end": 417
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Operator '-=' cannot be applied to types 'bigint' and 'number'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-bigint-compound-target.js",
+    "start": 419,
+    "end": 429
+   }
+  }
+ ]
+}

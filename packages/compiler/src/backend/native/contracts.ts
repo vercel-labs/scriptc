@@ -62,6 +62,13 @@ export interface CcOptions {
    * generated mapping tables live behind SCR_TEXT_DECODER_LEGACY so the
    * always-compiled bytes TU stays in the historical size class otherwise. */
   textDecoderLegacy?: boolean;
+  /** The program reads a BigInt typed-array constructor as a value
+   * (BigInt64Array, BigUint64Array): its element kinds, which no double
+   * represents, live in the JavaScript object model build (t262-da §J).
+   * The fact ORs into jsObjectModel (jsObjectModelFact), so every unit the
+   * program links names the same SCR_JS_OBJECT_MODEL builds; a program
+   * without it keeps the default objects byte for byte. */
+  bigintBytes?: boolean;
   /** The program uses fs/promises.open or a FileHandle value
    * (moduleUsesFileHandle on the IR): compiles scr_file_handle.c. Keeping
    * the descriptor object and promise adapters in their own unit preserves
@@ -83,6 +90,9 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses node:zlib's zstd forms (with zlib): compiles
+   * scr_zstd.c and links the vendored zstd objects. */
+  zstd?: boolean;
   /** The program uses an Intl form that only ICU can answer (the `icu.*`
    * libCalls: default-locale number/date formats, word segmentation):
    * compiles scr_intl.c and links the ICU archive, and the
@@ -106,6 +116,10 @@ export interface CcOptions {
    * libCalls on the IR): compiles scr_inspect.c — the assert gating
    * precedent, so inspect-free binaries keep their exact size class. */
   inspect?: boolean;
+  /** A Console built with inspectOptions or colorMode: its methods' option-
+   * aware runtime entries, and the tty color tables colorMode 'auto' reads
+   * (scr_tty_colors.c). */
+  consoleOptions?: boolean;
   /** The program dispatches prototype methods on dyn receivers (index.ts
    * detects dynInvoke nodes / dyn.defineProps libCalls on the IR):
    * compiles scr_dyn_invoke.c — the assert gating precedent, so
@@ -126,6 +140,12 @@ export interface CcOptions {
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */
   dynTier?: boolean;
+  /** The program calls a Promise static with a foreign constructor
+   * (`Promise.all.call(C, …)`): compiles scr_js_promise_generic.c, the
+   * specification's algorithms over the checked-dynamic tier. Its values
+   * adopt through scr_async_dyn.c, so the unit needs dynAsync and
+   * dynInvoke too; programs without the call link none of it. */
+  promiseGeneric?: boolean;
   /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
    * compiles scr_stream_dyn.c. */
   streamDyn?: boolean;
@@ -134,49 +154,114 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** process.features as a value links scr_process_features.c. */
+  processFeatures?: boolean;
+  /** Node islands and child_process together: compiles
+   * scr_node_island_child.c. */
+  islandChild?: boolean;
   /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
    * entries: the SCR_CHILD_CP_OPTIONS build of scr_child.c. */
   childOptionExt?: boolean;
+  /** node:cluster's module surface: compiles scr_cluster.c. */
+  cluster?: boolean;
+  /** A spawnSync capture read as a Buffer: compiles scr_child_capture.c. */
+  spawnCaptureBytes?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** A dev executable's report of failed checked conversions: compiles
+   * scr_conversion_trace.c. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup and the ES2025 Set compositions: compiles
+   * scr_dyn_collections.c. */
+  dynCollections?: boolean;
   /** Object.isExtensible and Object.isSealed of a value typed dynamically:
    * compiles scr_dyn_integrity.c. */
   dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check: compiles
+   * scr_dyn_reflect_proto.c. */
+  reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk: compiles
+   * scr_dyn_class_test.c. */
+  classTestPrototype?: boolean;
+  /** `delete` of a key a record's type does not declare: compiles
+   * scr_record_source_delete.c. */
+  recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen:
+   * compiles scr_record_view_frozen.c. */
+  recordViewFrozen?: boolean;
+  /** A generator that binds its parameters at the call: compiles
+   * scr_gen_bind.c. */
+  genBind?: boolean;
+  /** A generator function that reads `this` (dyn.generatorThis): compiles
+   * scr_gen_receiver.c. */
+  genReceiver?: boolean;
+  /** A kept-source read of a record-to-record conversion: compiles
+   * scr_record_source_get.c. */
+  recordSourceGet?: boolean;
+  /** A join of an array of strings: compiles scr_arr_join_str.c. */
+  arrJoinStr?: boolean;
   /** events.once with options (events.onceSignal): compiles
    * scr_events_once_signal.c. */
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: compiles scr_sqlite.c and links the vendored SQLite
+   * archive. */
+  sqlite?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
   /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: the SCR_WEB_BODIES build of
+   * scr_fetch.c, which sends the blob's bytes and its type as Content-Type. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: compiles scr_abort.c, unless the
    * program compiles the fetch unit, which has them. */
   abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: compiles scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: compiles scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
    * compiles scr_bytes_dyn.c. */
   dynBuffer?: boolean;
   /** createRequire's computed require and require.resolve: compiles
    * scr_require.c. */
   computedRequire?: boolean;
+  /** An untyped path of a synchronous fs function: compiles
+   * scr_fs_path_value.c. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values: compiles scr_builtin_values.c. */
   builtinValues?: boolean;
   /** A standard library prototype object read as a value in a JavaScript
    * source (`Date.prototype`): compiles scr_dyn_stdlib_prototype.c. */
   stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`): compiles scr_data_view_proto.c. */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`: compiles
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c. */
+  hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic: compiles
+   * scr_deferred_fence.c, its stderr reporter. */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value: compiles
+   * scr_dyn_fn_own.c. */
+  functionOwnWrite?: boolean;
   /** An Array.prototype method runs over an array-like receiver:
    * compiles scr_dyn_array_like.c, which the dyn-invoke unit's array
    * dispatch calls for receivers that are not arrays. */
   arrayLikeDispatch?: boolean;
-  /** Number.prototype or Boolean.prototype read as a value in a JavaScript
-   * source: compiles scr_dyn_builtin_prototype.c. */
-  builtinPrototypeValue?: boolean;
+  /** A builtin prototype method read as a value in a JavaScript source:
+   * compiles scr_dyn_builtin_methods.c. */
+  builtinMethodValue?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
@@ -186,26 +271,63 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
-  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
-   * NULL for a field a partial record view does not have. */
-  recordViewPartial?: boolean;
-  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
-  stdioExtended?: boolean;
+  /** SCR_PROMISE_REJECT_DYN: the scr_async.c build with the reject closure
+   * a checked-dynamic promise reasons with. */
+  promiseRejectDyn?: boolean;
+  /** SCR_JS_OBJECT_MODEL: the build of a unit that carries every JavaScript
+   * object model feature the program reaches (t262-da §J). */
+  jsObjectModel?: boolean;
+  /** The program resizes, grows or detaches an ArrayBuffer: compiles the
+   * buffer views registry, scr_js_buffers.c, whose arming call the program's
+   * %main emits. The fact ORs into jsObjectModel, so the unit's definition
+   * of the JavaScript object model build is already on. */
+  mutableBuffers?: boolean;
   /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
    * (scr_fs_flags.c and that build of scr_fs_cp.c). */
   fsFlags?: boolean;
+  /** fs.existsSync over a path value that may not be a string: compiles
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
+  /** node:module's enableCompileCache, getCompileCacheDir, flushCompileCache
+   * and constants: compiles scr_module_cache.c. */
+  moduleCompileCache?: boolean;
+  /** SCR_FN_MEMBER_PROPS: a function's inherited member shadowed by an own
+   * data property (`fn.call = f`; that build of scr_json.c and
+   * scr_dyn_invoke.c). */
+  fnMemberProps?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: compiles scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: compiles
    * scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
-   * stdin.isRaw and server.off. */
+   * stdin.isRaw and server.off (the dyn-async and net units). */
   processExtras?: boolean;
   /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
    * write completion callback receives (error-taking write callbacks). */
   streamWriteErrors?: boolean;
-  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
-   * (the write method as a value, its replacement, run-time-typed chunks). */
-  stdioWriteSlot?: boolean;
+  /** The program holds a process output stream as a value. With
+   * `nodeIsland` it compiles scr_node_island_stdio.c and defines
+   * SCR_NODE_ISLAND_STDIO: the island's process.stdout.write and
+   * process.stderr.write are the program's write slots. */
+  stdioObject?: boolean;
+  /** SCR_TTY_COLORS: the process stream object has getColorDepth and
+   * hasColors on a terminal; compiles scr_tty_colors.c (a program that holds
+   * a process stream as a value and names one of them). */
+  ttyColors?: boolean;
+  /** The program pipes or unpipes a stream: compiles
+   * scr_stream_pipe_events.c (Node's pipe lifecycle). */
+  streamPipeEvents?: boolean;
+  /** SCR_FS_STREAM_SIGNAL: fs.ReadStream and fs.WriteStream apply their
+   * options' `signal` (a program whose stream options can hold one). */
+  fsStreamSignal?: boolean;
+  /** SCR_CHILD_ERR_FIELDS: the spawnSync result's `.error` carries Node's
+   * errnoException fields (errno, syscall, path, spawnargs). */
+  childErrorFields?: boolean;
+  /** SCR_CHILD_STREAM_FLOW: a child's output streams keep Node's flowing
+   * state (pause(), resume(), isPaused(), readableFlowing). */
+  childStreamFlow?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
@@ -217,6 +339,8 @@ export interface CcOptions {
   moduleNamespaceDyn?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
+  /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */
+  iteratorProto?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -281,17 +405,25 @@ export interface CcOptions {
    * moduleUsesNet answers true for whenever this does. */
   http?: boolean;
   /** The program uses the REAL node:http2 surface (moduleUsesHttp2 on
-   * the IR): compiles scr_http2.c — always alongside scr_net.c, which
-   * moduleUsesNet answers true for whenever this does. */
+   * the IR): compiles scr_http2.c — always alongside scr_net.c and
+   * scr_http.c, which the link features turn on with it
+   * (LINK_FEATURE_REQUIREMENTS). */
   http2?: boolean;
   /** The program uses the node:dgram or node:dns surface (moduleUsesDgram
    * on the IR): compiles scr_dgram.c into the binary — the net gating
-   * precedent, so dgram-free binaries keep their exact link line. */
+   * precedent, so dgram-free binaries keep their exact link line — always
+   * alongside scr_net.c, which owns the net.BlockList matcher the options'
+   * block lists are read through (LINK_FEATURE_REQUIREMENTS). */
   dgram?: boolean;
   /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
    * compiles scr_dns_promises.c over the dgram unit, so callback-only
    * binaries keep their exact link line. */
   dnsPromises?: boolean;
+  /** The program uses dns.Resolver or the resolve/reverse/setServers
+   * forms (the dnsResolve runtime feature): compiles scr_dns_resolve.c
+   * over the dgram unit, so programs that only call dns.lookup keep
+   * their exact link line. */
+  dnsResolve?: boolean;
   /** A dgram socket converts to or from an untyped value: compiles
    * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
    * their exact link line. */
@@ -310,11 +442,13 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
-  /** A typed fs read whose bytes value the program can observe as a Buffer
-   * (the fsBufferBrand feature on the IR): compiles scr_lib.c's
-   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
-   * default object unchanged. */
-  fsBufferBrand?: boolean;
+  /** The program uses fsPromises.watch (moduleUsesFsWatchEvents on the IR):
+   * compiles scr_watch_async.c into the binary, and with it scr_watch.c
+   * (the iterator is a queue over that unit's watcher). */
+  watchEvents?: boolean;
+  /** The program uses filehandle.readableWebStream: compiles
+   * scr_fs_web_stream.c into the binary, and scr_webstreams.c with it. */
+  fsWebStream?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */
@@ -349,6 +483,11 @@ export interface CcOptions {
    * createDiffieHellmanGroup: compiles scr_dh.c and links the mbedTLS
    * archive (shared with tls). */
   dh?: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: compiles scr_argon2.c. */
+  argon2?: boolean;
+  /** ML-KEM (mlkem-native): compiles scr_mlkem.c and links the vendored
+   * ML-KEM archive. */
+  mlkem?: boolean;
   /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
    * the mbedTLS archive. */
   pki?: boolean;
@@ -434,9 +573,16 @@ export interface LibArchiveOptions {
   dynBuffer?: boolean;
   /** See CompileOptions.dynTier: the scr_js_* units. */
   dynTier?: boolean;
+  /** See CcOptions.recordSourceGet: the kept-source read of a
+   * record-to-record conversion (scr_record_source_get.c). */
+  recordSourceGet?: boolean;
+  /** See CcOptions.arrJoinStr: the join of an array of strings
+   * (scr_arr_join_str.c). */
+  arrJoinStr?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
+  consoleOptions?: boolean;
   symbol?: boolean;
   bigint?: boolean;
   searchParams?: boolean;
@@ -446,6 +592,20 @@ export interface LibArchiveOptions {
   x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
+  /** See CcOptions.bigintBytes: the SameValueZero/element-value methods of a
+   * BigInt typed array, in the archive's bytes and json units. */
+  bigintBytes?: boolean;
+  /** See CcOptions.jsObjectModel: the archive's bytes and json units carry
+   * the JavaScript object model build. */
+  jsObjectModel?: boolean;
+  /** See CcOptions.mutableBuffers: the archive carries the buffer views
+   * registry, scr_js_buffers.c. */
+  mutableBuffers?: boolean;
+  /** See CcOptions.fnMemberProps: the archive carries the
+   * SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, so an
+   * exported function that defines one of its own call/apply/bind members
+   * runs the write the way the executable lane does. */
+  fnMemberProps?: boolean;
 }
 
 export interface NativeArtifactDependency {

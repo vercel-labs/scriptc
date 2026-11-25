@@ -10,6 +10,10 @@
  *   `Object.defineProperties(o, ...)` (ansi-styles' `assembleStyles`).
  *   The object literals nested in its property values belong to the same
  *   value graph and are marked with it;
+ * - a non-empty object literal a function's `prototype` is set to
+ *   (`F.prototype = { … }`): the prototype is one object the instances
+ *   inherit from and `instanceof` answers by identity, and a record layout
+ *   would answer a view of its own to every read;
  * - a class whose only member is a constructor that returns a value and
  *   never reads `this` (chalk's `class Chalk { constructor(options) {
  *   return chalkFactory(options); } }`): `new C()` answers whatever the
@@ -23,6 +27,7 @@
  * compile exactly as before. */
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { BOOL, DYN, type IrExpr, type IrStmt } from "../../ir/ir.js";
 import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
@@ -38,13 +43,8 @@ const SCANNED_KINDS: ReadonlySet<ts.SyntaxKind> = new Set([
   ts.SyntaxKind.CallExpression,
 ]);
 
-function unparenthesized(node: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(node)) node = node.expression;
-  return node;
-}
-
 function isLiteralKey(node: ts.Expression): boolean {
-  const key = unparenthesized(node);
+  const key = withoutParentheses(node);
   return (
     ts.isStringLiteral(key) || ts.isNumericLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
   );
@@ -101,7 +101,7 @@ function markNested(literal: ts.ObjectLiteralExpression, out: Set<ts.Node>): voi
   out.add(literal);
   for (const property of literal.properties.nodes) {
     if (!ts.isPropertyAssignment(property)) continue;
-    const value = unparenthesized(property.initializer);
+    const value = withoutParentheses(property.initializer);
     if (ts.isObjectLiteralExpression(value)) markNested(value, out);
   }
 }
@@ -117,7 +117,7 @@ export function jsDynamicDeclarations(
     const reshaped = new Set<ts.Symbol>();
     const receiver = (expression: ts.Expression | undefined): void => {
       if (expression === undefined) return;
-      const target = unparenthesized(expression);
+      const target = withoutParentheses(expression);
       if (!ts.isIdentifier(target)) return;
       const symbol = checker.getSymbolAtLocation(target);
       if (symbol !== undefined) reshaped.add(symbol);
@@ -127,7 +127,7 @@ export function jsDynamicDeclarations(
       (node) => {
         if (ts.isVariableDeclaration(node)) {
           if (!ts.isIdentifier(node.name) || node.initializer === undefined) return;
-          const init = unparenthesized(node.initializer);
+          const init = withoutParentheses(node.initializer);
           // An empty literal's binding is already checked-dynamic
           // (jsOpenObjectType), and its type describes no layout.
           if (!ts.isObjectLiteralExpression(init) || init.properties.nodes.length === 0) return;
@@ -141,19 +141,33 @@ export function jsDynamicDeclarations(
         }
         if (ts.isBinaryExpression(node)) {
           if (!isAssignmentOperator(node.operatorToken.kind)) return;
-          const left = unparenthesized(node.left);
+          const left = withoutParentheses(node.left);
           if (ts.isElementAccessExpression(left) && !isLiteralKey(left.argumentExpression))
             receiver(left.expression);
+          // `F.prototype = { … }`: a function's prototype is one live object
+          // that `instanceof` and `Object.getPrototypeOf` answer by identity,
+          // so a literal assigned there is built as the checked-dynamic
+          // object; a record layout would give every read a view of its own.
+          if (
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(left) &&
+            !left.questionDotToken &&
+            left.name.text === "prototype"
+          ) {
+            const value = withoutParentheses(node.right);
+            if (ts.isObjectLiteralExpression(value) && value.properties.nodes.length > 0)
+              markNested(value, out);
+          }
           return;
         }
         if (ts.isDeleteExpression(node)) {
-          const operand = unparenthesized(node.expression);
+          const operand = withoutParentheses(node.expression);
           if (ts.isElementAccessExpression(operand) || ts.isPropertyAccessExpression(operand))
             receiver(operand.expression);
           return;
         }
         if (ts.isCallExpression(node)) {
-          const callee = unparenthesized(node.expression);
+          const callee = withoutParentheses(node.expression);
           if (
             ts.isPropertyAccessExpression(callee) &&
             ts.isIdentifier(callee.expression) &&
@@ -185,7 +199,7 @@ export function lowerValueReturningConstructorNew(
 ): IrExpr | null {
   const isDynamic = lowerer.typeCtx.jsDynamicDeclaration;
   if (isDynamic === undefined) return null;
-  const callee = unparenthesized(expr.expression);
+  const callee = withoutParentheses(expr.expression);
   if (!ts.isIdentifier(callee)) return null;
   let symbol = lowerer.resolveValueSymbol(callee);
   if (symbol !== null && (symbol.flags & ts.SymbolFlags.Alias) !== 0)

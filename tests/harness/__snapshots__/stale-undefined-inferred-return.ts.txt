@@ -1,0 +1,35 @@
+stale-undefined-inferred-return.ts:13:10 - error SC1090: returning 'found' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function) is not supported yet
+
+  12 |   search();
+  13 |   return found;
+     |          ^~~~~
+  14 | }
+
+  hint: declare the function's return type, so the result is the value stored at the return
+
+stale-undefined-inferred-return.ts:18:10 - error SC1090: returning 'found' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function) is not supported yet
+
+  17 |   search();
+  18 |   return first ? found : undefined;
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~
+  19 | }
+
+  hint: declare the function's return type, so the result is the value stored at the return
+
+stale-undefined-inferred-return.ts:28:12 - error SC1090: returning 'this.hit' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function) is not supported yet
+
+  27 |     this.look();
+  28 |     return this.hit;
+     |            ^~~~~~~~
+  29 |   }
+
+  hint: declare the function's return type, so the result is the value stored at the return
+
+stale-undefined-inferred-return.ts:35:8 - error SC1090: returning 'found' from a function whose return type TypeScript infers as 'undefined' (it types the read by the last assignment in this function, and a call made since can have assigned it from another function) is not supported yet
+
+  34 | search();
+  35 | (() => found)();
+     |        ^~~~~
+  36 | 
+
+  hint: declare the function's return type, so the result is the value stored at the return

@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "typeRoots": ["./typings"],
+    "types": ["measures", "packed"]
+  },
+  "include": ["*.ts"]
+}

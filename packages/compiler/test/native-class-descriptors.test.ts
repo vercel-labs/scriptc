@@ -13,7 +13,10 @@ function fixture(source: string) {
 
 test.each([
   "Object.defineProperty(value, 'x', {get() { return 2; }});",
-  "Object.defineProperties(value, {x: {value: 2}});",
+  "Object.defineProperties(value, {x: {get() { return 2; }}});",
+  "const map = {x: {value: 2}}; Object.defineProperties(value, map);",
+  "const notGetter: any = 1; Object.defineProperties(value, {x: {value: 2}, extra: {get: notGetter}});",
+  "const get: any = 1; Object.defineProperties(value, {x: {value: 2}, extra: {get}});",
 ])("keeps unsafe native descriptor changes fenced: %s", (operation) => {
   const { dir, entry } = fixture(
     `class Value { constructor() { this.x = 1; } } const value = new Value(); ${operation}`,
@@ -38,6 +41,45 @@ Object.defineProperty(value, 'x', { value: 2, writable: false });
 console.log(value.x, JSON.stringify(Object.getOwnPropertyDescriptor(value, 'x')));
 value.x = 3;
 console.log(value.x, Object.keys(value));
+`);
+  try {
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "program"),
+      sanitize: process.env["SCRIPTC_SAN"] === "1",
+    });
+    if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+    const run = spawnSync(result.binaryPath, { encoding: "utf8", timeout: 30_000 });
+    const oracle = spawnSync(process.execPath, [entry], { encoding: "utf8", timeout: 30_000 });
+    expect(run.error).toBeUndefined();
+    expect(oracle.status).toBe(0);
+    expect({
+      status: run.status,
+      signal: run.signal,
+      stdout: run.stdout,
+      stderr: run.stderr,
+    }).toEqual({
+      status: oracle.status,
+      signal: oracle.signal,
+      stdout: oracle.stdout,
+      stderr: oracle.stderr,
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("data descriptors for native fields in a literal Object.defineProperties map match Node", async () => {
+  const { dir, entry } = fixture(`
+class Value { constructor() { this.x = 1; this.y = 2; } }
+const value = new Value();
+const same = Object.defineProperties(value, {
+  x: { value: value.y + 10, writable: false },
+  y: { value: value.x + 20, enumerable: false },
+  extra: { value: 'e', enumerable: true },
+});
+console.log(same === value, value.x, value.y, Object.keys(value), JSON.stringify(value));
+console.log(JSON.stringify(Object.getOwnPropertyDescriptor(value, 'x')), JSON.stringify(Object.getOwnPropertyDescriptor(value, 'y')));
 `);
   try {
     const result = await compile(entry, {

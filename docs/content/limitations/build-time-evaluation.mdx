@@ -1,0 +1,16 @@
+`comptime(() => ...)` runs its callback while the program compiles, in an evaluator process based on QuickJS, and embeds the returned value as a constant.
+The callback must be written inline in the call, must not be `async` or a generator, and must not refer to bindings outside itself, to `console`, or to another `comptime` call.
+It sees the ECMAScript built-ins and nothing of the compiler or the machine: `process`, `require`, module loading, timers, file and network access, `Intl` and `WebAssembly` do not exist there, and using one is a build error.
+The evaluator is a separate process that holds no object of the compiler, and only source text goes in and only the result's data comes back.
+It is not a hardened sandbox: its protection rests on the JavaScript engine having no memory-safety bugs, so build only code you would run.
+Each callback has 2 seconds and 256 MB, and exceeding either is a build error that names the limit.
+Promise reactions never run, so a callback that leaves one pending, or leaves a rejected promise unhandled, is a build error.
+The result must be a finite number, a string, a boolean, or arrays, records and unions with `null` or `undefined` of those, and its type must not contain itself.
+Only a result's own enumerable properties are read, and an array hole reads as `undefined`.
+A result that contains itself, is nested more than 512 levels deep, has an array of more than 1,000,000 elements, or is larger than 64 MB is a build error.
+Two places in a result that hold the same object become two separate constants.
+`Math` members give the values Node.js computes.
+Members whose Node.js result depends on locale data throw at build time: `toLocaleString`, `localeCompare`, `toLocaleLowerCase`, `toLocaleUpperCase`, and `toString`, `toTimeString`, `toLocaleDateString` and `toLocaleTimeString` of a `Date`.
+`Number.prototype.toString` with a radix other than 10 throws at build time unless the number is a safe integer.
+`Date.now()`, `Math.random()` and the local time zone are the build machine's at build time.
+The message of an error the engine itself throws, such as the `TypeError` for reading a property of `undefined`, is QuickJS's wording, not Node.js's.

@@ -1,0 +1,26 @@
+builtin-namespace-non-export.ts:9:23 - error SC2020: 'zlib.Z_NO_FLUSH' is not an export of node:zlib: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow
+
+   8 | const ordinary: number = zlib.constants.Z_NO_FLUSH;
+   9 | const flush: number = zlib.Z_NO_FLUSH;
+     |                       ^~~~~~~~~~~~~~~
+  10 | const level: number = zlib.Z_BEST_COMPRESSION;
+
+  hint: the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (zlib.constants.Z_NO_FLUSH for one of the module's constants)
+
+builtin-namespace-non-export.ts:10:23 - error SC2020: 'zlib.Z_BEST_COMPRESSION' is not an export of node:zlib: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow
+
+   9 | const flush: number = zlib.Z_NO_FLUSH;
+  10 | const level: number = zlib.Z_BEST_COMPRESSION;
+     |                       ^~~~~~~~~~~~~~~~~~~~~~~
+  11 | const alias = zlib;
+
+  hint: the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (zlib.constants.Z_BEST_COMPRESSION for one of the module's constants)
+
+builtin-namespace-non-export.ts:12:26 - error SC2020: 'zlib.Z_DEFAULT_STRATEGY' is not an export of node:zlib: read through an ES module namespace (import * as) it is undefined in Node, which its declared type does not allow
+
+  11 | const alias = zlib;
+  12 | const strategy: number = alias.Z_DEFAULT_STRATEGY;
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~
+  13 | console.log(ordinary, flush, level, strategy, typeof zlib.gzipSync);
+
+  hint: the declaration describes the CommonJS exports object, which owns this name without enumerating it; read the value where Node exports it (zlib.constants.Z_DEFAULT_STRATEGY for one of the module's constants)

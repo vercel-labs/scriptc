@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-species-spread-receiver/dep.js",
+  "<repo>/tests/corpus/array-species-spread-receiver/main.js"
+ ],
+ "diags": []
+}

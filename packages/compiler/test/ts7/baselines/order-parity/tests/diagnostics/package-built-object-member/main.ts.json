@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/package-built-object-member/main.ts"
+ ],
+ "diags": []
+}

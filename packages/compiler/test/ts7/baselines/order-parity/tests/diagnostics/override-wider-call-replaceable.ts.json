@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/override-wider-call-replaceable.ts"
+ ],
+ "diags": []
+}

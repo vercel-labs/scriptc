@@ -1,6 +1,16 @@
 import { lowerReadlineCursorCall } from "./builtins/readline.js";
-import { lowerFsWatchFileCall } from "./builtins/filesystem.js";
-import { lowerMonitorEventLoopDelayCall } from "./builtins/performance.js";
+import {
+  lowerFsPromisesWatchCall,
+  lowerFsWatchFileCall,
+  lowerMkdtempDisposableCall,
+} from "./builtins/filesystem.js";
+import {
+  lowerEventLoopUtilizationCall,
+  lowerTimerifyCall,
+  lowerMonitorEventLoopDelayCall,
+  lowerCreateHistogramCall,
+} from "./builtins/performance.js";
+import { lowerCreateSlidingWindowHistogramCall } from "./builtins/sliding-histogram.js";
 import {
   lowerEnvironmentData,
   lowerReceiveMessageOnPort,
@@ -9,14 +19,18 @@ import {
 } from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
-import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
-import { lowerEventsEmitterHelper, lowerEventsOnce } from "./lower-event-emitter.js";
+import { BOOL, DYN, type IrExpr, STRING, type SrcLoc } from "../../ir/ir.js";
+import { lowerEventsEmitterHelper, lowerEventsOn, lowerEventsOnce } from "./lower-event-emitter.js";
+import { lowerBase64Call } from "./lower-calls.js";
 import type { Lowerer } from "./lowerer.js";
 import { lowerTimersMemberCall } from "./lower-timers.js";
 import { lowerStreamModuleCall } from "./lower-stream.js";
 import { lowerCallbackPromisify } from "./builtins/promisify-callback.js";
 import { lowerNodeModuleCall } from "./builtins/module-resolution.js";
 import { builtinModuleFnOf, builtinFenceHintOf } from "./surfaces.js";
+import { builtinModuleHasOwnMember } from "./builtin-module-members.js";
+import { builtinNamespaceMemberTest, reflectOverNamespaceExpr } from "./builtin-namespace-probe.js";
+import { foldedStringKeyOf } from "./expressions/object-literals.js";
 import { resultIsDiscarded } from "./call-position.js";
 import { locOf, requireSpecOf } from "../program.js";
 
@@ -90,6 +104,61 @@ function lowerGracefulify(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc
   };
 }
 
+/** `ns.hasOwnProperty("name")` on a builtin module namespace: Node's own
+ * member test answered from the census's own names. An `import * as`
+ * namespace object has a null prototype and no hasOwnProperty at all (Node
+ * throws TypeError), so that spelling keeps a fence. A non-literal
+ * string key answers through the interned name-comparison helper. */
+function lowerBuiltinHasOwnPropertyCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const callee = expr.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  if (callee.name.text !== "hasOwnProperty") return null;
+  const shape = lowerer.builtinNamespaceShapeOf(callee.expression);
+  if (shape === null) return null;
+  if (shape.flavor === "esm")
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "hasOwnProperty on an 'import * as' module namespace (Node's module namespace objects have no hasOwnProperty; the call throws TypeError)",
+    );
+  if (shape.flavor === "unknown")
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      "hasOwnProperty on a builtin module namespace whose runtime shape is not known statically (bind the namespace where it is imported or required)",
+    );
+  if (expr.arguments.nodes.length !== 1) return null;
+  const arg = expr.arguments.nodes[0]!;
+  if (ts.isSpreadElement(arg)) return null;
+  const key = foldedStringKeyOf(lowerer, arg);
+  if (key !== null) {
+    const own = builtinModuleHasOwnMember(shape.module, shape.flavor, key);
+    return own === null
+      ? null
+      : reflectOverNamespaceExpr(
+          lowerer,
+          callee.expression,
+          { kind: "boolLit", value: own, type: BOOL, loc },
+          loc,
+        );
+  }
+  // A runtime string key answers through the same interned census-name
+  // helper the `in` operator uses, over the own names only.
+  if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind !== "string") return null;
+  const member = builtinNamespaceMemberTest(
+    lowerer,
+    shape,
+    true,
+    lowerer.lowerExprExpecting(arg, STRING),
+    loc,
+  );
+  return member === null ? null : reflectOverNamespaceExpr(lowerer, callee.expression, member, loc);
+}
+
 /** Named imports, namespace members and callable aliases share validation
  * and dispatch. Resolve diagnostic provenance only if no handler accepts. */
 export function lowerBuiltinCall(
@@ -102,12 +171,46 @@ export function lowerBuiltinCall(
   if (bi.module === "child_process" && (bi.member === "execFile" || bi.member === "exec")) {
     return lowerer.lowerExecFileCall(expr, loc, bi.member === "exec");
   }
+  if (bi.member === "hasOwnProperty") {
+    const own = lowerBuiltinHasOwnPropertyCall(lowerer, expr, loc);
+    if (own) return own;
+  }
   if (bi.module === "events" && bi.member === "addAbortListener") {
     return lowerAddAbortListener(lowerer, expr, loc);
   }
   if (bi.module === "events" && bi.member === "once") return lowerEventsOnce(lowerer, expr, loc);
+  if (bi.module === "events" && bi.member === "on") return lowerEventsOn(lowerer, expr, loc);
+  if (bi.module === "buffer" && (bi.member === "atob" || bi.member === "btoa")) {
+    return lowerBase64Call(lowerer, expr, bi.member, loc);
+  }
+  if (bi.module === "buffer" && bi.member === "resolveObjectURL") {
+    // buffer.resolveObjectURL(id): the Blob registered under an object URL's
+    // id, or undefined when nothing is registered under it. Node coerces the
+    // argument with the template-literal ToString, so any value is boxed and
+    // the runtime converts it — a symbol throws there, as Node's does.
+    const args = expr.arguments.nodes;
+    if (args.length !== 1 || ts.isSpreadElement(args[0]!)) {
+      lowerer.noLowering("buffer.resolveObjectURL with this argument shape", expr);
+    }
+    const value = lowerer.lowerExpr(args[0]!);
+    const id: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    return { kind: "libCall", fn: "buffer.resolveObjectURL", args: [id], type: DYN, loc };
+  }
   if (bi.module === "perf_hooks" && bi.member === "monitorEventLoopDelay") {
     return lowerMonitorEventLoopDelayCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "createHistogram") {
+    return lowerCreateHistogramCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "createSlidingWindowHistogram") {
+    return lowerCreateSlidingWindowHistogramCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "eventLoopUtilization") {
+    return lowerEventLoopUtilizationCall(lowerer, expr);
+  }
+  if (bi.module === "perf_hooks" && bi.member === "timerify") {
+    return lowerTimerifyCall(lowerer, expr, loc);
   }
   if (bi.module === "events") {
     const helper = lowerEventsEmitterHelper(lowerer, expr, bi.member, loc);
@@ -117,6 +220,8 @@ export function lowerBuiltinCall(
     const timersServed = lowerTimersMemberCall(lowerer, expr, bi.member, loc);
     if (timersServed) return timersServed;
   }
+  const clusterServed = lowerer.lowerClusterModuleCall(expr, bi, loc);
+  if (clusterServed) return clusterServed;
   const served = lowerer.lowerNetModuleCall(expr, bi, loc);
   if (served) return served;
   const dgramServed = lowerer.lowerDgramDnsModuleCall(expr, bi, loc);
@@ -141,6 +246,32 @@ export function lowerBuiltinCall(
   if (bi.module === "fs" && (bi.member === "watchFile" || bi.member === "unwatchFile")) {
     const polling = lowerFsWatchFileCall(lowerer, expr, loc, bi.member === "unwatchFile");
     if (polling) return polling;
+  }
+  // fsPromises.watch: the async iterator a `for await` drains (the
+  // lowering of that loop drives it; any other use has no lowering and is
+  // refused where it stands).
+  // fsPromises.mkdtempDisposable / fs.mkdtempDisposableSync: the created
+  // directory plus its removal and disposal hooks.
+  if (
+    (bi.module === "fs/promises" && bi.member === "mkdtempDisposable") ||
+    (bi.module === "fs" && bi.member === "mkdtempDisposableSync")
+  ) {
+    const disposable = lowerMkdtempDisposableCall(
+      lowerer,
+      expr,
+      bi.member === "mkdtempDisposable",
+      loc,
+    );
+    if (disposable) return disposable;
+  }
+  if (bi.module === "fs/promises" && bi.member === "watch") {
+    const watching = lowerFsPromisesWatchCall(lowerer, expr, loc);
+    if (watching) return watching;
+    lowerer.noLowering(
+      "fsPromises.watch outside a for await",
+      expr,
+      "the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape",
+    );
   }
   const fsLadder = lowerer.lowerFsLadderCall(expr, bi, loc);
   if (fsLadder) return fsLadder;

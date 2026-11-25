@@ -15,8 +15,9 @@
  *   node rehome-split.mjs --branch <ref> --onto <ref> --config <split config>
  *       [--out <branch name>] [--squash] [--scratch <dir prefix>]
  *
- * Run it from a checkout with node_modules installed (it supplies typescript
- * and oxfmt). --onto is a commit that contains the split, usually main.
+ * Run it from a checkout with node_modules installed (it supplies the
+ * typescript5 package and oxfmt). --onto is a commit that contains the split,
+ * usually main.
  * The result is a new branch (default <branch>-rehomed). By default its tip
  * is a merge commit with parents <branch> and <onto>: the branch's history
  * is kept and the result reads as "merge main into the branch", so it can be
@@ -220,7 +221,7 @@ try {
  * written through the result checkout's guard. Returns false,
  * leaving the file unchanged, when any conflict holds other code. */
 function resolveImportConflicts(checkout, path) {
-  const ts = createRequire(join(tools, "package.json"))("typescript");
+  const ts = createRequire(join(tools, "package.json"))("typescript5");
   const text = checkout.read(path);
   const region = /^<<<<<<< [^\n]*\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> [^\n]*\n/gm;
   const imports = (side) => {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8961-comptime-node-values.ts"
+ ],
+ "diags": []
+}

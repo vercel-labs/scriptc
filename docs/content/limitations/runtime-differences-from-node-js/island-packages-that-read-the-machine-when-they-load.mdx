@@ -1,0 +1,8 @@
+- **Island packages that read the machine when they load:** The build keeps what an island package exports when it loads only when the load read nothing a run could answer differently.
+  A load that reads a clock, a random number, the process id, the arguments, the working directory, the user, the host, a file outside the package, or the time zone of a machine whose `TZ` is unset runs when the program imports the package, which starts Node.js there.
+  A package imported after any load that runs at its import runs at its import as well: Node.js is running by then, and the executable holds nothing the build computed after that load, such as a value the earlier load read and left in a global.
+  A load that reads an environment variable, the default locale, a time zone that `TZ` names, or whether a standard stream is a terminal waits, and runs at the import in a run where that answer differs from the build's.
+  A variable that has a value on the build machine keeps the load at the import unless the project lists it in `scriptc.nodeIslands.publicEnv`, so a build machine with `LANG` set does not defer a package that formats a number in the default locale.
+  A package marked `"evaluate": "lazy"` waits whatever its load reads.
+  The values it computed from the machine, the values of packages imported after it, and its members whose names do not appear in its files are then read from Node.js on first use.
+  The build cannot see three things a load can depend on, and keeps the build machine's answer for them: memory the package allocated without initializing it, how deep the stack is, and a value computed from the package's own path that no longer contains the path.

@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/commonjs-conditional-export-object/prod.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-object/dev.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-object/index.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-object/index-always-prod.cjs",
+  "<repo>/tests/corpus/commonjs-conditional-export-object/main.js"
+ ],
+ "diags": []
+}

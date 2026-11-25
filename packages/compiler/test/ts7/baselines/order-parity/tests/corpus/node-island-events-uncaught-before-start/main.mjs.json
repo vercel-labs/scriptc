@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-events-uncaught-before-start/main.mjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-drain-close-cleanup.ts"
+ ],
+ "diags": []
+}

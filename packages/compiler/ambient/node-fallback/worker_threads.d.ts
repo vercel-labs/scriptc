@@ -3,6 +3,7 @@
 /* node:worker_threads — native workers use statically compiled entry points.
  * Lowering and runtime diagnostics define the supported options and methods. */
 declare module "worker_threads" {
+  import { EventEmitter } from "events";
   export const isMainThread: boolean;
   export const isInternalThread: boolean;
   export const threadId: number;
@@ -16,10 +17,16 @@ declare module "worker_threads" {
   export const resourceLimits: ResourceLimits;
   /* the Worker's name option, trimmed ("WorkerThread" by default); "" in the main thread */
   export const threadName: string | null;
+  /* The env option value that makes a Worker read and write this process's
+   * environment instead of a copy: env: SHARE_ENV. */
+  export const SHARE_ENV: unique symbol;
   export interface WorkerOptions {
     workerData?: unknown;
     transferList?: readonly unknown[];
     argv?: readonly unknown[];
+    /* A copy of these entries becomes the worker's process.env; omitted or
+     * null copies this thread's environment. */
+    env?: { [key: string]: string | number | boolean | undefined } | null | typeof SHARE_ENV;
     name?: string;
     resourceLimits?: ResourceLimits;
     stdout?: boolean;
@@ -27,11 +34,30 @@ declare module "worker_threads" {
     stdin?: boolean;
     [option: string]: unknown;
   }
-  export class Worker {
+  /* worker.performance.eventLoopUtilization: the worker thread's own event
+   * loop utilization, read from the thread's last loop turn. */
+  export interface WorkerEventLoopUtilization {
+    idle: number;
+    active: number;
+    utilization: number;
+  }
+  export interface WorkerPerformance {
+    eventLoopUtilization(
+      utilization1?: WorkerEventLoopUtilization,
+      utilization2?: WorkerEventLoopUtilization,
+    ): WorkerEventLoopUtilization;
+  }
+  /* A Worker extends EventEmitter, not the EventTarget shape a port has: the
+   * full EventEmitter surface (emit, eventNames, the meta events, duplicate
+   * registrations, multi-argument emit) is present, and the seeded
+   * 'newListener'/'removeListener' listeners fire. */
+  export class Worker extends EventEmitter {
     constructor(filename: string | URL, options?: WorkerOptions);
     readonly threadId: number;
     readonly resourceLimits?: ResourceLimits;
     readonly threadName: string | null;
+    /* an object holding the worker thread's eventLoopUtilization */
+    readonly performance: WorkerPerformance;
     /* with the stdout/stderr options: the worker's writes to those streams */
     readonly stdout: import("stream").Readable;
     readonly stderr: import("stream").Readable;
@@ -51,13 +77,18 @@ declare module "worker_threads" {
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
+    /* the worker thread's own CPU usage (process.threadCpuUsage's values),
+     * a rejection with ERR_WORKER_NOT_RUNNING before 'online' or after exit */
+    cpuUsage(prev?: { user: number; system: number }): Promise<{ user: number; system: number }>;
     ref(): void;
     unref(): void;
     terminate(): Promise<number>;
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }
-  export class MessagePort {
+  /* A port is a NodeEventTarget: its listeners live in an emitter registry
+   * shared by the EventEmitter and EventTarget spellings. */
+  export class MessagePort extends EventTarget {
     on(event: "message", listener: (value: any) => void): this;
     on(event: "close", listener: () => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
@@ -67,12 +98,20 @@ declare module "worker_threads" {
     removeListener(event: string, listener: (...args: any[]) => void): this;
     prependListener(event: string, listener: (...args: any[]) => void): this;
     prependOnceListener(event: string, listener: (...args: any[]) => void): this;
+    /* The target's raw dispatch: one argument, extra arguments ignored. */
+    emit(event: string, ...args: any[]): boolean;
+    eventNames(): string[];
+    getMaxListeners(): number;
+    setMaxListeners(n: number): this;
     postMessage(value: unknown, transferList?: readonly unknown[]): void;
     start(): void;
     close(callback?: () => void): void;
     ref(): void;
     unref(): void;
     hasRef(): boolean;
+    /* The EventTarget form of the events: a MessageEvent for 'message'. */
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
     removeAllListeners(event?: string): this;
     listenerCount(event: string, listener?: (...args: any[]) => void): number;
   }

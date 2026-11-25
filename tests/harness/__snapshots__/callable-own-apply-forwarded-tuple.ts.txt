@@ -1,0 +1,6 @@
+callable-own-apply-forwarded-tuple.ts:14:10 - error SC1090: forwarding a fixed argument tuple through 'apply' on a callable that declares its own 'apply' member is not supported yet
+
+  13 | function forward(...nums: [number]): number {
+  14 |   return a.apply(null, nums);
+     |          ^~~~~~~~~~~~~~~~~~~
+  15 | }

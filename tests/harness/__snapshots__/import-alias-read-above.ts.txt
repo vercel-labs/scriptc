@@ -1,0 +1,13 @@
+import-alias-read-above.ts:18:10 - error SC1090: the reference to 'unit' in a function written above `import unit = ...` (Node's transform binds only the references below the alias statement — this one throws ReferenceError whenever the function runs; move the alias above the function) is not supported yet
+
+  17 | function early(): string {
+  18 |   return unit;
+     |          ^~~~
+  19 | }
+
+import-alias-read-above.ts:20:33 - error SC1090: the reference to 'twice' in a function written above `import twice = ...` (Node's transform binds only the references below the alias statement — this one throws ReferenceError whenever the function runs; move the alias above the function) is not supported yet
+
+  19 | }
+  20 | const earlyCall = (): number => twice(2);
+     |                                 ^~~~~
+  21 | import unit = plain.unit;

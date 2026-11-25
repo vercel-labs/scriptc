@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8948-promise-catch-handler-unhandled-listener.ts"
+ ],
+ "diags": []
+}

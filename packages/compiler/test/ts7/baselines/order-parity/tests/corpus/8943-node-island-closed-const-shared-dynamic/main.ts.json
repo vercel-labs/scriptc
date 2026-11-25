@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8943-node-island-closed-const-shared-dynamic/shapes.ts",
+  "<repo>/tests/corpus/8943-node-island-closed-const-shared-dynamic/main.ts"
+ ],
+ "diags": []
+}

@@ -28,7 +28,10 @@ const reserved = new Set(Object.keys(RESERVED_DIAGNOSTIC_CODES));
 
 /** The keys of one table in codes.ts, as written (duplicates included). */
 function writtenKeys(table: string): string[] {
-  const start = codesSource.indexOf(`export const ${table} = {`);
+  const header = `export const ${table} = {`;
+  const start = codesSource.indexOf(header);
+  // A table with no open work is written empty on one line.
+  if (codesSource.startsWith("}", start + header.length)) return [];
   const end = codesSource.indexOf("\n}", start);
   return [...codesSource.slice(start, end).matchAll(/^ {2}(SC\d{4}):/gm)].map((m) => m[1]!);
 }
@@ -36,8 +39,10 @@ function writtenKeys(table: string): string[] {
 test.each(["DIAGNOSTIC_CODES", "RETIRED_DIAGNOSTIC_CODES", "RESERVED_DIAGNOSTIC_CODES"])(
   "%s is written once per code, in numeric order",
   (table) => {
+    expect(codesSource).toContain(`export const ${table} = {`);
     const keys = writtenKeys(table);
-    expect(keys.length).toBeGreaterThan(0);
+    // The reserved table holds a code only while open work claims it.
+    if (table !== "RESERVED_DIAGNOSTIC_CODES") expect(keys.length).toBeGreaterThan(0);
     expect(keys).toEqual([...new Set(keys)].toSorted());
   },
 );

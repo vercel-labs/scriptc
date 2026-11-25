@@ -26,13 +26,6 @@ js-block-redeclaration.js:13:9 - error SC0006: the lexical declaration 'scoped' 
      |         ^~~~~~
   14 |     break;
 
-js-block-redeclaration.js:15:8 - error SC0001: Type '2' is not comparable to type '1'.
-
-  14 |     break;
-  15 |   case 2:
-     |        ^
-  16 |     var scoped = 2;
-
 js-block-redeclaration.js:16:9 - error SC0001: Cannot initialize outer scoped variable 'scoped' in the same scope as block scoped declaration 'scoped'.
 
   15 |   case 2:

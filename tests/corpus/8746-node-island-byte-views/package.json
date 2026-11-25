@@ -1,0 +1,10 @@
+{
+  "name": "node-island-byte-views",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "view-pkg": "node"
+    }
+  }
+}

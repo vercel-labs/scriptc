@@ -1,0 +1,8 @@
+builtin-member-write-modules/patch.ts:2:1 - error SC1092: replacing the built-in 'Array.prototype.reduce' here is not supported: the program calls it at use.ts:2:10, and compiled code does not read a built-in member from its object, so the call would not see the change
+
+  1 | // Replaces a member that use.ts calls through a typed array.
+  2 | Array.prototype.reduce = function (this: unknown[]): unknown {
+    | ^~~~~~~~~~~~~~~~~~~~~~
+  3 |   return 0;
+
+  hint: a program may change a member of a built-in object only when nothing it compiles uses that member natively. Remove a polyfill for a member Node 24 already has; to change behavior (a test mock, for instance), call a function of your own and replace that. With --node-islands=auto, the default, a package that contains this write runs in a Node island instead

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-cjs-namespace-as-value/mod.js",
+  "<repo>/tests/corpus/js-cjs-namespace-as-value/main.js"
+ ],
+ "diags": []
+}

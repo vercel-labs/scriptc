@@ -85,6 +85,7 @@ const PRODUCERS: Readonly<Record<string, string>> = {
   "dyn.bitwise": "js.bitwise",
   "dyn.toNumeric": "js.toNumeric",
   "dyn.increment": "js.increment",
+  "dyn.negate": "js.negate",
 };
 
 /** dyn operators with a static result, with their jsval twins. */
@@ -249,6 +250,11 @@ function jsvalParams(
     byName.set(fn.name, fn);
     if (!direct.has(fn.name) && !candidates.has(fn.name)) continue;
     if (sites.site(fn.name) !== null) continue;
+    // A named helper (class-dynamic-dispatch.ts `%dyn.class.named.<n>`)
+    // hands each parameter to one checked-dynamic operation: a jsval
+    // parameter would move its boxing from the call into the helper and
+    // save none.
+    if (fn.name.startsWith("%dyn.class.named.")) continue;
     const js = fn.params.map((p) => p.type.kind === "dyn");
     if (js.includes(true)) params.set(fn.name, js);
   }
@@ -257,6 +263,42 @@ function jsvalParams(
     (candidates.has(callee) && byName.get(callee)!.returnType.kind === "dyn");
   const producer = (e: IrExpr): boolean =>
     isProducerCall(e) || (e.kind === "call" && returnsJs(e.callee));
+  // The first pass over a body records what it contributes to the counters,
+  // so a later pass replays the contributions instead of walking the body
+  // again. Only the function's own jsval parameters change between passes;
+  // the weights, the arguments and their producer/immediate reading stay.
+  interface Contribution {
+    callee: string;
+    index: number;
+    weight: number;
+    /** The argument is a producer or an immediate: js whatever the locals. */
+    source: boolean;
+    /** The argument is a varRef local, js when that local is a jsval one. */
+    local: string | undefined;
+  }
+  const contributions = new Map<IrFunction, Contribution[]>();
+  const contributionsOf = (fn: IrFunction): Contribution[] => {
+    const known = contributions.get(fn);
+    if (known !== undefined) return known;
+    const rows: Contribution[] = [];
+    everyWeightedExpr(fn.body, (e, weight) => {
+      if (e.kind !== "call") return;
+      const js = params.get(e.callee);
+      if (js === undefined) return;
+      e.args.forEach((arg, index) => {
+        if (index >= js.length || arg.type.kind !== "dyn") return;
+        rows.push({
+          callee: e.callee,
+          index,
+          weight,
+          source: producer(arg) || isImmediateSource(arg),
+          local: arg.kind === "varRef" ? arg.localId : undefined,
+        });
+      });
+    });
+    contributions.set(fn, rows);
+    return rows;
+  };
   for (let changed = params.size > 0; changed;) {
     changed = false;
     const passed = new Map<string, { total: number[]; js: number[] }>();
@@ -266,17 +308,13 @@ function jsvalParams(
       if (fn.tier !== "dynamic") continue;
       const own = params.get(fn.name);
       const jsLocals = new Set(fn.params.filter((_, i) => own?.[i] === true).map((p) => p.localId));
-      const jsArgument = (e: IrExpr): boolean =>
-        producer(e) || isImmediateSource(e) || (e.kind === "varRef" && jsLocals.has(e.localId));
-      everyWeightedExpr(fn.body, (e, weight) => {
-        const counts = e.kind === "call" ? passed.get(e.callee) : undefined;
-        if (counts === undefined || e.kind !== "call") return;
-        e.args.forEach((arg, i) => {
-          if (i >= counts.total.length || arg.type.kind !== "dyn") return;
-          counts.total[i]! += weight;
-          if (jsArgument(arg)) counts.js[i]! += weight;
-        });
-      });
+      for (const row of contributionsOf(fn)) {
+        const counts = passed.get(row.callee);
+        if (counts === undefined || row.index >= counts.total.length) continue;
+        counts.total[row.index]! += row.weight;
+        if (row.source || (row.local !== undefined && jsLocals.has(row.local)))
+          counts.js[row.index]! += row.weight;
+      }
     }
     for (const [name, js] of params) {
       const fn = byName.get(name)!;

@@ -136,6 +136,16 @@ function check(label, fn) {
     await new Promise((resolve) => ws.on("close", () => resolve(report("pipe", [], ws.bytesWritten, ws.pending))));
     console.log("piped", fs.statSync(file).size);
   }
-  console.log("unknown-encoding stream opened its file", fs.existsSync(path.join(dir, "unknown-encoding.txt")));
+  // Nothing can wait for that stream: its constructor threw, and its open
+  // runs on the thread pool when a thread gets to it. Under load that has
+  // been later than everything above (in the native program, whose reads
+  // and writes of cached files do not pass through the pool), so the check
+  // waits for the file, and so does the removal of the directory the open
+  // creates it in. An open that was never scheduled runs into the limit and
+  // prints false.
+  const opened = path.join(dir, "unknown-encoding.txt");
+  const limit = Date.now() + 60000;
+  while (!fs.existsSync(opened) && Date.now() < limit) await new Promise((resolve) => setTimeout(resolve, 1));
+  console.log("unknown-encoding stream opened its file", fs.existsSync(opened));
   fs.rmSync(dir, { recursive: true });
 })();

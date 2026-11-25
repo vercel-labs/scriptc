@@ -1,0 +1,17 @@
+contract-immutable-stored-call.ts:34:35 - error SC7004: the value stored into 'KEEP' (Immutable) may be referenced elsewhere: 'built()' is not a fresh literal, construction or factory result
+
+  33 | 
+  34 | const KEEP: Immutable<number[]> = built();
+     |                                   ^~~~~~~
+  35 | const NESTED_KEEP: Immutable<number[][]> = nestedBuilt();
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains
+
+contract-immutable-stored-call.ts:35:44 - error SC7004: the value stored into 'NESTED_KEEP' (Immutable) may be referenced elsewhere: 'nestedBuilt()' is not a fresh literal, construction or factory result
+
+  34 | const KEEP: Immutable<number[]> = built();
+  35 | const NESTED_KEEP: Immutable<number[][]> = nestedBuilt();
+     |                                            ^~~~~~~~~~~~~
+  36 | SINK[0]!.push(7);
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains

@@ -1,7 +1,8 @@
 // The client's response parser applies Node's checks: a malformed status
 // line, header line, Content-Length or Transfer-Encoding, or chunk makes the
 // request emit an error with the parser's code and the message
-// "Parse Error: <reason>". A Transfer-Encoding that does not end in chunked
+// "Parse Error: <reason>". A chunk with more than 16 KiB of extensions is
+// refused the same way. A Transfer-Encoding that does not end in chunked
 // reads the body until the connection closes.
 import * as http from "node:http";
 import * as net from "node:net";
@@ -31,6 +32,7 @@ const cases: [string, string][] = [
   ["bare lf", "HTTP/1.1 200 OK\nContent-Length: 1\n\nx"],
   ["chunk size bad", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n"],
   ["chunk ext", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;a=b\r\nab\r\n0\r\n\r\n"],
+  ["chunk ext overflow", `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;${"a".repeat(17000)}\r\nab\r\n0\r\n\r\n`],
   ["chunk data end", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nabXX"],
 ];
 

@@ -384,6 +384,11 @@ export interface ExecutableRuntimePack {
 export function openNativeExecutableCache(
   cache: NativeCache | null,
   toolchain: NativeToolchain,
+  /** The partitions the helper divides the program into; see
+   * nativeProgramPartitions. It depends on the host's threads, so the key
+   * names it: a cache shared between hosts never hands one host the
+   * executable another host linked from a different partitioning. */
+  partitions: number,
   llvmDigest: () => string,
   options: CompileRequestOptions,
   ffi: FfiProfile | null,
@@ -455,6 +460,7 @@ export function openNativeExecutableCache(
       JSON.stringify({
         schema: 1,
         llvm: llvmDigest(),
+        partitions,
         options,
         toolchain,
         runtimeIdentity: readFileSync(join(pack.root, "package.json"), "utf8"),

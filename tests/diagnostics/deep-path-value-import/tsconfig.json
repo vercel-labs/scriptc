@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "moduleResolution": "node",
+    "strict": true
+  },
+  "include": [
+    "main.ts"
+  ]
+}

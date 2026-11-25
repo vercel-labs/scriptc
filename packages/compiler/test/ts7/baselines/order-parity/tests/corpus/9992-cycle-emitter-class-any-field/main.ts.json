@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9992-cycle-emitter-class-any-field/relay.ts",
+  "<repo>/tests/corpus/9992-cycle-emitter-class-any-field/station.ts",
+  "<repo>/tests/corpus/9992-cycle-emitter-class-any-field/main.ts"
+ ],
+ "diags": []
+}

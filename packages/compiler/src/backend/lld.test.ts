@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { driverFindsLld, inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { driverFindsLld, inputsWithoutLld, lldLinkerArgs, resolvedLldFile } from "./lld.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -32,9 +32,11 @@ test.skipIf(process.platform === "win32")(
     const clang = tool(join(f.llvm, "clang"));
     // Without ld.lld anywhere.
     expect(driverFindsLld(clang, { PATH: f.other })).toBe(false);
+    expect(resolvedLldFile(clang, { PATH: f.other })).toBeNull();
     // Beside the driver.
     tool(join(f.llvm, "ld.lld"));
     expect(driverFindsLld(clang, { PATH: f.other })).toBe(true);
+    expect(resolvedLldFile(clang, { PATH: f.other })).toBe(join(f.llvm, "ld.lld"));
     // A PATH entry that links to the driver: clang looks beside its real executable.
     symlinkSync(clang, join(f.usr, "clang"));
     expect(driverFindsLld("clang", { PATH: f.usr })).toBe(true);

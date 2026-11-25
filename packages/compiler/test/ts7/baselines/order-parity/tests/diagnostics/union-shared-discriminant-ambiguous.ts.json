@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/union-shared-discriminant-ambiguous.ts"
+ ],
+ "diags": []
+}

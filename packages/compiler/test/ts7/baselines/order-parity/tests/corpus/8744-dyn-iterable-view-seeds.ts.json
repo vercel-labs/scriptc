@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8744-dyn-iterable-view-seeds.ts"
+ ],
+ "diags": []
+}

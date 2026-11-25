@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9414-function-chain-accessor-receiver.mjs"
+ ],
+ "diags": []
+}

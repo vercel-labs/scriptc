@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/immutable-untyped-computed-read/dom.ts",
+  "<repo>/tests/corpus/immutable-untyped-computed-read/app.js",
+  "<repo>/tests/corpus/immutable-untyped-computed-read/main.ts"
+ ],
+ "diags": []
+}

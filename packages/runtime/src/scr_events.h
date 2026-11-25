@@ -42,8 +42,24 @@ void scr_process_prepend_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
 double scr_process_stdin_is_raw(void);
 void scr_process_off_exit(ScrClosure *cb);
 void scr_run_exit_listeners(double code);
+/* The 'beforeExit' event: listeners run every time the loop runs out of
+ * ref'd work (Node re-emits while a listener scheduled more), receive the
+ * current exit code, and a `once` entry leaves the registry when it fires.
+ * scr_process_before_exit_hook is scr_async.c's storage (a NULL hook keeps
+ * event-free binaries free of this unit); scr_events_install points it at
+ * scr_run_before_exit_listeners. The hook answers false when no listener
+ * is registered. */
+void scr_process_on_before_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double), bool once);
+void scr_process_prepend_before_exit(ScrClosure *cb, void (*fn)(ScrClosure *, double));
+void scr_process_off_before_exit(ScrClosure *cb);
+bool scr_run_before_exit_listeners(double code);
+extern SCR_TL bool (*scr_process_before_exit_hook)(double code);
 void scr_exit_thunk0(ScrClosure *cb, double code);
 void scr_exit_thunk_code(ScrClosure *cb, double code);
+/* process.finalization: the stable register/registerBeforeExit/unregister
+ * object (+1). Its callbacks run from process listeners this unit installs
+ * on the first registration for each event. */
+ScrDyn *scr_process_finalization(void);
 void scr_stdin_on_data(ScrClosure *cb, void (*fn)(ScrClosure *, ScrBytes *), bool once);
 /* A string 'data' listener (moves cb): receives each chunk decoded by the
  * stdin's setEncoding decoder; with no encoding set, a delivery throws
@@ -54,6 +70,22 @@ void scr_stdin_set_encoding(ScrStr *enc);
 void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text);
 void scr_stdin_on_end(ScrClosure *cb, bool once);
 void scr_stdin_on_error(ScrClosure *cb, ScrChildErrFn fn, bool once);
+/* A 'readable' listener (moves cb): paused mode, as in Node — input stays
+ * buffered for read(), and the event fires on the next tick when input
+ * arrives while a read wanted more, and once at EOF. */
+void scr_stdin_on_readable(ScrClosure *cb, bool once);
+void scr_stdin_pause(void);
+void scr_stdin_resume(void);
+/* process.stdin.ref()/unref(): Node's handle refcount. unref() lets the
+ * process exit with a consumer still registered; data still arrives while
+ * other work keeps the loop alive. ref() restores the default. */
+void scr_stdin_ref(void);
+void scr_stdin_unref(void);
+bool scr_stdin_is_paused(void);
+double scr_stdin_readable_length(void);
+/* read([size]): the held input up to `size` bytes (+1), or NULL; Node's
+ * size coercion and ERR_OUT_OF_RANGE (see the definition). */
+ScrBytes *scr_stdin_read_bytes(bool all, double size);
 ScrPromise *scr_stdin_next_chunk(void); /* +1 */
 void scr_stdin_destroy(void);
 bool scr_stdin_pending(void);
@@ -62,5 +94,13 @@ bool scr_stdin_pending(void);
  * destroyed — a later createInterface is born dead). */
 void scr_stdin_remove_data(ScrClosure *cb);
 bool scr_stdin_ended(void);
+
+/* Process events island code listens to (the bridge's SCR_NODE_EVENT_* ABI).
+ * Their listeners sit in this unit's registries at their registration
+ * position, and a delivery calls them through the emit hook: this unit
+ * cannot name scr_node_island_emit itself, because every program that uses
+ * process events links it and only an island program links that one. */
+enum { SCR_EVENTS_ISLAND_SIGNAL = 1, SCR_EVENTS_ISLAND_EXIT = 2 };
+void scr_events_set_island_emit(void (*fn)(uint32_t event, uint32_t listener, ScrStr *name, int arg));
 
 #endif /* SCR_EVENTS_H */

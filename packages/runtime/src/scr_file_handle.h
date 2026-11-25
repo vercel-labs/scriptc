@@ -6,13 +6,27 @@
 
 #include "scr_lib.h"
 
-/* fs.openSync(path, flags) → the raw fd as f64 (Node's string flag
+/* fs.openSync(path, flags, mode) → the raw fd as f64 (Node's string flag
  * grammar; unknown flags throw Node's ERR_INVALID_ARG_VALUE TypeError
- * text, open(2) failures the Node fs error shape), and fs.closeSync(fd)
- * (failure throws the path-less "EBADF: bad file descriptor, close").
- * The pair behind spawn's fd-stdio form. */
+ * text, an out-of-range mode throws ERR_OUT_OF_RANGE, open(2) failures
+ * the Node fs error shape), and fs.closeSync(fd) (failure throws the
+ * path-less "EBADF: bad file descriptor, close"). The pair behind spawn's
+ * fd-stdio form. The two-argument form is what program objects built
+ * before the mode argument call; it passes Node's 0o666 default. */
 double scr_fs_open(ScrStr *path, ScrStr *flags);
+/* stringToFlags' string arm (the documented flag grammar; anything else
+ * throws Node's ERR_INVALID_ARG_VALUE) and open(2) itself over the parsed
+ * flags. */
+bool scr_fs_flag_string(const ScrStr *flags, int *out);
+double scr_fs_open_flags(ScrStr *path, int of, double mode);
+double scr_fs_open_mode(ScrStr *path, ScrStr *flags, double mode);
+/* The octal-string creation mode: parseFileMode's string arm, then the
+ * same open(2). */
+double scr_fs_open_str_mode(ScrStr *path, ScrStr *flags, ScrStr *mode);
 double scr_fs_open_numeric(ScrStr *path, double flags, double mode);
+/* The same flags as the frontend's platform-independent mask, mapped to the
+ * target's own open(2) bits here; the creation mode is already parsed. */
+double scr_fs_open_mask(ScrStr *path, double flags, double mode);
 /* Engine callers supply the target OS's flags, rather than the frontend's
  * portable constant mask. Argument validation happens before this seam. */
 double scr_fs_open_native(ScrStr *path, double flags, double mode);
@@ -30,6 +44,12 @@ void scr_file_handle_close(ScrFileHandle *h);
 typedef struct ScrFileHandleHook ScrFileHandleHook;
 void scr_file_handle_ref(ScrFileHandle *h);
 int scr_file_handle_stream_unref(ScrFileHandle *h);
+
+/* readableWebStream's lock: a handle can open one stream, and its later calls
+ * answer Node's "The FileHandle is locked" instead of splitting the file
+ * between competing streams. */
+bool scr_file_handle_is_locked(const ScrFileHandle *h);
+void scr_file_handle_lock(ScrFileHandle *h);
 ScrFileHandleHook *scr_file_handle_on_close(ScrFileHandle *h, void (*fn)(void *ctx), void *ctx);
 void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
 /* FileHandle.createReadStream / createWriteStream(options): +1 runtime
@@ -37,11 +57,20 @@ void scr_file_handle_off_close(ScrFileHandle *h, ScrFileHandleHook *hook);
  * surface); NULL with the exception pending. Borrows both. */
 typedef struct ScrStream ScrStream;
 ScrStream *scr_file_handle_read_stream(ScrFileHandle *h, ScrDyn *options);
+/* FileHandle.readableWebStream([options]): the handle's content as Node's
+ * type: "bytes" web stream (scr_fs_web_stream.c). A closed handle throws
+ * Node's ERR_INVALID_STATE; `options.autoClose` closes the handle when the
+ * stream is cancelled or finishes. +1 checked-dynamic stream, or NULL with
+ * the exception pending. */
+ScrDyn *scr_file_handle_readable_web_stream(ScrFileHandle *h, ScrDyn *options);
 ScrStream *scr_file_handle_write_stream(ScrFileHandle *h, ScrDyn *options);
 ScrPromise *scr_file_handle_sync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_datasync_promise(ScrFileHandle *h);
 ScrPromise *scr_file_handle_truncate_promise(ScrFileHandle *h, double length);
 ScrPromise *scr_file_handle_chmod_promise(ScrFileHandle *h, double mode);
+/* FileHandle.chown(uid, gid): fchown(2) on the handle; the ids are checked
+ * by the fs chown ladder before the descriptor. */
+ScrPromise *scr_file_handle_chown_promise(ScrFileHandle *h, double uid, double gid);
 double scr_file_handle_readv(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_writev(ScrFileHandle *h, ScrArr *buffers, double position);
 double scr_file_handle_read(ScrFileHandle *h, ScrBytes *buf, double offset,
@@ -60,6 +89,10 @@ ScrStats *scr_file_handle_stat(ScrFileHandle *h);
  * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */
 double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                         double position);
+/* getValidatedFd: an integer in [0, 2147483647]; false with Node's
+ * ERR_OUT_OF_RANGE pending otherwise. The checked-dynamic fd ladders reuse
+ * it for the descriptor they read out of a dyn value. */
+bool scr_fs_fd_valid(double fd);
 /* fs.readSync's offset check; false with ERR_OUT_OF_RANGE pending. */
 bool scr_fs_read_offset_chk(double offset);
 /* scr_fs_read_sync after its offset and position checks, with an exact
@@ -73,6 +106,9 @@ double scr_fs_write_sync(double fd, ScrBytes *buf, double offset, double length,
                          double position);
 double scr_fs_write_str_sync(double fd, ScrStr *data, double position,
                              ScrStr *encoding);
+/* writeSync's string arm validation before the descriptor: validateEncoding's
+ * hex parity check. False with ERR_INVALID_ARG_VALUE pending. */
+bool scr_fs_write_str_encoding_ok(ScrStr *data, ScrStr *encoding);
 double scr_fs_readv_sync(double fd, ScrArr *buffers, double position);
 double scr_fs_writev_sync(double fd, ScrArr *buffers, double position);
 /* Unlike scalar readSync's zero-length fast path, a nonempty vector of

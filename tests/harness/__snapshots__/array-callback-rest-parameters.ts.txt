@@ -1,0 +1,48 @@
+array-callback-rest-parameters.ts:8:20 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  7 | const xs: number[] = [3, 1, 2];
+  8 | console.log(xs.map((...args: unknown[]) => args.length).join(","));
+    |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | console.log(xs.filter((...args: unknown[]) => args.length === 3).length);
+
+array-callback-rest-parameters.ts:9:23 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+   8 | console.log(xs.map((...args: unknown[]) => args.length).join(","));
+   9 | console.log(xs.filter((...args: unknown[]) => args.length === 3).length);
+     |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | xs.forEach((...args: unknown[]) => console.log(args.length));
+
+array-callback-rest-parameters.ts:10:12 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+   9 | console.log(xs.filter((...args: unknown[]) => args.length === 3).length);
+  10 | xs.forEach((...args: unknown[]) => console.log(args.length));
+     |            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | console.log(xs.some((...args: unknown[]) => args.length === 3));
+
+array-callback-rest-parameters.ts:11:21 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  10 | xs.forEach((...args: unknown[]) => console.log(args.length));
+  11 | console.log(xs.some((...args: unknown[]) => args.length === 3));
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | console.log(xs.reduce((sum: number, ...more: unknown[]) => sum + more.length, 0));
+
+array-callback-rest-parameters.ts:12:23 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  11 | console.log(xs.some((...args: unknown[]) => args.length === 3));
+  12 | console.log(xs.reduce((sum: number, ...more: unknown[]) => sum + more.length, 0));
+     |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  13 | console.log(xs.sort((...args: number[]) => args[0]! - args[1]!).join(","));
+
+array-callback-rest-parameters.ts:13:21 - error SC2001: values of type '(...args: number[]) => number' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  12 | console.log(xs.reduce((sum: number, ...more: unknown[]) => sum + more.length, 0));
+  13 | console.log(xs.sort((...args: number[]) => args[0]! - args[1]!).join(","));
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  14 | 
+
+array-callback-rest-parameters.ts:16:38 - error SC1090: a callback that takes a rest parameter or reads 'arguments', passed to an array method that calls it with a fixed argument list (name the parameters the callback uses) is not supported yet
+
+  15 | const d: Record<string, object> = { a: { n: 3 }, b: { n: 1 } };
+  16 | console.log(Object.values(d).flatMap((...args: unknown[]): number[] => [args.length]).join(","));
+     |                                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | 

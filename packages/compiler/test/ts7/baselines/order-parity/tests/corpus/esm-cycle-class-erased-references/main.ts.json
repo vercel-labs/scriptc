@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/esm-cycle-class-erased-references/b.ts",
+  "<repo>/tests/corpus/esm-cycle-class-erased-references/a.ts",
+  "<repo>/tests/corpus/esm-cycle-class-erased-references/main.ts"
+ ],
+ "diags": []
+}

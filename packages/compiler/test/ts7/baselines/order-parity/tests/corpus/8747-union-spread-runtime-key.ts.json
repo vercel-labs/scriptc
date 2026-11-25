@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8747-union-spread-runtime-key.ts"
+ ],
+ "diags": []
+}

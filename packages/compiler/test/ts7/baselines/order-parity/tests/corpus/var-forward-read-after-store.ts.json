@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/var-forward-read-after-store.ts"
+ ],
+ "diags": []
+}

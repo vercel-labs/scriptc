@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/buffer-encoding-widened-names.js"
+ ],
+ "diags": []
+}

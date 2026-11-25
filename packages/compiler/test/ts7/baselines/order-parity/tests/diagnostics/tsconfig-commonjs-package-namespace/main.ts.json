@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tsconfig-commonjs-package-namespace/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Cannot find namespace 'Kit'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-commonjs-package-namespace/main.ts",
+    "start": 274,
+    "end": 277
+   },
+   "typeWorld": true,
+   "hint": "this project compiles to CommonJS (\"module\": \"commonjs\"), where a package resolves through its 'require' entry and that entry's declarations; scriptc compiles TypeScript files as ES modules, the format Node gives them, and resolved the package's 'import' entry, which declares no namespace 'Kit'"
+  }
+ ]
+}

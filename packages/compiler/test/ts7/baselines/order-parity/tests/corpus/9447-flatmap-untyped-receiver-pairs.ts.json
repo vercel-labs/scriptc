@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9447-flatmap-untyped-receiver-pairs.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,3 @@
+{
+    "node-builtin.async_hooks": ["tests/corpus/2213-async-local-storage.cjs", "tests/corpus/5815-als-callback-context.ts"]
+}

@@ -1,0 +1,304 @@
+name: Prerelease (macOS arm64)
+
+# Builds an installable macOS arm64 prerelease of scriptc from any main
+# commit, so a release candidate can be installed without building it. Every
+# package is stamped with one dev version, `<next patch>-dev.<short sha>`, and
+# packed as a tarball; INSTALL.md gives the exact global install command in
+# dependency order and each tarball's SHA-256. The packed installation is
+# installed into a temp prefix on the runner, which builds and runs a
+# hello-world program and prints the installed version. The tarballs upload as
+# one artifact. Nothing is published and the workflow uses no secrets.
+#
+# The build repeats the darwin-arm64 leg of release-build.yml's native job,
+# which release.yml calls — the same macos-15 runner, LLVM toolchain, helper,
+# runtime and CLI steps — rather than extracting those steps into a composite
+# action or reusable workflow: the release job is a cross-platform matrix whose
+# conditionals such an extraction would have to reproduce, and this workflow
+# must leave release.yml's behavior untouched. Keep the build steps below in
+# sync with release-build.yml's darwin-arm64 matrix entry.
+#
+# A prerelease run does not collect the native compiler profile: release.yml's
+# cli-profile job builds an instrumented compiler for about two hours, and a
+# prerelease does not need it. Without SCRIPTC_NATIVE_PROFILE_USE the CLI
+# builds with the committed profile and layout, which is exactly what
+# release.yml's CLI build falls back to when its profile job fails.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit SHA or ref to build (default main)
+        required: false
+        default: main
+        type: string
+
+concurrency:
+  group: prerelease-darwin-arm64-${{ inputs.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build prerelease (darwin-arm64)
+    runs-on: macos-15
+    # release.yml allows 90 minutes for the same build: the helper and runtime
+    # pack take about ten minutes each and the optimized native CLI the rest.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+          # A commit SHA input needs the full history to resolve.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - name: Install toolchain (macOS)
+        run: |
+          brew install llvm@22
+          llvm_prefix=$(brew --prefix llvm@22)
+          echo "$llvm_prefix/bin" >> "$GITHUB_PATH"
+          echo "LLVM_DIR=$llvm_prefix/lib/cmake/llvm" >> "$GITHUB_ENV"
+
+      - run: pnpm install --frozen-lockfile
+
+      # One dev version across every package that moves in lockstep, so the
+      # install can never resolve a package from a real release. The native
+      # CLI records the compiler version it was built from, and the compiler
+      # requires its LLVM helper and runtime pack at that same version, so the
+      # version is stamped before anything is built.
+      - name: Stamp the prerelease version
+        id: version
+        run: |
+          set -euo pipefail
+          short_sha=$(git rev-parse --short=7 HEAD)
+          full_sha=$(git rev-parse HEAD)
+          release_version=$(node -p "require('./packages/cli/package.json').version")
+          dev_version=$(node -e '
+            const [major, minor, patch] = process.argv[1].split("-")[0].split(".").map(Number);
+            console.log(`${major}.${minor}.${patch + 1}-dev.${process.argv[2]}`);
+          ' "$release_version" "$short_sha")
+          node -e '
+            const { readFileSync, writeFileSync } = require("node:fs");
+            const path = "packages/cli/package.json";
+            const manifest = JSON.parse(readFileSync(path, "utf8"));
+            manifest.version = process.argv[1];
+            writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          ' "$dev_version"
+          # scriptc's version leads; sync-versions stamps the runtime, helper,
+          # compiler and platform packages, and the surface manifest records
+          # the same version, as a release commit does.
+          node scripts/sync-versions.mjs
+          pnpm manifest
+          {
+            echo "version=$dev_version"
+            echo "short_sha=$short_sha"
+            echo "full_sha=$full_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # release-build.yml's darwin-arm64 entry: the helper builds against the
+      # runner's pinned LLVM (SCRIPTC_HELPER_LLVM_DIR is selected on Linux
+      # only) and the runtime pack builds with the runner's clang.
+      - name: Build native packages (POSIX)
+        run: |
+          pnpm --filter @scriptc/llvm-darwin-arm64 build:native
+          CC=clang AR=llvm-ar pnpm --filter @scriptc/runtime-darwin-arm64 build:native
+
+      - name: Build native CLI distribution
+        run: |
+          pnpm --filter @scriptc/compiler --filter scriptc build
+          pnpm --filter @scriptc/cli-darwin-arm64 build:native
+          node scripts/verify-native-cli.mjs packages/cli-darwin-arm64 --run
+
+      - name: Verify packed Darwin helper on its build host
+        run: |
+          TARBALL=$(pnpm --dir packages/llvm-darwin-arm64 pack --pack-destination "$RUNNER_TEMP" --silent)
+          node scripts/verify-llvm-package.mjs "$RUNNER_TEMP/$(basename "$TARBALL")"
+
+      - name: Pack the prerelease packages
+        id: pack
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          FULL_SHA: ${{ steps.version.outputs.full_sha }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          full_sha="$FULL_SHA"
+          short_sha="$SHORT_SHA"
+          directory="$RUNNER_TEMP/scriptc-prerelease"
+          mkdir -p "$directory"
+          # pnpm pack rewrites the workspace protocol into the versions stamped
+          # above; npm pack would leave `workspace:*` in the tarballs, which
+          # npm cannot install.
+          pack() {
+            pnpm --dir "$1" pack --pack-destination "$directory" --silent | tail -1
+          }
+          runtime=$(basename "$(pack packages/runtime)")
+          runtime_darwin=$(basename "$(pack packages/runtime-darwin-arm64)")
+          llvm=$(basename "$(pack packages/llvm-darwin-arm64)")
+          compiler=$(basename "$(pack packages/compiler)")
+          platform_cli=$(basename "$(pack packages/cli-darwin-arm64)")
+          app=$(basename "$(pack packages/cli)")
+          # The packages a darwin-arm64 install needs, in dependency order: the
+          # runtime and compiler of the release-shaped installation (the packed
+          # npm installation smoke in .github/workflows/ci.yml installs the same
+          # set), the platform packages the native CLI depends on, the platform
+          # CLI itself, and scriptc.
+          install_order=("$runtime" "$runtime_darwin" "$llvm" "$compiler" "$platform_cli" "$app")
+          printf '%s\n' "${install_order[@]}" > "$RUNNER_TEMP/prerelease-install-order.txt"
+          ( cd "$directory" && shasum -a 256 "${install_order[@]}" > SHA256SUMS )
+          # Every tarball carries the one dev version, and every internal
+          # dependency range it declares names that version (never a release
+          # version and never another dev build).
+          for tarball in "${install_order[@]}"; do
+            manifest=$(tar -xOzf "$directory/$tarball" package/package.json)
+            node -e '
+              const manifest = JSON.parse(process.argv[1]);
+              const expected = process.argv[2];
+              const fail = (message) => {
+                console.error(`${manifest.name}: ${message}`);
+                process.exit(1);
+              };
+              if (manifest.version !== expected) fail(`version is ${manifest.version}, expected ${expected}`);
+              for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+                for (const [name, range] of Object.entries(manifest[field] ?? {})) {
+                  if (name.startsWith("@scriptc/") && range !== expected)
+                    fail(`${field} ${name} is ${range}, expected ${expected}`);
+                }
+              }
+            ' "$manifest" "$version"
+          done
+          install_command=$(printf 'npm i -g ./%s' "${install_order[0]}")
+          for tarball in "${install_order[@]:1}"; do
+            install_command+=$(printf ' \\\n  ./%s' "$tarball")
+          done
+          cat > "$directory/INSTALL.md" <<EOF
+          # scriptc prerelease for macOS arm64
+
+          Built from commit $full_sha ($short_sha) by the Prerelease (macOS arm64) workflow.
+
+          Version: $version. This is a dev version: it is never published to npm and cannot collide with a release version.
+
+          Requirements: macOS on Apple silicon, Node.js 24 or newer for the install only, and the Xcode command line tools (the compiler links programs with the host's clang).
+
+          ## Install
+
+          Run this from the directory holding these files, with every tarball in one command, in dependency order at the same version:
+
+          ~~~
+          $install_command
+          ~~~
+
+          npm installs all of them into one global tree, and scriptc's postinstall copies the native executable for this host.
+
+          ## Checksums
+
+          Each tarball's SHA-256 (the same list is in SHA256SUMS):
+
+          ~~~text
+          $(cat "$directory/SHA256SUMS")
+          ~~~
+
+          Verify them before installing:
+
+          ~~~
+          shasum -a 256 -c SHA256SUMS
+          ~~~
+
+          ## Check the installation
+
+          ~~~
+          scriptc --version
+          ~~~
+
+          and build and run a program:
+
+          ~~~
+          cat > hello.ts <<'TS'
+          console.log("hello from scriptc");
+          TS
+          scriptc build hello.ts -o hello
+          ./hello
+          ~~~
+
+          ## Uninstall
+
+          ~~~
+          npm uninstall -g scriptc @scriptc/cli-darwin-arm64 @scriptc/llvm-darwin-arm64 @scriptc/runtime-darwin-arm64 @scriptc/compiler @scriptc/runtime
+          ~~~
+          EOF
+          ls -l "$directory"
+          echo "directory=$directory" >> "$GITHUB_OUTPUT"
+
+      - name: Install the packed prerelease
+        env:
+          DIRECTORY: ${{ steps.pack.outputs.directory }}
+        run: |
+          set -euo pipefail
+          directory="$DIRECTORY"
+          prefix="$RUNNER_TEMP/prerelease-prefix"
+          args=()
+          while IFS= read -r tarball; do
+            args+=("$directory/$tarball")
+          done < "$RUNNER_TEMP/prerelease-install-order.txt"
+          # A temp prefix install proves what INSTALL.md's global install does:
+          # the tarballs resolve their internal dependencies from each other,
+          # not from the registry, and scriptc's postinstall selects the
+          # native CLI for this host.
+          npm install --prefix "$prefix" --no-audit --no-fund "${args[@]}"
+
+      - name: Verify the packed installation
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          SHORT_SHA: ${{ steps.version.outputs.short_sha }}
+          DIRECTORY: ${{ steps.pack.outputs.directory }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          short_sha="$SHORT_SHA"
+          directory="$DIRECTORY"
+          prefix="$RUNNER_TEMP/prerelease-prefix"
+          scriptc="$prefix/node_modules/.bin/scriptc"
+          # The installed command is the native compiler, and its version comes
+          # from the toolchain manifest stamped above.
+          installed_version=$("$scriptc" --version)
+          echo "scriptc --version: $installed_version"
+          test "$installed_version" = "$version"
+          work="$RUNNER_TEMP/prerelease-hello"
+          mkdir -p "$work"
+          printf 'console.log("hello from the scriptc prerelease");\n' > "$work/hello.ts"
+          (
+            cd "$work"
+            SCRIPTC_NO_CACHE=1 "$scriptc" build hello.ts -o hello
+          )
+          hello_output=$("$work/hello")
+          echo "the built program printed: $hello_output"
+          test "$hello_output" = "hello from the scriptc prerelease"
+          {
+            echo "### scriptc prerelease $version"
+            echo
+            echo "Installed from the packed tarballs in a temp prefix, built and ran a hello-world program."
+            echo
+            echo "Artifact: scriptc-prerelease-darwin-arm64-$short_sha"
+            echo
+            echo "~~~"
+            echo "$(cat "$directory/SHA256SUMS")"
+            echo "~~~"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scriptc-prerelease-darwin-arm64-${{ steps.version.outputs.short_sha }}
+          path: ${{ steps.pack.outputs.directory }}
+          if-no-files-found: error
+          retention-days: 30

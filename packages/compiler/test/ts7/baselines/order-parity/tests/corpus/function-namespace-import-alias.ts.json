@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/function-namespace-import-alias.ts"
+ ],
+ "diags": []
+}

@@ -11,8 +11,8 @@ type CreateRuntime = (cwd: string) => Promise<{ session: Session; extra: Map<str
 class Session {
   messages: AgentMessage[] = [];
   // A field whose union mentions a stdlib type with no lowering: the class
-  // registers; constructing a WeakRef would still be refused.
-  cachedTokens?: WeakRef<{ source: string; tokens: Token[] }> | undefined;
+  // registers; constructing a BigInt64Array would still be refused.
+  cachedTokens?: BigInt64Array<ArrayBuffer> | undefined;
   rendererState: any = {};
   effectState: Record<string, unknown> = {};
   private readonly createRuntime: CreateRuntime | undefined;

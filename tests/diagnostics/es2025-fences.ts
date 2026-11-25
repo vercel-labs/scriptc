@@ -1,21 +1,7 @@
-// The es2025-lib surface WITHOUT a lowering fences by name: resizable
-// ArrayBuffers and transfer, SharedArrayBuffer.grow, Atomics.waitAsync,
-// Iterator.from over objects with their own next method, and the unlowered forms of the
-// implemented statics (Promise.try with fewer arguments than parameters,
-// groupBy's literal-union keys, a set-like non-Set argument).
-
-// Resizable ArrayBuffer + transfer (ES2024).
-const ab = new ArrayBuffer(8, { maxByteLength: 16 });
-ab.resize(16);
-const moved = ab.transfer();
-
-// The resizable form fences by name even in an erasure position (the
-// fixed-length new Uint8Array(new ArrayBuffer(8)) lowers).
-const rz = new Uint8Array(new ArrayBuffer(8, { maxByteLength: 16 }));
-
-// SharedArrayBuffer growth.
-const sab = new SharedArrayBuffer(8, { maxByteLength: 16 });
-sab.grow(16);
+// The es2025-lib surface WITHOUT a lowering fences by name: Atomics.waitAsync,
+// Iterator.from over objects with their own next method, and the unlowered
+// forms of the implemented statics (Promise.try with fewer arguments than
+// parameters, groupBy's literal-union keys, a set-like non-Set argument).
 
 // Atomics.waitAsync.
 const ia = new Int32Array(4);

@@ -31,20 +31,24 @@ const SUBTLE_LOWERED: ReadonlyMap<string, IrLibFn> = new Map([
   ["deriveBits", "webcrypto.deriveBits"],
   ["deriveKey", "webcrypto.deriveKey"],
   ["sign", "webcrypto.sign"],
+  ["getPublicKey", "webcrypto.getPublicKey"],
   ["verify", "webcrypto.verify"],
   ["digest", "webcrypto.digest"],
 ]);
 
 const SUBTLE_HINT =
-  "the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC or AES-CTR, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, deriveBits and deriveKey with PBKDF2 or HKDF, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
+  "the native WebCrypto surface is crypto.subtle's importKey, generateKey and exportKey for HMAC and AES keys (importKey also for PBKDF2 and HKDF keys), encrypt and decrypt with AES-GCM, AES-CBC, AES-CTR or RSA-OAEP, wrapKey and unwrapKey of secret and asymmetric keys with AES-KW, those ciphers, or RSA-OAEP, deriveBits and deriveKey with PBKDF2, HKDF, ECDH, X25519 or X448, sign and verify with HMAC, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, generateKey, importKey and exportKey for ECDH, X25519, X448 and RSA-OAEP, getPublicKey for an asymmetric private key, and digest with SHA-1, SHA-256, SHA-384 or SHA-512, each called directly on crypto.subtle";
 
 /** Whether `node` is a SubtleCrypto object: `subtle` on a WebCrypto
  * Crypto object (the global, globalThis.crypto or node:crypto's
- * `webcrypto`) or node:crypto's own `subtle` export, named or through
- * the namespace. */
+ * `webcrypto`), a binding destructured from one, or node:crypto's own
+ * `subtle` export, named or through the namespace. */
 function isSubtleReceiver(lowerer: Lowerer, node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(node)) node = node.expression;
   if (ts.isIdentifier(node)) {
+    // `const { subtle } = crypto`: the destructured binding names the
+    // member (lower-stmts.ts stdlibGlobalMemberDestructure).
+    if (stdlibGlobalNameOf(lowerer, node) === "crypto.subtle") return true;
     const imported = lowerer.builtinImportOf(node);
     return imported?.module === "crypto" && imported.member === "subtle";
   }

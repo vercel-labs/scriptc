@@ -12,9 +12,11 @@ export function isConsoleLog(lowerer: Lowerer, call: ts.CallExpression): boolean
 export type ConsoleOutputMember = "log" | "info" | "debug" | "error" | "warn";
 
 /** The rest of the lowered global console surface (lower-console.ts):
- * counters, timers, groups, assert, dir/dirxml, table, clear, and the
- * inspector-only profile/profileEnd/timeStamp. trace stays fenced (its
- * stack frames name Node's own module loader). */
+ * counters, timers, groups, assert, dir/dirxml, table, clear, trace, the
+ * inspector-only profile/profileEnd/timeStamp, and createTask (the task
+ * object the runtime's console member builds). trace prints the
+ * captured frames with scriptc's own function and file text (SEMANTICS
+ * divergence 11), the same frames an uncaught Error's report carries. */
 export type ConsoleMethodMember =
   | "assert"
   | "clear"
@@ -31,7 +33,9 @@ export type ConsoleMethodMember =
   | "time"
   | "timeEnd"
   | "timeLog"
-  | "timeStamp";
+  | "timeStamp"
+  | "trace"
+  | "createTask";
 
 const CONSOLE_METHOD_MEMBERS: ReadonlySet<string> = new Set<ConsoleMethodMember>([
   "assert",
@@ -50,6 +54,8 @@ const CONSOLE_METHOD_MEMBERS: ReadonlySet<string> = new Set<ConsoleMethodMember>
   "timeEnd",
   "timeLog",
   "timeStamp",
+  "trace",
+  "createTask",
 ]);
 
 /** The console member of a `console.<member>(...)` call, for the lowered
@@ -93,6 +99,13 @@ function consoleMemberOf(
     lowerer.builtinNamespaceModuleOf(access.expression) === "console"
     ? name
     : null;
+}
+
+/** Whether a direct `console.<name>(...)` call has a lowering: the output
+ * members and the rest of the lowered surface. The keys that are not
+ * methods do not. */
+export function isLoweredConsoleMember(name: string): boolean {
+  return isConsoleOutputMember(name) || CONSOLE_METHOD_MEMBERS.has(name);
 }
 
 function isConsoleOutputMember(name: string): name is ConsoleOutputMember {

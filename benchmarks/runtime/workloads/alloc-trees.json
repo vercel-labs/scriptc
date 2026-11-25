@@ -2,5 +2,6 @@
   "entry": "workloads/alloc-trees.ts",
   "args": [
     "1"
-  ]
+  ],
+  "scaleArg": 0
 }

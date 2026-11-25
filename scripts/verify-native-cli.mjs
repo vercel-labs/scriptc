@@ -53,7 +53,6 @@ for (const name of [
   ...(platformPackages ? [] : ["llvm_package", "runtime_pack"]),
   "runtime_sources",
   "declarations",
-  "comptime",
   "wasi_node_runner",
 ]) {
   const value = toolchain[name];
@@ -110,14 +109,11 @@ for (const name of readdirSync(join(distribution, "lib"))) {
 }
 if (process.argv.includes("--run")) {
   if (target.startsWith("linux-")) {
-    for (const executable of [
-      binary,
-      resolve(dirname(binary), toolchain.ts7),
-      resolve(dirname(binary), toolchain.comptime),
-    ]) {
+    for (const executable of [binary, resolve(dirname(binary), toolchain.ts7)]) {
       verifyLinuxAbi(executable, { staticOnly: target.endsWith("-musl") });
     }
-    verifyLinuxAbi(join(helperRoot, "bin/scriptc-llvm-codegen"), { staticOnly: true });
+    for (const tool of ["scriptc-llvm-codegen", "scriptc-comptime"])
+      verifyLinuxAbi(join(helperRoot, "bin", tool), { staticOnly: true });
   }
   const version = execFileSync(binary, ["--version"], {
     encoding: "utf8",
@@ -139,7 +135,7 @@ if (process.argv.includes("--run")) {
   // only executables whose linker-generated code signature matches their
   // contents.
   if (process.platform === "darwin" && process.arch === "arm64") {
-    for (const executable of [binary, tscTs, resolve(dirname(binary), toolchain.comptime)])
+    for (const executable of [binary, tscTs, join(helperRoot, "bin/scriptc-comptime")])
       execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "inherit" });
   }
 }

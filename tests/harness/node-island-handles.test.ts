@@ -75,8 +75,30 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
+  test("abort listeners of a signal shared with an island: the island's run first", async () => {
+    // Under Node the four listeners run in registration order (n1, i1, n2,
+    // i2) and each count is the total (2, 4, 4): it is one signal. A native
+    // signal and its twin in the island keep one listener list each.
+    expect(await runFixture("abort-order", "abort-order/main.ts")).toBe(
+      "island counts 1 2 native count 2\ni1\ni2\nn1\nn2\n",
+    );
+  }, 300_000);
+
   test("requireModule() loads Node's built-in modules", async () => {
     expect(await runFixture("builtins", "builtins.ts")).toBe("a/b string\n");
+  }, 300_000);
+
+  test("a program buffer that can move or is detached does not cross into an island", async () => {
+    // An island view aliases the program's memory, so a buffer the program
+    // can resize or has detached is refused by name where it would cross,
+    // as a value or through a view. Under Node every line is a size.
+    const refused =
+      "true scriptc: a resizable or detached ArrayBuffer cannot cross into a Node island yet " +
+      "(scope-B NI-5 exports native values by reference)";
+    expect(await runFixture("movable-buffers", "movable-buffers.mjs")).toBe(
+      "fixed view 8\nfixed buffer 8\n" +
+        `resizable view ${refused}\nresizable buffer ${refused}\ndetached buffer ${refused}\n`,
+    );
   }, 300_000);
 
   /** Runs a binary that refuses at run time: its stderr. */
@@ -210,11 +232,43 @@ describe.skipIf(skip)("Node island handles", () => {
     );
   }, 300_000);
 
-  test("an island record that contradicts its declaration throws at the crossing", async () => {
-    // A record the island hands back crosses as a deep checked copy:
-    // `unsafe<T>` declares the caller's own record type and hands back a
-    // JSON object whose `fg` is a number, so the copy's conversion throws
-    // before a number reaches a native string field.
+  test("an island value that contradicts its declaration names the declaration and its patch", async () => {
+    // The conversion at the crossing carries the origin of the declaration
+    // that types the island's value, so the TypeError says which
+    // declaration to patch. A declaration inside a namespace is named
+    // through it, as `scriptc types patch` reaches it, and an element read
+    // names the element of what its receiver declares.
+    const dir = join(outDir, "declared-origin");
+    mkdirSync(dir, { recursive: true });
+    const result = await compile(
+      join(repoRoot, "tests/coverage-fixtures/node-islands-type-claims/lie.ts"),
+      { outPath: join(dir, "lie"), outDir: dir, sanitize },
+    );
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const { stdout } = await execFileAsync(result.binaryPath, [], { encoding: "utf8" });
+    expect(stdout).toBe(
+      "ttl expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares Session.ttl as number (index.d.ts:3)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island Session.ttl '| undefined'\n" +
+        "max expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares limits.Quota.max as number (index.d.ts:12)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island limits.Quota.max '| undefined'\n" +
+        "size expected number at $, got string\n" +
+        "    tc-island@3.1.0 declares sizes()[] as number (index.d.ts:16)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island 'sizes()[]' '| string'\n" +
+        "ttl by key expected number at $, got undefined\n" +
+        "    tc-island@3.1.0 declares Session.ttl as number (index.d.ts:3)\n" +
+        "    if that declaration is wrong, patch it: scriptc types patch tc-island Session.ttl '| undefined'\n",
+    );
+  }, 300_000);
+
+  test("an island record that contradicts its declaration throws at the read", async () => {
+    // The program record type the island's value is declared with is a
+    // checked-identity view (wave-2 6 = C), so the value keeps its identity
+    // and every read checks the declared type: `unsafe<T>` hands back a JSON
+    // object whose `fg` is a number, and reading it as the declared string
+    // throws instead of handing a number to native code.
     const root = join(outDir, "unsafe-record-lie");
     rmSync(root, { recursive: true, force: true });
     cpSync(join(repoRoot, "tests/corpus/6899-node-island-unsafe-record"), root, {
@@ -232,7 +286,7 @@ describe.skipIf(skip)("Node island handles", () => {
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
     expect(await refusal(result.binaryPath)).toContain(
-      "TypeError: expected string at $.fg, got number",
+      "TypeError: expected string at $, got number",
     );
   }, 300_000);
 

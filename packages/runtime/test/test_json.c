@@ -118,6 +118,13 @@ static void live_array_ref_tests(void) {
   check(scr_dyn_has_key(capsule, one) && scr_dyn_has_own(capsule, one) && scr_dyn_has_own(capsule, length),
       "live array own presence");
   check(!scr_dyn_has_own(capsule, two) && !scr_dyn_has_own(capsule, four), "live array own absence");
+  ScrStr *named = S("then");
+  got = scr_dyn_typed_ref_key_get(capsule, named);
+  check(got && got->kind == SCR_DYN_UNDEF, "a name a live array does not hold reads undefined");
+  scr_dyn_release(got);
+  check(!scr_dyn_typed_ref_own_get(capsule, named), "a name is not an own member of a live array");
+  scr_str_release(named);
+  check(!scr_dyn_ref_is_error(capsule), "live array is not an error");
   check(live_array_materializations == 0, "live array reads never materialize");
 
   ScrDyn *value = scr_dyn_new_num(7);
@@ -205,8 +212,18 @@ static void live_record_ref_tests(void) {
   ScrDyn *got = scr_dyn_typed_ref_key_get(capsule, x);
   check(got && got->kind == SCR_DYN_NUM && got->v.num == 3, "live record field");
   scr_dyn_release(got);
-  check(!scr_dyn_typed_ref_key_get(capsule, label), "absent optional field needs the view");
-  check(!scr_dyn_typed_ref_key_get(capsule, missing), "unknown name needs the view");
+  check(!scr_dyn_typed_ref_own_get(capsule, label) && !scr_dyn_typed_ref_own_get(capsule, missing),
+      "an absent optional field and an unknown name are not own members");
+  got = scr_dyn_typed_ref_key_get(capsule, label);
+  check(got && got->kind == SCR_DYN_UNDEF, "absent optional field reads undefined without the view");
+  scr_dyn_release(got);
+  got = scr_dyn_typed_ref_key_get(capsule, missing);
+  check(got && got->kind == SCR_DYN_UNDEF, "unknown name reads undefined without the view");
+  scr_dyn_release(got);
+  ScrStr *inherited = S("toString");
+  check(!scr_dyn_typed_ref_key_get(capsule, inherited), "a name Object.prototype answers needs the view");
+  scr_str_release(inherited);
+  check(!scr_dyn_ref_is_error(capsule), "live record is not an error");
   check(scr_dyn_has_key(capsule, x) && scr_dyn_has_own(capsule, x), "live record own presence");
   check(!scr_dyn_has_own(capsule, label) && !scr_dyn_has_own(capsule, missing),
       "live record own absence");
@@ -250,6 +267,31 @@ static void live_record_ref_tests(void) {
   got = scr_dyn_typed_ref_key_get(capsule, x);
   check(!got, "a viewed record reads through the view");
   check(scr_dyn_has_own(capsule, extra), "presence reads the view");
+  /* A union's checked match reads a capsule's discriminant once for all of
+   * the union's literals, as each literal test reads it. */
+  ScrStr *p = S("p"), *q = S("q"), *r = S("r");
+  ScrStr *const literals[] = { q, p };
+  ScrStr *const others[] = { q, r };
+  check(scr_dyn_field_eq_num(capsule, extra, 1) && scr_dyn_field_eq_str(capsule, label, p) &&
+      !scr_dyn_field_eq_str(capsule, label, q), "literal tests read the capsule");
+  check(scr_dyn_discriminant_case(capsule, label, literals, 2) == 1,
+      "a capsule's discriminant selects its case");
+  check(scr_dyn_discriminant_case(capsule, label, others, 2) == -1,
+      "a string among no literal matches none");
+  check(scr_dyn_discriminant_case(capsule, x, literals, 2) == -1,
+      "a discriminant that is not a string matches no literal");
+  check(scr_dyn_discriminant_case(capsule, missing, literals, 2) == -1,
+      "a member the capsule lacks matches no literal");
+  /* A capsule that is not a record (a class instance: its member can be a
+   * getter) is left to the literal tests and is not read here. */
+  ScrDyn *instance = scr_dyn_new_typed_ref(rec, live_record_retain, live_record_release,
+      "object:t", 8, live_record_materialize, NULL);
+  size_t materialized = live_record_materializations;
+  check(scr_dyn_discriminant_case(instance, label, literals, 2) == -2 &&
+      live_record_materializations == materialized,
+      "a capsule that is not a record is left to the literal tests, unread");
+  scr_dyn_release(instance);
+  scr_str_release(p); scr_str_release(q); scr_str_release(r);
   check(!scr_exc_pending(), "live record queries raise nothing");
 
   scr_str_release(x); scr_str_release(label); scr_str_release(extra); scr_str_release(missing);
@@ -520,6 +562,103 @@ static void json_callback_tests(void) {
   scr_dyn_release(callback);
 }
 
+/* scr_record_reflects_static: a native record answers reflection from its
+ * declared fields alone until it keeps a source, is a copy linked to a
+ * wider source, or a live capsule of it holds something of its own. The
+ * fact follows the tables: it is true again once the capsule is gone, and
+ * a record's entries leave with the record (the dispose hook). */
+static LiveRecord *reflecting_record(double x) {
+  LiveRecord *rec = calloc(1, sizeof *rec);
+  rec->rc = 1;
+  rec->x = x;
+  return rec;
+}
+static void reflecting_record_free(LiveRecord *rec) {
+  if (scr_weak_dispose_hook) scr_weak_dispose_hook(rec);
+  live_record_release(rec);
+}
+/* A stand-in symbol: the dyn runtime keys a symbol by its address and asks
+ * the symbol unit, which this test does not link, only for its text. */
+static char reflecting_mark;
+static void reflecting_mark_release(ScrSym *symbol) { (void)symbol; }
+static ScrStr *reflecting_mark_text(ScrSym *symbol) {
+  (void)symbol;
+  return scr_str_new("mark", 4);
+}
+static void record_reflects_static_tests(void) {
+  LiveRecord *plain = reflecting_record(1);
+  check(scr_record_reflects_static(plain, true), "a record no table holds reflects statically");
+
+  /* A live capsule with nothing of its own leaves the answer alone. */
+  ScrDyn *capsule = scr_dyn_new_typed_ref(plain, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  check(scr_record_reflects_static(plain, true), "a plain live capsule changes nothing");
+  /* A prototype given through the capsule lives in the capsule's view. */
+  ScrDyn *proto = scr_dyn_new_obj();
+  ScrDyn *same = scr_dyn_set_prototype(capsule, proto);
+  check(same == capsule && !scr_exc_pending(), "a capsule takes a prototype");
+  check(!scr_record_reflects_static(plain, true), "a live capsule with a prototype answers for its record");
+  LiveRecord *other = reflecting_record(2);
+  check(scr_record_reflects_static(other, true), "another record is not that capsule's");
+  scr_dyn_release(same);
+  scr_dyn_release(proto);
+  scr_dyn_release(capsule);
+  check(scr_record_reflects_static(plain, true), "the prototype goes with the capsule");
+
+  /* A member named by a symbol and written through a capsule lives in that
+   * capsule's view: no declared field holds it, and Reflect.ownKeys lists
+   * it after the fields. */
+  ScrDyn *holder = scr_dyn_new_typed_ref(plain, live_record_retain, live_record_release,
+      "record:t", 8, live_record_materialize, NULL);
+  ScrDyn *mark = scr_dyn_symbol_ref((ScrSym *)&reflecting_mark, reflecting_mark_release,
+      reflecting_mark_text, reflecting_mark_text);
+  ScrDyn *marked = scr_dyn_new_num(1);
+  check(scr_record_reflects_static(plain, true), "a second plain capsule changes nothing");
+  scr_dyn_symbol_key_set(holder, mark, marked);
+  check(!scr_exc_pending(), "a capsule takes a symbol-keyed member");
+  check(!scr_record_reflects_static(plain, true),
+      "a live capsule with a symbol-keyed member answers for its record");
+  check(scr_record_reflects_static(other, true), "a symbol-keyed member is one record's");
+  scr_dyn_release(marked);
+  scr_dyn_release(mark);
+  scr_dyn_release(holder);
+  check(scr_record_reflects_static(plain, true), "the symbol-keyed member goes with the capsule");
+
+  /* A kept source: the object the record was converted from had a key the
+   * record's type does not declare. */
+  ScrDyn *source = scr_dyn_new_obj();
+  scr_dyn_obj_set(source, "x", 1, scr_dyn_new_num(1));
+  scr_dyn_obj_set(source, "extra", 5, scr_dyn_new_num(2));
+  const char *const names[] = { "x" };
+  const size_t lens[] = { 1 };
+  scr_record_source_note(plain, source, names, lens, 1);
+  check(scr_record_source_has(plain) && !scr_record_reflects_static(plain, true),
+      "a record that kept a source does not reflect statically");
+  check(scr_record_reflects_static(other, true), "a kept source is one record's");
+  /* A source with the declared keys only is not kept. */
+  ScrDyn *exact = scr_dyn_new_obj();
+  scr_dyn_obj_set(exact, "x", 1, scr_dyn_new_num(1));
+  scr_record_source_note(other, exact, names, lens, 1);
+  check(!scr_record_source_has(other) && scr_record_reflects_static(other, true),
+      "a source with the declared keys alone is not kept");
+  scr_dyn_release(exact);
+  scr_dyn_release(source);
+
+  /* A copy linked to the wider record it was narrowed from. */
+  LiveRecord *wide = reflecting_record(3);
+  scr_record_link(other, wide, live_record_release, 7);
+  check(scr_record_link_pair(other) == 7 && !scr_record_reflects_static(other, true),
+      "a linked copy does not reflect statically");
+  check(scr_record_reflects_static(other, false),
+      "the link is not looked for where the program's types rule it out");
+  LiveRecord *fresh = reflecting_record(4);
+  check(scr_record_reflects_static(fresh, true), "the tables in use answer for their records only");
+
+  reflecting_record_free(fresh);
+  reflecting_record_free(other);
+  reflecting_record_free(plain);
+}
+
 static void test_class_values(void) {
   ScrStr *name = S("Stored");
   ScrClassObj template = { .rc = SIZE_MAX, .name = name, .length = 2 };
@@ -636,6 +775,112 @@ static void test_copy_property_descriptors(void) {
   scr_dyn_release(getter);
 }
 
+/* A class instance's checked view installs the class's accessor-backed
+ * members as getters that run on the instance (scr_dyn_class_view_accessors):
+ * a read answers the getter's value, while own-property queries answer as
+ * they do for the instance, where such a member is a prototype accessor. */
+static void *class_view_seen;
+static void *class_view_retain(void *value) { return scr_dyn_retain(value); }
+static void class_view_release(void *value) { scr_dyn_release(value); }
+static ScrDyn *class_view_get(void *instance, size_t index) {
+  class_view_seen = instance;
+  return scr_dyn_new_num(index == 0 ? 10 : 20);
+}
+
+static void test_class_view_accessors(void) {
+  ScrStr *names[2] = {S("kind"), S("value")};
+  ScrDynTypedClassOps ops = {0};
+  ops.accessor_count = 2;
+  ops.accessor_names = names;
+  ops.accessor_get = class_view_get;
+  ScrDyn *instance = scr_dyn_new_obj();
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrStr *tagged = S("tagged");
+  scr_dyn_obj_set(view, "label", 5, scr_dyn_new_str(tagged));
+  scr_str_release(tagged);
+  /* An own field that shadows a getter keeps its value. */
+  scr_dyn_obj_set(view, "value", 5, scr_dyn_new_num(7));
+  scr_dyn_class_view_accessors(view, &ops, instance, class_view_retain, class_view_release, NULL);
+  check(view->v.obj.len == 3, "the view gains one accessor per accessor-backed member");
+
+  ScrDyn *kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->kind == SCR_DYN_NUM && kind->v.num == 10, "a view read answers the member's getter");
+  scr_dyn_release(kind);
+  check(class_view_seen == instance, "the getter runs on the instance, not on the view");
+  ScrDyn *shadowed = scr_dyn_obj_read(view, "value", 5);
+  check(shadowed && shadowed->kind == SCR_DYN_NUM && shadowed->v.num == 7,
+        "an own field shadowing a getter keeps its value");
+  scr_dyn_release(shadowed);
+
+  check(scr_dyn_obj_get(view, "kind", 4) == NULL, "the member is not an own data property of the view");
+  ScrStr *kind_name = S("kind");
+  ScrDyn *descriptor = scr_dyn_own_descriptor(view, kind_name);
+  check(descriptor && descriptor->kind == SCR_DYN_UNDEF, "the view has no own descriptor for the member");
+  scr_dyn_release(descriptor);
+  scr_str_release(kind_name);
+  ScrDyn *keys = scr_dyn_obj_own_keys(view);
+  check(keys->v.arr.len == 2 && str_is(keys->v.arr.items[0]->v.str, "label") &&
+            str_is(keys->v.arr.items[1]->v.str, "value"),
+        "own-key walks leave the class member out");
+  scr_dyn_release(keys);
+
+  /* Installing again finds the entry and changes nothing. */
+  scr_dyn_class_view_accessors(view, &ops, instance, class_view_retain, class_view_release, NULL);
+  check(view->v.obj.len == 3, "the installer keeps one entry per member");
+  kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->v.num == 10, "the member still answers its getter");
+  scr_dyn_release(kind);
+
+  /* The member's entry stands for a prototype accessor, so defining it
+   * creates an own property of the view in its place. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(42), true, true, true));
+  ScrDyn *defined = scr_dyn_obj_get(view, "kind", 4);
+  check(!scr_exc_pending() && defined && defined->kind == SCR_DYN_NUM && defined->v.num == 42 &&
+            !entry_of(view, "kind")->class_view,
+        "defining the member makes it an own data property");
+  scr_dyn_release(defined);
+  ScrStr *defined_name = S("kind");
+  ScrDyn *defined_descriptor = scr_dyn_own_descriptor(view, defined_name);
+  check(defined_descriptor && defined_descriptor->kind == SCR_DYN_OBJ,
+        "the view now has an own descriptor for the member");
+  scr_dyn_release(defined_descriptor);
+  scr_str_release(defined_name);
+  keys = scr_dyn_obj_own_keys(view);
+  check(keys->v.arr.len == 3 && str_is(keys->v.arr.items[2]->v.str, "kind"),
+        "own-key walks include the defined member");
+  scr_dyn_release(keys);
+  kind = scr_dyn_obj_read(view, "kind", 4);
+  check(kind && kind->v.num == 42, "a read answers the defined value");
+
+  /* Defining again overwrites the own property, whose attributes are now
+   * read from the previous definition rather than from the class member. */
+  scr_dyn_release(define_from(view, "kind", scr_dyn_new_num(43), true, true, true));
+  const ScrDynEntry *redefined = entry_of(view, "kind");
+  check(redefined && redefined->value->v.num == 43 && redefined->writable && redefined->enumerable &&
+            redefined->configurable,
+        "a second definition keeps the attributes of the first");
+  scr_dyn_release(kind);
+
+  /* Being no own property, a class member is a new property to a closed
+   * view, which refuses it and keeps answering its getter. */
+  ScrDyn *closed_view = scr_dyn_new_obj();
+  scr_dyn_class_view_accessors(closed_view, &ops, instance, class_view_retain, class_view_release, NULL);
+  scr_dyn_release(scr_dyn_prevent_extensions(closed_view));
+  scr_dyn_release(define_from(closed_view, "kind", scr_dyn_new_num(1), true, true, true));
+  check(scr_exc_pending(), "a non-extensible view refuses a definition of the member");
+  scr_exc_clear();
+  ScrDyn *kept = scr_dyn_obj_read(closed_view, "kind", 4);
+  check(kept && kept->v.num == 10 && !scr_dyn_obj_get(closed_view, "kind", 4),
+        "the refused definition leaves the member answering its getter");
+  scr_dyn_release(kept);
+  scr_dyn_release(closed_view);
+
+  scr_dyn_release(view);
+  scr_dyn_release(instance);
+  scr_str_release(names[0]);
+  scr_str_release(names[1]);
+}
+
 static void test_primitive_owners(void) {
   ScrDyn *values[] = {scr_dyn_new_null(), scr_dyn_new_bool(false), scr_dyn_new_bool(true)};
   const char *texts[] = {"null", "false", "true"};
@@ -660,11 +905,139 @@ static void test_primitive_owners(void) {
   check(!scr_dyn_strict_eq(values[1], values[2]), "boolean singleton values remain distinct");
 }
 
+static ScrDyn *no_view(void *value) {
+  (void)value;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* `value instanceof C` for a class of the program walks the value's
+ * prototype chain with scr_dyn_class_test_prototype. The question has
+ * an answer for every value, so the read ends the walk with null where the
+ * runtime models no chain a program class could be on, and never throws. */
+static void test_class_test_walk(void) {
+  ScrStr *source = S("native identity");
+  ScrStr *text = S("text");
+  /* A class instance whose view cannot be built, and a generator object. */
+  ScrDyn *instance = scr_dyn_new_typed_ref(source, view_retain, view_release, "object:Generic", 14,
+                                           scr_dyn_class_view_unavailable, NULL);
+  ScrDyn *generator = scr_dyn_new_typed_ref(source, view_retain, view_release, "generator<f64>", 14, no_view, NULL);
+  ScrDyn *ended[] = {instance, generator, scr_dyn_new_num(1), scr_dyn_new_str(text), scr_dyn_new_bool(true)};
+  for (size_t i = 0; i < sizeof ended / sizeof *ended; i++) {
+    ScrDyn *prototype = scr_dyn_class_test_prototype(ended[i]);
+    check(prototype && prototype->kind == SCR_DYN_NULL && !scr_exc_pending(),
+          "a value without a modeled prototype chain ends a class test's walk");
+    if (scr_exc_pending()) scr_exc_clear();
+    if (prototype) scr_dyn_release(prototype);
+    scr_dyn_release(ended[i]);
+  }
+  scr_str_release(text);
+  scr_str_release(source);
+
+  /* An object keeps its chain: the prototype the program chose, then
+   * Object.prototype, then null. */
+  ScrDyn *parent = scr_dyn_new_obj();
+  ScrDyn *child = scr_dyn_obj_create(parent);
+  ScrDyn *first = scr_dyn_class_test_prototype(child);
+  check(first == parent && !scr_exc_pending(), "a class test's walk follows an object's own prototype");
+  ScrDyn *second = scr_dyn_class_test_prototype(first);
+  check(second && second->kind == SCR_DYN_OBJ && second != parent, "the walk reaches Object.prototype");
+  ScrDyn *third = scr_dyn_class_test_prototype(second);
+  check(third && third->kind == SCR_DYN_NULL && !scr_exc_pending(), "the walk ends after Object.prototype");
+  scr_dyn_release(third);
+  scr_dyn_release(first);
+  scr_dyn_release(second);
+  scr_dyn_release(child);
+  scr_dyn_release(parent);
+}
+
+
+/* Object.setPrototypeOf on class instances (scr_instance_proto_set): an
+ * instance's old prototype can be the last owner of another instance whose
+ * prototype was replaced too. Replacing the first instance's prototype then
+ * frees the second within the call, and the second's disposal moves the
+ * first's entry in the table (backward-shift deletion of a shared probe
+ * run). The first instance must keep the new prototype, and nothing may
+ * read the old one after it is freed (ASan). The instances are fake: two
+ * addresses picked to land in the same bucket of the table's first
+ * capacity, so the second one inserted probes past the first. */
+typedef struct {
+  size_t rc;
+  size_t pad;
+} FakeInstance;
+
+static void *fake_instance_retain(void *p) {
+  ((FakeInstance *)p)->rc++;
+  return p;
+}
+
+static void fake_instance_release(void *p) {
+  FakeInstance *instance = p;
+  if (--instance->rc != 0) return;
+  scr_weak_dispose(p);
+  instance->rc = SIZE_MAX; /* freed */
+}
+
+static ScrDyn *fake_instance_view(void *p) {
+  (void)p;
+  return scr_dyn_new_obj();
+}
+
+/* scr_instance_proto_bucket's hash. */
+static size_t fake_instance_bucket(const void *p, size_t capacity) {
+  uintptr_t h = (uintptr_t)p >> 4;
+  h ^= h >> 17;
+  h *= (uintptr_t)0x9E3779B97F4A7C15ull;
+  return (size_t)(h ^ (h >> 29)) & (capacity - 1);
+}
+
+static void instance_prototype_release_tests(void) {
+  static FakeInstance arena[256] __attribute__((aligned(16)));
+  size_t first = 0, second = 0;
+  for (size_t j = 1; j < 256 && second == 0; j++)
+    if (fake_instance_bucket(&arena[j], 16) == fake_instance_bucket(&arena[0], 16)) second = j;
+  check(second != 0, "two instances share a bucket");
+  if (second == 0) return;
+  static const char key[] = "object:FakeInstance";
+  FakeInstance *b = &arena[first], *a = &arena[second];
+  b->rc = 1;
+  a->rc = 1;
+
+  ScrDyn *cap_b = scr_dyn_new_typed_ref(b, fake_instance_retain, fake_instance_release, key,
+                                        sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_b = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_set_prototype(cap_b, proto_b));
+  scr_dyn_release(proto_b);
+
+  ScrDyn *cap_a = scr_dyn_new_typed_ref(a, fake_instance_retain, fake_instance_release, key,
+                                        sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_a = scr_dyn_new_obj();
+  scr_dyn_obj_set(proto_a, "b", 1, cap_b); /* proto_a owns B's only capsule */
+  fake_instance_release(b);                /* and through it, B */
+  scr_dyn_release(scr_dyn_set_prototype(cap_a, proto_a));
+  scr_dyn_release(proto_a);
+  scr_dyn_release(cap_a); /* the table is proto_a's last owner */
+
+  ScrDyn *cap_a2 = scr_dyn_new_typed_ref(a, fake_instance_retain, fake_instance_release, key,
+                                         sizeof key - 1, fake_instance_view, NULL);
+  ScrDyn *proto_c = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_set_prototype(cap_a2, proto_c));
+  check(b->rc == SIZE_MAX, "replacing a prototype frees the instance it owned");
+  ScrDyn *got = scr_dyn_get_prototype(cap_a2);
+  check(got == proto_c, "the instance keeps its new prototype after its entry moved");
+  scr_dyn_release(got);
+  scr_dyn_release(proto_c);
+  scr_dyn_release(cap_a2);
+  fake_instance_release(a);
+  check(a->rc == SIZE_MAX, "the instance is freed");
+}
+
 int main(void) {
   test_class_values();
   scr_init();
   test_primitive_owners();
   test_copy_property_descriptors();
+  test_class_view_accessors();
+  test_class_test_walk();
 
   /* ── primitives ─────────────────────────────────────────────────── */
   ScrDyn *d = parse_ok("null", "parse null");
@@ -837,6 +1210,8 @@ int main(void) {
   typed_view_failure_tests();
   live_array_ref_tests();
   live_record_ref_tests();
+  record_reflects_static_tests();
+  instance_prototype_release_tests();
 
   printf("%d/%d checks passed\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;

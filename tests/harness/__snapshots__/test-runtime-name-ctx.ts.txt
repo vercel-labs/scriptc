@@ -1,0 +1,8 @@
+test-runtime-name-ctx.ts:8:6 - error SC2020: 'test(...) with a runtime function name, whose body takes the TestContext' is part of the standard library types but has no scriptc lowering yet
+
+  7 | 
+  8 | test(body);
+    |      ^~~~
+  9 | 
+
+  hint: pass the test's name: a body that takes the TestContext cannot have its name read from the function yet

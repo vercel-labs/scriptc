@@ -519,6 +519,67 @@ function splitTestArgs(
   return out;
 }
 
+/** A registration's name read from the function at run time (Node's
+ * `fn.name`, "<anonymous>" when unnamed). The function value is evaluated
+ * once, where the call's argument evaluates, and the same value registers
+ * the test or suite. */
+function runtimeNameOfValue(
+  lowerer: Lowerer,
+  fnValue: IrExpr,
+  loc: SrcLoc,
+): { name: IrExpr; fn: IrExpr } {
+  const fnLocal = lowerer.declareHiddenLocal("%testBody", fnValue.type);
+  const nameLocal = lowerer.declareHiddenLocal("%testName", STRING);
+  const fnRef = (): IrExpr => varRef(fnLocal.id, fnValue.type, loc);
+  const read = varRef(nameLocal.id, STRING, loc);
+  const name: IrExpr = {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: fnLocal.id, init: fnValue, loc },
+      {
+        kind: "varDecl",
+        localId: nameLocal.id,
+        init: lowerer.coerceToExpected(
+          {
+            kind: "dynKeyGet",
+            key: strLit("name", loc),
+            value: lowerer.coerceToExpected(fnRef(), DYN),
+            type: DYN,
+            loc,
+          },
+          STRING,
+        ),
+        loc,
+      },
+    ],
+    result: {
+      kind: "ternary",
+      cond: { kind: "strEq", negated: false, left: read, right: strLit("", loc), type: BOOL, loc },
+      then: strLit("<anonymous>", loc),
+      else_: read,
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+  return { name, fn: fnRef() };
+}
+
+/** Whether a registration takes its name from the function at run time:
+ * no (or an empty) name, a function whose name is not known at compile
+ * time, and no options object (the options path is not lowered yet). */
+function takesRuntimeName(
+  lowerer: Lowerer,
+  nameNode: ts.Expression | undefined,
+  fnNode: ts.Expression | undefined,
+  optionsNode: ts.Expression | undefined,
+): boolean {
+  if (fnNode === undefined || optionsNode !== undefined) return false;
+  if (staticFunctionName(lowerer, fnNode) !== null) return false;
+  return nameNode === undefined || (ts.isStringLiteralLike(nameNode) && nameNode.text === "");
+}
+
 /** The test's name, as Node's Test constructor completes it: a missing or
  * empty name takes the function's name, or "<anonymous>". */
 function lowerTestName(
@@ -529,20 +590,19 @@ function lowerTestName(
   fnNode: ts.Expression | undefined,
   loc: SrcLoc,
 ): IrExpr {
-  const fallback = (): string => {
+  const fallback = (): IrExpr => {
     const fnName = fnNode ? staticFunctionName(lowerer, fnNode) : "";
-    if (fnName === null) {
+    if (fnName === null)
       lowerer.noLowering(
-        `${what} without a name, with a function whose name is not known at compile time`,
+        `${what} with a runtime function name and an options object`,
         fnNode ?? expr,
-        "give the test a name, or pass a function expression or a declared function",
+        "pass the test's name, or drop the options object: a name read from the function at run time combined with an options object is not lowered yet",
       );
-    }
-    return fnName || "<anonymous>";
+    return strLit(fnName || "<anonymous>", loc);
   };
-  if (!nameNode) return strLit(fallback(), loc);
+  if (!nameNode) return fallback();
   const name = lowerer.lowerExprExpecting(nameNode, STRING);
-  if (name.kind === "strLit") return name.value === "" ? strLit(fallback(), loc) : name;
+  if (name.kind === "strLit") return name.value === "" ? fallback() : name;
   // A name computed at run time: when the function's own name is not known
   // at compile time (a function passed in as a parameter, say), the name
   // is used as given, and an empty one stays empty (the limitations page
@@ -557,7 +617,7 @@ function lowerTestName(
     result: {
       kind: "ternary",
       cond: { kind: "strEq", negated: false, left: value, right: strLit("", loc), type: BOOL, loc },
-      then: strLit(fallback(), loc),
+      then: fallback(),
       else_: value,
       type: STRING,
       loc,
@@ -577,7 +637,27 @@ function lowerRegistration(
 ): IrExpr {
   if (sub === null) requireStatementPosition(lowerer, expr, what);
   const { nameNode, optionsNode, fnNode } = splitTestArgs(lowerer, expr, what);
-  let name = lowerTestName(lowerer, expr, what, nameNode, fnNode, loc);
+  let preLoweredBody: { cb: IrExpr; flags: number } | null = null;
+  let name: IrExpr;
+  if (takesRuntimeName(lowerer, nameNode, fnNode, optionsNode)) {
+    /* The name comes from the function, so the body is lowered here and the
+     * same value registers the test: one evaluation, as Node's arguments. */
+    preLoweredBody = lowerBodyArg(lowerer, fnNode!, what, true);
+    if (
+      preLoweredBody.cb.type.kind === "func" &&
+      preLoweredBody.cb.type.params.some((candidate) => candidate.kind === "testCtx")
+    )
+      lowerer.noLowering(
+        `${what} with a runtime function name, whose body takes the TestContext`,
+        fnNode!,
+        "pass the test's name: a body that takes the TestContext cannot have its name read from the function yet",
+      );
+    const named = runtimeNameOfValue(lowerer, preLoweredBody.cb, loc);
+    preLoweredBody = { cb: named.fn, flags: preLoweredBody.flags };
+    name = named.name;
+  } else {
+    name = lowerTestName(lowerer, expr, what, nameNode, fnNode, loc);
+  }
   let opts = noOptions();
   if (optionsNode) {
     opts = lowerTestOptions(lowerer, optionsNode, what, false);
@@ -638,7 +718,7 @@ function lowerRegistration(
       loc,
     );
   }
-  const { cb, flags } = lowerBodyArg(lowerer, fnNode, what, true);
+  const { cb, flags } = preLoweredBody ?? lowerBodyArg(lowerer, fnNode, what, true);
   const flagsLit = numLit(flags | flagBits, loc);
   if (sub) {
     const promiseVoid: IrType = { kind: "promise", inner: VOID };
@@ -699,7 +779,15 @@ function lowerSuite(
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
   const split = splitTestArgs(lowerer, expr, what);
-  let name = lowerTestName(lowerer, expr, what, split.nameNode, split.fnNode, loc);
+  let preLoweredSuiteBody: IrExpr | null = null;
+  let name: IrExpr;
+  if (takesRuntimeName(lowerer, split.nameNode, split.fnNode, split.optionsNode)) {
+    const named = runtimeNameOfValue(lowerer, lowerer.lowerExpr(split.fnNode!), loc);
+    preLoweredSuiteBody = named.fn;
+    name = named.name;
+  } else {
+    name = lowerTestName(lowerer, expr, what, split.nameNode, split.fnNode, loc);
+  }
   let opts = noOptions();
   if (split.optionsNode) {
     opts = lowerTestOptions(lowerer, split.optionsNode, what, true);
@@ -713,7 +801,7 @@ function lowerSuite(
   if (!fnNode) {
     lowerer.noLowering(`${what} without a body`, expr, "give the suite a body function");
   }
-  const cb = lowerer.lowerExpr(fnNode);
+  const cb = preLoweredSuiteBody ?? lowerer.lowerExpr(fnNode);
   // The body may take the SuiteContext (flag 2, as test bodies take theirs).
   if (
     cb.type.kind !== "func" ||

@@ -56,6 +56,14 @@ ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options);
 ScrStr *scr_intl_number_format_format(ScrDyn *format, double x);
 ScrStr *scr_intl_number_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_number_to_locale_string(double x, ScrStr *locale, ScrDyn *options);
+/* The same entry points with a locales value the program decides at run
+ * time: undefined is the default locale, a string is validated against
+ * ECMA-402's tag grammar (Node's RangeError), canonicalized and negotiated
+ * against ICU's locales as Node's best fit does, and any other value is the
+ * TypeError Node raises. `.toLocaleString` reads the locale before the
+ * options, as the specification's constructor does. */
+ScrDyn *scr_intl_number_format_new_dyn_locale(ScrDyn *locale, ScrDyn *options);
+ScrStr *scr_intl_number_to_locale_string_dyn_locale(double x, ScrDyn *locale, ScrDyn *options);
 
 /* Intl.DateTimeFormat: the constructor, `format(ms)` on its result (a
  * RangeError outside the time value range), and Date.prototype
@@ -66,5 +74,10 @@ ScrDyn *scr_intl_date_time_format_new(ScrStr *locale, ScrDyn *options);
 ScrStr *scr_intl_date_time_format_format(ScrDyn *format, double ms);
 ScrStr *scr_intl_date_time_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *options);
+/* The constructor and the three Date formatters over a run-time locales
+ * value (see the NumberFormat pair above); an invalid date still answers
+ * "Invalid Date" before the locale is validated. */
+ScrDyn *scr_intl_date_time_format_new_dyn_locale(ScrDyn *locale, ScrDyn *options);
+ScrStr *scr_intl_date_to_locale_dyn_locale(double ms, double kind, ScrDyn *locale, ScrDyn *options);
 
 #endif /* SCR_INTL_H */

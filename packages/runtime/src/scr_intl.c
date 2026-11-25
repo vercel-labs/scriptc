@@ -796,10 +796,145 @@ static void scr_intl_refuse(const char *what) {
   scr_str_release(text);
 }
 
+static bool scr_intl_tag_alpha(unsigned char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static bool scr_intl_tag_digit(unsigned char c) { return c >= '0' && c <= '9'; }
+
+static bool scr_intl_tag_alnum(unsigned char c) {
+  return scr_intl_tag_alpha(c) || scr_intl_tag_digit(c);
+}
+
+static bool scr_intl_tag_run(const char *s, size_t n, bool (*pred)(unsigned char)) {
+  for (size_t i = 0; i < n; i++)
+    if (!pred((unsigned char)s[i])) return false;
+  return true;
+}
+
+/** ECMA-402's IsStructurallyValidLanguageTag: the Unicode locale identifier
+ * grammar (language (script)? (region)? (variant)* (extension)* (privateuse)?),
+ * with grandfathered and private-use-only tags invalid, a language of four
+ * letters invalid, and no singleton or variant repeated. A tag the runtime
+ * rejects is Node's RangeError, never a formatter that quietly picks another
+ * locale. */
+static bool scr_intl_language_tag_valid(const char *s, size_t n) {
+  if (n == 0 || n > 255) return false;
+  size_t i = 0;
+  size_t len = 0;
+  while (i < n && s[i] != '-') {
+    len++;
+    i++;
+  }
+  if (!((len >= 2 && len <= 3) || (len >= 5 && len <= 8))) return false;
+  if (!scr_intl_tag_run(s, len, scr_intl_tag_alpha)) return false;
+  bool script = false;
+  bool region = false;
+  bool variant = false;
+  bool extension = false;
+  bool extension_needs_subtag = false;
+  bool private_use = false;
+  bool private_use_needs_subtag = false;
+  char singletons[36];
+  size_t nsing = 0;
+  while (i < n) {
+    if (s[i] != '-') return false;
+    i++;
+    const size_t start = i;
+    while (i < n && s[i] != '-') i++;
+    len = i - start;
+    if (len == 0) return false;
+    const char *t = s + start;
+    if (private_use) {
+      if (len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      private_use_needs_subtag = false;
+      continue;
+    }
+    if (len == 1) {
+      const unsigned char c = (unsigned char)t[0];
+      if (!scr_intl_tag_alnum(c)) return false;
+      if (extension_needs_subtag) return false; /* "en-a-b": a needs a subtag */
+      if (c == 'x' || c == 'X') {
+        private_use = true;
+        private_use_needs_subtag = true;
+        continue;
+      }
+      const unsigned char lower =
+          c >= 'A' && c <= 'Z' ? (unsigned char)(c - 'A' + 'a') : c;
+      for (size_t k = 0; k < nsing; k++)
+        if ((unsigned char)singletons[k] == lower) return false;
+      if (nsing < sizeof singletons) singletons[nsing++] = (char)lower;
+      extension = true;
+      extension_needs_subtag = true;
+      continue;
+    }
+    if (extension) {
+      if (len < 2 || len > 8 || !scr_intl_tag_run(t, len, scr_intl_tag_alnum)) return false;
+      extension_needs_subtag = false;
+      continue;
+    }
+    if (!script && !region && !variant && len == 4 &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alpha)) {
+      script = true;
+      continue;
+    }
+    if (!region && !variant &&
+        ((len == 2 && scr_intl_tag_run(t, 2, scr_intl_tag_alpha)) ||
+         (len == 3 && scr_intl_tag_run(t, 3, scr_intl_tag_digit)))) {
+      region = true;
+      continue;
+    }
+    if (((len >= 5 && len <= 8) || (len == 4 && scr_intl_tag_digit((unsigned char)t[0]))) &&
+        scr_intl_tag_run(t, len, scr_intl_tag_alnum)) {
+      variant = true;
+      continue;
+    }
+    return false;
+  }
+  return !extension_needs_subtag && !private_use_needs_subtag;
+}
+
+/** Node's RangeError for a tag that is not structurally valid. */
+static void scr_intl_throw_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
+/** The locale a valid tag resolves to: Node's best-fit matcher over ICU's
+ * available locales (V8 hands ICU's LocaleMatcher the requested tags and the
+ * service's locale list; uloc_acceptLanguage is that matcher). A tag ICU has
+ * no locale for falls back to the default locale, as Node's ResolveLocale
+ * does, and the requested locale's own extension keywords ride onto the
+ * matched locale so an explicit calendar or numbering system still reaches
+ * ICU. `icu` is the tag's ICU locale id. */
+static void scr_intl_resolve_locale(const char *icu, char *out, size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UEnumeration *available = uloc_openAvailableByType(ULOC_AVAILABLE_DEFAULT, &status);
+  if (U_SUCCESS(status) && available != NULL) {
+    const char *accept[1] = {icu};
+    char resolved[ULOC_FULLNAME_CAPACITY];
+    UAcceptResult result;
+    status = U_ZERO_ERROR;
+    const int32_t got = uloc_acceptLanguage(resolved, (int32_t)sizeof resolved, &result, accept, 1,
+                                            available, &status);
+    uenum_close(available);
+    if (U_SUCCESS(status) && got > 0) {
+      const char *keywords = strchr(icu, '@');
+      if (keywords != NULL && strchr(resolved, '@') == NULL)
+        snprintf(out, size, "%s%s", resolved, keywords);
+      else
+        snprintf(out, size, "%s", resolved);
+      return;
+    }
+  } else if (available != NULL) {
+    uenum_close(available);
+  }
+  snprintf(out, size, "%s", scr_intl_locale);
+}
+
 /** The ICU locale a formatter runs at: the default locale for the empty
- * tag (an absent or undefined locales argument), else the tag's. The
- * compiler passes only tags it accepts. False with the missing-data Error
- * pending. */
+ * tag (an absent or undefined locales argument), else the tag's, validated
+ * and negotiated. False with the missing-data or RangeError pending. */
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();
@@ -809,20 +944,50 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
     snprintf(out, size, "%s", scr_intl_locale);
     return true;
   }
-  char text[ULOC_FULLNAME_CAPACITY];
-  if (tag->len >= sizeof text) {
-    scr_intl_refuse("this Intl locale");
+  if (tag->len >= ULOC_FULLNAME_CAPACITY ||
+      !scr_intl_language_tag_valid(tag->data, tag->len)) {
+    scr_intl_throw_bad_locale();
     return false;
   }
+  char text[ULOC_FULLNAME_CAPACITY];
   memcpy(text, tag->data, tag->len);
   text[tag->len] = '\0';
+  char icu[ULOC_FULLNAME_CAPACITY];
   UErrorCode status = U_ZERO_ERROR;
-  uloc_forLanguageTag(text, out, (int32_t)size, NULL, &status);
+  uloc_forLanguageTag(text, icu, (int32_t)sizeof icu, NULL, &status);
   if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING) {
-    scr_intl_refuse("this Intl locale");
+    scr_intl_throw_bad_locale();
     return false;
   }
+  scr_intl_resolve_locale(icu, out, size);
   return true;
+}
+
+/** The tag a run-time locales value names: NULL for undefined (the default
+ * locale), else its string, which the caller validates. A malformed empty
+ * string, null, or a non-string value throws here with the exception
+ * pending, so a caller tests scr_exc_pending() before going on. `what` names
+ * the constructor or method for the TypeError. */
+static const ScrStr *scr_intl_locale_value(const ScrDyn *value, const char *what) {
+  if (value == NULL || value->kind == SCR_DYN_UNDEF) return NULL;
+  if (value->kind == SCR_DYN_STR) {
+    if (value->v.str->len == 0) {
+      scr_intl_throw_bad_locale();
+      return NULL;
+    }
+    return value->v.str;
+  }
+  if (value->kind == SCR_DYN_NULL) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, what);
+  scr_jb_puts(&message, " locales argument must be a string");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return NULL;
 }
 
 /* ── Intl.NumberFormat ────────────────────────────────────────────────
@@ -1462,6 +1627,15 @@ ScrDyn *scr_intl_number_format_new(ScrStr *locale, ScrDyn *options) {
   return boxed;
 }
 
+/** `new Intl.NumberFormat(locales, options)` with the locales value decided
+ * at run time: undefined is the default locale, a string is validated and
+ * negotiated, and anything else is the TypeError Node raises. */
+ScrDyn *scr_intl_number_format_new_dyn_locale(ScrDyn *locale, ScrDyn *options) {
+  const ScrStr *tag = scr_intl_locale_value(locale, "Intl.NumberFormat");
+  if (tag == NULL && scr_exc_pending()) return NULL;
+  return scr_intl_number_format_new((ScrStr *)tag, options);
+}
+
 ScrStr *scr_intl_number_format_format(ScrDyn *format, double x) {
   ScrIntlNumberFormat *value = scr_intl_number_format_of(format);
   return value == NULL ? NULL : scr_intl_number_format_run(value, x);
@@ -1479,6 +1653,13 @@ ScrStr *scr_intl_number_to_locale_string(double x, ScrStr *locale, ScrDyn *optio
   ScrStr *text = scr_intl_number_format_run(format, x);
   scr_intl_number_format_release(format);
   return text;
+}
+
+/** `x.toLocaleString(locales, options)` over a run-time locales value. */
+ScrStr *scr_intl_number_to_locale_string_dyn_locale(double x, ScrDyn *locale, ScrDyn *options) {
+  const ScrStr *tag = scr_intl_locale_value(locale, "Number.prototype.toLocaleString");
+  if (tag == NULL && scr_exc_pending()) return NULL;
+  return scr_intl_number_to_locale_string(x, (ScrStr *)tag, options);
 }
 
 /* ── Intl.DateTimeFormat ──────────────────────────────────────────────
@@ -2001,6 +2182,14 @@ ScrDyn *scr_intl_date_time_format_new(ScrStr *locale, ScrDyn *options) {
   return boxed;
 }
 
+/** `new Intl.DateTimeFormat(locales, options)` over a run-time locales
+ * value. */
+ScrDyn *scr_intl_date_time_format_new_dyn_locale(ScrDyn *locale, ScrDyn *options) {
+  const ScrStr *tag = scr_intl_locale_value(locale, "Intl.DateTimeFormat");
+  if (tag == NULL && scr_exc_pending()) return NULL;
+  return scr_intl_date_time_format_new((ScrStr *)tag, options);
+}
+
 static ScrIntlDateTimeFormat *scr_intl_date_time_format_of(ScrDyn *format) {
   if (format != NULL && format->kind == SCR_DYN_HANDLE &&
       format->v.handle.tag == SCR_DYNH_INTL_DATE_TIME_FORMAT)
@@ -2035,4 +2224,17 @@ ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *
   ScrStr *text = scr_intl_date_time_format_run(format, ms);
   scr_intl_date_time_format_release(format);
   return text;
+}
+
+/** The three Date formatters over a run-time locales value. An invalid date
+ * answers "Invalid Date" first, as the string-locale form does and as Node
+ * does, before the locale is validated. */
+ScrStr *scr_intl_date_to_locale_dyn_locale(double ms, double kind, ScrDyn *locale, ScrDyn *options) {
+  if (!isfinite(ms)) return scr_str_new("Invalid Date", 12);
+  const char *method = kind == 1   ? "Date.prototype.toLocaleDateString"
+                       : kind == 2 ? "Date.prototype.toLocaleTimeString"
+                                   : "Date.prototype.toLocaleString";
+  const ScrStr *tag = scr_intl_locale_value(locale, method);
+  if (tag == NULL && scr_exc_pending()) return NULL;
+  return scr_intl_date_to_locale(ms, kind, (ScrStr *)tag, options);
 }

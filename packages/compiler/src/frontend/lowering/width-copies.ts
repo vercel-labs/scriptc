@@ -20,8 +20,8 @@
  *   The observation is a fact about the whole program, not about one
  *   binding, so no flow of the copy can escape it. One flow needs no such
  *   fact: a copy passed as a call's last argument to a function that only
- *   reads that parameter, never writes it, compares it by identity, or
- *   lets it out, and whose body neither calls out nor suspends, has no
+ *   reads that parameter, never writes any object, compares it by identity,
+ *   or lets it out, and whose body neither calls out nor suspends, has no
  *   other name and no observer, so the callee cannot tell it from the
  *   object it copied (see Observations.readsOnly).
  *
@@ -759,6 +759,44 @@ function storesTainted(s: IrStmt, tainted: ReadonlySet<IrExpr>): boolean {
   }
 }
 
+/** Array intrinsics that write their receiver (or run a comparator), so a
+ * callee that uses one can mutate an object it reaches through any alias. */
+const ARRAY_MUTATIONS: ReadonlySet<string> = new Set([
+  "sortPrimitive",
+  "sortValues",
+  "sortDense",
+  "push",
+  "pushSpread",
+  "unshift",
+  "unshiftSpread",
+  "pop",
+  "shift",
+  "splice",
+  "spliceInsert",
+  "reverse",
+  "copyWithin",
+  "fill",
+  "fillUndefined",
+]);
+
+/** Statements that write a record field or an array element. */
+function writesMember(s: IrStmt): boolean {
+  switch (s.kind) {
+    case "recordSet":
+    case "recordKeySet":
+    case "recordKeyDelete":
+    case "fieldSet":
+    case "arraySet":
+    case "bytesSet":
+    case "arraySetLength":
+    case "arraySetUndefined":
+    case "arrayDelete":
+      return true;
+    default:
+      return false;
+  }
+}
+
 /** The runtime calls a constructor makes for the runtime-provided class its
  * class is rooted in (superCall in lower-classes.ts). The runtime
  * initializes the members that class holds on the object being built and
@@ -903,6 +941,9 @@ class Observations {
         case "ffiCall":
         case "dynCall":
         case "dynInvoke":
+        case "fieldIncDec":
+        case "mapIntrinsic":
+        case "setIntrinsic":
         case "awaitExpr":
         case "awaitUnionExpr":
         case "genResume":
@@ -910,6 +951,10 @@ class Observations {
           return false;
         default:
           break;
+      }
+      if (e.kind === "arrIntrinsic" && ARRAY_MUTATIONS.has(e.method)) {
+        escapes = true;
+        return false;
       }
       if (e.kind === "varRef" && e.localId === id) {
         if (!isValueType(e.type)) tainted.add(e);
@@ -949,6 +994,12 @@ class Observations {
     };
     const stmt = (s: IrStmt): boolean => {
       if (escapes) return false;
+      // A write to any object can reach the original through an alias this
+      // scan cannot follow (a module global, a captured binding, a field).
+      if (writesMember(s)) {
+        escapes = true;
+        return false;
+      }
       if (s.kind === "assign" && s.localId === id) {
         escapes = true;
         return false;

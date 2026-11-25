@@ -114,6 +114,12 @@ test("a callee that can run other code keeps the copy warning", () => {
   );
   expect(suspended.facts.map((f) => f.observed)).toEqual(["write"]);
 
+  // A write through another name of the copied layout can reach the original.
+  const globalAlias = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N): number { w.a = 9; return n.a; }\nconsole.log(read(w));`,
+  );
+  expect(globalAlias.facts.map((f) => f.observed)).toEqual(["write"]);
+
   // A generator's body runs at next(), after the caller can run again.
   const deferred = facts(
     `${TYPES}const w: W = { a: 1, b: "x" };\nfunction* read(n: N): Generator<number> { return n.a; }\nread(w);\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,

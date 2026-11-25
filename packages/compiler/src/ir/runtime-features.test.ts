@@ -57,6 +57,20 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesRegex(regExp)).toBe(true);
   });
 
+  test("the compression classes' class-table entries link their unit's engines", () => {
+    // Computed global reads emit webstream.compressClass/compressInstanceOf
+    // without any zlib call of their own; the unit that answers them carries
+    // the zlib and Brotli engines, so both features must follow.
+    for (const fn of ["webstream.compressClass", "webstream.compressInstanceOf"] as const) {
+      const withTable = module();
+      withTable.functions[0]!.body.push(call(fn));
+      const features = moduleRuntimeFeatures(withTable);
+      expect(features.webStreams).toBe(true);
+      expect(features.zlib).toBe(true);
+      expect(features.brotli).toBe(true);
+    }
+  });
+
   test("links the units that build the host classes read as values", () => {
     const event = module();
     event.functions[0]!.body.push(readConstructor("Event"));

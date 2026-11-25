@@ -1,7 +1,8 @@
 /* Number-keyed maps switch between linear, directly indexed and hashed
  * lookup. A randomized run compares every operation with a plain ordered
  * model (SameValueZero, insertion order), and explicit cases pin which
- * index each key shape selects. */
+ * index each key shape selects. Checked-dynamic keys are checked for the
+ * one identity each kind of object has (identity_keys). */
 #include "scr_runtime.h"
 #include <assert.h>
 #include <math.h>
@@ -551,7 +552,308 @@ static void front_deletes(void) {
   scr_map_release(names);
 }
 
+/* ── one identity for each kind of checked-dynamic key ────────────────
+ * A checked-dynamic Map or Set (SCR_MAP_KEY_DYN) keys an object by its
+ * identity, not by the box that carries it: two boxes of one object are
+ * one key, as they are strictly equal. A second object of the kind is
+ * another key. Values are keyed by value. This test is the
+ * SCR_DYN_PROMISE_KEYS build of scr_map.c, the one a program with promise
+ * adapters links. */
+
+#define CHECK(what, cond)                                             \
+  do {                                                                \
+    if (!(cond)) {                                                    \
+      fprintf(stderr, "identity keys: %s: %s\n", (what), #cond);      \
+      abort();                                                        \
+    }                                                                 \
+  } while (0)
+
+/* `a` and `b` are one key and `other` is another, in a table that grows
+ * past its first index while it holds them. */
+static void one_key(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
+  double v = 0;
+  scr_map_set_ref_f64(m, a, 1);
+  CHECK(what, scr_map_has_ref(m, a) && scr_map_has_ref(m, b));
+  CHECK(what, scr_map_get_ref_f64(m, b, &v) && v == 1);
+  CHECK(what, !scr_map_has_ref(m, other));
+  scr_map_set_ref_f64(m, b, 2);
+  CHECK(what, scr_map_size(m) == 1);
+  scr_map_set_ref_f64(m, other, 3);
+  CHECK(what, scr_map_size(m) == 2);
+  for (int i = 0; i < 200; i++) {
+    ScrDyn *filler = scr_dyn_new_num(1000 + i);
+    scr_map_set_ref_f64(m, filler, i);
+    scr_dyn_release(filler);
+  }
+  CHECK(what, scr_map_get_ref_f64(m, a, &v) && v == 2);
+  CHECK(what, scr_map_get_ref_f64(m, b, &v) && v == 2);
+  CHECK(what, scr_map_get_ref_f64(m, other, &v) && v == 3);
+  CHECK(what, scr_map_delete_ref(m, b));
+  CHECK(what, !scr_map_has_ref(m, a) && !scr_map_has_ref(m, b) && scr_map_has_ref(m, other));
+  CHECK(what, scr_map_size(m) == 201);
+  scr_map_release(m);
+}
+
+/* Two boxes of one object: strictly equal, one key. */
+static void one_object(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
+  CHECK(what, scr_dyn_strict_eq(a, b) && scr_dyn_strict_eq(b, a));
+  CHECK(what, !scr_dyn_strict_eq(a, other) && !scr_dyn_strict_eq(other, b));
+  one_key(what, a, b, other);
+  one_key(what, b, a, other);
+}
+
+/* Two boxes of one value: equal, one key. */
+static void one_value(const char *what, ScrDyn *a, ScrDyn *b, ScrDyn *other) {
+  CHECK(what, scr_dyn_strict_eq(a, b) && !scr_dyn_strict_eq(a, other));
+  one_key(what, a, b, other);
+}
+
+/* A native object behind boxes: a record, a class instance, a handle. */
+typedef struct {
+  size_t rc;
+} Source;
+
+static Source *source_new(void) {
+  Source *s = malloc(sizeof *s);
+  assert(s);
+  s->rc = 1;
+  return s;
+}
+
+static void *source_retain(void *p) {
+  ((Source *)p)->rc++;
+  return p;
+}
+
+static void source_release(void *p) {
+  Source *s = p;
+  if (--s->rc == 0) free(s);
+}
+
+static ScrDyn *source_access(void *p, bool materialize) {
+  if (materialize) return scr_dyn_new_obj();
+  source_release(p);
+  return NULL;
+}
+
+static ScrDyn *source_materialize(void *p) {
+  (void)p;
+  return scr_dyn_new_obj();
+}
+
+static ScrDyn *view_of(Source *s) { return scr_dyn_new_obj_with_identity(s, source_retain, source_access); }
+
+static ScrDyn *capsule_of(Source *s, const char *type) {
+  return scr_dyn_new_typed_ref(s, source_retain, source_release, type, strlen(type), source_materialize, NULL);
+}
+
+static ScrDyn *no_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static ScrDyn *function_of(ScrClosure *clo) {
+  return scr_dyn_new_func(scr_closure_retain(clo), no_call, 0, "", "f");
+}
+
+void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+static const ScrDynHandleOps source_handle_ops = {.cls = "Source", .retain = source_retain, .release = source_release};
+
+/* A promise as the checked-dynamic core sees one: its count and its
+ * identity cell (ScrPromiseHead). An adapter shares its source's cell, as
+ * scr_promise_share_identity links them. */
+static ScrPromiseHead *promise_new(ScrPromiseHead *source) {
+  ScrPromiseHead *p = malloc(sizeof *p);
+  assert(p);
+  p->rc = 1;
+  p->identity = NULL;
+  if (source) {
+    if (!source->identity) {
+      source->identity = malloc(sizeof *source->identity);
+      assert(source->identity);
+      source->identity->rc = 1;
+      source->identity->observed = false;
+      source->identity->transferred = false;
+    }
+    p->identity = source->identity;
+    p->identity->rc++;
+  }
+  return p;
+}
+
+static void promise_release(ScrPromise *promise) {
+  ScrPromiseHead *p = (ScrPromiseHead *)promise;
+  if (--p->rc) return;
+  if (p->identity && --p->identity->rc == 0) free(p->identity);
+  free(p);
+}
+
+/* The promise unit's key identity of a promise (scr_async.c), which this
+ * test links without: the cell, made on first use. */
+void *scr_promise_map_identity(void *promise) {
+  ScrPromiseHead *p = promise;
+  if (!p->identity) {
+    p->identity = malloc(sizeof *p->identity);
+    assert(p->identity);
+    p->identity->rc = 1;
+    p->identity->observed = false;
+    p->identity->transferred = false;
+  }
+  return p->identity;
+}
+
+static bool promise_identity_equal(ScrPromise *a, ScrPromise *b) {
+  ScrPromiseHead *x = (ScrPromiseHead *)a, *y = (ScrPromiseHead *)b;
+  return x == y || (x->identity != NULL && x->identity == y->identity);
+}
+
+extern SCR_TL bool (*scr_dyn_promise_identity_fn)(ScrPromise *a, ScrPromise *b);
+
+static ScrDyn *promise_box(ScrPromiseHead *p) {
+  ScrDyn *d = scr_dyn_alloc_promise(promise_release);
+  p->rc++;
+  d->v.promise = (ScrPromise *)p;
+  return d;
+}
+
+static void symbol_release(ScrSym *s) { (void)s; }
+static ScrStr *symbol_text(ScrSym *s) {
+  (void)s;
+  return scr_str_new("Symbol()", 8);
+}
+
+static void identity_keys(void) {
+  /* A plain checked object and array: the box is the object. */
+  ScrDyn *object = scr_dyn_new_obj(), *object2 = scr_dyn_new_obj();
+  one_object("object", object, object, object2);
+  ScrDyn *array = scr_dyn_new_arr(), *array2 = scr_dyn_new_arr();
+  one_object("array", array, array, array2);
+  one_object("an object against an array", object, object, array);
+
+  /* A typed record: each boxing is another view of it. */
+  Source *s1 = source_new(), *s2 = source_new();
+  ScrDyn *view1 = view_of(s1), *view1b = view_of(s1), *view2 = view_of(s2);
+  CHECK("record view", view1 != view1b);
+  one_object("record view", view1, view1b, view2);
+  /* A class instance: a capsule at its class and one at its base class,
+   * and a view and a capsule of one object. */
+  ScrDyn *derived = capsule_of(s1, "object:Derived"), *base = capsule_of(s1, "object:Base");
+  ScrDyn *derived2 = capsule_of(s2, "object:Derived");
+  CHECK("capsule", derived != base);
+  one_object("capsule", derived, base, derived2);
+  one_object("a view and a capsule", view1, base, derived2);
+  one_object("a capsule and a view", derived, view1b, view2);
+
+  /* A function: each boxing of one closure, and an adapter of it. */
+  ScrClosure *clo = scr_closure_new(NULL, 0), *clo2 = scr_closure_new(NULL, 0);
+  ScrClosure *adapter = scr_closure_new(NULL, 0);
+  scr_closure_adopt_identity(adapter, clo, 0);
+  ScrDyn *fn = function_of(clo), *fnb = function_of(clo), *fn_adapter = function_of(adapter);
+  ScrDyn *fn2 = function_of(clo2);
+  one_object("function", fn, fnb, fn2);
+  one_object("function adapter", fn, fn_adapter, fn2);
+
+  /* A typed array: each boxing retains the one view. */
+  ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, 4), *bytes2 = scr_bytes_new(SCR_BYTES_U8, 4);
+  ScrDyn *b1 = scr_dyn_new_bytes(bytes), *b1b = scr_dyn_new_bytes(bytes), *b2 = scr_dyn_new_bytes(bytes2);
+  CHECK("typed array", b1 != b1b);
+  one_object("typed array", b1, b1b, b2);
+
+  /* A native handle: the object under its tag. One address under two tags
+   * is two objects. */
+  scr_dyn_handle_install(SCR_DYNH_DATE, &source_handle_ops);
+  scr_dyn_handle_install(SCR_DYNH_URL, &source_handle_ops);
+  ScrDyn *h1 = scr_dyn_new_handle(s1, SCR_DYNH_DATE), *h1b = scr_dyn_new_handle(s1, SCR_DYNH_DATE);
+  ScrDyn *h2 = scr_dyn_new_handle(s2, SCR_DYNH_DATE), *h1url = scr_dyn_new_handle(s1, SCR_DYNH_URL);
+  CHECK("handle", h1 != h1b);
+  one_object("handle", h1, h1b, h2);
+  one_object("handle under another tag", h1, h1b, h1url);
+
+  /* A promise: its adapters share its identity cell. A promise that was a
+   * key before it had a cell keeps that key once an adapter shares it. */
+  scr_dyn_promise_identity_fn = promise_identity_equal;
+  ScrPromiseHead *source = promise_new(NULL);
+  ScrPromiseHead *adapter1 = promise_new(source), *adapter2 = promise_new(source);
+  ScrPromiseHead *another = promise_new(NULL);
+  ScrDyn *p1 = promise_box(adapter1), *p2 = promise_box(adapter2), *p_source = promise_box(source);
+  ScrDyn *p_other = promise_box(another);
+  one_object("promise adapters", p1, p2, p_other);
+  one_object("a promise and its adapter", p_source, p2, p_other);
+  ScrPromiseHead *late = promise_new(NULL);
+  ScrDyn *p_late = promise_box(late);
+  ScrMap *keyed = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
+  scr_map_set_ref_f64(keyed, p_late, 1);
+  CHECK("promise keyed before its first adapter", late->identity != NULL);
+  ScrPromiseHead *late_adapter = promise_new(late);
+  ScrDyn *p_late_adapter = promise_box(late_adapter);
+  CHECK("promise keyed before its first adapter", scr_map_has_ref(keyed, p_late_adapter));
+  CHECK("promise keyed before its first adapter", !scr_map_has_ref(keyed, p_other));
+  scr_map_release(keyed);
+
+  /* Different kinds of object never share a key. */
+  ScrDyn *kinds[] = {object, array, view1, derived2, fn, b1, h1, h1url, p1, p_other};
+  ScrMap *all = scr_map_new(SCR_MAP_KEY_DYN, SCR_MAP_VAL_F64, &scr_map_dyn_set_ops);
+  for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) scr_map_set_ref_f64(all, kinds[i], (double)i);
+  CHECK("every kind", scr_map_size(all) == sizeof kinds / sizeof *kinds);
+  for (size_t i = 0; i < sizeof kinds / sizeof *kinds; i++) {
+    double v = -1;
+    CHECK("every kind", scr_map_get_ref_f64(all, kinds[i], &v) && v == (double)i);
+  }
+  scr_map_release(all);
+
+  /* Values: equal values are one key, whichever box holds them. */
+  ScrDyn *n1 = scr_dyn_new_num(1.5), *n1b = scr_dyn_new_num(3.0 / 2), *n2 = scr_dyn_new_num(2.5);
+  one_value("number", n1, n1b, n2);
+  ScrDyn *nan1 = scr_dyn_new_num(NAN), *nan2 = scr_dyn_new_num(NAN);
+  one_key("NaN", nan1, nan2, n1);
+  ScrDyn *zero = scr_dyn_new_num(0.0), *minus_zero = scr_dyn_new_num(-0.0);
+  one_key("zero", zero, minus_zero, n1);
+  ScrStr *text = scr_str_new("key", 3), *text_b = scr_str_new("key", 3), *text2 = scr_str_new("kex", 3);
+  ScrDyn *str1 = scr_dyn_new_str(text), *str1b = scr_dyn_new_str(text_b), *str2 = scr_dyn_new_str(text2);
+  one_value("string", str1, str1b, str2);
+  ScrBigInt *big = scr_bigint_from_i64(INT64_C(1234567890123456789)), *big_b = scr_bigint_from_i64(INT64_C(1234567890123456789));
+  ScrBigInt *big2 = scr_bigint_from_i64(7);
+  ScrDyn *bi1 = scr_dyn_new_bigint(big), *bi1b = scr_dyn_new_bigint(big_b), *bi2 = scr_dyn_new_bigint(big2);
+  one_value("bigint", bi1, bi1b, bi2);
+  ScrDyn *yes = scr_dyn_new_bool(true), *yes_b = scr_dyn_new_bool(true), *no = scr_dyn_new_bool(false);
+  one_value("boolean", yes, yes_b, no);
+  ScrDyn *null1 = scr_dyn_new_null(), *null2 = scr_dyn_new_null();
+  one_value("null", null1, null2, scr_dyn_undefined());
+  static int symbol_a, symbol_b;
+  ScrDyn *sym1 = scr_dyn_symbol_ref((ScrSym *)&symbol_a, symbol_release, symbol_text, symbol_text);
+  ScrDyn *sym1b = scr_dyn_symbol_ref((ScrSym *)&symbol_a, symbol_release, symbol_text, symbol_text);
+  ScrDyn *sym2 = scr_dyn_symbol_ref((ScrSym *)&symbol_b, symbol_release, symbol_text, symbol_text);
+  one_value("symbol", sym1, sym1b, sym2);
+
+  ScrDyn *boxes[] = {object, object2, array, array2, view1, view1b, view2, derived, base, derived2,
+                     fn, fnb, fn_adapter, fn2, b1, b1b, b2, h1, h1b, h2, h1url,
+                     p1, p2, p_source, p_other, p_late, p_late_adapter,
+                     n1, n1b, n2, nan1, nan2, zero, minus_zero, str1, str1b, str2,
+                     bi1, bi1b, bi2, yes, yes_b, no, null1, null2, sym1, sym1b, sym2};
+  for (size_t i = 0; i < sizeof boxes / sizeof *boxes; i++) scr_dyn_release(boxes[i]);
+  ScrPromiseHead *promises[] = {source, adapter1, adapter2, another, late, late_adapter};
+  for (size_t i = 0; i < sizeof promises / sizeof *promises; i++) promise_release((ScrPromise *)promises[i]);
+  scr_str_release(text);
+  scr_str_release(text_b);
+  scr_str_release(text2);
+  scr_bigint_release(big);
+  scr_bigint_release(big_b);
+  scr_bigint_release(big2);
+  scr_bytes_release(bytes);
+  scr_bytes_release(bytes2);
+  scr_closure_release(clo);
+  scr_closure_release(clo2);
+  scr_closure_release(adapter);
+  source_release(s1);
+  source_release(s2);
+}
+
 int main(void) {
+  identity_keys();
+  puts("identity keys passed");
   modes();
   small_storage();
   front_deletes();

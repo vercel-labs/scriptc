@@ -201,6 +201,7 @@ static ScrError *op_unsupported(const char *what) {
   ScrStr *m = scr_str_new(msg, (size_t)n);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, m);
   scr_str_release(m);
+  scr_error_set_code(e, "SC2020");
   return e;
 }
 
@@ -209,6 +210,27 @@ static ScrError *op_unsupported(const char *what) {
 static ScrDyn *op_get(const ScrDyn *obj, const char *key) {
   if (!obj) return NULL;
   size_t n = strlen(key);
+  if (obj->kind == SCR_DYN_TYPED_REF) {
+    /* A program class instance reaches the operator as the capsule over
+     * its layout. Node reads the instance's own fields and its class's
+     * accessors, so follow the keyed-read protocol: the capsule's own fast
+     * members first, else the property read on its materialized view. */
+    ScrStr *k = scr_str_new(key, n);
+    ScrDyn *v = scr_dyn_typed_ref_key_get(obj, k);
+    scr_str_release(k);
+    if (!v) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(obj);
+      if (!view) return NULL;
+      v = scr_dyn_obj_read(view, key, n);
+      scr_dyn_release(view);
+    }
+    if (v && v->kind == SCR_DYN_TYPED_REF) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+      scr_dyn_release(v);
+      return view;
+    }
+    return v;
+  }
   if (obj->kind == SCR_DYN_OBJ) {
     ScrDyn *v = scr_dyn_obj_get(obj, key, n);
     return v ? scr_dyn_retain(v) : NULL;
@@ -230,7 +252,10 @@ static bool op_nullish(const ScrDyn *v) {
  * ERR_INVALID_ARG_TYPE pending. */
 static bool op_check_options(const ScrDyn *options) {
   if (op_nullish(options)) return true;
-  if ((options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_HANDLE) &&
+  /* A checked-dynamic class instance is an object to Node's
+   * validateObject, which only rejects primitives and functions. */
+  if ((options->kind == SCR_DYN_OBJ || options->kind == SCR_DYN_HANDLE ||
+       options->kind == SCR_DYN_TYPED_REF) &&
       !scr_dyn_is_callable(options)) {
     return true;
   }
@@ -243,12 +268,21 @@ static bool op_check_options(const ScrDyn *options) {
 static ScrDyn *op_signal(const ScrDyn *options, bool *ok) {
   *ok = true;
   ScrDyn *s = op_get(options, "signal");
+  if (!s && scr_exc_pending()) {
+    *ok = false;
+    return NULL;
+  }
   if (op_nullish(s)) {
     if (s) scr_dyn_release(s);
     return NULL;
   }
   ScrDyn *aborted = NULL;
   if (s->kind == SCR_DYN_OBJ || s->kind == SCR_DYN_HANDLE) aborted = op_get(s, "aborted");
+  if (!aborted && scr_exc_pending()) {
+    scr_dyn_release(s);
+    *ok = false;
+    return NULL;
+  }
   if (!aborted) {
     scr_dyn_prop_type_fail("options.signal", "an instance of AbortSignal", s);
     scr_dyn_release(s);
@@ -1173,7 +1207,7 @@ typedef struct {
 static ScrDyn *flat_get(const ScrDyn *v, const char *key) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     ScrStr *k = scr_str_new(key, strlen(key));
-    ScrDyn *r = scr_dyn_typed_ref_key_get(v, k);
+    ScrDyn *r = scr_dyn_typed_ref_own_get(v, k);
     scr_str_release(k);
     return r;
   }
@@ -1784,10 +1818,12 @@ static void op_from_step_drop(OpObj *o) {
 static void from_next(OpFrom *f, ScrStream *out);
 
 /* An operator error as a stream error: Error values as themselves, any
- * other thrown value refused. +1. */
+ * other truthy value carried by an Error that boxes back to it (Node hands
+ * the thrown value on), a falsy one refused. +1. */
 static ScrError *op_caught_error(const ScrCaught *c) {
   ScrDyn *d = scr_caught_to_dyn(c);
   ScrError *e = d ? scr_errdyn_err_of(d) : NULL;
+  if (d && !e && scr_dyn_truthy(d)) e = scr_error_from_dyn(d);
   if (d) scr_dyn_release(d);
   if (e) return e;
   return op_unsupported("a stream operator rejection that is not an Error object");
@@ -2067,6 +2103,15 @@ static ScrError *op_aggregate_two(ScrError *inner, ScrError *outer) {
     return e ? scr_error_retain(e) : NULL;
   }
   ScrDyn *od = scr_dyn_from_error(outer);
+  /* Two errors that carry one value (a number thrown once and seen on two
+   * paths) are the same error to JavaScript. */
+  ScrDyn *id = scr_dyn_from_error(inner);
+  bool same = id && od && scr_dyn_strict_eq(id, od);
+  if (id) scr_dyn_release(id);
+  if (same) {
+    scr_dyn_release(od);
+    return scr_error_retain(inner);
+  }
   ScrDyn *list = od ? scr_dyn_iterator_result_get(od, "errors", 6) : NULL;
   if (list && list->kind == SCR_DYN_ARR) {
     scr_dyn_arr_push(list, scr_dyn_from_error(inner));
@@ -2816,8 +2861,12 @@ static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source,
     op_unref(c);
     return NULL;
   }
-  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }) */
-  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, false, true, NULL, NULL,
+  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }):
+   * an ordinary Duplex, so both marks start at the object-mode default
+   * (getDefaultHighWaterMark(true), which setDefaultHighWaterMark moves),
+   * as Node 24 does. */
+  const double ohwm = scr_stream_get_default_hwm(true);
+  ScrStream *d = scr_stream_new_duplex(ohwm, ohwm, true, true, true, false, true, NULL, NULL,
                                        op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
                                        op_chan_closure((void *)&op_chan_final_async_inv, c),
                                        &op_chan_final_async_inv,
@@ -3112,6 +3161,7 @@ static void op_fn_next(OpFn *a) {
 static bool op_map_options(const ScrDyn *options, double *concurrency, double *hwm) {
   *concurrency = 1;
   ScrDyn *c = op_get(options, "concurrency");
+  if (!c && scr_exc_pending()) return false;
   if (!op_nullish(c)) {
     double n = scr_dyn_number_coerce(c);
     if (scr_exc_pending()) {
@@ -3123,6 +3173,7 @@ static bool op_map_options(const ScrDyn *options, double *concurrency, double *h
   if (c) scr_dyn_release(c);
   *hwm = *concurrency - 1;
   ScrDyn *h = op_get(options, "highWaterMark");
+  if (!h && scr_exc_pending()) return false;
   if (!op_nullish(h)) {
     double n = scr_dyn_number_coerce(h);
     if (scr_exc_pending()) {

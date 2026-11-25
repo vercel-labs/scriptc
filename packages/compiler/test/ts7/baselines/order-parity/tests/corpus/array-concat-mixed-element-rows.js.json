@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-concat-mixed-element-rows.js"
+ ],
+ "diags": []
+}

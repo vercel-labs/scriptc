@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nested-object-returning-constructor.js"
+ ],
+ "diags": []
+}

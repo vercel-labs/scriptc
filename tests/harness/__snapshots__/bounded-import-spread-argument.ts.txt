@@ -1,0 +1,17 @@
+bounded-import-spread-argument.ts:6:19 - error SC1090: dynamic import() with a specifier that cannot be bounded at build time (at bounded-import-spread-argument.ts:11: a call of 'load' that spreads its arguments) is not supported yet
+
+  5 | async function load(tag: string, spec: string = "node:os"): Promise<unknown> {
+  6 |   const m = await import(spec);
+    |                   ^~~~~~~~~~~~
+  7 |   return [tag, m];
+
+  hint: pass a string literal, a const, or a parameter of a module-local function every call of which passes one
+
+bounded-import-spread-argument.ts:7:16 - error SC2004: uses of 'm' inherit the blocker on its declaration
+
+  6 |   const m = await import(spec);
+  7 |   return [tag, m];
+    |                ^
+  8 | }
+
+  hint: the declaration of 'm' did not compile — fix the diagnostic reported there and these sites clear with it

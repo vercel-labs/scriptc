@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8747-node-island-absent-env-late/main.ts"
+ ],
+ "diags": []
+}

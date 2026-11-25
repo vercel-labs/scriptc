@@ -26,12 +26,15 @@ typedef void (*ScrRlHistoryFn)(ScrClosure *, ScrArr *); /* borrows the history *
 
 /* One listener: a user closure (fn: the line, error or history adapter;
  * NULL for the zero-argument events), or the async iterator's own
- * handler. */
+ * handler. A checked-dynamic 'history' listener has no adapter: `box` is
+ * the typed-ref recipe its argument (the history array itself) is boxed
+ * with, so the listener reads and writes the interface's array. */
 typedef struct {
   ScrClosure *cb;
   void *fn;
   bool once;
   bool iter;
+  const ScrDynTypedRefRecipe *box;
 } RlEntry;
 
 typedef struct {
@@ -73,6 +76,17 @@ typedef struct ScrRl {
    * Ctrl+C and Ctrl+D reject with an AbortError (+1, or NULL) */
   void *q_ask;
   RlList ev[RL_EV_COUNT];
+  /* The order each event's first listener arrived in (0 while the event
+   * has none): eventNames() reports the events in it. */
+  double ev_seq[RL_EV_COUNT];
+  double ev_seq_next;
+  /* Node's own close listeners, registered at construction: the terminal's
+   * onSelfCloseWithoutTerminal (or onSelfCloseWithTerminal) and, when the
+   * signal option is a live AbortSignal, the once('close') that disposes
+   * its abort listener. listenerCount('close') and eventNames() see them,
+   * a listener's removeListener never matches them, removeAllListeners
+   * drops them, and they leave when 'close' is emitted. */
+  int self_close;
   /* the line splitter */
   char *line_buf; /* the unfinished line (kLine_buffer), UTF-8 */
   size_t line_len, line_cap;
@@ -111,6 +125,7 @@ typedef struct {
   void (*write_key)(ScrRl *rl, ScrStr *data, bool has_key, ScrStr *name, bool ctrl, bool meta,
                     bool shift);
   void (*resumed)(ScrRl *rl); /* resume(): process.stdin keys parked meanwhile flow */
+  void (*resize)(ScrRl *rl);  /* the output's 'resize': kRefreshLine */
 } ScrRlTtyOps;
 extern SCR_TL const ScrRlTtyOps *scr_rl_tty_ops;
 
@@ -123,6 +138,11 @@ void scr_rl_write_out(ScrRl *rl, ScrStr *text);
 /* kWriteToOutput(prompt)'s validateString: false with ERR_INVALID_ARG_TYPE
  * pending when the prompt is not a string. */
 bool scr_rl_prompt_writable(ScrRl *rl);
+/* The prompt text one use writes: String(prompt_value) when setPrompt or
+ * question took a non-string (Node coerces at each use, so a value's
+ * toString runs again on every refresh and getCursorPos), else the string
+ * prompt. +1; a symbol throws Node's TypeError. */
+ScrStr *scr_rl_prompt_text_now(ScrRl *rl);
 /* A prompt value whose String() the interface keeps in prompt. */
 static inline bool scr_rl_primitive_prompt(const ScrDyn *v) {
   return v->kind == SCR_DYN_NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_BOOL ||

@@ -24,16 +24,23 @@
  * Node's, SEMANTICS.md numbers the divergence). Durations are real
  * elapsed milliseconds and thus NONDETERMINISTIC — the differential
  * harness normalizes them on both lanes; the suite runner only reads
- * exit codes. One deliberate divergence: reporter lines write to stdout
- * synchronously as results land, where Node's reporter stream lags
- * console output racily — programs that interleave console.log with the
- * reporter cannot be byte-compared under Node itself.
+ * exit codes. One deliberate divergence: reporter lines write to the
+ * report stream synchronously as results land, where Node's reporter
+ * stream lags console output racily — programs that interleave console.log
+ * with the reporter cannot be byte-compared under Node itself. The stream
+ * is stdout unless `--test-reporter-destination` names stderr or a file,
+ * which is how a runner separates program output from the report.
+ *
+ * The summary block and failing-tests section print from scr_test_exit_code,
+ * after the loop drains: Node's reporter ends its stream at exit, so a task
+ * a test left behind prints ahead of the summary.
  *
  * Exit code: main asks scr_test_exit_code() after the loop drains —
  * 1 when any non-todo test failed (todo failures print ⚠ and list in the
  * failing section but exit 0, Node's contract), else 0. */
 #include "scr_platform.h"
 #include "scr_runtime.h"
+#include "scr_abort_signal.h"
 
 #include <errno.h>
 #include <math.h>
@@ -47,6 +54,12 @@
 #include <direct.h>
 #define getcwd _getcwd
 #endif
+
+/* The report stream: stdout unless `--test-reporter-destination` names
+ * stderr or a file. Program output always stays on stdout, so a file
+ * destination separates the report from it exactly as Node's does. */
+static SCR_TL FILE *scr_test_report_file = NULL;
+#define scr_test_out() (scr_test_report_file ? scr_test_report_file : stdout)
 
 static void scr_test_oom(void) {
   fputs("scriptc: out of memory\n", stderr);
@@ -62,6 +75,17 @@ enum {
   SCR_TEST_F_ONLY = 4,
   SCR_TEST_F_TIMEOUT = 8,
   SCR_TEST_F_CONCURRENCY = 16,
+  /* { only: false }: Node filters the test out of an in-process run even
+   * when no test is marked only. */
+  SCR_TEST_F_ONLY_FALSE = 32,
+  /* { expectFailure } (or the expectFailure method twin): the test passes
+   * only if its own run threw. */
+  SCR_TEST_F_EXPECT_FAILURE = 64,
+  /* Node's callback form: the function takes (context, done). The runner
+   * creates the promise the run waits on and passes a done closure that
+   * settles it; a body that also returns a promise fails with Node's
+   * message. */
+  SCR_TEST_F_DONE = 128,
 };
 /* hook kinds */
 enum { SCR_HOOK_BEFORE = 0, SCR_HOOK_AFTER = 1, SCR_HOOK_BEFORE_EACH = 2, SCR_HOOK_AFTER_EACH = 3 };
@@ -101,6 +125,16 @@ struct ScrTestCtx {
   bool started_line; /* the "▶ name" header printed */
   double dur_ms;
   ScrCaught *err;      /* owned; the own-body failure payload */
+  ScrDyn *abort_controller; /* owned; t.signal's controller, made on first read */
+  /* The custom-assertion registry as this context first saw it (+1), made
+   * when the context's `t.assert` is first read: Node builds each test's
+   * assertion object from the registry at that moment, so a registration a
+   * later callback makes is invisible to a context already using it. */
+  ScrDyn *custom_asserts;
+  /* The test finished, timed out or was cancelled: a t.signal read after
+   * that must answer an aborted signal, even though the controller is made
+   * on the first read. */
+  bool signal_aborted;
   ScrStr **diags;      /* owned t.diagnostic strings, printed after the line */
   size_t ndiags, dcap;
   struct ScrTestCtx *parent; /* borrowed back-edge */
@@ -108,11 +142,28 @@ struct ScrTestCtx {
   size_t nchildren, ccap;
   ScrTestHooks hooks[4]; /* suites and root; tests through t.after/t.beforeEach/t.afterEach */
   ScrCaught *before_err; /* owned; a throwing t.before, which fails the test and later subtests */
-  int plan;              /* t.plan count, -1 without a plan */
+  double plan;           /* t.plan count, -1 without a plan */
   int plan_count;        /* t.assert calls and subtests counted against the plan */
   ScrTestHooks mocks;    /* t.mock: the restore closure of each mock, in creation order */
   double timeout;        /* { timeout } in ms, INFINITY without one */
+  /* A suite's { timeout } as an absolute deadline (its start + timeout):
+   * the bound its hooks and tests race. INFINITY without one and once the
+   * suite's children have finished, so its cleanup runs unbounded. It is
+   * read off the node tree, not thread state, so concurrent sibling suites
+   * never share a deadline. */
+  double deadline_ms;
+  /* The { signal } option (+1; NULL without one): aborts the run, and its
+   * reason is the failure. */
+  ScrDyn *signal_dyn;
+  bool aborted;          /* the { signal } aborted the run */
+  ScrPromise *abort_promise;   /* settles when the { signal } fires */
+  SfSignalWatch *signal_watch; /* the node's watch on that signal */
   bool timed_out;        /* the async body was still pending when the timeout elapsed */
+  /* The runner itself raised the failure (a plan mismatch or a plan that
+   * timed out): its message string is Node's ERR_TEST_FAILURE error, which
+   * tracing subscribers receive as the error object Node builds. */
+  bool fail_runner;
+  bool cancelled_parent; /* a suite { timeout } above cut this suite's run short */
   /* { concurrency }: how many subtests run at once (1 runs them in order),
    * the parent's value without the option. Above 1, each subtest runs on
    * its own fiber, started in order as slots free up. */
@@ -124,12 +175,91 @@ struct ScrTestCtx {
   ScrPromise *slot;    /* owned; the parent waiting for its next subtest to finish */
   struct ScrMockTimers *mock_timers; /* t.mock.timers, made on first use; freed at exit */
   bool passed; /* t.passed: set when the body passes, as Node's pass() does */
+  /* t.runOnly(true) ran while this test was the registration parent: the
+   * subtests registered under it are dropped unless marked only. */
+  bool run_only;
+  bool only_filtered; /* registered under runOnly(true) without { only } */
   bool listed; /* a suite listed in the failing section (a failing root before) */
+  bool expect_failure; /* { expectFailure }: throwing is what passes */
+  /* The tracing channels published this node's start/error events already
+   * (Node publishes one error per failed run, before its expectFailure
+   * decision; a node that never started has no end). */
+  bool tr_started;
+  bool tr_ended;
+  bool tr_error;
+  /* The start/end payload Node publishes for this node: one context object
+   * shared by both events, so consumers can correlate them (the error event
+   * spreads it into a fresh object). */
+  ScrDyn *tr_ctx; /* owned */
+  /* The failing-section message, rendered when the result settles: exit-time
+   * reporting must not run custom inspectors, because module-level values are
+   * released before scr_test_exit_code prints the summary. */
+  ScrStr *fail_msg; /* owned */
   double start_ms; /* when the test started running; NaN before */
+  /* When the body was invoked (Node's stopTest starts after the beforeEach
+   * hooks): the plan's wait shares the remaining { timeout } from here. */
+  double body_start_ms;
   size_t serial; /* index in scr_test_nodes, getTestContext()'s handle */
+  bool finished; /* its result line has been reported */
+  /* Explicit { only: false }: Node filters the test (and a suite's whole
+   * subtree) out in-process, where its only-filter always runs. */
+  bool only_false;
+  /* t.plan's { wait } in ms (-1 without one), whether a plan was set, and
+   * the promise the plan's wait settles early through. */
+  double plan_wait;
+  bool plan_set;
+  ScrPromise *plan_met; /* owned */
+  /* { tags }: the flattened, lowercased, de-duplicated tag set — the
+   * test's own tags unioned with every ancestor suite's, in Node's Set
+   * order — and the frozen array t.tags answers, made on the first read. */
+  ScrStr **tags; /* owned */
+  size_t ntags;
+  ScrArr *tags_arr; /* owned; the frozen array t.tags hands out */
 };
 
+/* t.signal's abort unit face (scr_fetch.c). The compiler links that unit
+ * only for a program that reads a test's signal (the abortSignal runtime
+ * feature), so these declarations are weak: a program without it leaves
+ * them null, and nothing else in the runner touches them. Mach-O refuses an
+ * undefined weak reference, so Apple gets weak definitions and the unit's
+ * linked flag as the capability test. */
+#if defined(__APPLE__)
+__attribute__((weak)) int scr_dyn_abort_unit_linked = 0;
+__attribute__((weak)) ScrDyn *scr_test_abort_controller_new(void) { return NULL; }
+__attribute__((weak)) ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) {
+  (void)controller;
+  return NULL;
+}
+__attribute__((weak)) void scr_test_abort_controller_abort(ScrDyn *controller) {
+  (void)controller;
+}
+static bool scr_test_abort_available(void) { return scr_dyn_abort_unit_linked != 0; }
+#else
+extern ScrDyn *scr_test_abort_controller_new(void) __attribute__((weak));
+extern ScrDyn *scr_test_abort_controller_signal(ScrDyn *controller) __attribute__((weak));
+extern void scr_test_abort_controller_abort(ScrDyn *controller) __attribute__((weak));
+static bool scr_test_abort_available(void) {
+  return scr_test_abort_controller_new != NULL && scr_test_abort_controller_signal != NULL &&
+         scr_test_abort_controller_abort != NULL;
+}
+#endif
+
+/* Aborts a test's t.signal when it finished, timed out or was cancelled, as
+ * Node's Test#run does for every non-root test (its hooks see the signal
+ * unaborted). A suite's signal is left unaborted, as Node leaves it. A test
+ * that never read t.signal made no controller. */
+static void scr_test_abort_now(ScrTestCtx *t) {
+  if (!t) return;
+  t->signal_aborted = true;
+  if (t->abort_controller && scr_test_abort_available())
+    scr_test_abort_controller_abort(t->abort_controller);
+}
+
 static SCR_TL ScrTestCtx *scr_test_root = NULL;
+
+/* The failing-section message for a settled failure (scr_test_print_failure),
+ * rendered while the program's own values are still alive. */
+static ScrStr *scr_test_failure_message(const ScrTestCtx *t);
 /* Where registrations attach: the suite body being collected or the test
  * currently running (its nested test()/t.test() calls are subtests). */
 static SCR_TL ScrTestCtx *scr_test_reg_parent = NULL;
@@ -200,6 +330,8 @@ static void scr_test_hooks_free(ScrTestHooks *h) {
   h->n = h->cap = 0;
 }
 
+static void scr_test_watch_free(ScrTestCtx *t);
+
 void scr_testctx_release(ScrTestCtx *t) {
   if (!t || --t->rc > 0) return;
   scr_str_release(t->name);
@@ -210,6 +342,19 @@ void scr_testctx_release(ScrTestCtx *t) {
   scr_caught_release(t->before_err);
   scr_promise_release(t->done);
   scr_promise_release(t->slot);
+  scr_dyn_release(t->abort_controller);
+  scr_dyn_release(t->custom_asserts);
+  /* The watch points at the signal: unlink it before the node's last
+   * reference to the signal can free it. */
+  scr_test_watch_free(t);
+  scr_dyn_release(t->signal_dyn);
+  scr_dyn_release(t->tr_ctx);
+  scr_str_release(t->fail_msg);
+  for (size_t i = 0; i < t->ntags; i++) scr_str_release(t->tags[i]);
+  free(t->tags);
+  scr_arr_release(t->tags_arr);
+  scr_promise_release(t->plan_met);
+  scr_promise_release(t->abort_promise);
   for (size_t i = 0; i < t->ndiags; i++) scr_str_release(t->diags[i]);
   free(t->diags);
   for (size_t i = 0; i < t->nchildren; i++) scr_testctx_release(t->children[i]);
@@ -247,9 +392,12 @@ static ScrTestCtx *scr_test_node_new(ScrStr *name /*borrowed*/, int mode,
   t->flags = flags;
   t->is_suite = is_suite;
   t->plan = -1;
+  t->plan_wait = -1;
   t->timeout = INFINITY;
+  t->deadline_ms = INFINITY;
   t->concurrency = 1;
   t->start_ms = NAN;
+  t->body_start_ms = NAN;
   if (scr_test_nnodes == scr_test_nodes_cap) {
     scr_test_nodes_cap = scr_test_nodes_cap ? scr_test_nodes_cap * 2 : 16;
     scr_test_nodes = realloc(scr_test_nodes, scr_test_nodes_cap * sizeof *scr_test_nodes);
@@ -298,6 +446,9 @@ static void scr_test_child_add(ScrTestCtx *parent, ScrTestCtx *child /*moves*/) 
    * are todo themselves, with a bare TODO directive, unless they carry
    * their own skip or todo. */
   if (child->mode == SCR_TEST_RUN && parent->mode == SCR_TEST_TODO) child->mode = SCR_TEST_TODO;
+  /* Node inherits expectFailure the way it inherits todo: a flagged parent
+   * flags its descendants, whose own throws are then what passes. */
+  if (parent->expect_failure) child->expect_failure = true;
   /* Subtests inherit the parent's concurrency unless they set their own. */
   if (!(child->flags & SCR_TEST_F_CONCURRENCY)) child->concurrency = parent->concurrency;
   parent->children[parent->nchildren++] = child;
@@ -340,7 +491,7 @@ static int scr_test_depth(const ScrTestCtx *t) {
 }
 
 static void scr_test_indent(int depth) {
-  for (int i = 0; i < depth; i++) fputs("  ", stdout);
+  for (int i = 0; i < depth; i++) fputs("  ", scr_test_out());
 }
 
 /* "(1.234567ms)" — durations print microsecond-rounded (Node's hrtime
@@ -349,10 +500,18 @@ static void scr_test_indent(int depth) {
 static void scr_test_print_dur(double ms) {
   if (isnan(ms)) return;
   char num[32];
-  fputs(" (", stdout);
+  fputs(" (", scr_test_out());
   size_t n = scr_f64_to_str(round(ms * 1e6) / 1e6, num);
-  fwrite(num, 1, n, stdout);
-  fputs("ms)", stdout);
+  fwrite(num, 1, n, scr_test_out());
+  fputs("ms)", scr_test_out());
+}
+
+/* The result symbol: an expectFailure test that was cancelled without
+ * running displays the pass symbol, as Node's reporter does, though it keeps
+ * the cancelled counter. */
+static const char *scr_test_symbol_of(const ScrTestCtx *t) {
+  if (t->state == SCR_TS_CANCELLED && t->expect_failure && t->mode == SCR_TEST_RUN) return "\xE2\x9C\x94";
+  return NULL;
 }
 
 static const char *scr_test_symbol(int state) {
@@ -369,7 +528,7 @@ static const char *scr_test_symbol(int state) {
 }
 
 static void scr_test_print_str(const ScrStr *s) {
-  if (s) fwrite(s->data, 1, s->len, stdout);
+  if (s) fwrite(s->data, 1, s->len, scr_test_out());
 }
 
 /* Ancestors print their "▶ name" headers before the first descendant
@@ -380,64 +539,547 @@ static void scr_test_ensure_started(ScrTestCtx *t) {
   scr_test_ensure_started(t->parent);
   t->started_line = true;
   scr_test_indent(scr_test_depth(t));
-  fputs("\xE2\x96\xB6 ", stdout); /* ▶ */
+  fputs("\xE2\x96\xB6 ", scr_test_out()); /* ▶ */
   scr_test_print_str(t->name);
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
+}
+
+/* ── diagnostics_channel tracing (node:test) ───────────────────────────
+ * The runner publishes to Node's `tracing:node.test` tracing channel, whose
+ * start/end/error messages carry { name, nesting, file, type } (and the
+ * thrown error on error). The diagnostics_channel unit links only for a
+ * program that uses it (a subscriber lives in the program), so its entry
+ * points are weak: a program without subscribers has nothing to publish. */
+#if defined(__APPLE__)
+/* Mach-O refuses an undefined weak reference; these weak definitions stand in
+ * until the diagnostics_channel unit's strong ones are linked. The channel
+ * lookup answers NAN when the unit is absent, so nothing is published. */
+__attribute__((weak)) double scr_dc_channel(ScrDyn *name) {
+  (void)name;
+  return NAN;
+}
+__attribute__((weak)) void scr_dc_publish(double handle, ScrDyn *message) {
+  (void)handle;
+  (void)message;
+}
+__attribute__((weak)) bool scr_dc_chan_has_subscribers(double handle) {
+  (void)handle;
+  return false;
+}
+#else
+extern double scr_dc_channel(ScrDyn *name) __attribute__((weak));
+extern void scr_dc_publish(double handle, ScrDyn *message) __attribute__((weak));
+extern bool scr_dc_chan_has_subscribers(double handle) __attribute__((weak));
+#endif
+
+static SCR_TL ScrStr *scr_test_entry; /* the compiled entry file's path, owned */
+
+enum { SCR_TR_START = 0, SCR_TR_END = 1, SCR_TR_ERROR = 2 };
+static SCR_TL double scr_test_tr_handles[3] = {-1, -1, -1};
+
+static double scr_test_tr_channel(int which) {
+  if (!scr_dc_channel) return NAN;
+  if (scr_test_tr_handles[which] >= 0) return scr_test_tr_handles[which];
+  static const char *const names[] = {"tracing:node.test:start", "tracing:node.test:end",
+                                      "tracing:node.test:error"};
+  const char *name = names[which];
+  ScrStr *text = scr_str_new(name, strlen(name));
+  ScrDyn *key = scr_dyn_new_str(text);
+  scr_str_release(text);
+  double handle = scr_dc_channel(key);
+  scr_dyn_release(key);
+  if (scr_exc_pending()) {
+    scr_exc_clear();
+    handle = NAN;
+  }
+  scr_test_tr_handles[which] = handle;
+  return handle;
+}
+
+static void scr_test_tr_put(ScrDyn *o, const char *key, size_t key_len, ScrDyn *value /*moves*/) {
+  if (value) scr_dyn_obj_set(o, key, key_len, value);
+}
+
+static ScrDyn *scr_test_tr_ctx(const ScrTestCtx *t) {
+  ScrDyn *o = scr_dyn_new_obj();
+  ScrStr *name = t->name ? scr_str_retain(t->name) : scr_str_new("<root>", 6);
+  scr_test_tr_put(o, "name", 4, scr_dyn_new_str(name));
+  scr_str_release(name);
+  scr_test_tr_put(o, "nesting", 7, scr_dyn_new_num(scr_test_depth(t)));
+  if (scr_test_entry)
+    scr_test_tr_put(o, "file", 4, scr_dyn_new_str(scr_test_entry));
+  else
+    scr_test_tr_put(o, "file", 4, scr_dyn_undefined());
+  /* The implicit root reports as a test, as Node's does. */
+  const char *type = (t->is_suite && t->parent) ? "suite" : "test";
+  ScrStr *type_text = scr_str_new(type, strlen(type));
+  scr_test_tr_put(o, "type", 4, scr_dyn_new_str(type_text));
+  scr_str_release(type_text);
+  return o;
+}
+
+/** The node's start/end payload: built once and shared by both events, as
+ * Node publishes one context object for them (+1). */
+static ScrDyn *scr_test_tr_roster(ScrTestCtx *t) {
+  if (!t->tr_ctx) t->tr_ctx = scr_test_tr_ctx(t);
+  return scr_dyn_retain(t->tr_ctx);
+}
+
+/** The error event's payload: Node's `{ ...channelContext, error }`, a
+ * shallow copy of the shared context — a start subscriber may have attached
+ * its own fields there — plus the thrown value (+1). */
+/* The error event's `error`: the thrown value as it was thrown, except for
+ * the failures the runner raises itself (a test's timeout, a plan mismatch
+ * or a plan that timed out). Node records those as an ERR_TEST_FAILURE
+ * error whose message is the text the spec reporter prints, and tracing
+ * subscribers receive that error object (+1). */
+static ScrDyn *scr_test_tr_error_value(ScrTestCtx *t) {
+  if ((t->fail_runner || t->timed_out) && t->err->kind == SCR_EXC_STR) {
+    ScrStr *message = scr_str_retain(t->err->payload);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+    scr_str_release(message);
+    scr_error_set_code(e, "ERR_TEST_FAILURE");
+    ScrDyn *value = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return value;
+  }
+  return scr_caught_to_dyn(t->err);
+}
+
+static ScrDyn *scr_test_tr_error_ctx(ScrTestCtx *t, ScrDyn *ctx /*borrowed*/) {
+  ScrDyn *out = scr_dyn_new_obj();
+  /* Object.assign semantics: the own enumerable members of the shared
+   * context, in order (the spread Node writes). */
+  ScrDyn *target = scr_dyn_assign(out, ctx);
+  scr_dyn_release(out);
+  if (!target) return NULL;
+  scr_test_tr_put(target, "error", 5, scr_test_tr_error_value(t));
+  return target;
+}
+
+static void scr_test_tr_publish(int which, ScrTestCtx *t, bool with_error) {
+  double handle = scr_test_tr_channel(which);
+  if (isnan(handle)) return;
+  /* Node publishes only with a subscriber attached; skip building the
+   * message otherwise (every test start and end takes this path). */
+  if (scr_dc_chan_has_subscribers && !scr_dc_chan_has_subscribers(handle)) return;
+  ScrDyn *msg;
+  if (with_error && t->err) {
+    /* Node's error event is `{ ...channelContext, error }`: a fresh object
+     * copying the shared context (including fields a start subscriber
+     * attached to it), so start/end still share their ctx. */
+    ScrDyn *ctx = scr_test_tr_roster(t);
+    msg = scr_test_tr_error_ctx(t, ctx);
+    scr_dyn_release(ctx);
+    if (!msg) return;
+  } else {
+    msg = scr_test_tr_roster(t);
+  }
+  scr_dc_publish(handle, msg);
+  scr_dyn_release(msg);
+}
+
+/* The error event, once per failed run (Node publishes the thrown value
+ * before its expectFailure matching decides the outcome). */
+static void scr_test_tr_error(ScrTestCtx *t) {
+  if (t->tr_error || !t->err) return;
+  t->tr_error = true;
+  scr_test_tr_publish(SCR_TR_ERROR, t, true);
 }
 
 /* "<sym> <name> (<dur>ms)[ # directive]" + queued ℹ diagnostics. Held
- * while subtests run concurrently (scr_test_report_tree prints them). */
+ * while subtests run concurrently (scr_test_report_tree prints them). A
+ * concurrent parent buffering the line does not delay the test's finish:
+ * a task the test left behind must already see it finished. */
 static void scr_test_report_result(ScrTestCtx *t) {
+  t->finished = true;
+  /* Node's end event lands when the run finishes, before the buffered spec
+   * report prints it; a node that never started publishes none, and a
+   * buffered concurrent result reports it once. */
+  if (t->tr_started && !t->tr_ended) {
+    t->tr_ended = true;
+    scr_test_tr_publish(SCR_TR_END, t, false);
+  }
+  if (t->err && !t->fail_msg && t->state != SCR_TS_PASS && t->state != SCR_TS_TODO_PASS &&
+      t->state != SCR_TS_CHILDFAIL && t->state != SCR_TS_PENDING)
+    t->fail_msg = scr_test_failure_message(t);
   if (scr_test_defer > 0) return;
   scr_test_ensure_started(t->parent);
   int depth = scr_test_depth(t);
   scr_test_indent(depth);
-  fputs(scr_test_symbol(t->state), stdout);
-  fputc(' ', stdout);
+  {
+    const char *expected_symbol = scr_test_symbol_of(t);
+    fputs(expected_symbol ? expected_symbol : scr_test_symbol(t->state), scr_test_out());
+  }
+  fputc(' ', scr_test_out());
   scr_test_print_str(t->name);
   scr_test_print_dur(t->dur_ms);
   if (t->state == SCR_TS_SKIPPED) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("SKIP", stdout);
+    else fputs("SKIP", scr_test_out());
   } else if (t->state == SCR_TS_TODO_PASS || t->state == SCR_TS_TODO_FAIL) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("TODO", stdout);
+    else fputs("TODO", scr_test_out());
+  } else if (t->expect_failure && t->mode == SCR_TEST_RUN) {
+    fputs(" # EXPECTED FAILURE", scr_test_out());
   }
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
   for (size_t i = 0; i < t->ndiags; i++) {
     scr_test_indent(depth);
-    fputs("\xE2\x84\xB9 ", stdout); /* ℹ */
+    fputs("\xE2\x84\xB9 ", scr_test_out()); /* ℹ */
     scr_test_print_str(t->diags[i]);
-    fputc('\n', stdout);
+    fputc('\n', scr_test_out());
   }
 }
 
 /* ── running ─────────────────────────────────────────────────────────── */
 
-/* An async test body with { timeout }: awaits the body's promise or a
- * timer, whichever settles first. When the timer wins, the test fails with
- * Node's "test timed out after <timeout>ms" string and is cancelled; the
- * body keeps running unobserved. */
-static void scr_test_await_timeout(ScrPromise *p, ScrTestCtx *t) {
-  ScrPromise *timer = scr_promise_new();
-  double handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), t->timeout);
+/* The { signal } option's AbortSignal, NULL without one. */
+static SfSignal *scr_test_signal_of(const ScrTestCtx *t) {
+  if (t->signal_dyn == NULL || t->signal_dyn->kind != SCR_DYN_HANDLE) return NULL;
+  if (t->signal_dyn->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) return NULL;
+  return (SfSignal *)t->signal_dyn->v.handle.ptr;
+}
+
+/* Keeps the { signal } a test or suite was registered with (+1). */
+static void scr_test_take_signal(ScrTestCtx *t, ScrDyn *signal) {
+  if (signal != NULL && signal->kind != SCR_DYN_UNDEF) t->signal_dyn = scr_dyn_retain(signal);
+}
+
+/* Throws the signal's reason: the abort failure every cancelled run
+ * reports. */
+static void scr_test_throw_reason(SfSignal *s) {
+  if (s->error_reason != NULL) {
+    scr_throw_obj(scr_error_retain(s->error_reason), &scr_error_retain_v,
+                  &scr_error_release_v, scr_error_trace_arg());
+  } else if (s->reason != NULL) {
+    scr_throw_ref(scr_dyn_retain(s->reason), scr_dyn_retain_v, scr_dyn_release_v,
+                  scr_dyn_trace_v);
+  } else {
+    static const char msg[] = "This operation was aborted";
+    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+  }
+}
+
+/* Records the signal's reason as the node's failure, and the node as
+ * cancelled (Node counts an aborted test or suite cancelled). */
+static void scr_test_abort_failure(ScrTestCtx *t, SfSignal *s) {
+  scr_test_throw_reason(s);
+  t->aborted = true;
+  t->err = scr_exc_take();
+  t->listed = true;
+}
+
+/* An abort algorithm on the { signal }: the source unlinks a watch before
+ * firing it, so the fire only wakes the run; the node frees the watch. */
+static void scr_test_signal_fire(SfSignalWatch *w, SfSignal *s) {
+  (void)s;
+  ScrTestCtx *owner = w->owner;
+  w->source = NULL;
+  if (owner->abort_promise != NULL) scr_promise_fulfill_void(owner->abort_promise);
+}
+
+static void scr_test_watch_free(ScrTestCtx *t) {
+  SfSignalWatch *w = t->signal_watch;
+  if (w == NULL) return;
+  t->signal_watch = NULL;
+  if (w->source != NULL) {
+    for (SfSignalWatch **at = &w->source->watchers; *at != NULL; at = &(*at)->next) {
+      if (*at == w) {
+        *at = w->next;
+        break;
+      }
+    }
+  }
+  free(w);
+}
+
+/* Starts watching the node's { signal }: an abort wakes the run it bounds. */
+static void scr_test_watch_signal(ScrTestCtx *t) {
+  SfSignal *s = scr_test_signal_of(t);
+  if (s == NULL || s->aborted || t->signal_watch != NULL) return;
+  if (t->abort_promise == NULL) t->abort_promise = scr_promise_new();
+  SfSignalWatch *w = calloc(1, sizeof *w);
+  if (!w) scr_test_oom();
+  w->source = s;
+  w->owner = t;
+  w->fire = &scr_test_signal_fire;
+  w->next = s->watchers;
+  s->watchers = w;
+  t->signal_watch = w;
+}
+
+/* The suite above `node` whose { timeout } deadline comes first, and that
+ * deadline: a test races the earliest deadline in its ancestor chain, so a
+ * nested suite's longer timeout cannot mask an ancestor's, and two suites
+ * running side by side on their own fibers keep their own. */
+static ScrTestCtx *scr_test_deadline_of(const ScrTestCtx *node, double *deadline) {
+  ScrTestCtx *best = NULL;
+  double best_deadline = INFINITY;
+  for (const ScrTestCtx *n = node; n != NULL; n = n->parent) {
+    if (n->is_suite && isfinite(n->deadline_ms) && n->deadline_ms < best_deadline) {
+      best = (ScrTestCtx *)n;
+      best_deadline = n->deadline_ms;
+    }
+  }
+  *deadline = best_deadline;
+  return best;
+}
+
+/* Whether the run above `node` stopped: an aborted suite, or a suite
+ * { timeout } deadline that elapsed. What a child started after either is
+ * cancelled without running. */
+static bool scr_test_stopped(const ScrTestCtx *node) {
+  for (const ScrTestCtx *n = node; n != NULL; n = n->parent) {
+    if (n->aborted || n->timed_out) return true;
+    if (n->is_suite && isfinite(n->deadline_ms) && scr_now_ms() >= n->deadline_ms) return true;
+  }
+  return false;
+}
+
+/* A signal in the run's chain that aborted cancels it: the running test
+ * reports the signal's reason, an ancestor suite reports it for the subtree
+ * and the child is cancelled with Node's parent message. Returns true when
+ * a signal fired (and threw). */
+static bool scr_test_signal_wake(ScrTestCtx *run, ScrTestCtx *t) {
+  for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
+    SfSignal *ns = scr_test_signal_of(n);
+    if (ns == NULL || !ns->aborted) continue;
+    if (n == t) {
+      t->aborted = true;
+      scr_test_throw_reason(ns);
+      return true;
+    }
+    scr_test_abort_failure(n, ns);
+    ScrTestCtx *cancelled = (run != NULL && !run->is_suite) ? run : NULL;
+    if (cancelled != NULL) {
+      cancelled->timed_out = true;
+      scr_test_abort_now(cancelled);
+    }
+    for (ScrTestCtx *m = run; m != NULL && m != n; m = m->parent) {
+      if (m != cancelled && m->is_suite) m->cancelled_parent = true;
+    }
+    static const char msg[] = "test did not finish before its parent and was cancelled";
+    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    return true;
+  }
+  return false;
+}
+
+/* Waits for a body or hook, bounded by the test's own { timeout } and by
+ * the enclosing suite's { timeout } deadline, whichever is nearer. When the
+ * suite deadline wins, the suite fails with its own "test timed out after
+ * <timeout>ms" and the running child is cancelled with Node's parent
+ * message; the body keeps running unobserved. */
+static void scr_test_await_bounded(ScrPromise *p, ScrTestCtx *t, ScrTestCtx *scope,
+                                   ScrTestCtx *ctx, double own_left_override) {
+  /* A hook runs for its context: an inherited beforeEach is bounded by the
+   * deadlines above the test it runs for, not above the suite that
+   * registered it. */
+  ScrTestCtx *run = t != NULL ? t : ctx;
+  double suite_deadline = INFINITY;
+  ScrTestCtx *owner = scr_test_deadline_of(run, &suite_deadline);
+  double suite_left = owner != NULL ? suite_deadline - scr_now_ms() : INFINITY;
+  /* The test's own window: its { timeout } from the body's start, or the
+   * caller's remaining-time override (a plan's wait shares the body's
+   * deadline, as Node races the plan against stopTest). */
+  double own_left =
+      !isnan(own_left_override)
+          ? own_left_override
+          : (t != NULL && isfinite(t->timeout) ? t->timeout : INFINITY);
+  bool watching = false;
+  for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
+    if (n->abort_promise != NULL) watching = true;
+  }
+  /* The nearer of the test's own timeout and the suite's deadline bounds the
+   * wait; the body settles it earlier, and a watched { signal } wakes it at
+   * once. */
+  bool own_nearer = own_left <= suite_left;
   ScrPromise *race = scr_promise_new();
   scr_promise_race_join(race, p, scr_promise_adapt_copy);
-  scr_promise_race_join(race, timer, scr_promise_adapt_copy);
+  ScrPromise *timer = NULL;
+  double handle = -1;
+  if (own_nearer && own_left != INFINITY) {
+    timer = scr_promise_new();
+    handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */), own_left);
+    scr_promise_race_join(race, timer, scr_promise_adapt_copy);
+  } else if (!own_nearer && suite_left != INFINITY) {
+    timer = scr_promise_new();
+    handle = scr_set_timeout_handle(scr_make_resolve(timer, 3 /* void */),
+                                    suite_left > 0 ? suite_left : 0);
+    scr_promise_race_join(race, timer, scr_promise_adapt_copy);
+  }
+  if (watching) {
+    for (ScrTestCtx *n = run; n != NULL; n = n->parent) {
+      if (n->abort_promise != NULL)
+        scr_promise_race_join(race, n->abort_promise, scr_promise_adapt_copy);
+    }
+  }
   scr_await_void(race);
-  scr_clear_interval(handle);
+  if (handle >= 0) scr_clear_interval(handle);
   scr_promise_release(race);
-  scr_promise_release(timer);
-  if (!scr_exc_pending() && scr_promise_is_pending(p)) {
+  if (timer != NULL) scr_promise_release(timer);
+  if (scr_exc_pending()) return;
+
+  if (scr_test_signal_wake(run, t)) return;
+  if (!scr_promise_is_pending(p)) return;
+  if (timer == NULL) return;
+
+  if (own_nearer) {
     char num[32];
     size_t n = scr_f64_to_str(t->timeout, num);
     char buf[80];
     int len = snprintf(buf, sizeof buf, "test timed out after %.*sms", (int)n, num);
     t->timed_out = true;
+    scr_test_abort_now(t);
     scr_throw_str(scr_str_new(buf, (size_t)len));
+    return;
   }
+  if (owner != NULL && !owner->err) {
+    char num[32];
+    size_t n = scr_f64_to_str(owner->timeout, num);
+    char buf[80];
+    int len = snprintf(buf, sizeof buf, "test timed out after %.*sms", (int)n, num);
+    owner->timed_out = true;
+    owner->listed = true;
+    scr_throw_str(scr_str_new(buf, (size_t)len));
+    owner->err = scr_exc_take();
+  }
+  static const char msg[] = "test did not finish before its parent and was cancelled";
+  /* The running test is the one cancelled, and every suite between it and
+   * the suite whose deadline fired reports the same cancellation, as Node
+   * cancels the subtree its timer cut short. */
+  ScrTestCtx *cancelled = (run != NULL && !run->is_suite) ? run : NULL;
+  if (cancelled != NULL) {
+    cancelled->timed_out = true;
+    scr_test_abort_now(cancelled);
+  }
+  for (ScrTestCtx *n = run; n != NULL && n != owner; n = n->parent) {
+    if (n != cancelled && n->is_suite) n->cancelled_parent = true;
+  }
+  scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+}
+
+/* A test that ended short of its t.plan count with { wait }: waits for the
+ * remaining assertions or subtests, or for the wait window to elapse —
+ * Node lets assertions running in timers finish before it judges the
+ * plan. The wait is bounded by the test's own { timeout } as Node races
+ * the plan promise against its stopTest timer: `wait: true` waits until the
+ * plan is met, the timeout cancels the test, or a suite deadline or the
+ * { signal } stops it. */
+static void scr_test_await_plan(ScrTestCtx *t) {
+  double remaining = INFINITY;
+  if (isfinite(t->timeout) && !isnan(t->body_start_ms)) {
+    remaining = t->timeout - (scr_now_ms() - t->body_start_ms);
+    if (remaining < 0) remaining = 0;
+  }
+  t->plan_met = scr_promise_new();
+  ScrPromise *wait = scr_promise_new();
+  double wait_handle = -1;
+  ScrPromise *p = scr_promise_new();
+  scr_promise_race_join(p, t->plan_met, scr_promise_adapt_copy);
+  if (t->plan_wait >= 0) {
+    /* A numeric wait: `wait: true` has none of its own (-2). */
+    wait_handle = scr_set_timeout_handle(scr_make_resolve(wait, 3 /* void */), t->plan_wait);
+    scr_promise_race_join(p, wait, scr_promise_adapt_copy);
+  }
+  scr_test_await_bounded(p, t, t, t, remaining);
+  if (wait_handle >= 0) scr_clear_interval(wait_handle);
+  scr_promise_release(p);
+  scr_promise_release(wait);
+  scr_promise_release(t->plan_met);
+  t->plan_met = NULL;
+}
+
+/* ── Node's callback form ──────────────────────────────────────────────
+ * A test or hook written `(c, done) => ...` finishes when it calls done: the
+ * runner owns a promise the run waits on, and done() fulfils it. A truthy
+ * result fails the run with that value (Node's done(error)), a second call
+ * fails it with Node's "callback invoked multiple times", and a body that
+ * also returns a promise fails with "passed a callback but also returned a
+ * Promise". The state is reference counted and rides the done closure as a
+ * captured value, so a timer that keeps the closure keeps it alive. */
+typedef struct ScrTestDone {
+  size_t rc;
+  ScrPromise *p; /* +1 */
+  int calls;
+} ScrTestDone;
+
+static ScrTestDone *scr_test_done_new(void) {
+  ScrTestDone *d = malloc(sizeof *d);
+  if (!d) scr_test_oom();
+  d->rc = 1;
+  d->p = scr_promise_new();
+  d->calls = 0;
+  return d;
+}
+
+static void scr_test_done_release(ScrTestDone *d) {
+  if (d == NULL) return;
+  if (--d->rc > 0) return;
+  scr_promise_release(d->p);
+  free(d);
+}
+
+static void *scr_test_done_retain_v(void *p) {
+  ((ScrTestDone *)p)->rc++;
+  return p;
+}
+
+static void scr_test_done_release_v(void *p) { scr_test_done_release(p); }
+
+/* The captured value's descriptor: a native state, so it carries no cycle
+ * header and the collector never visits it. */
+static const ScrClosureValues scr_test_done_values = {
+  1,
+  {{scr_test_done_release_v, NULL}},
+};
+
+/* done(result): falsy passes, a truthy result rejects with that value the
+ * way the body's own throw would (the failing section renders it as
+ * Node's does), and every call is counted for the caller to judge. The
+ * closure calling convention makes the thunk own its parameter. */
+/* Whether a checked-dynamic value is an Error-hierarchy instance (the mark
+ * every Error carries), so done(error) fails with the Error itself rather
+ * than with a value Node would inspect. */
+static bool scr_test_is_error_dyn(const ScrDyn *d) {
+  if (!d || d->kind != SCR_DYN_OBJ) return false;
+  const ScrDyn *mark = scr_dyn_obj_get(d, "%error", 6);
+  return mark && mark->kind == SCR_DYN_BOOL && mark->v.b;
+}
+
+static void scr_test_done_thunk(ScrClosure *self, ScrDyn *result) {
+  ScrTestDone *d = scr_closure_value_slots(self)[0];
+  d->calls++;
+  if (d->calls == 1 && scr_promise_is_pending(d->p)) {
+    if (result != NULL && scr_dyn_truthy(result)) {
+      if (scr_test_is_error_dyn(result)) {
+        ScrError *e = scr_error_from_dyn(result);
+        scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+      } else {
+        scr_throw_ref(scr_dyn_retain(result), scr_dyn_retain_v, scr_dyn_release_v,
+                      scr_dyn_trace_v);
+      }
+      scr_promise_reject_pending(d->p);
+      if (scr_exc_pending()) scr_exc_clear();
+    } else {
+      scr_promise_fulfill_void(d->p);
+    }
+  }
+  if (result != NULL) scr_dyn_release(result);
+}
+
+/* The done closure the body receives: a function value over the state,
+ * which the closure holds a reference of its own to (the runner keeps its
+ * reference until the run has finished). */
+static ScrClosure *scr_test_done_closure(ScrTestDone *d) {
+  size_t size = sizeof(ScrClosure) + sizeof(ScrClosureValues *) + sizeof(void *);
+  ScrClosure *c =
+      scr_closure_new_values((void *)&scr_test_done_thunk, 0, &scr_test_done_values, size);
+  scr_closure_value_slots(c)[0] = scr_test_done_retain_v(d);
+  return c;
 }
 
 /* Call one stored closure by its lowering-pinned shape; async shapes are
@@ -449,20 +1091,59 @@ static void scr_test_call(ScrClosure *cb, int flags, ScrTestCtx *ctx, ScrTestCtx
                           ScrTestCtx *timed) {
   ScrAlsCtx *outer = scr_test_scope_enter(scope);
   bool takes_ctx = (flags & SCR_TEST_F_CTX) != 0;
+  if (flags & SCR_TEST_F_DONE) {
+    ScrTestDone *d = scr_test_done_new();
+    ScrClosure *done = scr_test_done_closure(d);
+    if (flags & SCR_TEST_F_ASYNC) {
+      /* Node refuses a callback-style body that also returns a promise: the
+       * run fails with its message, never waiting for either. */
+      ScrPromise *body = ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *,
+                                             ScrClosure *))cb->fn)(
+          cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
+      if (!scr_exc_pending()) {
+        static const char msg[] = "passed a callback but also returned a Promise";
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+      }
+      scr_promise_release(body);
+    } else {
+      ((void (*)(ScrClosure *, ScrTestCtx *, ScrClosure *))cb->fn)(
+          cb, takes_ctx ? scr_testctx_retain(ctx) : NULL, scr_closure_retain(done));
+      if (!scr_exc_pending()) {
+        scr_test_await_bounded(d->p, timed, scope, ctx, NAN);
+      }
+    }
+    scr_closure_release(done);
+    /* A second call while the run is in flight is Node's failure, and it
+     * wins over the first call's result ("done(error); done()" reports the
+     * second call). A call after the run finished is ignored, as Node
+     * ignores it, and a timed-out run keeps its timeout failure. */
+    if (d->calls > 1 && !(timed && timed->timed_out)) {
+      if (scr_exc_pending()) scr_exc_clear();
+      static const char msg[] = "callback invoked multiple times";
+      scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    }
+    scr_test_done_release(d);
+    scr_test_scope_leave(outer);
+    return;
+  }
   if (flags & SCR_TEST_F_ASYNC) {
     ScrPromise *p =
         takes_ctx
             ? ((ScrPromise * (*)(ScrClosure *, ScrTestCtx *)) cb->fn)(cb, scr_testctx_retain(ctx))
             : ((ScrPromise * (*)(ScrClosure *)) cb->fn)(cb);
     if (!scr_exc_pending() && p) {
-      if (timed && isfinite(timed->timeout)) scr_test_await_timeout(p, timed);
-      else scr_await_void(p);
+      scr_test_await_bounded(p, timed, scope, ctx, NAN);
     }
     scr_promise_release(p);
   } else if (takes_ctx) {
     ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(ctx));
+    /* Only a body observes its own abort: a hook runs after the test was
+     * already cancelled, and the signal stays aborted, so re-throwing there
+     * would skip the remaining cleanup hooks. */
+    if (timed != NULL && !scr_exc_pending()) scr_test_signal_wake(timed, timed);
   } else {
     ((void (*)(ScrClosure *))cb->fn)(cb);
+    if (timed != NULL && !scr_exc_pending()) scr_test_signal_wake(timed, timed);
   }
   scr_test_scope_leave(outer);
 }
@@ -512,6 +1193,7 @@ static bool scr_test_run_each_hooks(ScrTestCtx *t, int which, bool outermost_fir
 
 /* A test or suite marked only, or one with a marked descendant. */
 static bool scr_test_has_only(const ScrTestCtx *t) {
+  if (t->only_false) return false;
   if (t->flags & SCR_TEST_F_ONLY) return true;
   for (size_t i = 0; i < t->nchildren; i++) {
     if (scr_test_has_only(t->children[i])) return true;
@@ -521,6 +1203,7 @@ static bool scr_test_has_only(const ScrTestCtx *t) {
 
 static bool scr_test_any_only(ScrTestCtx *parent) {
   for (size_t i = 0; i < parent->nchildren; i++) {
+    if (parent->children[i]->only_false) continue;
     if (scr_test_has_only(parent->children[i])) return true;
   }
   return false;
@@ -567,6 +1250,27 @@ static void scr_test_fiber_leave(void) {
   }
 }
 
+static void scr_test_cancel_unrun(ScrTestCtx *c);
+
+/* The next queued sibling takes the freed slot. A suite { timeout } that
+ * elapsed cancels the children still queued, without running them, as Node
+ * never starts what the deadline passed. */
+static void scr_test_start_next_queued(ScrTestCtx *parent) {
+  bool expired = scr_test_stopped(parent);
+  for (size_t i = 0; i < parent->nchildren; i++) {
+    ScrTestCtx *c = parent->children[i];
+    if (!c->queued) continue;
+    if (expired) {
+      c->queued = false;
+      scr_test_cancel_unrun(c);
+      scr_promise_fulfill_void(c->done);
+      continue;
+    }
+    scr_test_spawn(c);
+    break;
+  }
+}
+
 static void scr_test_child_entry(ScrFiber *self, void *arg) {
   (void)self;
   ScrTestCtx *c = arg;
@@ -578,13 +1282,7 @@ static void scr_test_child_entry(ScrFiber *self, void *arg) {
   scr_test_run_node(c);
   scr_test_fiber_leave();
   parent->active--;
-  /* The next queued sibling takes the freed slot. */
-  for (size_t i = 0; i < parent->nchildren; i++) {
-    if (parent->children[i]->queued) {
-      scr_test_spawn(parent->children[i]);
-      break;
-    }
-  }
+  scr_test_start_next_queued(parent);
   scr_promise_fulfill_void(c->done);
   if (parent->slot) scr_promise_fulfill_void(parent->slot);
   scr_testctx_release(c);
@@ -602,6 +1300,13 @@ static void scr_test_spawn(ScrTestCtx *c) {
 static void scr_test_start(ScrTestCtx *c) {
   ScrTestCtx *parent = c->parent;
   c->done = scr_promise_new();
+  /* A suite { timeout } that already elapsed cancels a subtest started
+   * after it, as Node never starts what the deadline passed. */
+  if (scr_test_stopped(parent)) {
+    scr_test_cancel_unrun(c);
+    scr_promise_fulfill_void(c->done);
+    return;
+  }
   if (parent->active >= parent->concurrency) {
     c->queued = true;
     return;
@@ -646,10 +1351,87 @@ static void scr_test_cancel_unrun(ScrTestCtx *c) {
   static const char msg[] = "test did not finish before its parent and was cancelled";
   scr_throw_str(scr_str_new(msg, sizeof msg - 1));
   c->err = scr_exc_take();
-  c->listed = true;
   c->dur_ms = NAN;
+  /* A test flagged { expectFailure } passes on the failure: its cancellation
+   * without running is the failure it expected. Node still counts it
+   * cancelled (it displays the pass symbol), and does not list it; a todo
+   * one keeps its todo directive and warning. */
+  if (c->expect_failure && c->mode != SCR_TEST_SKIP) {
+    c->listed = c->mode == SCR_TEST_TODO;
+    c->state = c->mode == SCR_TEST_TODO ? SCR_TS_TODO_FAIL : SCR_TS_CANCELLED;
+    scr_test_abort_now(c);
+    scr_test_report_result(c);
+    return;
+  }
+  c->listed = true;
   c->state = SCR_TS_CANCELLED;
+  scr_test_abort_now(c);
   scr_test_report_result(c);
+}
+
+/* A test or suite that finished with subtests that never ran — a throwing
+ * body or before hook, a cancelled ancestor — cancels each one, Node's
+ * postRun: the subtests print with the run's message, no duration when
+ * they never started, and a skipped or todo one keeps its directive and
+ * its counter. */
+static void scr_test_cancel_pending(ScrTestCtx *t) {
+  static const char msg[] = "test did not finish before its parent and was cancelled";
+  for (size_t i = 0; i < t->nchildren; i++) {
+    ScrTestCtx *c = t->children[i];
+    if (c->state != SCR_TS_PENDING || c->only_filtered || c->queued || c->on_fiber) continue;
+    scr_test_cancel_pending(c);
+    scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+    c->err = scr_exc_take();
+    c->dur_ms = NAN;
+    if (c->expect_failure && c->mode != SCR_TEST_SKIP) {
+      /* A flagged test passes on the failure: it displays the pass with the
+       * directive while counting as cancelled and staying out of the failing
+       * section; a todo one keeps its warning and its listing. */
+      c->listed = c->mode == SCR_TEST_TODO;
+      c->state = c->mode == SCR_TEST_TODO ? SCR_TS_TODO_FAIL : SCR_TS_CANCELLED;
+    } else {
+      c->listed = true;
+      c->state = c->mode == SCR_TEST_SKIP   ? SCR_TS_SKIPPED
+                 : c->mode == SCR_TEST_TODO ? SCR_TS_TODO_FAIL
+                                            : SCR_TS_CANCELLED;
+    }
+    scr_test_report_result(c);
+  }
+}
+
+/* Late registrations, reported when the summary prints: a concurrent
+ * sibling buffers its subtree's lines, and Node reports a late failure at
+ * the end of the run, so it cannot be printed on arrival. */
+static SCR_TL ScrTestCtx **scr_test_late = NULL;
+static SCR_TL size_t scr_test_nlate = 0, scr_test_late_cap = 0;
+
+/* A test registered under a parent that already finished (a timer callback
+ * the body left behind): Node attaches it to the root and fails it with
+ * this message, reporting it when the run ends. */
+static void scr_test_late_failure(ScrTestCtx *t) {
+  static const char msg[] = "test could not be started because its parent finished";
+  scr_test_child_add(scr_test_root, t);
+  scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+  t->err = scr_exc_take();
+  t->listed = true;
+  t->start_ms = scr_now_ms();
+  t->dur_ms = 0;
+  t->state = SCR_TS_FAIL;
+  if (scr_test_nlate == scr_test_late_cap) {
+    scr_test_late_cap = scr_test_late_cap ? scr_test_late_cap * 2 : 4;
+    scr_test_late = realloc(scr_test_late, scr_test_late_cap * sizeof *scr_test_late);
+    if (!scr_test_late) scr_test_oom();
+  }
+  scr_test_late[scr_test_nlate++] = t;
+}
+
+/* Prints the late failures' result lines, in registration order, before the
+ * summary they belong above. */
+static void scr_test_flush_late(void) {
+  for (size_t i = 0; i < scr_test_nlate; i++) scr_test_report_result(scr_test_late[i]);
+  free(scr_test_late);
+  scr_test_late = NULL;
+  scr_test_nlate = scr_test_late_cap = 0;
 }
 
 /* A cancelled subtest's afterEach chain and t.after hooks, on their own
@@ -720,6 +1502,7 @@ static void scr_test_cancel_running(ScrTestCtx *t) {
     c->err = scr_exc_take();
     c->dur_ms = scr_now_ms() - c->start_ms;
     c->state = SCR_TS_CANCELLED;
+    scr_test_abort_now(c);
     scr_test_report_result(c);
     scr_test_mocks_restore(&c->mocks, true);
     scr_mt_reset(c->mock_timers);
@@ -730,6 +1513,24 @@ static void scr_test_cancel_running(ScrTestCtx *t) {
 static void scr_test_fail_unrun(ScrTestCtx *c, ScrCaught *err) {
   double start = scr_now_ms();
   c->err = scr_caught_retain(err);
+  bool expected = c->expect_failure && c->mode != SCR_TEST_SKIP;
+  if (expected) {
+    /* The expected failure: the failing root before hook's error is what the
+     * flagged test expected, so it passes; a flagged suite's descendants are
+     * flagged too and pass the same way through cancel_unrun. */
+    if (c->is_suite) {
+      for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
+    } else {
+      /* The outcome the afterEach hooks see is the pass the flag makes. */
+      c->passed = true;
+      scr_test_run_each_hooks(c, SCR_HOOK_AFTER_EACH, false);
+      if (scr_exc_pending()) scr_exc_clear();
+    }
+    c->dur_ms = scr_now_ms() - start;
+    c->state = c->mode == SCR_TEST_TODO ? SCR_TS_TODO_PASS : SCR_TS_PASS;
+    scr_test_report_result(c);
+    return;
+  }
   c->listed = true;
   if (c->is_suite) {
     for (size_t i = 0; i < c->nchildren; i++) scr_test_cancel_unrun(c->children[i]);
@@ -749,8 +1550,16 @@ static void scr_test_run_children(ScrTestCtx *t) {
   bool only = scr_test_any_only(t);
   for (size_t i = 0; i < t->nchildren; i++) {
     ScrTestCtx *c = t->children[i];
+    if (c->only_filtered) continue; /* t.runOnly(true): dropped at registration */
     if (only && !scr_test_has_only(c)) {
-      continue; /* filtered: never run, never reported, never counted */
+      c->only_filtered = true; /* filtered: never run, never reported */
+      continue;
+    }
+    /* A suite { timeout } that elapsed cancels the children that have not
+     * run, with Node's parent message. */
+    if (scr_test_stopped(t)) {
+      scr_test_cancel_unrun(c);
+      continue;
     }
     /* Subtests t.test already ran INLINE at their call site, or started on
      * their own fiber. */
@@ -775,20 +1584,60 @@ static bool scr_test_subtree_failed(const ScrTestCtx *t) {
 static void scr_test_run_node(ScrTestCtx *t) {
   double start = scr_now_ms();
   if (t->mode == SCR_TEST_SKIP) {
+    if (!t->is_suite) {
+      t->tr_started = true;
+      scr_test_tr_publish(SCR_TR_START, t, false);
+    }
     t->dur_ms = scr_now_ms() - start;
     t->state = SCR_TS_SKIPPED;
     t->passed = true;
+    scr_test_abort_now(t);
     scr_test_report_result(t);
     return;
   }
+  SfSignal *sig = scr_test_signal_of(t);
+  if (sig != NULL && sig->aborted) {
+    /* A signal that aborted before the run starts cancels it: the reason is
+     * the failure. A suite's children never run and, as in Node, are not
+     * reported at all (they stay pending). */
+    scr_test_abort_failure(t, sig);
+    t->dur_ms = scr_now_ms() - start;
+    t->state = SCR_TS_CANCELLED;
+    /* A cancelled suite is a failing result in Node, even though suites are
+     * not counted: the file exits nonzero for it. A todo suite never does. */
+    if (t->is_suite && t->mode != SCR_TEST_TODO) scr_test_suite_hook_failed = true;
+    scr_test_abort_now(t);
+    scr_test_report_result(t);
+    return;
+  }
+  scr_test_watch_signal(t);
   if (t->is_suite) {
-    /* The body already ran at registration (children collected). A hook
-     * throw fails the SUITE with that error — before-failures skip the
-     * children (Node cancels them; SEMANTICS.md numbers the difference). */
-    scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+    /* The body already ran at registration (children collected). A body that
+     * threw fails the suite and cancels its children, as Node does, but the
+     * suite's own hooks still run: they are the cleanup the body registered
+     * before it threw. */
+    if (t->err) {
+      scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+      if (scr_exc_pending()) scr_exc_clear(); /* the body's error stands */
+      for (size_t i = 0; i < t->nchildren; i++) {
+        if (t->children[i]->state == SCR_TS_PENDING) scr_test_cancel_unrun(t->children[i]);
+      }
+      scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
+      if (scr_exc_pending()) scr_exc_clear();
+    } else {
+      /* A hook throw fails the SUITE with that error, and its children never
+       * run: Node cancels each of them. */
+      scr_test_run_hooks_of(t, SCR_HOOK_BEFORE, t);
+    }
     if (scr_exc_pending()) {
       t->err = scr_exc_take();
-    } else {
+      t->listed = true; /* a failing suite lists in the failing section */
+      scr_test_tr_error(t);
+      scr_test_cancel_pending(t);
+    } else if (!t->err) {
+      /* Node starts a suite's timer once its setup hooks have finished: the
+       * children get the full timeout budget after the before hooks run. */
+      if (isfinite(t->timeout)) t->deadline_ms = scr_now_ms() + t->timeout;
       if (t->concurrency > 1) {
         scr_test_defer++;
         scr_test_run_children(t);
@@ -796,20 +1645,67 @@ static void scr_test_run_node(ScrTestCtx *t) {
       } else {
         scr_test_run_children(t);
       }
+      /* The suite's after hooks are the cleanup a timed-out suite still
+       * runs, as Node runs them; they are no longer bounded by the elapsed
+       * deadline. */
+      t->deadline_ms = INFINITY;
       scr_test_run_hooks_of(t, SCR_HOOK_AFTER, t);
-      if (scr_exc_pending()) t->err = scr_exc_take();
+      if (scr_exc_pending()) {
+        t->err = scr_exc_take();
+        t->listed = true;
+        scr_test_tr_error(t);
+      }
+      scr_test_cancel_pending(t);
+    }
+    /* An ancestor's { timeout } cut this suite's run short: Node cancels the
+     * subtree it cut, and the suite reports the same parent message. */
+    if (t->cancelled_parent) {
+      static const char msg[] = "test did not finish before its parent and was cancelled";
+      if (t->err == NULL) {
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+        t->err = scr_exc_take();
+      }
+      t->listed = true;
+      t->dur_ms = scr_now_ms() - start;
+      t->passed = false;
+      t->state = SCR_TS_CANCELLED;
+      scr_test_report_result(t);
+      return;
+    }
+    /* { expectFailure }: the suite passes only if its own run threw. The
+     * expected failure stays t.error, but the result is a pass. */
+    bool expected_failure = false;
+    if (t->expect_failure && t->mode != SCR_TEST_SKIP) {
+      if (t->err) {
+        expected_failure = true;
+      } else {
+        static const char msg[] = "test was expected to fail but passed";
+        scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+        t->err = scr_exc_take();
+        t->listed = true; /* Node lists a failing suite's own error */
+      }
     }
     t->dur_ms = scr_now_ms() - start;
-    if (t->err) scr_test_suite_hook_failed = true;
+    /* A todo suite's failure, expected or not, never fails the process. */
+    if (t->err && !expected_failure && t->mode != SCR_TEST_TODO)
+      scr_test_suite_hook_failed = true;
     if (t->mode == SCR_TEST_TODO) {
-      /* A todo suite reports its directive; its children are todo too. */
-      t->state = t->err ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
+      /* A todo suite reports its directive; its children are todo too, and
+       * an expected failure keeps the suite todo-passing. */
+      t->state = (t->err && !expected_failure) ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
+    } else if (expected_failure) {
+      t->state = SCR_TS_PASS;
     } else {
       t->state = t->err                     ? SCR_TS_FAIL
                  : scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL
                                               : SCR_TS_PASS;
     }
-    /* Node's suite pass() comes after its after hooks. */
+    /* A suite failed by its own body or hook error lists it in the failing
+     * section; one failed by its descendants does not. */
+    if (t->state == SCR_TS_FAIL) t->listed = true;
+    /* Node's suite pass() comes after its after hooks. A suite's signal is
+     * not aborted when the suite finishes (Node aborts a test's in its
+     * run's finally; a suite's context signal stays unaborted). */
     t->passed = t->state == SCR_TS_PASS || t->state == SCR_TS_TODO_PASS;
     scr_test_report_result(t);
     return;
@@ -832,23 +1728,33 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (scr_exc_pending()) {
     t->err = scr_exc_take();
     failed = true;
-  } else if (t->cb) {
-    scr_test_call(t->cb, t->flags, t, t, t);
-    if (t->state != SCR_TS_PENDING) {
-      /* Its parent timed out and cancelled it while the body ran: the
-       * result is reported, its cleanup ran at the cancellation
-       * (scr_test_cancel_running), and the runner has moved on, so the
-       * registration parent is not restored either: it belongs to the
-       * test that runs now. */
-      if (scr_exc_pending()) scr_exc_clear();
-      if (t->concurrency > 1) scr_test_defer--;
-      return;
+    scr_test_tr_error(t);
+  } else {
+    /* Node publishes a test's start when its run begins; a fn-less test
+     * (test("empty"), test.todo("pending")) runs the noop body Node gives
+     * it and publishes the same start and end. */
+    t->tr_started = true;
+    scr_test_tr_publish(SCR_TR_START, t, false);
+    if (t->cb) {
+      t->body_start_ms = scr_now_ms();
+      scr_test_call(t->cb, t->flags, t, t, t);
+      if (t->state != SCR_TS_PENDING) {
+        /* Its parent timed out and cancelled it while the body ran: the
+         * result is reported, its cleanup ran at the cancellation
+         * (scr_test_cancel_running), and the runner has moved on, so the
+         * registration parent is not restored either: it belongs to the
+         * test that runs now. */
+        if (scr_exc_pending()) scr_exc_clear();
+        if (t->concurrency > 1) scr_test_defer--;
+        return;
+      }
+      if (scr_exc_pending()) {
+        t->err = scr_exc_take();
+        failed = true;
+        scr_test_tr_error(t);
+      }
+      if (failed && t->timed_out) scr_test_cancel_running(t);
     }
-    if (scr_exc_pending()) {
-      t->err = scr_exc_take();
-      failed = true;
-    }
-    if (failed && t->timed_out) scr_test_cancel_running(t);
   }
   /* Children a passing body registered without running (bare test() in
    * the body): run them now, before the parent completes — Node holds
@@ -859,16 +1765,62 @@ static void scr_test_run_node(ScrTestCtx *t) {
   if (!failed && t->before_err) {
     t->err = scr_caught_retain(t->before_err);
     failed = true;
+    scr_test_tr_error(t);
   }
   /* t.plan: the t.assert calls and subtests the test made. Node reports the
    * mismatch as a string failure. */
   if (!failed && t->plan >= 0 && t->plan_count != t->plan) {
-    char buf[96];
-    int n = snprintf(buf, sizeof buf, "plan expected %d assertions but received %d", t->plan,
-                     t->plan_count);
-    scr_throw_str(scr_str_new(buf, (size_t)n));
-    t->err = scr_exc_take();
-    failed = true;
+    /* A shortfall waits out { wait } first, as Node holds the test open
+     * for assertions its timers still run. */
+    if (t->plan_wait != -1 && t->plan_count < t->plan) {
+      scr_test_await_plan(t);
+      if (scr_exc_pending()) {
+        /* The test's { timeout } fired while the plan waited: that timeout
+         * is the failure, as Node's stopTest wins the race, and tracing
+         * subscribers see it as the test's error event before its end. */
+        t->err = scr_exc_take();
+        failed = true;
+        t->fail_runner = true;
+        scr_test_tr_error(t);
+      }
+    }
+    if (!failed && t->plan_count != t->plan) {
+      char buf[128];
+      int n;
+      if (t->plan_wait >= 0 && t->plan_count < t->plan) {
+        char num[32];
+        size_t wl = scr_f64_to_str(t->plan_wait, num);
+        char expected[32];
+        size_t el = scr_f64_to_str(t->plan, expected);
+        n = snprintf(buf, sizeof buf,
+                     "plan timed out after %.*sms with %d assertions when expecting %.*s", (int)wl,
+                     num, t->plan_count, (int)el, expected);
+        /* Node cancels the test and its pending subtests, as a timeout. */
+        t->timed_out = true;
+      } else {
+        char expected[32];
+        size_t el = scr_f64_to_str(t->plan, expected);
+        n = snprintf(buf, sizeof buf, "plan expected %.*s assertions but received %d", (int)el,
+                     expected, t->plan_count);
+      }
+      scr_throw_str(scr_str_new(buf, (size_t)n));
+      t->err = scr_exc_take();
+      failed = true;
+      t->fail_runner = true;
+      scr_test_tr_error(t);
+    }
+  }
+  /* { expectFailure }: the test passes only if its own run threw; an
+   * expected failure keeps t.error for the hooks but counts as a pass. */
+  if (t->expect_failure && t->mode != SCR_TEST_SKIP) {
+    if (failed && t->err) {
+      failed = false;
+    } else if (!failed) {
+      static const char msg[] = "test was expected to fail but passed";
+      scr_throw_str(scr_str_new(msg, sizeof msg - 1));
+      t->err = scr_exc_take();
+      failed = true;
+    }
   }
   /* Node's pass()/fail(): afterEach hooks already see the outcome. */
   t->passed = !failed;
@@ -877,6 +1829,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     } else {
       scr_exc_clear();
     }
@@ -887,6 +1840,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
     if (!failed && !t->err) {
       t->err = scr_exc_take();
       failed = true;
+      scr_test_tr_error(t);
     } else {
       scr_exc_clear();
     }
@@ -898,6 +1852,11 @@ static void scr_test_run_node(ScrTestCtx *t) {
    * nothing runs them again: dropping them releases closures that capture
    * the context, which would otherwise keep it alive in a cycle. */
   for (int k = 0; k < 4; k++) scr_test_hooks_free(&t->hooks[k]);
+  /* Node aborts the test's signal at the end of its run, after its hooks. */
+  scr_test_abort_now(t);
+  /* Node's postRun: subtests this test never ran (a throwing body or
+   * before hook) are cancelled and reported with the run's message. */
+  scr_test_cancel_pending(t);
   scr_test_parent_set(prev_parent);
   t->dur_ms = scr_now_ms() - start;
   if (t->mode == SCR_TEST_SKIP) {
@@ -906,7 +1865,7 @@ static void scr_test_run_node(ScrTestCtx *t) {
   } else if (t->mode == SCR_TEST_TODO) {
     t->state = failed ? SCR_TS_TODO_FAIL : SCR_TS_TODO_PASS;
   } else if (failed) {
-    t->state = t->timed_out ? SCR_TS_CANCELLED : SCR_TS_FAIL;
+    t->state = (t->timed_out || t->aborted) ? SCR_TS_CANCELLED : SCR_TS_FAIL;
   } else {
     t->state = scr_test_subtree_failed(t) ? SCR_TS_CHILDFAIL : SCR_TS_PASS;
   }
@@ -940,12 +1899,12 @@ static void scr_test_count(const ScrTestCtx *t) {
 
 static void scr_test_info_line(const char *label, double value) {
   char num[32];
-  fputs("\xE2\x84\xB9 ", stdout);
-  fputs(label, stdout);
-  fputc(' ', stdout);
+  fputs("\xE2\x84\xB9 ", scr_test_out());
+  fputs(label, scr_test_out());
+  fputc(' ', scr_test_out());
   size_t n = scr_f64_to_str(value, num);
-  fwrite(num, 1, n, stdout);
-  fputc('\n', stdout);
+  fwrite(num, 1, n, scr_test_out());
+  fputc('\n', scr_test_out());
 }
 
 /* The failing-tests detail: "test at <file>:<line>:<col>" (the file
@@ -955,60 +1914,98 @@ static void scr_test_info_line(const char *label, double value) {
  * block; this runtime stops at the message (SEMANTICS.md — the harness
  * strips both sides). */
 static void scr_test_print_at(const ScrStr *at) {
-  fputs("test at ", stdout);
+  fputs("test at ", scr_test_out());
   char cwd[4096];
   if (getcwd(cwd, sizeof cwd)) {
     size_t cl = strlen(cwd);
     if (at->len > cl + 1 && memcmp(at->data, cwd, cl) == 0 && at->data[cl] == '/') {
-      fwrite(at->data + cl + 1, 1, at->len - cl - 1, stdout);
-      fputc('\n', stdout);
+      fwrite(at->data + cl + 1, 1, at->len - cl - 1, scr_test_out());
+      fputc('\n', scr_test_out());
       return;
     }
   }
-  fwrite(at->data, 1, at->len, stdout);
-  fputc('\n', stdout);
+  fwrite(at->data, 1, at->len, scr_test_out());
+  fputc('\n', scr_test_out());
+}
+
+/* Node prints a failure inspected: a thrown string is quoted, and numbers,
+ * booleans and checked-dynamic values (thrown records, arrays, null and
+ * undefined) print as util.inspect renders them, which may run the value's
+ * own custom inspector. Errors and other payloads print their string form.
+ * +1, or NULL without an error. */
+static ScrStr *scr_test_failure_message(const ScrTestCtx *t) {
+  const ScrCaught *err = t->err;
+  if (!err) return NULL;
+  if (err->kind == SCR_EXC_STR) return scr_insp_str(err->payload);
+  if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
+      ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
+       err->retain_fn == scr_dyn_retain_v)) {
+    ScrDyn *value = scr_caught_to_dyn(err);
+    ScrStr *msg = scr_insp_dyn(value, 0, 2);
+    if (scr_exc_pending()) {
+      /* The value's custom inspector threw. The render happens on the runner
+       * fiber, so the exception must not stay pending (it would fail the
+       * tests that follow); Node inspects again with the custom inspector
+       * off, which prints the value's own shape. */
+      scr_exc_clear();
+      /* Node's wrapper message renders a non-Error with the custom inspector
+       * off and every property on one line (inspectWithNoCustomRetry), so the
+       * fallback text keeps that layout. */
+      bool previous = scr_insp_custom_inspect(false);
+      scr_insp_layout(INFINITY, INFINITY, false, 100);
+      scr_str_release(msg);
+      msg = scr_insp_dyn(value, 0, 2);
+      scr_insp_layout(80, 3, false, 100);
+      scr_insp_custom_inspect(previous);
+      if (scr_exc_pending()) {
+        /* Even the plain retry failed: cache an inert message, so the
+         * settled failure never looks unrendered (exit reporting must not
+         * try again). */
+        scr_exc_clear();
+        scr_str_release(msg);
+        msg = scr_str_new("", 0);
+      }
+    }
+    scr_dyn_release(value);
+    return msg;
+  }
+  return scr_caught_to_string(err);
 }
 
 static void scr_test_print_failure(ScrTestCtx *t) {
-  fputc('\n', stdout);
+  fputc('\n', scr_test_out());
   if (t->at) scr_test_print_at(t->at);
-  fputs(scr_test_symbol(t->state), stdout);
-  fputc(' ', stdout);
+  fputs(scr_test_symbol(t->state), scr_test_out());
+  fputc(' ', scr_test_out());
   scr_test_print_str(t->name);
   scr_test_print_dur(t->dur_ms);
   if (t->state == SCR_TS_TODO_FAIL) {
-    fputs(" # ", stdout);
+    fputs(" # ", scr_test_out());
     if (t->msg) scr_test_print_str(t->msg);
-    else fputs("TODO", stdout);
+    else fputs("TODO", scr_test_out());
+  } else if (t->expect_failure && t->mode == SCR_TEST_RUN) {
+    fputs(" # EXPECTED FAILURE", scr_test_out());
+  } else if (t->state == SCR_TS_SKIPPED) {
+    /* A skipped test cancelled with its failing suite keeps its directive. */
+    fputs(" # ", scr_test_out());
+    if (t->msg) scr_test_print_str(t->msg);
+    else fputs("SKIP", scr_test_out());
   }
-  fputc('\n', stdout);
-  if (t->err) {
-    /* Node prints the failure inspected: a thrown string is quoted, and
-     * numbers, booleans and checked-dynamic values (thrown records, arrays,
-     * null and undefined) print as util.inspect renders them. Errors and
-     * other payloads print their string form. */
-    const ScrCaught *err = t->err;
-    ScrStr *msg;
-    if (err->kind == SCR_EXC_STR) {
-      msg = scr_insp_str(err->payload);
-    } else if (err->kind == SCR_EXC_F64 || err->kind == SCR_EXC_BOOL ||
-               ((err->kind == SCR_EXC_REF || err->kind == SCR_EXC_PRIMITIVE_REF) &&
-                err->retain_fn == scr_dyn_retain_v)) {
-      ScrDyn *value = scr_caught_to_dyn(err);
-      msg = scr_insp_dyn(value, 0, 2);
-      scr_dyn_release(value);
-    } else {
-      msg = scr_caught_to_string(err);
-    }
-    if (msg) {
+  fputc('\n', scr_test_out());
+  if (t->err && t->fail_msg) {
+    /* The message was rendered when the result settled, while the program's
+     * values were alive; this print runs at exit, after the epilogue released
+     * them, so it must never render (which could run a custom inspector). */
+    ScrStr *msg = scr_str_retain(t->fail_msg);
+    if (msg && msg->len > 0) {
       const char *p = msg->data;
       const char *end = msg->data + msg->len;
       while (p <= end) {
         const char *nl = memchr(p, '\n', (size_t)(end - p));
         size_t linelen = nl ? (size_t)(nl - p) : (size_t)(end - p);
-        fputs("  ", stdout);
-        fwrite(p, 1, linelen, stdout);
-        fputc('\n', stdout);
+        fputs("  ", scr_test_out());
+        fwrite(p, 1, linelen, scr_test_out());
+        fputc('\n', scr_test_out());
         if (!nl) break;
         p = nl + 1;
       }
@@ -1028,11 +2025,14 @@ static void scr_test_print_failures(ScrTestCtx *t, bool *any) {
     scr_test_print_failures(c, any);
     if ((!c->is_suite || c->listed) &&
         (c->state == SCR_TS_FAIL || c->state == SCR_TS_TODO_FAIL ||
-         c->state == SCR_TS_CANCELLED) &&
+         c->state == SCR_TS_CANCELLED || (c->state == SCR_TS_SKIPPED && c->listed)) &&
+        /* A flagged test cancelled before it ran displays the pass and is
+         * not listed; Node still counts it cancelled. */
+        !(c->state == SCR_TS_CANCELLED && c->expect_failure && c->mode == SCR_TEST_RUN) &&
         c->err) {
       if (!*any) {
         *any = true;
-        fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
+        fputs("\n\xE2\x9C\x96 failing tests:\n", scr_test_out());
       }
       scr_test_print_failure(c);
     }
@@ -1066,12 +2066,66 @@ typedef struct ScrSnapFile {
 } ScrSnapFile;
 
 static SCR_TL ScrSnapFile *scr_snap_files = NULL;
-/* Node's --test-update-snapshots: a leading argument of the binary,
+/* snapshot.setDefaultSnapshotSerializers: the list every serialization that
+ * has no serializers of its own runs through (+1). */
+static SCR_TL ScrDyn *scr_snap_default_serializers = NULL;
+/* snapshot.setResolveSnapshotPath: the resolver mapping a test file's path to
+ * its snapshot file (+1), and the one path it answered (+1). */
+static SCR_TL ScrClosure *scr_snap_resolve_path = NULL;
+static SCR_TL ScrStr *scr_snap_resolved = NULL;
+/* Node's --test-update-snapshots: a runtime argument of the binary,
  * which scr_test_init takes out of process.argv. */
 static SCR_TL bool scr_test_update_snapshots = false;
 
-void scr_test_init(void) {
-  scr_test_update_snapshots = scr_lib_take_flag("--test-update-snapshots");
+void scr_test_init(const char *entry /*borrowed*/) {
+  scr_str_release(scr_test_entry);
+  scr_test_entry = entry ? scr_str_new(entry, strlen(entry)) : NULL;
+  /* The runtime options scr_test_init takes out of process.argv, leading
+   * and in any order, as Node accepts its own flags before the entry:
+   * `--test-update-snapshots`, and the reporter options
+   * `--test-reporter=spec` (the reporter this runtime reproduces) and
+   * `--test-reporter-destination=stdout|stderr|<file>` (where its lines
+   * go). A reporter name Node would import is refused here instead: the
+   * binary carries only the spec reporter, and silently reporting
+   * somewhere else would hide a misconfigured command. */
+  const char *reporter = NULL;
+  const char *destination = NULL;
+  for (;;) {
+    const char *value = NULL;
+    if (scr_lib_take_flag("--test-update-snapshots")) {
+      scr_test_update_snapshots = true;
+      continue;
+    }
+    if (scr_lib_take_flag_value("--test-reporter", &value)) {
+      reporter = value;
+      continue;
+    }
+    if (scr_lib_take_flag_value("--test-reporter-destination", &value)) {
+      destination = value;
+      continue;
+    }
+    break;
+  }
+  if (reporter != NULL && strcmp(reporter, "spec") != 0) {
+    fprintf(stderr, "scriptc: unknown test reporter '%s': only the spec reporter is supported\n",
+            reporter);
+    fflush(stderr);
+    scr_process_exit(1);
+  }
+  if (destination == NULL || strcmp(destination, "stdout") == 0) return;
+  if (strcmp(destination, "stderr") == 0) {
+    scr_test_report_file = stderr;
+    return;
+  }
+  FILE *file = fopen(destination, "w");
+  if (file == NULL) {
+    fprintf(stderr, "scriptc: cannot open test reporter destination '%s': %s\n", destination,
+            strerror(errno));
+    fflush(stderr);
+    scr_process_exit(1);
+  }
+  setvbuf(file, NULL, _IOLBF, 0);
+  scr_test_report_file = file;
 }
 
 static void scr_snap_throw_state(const char *text, size_t len) {
@@ -1116,6 +2170,18 @@ static void scr_snap_put_escaped(ScrJsonBuf *b, const char *s, size_t n) {
  * Node's ERR_INVALID_STATE. Returns +1, or NULL after a throw. */
 ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
   ScrDyn *v;
+  /* A serializers value held in an array-typed expression arrives as a
+   * checked identity view; read it as the plain array Node's assertion
+   * iterates. */
+  ScrDyn *materialized = NULL;
+  if (serializers->kind == SCR_DYN_TYPED_REF) {
+    materialized = scr_dyn_typed_ref_materialize(serializers);
+    if (materialized) serializers = materialized;
+  }
+  /* A snapshot with no serializers of its own uses the module's default
+   * list when one is set (snapshot.setDefaultSnapshotSerializers). */
+  if (serializers->kind != SCR_DYN_ARR && scr_snap_default_serializers)
+    serializers = scr_snap_default_serializers;
   if (serializers->kind != SCR_DYN_ARR) {
     ScrDyn *undef = scr_dyn_undefined();
     ScrDyn *space = scr_dyn_new_num(2);
@@ -1123,19 +2189,105 @@ ScrDyn *scr_test_snapshot_serialize(ScrDyn *value, ScrDyn *serializers) {
     scr_dyn_release(undef);
     scr_dyn_release(space);
   } else {
+    /* The list can be the module's default, borrowed from the global: a
+     * serializer that installs a new default releases that global, so the
+     * iteration holds its own reference and keeps walking the array it
+     * started with, as Node's does. */
+    ScrDyn *list = scr_dyn_retain(serializers);
     v = scr_dyn_retain(value);
-    for (size_t i = 0; v && i < serializers->v.arr.len; i++) {
-      ScrDyn *next = scr_dyn_call(serializers->v.arr.items[i], &v, 1, "serializer");
+    for (size_t i = 0; v && i < list->v.arr.len; i++) {
+      ScrDyn *next = scr_dyn_call(list->v.arr.items[i], &v, 1, "serializer");
       scr_dyn_release(v);
       v = next;
     }
+    scr_dyn_release(list);
   }
-  if (v && !scr_exc_pending()) return v;
+  if (v && !scr_exc_pending()) {
+    scr_dyn_release(materialized);
+    return v;
+  }
+  scr_dyn_release(materialized);
   scr_dyn_release(v);
   scr_exc_clear();
   static const char msg[] = "The provided serializers did not generate a string.";
   scr_snap_throw_state(msg, sizeof msg - 1);
   return NULL;
+}
+
+/* snapshot.setDefaultSnapshotSerializers(serializers): Node validates an
+ * array of functions, naming the first entry that is not one, and every
+ * later serialization without its own list runs through it. */
+void scr_test_snapshot_set_default_serializers(ScrDyn *serializers /*borrowed*/) {
+  /* An array-typed serializers value arrives as a checked identity view;
+   * Node validates and stores the array itself. */
+  ScrDyn *materialized = NULL;
+  if (serializers != NULL && serializers->kind == SCR_DYN_TYPED_REF) {
+    materialized = scr_dyn_typed_ref_materialize(serializers);
+    if (materialized) serializers = materialized;
+  }
+  if (serializers == NULL || serializers->kind != SCR_DYN_ARR) {
+    ScrDyn *undef = scr_dyn_undefined();
+    scr_dyn_arg_type_fail("serializers", "an instance of Array",
+                          serializers ? serializers : undef);
+    scr_dyn_release(materialized);
+    return;
+  }
+  for (size_t i = 0; i < serializers->v.arr.len; i++) {
+    ScrDyn *item = serializers->v.arr.items[i];
+    if (item && item->kind == SCR_DYN_FUNC) continue;
+    char name[32];
+    snprintf(name, sizeof name, "serializers[%zu]", i);
+    ScrDyn *undef = scr_dyn_undefined();
+    scr_dyn_arg_type_fail(name, "of type function", item ? item : undef);
+    scr_dyn_release(materialized);
+    return;
+  }
+  scr_dyn_release(scr_snap_default_serializers);
+  scr_snap_default_serializers = scr_dyn_retain(serializers);
+  scr_dyn_release(materialized);
+}
+
+/* snapshot.setResolveSnapshotPath(fn): Node stores a (path: string) => string
+ * resolver and calls it once per test file, with the file's path, when the
+ * file's snapshot file is first needed. The closure moves in; a new resolver
+ * forgets the path the previous one answered. */
+void scr_test_snapshot_set_resolve_path(ScrClosure *cb /*moves*/) {
+  /* Node resolves a file once and keeps that answer: a resolver installed
+   * after the program's snapshot file was resolved is never consulted, so a
+   * new resolver does not forget the cached path. */
+  scr_closure_release(scr_snap_resolve_path);
+  scr_snap_resolve_path = cb;
+}
+
+/* The snapshot file for `file`: "<file>.snapshot" without a resolver, else
+ * the resolver's answer, computed once per program as Node computes it once
+ * per test file. +1, or NULL after a throw from the resolver. */
+ScrStr *scr_test_snapshot_path(ScrStr *file /*borrowed*/) {
+  /* Node resolves the file once per program, default answer included: a
+   * resolver installed after a snapshot already resolved it is never
+   * consulted, so the assertions that follow keep the first file. */
+  if (scr_snap_resolved) return scr_str_retain(scr_snap_resolved);
+  if (!scr_snap_resolve_path) {
+    size_t n = file->len + sizeof ".snapshot" - 1;
+    char *buf = malloc(n ? n : 1);
+    if (!buf) scr_test_oom();
+    memcpy(buf, file->data, file->len);
+    memcpy(buf + file->len, ".snapshot", sizeof ".snapshot" - 1);
+    ScrStr *out = scr_str_new(buf, n);
+    free(buf);
+    scr_snap_resolved = scr_str_retain(out);
+    return out;
+  }
+  /* The closure owns its argument and answers a retained string, as every
+   * generated closure does. */
+  ScrStr *out = ((ScrStr *(*)(ScrClosure *, ScrStr *))scr_snap_resolve_path->fn)(
+      scr_snap_resolve_path, scr_str_retain(file));
+  if (!out || scr_exc_pending()) {
+    scr_str_release(out);
+    return NULL;
+  }
+  scr_snap_resolved = scr_str_retain(out);
+  return out;
 }
 
 ScrStr *scr_test_snapshot_value(ScrStr *serialized) {
@@ -1582,6 +2734,7 @@ static void scr_snap_write_all(void) {
     }
     ScrStr *text = scr_jb_finish(&b);
     if (!scr_snap_mkdir_parent(f->path) || !scr_snap_write_text(f->path, text->data, text->len)) {
+      scr_stdout_settle();
       fflush(stdout);
       fprintf(stderr, "Error [ERR_INVALID_STATE]: Invalid state: Cannot write snapshot file '%.*s.'\n",
               (int)f->path->len, f->path->data);
@@ -1592,6 +2745,12 @@ static void scr_snap_write_all(void) {
 }
 
 static void scr_snap_free_all(void) {
+  scr_dyn_release(scr_snap_default_serializers);
+  scr_snap_default_serializers = NULL;
+  scr_closure_release(scr_snap_resolve_path);
+  scr_snap_resolve_path = NULL;
+  scr_str_release(scr_snap_resolved);
+  scr_snap_resolved = NULL;
   while (scr_snap_files) {
     ScrSnapFile *f = scr_snap_files;
     scr_snap_files = f->next;
@@ -1634,26 +2793,49 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   double after_start = scr_now_ms();
   ScrTestHook *after_failed = scr_test_run_hooks_of(root, SCR_HOOK_AFTER, root);
   if (scr_exc_pending()) {
+    /* Copy the failing hook's location before rendering: the render can run
+     * a custom inspector, and an inspector that registers another after hook
+     * moves the root's growable hook array, leaving the pointer dangling. */
+    ScrStr *failed_at = after_failed && after_failed->at ? scr_str_retain(after_failed->at) : NULL;
     root->err = scr_exc_take();
+    root->fail_msg = scr_test_failure_message(root);
     root->dur_ms = scr_now_ms() - after_start;
     root->state = SCR_TS_FAIL;
-    if (after_failed && after_failed->at) {
-      root->at = scr_str_retain(after_failed->at);
+    if (failed_at) {
+      root->at = scr_str_retain(failed_at);
       /* The name is the file: the location without its ":line:col". */
-      size_t end = root->at->len;
+      size_t end = failed_at->len;
       for (int colons = 0; end > 0 && colons < 2; end--) {
-        if (root->at->data[end - 1] == ':') colons++;
+        if (failed_at->data[end - 1] == ':') colons++;
       }
       scr_str_release(root->name);
-      root->name = scr_str_new(root->at->data, end);
+      root->name = scr_str_new(failed_at->data, end);
+      scr_str_release(failed_at);
     }
-    fputs("\xE2\x9C\x96 ", stdout);
+    fputs("\xE2\x9C\x96 ", scr_test_out());
     scr_test_print_str(root->name);
     scr_test_print_dur(root->dur_ms);
-    fputc('\n', stdout);
+    fputc('\n', scr_test_out());
+  }
+  /* Node's implicit root reports its own start and end once every test has
+   * finished, still inside the run (the program's module values are alive;
+   * exit-time publication would run subscriber code after teardown). */
+  if (scr_test_root) {
+    scr_test_tr_publish(SCR_TR_START, scr_test_root, false);
+    scr_test_tr_publish(SCR_TR_END, scr_test_root, false);
   }
   scr_test_run_done = true;
   scr_snap_write_all();
+}
+
+/* The summary block and the failing-tests section print when the process is
+ * about to exit, after every pending task has run: Node's reporter ends its
+ * stream there, so output a test left behind prints lands ahead of the
+ * summary and a test registered late still counts. */
+static void scr_test_print_summary(void) {
+  ScrTestCtx *root = scr_test_root;
+  if (!root) return;
+  scr_test_flush_late();
   scr_test_count(root);
   scr_test_info_line("tests", (double)scr_test_ct_tests);
   scr_test_info_line("suites", (double)scr_test_ct_suites);
@@ -1666,7 +2848,7 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
   bool any = false;
   scr_test_print_failures(root, &any);
   if (root->err) {
-    if (!any) fputs("\n\xE2\x9C\x96 failing tests:\n", stdout);
+    if (!any) fputs("\n\xE2\x9C\x96 failing tests:\n", scr_test_out());
     scr_test_print_failure(root);
   }
   /* The tree is done reporting: release it (test bodies may still hold
@@ -1679,6 +2861,12 @@ static void scr_test_runner_entry(ScrFiber *self, void *argpack) {
 static void scr_test_ensure_runner(void) {
   if (scr_test_runner_spawned) return;
   scr_test_runner_spawned = true;
+#ifndef __wasi__
+  /* A subtest started inside a then / catch / finally handler on an untyped
+   * promise runs inline and is awaited on the current fiber (scr_test_call),
+   * so in a program with tests each such reaction's steps get a fiber. */
+  scr_dyn_reaction_spawn = scr_dyn_then_spawn;
+#endif
   scr_test_t0 = scr_now_ms();
   ScrPromise *p = scr_async_spawn(scr_test_runner_entry, NULL);
   scr_promise_release(p);
@@ -1695,6 +2883,18 @@ static void scr_test_out_of_range(const char *option, const char *range, double 
   int len = snprintf(msg, sizeof msg,
                      "The value of \"options.%s\" is out of range. It must be %s. Received %.*s",
                      option, range, (int)n, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+/* Node's validateInteger/validateNumber out-of-range text for a bare
+ * option name ("The value of \"count\" is out of range. ..."). */
+static void scr_test_value_out_of_range(const char *name, const char *range, double value) {
+  char recv[48];
+  size_t n = scr_num_received(value, recv);
+  char msg[192];
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"%s\" is out of range. It must be %s. Received %.*s", name,
+                     range, (int)n, recv);
   scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
 }
 
@@ -1721,8 +2921,22 @@ static bool scr_test_options_ok(double flags, double timeout, double concurrency
 
 static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, double timeout,
                                    double concurrency) {
-  if (plan >= 0) t->plan = (int)plan;
+  if (plan > 0) {
+    /* Node installs the option through ctx.plan() when the test starts, so a
+     * body or hook calling t.plan again throws Node's "cannot set plan more
+     * than once"; `{ plan: 0 }` is falsy in Node and installs no plan. */
+    t->plan = plan;
+    t->plan_set = true;
+  }
   if ((int)flags & SCR_TEST_F_TIMEOUT) t->timeout = timeout;
+  if ((int)flags & SCR_TEST_F_EXPECT_FAILURE) t->expect_failure = true;
+  if (((int)flags & SCR_TEST_F_ONLY_FALSE) && !((int)flags & SCR_TEST_F_ONLY)) {
+    /* `test.only(name, { only: false })`: Node's method twin wins. */
+    t->only_false = true;
+    /* Node's applyFilters drops it: never run, never reported, never
+     * counted. */
+    t->only_filtered = true;
+  }
   if ((int)flags & SCR_TEST_F_CONCURRENCY) {
     /* `true` runs every subtest at once: Node uses Infinity for any test
      * with a parent, and os.availableParallelism() - 1 only for its root. */
@@ -1730,11 +2944,123 @@ static void scr_test_options_apply(ScrTestCtx *t, double flags, double plan, dou
   }
 }
 
+/* ── { tags } ───────────────────────────────────────────────────────────
+ * Node's validateAndCanonicalizeTagValues (tag_filter.js): the option is an
+ * array whose values must be non-empty strings, lowercased (by the lowering,
+ * through String.prototype.toLowerCase) and de-duplicated in declaration
+ * order. A bad value throws at the
+ * registration site, before the test is created. The node's set is its own
+ * canonical list unioned onto its parent's (a suite's tags reach every
+ * descendant). */
+
+/* Canonicalizes one { tags } value into a newly allocated, owned list.
+ * Answers false (with Node's error pending) for an invalid value. */
+static bool scr_test_tags_canonical(ScrDyn *tags, ScrStr ***out, size_t *out_n) {
+  *out = NULL;
+  *out_n = 0;
+  if (!tags || tags->kind == SCR_DYN_UNDEF) return true;
+  if (tags->kind != SCR_DYN_ARR) {
+    scr_dyn_prop_type_fail("options.tags", "an instance of Array", tags);
+    return false;
+  }
+  size_t n = (size_t)scr_dyn_arr_len(tags);
+  ScrStr **list = n ? malloc(n * sizeof *list) : NULL;
+  if (n && !list) scr_test_oom();
+  size_t count = 0;
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *value = scr_dyn_arr_at(tags, (double)i);
+    char name[40];
+    snprintf(name, sizeof name, "options.tags[%zu]", i);
+    if (!value || value->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail(name, "of type string", value ? value : scr_dyn_undefined());
+      scr_dyn_release(value);
+      for (size_t j = 0; j < count; j++) scr_str_release(list[j]);
+      free(list);
+      return false;
+    }
+    /* The lowering lowercases each value through String.prototype
+     * .toLowerCase (libunicode, the regex unit), as Node's canonicalization
+     * does, so the list arriving here is already canonical. */
+    ScrStr *tag = scr_str_retain(value->v.str);
+    scr_dyn_release(value);
+    if (tag->len == 0) {
+      ScrDyn *empty = scr_dyn_new_str(tag);
+      scr_dyn_arg_value_fail(name, "must not be empty", empty);
+      scr_dyn_release(empty);
+      scr_str_release(tag);
+      for (size_t j = 0; j < count; j++) scr_str_release(list[j]);
+      free(list);
+      return false;
+    }
+    bool seen = false;
+    for (size_t j = 0; j < count; j++)
+      if (scr_str_eq(list[j], tag)) {
+        seen = true;
+        break;
+      }
+    if (seen) scr_str_release(tag);
+    else list[count++] = tag;
+  }
+  *out = list;
+  *out_n = count;
+  return true;
+}
+
+/* The node's flattened tag set: the parent's tags first, then the own
+ * ones it does not already carry. Moves `own`. */
+static void scr_test_tags_apply(ScrTestCtx *t, ScrStr **own, size_t nown,
+                                const ScrTestCtx *parent) {
+  size_t inherited = parent ? parent->ntags : 0;
+  size_t cap = inherited + nown;
+  t->tags = cap ? malloc(cap * sizeof *t->tags) : NULL;
+  if (cap && !t->tags) scr_test_oom();
+  for (size_t i = 0; i < inherited; i++) t->tags[i] = scr_str_retain(parent->tags[i]);
+  size_t n = inherited;
+  for (size_t i = 0; i < nown; i++) {
+    bool seen = false;
+    for (size_t j = 0; j < n; j++)
+      if (scr_str_eq(t->tags[j], own[i])) {
+        seen = true;
+        break;
+      }
+    if (seen) scr_str_release(own[i]);
+    else t->tags[n++] = own[i]; /* moves */
+  }
+  t->ntags = n;
+  free(own);
+}
+
+static void scr_test_tags_free(ScrStr **own, size_t n) {
+  for (size_t i = 0; i < n; i++) scr_str_release(own[i]);
+  free(own);
+}
+
+/* t.tags: the frozen string array of the flattened tag set, made on the
+ * first read and cached (Node caches #tagsArray), so every read answers the
+ * same array. +1. */
+ScrArr *scr_test_ctx_tags(ScrTestCtx *t) {
+  if (!t->tags_arr) {
+    ScrArr *arr = scr_arr_new(SCR_ELEM_STR, t->ntags);
+    for (size_t i = 0; i < t->ntags; i++)
+      scr_arr_push_ref(arr, scr_str_retain(t->tags[i]));
+    scr_arr_freeze(arr);
+    t->tags_arr = arr;
+  }
+  return scr_arr_retain(t->tags_arr);
+}
+
 void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                         ScrClosure *cb /*moves, may be NULL*/, double flags,
                         ScrStr *at /*borrowed*/, double plan, double timeout,
-                        double concurrency) {
+                        double concurrency, ScrDyn *signal, ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return;
+  }
   if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
@@ -1743,36 +3069,86 @@ void scr_test_register(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*bor
   if (scr_test_run_done) {
     /* Registration after the run completed (a late timer callback):
      * Node throws ERR_TEST_FAILURE; this runtime drops it (SEMANTICS). */
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
   scr_test_options_apply(t, flags, plan, timeout, concurrency);
+  scr_test_take_signal(t, signal);
   ScrTestCtx *parent = scr_test_parent_get();
+  if (!parent) {
+    /* A task that outlived the run: there is no tree left to register in. */
+    scr_test_tags_free(own_tags, nown_tags);
+    scr_closure_release(cb);
+    return;
+  }
+  if (parent->finished && parent != scr_test_root) {
+    scr_test_tags_free(own_tags, nown_tags);
+    scr_test_late_failure(t);
+    return;
+  }
+  scr_test_tags_apply(t, own_tags, nown_tags, parent);
+  /* t.runOnly(true) on the test that registers this one: only subtests
+   * marked { only } survive (Node drops the rest silently). */
+  if (parent->run_only && !((int)flags & SCR_TEST_F_ONLY)) t->only_filtered = true;
   scr_test_child_add(parent, t);
-  /* A test() call inside a running concurrent test starts the subtest now. */
-  if (!parent->is_suite && parent->concurrency > 1) scr_test_start(t);
+  /* A test() call inside a running concurrent test starts the subtest now.
+   * A filtered one stays unstarted: the runner drops it, exactly as it
+   * drops a filtered subtest of a sequential parent (Node's applyFilters
+   * runs at start() for either kind of parent). */
+  if (!parent->is_suite && parent->concurrency > 1 && !t->only_filtered) scr_test_start(t);
 }
 
 void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrowed*/,
                      ScrClosure *cb /*moves, may be NULL*/, ScrStr *at /*borrowed*/,
-                     double flags, double concurrency) {
-  if (!scr_test_options_ok(flags, 0, concurrency)) {
+                     double flags, double concurrency, double timeout, ScrDyn *signal,
+                     ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
   scr_test_ensure_root();
   scr_test_ensure_runner();
   if (scr_test_run_done) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return;
   }
   ScrTestCtx *t = scr_test_node_new(name, (int)mode, msg, NULL, (int)flags, at, true);
-  scr_test_options_apply(t, flags, -1, 0, concurrency);
-  scr_test_child_add(scr_test_parent_get(), t);
+  scr_test_options_apply(t, flags, -1, timeout, concurrency);
+  scr_test_take_signal(t, signal);
+  ScrTestCtx *parent = scr_test_parent_get();
+  if (!parent) {
+    scr_test_tags_free(own_tags, nown_tags);
+    scr_testctx_release(t);
+    scr_closure_release(cb);
+    return;
+  }
+  if (parent->finished && parent != scr_test_root) {
+    scr_test_tags_free(own_tags, nown_tags);
+    scr_test_late_failure(t);
+    scr_closure_release(cb);
+    return;
+  }
+  scr_test_tags_apply(t, own_tags, nown_tags, parent);
+  scr_test_child_add(parent, t);
+  /* Node publishes a suite's start when its body runs (collection), for a
+   * skipped suite too (its body is a noop there). */
+  t->tr_started = true;
+  scr_test_tr_publish(SCR_TR_START, t, false);
   /* The suite body runs NOW (Node's collection phase) — its test()/it()
-   * calls attach here. Skipped suites keep their bodies unrun. */
-  if (cb && (int)mode != SCR_TEST_SKIP) {
+   * calls attach here. Skipped suites keep their bodies unrun. A body that
+   * throws fails the suite (Node fails it and cancels its children), so the
+   * error is captured here instead of escaping the registration. */
+  if (cb && (int)mode != SCR_TEST_SKIP && !t->only_false) {
     ScrTestCtx *prev = scr_test_parent_get();
     scr_test_parent_set(t);
     ScrAlsCtx *outer = scr_test_scope_enter(t);
@@ -1781,6 +3157,10 @@ void scr_test_suite(ScrStr *name /*borrowed*/, double mode, ScrStr *msg /*borrow
       ((void (*)(ScrClosure *, ScrTestCtx *))cb->fn)(cb, scr_testctx_retain(t));
     else
       ((void (*)(ScrClosure *))cb->fn)(cb);
+    if (scr_exc_pending()) {
+      t->err = scr_exc_take();
+      scr_test_tr_error(t);
+    }
     scr_test_scope_leave(outer);
     scr_test_parent_set(prev);
   }
@@ -1845,18 +3225,55 @@ void scr_test_hook(double which, ScrClosure *cb /*moves*/, double flags, ScrStr 
  * the runner fiber at their call site (Node's awaited-subtest ordering) —
  * runs it immediately. Returns the settled promise `await t.test(...)`
  * consumes. */
+/* One fact counts against t.plan — an assertion, a subtest, or a subtest a
+ * timer registers — and a plan's { wait } stops as soon as the count is
+ * met, whichever fact met it. */
+static void scr_test_plan_bump(ScrTestCtx *t) {
+  t->plan_count++;
+  if (t->plan_met && t->plan_count >= t->plan) scr_promise_fulfill_void(t->plan_met);
+}
+
 ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
                           ScrStr *msg /*borrowed*/, ScrClosure *cb /*moves, may be NULL*/,
                           double flags, ScrStr *at /*borrowed*/, double plan, double timeout,
-                          double concurrency) {
+                          double concurrency, ScrDyn *signal, ScrDyn *tags) {
+  ScrStr **own_tags = NULL;
+  size_t nown_tags = 0;
+  if (!scr_test_tags_canonical(tags, &own_tags, &nown_tags)) {
+    scr_closure_release(cb);
+    return NULL;
+  }
   if (!scr_test_options_ok(flags, timeout, concurrency)) {
+    scr_test_tags_free(own_tags, nown_tags);
     scr_closure_release(cb);
     return NULL;
   }
   ScrTestCtx *sub = scr_test_node_new(name, (int)mode, msg, cb, (int)flags, at, false);
   scr_test_options_apply(sub, flags, plan, timeout, concurrency);
+  scr_test_take_signal(sub, signal);
+  scr_test_tags_apply(sub, own_tags, nown_tags, t);
+  /* Node's t.test() counts the subtest against the parent plan before it
+   * creates it, so one dropped by t.runOnly(true) counts too. */
+  scr_test_plan_bump(t);
+  if (t->finished) {
+    /* t.test() from a task the body left behind, after the test finished:
+     * Node fails it the same way. */
+    scr_test_late_failure(sub);
+    return scr_promise_settled_void();
+  }
+  if (sub->only_filtered) {
+    /* { only: false }: registered for the tree, never run, never reported. */
+    scr_test_child_add(t, sub);
+    return scr_promise_settled_void();
+  }
+  if (t->run_only && !((int)flags & SCR_TEST_F_ONLY)) {
+    /* Dropped by t.runOnly(true): registered for the tree, never run and
+     * never reported, like the { only } filter's leftovers. */
+    sub->only_filtered = true;
+    scr_test_child_add(t, sub);
+    return scr_promise_settled_void();
+  }
   scr_test_child_add(t, sub);
-  t->plan_count++;
   if (t->concurrency > 1 && !t->before_err) {
     /* Under concurrency the subtest starts now, or when a slot frees up,
      * and the returned promise settles when it finishes. */
@@ -1865,9 +3282,13 @@ ScrPromise *scr_test_sub(ScrTestCtx *t, ScrStr *name /*borrowed*/, double mode,
   }
   if (t->before_err) {
     /* A throwing t.before fails the subtests that follow: their bodies and
-     * beforeEach hooks do not run, their afterEach hooks do. */
+     * beforeEach hooks do not run, their afterEach hooks do. A flagged
+     * subtest inherits { expectFailure }, so that failure is the one it
+     * expected and it passes with the directive. */
     sub->err = scr_caught_retain(t->before_err);
-    sub->state = SCR_TS_FAIL;
+    bool expected = sub->expect_failure && sub->mode != SCR_TEST_SKIP;
+    sub->state = expected ? SCR_TS_PASS : SCR_TS_FAIL;
+    if (expected) sub->passed = true;
     scr_test_run_each_hooks(sub, SCR_HOOK_AFTER_EACH, false);
     if (scr_exc_pending()) scr_exc_clear();
     scr_test_report_result(sub);
@@ -2329,14 +3750,33 @@ double scr_test_mt_set_interval(ScrClosure *cb /*moves*/, double ms) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
   return m ? scr_mt_create(m, true, cb, ms)->handle : scr_set_interval(cb, ms);
 }
+/* Node's #clearTimer removes whatever timer the handle names from the mock
+ * queue, whichever API created it: a mocked interval is cleared by
+ * clearTimeout's bound clear too (both APIs share the one #clearTimer). A
+ * handle no mock entry holds is left alone. */
+static void scr_test_mt_clear_mock(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL && e->pos != 0) scr_mt_clear(e->owner, handle);
+}
+/* clearTimeout and clearInterval are the mock's bound clear only while
+ * their own API is mocked (enable() replaces the clear with its set*).
+ * Otherwise they are the loop's clear, which acts on the loop's timers and
+ * leaves a mock Timeout alone — a real timer armed before enable() stays
+ * armed through a mocked clearTimeout. */
 void scr_test_mt_clear_timeout(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_TIMEOUT];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_TIMEOUT] != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 void scr_test_mt_clear_interval(double handle) {
-  ScrMockTimers *m = scr_mt_owner[SCR_MT_INTERVAL];
-  if (m) scr_mt_clear(m, handle);
+  if (scr_mt_owner[SCR_MT_INTERVAL] != NULL) scr_test_mt_clear_mock(handle);
+  else scr_clear_interval(handle);
+}
+/* Timeout.close() and [Symbol.dispose]() carry their own clear: a mock
+ * Timeout clears its queue entry at any time, and a loop Timeout the loop's
+ * timer, whether or not timers are mocked now. */
+void scr_test_mt_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_interval(handle);
 }
 /* A mock Timeout's ref() and unref() return it unchanged, refresh() does
@@ -2380,6 +3820,14 @@ double scr_test_mt_set_immediate_als(ScrClosure *cb /*moves*/) {
 void scr_test_mt_clear_immediate(double handle) {
   ScrMockTimers *m = scr_mt_owner[SCR_MT_IMMEDIATE];
   if (m) scr_mt_clear(m, handle);
+  else scr_clear_immediate(handle);
+}
+/* Immediate.prototype[Symbol.dispose](): the immediate's own clear, not
+ * the global clearImmediate mock.timers may have replaced. A mock entry is
+ * removed from its queue; a loop immediate is the loop's to clear. */
+void scr_test_mt_immediate_close(double handle) {
+  ScrMockTimer *e = scr_mt_find(handle);
+  if (e != NULL && e->owner != NULL) scr_test_mt_clear_mock(handle);
   else scr_clear_immediate(handle);
 }
 void scr_test_mt_immediate_unref(double handle) {
@@ -2456,6 +3904,51 @@ static void scr_mt_free_all(void) {
   scr_mt_module = NULL;
 }
 
+/* Node's findMethodOnPrototypeChain over checked-dynamic objects: the first
+ * own property descriptor of `key` along the object's prototype chain (+1),
+ * or undefined. An inherited accessor is the common case (a shared
+ * prototype's getter/setter). */
+ScrDyn *scr_test_accessor_descriptor(ScrDyn *object /*borrowed*/, ScrDyn *key /*borrowed*/) {
+  ScrDyn *cur = scr_dyn_retain(object);
+  for (;;) {
+    ScrDyn *desc = scr_dyn_get_own_property_descriptor(cur, key);
+    if (scr_exc_pending()) {
+      scr_dyn_release(desc);
+      scr_dyn_release(cur);
+      return NULL;
+    }
+    if (desc && desc->kind != SCR_DYN_UNDEF) {
+      scr_dyn_release(cur);
+      return desc;
+    }
+    scr_dyn_release(desc);
+    ScrDyn *next = scr_dyn_get_prototype(cur);
+    if (scr_exc_pending()) {
+      scr_dyn_release(next);
+      scr_dyn_release(cur);
+      return NULL;
+    }
+    scr_dyn_release(cur);
+    if (next == NULL || next->kind == SCR_DYN_NULL || next->kind == SCR_DYN_UNDEF) {
+      scr_dyn_release(next);
+      return scr_dyn_undefined();
+    }
+    cur = next;
+  }
+}
+
+/* Node's `typeof original !== 'function'` gate for a mocked accessor: the
+ * descriptor found on the chain must carry the getter (or setter) the mock
+ * replaces, else ERR_INVALID_ARG_VALUE. */
+void scr_test_accessor_require(ScrDyn *descriptor /*borrowed*/, bool setter) {
+  const ScrDyn *fn = descriptor && descriptor->kind == SCR_DYN_OBJ
+                         ? scr_dyn_obj_get(descriptor, setter ? "set" : "get", 3)
+                         : NULL;
+  if (fn && fn->kind == SCR_DYN_FUNC) return;
+  scr_dyn_arg_value_fail("methodName", "must be a method",
+                         fn ? (ScrDyn *)fn : scr_dyn_undefined());
+}
+
 void scr_test_mock_track(ScrClosure *restore /*moves*/) {
   scr_test_mocks_add(&scr_test_mocks, restore);
 }
@@ -2474,9 +3967,252 @@ void scr_test_ctx_mock_reset(ScrTestCtx *t) {
   scr_mt_reset(t->mock_timers);
 }
 
-void scr_test_ctx_plan(ScrTestCtx *t, double count) { t->plan = (int)count; }
+/* t.plan(count[, { wait }]): Node allows one plan per test, checks the
+ * wait's range (a non-negative number up to the timer maximum) and keeps
+ * the count. A test that ends short of its plan waits up to `wait` for
+ * the assertions still running (see scr_test_await_plan). */
+void scr_test_ctx_plan(ScrTestCtx *t, double count, bool has_wait, double wait,
+                       bool indefinite) {
+  if (t->plan_set) {
+    static const char msg[] = "cannot set plan more than once";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TEST_FAILURE");
+    return;
+  }
+  /* Node's validateUint32(count, 'count'), then the options' wait. */
+  if (isnan(count) || count != floor(count)) {
+    scr_test_value_out_of_range("count", "an integer", count);
+    return;
+  }
+  if (count < 0 || count > 4294967295.0) {
+    scr_test_value_out_of_range("count", ">= 0 && <= 4294967295", count);
+    return;
+  }
+  if (has_wait && !(wait >= 0 && wait <= 2147483647)) {
+    scr_test_out_of_range("wait", ">= 0 && <= 2147483647", wait);
+    return;
+  }
+  t->plan = count;
+  t->plan_set = true;
+  /* -1: no wait; -2: `wait: true`, Node waits indefinitely. */
+  if (indefinite) t->plan_wait = -2;
+  else if (has_wait) t->plan_wait = wait;
+}
 
-void scr_test_ctx_count(ScrTestCtx *t) { t->plan_count++; }
+void scr_test_ctx_count(ScrTestCtx *t) { scr_test_plan_bump(t); }
+
+/* t.log(message[, data]): Node's 'test:log' event prints at once, at the
+ * test's indentation and in execution order, ahead of the buffered result
+ * lines. The data payload rides the event only; the spec reporter prints
+ * the message. */
+void scr_test_ctx_log(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
+  int depth = scr_test_depth(t);
+  scr_test_indent(depth);
+  fputs("\xE2\x84\xB9 ", scr_test_out()); /* ℹ */
+  scr_test_print_str(msg);
+  fputc('\n', scr_test_out());
+}
+
+/* t.runOnly(shouldRunOnlyTests): subtests registered under `t` from now on
+ * are dropped unless marked { only }; false turns the filter off again.
+ * Subtests already registered keep the decision made for them. */
+void scr_test_ctx_run_only(ScrTestCtx *t, bool value) { t->run_only = value; }
+
+/* mock.fn's and mock.method's { times }: Node's validateInteger(times,
+ * "options.times", 1, Number.MAX_SAFE_INTEGER), whose messages it prints
+ * with the value it received. Answers the count for the mock's context. */
+double scr_test_mock_times_checked(double times) {
+  char recv[48];
+  char msg[192];
+  if (isnan(times) || times != floor(times)) {
+    size_t n = scr_num_received(times, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options.times\" is out of range. It must be an integer. "
+                       "Received %.*s",
+                       (int)n, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  /* Node's validateTimes accepts Infinity as "unlimited" and applies the
+   * integer range to every other count. */
+  if (times != INFINITY && !(times >= 1 && times <= 9007199254740991.0)) {
+    size_t n = scr_num_received(times, recv);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"options.times\" is out of range. It must be >= 1 && "
+                       "<= 9007199254740991. Received %.*s",
+                       (int)n, recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return 0;
+  }
+  return times;
+}
+
+/* ── t.waitFor(condition[, { interval, timeout }]) ──────────────────────
+ * Node polls the condition on a timer until it stops throwing or rejecting,
+ * racing that poller against one timeout timer. This implementation keeps the
+ * same shape: one poller fiber (the condition call and its await run there),
+ * and one timeout timer armed at the call. Whichever settles the result
+ * promise first cancels the other; a poller left parked on a condition that
+ * never settles is abandoned when the loop drains, as Node abandons it. */
+typedef struct ScrTestWaitFor {
+  ScrPromise *out;   /* +1, the promise waitFor returns */
+  ScrDyn *condition; /* +1 */
+  ScrDyn *cause;     /* +1 or NULL, the last condition throw */
+  double interval;
+  double timeout;
+  double timeout_handle; /* 0 once fired or cancelled */
+  double poll_handle;    /* the poller's sleep timer, 0 when not armed */
+  ScrPromise *poll_wake; /* borrowed; the promise that sleep awaits */
+  bool settled;
+  int refs; /* the poller fiber and the timeout closure each hold one */
+} ScrTestWaitFor;
+
+static void *scr_test_wf_ref(void *p) {
+  ((ScrTestWaitFor *)p)->refs++;
+  return p;
+}
+
+static void scr_test_wf_unref(void *p) {
+  ScrTestWaitFor *w = (ScrTestWaitFor *)p;
+  if (--w->refs > 0) return;
+  scr_promise_release(w->out);
+  scr_dyn_release(w->condition);
+  if (w->cause) scr_dyn_release(w->cause);
+  free(w);
+}
+
+/* The poller and the timeout both settle at most once: the flag stops the
+ * poller from re-arming after the timeout won, and the timer does not outlive
+ * a fulfilled result. */
+static void scr_test_wf_cancel_timeout(ScrTestWaitFor *w) {
+  w->settled = true;
+  if (w->timeout_handle >= 1) {
+    scr_clear_interval(w->timeout_handle);
+    w->timeout_handle = 0;
+  }
+  /* The poller's sleep ends now too. Its timer is cleared — otherwise it
+   * keeps the loop alive until the interval elapsed after the result
+   * settled — and the promise it awaits is woken so the poller resumes,
+   * sees the settled flag, and lets go. Node's done() clears both ids. */
+  if (w->poll_handle >= 1) {
+    scr_clear_interval(w->poll_handle);
+    w->poll_handle = 0;
+  }
+  if (w->poll_wake) {
+    ScrPromise *wake = w->poll_wake;
+    w->poll_wake = NULL;
+    scr_promise_fulfill_void(wake);
+  }
+}
+
+static void scr_test_wf_fulfill(ScrTestWaitFor *w, ScrDyn *result /*moves*/) {
+  scr_test_wf_cancel_timeout(w);
+  scr_promise_fulfill_ref(w->out, result, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+}
+
+static void scr_test_wf_timeout(ScrTestWaitFor *w) {
+  scr_test_wf_cancel_timeout(w);
+  ScrStr *message = scr_str_new("waitFor() timed out", 19);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  if (w->cause) scr_error_define_cause(e, w->cause);
+  ScrDyn *d = scr_dyn_from_error(e); /* +1 */
+  scr_error_release(e);
+  scr_throw_ref(d, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_promise_reject_pending(w->out);
+}
+
+static void scr_test_wf_timeout_fire(ScrClosure *self) {
+  ScrTestWaitFor *w = (ScrTestWaitFor *)scr_box_get_ref(self->caps[0]);
+  if (w) {
+    w->timeout_handle = 0; /* the timer that just fired */
+    scr_test_wf_timeout(w);
+    scr_test_wf_unref(w); /* the +1 scr_box_get_ref took */
+  }
+}
+
+static void scr_test_wf_remember_cause(ScrTestWaitFor *w) {
+  ScrCaught *c = scr_exc_take();
+  ScrDyn *reason = scr_caught_to_dyn(c);
+  scr_caught_release(c);
+  if (w->cause) scr_dyn_release(w->cause);
+  w->cause = reason;
+}
+
+static void scr_test_wf_entry(ScrFiber *self, void *ap) {
+  (void)self;
+  ScrTestWaitFor *w = (ScrTestWaitFor *)ap;
+  for (;;) {
+    if (w->settled) break;
+    ScrDyn *value = scr_dyn_call(w->condition, NULL, 0, "condition");
+    if (scr_exc_pending()) {
+      /* The condition threw synchronously: remember it and poll again. */
+      scr_test_wf_remember_cause(w);
+    } else if (value != NULL) {
+      ScrDyn *result = scr_await_dyn_value(value); /* +1, NULL on rejection */
+      scr_dyn_release(value);
+      if (!scr_exc_pending()) {
+        /* settle moves the result in (and drops it if the timeout won). */
+        scr_test_wf_fulfill(w, result);
+        break;
+      }
+      scr_test_wf_remember_cause(w);
+    }
+    if (w->settled) break;
+    /* A cancellable sleep: the timer's handle lets the timeout path clear
+     * it, and the promise it fulfills wakes this loop so it can notice. */
+    ScrPromise *tick = scr_promise_new();
+    w->poll_wake = tick;
+    w->poll_handle = scr_set_timeout_handle(scr_make_resolve(tick, 3 /* void */), w->interval);
+    scr_await_void(tick);
+    w->poll_handle = 0;
+    w->poll_wake = NULL;
+    scr_promise_release(tick);
+  }
+  scr_test_wf_unref(w); /* the fiber's reference */
+}
+
+/* validateNumber(value, name, 0, TIMEOUT_MAX) — Node's ERR_OUT_OF_RANGE,
+ * NaN included. */
+static void scr_test_wf_validate(const char *name, double value) {
+  if (value >= 0 && value <= 2147483647) return;
+  char recv[48];
+  size_t n = scr_num_received(value, recv);
+  char message[192];
+  int len = snprintf(message, sizeof message,
+                     "The value of \"%s\" is out of range. It must be >= 0 && <= 2147483647. "
+                     "Received %.*s",
+                     name, (int)n, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, (size_t)len, "ERR_OUT_OF_RANGE");
+}
+
+ScrDyn *scr_test_ctx_wait_for(ScrTestCtx *t, const ScrDyn *condition, bool has_interval,
+                              double interval, bool has_timeout, double timeout) {
+  (void)t;
+  if (!scr_dyn_is_callable(condition)) {
+    scr_dyn_arg_type_fail("condition", "of type function", condition);
+    return NULL;
+  }
+  if (has_interval) scr_test_wf_validate("options.interval", interval);
+  if (scr_exc_pending()) return NULL;
+  if (has_timeout) scr_test_wf_validate("options.timeout", timeout);
+  if (scr_exc_pending()) return NULL;
+  ScrTestWaitFor *w = (ScrTestWaitFor *)malloc(sizeof *w);
+  if (!w) scr_test_oom();
+  memset(w, 0, sizeof *w);
+  w->out = scr_promise_new();
+  w->condition = scr_dyn_retain((ScrDyn *)condition);
+  w->interval = has_interval ? interval : 50;
+  w->timeout = has_timeout ? timeout : 1000;
+  w->refs = 2; /* the poller fiber and the timeout closure */
+  ScrClosure *timer = scr_closure_new((void *)&scr_test_wf_timeout_fire, 1);
+  timer->caps[0] =
+      scr_box_new_obj(&scr_test_wf_ref, &scr_test_wf_unref, NULL);
+  scr_box_set_ref(timer->caps[0], w);
+  w->timeout_handle = scr_set_timeout_handle(timer, w->timeout);
+  ScrPromise *poller = scr_async_spawn(scr_test_wf_entry, w);
+  scr_promise_release(poller); /* the entry only settles out; nobody awaits it */
+  return scr_dyn_new_promise(w->out);
+}
 
 void scr_test_ctx_diagnostic(ScrTestCtx *t, ScrStr *msg /*borrowed*/) {
   if (t->ndiags == t->dcap) {
@@ -2497,7 +4233,7 @@ bool scr_test_ctx_passed(ScrTestCtx *t) { return t->passed; }
 /* t.workerId: Number(process.env.NODE_TEST_WORKER_ID) || undefined, with 0
  * standing for undefined. */
 double scr_test_worker_id(void) {
-  const char *env = getenv("NODE_TEST_WORKER_ID");
+  const char *env = scr_getenv("NODE_TEST_WORKER_ID");
   if (!env) return 0;
   ScrStr *s = scr_str_new(env, strlen(env));
   double n = scr_string_to_number(s);
@@ -2507,6 +4243,145 @@ double scr_test_worker_id(void) {
 
 /* t.fullName: the names from the outermost suite or test down to this one,
  * joined with " > "; the root's own name for the root. */
+/* t.signal: the test's AbortSignal, made on the first read and aborted
+ * when the test times out, is cancelled, or finishes (Node's Test#run
+ * aborts its controller in the finally, so hooks see it unaborted). The
+ * abort unit is linked only for a program that reads this member; each
+ * read boxes the same native signal, which is JavaScript identity under
+ * the checked-dynamic handle rule (tag + pointer). +1, or undefined when
+ * the unit is absent. */
+ScrDyn *scr_test_ctx_signal(ScrTestCtx *t) {
+  if (!scr_test_abort_available()) return scr_dyn_undefined();
+  if (!t->abort_controller) {
+    t->abort_controller = scr_test_abort_controller_new();
+    /* The test may have finished before anything read its signal: the
+     * controller made now starts aborted then. */
+    if (t->signal_aborted && scr_test_abort_available())
+      scr_test_abort_controller_abort(t->abort_controller);
+  }
+  return scr_test_abort_controller_signal(t->abort_controller);
+}
+
+/* Node's ERR_TEST_FAILURE message rule: an error's own message, a thrown
+ * string as itself, and any other payload inspected. +1. */
+static ScrStr *scr_test_caught_message(const ScrCaught *err) {
+  if (err->kind == SCR_EXC_STR) return scr_str_retain(err->payload);
+  ScrDyn *value = scr_caught_to_dyn(err);
+  ScrStr *out = NULL;
+  if (value && value->kind == SCR_DYN_OBJ) {
+    const ScrDyn *message = scr_dyn_obj_get(value, "message", 7);
+    if (message && message->kind == SCR_DYN_STR) out = scr_str_retain(message->v.str);
+  }
+  if (!out) out = scr_insp_dyn(value, 0, 2);
+  scr_dyn_release(value);
+  return out;
+}
+
+/* ── the module's assert.register registry ─────────────────────────────
+ * Node's test_runner/assert.js keeps a name→function map that every
+ * TestContext.assert reads. The registry lives for the process; a
+ * registered name is called with the assertion's arguments. */
+static SCR_TL ScrDyn *scr_test_custom_asserts; /* owned; a dyn object name→fn */
+
+void scr_test_assert_register(ScrStr *name /*borrowed*/, ScrDyn *fn /*borrowed*/) {
+  if (fn->kind != SCR_DYN_FUNC) {
+    scr_dyn_arg_type_fail("fn", "of type function", fn);
+    return;
+  }
+  if (!scr_test_custom_asserts) scr_test_custom_asserts = scr_dyn_new_obj();
+  scr_dyn_obj_set(scr_test_custom_asserts, name->data, name->len, scr_dyn_retain(fn));
+}
+
+/* t.assert.<registered>(...): the registered function runs with the call's
+ * arguments and the call's value is its result, as Node's assertion object
+ * returns it. An async assertion therefore hands its promise to the call
+ * site: `await t.assert.custom()` waits for it and a rejection fails the
+ * test. Node binds the TestContext as `this`; a compiled closure has no
+ * receiver, so `this` is not bound here (the limitations page records it).
+ * +1; NULL leaves an exception pending. */
+/* The registry as this context first saw it: Node builds each test's
+ * assertion object from the registry when the test reaches `t.assert`, so
+ * later re-registrations do not reach a context already using it. */
+static ScrDyn *scr_test_ctx_assert_snapshot(ScrTestCtx *t) {
+  if (t->custom_asserts) return t->custom_asserts;
+  ScrDyn *snap = scr_dyn_new_obj();
+  if (scr_test_custom_asserts) {
+    /* assign answers its own reference to the target; the snapshot keeps
+     * the one made here. */
+    ScrDyn *assigned = scr_dyn_assign(snap, scr_test_custom_asserts);
+    if (assigned) {
+      scr_dyn_release(assigned);
+    } else {
+      scr_dyn_release(snap);
+      snap = NULL;
+    }
+  }
+  t->custom_asserts = snap;
+  return snap;
+}
+
+/* Reading `t.assert` (any member, the module's own or a registered one):
+ * the first read fixes this context's assertion set. */
+void scr_test_ctx_assert_touch(ScrTestCtx *t) { (void)scr_test_ctx_assert_snapshot(t); }
+
+ScrDyn *scr_test_ctx_custom_assert(ScrTestCtx *t, ScrStr *name /*borrowed*/,
+                                   ScrDyn *args /*borrowed*/) {
+  ScrDyn *registry = scr_test_ctx_assert_snapshot(t);
+  ScrDyn *fn = registry ? scr_dyn_obj_get(registry, name->data, name->len) : NULL;
+  if (!fn) {
+    /* The name is program data of any length: format into a stack buffer
+     * and, when the message does not fit, into an exactly-sized heap
+     * buffer, so a long name neither truncates the message nor reads past
+     * the buffer (Node's message carries the whole name). */
+    char stack[96];
+    const char *msg = stack;
+    char *heap = NULL;
+    int len = snprintf(stack, sizeof stack, "t.assert.%.*s is not a function", (int)name->len,
+                       name->data);
+    if (len < 0) len = 0;
+    if ((size_t)len >= sizeof stack) {
+      heap = malloc((size_t)len + 1);
+      if (heap) {
+        snprintf(heap, (size_t)len + 1, "t.assert.%.*s is not a function", (int)name->len,
+                 name->data);
+        msg = heap;
+      } else {
+        len = (int)sizeof stack - 1;
+      }
+    }
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    free(heap);
+    return NULL;
+  }
+  /* An assertion that replaces its own registration while it runs (or a
+   * callback it made does) drops the registry's reference to the running
+   * function. Keep it — and the state its closure captured — alive until
+   * the call returns; the registry holds a borrowed reference here. */
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)fn);
+  ScrDyn *result = scr_dyn_apply(held, args, "assertion");
+  scr_dyn_release(held);
+  return result;
+}
+
+/* t.error: Node's ERR_TEST_FAILURE wrapper over the test's failure, or
+ * null. Its `cause` is the value the test threw (an Error, a string, or
+ * whatever else), which is how the documented surface reads the original
+ * failure. Node also stamps failureType on the wrapper, which needs the
+ * failure kind the runtime does not keep. +1. */
+ScrDyn *scr_test_ctx_error(ScrTestCtx *t) {
+  if (!t->err) return scr_dyn_new_null();
+  ScrStr *message = scr_test_caught_message(t->err);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_error_set_code(e, "ERR_TEST_FAILURE");
+  ScrDyn *cause = scr_caught_to_dyn(t->err);
+  if (cause) scr_error_set_cause(e, cause);
+  scr_dyn_release(cause);
+  ScrDyn *out = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return out;
+}
+
 ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
   if (!t->parent) return scr_test_ctx_name(t);
   const ScrTestCtx *chain[64];
@@ -2533,17 +4408,32 @@ ScrStr *scr_test_ctx_full_name(ScrTestCtx *t) {
 }
 
 int scr_test_exit_code(void) {
+  /* Node's reporter ends its stream at exit: the summary and the failing
+   * section print here, after every pending task (and so every late
+   * registration) has run. */
+  if (scr_test_runner_spawned && scr_test_run_done) scr_test_print_summary();
   /* The program is done: the module tracker's restore closures go. */
   if (scr_exit_frees()) {
     scr_test_hooks_free(&scr_test_mocks);
     scr_mt_free_all();
     scr_snap_free_all();
+    scr_dyn_release(scr_test_custom_asserts);
+    scr_test_custom_asserts = NULL;
+    /* The entry path and the root's cached tracing context outlive the
+     * runner; a clean RC-audited program must release them. */
+    scr_str_release(scr_test_entry);
+    scr_test_entry = NULL;
+    if (scr_test_root) {
+      scr_dyn_release(scr_test_root->tr_ctx);
+      scr_test_root->tr_ctx = NULL;
+    }
   }
   /* The runner never finished: a test awaited a promise nobody settles
    * and the loop exhausted (Node cancels the test and exits 1 — the
    * summary it prints there is not reproduced; SEMANTICS.md). The run
    * exits 1 instead of passing. */
   if (scr_test_runner_spawned && !scr_test_run_done) {
+    scr_stdout_settle();
     fflush(stdout);
     fputs("scriptc: node:test runner never finished (a test awaited a promise nobody settles)\n", stderr);
     return 1;

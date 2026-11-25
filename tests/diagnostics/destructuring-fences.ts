@@ -11,9 +11,9 @@
 // a plain record (a class of methods only packs '{}' — 'unknown'),
 // rest that would copy a NON-PUBLIC field (JS copies it; the rest type
 // cannot name it), setter-only properties, union sources (narrow
-// first), object patterns over arrays, index-signature rest packing,
-// defaults on NESTED assignment targets (no single binding type to
-// test against), and assignment targets with no static write form.
+// first), object patterns over arrays, defaults on NESTED assignment
+// targets (no single binding type to test against), and assignment
+// targets with no static write form.
 
 class C {
   f = 1;
@@ -50,10 +50,6 @@ console.log(fromUnion({ kind: "one", b: "s", count: 1 }));
 const xs = [1, 2, 3];
 const { push: append } = xs; // object patterns over arrays read positions and length only
 console.log(typeof append);
-
-const indexed: Record<string, number> = { a: 1 };
-const { ...allOfIt } = indexed; // index-signature rest needs overflow packing
-console.log(allOfIt["a"]);
 
 const holder = { inner: { v: 1 } };
 let sink = 0;

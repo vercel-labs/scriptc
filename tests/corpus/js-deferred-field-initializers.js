@@ -1,4 +1,4 @@
-// @deferred-fences: 2
+// @deferred-fences: 1
 class InstanceProbe {
   value = Reflect.isExtensible({});
 }

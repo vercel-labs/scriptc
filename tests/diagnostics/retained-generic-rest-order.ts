@@ -17,9 +17,10 @@ function laterGeneric<T>(_: T): void {
   console.log(Object.keys(sameShape).length);
   earlierOrdinary();
   // The deferred rest-order rejection must poison this whole statement:
-  // the later WeakRef declarator is never visited, and the next statement
-  // sees rest as a blocked binding just like the historical emit pass.
-  const { ...rest } = new Pair(), blocked = new WeakRef<object>({});
+  // the later BigInt64Array declarator is never visited, and the next
+  // statement sees rest as a blocked binding just like the historical
+  // emit pass.
+  const { ...rest } = new Pair(), blocked = new BigInt64Array(8);
   console.log(Object.keys(rest).join(","), blocked);
 }
 

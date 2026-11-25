@@ -275,7 +275,7 @@ describe("LLVM runtime RC symbols", () => {
 describe("inline release budgets", () => {
   const body = (name: string, sites: number, family = "dyn"): string =>
     [
-      `define internal void @${name}(ptr %v) #0 {`,
+      `define internal void @${name}(ptr %v) align 64 #0 {`,
       "entry:",
       ...Array.from({ length: sites }, () => `  call void @sc_rc_release_${family}(ptr %v)`),
       "  ret void",

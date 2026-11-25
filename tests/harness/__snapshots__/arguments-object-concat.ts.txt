@@ -1,0 +1,35 @@
+arguments-object-concat.ts:6:38 - error SC1090: the arguments object as the receiver or an item of 'concat' (Node keeps it as one element: it is not an array and has no Symbol.isConcatSpreadable, while the compiled argument list is an array and would be spread) is not supported yet
+
+  5 | function tally(..._marks: number[]): number {
+  6 |   return Array.prototype.concat.call(arguments, 0).length;
+    |                                      ^~~~~~~~~
+  7 | }
+
+  hint: copy the arguments into an array first: Array.prototype.slice.call(arguments), [...arguments] or Array.from(arguments)
+
+arguments-object-concat.ts:10:35 - error SC1090: the arguments object as the receiver or an item of 'concat' (Node keeps it as one element: it is not an array and has no Symbol.isConcatSpreadable, while the compiled argument list is an array and would be spread) is not supported yet
+
+   9 | function gather(..._marks: number[]): number {
+  10 |   return ([] as unknown[]).concat(arguments).length;
+     |                                   ^~~~~~~~~
+  11 | }
+
+  hint: copy the arguments into an array first: Array.prototype.slice.call(arguments), [...arguments] or Array.from(arguments)
+
+arguments-object-concat.ts:14:45 - error SC1090: the arguments object as the receiver or an item of 'concat' (Node keeps it as one element: it is not an array and has no Symbol.isConcatSpreadable, while the compiled argument list is an array and would be spread) is not supported yet
+
+  13 | function append(..._marks: number[]): number {
+  14 |   return Array.prototype.concat.apply([0], [arguments]).length;
+     |                                             ^~~~~~~~~
+  15 | }
+
+  hint: copy the arguments into an array first: Array.prototype.slice.call(arguments), [...arguments] or Array.from(arguments)
+
+arguments-object-concat.ts:18:25 - error SC1090: JSON.stringify of the arguments object (Node writes an object keyed by index, while the compiled argument list is an array) is not supported yet
+
+  17 | function encode(..._marks: number[]): string {
+  18 |   return JSON.stringify(arguments);
+     |                         ^~~~~~~~~
+  19 | }
+
+  hint: copy the arguments into an array first, or build the object the caller expects

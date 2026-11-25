@@ -1,0 +1,6 @@
+{
+  "name": "entry-types",
+  "version": "0.3.0",
+  "main": "./entries.d.ts",
+  "types": "./entries.d.ts"
+}

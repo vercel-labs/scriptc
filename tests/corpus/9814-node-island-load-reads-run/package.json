@@ -1,0 +1,1 @@
+{"name": "island-load-reads-run", "private": true, "scriptc": {"packages": {"place-kit": "node", "ident-kit": "node", "seed-kit": "node", "echo-kit": "node", "odd-kit": "node", "plain-kit": "node"}}}

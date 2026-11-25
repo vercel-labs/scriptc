@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/for-of-iterable-kind-union.ts"
+ ],
+ "diags": []
+}

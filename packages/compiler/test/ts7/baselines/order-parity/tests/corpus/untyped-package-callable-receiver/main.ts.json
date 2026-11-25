@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/untyped-package-callable-receiver/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9186-umd-function-export-island/left.ts",
+  "<repo>/tests/corpus/9186-umd-function-export-island/right.ts",
+  "<repo>/tests/corpus/9186-umd-function-export-island/main.ts"
+ ],
+ "diags": []
+}

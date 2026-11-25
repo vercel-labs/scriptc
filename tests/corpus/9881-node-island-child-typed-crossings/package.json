@@ -1,0 +1,6 @@
+{
+  "name": "node-island-child-typed-crossings",
+  "private": true,
+  "type": "module",
+  "scriptc": { "packages": { "spawn-pkg": "node" } }
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/json-stringify-scalar-union-bigint-symbol.ts"
+ ],
+ "diags": []
+}

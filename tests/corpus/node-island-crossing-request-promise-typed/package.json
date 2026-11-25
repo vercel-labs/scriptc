@@ -1,0 +1,1 @@
+{ "name": "island-request-promise", "private": true, "type": "module", "scriptc": { "packages": { "api-pkg": "node" } } }

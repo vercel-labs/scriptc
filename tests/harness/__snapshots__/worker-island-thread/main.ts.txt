@@ -1,0 +1,8 @@
+worker-island-thread/main.ts:8:16 - error SC8012: the Worker's entry module runs in a Node island, so a native worker thread cannot run it
+
+  7 | console.log("main", answer());
+  8 | const worker = new Worker(new URL("./w.cjs", import.meta.url));
+    |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  9 | worker.on("exit", (code: number) => console.log(code));
+
+  hint: give the worker an entry the build compiles natively: island modules run only in Node, and a worker thread runs the compiled program

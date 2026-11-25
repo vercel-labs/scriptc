@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "name": "node-island-own-property-checks",
+  "scriptc": { "packages": { "seed-kit": "node" } }
+}

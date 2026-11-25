@@ -60,3 +60,59 @@ comptime.ts:33:20 - error SC1090: baking comptime results of type '(...)[] | num
   33 | const tree: Tree = comptime((): Tree => [1, [2, [3]]]);
      |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   34 | 
+
+comptime.ts:36:22 - error SC1110: comptime evaluation failed: evaluation exceeded the 256 MB compile-time memory limit
+
+  35 | // The evaluator's limits and refusals are build errors that name them.
+  36 | const hog = comptime((): number => {
+     |                      ^~~~~~~~~~~~~~~
+  37 |   const all: number[][] = [];
+
+comptime.ts:41:24 - error SC1110: comptime evaluation failed: the callback left promise reactions pending, and they never run at compile time
+
+  40 | 
+  41 | const later = comptime(() => {
+     |                        ^~~~~~~
+  42 |   Promise.resolve().then(() => {});
+
+comptime.ts:46:23 - error SC1110: comptime evaluation failed: the callback left a rejected promise unhandled
+
+  45 | 
+  46 | const lost = comptime(() => {
+     |                       ^~~~~~~
+  47 |   Promise.reject(new Error("nobody listens"));
+
+comptime.ts:51:23 - error SC1110: comptime evaluation failed: the result contains itself
+
+  50 | 
+  51 | const knot = comptime((): { n: number } => {
+     |                       ^~~~~~~~~~~~~~~~~~~~~~
+  52 |   const a: any = { n: 1 };
+
+comptime.ts:57:26 - error SC1110: comptime evaluation failed: the callback threw: Number.prototype.toLocaleString is not available at compile time: its result depends on locale data
+
+  56 | 
+  57 | const grouped = comptime(() => (1234567.891).toLocaleString());
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  58 | 
+
+comptime.ts:59:27 - error SC1110: comptime evaluation failed: the callback threw: Number.prototype.toString with a radix other than 10 is available at compile time only for safe integers
+
+  58 | 
+  59 | const fraction = comptime(() => (0.5).toString(3));
+     |                           ^~~~~~~~~~~~~~~~~~~~~~~
+  60 | 
+
+comptime.ts:61:26 - error SC1110: comptime evaluation failed: the callback threw: null
+
+  60 | 
+  61 | const nothing = comptime((): number => {
+     |                          ^~~~~~~~~~~~~~~
+  62 |   throw null;
+
+comptime.ts:65:25 - error SC1110: comptime evaluation failed: expected 'number' at $[1], got undefined
+
+  64 | 
+  65 | const sparse = comptime(() => [1, , 3] as number[]);
+     |                         ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  66 | 

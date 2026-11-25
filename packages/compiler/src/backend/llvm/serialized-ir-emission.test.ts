@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../../index.js";
-import { emitLlvmModuleSource } from "./emitter.js";
+import { emitLlvmModuleSource, lowRegionTarget } from "./emitter.js";
 
 const root = join(import.meta.dirname, "../../../../..");
 
@@ -43,6 +43,8 @@ test("sort-heavy programs emit equal LLVM from memory and from serialized IR", a
           runtimeAbiMarker: false,
           // compile() emits Linux textual LLVM with the unwinding ABI.
           unwindAbi: process.platform === "linux",
+          // compile() places executables' objects below 32 GiB on Linux.
+          lowRegion: lowRegionTarget(process.platform, sanitize),
           objectAudit: sanitize,
           sanitizeAttributes: sanitize,
           ...inlineRcOption(options.optimization, sanitize),

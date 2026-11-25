@@ -1,0 +1,6 @@
+early-error-catch-parameter-collision.js:8:14 - error SC0015: the catch parameter 'error' is already declared in this catch block
+
+  7 |   } catch (error) {
+  8 |     function error() {}
+    |              ^~~~~
+  9 |     return error;

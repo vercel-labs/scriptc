@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9416-builtins-through-global-object.mjs"
+ ],
+ "diags": []
+}

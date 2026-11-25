@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/assert-strict-equal-mixed-scalars.cjs"
+ ],
+ "diags": []
+}

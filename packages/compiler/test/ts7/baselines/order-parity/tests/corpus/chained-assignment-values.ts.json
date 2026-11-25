@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/chained-assignment-values.ts"
+ ],
+ "diags": []
+}

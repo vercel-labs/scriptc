@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "typeRoots": [
+      "ambient"
+    ]
+  },
+  "include": [
+    "ambient",
+    "main.ts"
+  ]
+}

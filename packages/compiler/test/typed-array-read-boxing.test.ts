@@ -20,7 +20,7 @@ async function emit(source: string): Promise<(name: string) => string> {
     return (name) =>
       ll.match(
         new RegExp(
-          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) #0 \\{([\\s\\S]*?)\\n\\}`,
+          `define internal [^\\n]+ @sc_bf_${name}(?:\\.i32)?\\([^\\n]*\\) align 64 #0 \\{([\\s\\S]*?)\\n\\}`,
         ),
       )![1]!;
   } finally {

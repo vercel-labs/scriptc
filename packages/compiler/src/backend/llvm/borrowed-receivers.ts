@@ -31,6 +31,56 @@ export function guardedValue(e: IrExpr): IrExpr | null {
   return e.result;
 }
 
+/** A sequence that stabilizes one read in a local it declares and then only
+ * projects that local: `(const %propertyRecv = <read>; <checked projection of
+ * %propertyRecv>)`, the form runtimeOptionalPropertyReceiver builds for a
+ * receiver whose source cannot be written twice. The local is a stable
+ * binding — declared once and never rewritten — so every read of it in the
+ * projection names the value the statement stored, and the statement keeps
+ * that value alive for the whole scope whether it took a reference for it or
+ * lent one. The projection therefore borrows it, exactly as
+ * `const p = <read>; p` does. Null for any other sequence. */
+export function stabilizedValue(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): { readonly init: IrExpr; readonly localId: string } | null {
+  if (e.kind !== "seqExpr") return null;
+  const [only] = e.stmts;
+  if (e.stmts.length !== 1 || only?.kind !== "varDecl" || only.init === null) return null;
+  const init = only.init;
+  if (!isRefCounted(init.type) || !host.stableCallBindings.has(only.localId)) return null;
+  if (!projectsLocal(host, e.result, only.localId)) return null;
+  return { init, localId: only.localId };
+}
+
+/** Whether `e` reads the reference local `localId` and nothing else as a
+ * reference: a checked projection of it (its narrowing, casts and the
+ * throwing guards around them), with scalar conditions computing the way. */
+function projectsLocal(host: LlvmEmitterContext, e: IrExpr, localId: string): boolean {
+  switch (e.kind) {
+    case "varRef":
+      return e.localId === localId;
+    case "unionNarrow":
+    case "downcast":
+    case "upcast":
+      return projectsLocal(host, e.value, localId);
+    case "ternary":
+      return (
+        scalarComputation(host, e.cond) &&
+        projectsLocal(host, e.then, localId) &&
+        projectsLocal(host, e.else_, localId)
+      );
+    case "libCall":
+      return e.fn === "error.nodeThrow";
+    case "seqExpr": {
+      const guarded = guardedValue(e);
+      return guarded !== null && projectsLocal(host, guarded, localId);
+    }
+    default:
+      return false;
+  }
+}
+
 function scalarGuardCondition(e: IrExpr): boolean {
   switch (e.kind) {
     case "boolLit":

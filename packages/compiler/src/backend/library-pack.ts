@@ -15,18 +15,16 @@ import { executableOptimizationLinkerArgs, type NativeTargetSpec } from "./targe
 
 const run = promisify(execFile);
 
-/** Assemble a library from LLVM program objects and verified runtime objects.
- * The runtime's library and per-thread modes are compiled when packaging. */
-export async function compilePackedLibrary(
-  options: LibArchiveOptions,
-  target: NativeTargetSpec,
-  wasmExports?: readonly string[],
-): Promise<void> {
-  const optimization = options.optimization ?? "release";
-  const features: NativeLinkFeatures = {
+/** The runtime gates a library archive selects its pack objects with. The
+ * program's IR decides them: a unit the program names but this table leaves
+ * off is missing from the archive, and the embedder's link fails on the
+ * entry point the program calls. */
+export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFeatures {
+  return {
     regex: options.regex ?? false,
     copying: options.copying ?? false,
     textDecoderLegacy: options.textDecoderLegacy ?? false,
+    bigintBytes: options.bigintBytes ?? false,
     fileHandle: false,
     fetch: false,
     zlib: options.zlib ?? false,
@@ -35,6 +33,16 @@ export async function compilePackedLibrary(
     dynInvoke: options.dynInvoke ?? false,
     ...(options.dynBuffer === true ? { dynBuffer: true } : {}),
     ...(options.dynTier === true ? { dynTier: true } : {}),
+    ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
+    ...(options.arrJoinStr === true ? { arrJoinStr: true } : {}),
+    // A program that resizes, grows or detaches a buffer names the views
+    // registry's arming entry point, so the archive must carry the unit and
+    // the JavaScript object model build it belongs to.
+    ...(options.mutableBuffers === true ? { mutableBuffers: true } : {}),
+    // A function's inherited member shadowed by an own data property selects
+    // the SCR_FN_MEMBER_PROPS builds of scr_json.c and scr_dyn_invoke.c, the
+    // same pair the executable lane links.
+    ...(options.fnMemberProps === true ? { fnMemberProps: true } : {}),
     dc: false,
     dynAsync: false,
     events: false,
@@ -53,11 +61,12 @@ export async function compilePackedLibrary(
     http2: false,
     dgram: false,
     dnsPromises: false,
+    dnsResolve: false,
     dgramDyn: false,
     textCodecDyn: false,
     watch: false,
     watchFile: false,
-    fsBufferBrand: false,
+    watchEvents: false,
     foreignFfi: false,
     nodeTest: false,
     tls: false,
@@ -68,9 +77,22 @@ export async function compilePackedLibrary(
     ed25519: false,
     x509: options.x509 ?? false,
     webcrypto: false,
+    argon2: false,
+    mlkem: false,
     perfLoop: false,
     tlsCa: false,
   };
+}
+
+/** Assemble a library from LLVM program objects and verified runtime objects.
+ * The runtime's library and per-thread modes are compiled when packaging. */
+export async function compilePackedLibrary(
+  options: LibArchiveOptions,
+  target: NativeTargetSpec,
+  wasmExports?: readonly string[],
+): Promise<void> {
+  const optimization = options.optimization ?? "release";
+  const features = libraryArchiveFeatures(options);
   const selection = await loadRuntimePack({
     target,
     features,

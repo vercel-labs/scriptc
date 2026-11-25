@@ -1,0 +1,8 @@
+- **Intl.NumberFormat and Intl.DateTimeFormat:** Formatter objects compile, with their options and `format()`, over ICU 78 (the release Node.js 24 bundles).
+  The options object is read when the program runs, by the steps ECMA-402 gives, so it can be a variable or hold computed values, and an invalid option throws the error Node.js throws.
+  `Number.prototype.toLocaleString`, `Date.prototype.toLocaleString`, `toLocaleDateString` and `toLocaleTimeString` take a locale and options and build the same formatters.
+  The locale is the default locale (no argument, or `undefined`), `"en-US"` or `"en"`; any other locale and a list of locales are refused, because which locale Node.js picks for a requested tag is not modelled.
+  `formatToParts`, `formatRange`, `formatRangeToParts`, `resolvedOptions`, `supportedLocalesOf`, detached `format` methods, BigInt and numeric-string inputs, and the `calendar` and `numberingSystem` options of `Intl.DateTimeFormat` are unsupported.
+  The other `Intl` constructors (`Collator`, `PluralRules`, `ListFormat`, `RelativeTimeFormat`, `DisplayNames`, `DurationFormat`, `Locale`) and `localeCompare` with a locale argument are unsupported.
+  A program that uses these forms links ICU and needs the data file `icudt78l.dat` (18.7 MiB) beside the executable; `scriptc build` puts it there.
+  Time zone rules and names are those of the ICU release, which can be older than the time zone data Node.js ships: Node.js 24.22 prints the offset for the names `EST5EDT`, `CST6CDT`, `MST7MDT` and `PST8PDT` and `UTC` for `GMT0` where scriptc prints the zone's name, and the two disagree about `Africa/Casablanca` and `Africa/El_Aaiun` from October 2026 on.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8826-override-wider-call-replaceable.ts"
+ ],
+ "diags": []
+}

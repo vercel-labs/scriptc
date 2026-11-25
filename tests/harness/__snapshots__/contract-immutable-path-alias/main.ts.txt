@@ -1,0 +1,8 @@
+contract-immutable-path-alias/main.ts:9:1 - error SC7004: '(ROWS as number[]).push(3)' writes to a value that may be Immutable (from 'ROWS')
+
+   8 | const ROWS: Immutable<number[]> = [1, 2];
+   9 | (ROWS as number[]).push(3);
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | console.log(ROWS.length);
+
+  hint: Immutable values cannot be written through any reference; copy the value before changing it

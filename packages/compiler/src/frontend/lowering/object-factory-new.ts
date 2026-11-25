@@ -6,13 +6,17 @@ import { bindingNeverReassigned } from "./binding-analysis.js";
 import { implicitDefaultInstance } from "./generic-functions.js";
 import { type FnSig } from "./call-signatures.js";
 
-/** The JavaScript function declaration (or never-reassigned function
- * expression binding) `new` calls, when it is an ordinary constructor: not
- * a generator or async function. */
-function jsConstructorFunctionOf(
+/** The JavaScript function declaration (or function expression binding)
+ * `new` names, when it is an ordinary constructor: not a generator or async
+ * function. Whether the binding is reassigned is the caller's question. */
+function jsConstructorDeclarationOf(
   lowerer: Lowerer,
   expr: ts.NewExpression,
-): ts.FunctionDeclaration | ts.FunctionExpression | null {
+): {
+  declaration: ts.FunctionDeclaration | ts.FunctionExpression;
+  owner: ts.Node;
+  symbol: ts.Symbol;
+} | null {
   if (!ts.isIdentifier(expr.expression) || lowerer.peekLocal(expr.expression)) return null;
   // This probe also sees ordinary classes during global collection. Leave
   // their deferred diagnostics for the class declaration's lowering.
@@ -44,13 +48,38 @@ function jsConstructorFunctionOf(
   if (
     !owner ||
     !declaration?.body ||
-    !bindingNeverReassigned(lowerer, symbol, owner) ||
     !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     declaration.asteriskToken ||
     declaration.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
   )
     return null;
-  return declaration;
+  return { declaration, owner, symbol };
+}
+
+/** The never-reassigned JavaScript function declaration (or function
+ * expression binding) `new` calls: the constructor whose declaration is the
+ * value the binding holds. */
+function jsConstructorFunctionOf(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): ts.FunctionDeclaration | ts.FunctionExpression | null {
+  const found = jsConstructorDeclarationOf(lowerer, expr);
+  if (found === null) return null;
+  return bindingNeverReassigned(lowerer.bindingScope(), found.symbol, found.owner)
+    ? found.declaration
+    : null;
+}
+
+/** An expression whose value replaces the receiver instead of answering it:
+ * an object, an array, a function, or a constructed instance. */
+function returnsObjectValue(expression: ts.Expression): boolean {
+  return (
+    ts.isObjectLiteralExpression(expression) ||
+    ts.isArrayLiteralExpression(expression) ||
+    ts.isArrowFunction(expression) ||
+    ts.isFunctionExpression(expression) ||
+    ts.isNewExpression(expression)
+  );
 }
 
 /** An ordinary constructor's explicit object return replaces its receiver.
@@ -58,14 +87,13 @@ function jsConstructorFunctionOf(
 function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
   const declaration = jsConstructorFunctionOf(lowerer, expr);
   if (!declaration?.body) return false;
-  const objectReturn = (expression: ts.Expression): boolean =>
-    ts.isObjectLiteralExpression(expression) ||
-    ts.isArrayLiteralExpression(expression) ||
-    ts.isArrowFunction(expression) ||
-    ts.isFunctionExpression(expression) ||
-    ts.isNewExpression(expression);
   const last = declaration.body.statements.nodes.at(-1);
-  if (!last || !ts.isReturnStatement(last) || !last.expression || !objectReturn(last.expression))
+  if (
+    !last ||
+    !ts.isReturnStatement(last) ||
+    !last.expression ||
+    !returnsObjectValue(last.expression)
+  )
     return false;
   let safe = true;
   const visit = (node: ts.Node, nestedArrow = false): void => {
@@ -81,7 +109,7 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
     if (
       !nestedArrow &&
       ts.isReturnStatement(node) &&
-      (!node.expression || !objectReturn(node.expression))
+      (!node.expression || !returnsObjectValue(node.expression))
     )
       safe = false;
     ts.forEachChild(node, (child) => visit(child, nestedArrow));
@@ -89,6 +117,37 @@ function isObjectFactoryNew(lowerer: Lowerer, expr: ts.NewExpression): boolean {
   for (const parameter of declaration.parameters.nodes) visit(parameter);
   visit(declaration.body);
   return safe;
+}
+
+/** The construction-site refusal for an ordinary constructor whose last
+ * statement returns an object, but which `isObjectFactoryNew` rejects: it
+ * observes `this` or `new.target`, so the receiver it abandons is visible,
+ * or another return answers a primitive or nothing, so the construction
+ * mixes the returned object with that receiver. Checked construction would
+ * compile the call, so the site keeps the fence the checked path replaced.
+ * Null when the constructor is a factory the factory lowering owns, or its
+ * last statement does not return an object. */
+export function objectReturningConstructorRefusal(
+  lowerer: Lowerer,
+  expr: ts.NewExpression,
+): string | null {
+  const found = jsConstructorDeclarationOf(lowerer, expr);
+  if (!found) return null;
+  const last = found.declaration.body?.statements.nodes.at(-1);
+  if (
+    !last ||
+    !ts.isReturnStatement(last) ||
+    !last.expression ||
+    !returnsObjectValue(last.expression)
+  )
+    return null;
+  if (isObjectFactoryNew(lowerer, expr)) return null;
+  // A reassigned binding no longer holds the declaration's function: the
+  // assignment may replace it with any value, so the construction keeps the
+  // fence the checked path would otherwise take.
+  if (!bindingNeverReassigned(lowerer.bindingScope(), found.symbol, found.owner))
+    return "object-returning constructors whose binding is reassigned";
+  return "object-returning constructors that observe this or return mixed primitive/object values";
 }
 
 /** Collection must register the shared result before reaching factory

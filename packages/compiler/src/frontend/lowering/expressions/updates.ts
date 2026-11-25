@@ -1,6 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
 import { staticPrivateUpdateTarget } from "../private-statics.js";
-import { lowerCompoundValueToTarget } from "./binary.js";
+import { lowerCompoundValueToTarget, numericTypeStaysNumber } from "./binary.js";
 import {
   indexedUnionArms,
   lowerIndexedUnionNumberRead,
@@ -14,6 +14,7 @@ import {
 } from "../undefined-index.js";
 import { isStrictCode } from "../strict-mode.js";
 import { isPrivateWriteReceiver } from "../private-brands.js";
+import { prototypeViewable, receiverPrototypeView } from "../class-prototypes.js";
 import type { Lowerer } from "../lowerer.js";
 import {
   type FieldTarget,
@@ -22,6 +23,7 @@ import {
   concatOperand,
   deferredSlotOr,
   dynCompoundValue,
+  lowerOptionalBigint,
   lowerOptionalNumber,
   lowerOperatorNumber,
   operatorUnsupported,
@@ -39,24 +41,28 @@ import {
   isUnitType,
   STRING,
   type SrcLoc,
+  typeEquals,
   UNDEFINED_T,
   VOID,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { callableBox, isCallableTableValue } from "../callable-properties.js";
+import { refuseShadowedImplicitReader } from "../handle-properties.js";
 import { classToNumberConversion } from "../class-to-primitive.js";
 import { lowerPrimitiveUnionNumber } from "../lower-calls.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../../ir/build.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
-import { staticFieldWriteTarget } from "../lower-classes.js";
-import { expandoWritableTarget } from "../lower-expando.js";
+import { fenceCopiedKeyedWrite } from "./asserted-receiver.js";
+import { findStaticOn, staticFieldWriteTarget } from "../lower-classes.js";
+import { checkRefusedMemberUse } from "../class-member-refusals.js";
+import { fenceReadonlyExpandoWrite } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
-import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { hasRuntimeStatics, runtimeStaticDefines } from "../class-runtime-statics.js";
 import { declareContextLocal } from "../function-context.js";
 import { keyedFieldTarget, keyedFieldWrite, saveKeyedFieldKey } from "./keyed-field-targets.js";
 
@@ -141,8 +147,58 @@ function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
   };
 }
 
+/** A JavaScript unary operand that is not the number the operator needs
+ * (`-"6"`, `+null`, `~aString`): ToNumber runs on the operand through the
+ * checked-dynamic conversion, so the runtime applies the language's
+ * ToPrimitive/valueOf order and throws Node's TypeError for a Symbol. Null
+ * for a typed source — a typed non-number operand is a source error — and
+ * for a BigInt, whose operators are the BigInt ones. */
+function jsUnaryNumber(
+  lowerer: Lowerer,
+  expr: ts.PrefixUnaryExpression,
+  raw: IrExpr,
+): IrExpr | null {
+  if (raw.type.kind === "bigint" || !isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.toNumberCoerce",
+    args: [lowerer.coerceToExpected(raw, DYN)],
+    type: F64,
+    loc: locOf(expr),
+  };
+}
+
+/** Unary minus of a JavaScript operand that can convert to a BigInt
+ * (`-new Box()` with a coercion hook returning one): ToNumeric, then the
+ * negation of that number or BigInt. */
+function jsUnaryNegate(lowerer: Lowerer, expr: ts.PrefixUnaryExpression, raw: IrExpr): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "dyn.negate",
+    args: [lowerer.coerceToExpected(raw, DYN)],
+    type: DYN,
+    loc: locOf(expr),
+  };
+}
+
+/** Whether `expr`'s own value is never consumed: it is the whole of an
+ * expression statement (through parentheses), where the boolean a `!`
+ * computes is thrown away. */
+function discardedNegation(expr: ts.PrefixUnaryExpression): boolean {
+  let outer: ts.Node = expr;
+  while (outer.parent !== undefined && ts.isParenthesizedExpression(outer.parent))
+    outer = outer.parent;
+  return outer.parent !== undefined && ts.isExpressionStatement(outer.parent);
+}
+
 export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpression): IrExpr {
   const loc = locOf(expr);
+  // Unary plus and minus convert with ToNumber, whose number hint reads the
+  // Date's valueOf; a program that replaces it needs the dynamic path.
+  const dateNumber = (value: IrExpr): IrExpr => {
+    refuseShadowedImplicitReader(lowerer, expr.operand, value.type, "valueOf", "number conversion");
+    return dateTimeValue(value, loc);
+  };
   switch (expr.operator) {
     case ts.SyntaxKind.MinusToken: {
       const raw = lowerer.lowerExpr(expr.operand);
@@ -150,12 +206,22 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       if (raw.type.kind === "bigint") {
         return { kind: "libCall", fn: "bigint.neg", args: [raw], type: BIGINT_T, loc };
       }
+      // Unary minus is ToNumeric: a JavaScript operand whose coercion hook
+      // can answer a BigInt keeps the BigInt negation. A Date keeps its
+      // valueOf lowering below.
+      if (
+        isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        raw.type.kind !== "bool" &&
+        raw.type.kind !== "date" &&
+        !numericTypeStaysNumber(lowerer, raw.type)
+      )
+        return jsUnaryNegate(lowerer, expr, raw);
       // Match the checked numeric boundary used by JS binary arithmetic.
       const operand =
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
           : raw.type.kind === "date"
-            ? dateTimeValue(raw, loc)
+            ? dateNumber(raw)
             : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
@@ -164,16 +230,12 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
                   type: F64,
                   loc,
                 } satisfies IrExpr)
-              : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
-                ? ({
-                    kind: "libCall",
-                    fn: "dyn.toNumberCoerce",
-                    args: [raw],
-                    type: F64,
-                    loc,
-                  } satisfies IrExpr)
-                : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
+              : lowerOperatorNumber(lowerer, raw, loc, expr.operand);
+      if (operand.type.kind !== "f64") {
+        const js = jsUnaryNumber(lowerer, expr, raw);
+        if (js) return { kind: "unary", op: "-", operand: js, type: F64, loc };
+        operatorUnsupported(lowerer, expr, "-", [raw.type]);
+      }
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
     }
@@ -181,6 +243,14 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       const raw = lowerer.lowerExpr(expr.operand);
       if (raw.type.kind === "dyn") {
         return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [raw], type: F64, loc };
+      }
+      // `+sym`: ToNumber of a Symbol throws "Cannot convert a Symbol value
+      // to a number", which the runtime's checked conversion raises. Only a
+      // JavaScript source reaches this, since the checker's own operator
+      // error still fences the TypeScript form.
+      if (raw.type.kind === "symbol") {
+        const boxed: IrExpr = { kind: "dynFrom", value: raw, type: DYN, loc };
+        return { kind: "libCall", fn: "dyn.toNumberCoerce", args: [boxed], type: F64, loc };
       }
       // A union of primitives (`+match[1]` over `string | undefined`): ToNumber
       // over the boxed value, as for a checked-dynamic operand.
@@ -197,7 +267,7 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
       // A Date's number hint answers its time value.
-      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
+      if (raw.type.kind === "date") return dateNumber(raw);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
@@ -206,9 +276,26 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // union) converts as Number(value) does.
       const unionNumber = lowerPrimitiveUnionNumber(lowerer, raw, expr.operand, loc);
       if (unionNumber) return unionNumber;
+      {
+        const js = jsUnaryNumber(lowerer, expr, raw);
+        if (js) return js;
+      }
       operatorUnsupported(lowerer, expr, "+", [raw.type]);
     }
     case ts.SyntaxKind.ExclamationToken: {
+      // A DISCARDED negation of a void-typed operand (`!register();`,
+      // TS1345 admitted in a JavaScript source): the expression statement
+      // drops the boolean, so the operand evaluates once for its effects
+      // and its own lowering answers. Reached only through the admitted
+      // site (tsc-codes.ts), never by syntax. The site is the void-typed
+      // OPERAND, and the query names exactly that node: an admitted
+      // discarded negation nested inside this one (`!(() => { !voidCall();
+      // return false; })()`) must not consume a boolean this negation reads.
+      // A negation whose boolean IS consumed (`!this.route()`) takes the
+      // ordinary path below: the admitted site is the same OPERAND node, so
+      // the record alone cannot tell the two apart.
+      if (discardedNegation(expr) && lowerer.opinionAtNode(expr.operand, 1345))
+        return lowerer.lowerExpr(expr.operand);
       // `!runtimeBuffer` over an alias of the Buffer global: Node always
       // defines Buffer (the condition twin is lowerCondition's).
       if (lowerer.isStdlibGlobal(expr.operand, "Buffer"))
@@ -243,7 +330,29 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       // such as `while (~index)`, where inference may have widened an
       // otherwise numeric slot to the checked-dynamic tree.
       const operand = lowerOperatorNumber(lowerer, raw, loc, expr.operand);
-      if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "~", [raw.type]);
+      if (operand.type.kind !== "f64") {
+        // ToInt32 of a JavaScript operand that is not statically a number,
+        // through the same checked-dynamic conversion the `~`-over-`dyn`
+        // arm above runs. An operand whose conversion can answer a BigInt
+        // keeps the checked-dynamic result.
+        if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+          const bits: IrExpr = {
+            kind: "libCall",
+            fn: "dyn.bitwise",
+            args: [
+              lowerer.coerceToExpected(raw, DYN),
+              dynUndefinedExpr(loc),
+              { kind: "strLit", value: "~", type: STRING, loc },
+            ],
+            type: DYN,
+            loc,
+          };
+          return numericTypeStaysNumber(lowerer, raw.type)
+            ? { kind: "dynCheck", value: bits, type: F64, loc }
+            : bits;
+        }
+        operatorUnsupported(lowerer, expr, "~", [raw.type]);
+      }
       return { kind: "unary", op: "~", operand, type: F64, loc };
     }
     case ts.SyntaxKind.PlusPlusToken:
@@ -272,6 +381,7 @@ export function lowerIncDec(
       lowerer.unsupported("SC1045", expr, "increment/decrement of this target");
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
+    if (ts.isElementAccessExpression(access)) fenceCopiedKeyedWrite(lowerer, access);
     if (ts.isPropertyAccessExpression(access)) {
       // `this.#x++` on a static private field (private-statics.ts): the
       // brand check, then the field's native global.
@@ -286,10 +396,8 @@ export function lowerIncDec(
           loc,
         };
       }
-      const target =
-        staticFieldWriteTarget(lowerer, access) ??
-        expandoWritableTarget(lowerer, access) ??
-        nsWritableTarget(lowerer, access);
+      fenceReadonlyExpandoWrite(lowerer, access);
+      const target = staticFieldWriteTarget(lowerer, access) ?? nsWritableTarget(lowerer, access);
       if (target) {
         return lowerIncDecTarget(lowerer, expr, target, prefix);
       }
@@ -344,6 +452,30 @@ export function lowerIncDec(
       return { kind: "seqExpr", stmts, result, type: result.type, loc };
     };
     const raw = lowerer.lowerExpr(access.expression);
+    // A native array's `length` is a writable number: `a.length++` writes
+    // length + 1, truncating or growing the storage as Node's length
+    // assignment does, and yields the old (postfix) or new (prefix) length.
+    if (
+      ts.isPropertyAccessExpression(access) &&
+      access.name.text === "length" &&
+      raw.type.kind === "array"
+    ) {
+      const receiver = save(raw, "%incrementArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      return finish(length, (value) => ({
+        kind: "arraySetLength",
+        arr: receiver,
+        length: value,
+        loc,
+      }));
+    }
     // Keep native array/byte storage: boxing a native array can create a
     // checked view, which is not a substitute for updating its slot.
     if (
@@ -461,15 +593,23 @@ export function lowerIncDec(
       !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
       raw.type.kind === "dyn" &&
       lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "f64";
+    // A typed callable's ELEMENT is its own-property table entry
+    // (`fn[k]++`): the same keyed read-modify-write, over the box.
+    const callableBoxed =
+      ts.isElementAccessExpression(access) &&
+      raw.type.kind === "func" &&
+      isCallableTableValue(lowerer, access.expression, raw)
+        ? callableBox(lowerer, raw)
+        : null;
     // A private name is the field of its class (fieldTarget).
     const privateName =
       ts.isPropertyAccessExpression(access) && ts.isPrivateIdentifier(access.name);
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber) &&
-      raw.type.kind === "dyn" &&
+      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || checkedNumber || callableBoxed !== null) &&
+      (raw.type.kind === "dyn" || callableBoxed !== null) &&
       !privateName
     ) {
-      const receiver = save(raw, "%incrementReceiver");
+      const receiver = save(callableBoxed ?? raw, "%incrementReceiver");
       const key = save(
         ts.isElementAccessExpression(access)
           ? lowerer.lowerExprExpecting(access.argumentExpression, DYN)
@@ -631,6 +771,37 @@ export function lowerIncDecTarget(
         loc,
       };
     }
+    const bigintRead = lowerOptionalBigint(
+      lowerer,
+      varRef(target.id, target.type, loc),
+      loc,
+      expr.operand,
+    );
+    if (bigintRead) {
+      const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
+      const next = lowerer.declareHiddenLocal("%bigintNext", BIGINT_T);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: old.id, init: bigintRead, loc },
+          {
+            kind: "varDecl",
+            localId: next.id,
+            init: bigintStep(op, varRef(old.id, BIGINT_T, loc), loc),
+            loc,
+          },
+          {
+            kind: "assign",
+            localId: target.id,
+            value: lowerer.coerceInto(expr.operand, varRef(next.id, BIGINT_T, loc), target.type),
+            loc,
+          },
+        ],
+        result: varRef(prefix ? next.id : old.id, BIGINT_T, loc),
+        type: BIGINT_T,
+        loc,
+      };
+    }
   }
   if (target.type.kind === "bigint") {
     const old = lowerer.declareHiddenLocal("%bigintOld", BIGINT_T);
@@ -685,6 +856,32 @@ export function fieldSetStmt(
   loc: SrcLoc,
   blame: ts.Node,
 ): IrStmt {
+  // A class- or accessor-typed receiver whose value is checked-dynamic (an
+  // object made from the class's prototype, whose storage holds the created
+  // object): the write is the dynamic keyed store, with Node's [[Set]]
+  // semantics. An own property shadows the prototype, a setter runs with the
+  // object as `this`, and a data property on the prototype is written
+  // through its writability.
+  if (
+    (target.container === "class" || target.container === "accessor") &&
+    target.obj.type.kind === "dyn"
+  ) {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "dyn.keySet",
+        args: [
+          target.obj,
+          { kind: "strLit", value: target.field, type: STRING, loc },
+          lowerer.coerceToExpected(value, DYN),
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
   // A write through a brand-checked receiver (checkedPrivateReceiver): the
   // value evaluates first, then the brand check throws, as in Node.
   if (isPrivateWriteReceiver(target.obj) && value.kind !== "varRef") {
@@ -806,6 +1003,19 @@ export function fieldSetStmt(
       loc,
     };
   }
+  if (target.container === "errorPrepareStackTrace") {
+    return {
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "error.prepareStackTraceSet",
+        args: [lowerer.coerceToExpected(value, DYN)],
+        type: VOID,
+        loc,
+      },
+      loc,
+    };
+  }
   if (target.container === "errorCause") {
     return {
       kind: "exprStmt",
@@ -852,6 +1062,59 @@ export function fieldSetStmt(
         blame,
         `assignment to the getter-only property '${target.field}'`,
       );
+    checkRefusedMemberUse(lowerer, setF.declarer, `set:${target.field}`, blame);
+    // A name the program reflects on some class prototype: the shared
+    // prototype view may hold a replaced setter (or a data property a
+    // definition put there), so write through it with the instance as the
+    // receiver, as Node's [[Set]] walks the prototype chain.
+    if (lowerer.prototypeMethodAccesses.has(target.field) && prototypeViewable(setF.declarer)) {
+      // The write names the receiver twice; an effectful expression
+      // (`make().x = 1`) runs once, into a hidden local.
+      const receiverValue = lowerer.coerceToExpected(target.obj, DYN);
+      const stable =
+        isSafeToRepeat(receiverValue) || lowerer.fnStack.length === 0
+          ? null
+          : lowerer.declareHiddenLocal("%prototypeReceiver", DYN);
+      const receiver = (): IrExpr =>
+        stable === null ? receiverValue : varRef(stable.id, DYN, loc);
+      // Node's [[Set]] starts at the receiver: the receiver's own class's
+      // prototype may replace what the class that declares the setter put
+      // there, and a base-class parameter can hold any subclass instance.
+      const view = receiverPrototypeView(
+        lowerer,
+        lowerer.classes.get(target.className) ?? null,
+        setF.declarer,
+        receiver(),
+        loc,
+      );
+      if (view && view.start.prototypeReflectionRefusal === undefined) {
+        const store: IrStmt = {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.reflectSet",
+            args: [
+              view.prototype,
+              lowerer.coerceToExpected(
+                { kind: "strLit", value: target.field, type: STRING, loc },
+                DYN,
+              ),
+              lowerer.coerceToExpected(value, DYN),
+              receiver(),
+            ],
+            type: BOOL,
+            loc,
+          },
+          loc,
+        };
+        if (stable === null) return store;
+        return {
+          kind: "block",
+          body: [{ kind: "varDecl", localId: stable.id, init: receiverValue, loc }, store],
+          loc,
+        };
+      }
+    }
     return {
       kind: "exprStmt",
       expr: lowerer.accessorCall(
@@ -915,57 +1178,6 @@ export function fieldSetStmt(
       ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
       loc,
     };
-  // A field some partial record assertion leaves unwritten (a partial
-  // record view, partial-assertions.ts): a view cannot grow a slot the
-  // asserted literal never wrote, so the write throws the catchable
-  // TypeError (Node would add the property — a documented divergence). The
-  // receiver and the value are evaluated first, as JavaScript does, and the
-  // presence test runs where the write would.
-  const refused = partialFieldWriteError(lowerer, target.shapeId, target.field, loc);
-  if (refused !== null) {
-    const obj = target.obj;
-    const saved = isSafeToRepeat(value)
-      ? null
-      : lowerer.declareHiddenLocal("%partialWriteValue", value.type);
-    // The receiver is saved whenever the value is: a right side can
-    // reassign the variable the receiver reads.
-    const stable =
-      isSafeToRepeat(obj) && saved === null
-        ? null
-        : lowerer.declareHiddenLocal("%partialWrite", obj.type);
-    const ref = stable ? varRef(stable.id, obj.type, loc) : obj;
-    const written = saved ? varRef(saved.id, value.type, loc) : value;
-    return {
-      kind: "block",
-      body: [
-        ...(stable ? [{ kind: "varDecl" as const, localId: stable.id, init: obj, loc }] : []),
-        ...(saved ? [{ kind: "varDecl" as const, localId: saved.id, init: value, loc }] : []),
-        {
-          kind: "if",
-          cond: {
-            kind: "recordHas",
-            obj: ref,
-            shapeId: target.shapeId,
-            field: target.field,
-            type: BOOL,
-            loc,
-          },
-          then: [],
-          else_: [{ kind: "exprStmt", expr: refused, loc }],
-          loc,
-        },
-        {
-          kind: "recordSet",
-          obj: ref,
-          shapeId: target.shapeId,
-          field: target.field,
-          value: written,
-          loc,
-        },
-      ],
-      loc,
-    };
-  }
   return {
     kind: "recordSet",
     obj: target.obj,
@@ -973,6 +1185,82 @@ export function fieldSetStmt(
     field: target.field,
     value,
     loc,
+  };
+}
+
+/** The unasserted operand of a member access spelled through `as`/`<>`
+ * views (`(x as { k: string }).k`, parenthesized), or null when the
+ * receiver carries no assertion. Node erases the assertion, so the member
+ * lives on the object the operand names. */
+function assertedOperandOf(access: ts.PropertyAccessExpression): ts.Expression | null {
+  let node: ts.Expression = access.expression;
+  let asserted = false;
+  while (true) {
+    if (ts.isParenthesizedExpression(node)) node = node.expression;
+    else if (ts.isAsExpression(node) || ts.isTypeAssertion(node)) {
+      node = node.expression;
+      asserted = true;
+    } else break;
+  }
+  return asserted ? node : null;
+}
+
+/** `(u as { k: T }).k op= v` where `u` is a union of record layouts.
+ * fieldTarget declines because the ASSERTED view is not the value's own
+ * layout, and the assertion's conversion would build a copy the write
+ * would be lost in. Node mutates the object the operand names, so address
+ * the one arm whose layout holds `k` at the asserted type through the
+ * checked single-arm extraction: a value of any other arm throws instead
+ * of writing a member its layout cannot carry. Null for every other
+ * shape (the caller keeps its refusal). */
+function assertedUnionFieldTarget(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): FieldTarget | null {
+  if (ts.isPrivateIdentifier(access.name)) return null;
+  const operand = assertedOperandOf(access);
+  if (operand === null) return null;
+  const asserted = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (asserted?.kind !== "record") return null;
+  const assertedField = lowerer.shapes
+    .get(asserted.shapeId)
+    ?.fields.find((f) => f.name === access.name.text);
+  if (!assertedField) return null;
+  // Decide from the mapped operand first: the probe must not lower (or
+  // convert) anything a declined call would leave behind.
+  const operandType = lowerer.mapTypeOf(lowerer.typeOf(operand));
+  if (operandType?.kind !== "union") return null;
+  const declared = lowerer.unions.get(operandType.unionId);
+  if (!declared) return null;
+  const shapeIds: string[] = [];
+  for (const arm of declared.arms) {
+    if (arm.kind !== "record") continue;
+    const field = lowerer.shapes.get(arm.shapeId)?.fields.find((f) => f.name === access.name.text);
+    if (field !== undefined && typeEquals(field.type, assertedField.type))
+      shapeIds.push(arm.shapeId);
+  }
+  // The assertion naming the one arm itself is an identity view the
+  // ordinary field target already addresses.
+  if (shapeIds.length !== 1 || shapeIds[0] === asserted.shapeId) return null;
+  const value = lowerer.lowerExpr(operand);
+  if (value.type.kind !== "union") return null;
+  let arm: IrType | null = null;
+  for (const candidate of lowerer.unions.get(value.type.unionId)?.arms ?? []) {
+    if (candidate.kind === "record" && candidate.shapeId === shapeIds[0]) {
+      arm = candidate;
+      break;
+    }
+  }
+  if (arm === null || arm.kind !== "record") return null;
+  const loc = locOf(access);
+  const helper = lowerer.narrowedArmHelper(value.type.unionId, arm, loc);
+  if (helper === null) return null;
+  return {
+    container: "record",
+    obj: lowerer.checkedNarrowCall(helper, value, arm, loc),
+    shapeId: arm.shapeId,
+    field: access.name.text,
+    fieldType: assertedField.type,
   };
 }
 
@@ -1017,6 +1305,34 @@ export function lowerFieldCompoundValue(
     body.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
     return varRef(local.id, value.type, value.loc);
   };
+  // A native array's `length` is a writable number. `a.length op= rhs`
+  // reads the length, evaluates the right side, combines, then writes the
+  // result back through the same grow/truncate path as `a.length = n`
+  // (arraySetLength), yielding that result. The receiver and the length
+  // read are saved before the right side, as JavaScript's reference
+  // evaluation orders them.
+  if (ts.isPropertyAccessExpression(access) && access.name.text === "length" && rhsNode !== null) {
+    const probed = tryLowerExpression(lowerer, access.expression);
+    if (probed?.type.kind === "array") {
+      const receiver = save(lowerer.lowerExpr(access.expression), "%compoundArray");
+      const length: IrExpr = {
+        kind: "arrIntrinsic",
+        method: "length",
+        receiver,
+        args: [],
+        type: F64,
+        loc,
+      };
+      const old = save(length, "%compoundOld");
+      const rhs = save(lowerer.lowerExprExpecting(rhsNode, F64), "%compoundRhs");
+      const value = save(
+        { kind: "bin", op, left: old, right: rhs, type: F64, loc },
+        "%compoundResult",
+      );
+      body.push({ kind: "arraySetLength", arr: receiver, length: value, loc });
+      return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+    }
+  }
   // A CHECKED-DYNAMIC receiver (`context.actual++` — test/common's call
   // accounting; dot spelling only — symbol-keyed element targets are
   // static fields): read the member (dynKeyGet), VALIDATE it as a
@@ -1028,7 +1344,20 @@ export function lowerFieldCompoundValue(
     let probed = tryLowerExpression(lowerer, access.expression);
     const staticClass =
       probed?.type.kind === "classval" ? lowerer.classes.get(probed.type.className) : undefined;
-    if (probed && staticClass && hasRuntimeStatics(staticClass))
+    // A statically known member that the class value's table does not carry
+    // (a class whose only runtime static is its `Symbol.hasInstance` hook)
+    // updates its own storage, as it would without the hook; a member the
+    // class does not declare at all is a property of the class object.
+    const staticMember =
+      staticClass && !ts.isPrivateIdentifier(access.name)
+        ? findStaticOn(lowerer, staticClass, access.name.text)
+        : undefined;
+    if (
+      probed &&
+      staticClass &&
+      hasRuntimeStatics(staticClass) &&
+      (!staticMember || runtimeStaticDefines(lowerer, staticClass, access.name.text))
+    )
       probed = lowerer.coerceToExpected(probed, DYN);
     // A private name is the field of its class (fieldTarget).
     if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(access.name)) {
@@ -1089,12 +1418,50 @@ export function lowerFieldCompoundValue(
         });
         return { kind: "seqExpr", stmts: body, result: value, type: DYN, loc };
       }
+      // A member the checker types as a string (`detail.text += chunk`,
+      // where the program holds values of the record type as checked-dynamic
+      // values): the member validates as a string, as it validates as a
+      // number below, and the right side appends as it does to a string
+      // field.
+      if (
+        op === "+" &&
+        rhsNode !== null &&
+        lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string"
+      ) {
+        const old: IrExpr = { kind: "dynCheck", value: read, type: STRING, loc };
+        const appended = concatOperand(lowerer, rhs, rhsNode);
+        const value = save(
+          { kind: "strConcat", left: old, right: appended, type: STRING, loc },
+          "%compoundResult",
+        );
+        const boxed: IrExpr = { kind: "dynFrom", value, type: DYN, loc };
+        body.push({
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "dyn.keySet",
+            args: [receiver, { ...key }, boxed],
+            type: VOID,
+            loc,
+          },
+          loc,
+        });
+        return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
+      }
       const numericRhs: IrExpr =
         rhs.type.kind === "dyn"
           ? { kind: "dynCheck", value: rhs, type: F64, loc: rhs.loc }
           : lowerOperatorNumber(lowerer, rhs, loc);
-      if (numericRhs.type.kind !== "f64")
-        compoundUnsupported(lowerer, access, op, F64, numericRhs.type);
+      if (numericRhs.type.kind !== "f64") {
+        // Name the member as the checker types it: this path reads it as a
+        // number, which is its own assumption, not the member's type.
+        const memberTs = lowerer.typeOf(access);
+        const member =
+          (memberTs.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+            ? DYN
+            : (lowerer.mapTypeOf(memberTs) ?? F64);
+        compoundUnsupported(lowerer, access, op, member, numericRhs.type);
+      }
       const value = save(
         { kind: "bin", op, left: cur, right: numericRhs, type: F64, loc },
         "%compoundResult",
@@ -1114,9 +1481,12 @@ export function lowerFieldCompoundValue(
       return { kind: "seqExpr", stmts: body, result: value, type: value.type, loc };
     }
   }
+  // The ordinary field target first: every write that resolved before keeps
+  // its byte-identical lowering. The asserted union view only answers where
+  // that target declined (SC1090 before this).
   const targetOf = (): FieldTarget | null =>
     ts.isPropertyAccessExpression(access)
-      ? lowerer.fieldTarget(access)
+      ? (lowerer.fieldTarget(access) ?? assertedUnionFieldTarget(lowerer, access))
       : (symbolFieldTarget(lowerer, access) ?? keyedFieldTarget(lowerer, access, true));
   const target = targetOf();
   if (!target)
@@ -1126,7 +1496,15 @@ export function lowerFieldCompoundValue(
   saveKeyedFieldKey(target, save);
   // Accessors observe getter, RHS side effects, then setter, all through
   // the saved receiver.
-  const fieldRead = lowerer.fieldGetExpr(target, locOf(access), access);
+  const fieldRead = lowerOptionalStringRead(
+    lowerer,
+    lowerer.fieldGetExpr(target, locOf(access), access),
+    access,
+    rhsNode,
+    op,
+    save,
+    loc,
+  );
   // `+=` on a stored string field reads it into a mutable local, so the
   // concat below can append to that local in place.
   const storedString =
@@ -1204,20 +1582,32 @@ export function lowerFieldCompoundValue(
   } else {
     compoundUnsupported(lowerer, access, op, read.type, rhs.type);
   }
-  if (storedString && rhs.type.kind === "string" && read.kind === "varRef" && appended !== null) {
+  if (
+    storedString &&
+    read.kind === "varRef" &&
+    appended !== null &&
+    appended.type.kind === "string"
+  ) {
     // The field gives up its value before the concat (no code runs in
     // between: both operands are already strings), and the concat is the
     // self-append `old = old + rhs`, which hands the local's reference to
     // the runtime: the old string is then uniquely owned unless something
     // else holds it, and is appended to in place. Repeated `this.text += s`
     // is linear rather than a copy per append.
+    //
+    // A right side that is not a string yet (a number, `string | undefined`,
+    // an object with its own toString) converts into a temporary FIRST: the
+    // conversion may run program code or throw, and it then still finds the
+    // old value in the field, as it does in JavaScript, where the field is
+    // written only after the conversion.
+    const suffix = rhs.type.kind === "string" ? appended : save(appended, "%compoundSuffix");
     const oldId = read.localId;
     const oldLoc = read.loc;
     const oldRef = (): IrExpr => varRef(oldId, STRING, oldLoc);
     const concat: IrExpr = {
       kind: "strConcat",
       left: oldRef(),
-      right: appended,
+      right: suffix,
       type: STRING,
       loc,
     };
@@ -1233,4 +1623,70 @@ export function lowerFieldCompoundValue(
     lowerer.fieldSetStmt(target, lowerer.coerceInto(access, result, target.fieldType), loc, access),
   );
   return { kind: "seqExpr", stmts: body, result, type: result.type, loc };
+}
+
+/** `+=` on an OPTIONAL string field (`label?: string`, `errorMessage:
+ * string | undefined`). JavaScript reads the absent value as a value and
+ * the abstract `+` converts it with ToString, so `label += "x"` on a label
+ * nobody set appends the text "undefined"; the compiler's string concat
+ * needs a string operand, which the declared `string | undefined` slot is
+ * not. The checker may also have narrowed the slot to `string` at this site
+ * (an earlier assignment — `block.label = block.label || ""` — or a typeof
+ * guard); then the absent arm cannot run, and the read narrows through the
+ * string arm, trapping like every checked narrowing. Null conversions leave
+ * the read alone: the compound's own fences answer those. */
+function lowerOptionalStringRead(
+  lowerer: Lowerer,
+  read: IrExpr,
+  access: ts.Node,
+  rhsNode: ts.Node | null,
+  op: string,
+  save: (value: IrExpr, name: string) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (op !== "+" || read.type.kind !== "union") return read;
+  const unionId = read.type.unionId;
+  const absentTag = lowerer.armTag(unionId, UNDEFINED_T);
+  const presentTag = lowerer.armTag(unionId, STRING);
+  if (absentTag < 0 || presentTag < 0) return read;
+  const present = lowerer.stripUndefinedArm(read.type);
+  if (present.kind !== "string") return read;
+  const stable = save(read, "%compoundOldUnion");
+  const stringArm = (): IrExpr => ({
+    kind: "unionNarrow",
+    unionId,
+    tag: presentTag,
+    value: stable,
+    type: STRING,
+    loc,
+  });
+  // The checker proved the slot holds a string here: extract it, and a
+  // lying binding throws the catchable TypeError instead of appending to a
+  // value Node would have converted.
+  if (lowerer.mapTypeOf(lowerer.typeOf(access))?.kind === "string") {
+    const helper = lowerer.narrowedArmHelper(unionId, STRING, loc);
+    return helper ? lowerer.checkedNarrowCall(helper, stable, STRING, loc) : stringArm();
+  }
+  // An absent value appends its ToString, which is a string only when the
+  // right operand is one too (`undefined + 1` is NaN in JavaScript). Any
+  // other right side keeps the union read for the compound below, which
+  // takes the value already evaluated here: a getter runs once.
+  if (rhsNode === null || lowerer.mapTypeOf(lowerer.typeOf(rhsNode))?.kind !== "string")
+    return stable;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "unionIsTag",
+      unionId,
+      tag: absentTag,
+      negated: false,
+      value: stable,
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "strLit", value: "undefined", type: STRING, loc },
+    else_: stringArm(),
+    type: STRING,
+    loc,
+  };
 }

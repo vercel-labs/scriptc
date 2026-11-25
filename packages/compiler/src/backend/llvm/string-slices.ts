@@ -4,6 +4,7 @@ import {
   type IrStmt,
   type IrStrIntrinsicMethod,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { F64_INF, f64Lit, sizeToDouble } from "./common.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
@@ -70,7 +71,7 @@ export function findScalarStringSlices(
 /** scr_slice_unit: a slice()/substring() bound `v` over `length` units. A
  * non-negative bound clamps to the length; a negative one counts from the
  * end for slice (truncated toward zero) and is 0 for substring, as is NaN. */
-function emitSliceUnit(
+export function emitSliceUnit(
   host: LlvmEmitterContext,
   v: string,
   length: string,
@@ -237,7 +238,7 @@ const LENDING_METHODS: ReadonlySet<IrStrIntrinsicMethod> = new Set([
 ]);
 
 /** Numeric parsers read their text during the call. */
-const LENDING_LIB_FNS: ReadonlySet<string> = new Set([
+const LENDING_LIB_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "num.fromString",
   "num.parseInt",
   "num.parseFloat",

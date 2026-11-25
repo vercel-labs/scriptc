@@ -1,0 +1,13 @@
+early-error-await-reserved.js:8:11 - error SC0011: 'await' is an operator in this context, not an identifier: an async function body or parameter list, a class static block, and a module's top level parse it as the await keyword
+
+  7 |     // @ts-expect-error -- the compiler's own early error fires first
+  8 |     ((x = await) => 0);
+    |           ^~~~~
+  9 |   }
+
+early-error-await-reserved.js:13:8 - error SC0011: 'await' is an operator in this context, not an identifier: an async function body or parameter list, a class static block, and a module's top level parse it as the await keyword
+
+  12 |   // @ts-expect-error -- the compiler's own early error fires first
+  13 |   (a = await) => 0;
+     |        ^~~~~
+  14 | };

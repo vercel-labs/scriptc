@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/util-get-call-sites-throwing-options.cjs"
+ ],
+ "diags": []
+}

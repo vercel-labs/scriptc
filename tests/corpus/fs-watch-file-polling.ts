@@ -50,7 +50,17 @@ const second = (current: fs.Stats, previous: fs.Stats): void => {
 };
 fs.watchFile(existing, { interval: 20 }, first);
 fs.watchFile(existing, { interval: -1 }, second);
-setTimeout(() => fs.writeFileSync(existing, "abcd"), 150);
+setTimeout(() => writeAtomically(existing, "abcd"), 150);
+
+// A poll reads a snapshot of the path, so a write in place can be seen
+// between its truncate and its data. The data goes to a staging path and a
+// rename replaces the name, so every snapshot a poll reads is either the
+// old file or the complete new one.
+function writeAtomically(path: string, data: string): void {
+  const staged = `${path}.staged`;
+  fs.writeFileSync(staged, data);
+  fs.renameSync(staged, path);
+}
 
 function startMissingPhase(): void {
   let events = 0;
@@ -59,7 +69,7 @@ function startMissingPhase(): void {
     if (events === 1) {
       // The first poll fails (ENOENT): one change with both sides zeroed.
       console.log("missing", previous.size, previous.mtimeMs, previous.isFile(), current.size, current.isFile());
-      setTimeout(() => fs.writeFileSync(later, "hello"), 100);
+      setTimeout(() => writeAtomically(later, "hello"), 100);
       return;
     }
     console.log("created", previous.size, previous.mtimeMs, "->", current.size, current.isFile());

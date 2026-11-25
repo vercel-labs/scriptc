@@ -17,8 +17,8 @@ import { Client as CoreClient } from "./core/client.ts";
 import { buildConnector as coreBuildConnector } from "./core/connector.ts";
 import { Dispatcher } from "./core/dispatcher.ts";
 import type { ResponseData } from "./core/dispatcher.ts";
-import { undiciFetch } from "./core/fetch.ts";
-import type { UndiciRequestInit } from "./core/fetch.ts";
+import { installGlobalFetchDispatcher, undiciFetch } from "./core/fetch.ts";
+import type { UndiciFetchInit } from "./core/fetch.ts";
 import { Pool as CorePool, PoolStats as CorePoolStats } from "./core/pool.ts";
 import type {
   AgentOptions,
@@ -110,9 +110,13 @@ export function request(
   return coreRequest(url, options, () => new Agent(), profile);
 }
 
-export function fetch(input: string | URL, init?: UndiciRequestInit): Promise<Response> {
+export function fetch(input: string | URL, init?: UndiciFetchInit): Promise<Response> {
   return undiciFetch(input, init, () => new Agent(), profile);
 }
+
+// The global fetch sends a request whose init carries a dispatcher of this
+// package through it.
+installGlobalFetchDispatcher(() => new Agent(), profile);
 
 // undici's Headers is the WHATWG class the runtime implements natively.
 export import Headers = globalThis.Headers;

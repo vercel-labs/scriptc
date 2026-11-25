@@ -1,0 +1,1 @@
+{ "name": "island-absent-env-unused", "private": true, "type": "module", "scriptc": { "packages": { "quiet-pkg": "node" } } }

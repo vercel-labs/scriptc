@@ -1,0 +1,1 @@
+{ "name": "shared-var-cycle", "private": true, "type": "module", "scriptc": { "packages": { "ext": "node" } } }

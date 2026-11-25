@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/weak-entry-value-holds-key.ts"
+ ],
+ "diags": []
+}

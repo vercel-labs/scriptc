@@ -1,0 +1,1 @@
+["0","0","GET /k HTTP/1.1\r\nHost: a\r\nConnection: keep-alive\r\n\r\nGET /k2 HTTP/1.1\r\nHost: a\r\n\r\n"]

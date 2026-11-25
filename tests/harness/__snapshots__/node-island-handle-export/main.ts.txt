@@ -1,0 +1,44 @@
+node-island-handle-export/main.ts:15:15 - error SC8010: a 'string | ChildProcess' value (its 'ChildProcess' arm has no island export) cannot cross into or out of a Node island yet
+
+  14 | function pass(either: ChildProcess | string): string {
+  15 |   return take(either);
+     |               ^~~~~~
+  16 | }
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-handle-export/main.ts:18:18 - error SC8010: a 'ChildProcess' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  17 | 
+  18 | console.log(take(child));
+     |                  ^~~~~
+  19 | console.log(take(server));
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-handle-export/main.ts:19:18 - error SC8010: a 'Server' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  18 | console.log(take(child));
+  19 | console.log(take(server));
+     |                  ^~~~~~
+  20 | console.log(pass(child));
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-handle-export/main.ts:21:33 - error SC8010: a 'ChildProcess' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  20 | console.log(pass(child));
+  21 | console.log(line({ name: "job", child }));
+     |                                 ^~~~~
+  22 | function respond(res: ServerResponse & { req: IncomingMessage }): string {
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on
+
+node-island-handle-export/main.ts:23:15 - error SC8010: a 'ServerResponse & { req: IncomingMessage; }' value (its native representation has no island export) cannot cross into or out of a Node island yet
+
+  22 | function respond(res: ServerResponse & { req: IncomingMessage }): string {
+  23 |   return take(res);
+     |               ^~~
+  24 | }
+
+  hint: pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on

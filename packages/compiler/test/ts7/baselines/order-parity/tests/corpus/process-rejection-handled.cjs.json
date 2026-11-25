@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-rejection-handled.cjs"
+ ],
+ "diags": []
+}

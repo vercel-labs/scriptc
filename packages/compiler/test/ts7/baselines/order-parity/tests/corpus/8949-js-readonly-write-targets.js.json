@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8949-js-readonly-write-targets.js"
+ ],
+ "diags": []
+}

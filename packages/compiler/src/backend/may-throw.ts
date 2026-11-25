@@ -86,14 +86,84 @@ export function computeMayThrow(
   const explain = options.explain === true;
   const facts = new Map<string, Facts>();
   const closureTargets = new Set<string>();
+  // Whether a checked conversion into `type` can mint a function adapter: a
+  // function type, or a record, tuple, array, collection, promise or union
+  // that holds one in a member, an element or an arm. It is reachability in
+  // the type graph: one query expands each record and union once, and when
+  // it finds no function, none of the types it expanded holds one either, so
+  // all of them are answered for good. (A walk that only remembers its own
+  // path expands a type shared by many members once per path to it.)
+  // The declarations by id, built at the first conversion that asks.
+  let recordsById: Map<string, NonNullable<IrModule["records"]>[number]> | null = null;
+  let unionsById: Map<string, NonNullable<IrModule["unions"]>[number]> | null = null;
+  const holdsFunctionKnown = new Map<string, boolean>();
+  const holdsFunction = (root: IrType): boolean => {
+    const expanded = new Set<string>();
+    const reaches = (type: IrType): boolean => {
+      switch (type.kind) {
+        case "func":
+          return true;
+        case "array":
+        case "set":
+          return reaches(type.elem);
+        case "map":
+          return reaches(type.key) || reaches(type.value);
+        case "promise":
+          return reaches(type.inner);
+        case "record":
+        case "union": {
+          const key = type.kind === "record" ? `r:${type.shapeId}` : `u:${type.unionId}`;
+          const known = holdsFunctionKnown.get(key);
+          if (known !== undefined) return known;
+          // Expanded earlier in this query: what it reaches is being, or
+          // has been, looked at from there.
+          if (expanded.has(key)) return false;
+          expanded.add(key);
+          let answer = false;
+          if (type.kind === "record") {
+            recordsById ??= new Map((mod.records ?? []).map((record) => [record.id, record]));
+            const shape = recordsById.get(type.shapeId);
+            answer =
+              shape !== undefined &&
+              (shape.fields.some((field) => reaches(field.type)) ||
+                (shape.indexValue !== undefined && reaches(shape.indexValue)));
+          } else {
+            unionsById ??= new Map((mod.unions ?? []).map((union) => [union.id, union]));
+            answer = unionsById.get(type.unionId)?.arms.some((arm) => reaches(arm)) === true;
+          }
+          if (answer) holdsFunctionKnown.set(key, true);
+          return answer;
+        }
+        default:
+          return false;
+      }
+    };
+    const answer = reaches(root);
+    if (!answer) for (const key of expanded) holdsFunctionKnown.set(key, false);
+    return answer;
+  };
   // FUNC-targeted dynChecks synthesize adapter closures outside the IR's
   // closure table; any callValue may then reach a throwing body.
   let sawDynFuncAdapter = false;
-  const asyncFns = new Set(mod.functions.filter((fn) => fn.async).map((fn) => fn.name));
+  // A bindAtCall generator binds parameters at the call. For an async one
+  // that prologue still runs inside the call, so the async exclusion below
+  // must not apply: the call can throw synchronously.
+  const asyncFns = new Set(
+    mod.functions
+      .filter((fn) => fn.async && !(fn.generator !== undefined && fn.generator.bindAtCall === true))
+      .map((fn) => fn.name),
+  );
   // Generator functions follow the async exclusion: CALLING one only
   // allocates the suspended fiber (nothing runs, nothing can throw) — a
   // body throw surfaces at genResume, which seeds unconditionally below.
-  const genFns = new Set(mod.functions.filter((fn) => fn.generator).map((fn) => fn.name));
+  // A bindAtCall generator (a parameter prologue that destructures or
+  // defaults) is the exception: its spawn wrapper runs that prologue inside
+  // the call, so the call can throw and takes an ordinary call edge.
+  const genFns = new Set(
+    mod.functions
+      .filter((fn) => fn.generator !== undefined && fn.generator.bindAtCall !== true)
+      .map((fn) => fn.name),
+  );
   const callbackFfiImports = new Set(
     (mod.ffiImports ?? [])
       .filter((entry) => entry.params.some(isFfiCallbackParam))
@@ -159,15 +229,16 @@ export function computeMayThrow(
         case "dynCheck":
         case "caughtCheck":
           // A checked cast throws (catchably) on validation failure —
-          // seeds the fixpoint exactly like a `throw` statement. A
-          // FUNC-targeted dynCheck can also mint an ADAPTER closure whose
-          // body throws (argument/result validation inside a later
-          // callValue) — those adapters are emitter-synthesized, invisible
-          // to closureTargets, so they force the indirect answer below.
+          // seeds the fixpoint exactly like a `throw` statement. A dynCheck
+          // whose target holds a function (the target itself, or a member,
+          // an element or an arm of it) can also mint an ADAPTER closure
+          // whose body throws: argument/result validation inside a later
+          // callValue, or the function behind it, which is not one of this
+          // module's closures when a Node island made it. Those adapters are
+          // emitter-synthesized, invisible to closureTargets, so they force
+          // the indirect answer below.
           f.throws = true;
-          if (rec.type.kind === "func") {
-            sawDynFuncAdapter = true;
-          }
+          if (!sawDynFuncAdapter && holdsFunction(rec.type)) sawDynFuncAdapter = true;
           break;
         case "mapIntrinsic":
         case "setIntrinsic": {
@@ -226,6 +297,11 @@ export function computeMayThrow(
             (rec.name === "itable.find" || rec.name === "itable.insert") &&
             rec.args[1]?.type.kind === "array"
           )
+            f.throws = true;
+          // The parallel loops' entry checks throw the RangeError the Node.js
+          // implementation throws (count, grain, stride), and a detached
+          // target throws the TypeError subarray throws.
+          if (rec.name === "par.into" || rec.name === "par.reduce" || rec.name === "par.for")
             f.throws = true;
           break;
         case "yieldExpr":
@@ -788,6 +864,7 @@ const BOUNDED_KINDS: ReadonlySet<string> = new Set([
   "strLit",
   "boolLit",
   "unitLit",
+  "constCell",
   "varRef",
   "assignExpr",
   "incDec",
@@ -855,6 +932,33 @@ const BOUNDED_BYTES_METHODS: ReadonlySet<string> = new Set([
   "length",
   "subarray",
   "sortNumeric",
+  // Byte and element moves that read and write storage and never call back
+  // into scriptc code: a typed array's slice, fill, copy, search and
+  // conversion of numbers. The comparator sort (sortCompare) and the
+  // dynamic source (setFromDyn) can run scriptc code and stay unbounded.
+  "buffer",
+  "byteLength",
+  "byteOffset",
+  "slice",
+  "toReversed",
+  "with",
+  "copyWithin",
+  "fill",
+  "fillNum",
+  "fillElem",
+  "fillStr",
+  "indexOf",
+  "indexOfElem",
+  "indexOfNum",
+  "lastIndexOf",
+  "lastIndexOfElem",
+  "lastIndexOfNum",
+  "includes",
+  "includesElem",
+  "includesNum",
+  "equals",
+  "compareBuf",
+  "toArray",
 ]);
 
 /** Array methods that can call back into scriptc code (a comparator, or
@@ -876,7 +980,10 @@ function staticContainer(type: IrType): boolean {
   return type.kind === "array" || type.kind === "set" || type.kind === "bytes";
 }
 
-function boundedNode(rec: IrExpr | IrStmt): boolean {
+/** Whether `rec` itself (not its operands) is such an operation. The arena
+ * analysis (llvm/region-groups.ts) asks the same question: an operation
+ * that can reenter scriptc code runs it with the caller's arena open. */
+export function boundedNode(rec: IrExpr | IrStmt): boolean {
   if (BOUNDED_KINDS.has(rec.kind)) return true;
   switch (rec.kind) {
     case "arrIntrinsic":
@@ -891,6 +998,11 @@ function boundedNode(rec: IrExpr | IrStmt): boolean {
       // callback or conversion.
       if (rec.fn.startsWith("string.") || rec.fn.startsWith("num."))
         return rec.args.every(primitiveArgument);
+      // A callback-free process write is not bounded: the runtime's stdio
+      // hook hands the chunk to the stream's CURRENT write method, which a
+      // program (or a dynamically typed alias it passed the stream through)
+      // can replace with code that writes again. That re-entry edge keeps
+      // the stack check on a recursive writer or hook cycle.
       return rec.fn.startsWith("math.");
     case "intrinsic":
       // A module binding read before its declaration ran only throws.

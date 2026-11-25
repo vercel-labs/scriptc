@@ -32,7 +32,7 @@ import {
   storeArrCount,
 } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
-import { compactRefLoadLines, compactRefStoreLines } from "./classes.js";
+import { compactRefAddressLines, compactRefLoadLines, compactRefStoreLines } from "./classes.js";
 import { elemAccess } from "./shapes.js";
 import { indexInteger } from "./integer-values.js";
 import { integerOrNaNIndex } from "./wrapping-sums.js";
@@ -112,9 +112,24 @@ function emitDenseGuard(
     // double's path.
     wide = integer;
   } else if (nanIndex) {
-    // An exact integer or NaN is an index exactly when it is ordered.
+    // An exact integer or NaN is an index exactly when it is ordered. Where
+    // the range does not hold the value in an i64 (an unbounded expression),
+    // a magnitude test on the double keeps the poison conversion out of the
+    // capacity comparison without paying a round trip.
     wide = nanIndex.wide;
-    integral = nanIndex.ordered;
+    if (nanIndex.bounded) integral = nanIndex.ordered;
+    else {
+      // Both ends: below -2^63 the conversion is poison too, and a frozen
+      // negative could pass the unsigned capacity comparison.
+      const magnitude = B.tmp(),
+        lower = B.tmp(),
+        inRange = B.tmp();
+      B.line(`${magnitude} = fcmp olt double ${index.name}, 0x43E0000000000000`);
+      B.line(`${lower} = fcmp oge double ${index.name}, 0xC3E0000000000000`);
+      B.line(`${inRange} = and i1 ${magnitude}, ${lower}`);
+      integral = B.tmp();
+      B.line(`${integral} = and i1 ${nanIndex.ordered}, ${inRange}`);
+    }
   } else {
     // freeze keeps NaN/out-of-range conversions from producing poison; the
     // exact round-trip comparison then rejects every value that is not an
@@ -353,8 +368,11 @@ export function emitDenseSlotUnlink(
 /** Strict element read with the runtime getter's result contract: a
  * double, an i1, or a pointer that is +1 (`retain`) or borrowed. The
  * runtime getter keeps the trap for holes, present undefined, and missing
- * properties; it also answers sparse indices. Null reference slots take
- * the runtime path, which returns them without a retain. */
+ * properties; it also answers sparse indices. A null reference slot that
+ * the guard or the state check admits is a value of the element type, and
+ * the runtime getter answers it with NULL and no retain: the inline path
+ * answers it the same way, so every absent element of an optional-element
+ * array stays off the runtime call. */
 export function emitDenseArrayGet(
   host: LlvmEmitterContext,
   array: string,
@@ -427,7 +445,7 @@ export function emitDenseArrayRead(
   const ptr = valuePointer(host, guard, kind);
   let fast: string;
   let fastInt: string | null = null;
-  let fastLabel = valueLabel;
+  const fastLabel = valueLabel;
   if (acc === "f64") {
     fast = B.tmp();
     B.line(`${fast} = load double, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
@@ -442,19 +460,15 @@ export function emitDenseArrayRead(
     B.line(`${raw} = load i8, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     B.line(`${fast} = icmp ne i8 ${raw}, 0`);
   } else {
-    const raw = B.tmp(),
-      nonnull = B.tmp();
+    const raw = B.tmp();
     if (kind === "cref") {
       const ref = B.tmp();
       B.line(`${ref} = load i32, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
-      for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+      for (const line of compactRefLoadLines(host.compactRefBase, ref, raw, `${raw}.r`))
+        B.line(line.trimStart());
     } else {
       B.line(`${raw} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
     }
-    B.line(`${nonnull} = icmp ne ptr ${raw}, null`);
-    fastLabel = B.newLabel("arr.get.ref");
-    B.condBr(nonnull, fastLabel, slow);
-    B.startBlock(fastLabel);
     fast = retain ? host.retainFrame(raw, element) : raw;
   }
   B.br(join);
@@ -868,8 +882,12 @@ export function emitDenseArrayPop(
       // The 8-byte slot of a compact reference is its address.
       const wide = B.tmp(),
         address = B.tmp();
-      B.line(`${wide} = zext i32 ${raw} to i64`);
-      B.line(`${address} = shl nuw nsw i64 ${wide}, 3`);
+      if (host.compactRefBase === 0n) {
+        B.line(`${wide} = zext i32 ${raw} to i64`);
+        B.line(`${address} = shl nuw nsw i64 ${wide}, 3`);
+      } else
+        for (const line of compactRefAddressLines(host.compactRefBase, raw, address, `${wide}.r`))
+          B.line(line.trimStart());
       raw = address;
     } else {
       // The slot bits of an int32 element's double, as the f64 path returns them.

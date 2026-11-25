@@ -1472,7 +1472,7 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make(ScrElemKind el
   if (a)
     a->rc = SCR_ARENA_RC;
   else {
-    a = scr_mem_alloc(size);
+    a = scr_mem_alloc_ref(size);
     if (!a) scr_arr_oom();
     a->rc = 1;
   }
@@ -1516,7 +1516,7 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   }
   if (cap > SCR_ARR_MAX_LENGTH) scr_arr_oom();
   size_t unit = scr_elem_slot_width(elem) + (states ? 1 : 0);
-  ScrArr *a = scr_mem_alloc(SCR_ARR_INLINE_OFFSET + cap * unit);
+  ScrArr *a = scr_mem_alloc_ref(SCR_ARR_INLINE_OFFSET + cap * unit);
   if (!a) scr_arr_oom();
   a->rc = 1;
   a->len = 0;
@@ -1531,6 +1531,21 @@ ScrArr *scr_arr_new_inline(ScrElemKind elem, size_t cap, bool states) {
   scr_live_arrays++;
 #endif
   return a;
+}
+
+ScrArr *scr_arr_window_header(const ScrArr *image, ScrArr **slot) {
+  ScrArr *known = __atomic_load_n(slot, __ATOMIC_ACQUIRE);
+  if (known) return known;
+  ScrArr *made = scr_mem_alloc_ref(sizeof(ScrArr));
+  if (!made) scr_arr_oom();
+  memcpy(made, image, sizeof(ScrArr));
+  /* Other threads reach the copy through the slot. */
+  scr_sa_thread_shares();
+  ScrArr *expected = NULL;
+  if (__atomic_compare_exchange_n(slot, &expected, made, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    return made;
+  scr_mem_free(made);
+  return expected;
 }
 
 void scr_arr_outline(ScrArr *a) {
@@ -1644,7 +1659,7 @@ static inline __attribute__((always_inline)) ScrArr *scr_arr_make_ops_kind(const
     if (cyc)
       a = scr_cyc_alloc_inline(size, &scr_arr_cyc_type);
     else {
-      a = scr_mem_alloc(size);
+      a = scr_mem_alloc_ref(size);
       if (!a) scr_arr_oom();
     }
     a->rc = 1;
@@ -1946,7 +1961,7 @@ void scr_arr_subclass_construct_dyn(ScrArr *a, const ScrDyn *args, bool dyn_elem
     } else {
       static const char msg[] =
           "constructing this Array subclass with element arguments is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       return;
     }
   }
@@ -2044,7 +2059,7 @@ static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_le
     if (!empty || (traced && !species->cyc)) {
       static const char msg[] =
           "an Array subclass's species result of another element type is not supported yet";
-      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg, sizeof msg - 1, "SC1090");
       scr_arr_release(species);
       return result;
     }
@@ -2196,52 +2211,86 @@ void scr_array_undeletable_error(double index) {
   scr_frozen_undeletable(index);
 }
 
+/* Element presence for the immutable no-op walk: a hole is absent. A guard
+ * called without its array (the checked-dynamic tier) cannot tell, and
+ * answers for an array whose every index holds a value, as it always did. */
+static bool scr_frozen_present(const ScrArr *a, size_t len, size_t index) {
+  if (a == NULL) return true;
+  if (index >= len) return false;
+  return scr_arr_state_at(a, index, NULL) != SCR_ARR_HOLE;
+}
+
 /* Each case finds the operation's first write in the order the spec makes
- * its writes. */
-bool scr_array_frozen_error(int op, size_t len, double x, double y, double z) {
+ * its writes, among the elements the receiver actually holds, and answers
+ * SCR_FROZEN_NOOP when that walk finds no write at all — reversing an
+ * all-hole array, sorting one that holds at most one element, an empty fill
+ * or copy range. Node returns the receiver for those, so the caller must
+ * not run the mutating helper: it would rebuild or widen the storage of an
+ * array that stays as it is. */
+int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double y, double z) {
   switch (op) {
   case 0:
     if (x >= 0 && x < (double)len && x == (double)(size_t)x) scr_frozen_read_only(x);
     else scr_frozen_not_extensible(x);
-    return true;
+    return SCR_FROZEN_THREW;
   case 1:
     if (y == 0) break;
     scr_frozen_not_extensible((double)len);
-    return true;
+    return SCR_FROZEN_THREW;
   case 2:
   case 6:
     if (len == 0) break;
     if (op == 6 && len > 1) scr_frozen_read_only(0);
     else scr_frozen_undeletable((double)(len - 1));
-    return true;
+    return SCR_FROZEN_THREW;
   case 3: break;
   case 4:
     if (y == 0) break;
     scr_frozen_not_extensible(len ? (double)len + y - 1 : 0);
-    return true;
+    return SCR_FROZEN_THREW;
   case 5:
-    if (!(x >= 0 && x < (double)len && x == (double)(size_t)x)) return false;
+    if (!(x >= 0 && x < (double)len && x == (double)(size_t)x)) return SCR_FROZEN_RUN;
     scr_frozen_undeletable(x);
-    return true;
-  case 7:
-    if (len < 2) return false;
-    scr_frozen_read_only(0);
-    return true;
-  case 8: {
-    size_t k = scr_frozen_relative_index(x, len), final = scr_frozen_relative_index(y, len);
-    if (k >= final) return false;
-    scr_frozen_read_only((double)k);
-    return true;
+    return SCR_FROZEN_THREW;
+  case 7: { /* reverse: each pair swaps, and a hole paired with a hole is
+             * no write; the middle of an odd length is never written. */
+    for (size_t lower = 0; lower < len / 2; lower++) {
+      size_t upper = len - 1 - lower;
+      bool lower_p = scr_frozen_present(a, len, lower);
+      bool upper_p = scr_frozen_present(a, len, upper);
+      if (lower_p && upper_p) scr_frozen_read_only((double)lower);
+      else if (lower_p) scr_frozen_undeletable((double)lower);
+      else if (upper_p) scr_frozen_not_extensible((double)lower);
+      else continue;
+      return SCR_FROZEN_THREW;
+    }
+    return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
   }
-  case 9: {
+  case 8: { /* fill: the range's first index, present or not, decides. */
+    size_t k = scr_frozen_relative_index(x, len), final = scr_frozen_relative_index(y, len);
+    if (k >= final) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    if (scr_frozen_present(a, len, k)) scr_frozen_read_only((double)k);
+    else scr_frozen_not_extensible((double)k);
+    return SCR_FROZEN_THREW;
+  }
+  case 9: { /* copyWithin: a hole copied onto a hole writes nothing. */
     size_t to = scr_frozen_relative_index(x, len), from = scr_frozen_relative_index(y, len);
     size_t final = scr_frozen_relative_index(z, len);
-    if (final <= from || len <= to) return false;
+    if (final <= from || len <= to) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
     size_t count = final - from < len - to ? final - from : len - to;
     /* An overlapping copy toward the end writes its last index first. */
-    if (from < to && to < from + count) to += count - 1;
-    scr_frozen_read_only((double)to);
-    return true;
+    bool backwards = from < to && to < from + count;
+    for (size_t step = 0; step < count; step++) {
+      size_t k = backwards ? count - 1 - step : step;
+      bool source_p = scr_frozen_present(a, len, from + k);
+      bool target_p = scr_frozen_present(a, len, to + k);
+      if (!source_p && !target_p) continue;
+      if (!source_p) scr_frozen_undeletable((double)(to + k));
+      else if (target_p) scr_frozen_read_only((double)(to + k));
+      else scr_frozen_not_extensible((double)(to + k));
+      return SCR_FROZEN_THREW;
+    }
+    return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
   }
   case 10: {
     size_t start = scr_frozen_relative_index(x, len);
@@ -2252,27 +2301,43 @@ bool scr_array_frozen_error(int op, size_t len, double x, double y, double z) {
       /* Elements after the removed ones move down, then the tail goes. */
       if (start < len - removed) scr_frozen_read_only((double)(start + items));
       else scr_frozen_undeletable((double)(len - 1));
-      return true;
+      return SCR_FROZEN_THREW;
     }
     if (items > removed) {
       /* Elements after the removed ones move up, past the end first. */
       if (len - removed > start) scr_frozen_not_extensible((double)(len - removed + items - 1));
       else if (start < len) scr_frozen_read_only((double)start);
       else scr_frozen_not_extensible((double)start);
-      return true;
+      return SCR_FROZEN_THREW;
     }
     if (items > 0) {
       scr_frozen_read_only((double)start);
-      return true;
+      return SCR_FROZEN_THREW;
     }
     break;
   }
+  case 11: { /* the default sort: one element (or none) is written none. */
+    if (len < 2) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    if (a != NULL) {
+      bool any = false;
+      for (size_t i = 0; i < len && !any; i++) any = scr_frozen_present(a, len, i);
+      if (!any) return SCR_FROZEN_NOOP;
+    }
+    /* The sorted values are written from index 0 up. */
+    if (scr_frozen_present(a, len, 0)) scr_frozen_read_only(0);
+    else scr_frozen_not_extensible(0);
+    return SCR_FROZEN_THREW;
+  }
   default:
-    return false;
+    return SCR_FROZEN_RUN;
   }
   static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
   scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
-  return true;
+  return SCR_FROZEN_THREW;
+}
+
+bool scr_array_frozen_error(int op, size_t len, double x, double y, double z) {
+  return scr_array_frozen_guard(op, NULL, len, x, y, z) == SCR_FROZEN_THREW;
 }
 
 void scr_arr_freeze(ScrArr *a) {
@@ -5870,13 +5935,15 @@ const uint64_t *scr_arr_dense_slots(const ScrArr *a, size_t *len) {
  * slots of `a` in place. */
 bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, int32_t order,
                         ScrClosure *key) {
+  /* A sort of one element (or none) writes nothing: answer before the
+   * preparation below, which must leave the storage as it is. */
+  size_t n = a->len;
+  if (n < 2) return true;
   uint8_t elem = a->elem;
   const ScrArrOps *ops = scr_arr_ops(a);
   /* Compact references sort through the snapshot path, which reads and
    * writes 8-byte slots. */
   if (a->rc == SIZE_MAX || elem == SCR_ELEM_CREF || !scr_arr_dense_values(a)) return false;
-  size_t n = a->len;
-  if (n < 2) return true;
   /* A frozen array takes the snapshot path, whose write-back throws. */
   if (scr_arr_frozen(a)) return false;
   if (n > SIZE_MAX / 2 / sizeof(uint64_t)) scr_arr_oom();
@@ -5932,43 +5999,7 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
   return true;
 }
 
-/* join over a hole-free string array: size the result exactly, then copy
- * each piece without per-append capacity checks. Only a piece starting
- * with a lone low surrogate can complete a pair across its seam. */
-static ScrStr *scr_arr_join_dense_str(const ScrArr *a, const ScrStr *sep) {
-  const size_t limit = SIZE_MAX - sizeof(ScrStr) - 1;
-  size_t n = a->len;
-  if (n > 1 && sep->len > limit / (n - 1)) scr_arr_oom();
-  size_t total = n > 1 ? (n - 1) * sep->len : 0;
-  bool ascii = n < 2 || sep->ascii, lone = scr_wtf8_any();
-  bool lead_low = lone && n > 1 && scr_wtf8_low_at(sep->data);
-  for (size_t i = 0; i < n; i++) {
-    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
-    if (!s) continue;
-    total = scr_join_size(total, s->len);
-    ascii &= s->ascii;
-    if (lone) lead_low |= scr_wtf8_low_at(s->data);
-  }
-  ScrStr *out = scr_str_alloc_raw(total, total);
-  char *w = out->data;
-  for (size_t i = 0; i < n; i++) {
-    if (i > 0) {
-      scr_copy_bytes(w, sep->data, sep->len);
-      w += sep->len;
-    }
-    const ScrStr *s = (const ScrStr *)scr_slot_to_ptr(a->data[i]);
-    if (!s) continue;
-    scr_copy_bytes(w, s->data, s->len);
-    w += s->len;
-  }
-  out->data[total] = '\0';
-  if (lead_low) scr_str_fuse_surrogates(out);
-  else if (ascii) scr_str_note_ascii(out);
-  return out;
-}
-
 ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
-  if (a->elem == SCR_ELEM_STR && a->filled == a->len) return scr_arr_join_dense_str(a, sep);
   size_t cap = 64;
   /* String widths are already known. Size once to avoid growth and copying
    * even when the array holds holes, explicit undefined or sparse slots.

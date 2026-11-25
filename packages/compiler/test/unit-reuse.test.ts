@@ -1,6 +1,7 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, expect, test } from "vitest";
 import { compile } from "../src/index.js";
 
@@ -9,6 +10,7 @@ const VARIABLES = [
   "SCRIPTC_INCR_LOWERING",
   "SCRIPTC_INCR_VERIFY",
   "SCRIPTC_LOWER_JOURNAL_DUMP",
+  "SCRIPTC_UNIT_CHANGED_DUMP",
 ];
 
 afterEach(() => {
@@ -43,29 +45,59 @@ class Workspace {
       process.env["SCRIPTC_CACHE_DIR"] = join(this.dir, "cache");
       process.env["SCRIPTC_INCR_LOWERING"] = "1";
       process.env["SCRIPTC_LOWER_JOURNAL_DUMP"] = join(this.dir, label);
+      process.env["SCRIPTC_UNIT_CHANGED_DUMP"] = join(this.dir, `${label}.changed.json`);
       if (verify) process.env["SCRIPTC_INCR_VERIFY"] = "1";
     }
+    const changedPath = join(this.dir, `${label}.changed.json`);
+    this.changedUnits = [];
     const outPath = join(this.dir, `${label}.ir.json`);
     const result = await compile(join(this.dir, "main.ts"), {
       outDir: join(this.dir, "out"),
       outPath,
       outputKind: "ir",
+      ...(this.define ? { define: this.define } : {}),
     });
     if (!result.ok)
       throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    if (reuse) {
+      try {
+        this.changedUnits = JSON.parse(await readFile(changedPath, "utf8")) as string[];
+      } catch {
+        this.changedUnits = [];
+      }
+    }
     return readFile(outPath, "utf8");
   }
 
   /** The units with a record in the last build, recorded or applied. */
   units: string[] = [];
 
+  /** The units the last reuse build lowered (SCRIPTC_UNIT_CHANGED_DUMP). */
+  changedUnits: string[] = [];
+
+  /** The units the reuse build of the last `build()` lowered. */
+  buildChanged: string[] = [];
+
+  /** The `--define` values of every build, when the program has them. */
+  define: Record<string, string> | undefined;
+
   /** Builds with reuse, checks the IR against a build without it, and
    * returns the units whose stored records applied. A build in verify mode
    * follows and must give the same IR. */
   async build(): Promise<string[]> {
+    const { reused, plain, applied } = await this.both();
+    expect(reused).toBe(plain);
+    return applied;
+  }
+
+  /** Builds with reuse and without it: the IR of each, and the units whose
+   * stored records applied. A build in verify mode follows and must give
+   * the IR of the build with reuse. */
+  async both(): Promise<{ reused: string; plain: string; applied: string[] }> {
     const label = `build-${this.builds++}`;
     const reused = await this.lower(label, true);
-    expect(reused).toBe(await this.lower(`${label}-plain`, false));
+    this.buildChanged = this.changedUnits;
+    const plain = await this.lower(`${label}-plain`, false);
     const applied: string[] = [];
     this.units = [];
     for (const line of (await readFile(join(this.dir, label, "records.jsonl"), "utf8"))
@@ -79,7 +111,7 @@ class Workspace {
     }
     this.units.sort();
     expect(await this.lower(`${label}-verify`, true, true)).toBe(reused);
-    return applied.sort();
+    return { reused, plain, applied: applied.sort() };
   }
 
   dispose(): Promise<void> {
@@ -140,6 +172,70 @@ const MODULES = {
 const has = (applied: readonly string[], name: string): boolean =>
   applied.some((unit) => unit.endsWith(`.${name}`) || unit === name);
 
+test("an implicit instance a record added is not lowered again by a later unit", async () => {
+  // The program is the corpus case for this: its second build records, and
+  // its third applies the records while another unit demands the same
+  // implicit instance at its call site. The recorded function is the one the
+  // module must hold, and a caller that lowers against it reads its return
+  // type. That caller is edited before the last build, so it lowers.
+  const root = await mkdtemp(join(tmpdir(), "scriptc-unit-reuse-instance-"));
+  const app = join(root, "jose");
+  const entry = join(app, "main.mjs");
+  const cache = join(root, "cache");
+  const caller = join(app, "node_modules/jose/dist/webapi/lib/key_management.js");
+  try {
+    await cp(
+      fileURLToPath(new URL("../../../tests/corpus/jose-jwe-asymmetric", import.meta.url)),
+      app,
+      { recursive: true },
+    );
+    for (const name of VARIABLES) delete process.env[name];
+    process.env["SCRIPTC_CACHE_DIR"] = cache;
+    process.env["SCRIPTC_INCR_LOWERING"] = "1";
+    process.env["SCRIPTC_INCR_VERIFY"] = "1";
+    const outputs: string[] = [];
+    for (const build of [1, 2, 3]) {
+      const outPath = join(cache, `build-${build}.ll`);
+      const result = await compile(entry, {
+        outDir: join(cache, "out"),
+        outPath,
+        outputKind: "llvm",
+      });
+      expect(
+        result.ok,
+        `build ${build}: ${result.ok ? "" : result.diagnostics.map((d) => d.code).join(",")}`,
+      ).toBe(true);
+      outputs.push(await readFile(outPath, "utf8"));
+    }
+    expect(outputs[2]).toBe(outputs[0]);
+    // A caller of the instance, edited so it lowers against the record.
+    const text = await readFile(caller, "utf8");
+    expect(text).toContain("  checkUsage(key, usage);");
+    await writeFile(
+      caller,
+      text.replace("  checkUsage(key, usage);", "  void 0;\n  checkUsage(key, usage);"),
+    );
+    const reusedPath = join(cache, "reused.ll");
+    const reused = await compile(entry, {
+      outDir: join(cache, "out"),
+      outPath: reusedPath,
+      outputKind: "llvm",
+    });
+    expect(reused.ok, reused.ok ? "" : reused.diagnostics.map((d) => d.code).join(",")).toBe(true);
+    for (const name of VARIABLES) delete process.env[name];
+    const freshPath = join(root, "fresh.ll");
+    const fresh = await compile(entry, {
+      outDir: join(root, "out"),
+      outPath: freshPath,
+      outputKind: "llvm",
+    });
+    expect(fresh.ok, fresh.ok ? "" : fresh.diagnostics.map((d) => d.code).join(",")).toBe(true);
+    expect(await readFile(reusedPath, "utf8")).toBe(await readFile(freshPath, "utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}, 300_000);
+
 test("an unchanged rebuild applies every unit's stored record", async () => {
   const workspace = await Workspace.create(MODULES);
   try {
@@ -149,6 +245,52 @@ test("an unchanged rebuild applies every unit's stored record", async () => {
     const units = workspace.units;
     expect(units.length).toBeGreaterThan(4);
     expect(await workspace.build()).toEqual(units);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a unit that interns a shape keeps a record, and the next build applies it", async () => {
+  // `make` builds a record literal its own lowering interns: the shape table
+  // grows under the unit, which a record carries (type-mapper.ts
+  // journalTable).
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "type Point = { x: number; y: number };",
+      "function make(n: number): Point {",
+      "  return { x: n, y: n * 2 };",
+      "}",
+      "console.log(make(2).x, make(2).y);",
+      "",
+    ].join("\n"),
+  });
+  try {
+    expect(await workspace.build()).toEqual([]);
+    expect(has(workspace.units, "make")).toBe(true);
+    expect(has(await workspace.build(), "make")).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a unit that adds a key-order note keeps a record, and the next build applies it", async () => {
+  // `twice` builds a literal of a shape the init already interned: only the
+  // key-order notes grow under the unit (key-order-witness.ts journalTable).
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "type Point = { x: number; y: number };",
+      "const start: Point = { x: 1, y: 2 };",
+      "function twice(p: Point): Point {",
+      "  return { x: p.x * 2, y: p.y * 2 };",
+      "}",
+      "console.log(start.x, twice(start).x);",
+      "",
+    ].join("\n"),
+  });
+  try {
+    expect(await workspace.build()).toEqual([]);
+    expect(has(workspace.units, "twice")).toBe(true);
+    expect(has(await workspace.build(), "twice")).toBe(true);
   } finally {
     await workspace.dispose();
   }
@@ -412,6 +554,110 @@ test("an import of an anonymous default export lowers again when its signature c
     const applied = await workspace.build();
     expect(has(applied, "grown")).toBe(false);
     expect(has(applied, "next")).toBe(true);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a stored unit holds no condition --define decided, so a computed write added elsewhere finds it right", async () => {
+  // `mode` spells DEV and nothing of the environment, so its stored record
+  // applies after `setup` gains a write through a computed name. A build
+  // that reuses units therefore leaves the condition to the run: the record
+  // holds both branches, where a build without reuse keeps only the one the
+  // define selects until the program has such a write.
+  const workspace = await Workspace.create({
+    "flags.ts": 'export const DEV = process.env.NODE_ENV !== "production";\n',
+    "check.ts": [
+      'import { DEV } from "./flags.js";',
+      "export function mode(): string {",
+      "  if (DEV) {",
+      '    return "development branch";',
+      "  }",
+      '  return "production branch";',
+      "}",
+      "",
+    ].join("\n"),
+    "setup.ts": [
+      "export function setup(name: string): void {",
+      "  console.log(name);",
+      "}",
+      "",
+    ].join("\n"),
+    "main.ts": [
+      'import { mode } from "./check.js";',
+      'import { setup } from "./setup.js";',
+      'setup(["NODE", "ENV"].join("_"));',
+      "console.log(mode());",
+      "",
+    ].join("\n"),
+  });
+  workspace.define = { "process.env.NODE_ENV": "production" };
+  const development = '"development branch"';
+  try {
+    await workspace.both();
+    const before = await workspace.both();
+    expect(has(before.applied, "mode")).toBe(true);
+    expect(before.reused).toContain(development);
+    expect(before.plain).not.toContain(development);
+    await workspace.edit("setup.ts", "console.log(name);", 'process.env[name] = "development";');
+    // build() holds the IR with reuse to the IR without it, which now
+    // evaluates the condition too.
+    const applied = await workspace.build();
+    expect(has(applied, "mode")).toBe(true);
+    expect(has(applied, "setup")).toBe(false);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("the changed-unit set names what a build lowered, and nothing it applied", async () => {
+  const workspace = await Workspace.create(MODULES);
+  try {
+    await workspace.build();
+    const unchangedApplied = await workspace.build();
+    expect(unchangedApplied.length).toBeGreaterThan(4);
+    // An unchanged rebuild still lowers the units no record covers; it never
+    // lowers a unit that applied.
+    const unchangedLowered = workspace.buildChanged;
+    expect(unchangedLowered.every((unit) => !unchangedApplied.includes(unit))).toBe(true);
+
+    await workspace.edit("shapes.ts", "return width * height;", "return width * height + 1;");
+    const applied = await workspace.build();
+    const changed = workspace.buildChanged;
+    expect(changed.length).toBeGreaterThan(0);
+    // What lowered and what applied are disjoint and sorted.
+    expect(changed.every((unit) => !applied.includes(unit))).toBe(true);
+    expect([...changed].sort()).toEqual(changed);
+    // The edit lowers more than the unchanged rebuild did: its file's units
+    // join the unrecorded ones.
+    expect(changed.length).toBeGreaterThan(unchangedLowered.length);
+  } finally {
+    await workspace.dispose();
+  }
+}, 300_000);
+
+test("a class expression's lowered units join the changed set", async () => {
+  // The constructor and methods of a class expression are registered while
+  // lowering and own no source file: they must still be named when a build
+  // lowers their bodies again.
+  const workspace = await Workspace.create({
+    "main.ts": [
+      "const Box = class {",
+      "  value(): number {",
+      "    return 1;",
+      "  }",
+      "};",
+      "console.log(new Box().value());",
+      "",
+    ].join("\n"),
+  });
+  try {
+    await workspace.build();
+    await workspace.build();
+    await workspace.edit("main.ts", "return 1;", "return 2;");
+    await workspace.build();
+    const changed = workspace.buildChanged;
+    expect(changed.some((unit) => unit.includes(".value"))).toBe(true);
   } finally {
     await workspace.dispose();
   }

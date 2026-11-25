@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/destructure-default-writes-later-position.ts"
+ ],
+ "diags": []
+}

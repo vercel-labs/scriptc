@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-static-reflection-stays-current.ts"
+ ],
+ "diags": []
+}

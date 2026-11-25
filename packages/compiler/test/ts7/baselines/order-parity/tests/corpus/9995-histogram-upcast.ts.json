@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9995-histogram-upcast.ts"
+ ],
+ "diags": []
+}

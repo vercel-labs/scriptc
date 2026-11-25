@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8828-enum-object-js-consumer/schema.js",
+  "<repo>/tests/corpus/8828-enum-object-js-consumer/main.ts"
+ ],
+ "diags": []
+}

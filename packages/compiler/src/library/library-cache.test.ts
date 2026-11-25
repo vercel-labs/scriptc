@@ -8,7 +8,7 @@ import {
   trackedAccessibleEntries,
   trackedDirectoryExists,
   trackedFileExists,
-  trackedReadFile,
+  trackedReadSource,
 } from "../frontend/input-tracker.js";
 import {
   publishEarlyLibraryCache,
@@ -72,7 +72,7 @@ test("early library cache restores generated artifacts and metadata", async () =
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   const native = {
@@ -88,7 +88,10 @@ test("early library cache restores generated artifacts and metadata", async () =
     x509: false,
     copying: false,
     textDecoderLegacy: false,
+    bigintBytes: false,
+    mutableBuffers: false,
     dynInvoke: false,
+    fnMemberProps: false,
   };
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
@@ -122,7 +125,7 @@ test("early library cache publishes after creating a fresh output directory", as
     trackedAccessibleEntries(f.options.outDir);
     trackedDirectoryExists(outDir);
     trackedAccessibleEntries(outDir);
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
   });
 
   await mkdir(outDir);
@@ -142,7 +145,10 @@ test("early library cache publishes after creating a fresh output directory", as
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -155,7 +161,7 @@ test("early library cache publishes after creating a fresh output directory", as
 test("early library cache hits refresh every payload's LRU time", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -173,7 +179,10 @@ test("early library cache hits refresh every payload's LRU time", async () => {
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -199,7 +208,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
   const f = await fixture();
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
@@ -219,7 +228,10 @@ test("early library cache misses on source edits and newly-resolved candidates",
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -229,7 +241,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
   await writeFile(f.llvmPath, "; generated llvm v2\n");
   const editedTracker = new FrontendInputTracker();
   editedTracker.run(() => {
-    trackedReadFile(f.source);
+    trackedReadSource(f.source);
     trackedFileExists(f.missing);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
@@ -249,7 +261,10 @@ test("early library cache misses on source edits and newly-resolved candidates",
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: editedTracker.snapshot(),
   });
@@ -281,7 +296,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -299,7 +314,10 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -345,7 +363,7 @@ test("semantic library cache refuses token and directive edits", async () => {
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -363,7 +381,10 @@ test("semantic library cache refuses token and directive edits", async () => {
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -394,7 +415,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
     entry: "__main",
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -412,7 +433,10 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
@@ -433,7 +457,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
     ].join(separator);
     await writeFile(f.source, sourceBefore);
     const tracker = new FrontendInputTracker();
-    tracker.run(() => trackedReadFile(f.source));
+    tracker.run(() => trackedReadSource(f.source));
     await publishEarlyLibraryCache(f.root, f.options, {
       llvmPath: f.llvmPath,
       irPath: f.irPath,
@@ -451,7 +475,10 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
         x509: false,
         copying: false,
         textDecoderLegacy: false,
+        bigintBytes: false,
+        mutableBuffers: false,
         dynInvoke: false,
+        fnMemberProps: false,
       },
       frontend: tracker.snapshot(),
       semantic: {
@@ -493,8 +520,8 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
   } satisfies IrModule;
   const tracker = new FrontendInputTracker();
   tracker.run(() => {
-    trackedReadFile(f.source);
-    trackedReadFile(imported);
+    trackedReadSource(f.source);
+    trackedReadSource(imported);
   });
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
@@ -513,7 +540,10 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
     semantic: {
@@ -535,7 +565,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
 test("early library cache is separated by the host Node version", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -553,7 +583,10 @@ test("early library cache is separated by the host Node version", async () => {
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -567,7 +600,7 @@ test("early library cache is separated by the host Node version", async () => {
 test("early library cache rejects corrupted artifacts and metadata", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   await publishEarlyLibraryCache(f.root, f.options, {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -585,7 +618,10 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   });
@@ -602,7 +638,7 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
 test("disabled early library cache performs no reads or writes", async () => {
   const f = await fixture();
   const tracker = new FrontendInputTracker();
-  tracker.run(() => trackedReadFile(f.source));
+  tracker.run(() => trackedReadSource(f.source));
   const publish = {
     llvmPath: f.llvmPath,
     irPath: f.irPath,
@@ -620,11 +656,75 @@ test("disabled early library cache performs no reads or writes", async () => {
       x509: false,
       copying: false,
       textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
       dynInvoke: false,
+      fnMemberProps: false,
     },
     frontend: tracker.snapshot(),
   };
   await publishEarlyLibraryCache(null, f.options, publish);
   await expect(readdir(f.root)).rejects.toThrow();
   expect(await readEarlyLibraryCache(null, f.options, null)).toBeNull();
+});
+
+test("a dev library reuses cached LLVM only when an edit keeps source positions", async () => {
+  const f = await fixture();
+  const sourceBefore = "export function value(): number { return 1; }\n";
+  await writeFile(f.source, sourceBefore);
+  const returnStart = sourceBefore.indexOf("return");
+  const semanticMod = {
+    irVersion: 17,
+    sourceFile: f.source,
+    functions: [
+      {
+        name: "__main",
+        params: [],
+        returnType: { kind: "void" },
+        locals: [],
+        body: [],
+        loc: { file: f.source, start: returnStart, end: returnStart + 6 },
+      },
+    ],
+    entry: "__main",
+  } satisfies IrModule;
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadSource(f.source));
+  await publishEarlyLibraryCache(f.root, f.options, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    sidecarPath: f.sidecarPath,
+    native: {
+      backend: "llvm",
+      regex: false,
+      assert: false,
+      inspect: false,
+      symbol: false,
+      bigint: false,
+      searchParams: false,
+      emitter: false,
+      zlib: false,
+      x509: false,
+      copying: false,
+      textDecoderLegacy: false,
+      bigintBytes: false,
+      mutableBuffers: false,
+      dynInvoke: false,
+      fnMemberProps: false,
+    },
+    frontend: tracker.snapshot(),
+    semantic: { mod: semanticMod, sources: new Map([[f.source, sourceBefore]]) },
+  });
+
+  // A comment whose text changes on the same line leaves every token where
+  // it was, so the cached translation unit's debugger locations still hold.
+  await writeFile(f.source, "export function value(): number { return 1; } // note\n");
+  const kept = await readSemanticLibraryCache(f.root, f.options, null, true);
+  expect(kept).not.toBeNull();
+  expect(kept?.translationUnit).toBe("; generated llvm\n");
+
+  // A comment inserted above the line moves every token down a line: the
+  // cached debugger locations and stack-frame line numbers are stale.
+  await writeFile(f.source, `// inserted comment\n${sourceBefore}`);
+  expect(await readSemanticLibraryCache(f.root, f.options, null, true)).toBeNull();
 });

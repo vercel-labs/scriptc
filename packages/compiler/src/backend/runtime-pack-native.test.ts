@@ -79,8 +79,13 @@ test("a missing native helper keeps the reinstall hint", () => {
 });
 
 /** A runtime pack with one runtime object and a license, and a store that
- * keeps entries in memory. */
-async function packFixture() {
+ * keeps entries in memory. `abi` is the identity its manifest declares. */
+async function packFixture(
+  abi: { version: number; marker: string } = {
+    version: RUNTIME_ABI_VERSION,
+    marker: RUNTIME_ABI_MARKER,
+  },
+) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-runtime-pack-store-"));
   dirs.push(root);
   const target = MACOS_ARM64_TARGET;
@@ -119,7 +124,7 @@ async function packFixture() {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
+    runtime_abi: abi,
     compiler: { command: "clang", identity: "fixture clang", target: target.llvmTriple },
     macros: {
       executable: [],
@@ -180,6 +185,53 @@ test("a stored selection answers while the pack's files keep their identities", 
   // Writing the manifest again, with the same text, gives it a new identity.
   writeFileSync(join(f.root, "runtime-pack.json"), f.manifestText);
   expect(f.select().selected.systemLibraries).toEqual(["System"]);
+});
+
+test("a stored selection from another runtime ABI is validated again instead of reused", async () => {
+  // The pack's files do not change when the compiler is upgraded, so only
+  // the ABI identity separates the two builds' selections. A selection the
+  // older compiler recorded must not answer the newer one, which then reads
+  // the manifest and refuses it.
+  const abi = { version: 0, marker: "scr_runtime_abi_v0" };
+  const f = await packFixture(abi);
+  const store: RuntimePackStore = {
+    read: (key) => f.entries.get(key) ?? null,
+    write: (key, text) => void f.entries.set(key, text),
+  };
+  const select = (pack: typeof selectNativeRuntimePack) =>
+    pack(
+      f.root,
+      MACOS_ARM64_TARGET,
+      compilerReleaseVersion(),
+      {} as NativeLinkFeatures,
+      "release",
+      "executable",
+      store,
+    );
+  vi.resetModules();
+  vi.doMock("./runtime-abi.js", () => ({
+    RUNTIME_ABI_VERSION: abi.version,
+    RUNTIME_ABI_MARKER: abi.marker,
+    EXTERNAL_OBJECT_ABI_STABILITY: "experimental",
+  }));
+  try {
+    const older = await import("./runtime-pack-native.js");
+    expect(select(older.selectNativeRuntimePack).manifest).toBeDefined();
+  } finally {
+    vi.doUnmock("./runtime-abi.js");
+    vi.resetModules();
+  }
+  expect(f.entries.size).toBe(1);
+  const current = await import("./runtime-pack-native.js");
+  let error: unknown;
+  try {
+    select(current.selectNativeRuntimePack);
+  } catch (caught) {
+    error = caught;
+  }
+  // The fresh module's own RuntimePackError class, not this instance's.
+  expect(error).toBeInstanceOf(Error);
+  expect((error as { code?: string }).code).toBe("invalid");
 });
 
 test.each(["replaced", "rewritten in place"])(
@@ -408,6 +460,81 @@ test("writing the record beside the pack keeps the entries another build wrote",
     record.artifacts.find((artifact: { path: string }) => artifact.path === other.path),
   ).toEqual(other);
   expect(readdirSync(f.root).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+});
+
+test("a speed build of a pack without a speed flavor says so, once per pack", async () => {
+  const f = await packFixture();
+  const write = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    const select = () =>
+      selectNativeRuntimePack(
+        f.root,
+        MACOS_ARM64_TARGET,
+        compilerReleaseVersion(),
+        {} as NativeLinkFeatures,
+        "speed",
+        "executable",
+        emptyStore(),
+      );
+    select();
+    select();
+    // The fixture pack ships release and dev units only, so both selections
+    // link the release objects; the warning is the build's only sign of it,
+    // and one build says it once.
+    const lines = write.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('has no "speed" flavor'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("--optimization=speed");
+    expect(lines[0]).toContain("release runtime objects");
+    expect(lines[0]).toContain("SCRIPTC_LLVM_CODEGEN");
+  } finally {
+    write.mockRestore();
+  }
+});
+
+test("a build that reads a stored selection still says the pack has no speed flavor", async () => {
+  const f = await packFixture();
+  const store: RuntimePackStore = {
+    read: (key) => f.entries.get(key) ?? null,
+    write: (key, text) => void f.entries.set(key, text),
+  };
+  const select = (pack: typeof selectNativeRuntimePack) =>
+    pack(
+      f.root,
+      MACOS_ARM64_TARGET,
+      compilerReleaseVersion(),
+      {} as NativeLinkFeatures,
+      "speed",
+      "executable",
+      store,
+    );
+  const speedLines = (write: { mock: { calls: unknown[][] } }) =>
+    write.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.includes('has no "speed" flavor'));
+  const cold = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    select(selectNativeRuntimePack);
+    expect(speedLines(cold)).toHaveLength(1);
+    expect(f.entries.size).toBe(1);
+  } finally {
+    cold.mockRestore();
+  }
+  // The next build starts with the pack directory unreported and reads the
+  // stored selection instead of the manifest; it links the same release
+  // objects, so it has to say so too.
+  const warm = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  try {
+    vi.resetModules();
+    const fresh = await import("./runtime-pack-native.js");
+    const selection = select(fresh.selectNativeRuntimePack);
+    expect(selection.manifest).toBeUndefined();
+    expect(speedLines(warm)).toHaveLength(1);
+    expect(speedLines(warm)[0]).toContain("--optimization=speed");
+  } finally {
+    warm.mockRestore();
+  }
 });
 
 test("a cache that already trusts the artifacts writes the record beside the pack", async () => {

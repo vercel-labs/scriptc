@@ -41,7 +41,9 @@ import { resultSlotStore } from "./result-slots.js";
  *   builder of a record shape that reaches itself stores into the record
  *   after converting its members, which may be the record itself or an
  *   ancestor when the dynamic value is cyclic: every such record shape in
- *   the target's type closure is mutable;
+ *   the target's type closure is mutable. A conversion of a value that
+ *   holds no object twice (convertsTree) builds each record while only its
+ *   parent refers to it, as a literal does, and marks nothing;
  * - runtime-rooted hierarchies (errors, emitters, streams) are mutable;
  * - library builds disable the refinement.
  *
@@ -69,6 +71,19 @@ const DYNAMIC_BOUNDARY_EXPRS = new Set<string>([
   "jsonStringify",
   "ffiCall",
 ]);
+
+/** Whether a `dynCheck` converts a dynamic value that holds each of its
+ * objects and arrays once and that nothing else refers to: the result of
+ * `JSON.parse` without a reviver, converted where the call produces it. The
+ * parser allocates every member anew, and no code runs between the parse
+ * and the conversion that could store into the value, so the records the
+ * conversion builds form a tree: each is referenced by its parent alone
+ * until the whole value is returned. A parsed value read back from a
+ * binding is not such an operand: a dynamic store can have made it cyclic
+ * in between. */
+export function convertsTree(check: IrExpr & { kind: "dynCheck" }): boolean {
+  return check.value.kind === "libCall" && check.value.fn === "json.parse";
+}
 
 export function fieldKey(unit: string, field: string): string {
   return `${unit}\0${field}`;
@@ -288,7 +303,7 @@ export function computeCycleMutability(
       }
       switch (e.kind) {
         case "dynCheck":
-          checkInto(e.type);
+          if (!convertsTree(e)) checkInto(e.type);
           break;
         case "fieldIncDec":
           result.fields.add(fieldKey(unitOfClass(e.className), e.field));

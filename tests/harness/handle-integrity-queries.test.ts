@@ -15,7 +15,9 @@ const execFileAsync = promisify(execFile);
 // Object.seal do not change it and Object.freeze refuses, so any answer
 // would be invented where Node answers true/false. These queries answered
 // false/true for every handle, a silently wrong result. Object.isFrozen
-// already refused for the unmodeled kinds.
+// already refused for the unmodeled kinds. Reflect.isExtensible is the same
+// query: it answered from the entries that give every handle false until it
+// took the handle-aware one.
 test("integrity queries refuse an unmodeled native handle", async () => {
   const outDir = mkdtempSync(join(tmpdir(), "scriptc-integrity-queries-"));
   const entry = join(outDir, "main.mjs");
@@ -24,6 +26,7 @@ test("integrity queries refuse an unmodeled native handle", async () => {
     `
 function isExtensible(value) { return Object.isExtensible(value); }
 function isSealed(value) { return Object.isSealed(value); }
+function reflectIsExtensible(value) { return Reflect.isExtensible(value); }
 function attempt(label, run) {
   try { process.stdout.write(label + " " + run() + "\\n"); }
   catch (error) { process.stdout.write(label + " " + error.message + "\\n"); }
@@ -32,6 +35,8 @@ attempt("date extensible", () => Object.isExtensible(new Date(0)));
 attempt("date sealed", () => Object.isSealed(new Date(0)));
 attempt("regexp extensible", () => isExtensible(/a/));
 attempt("regexp sealed", () => isSealed(/a/));
+attempt("reflect date extensible", () => Reflect.isExtensible(new Date(0)));
+attempt("reflect regexp extensible", () => reflectIsExtensible(/a/));
 attempt("buffer extensible", () => Object.isExtensible(new ArrayBuffer(1)));
 attempt("weakmap extensible", () => Object.isExtensible(new WeakMap()));
 attempt("weakmap sealed", () => Object.isSealed(new WeakMap()));
@@ -65,6 +70,8 @@ attempt("instance sealed", () => Object.isSealed(new Point()));
       `date sealed ${refused("Object.isSealed", "Date")}`,
       `regexp extensible ${refused("Object.isExtensible", "RegExp")}`,
       `regexp sealed ${refused("Object.isSealed", "RegExp")}`,
+      `reflect date extensible ${refused("Object.isExtensible", "Date")}`,
+      `reflect regexp extensible ${refused("Object.isExtensible", "RegExp")}`,
       `buffer extensible ${refused("Object.isExtensible", "ArrayBuffer")}`,
       `weakmap extensible ${refused("Object.isExtensible", "WeakMap")}`,
       `weakmap sealed ${refused("Object.isSealed", "WeakMap")}`,

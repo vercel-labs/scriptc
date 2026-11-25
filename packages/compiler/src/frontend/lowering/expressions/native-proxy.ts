@@ -45,7 +45,7 @@ export function lowerNativeProxy(lowerer: Lowerer, expr: ts.NewExpression): IrEx
       }
     }
   }
-  const inputs = args.map((arg) => {
+  const inputs = args.map((arg, index) => {
     let value = ts.isObjectLiteralExpression(arg)
       ? lowerer.lowerExprExpecting(arg, DYN)
       : lowerer.lowerExpr(arg);
@@ -57,6 +57,34 @@ export function lowerNativeProxy(lowerer: Lowerer, expr: ts.NewExpression): IrEx
         arg,
         "Proxy targets and handlers outside checked-native object storage",
       );
+    }
+    // The runtime's Proxy constructor takes an untyped object as the handler,
+    // and an untyped object, a function or a plain record as the target. A
+    // handler that reaches it as a reference to typed storage (dynFrom's
+    // typed capsule: a record boxed with liveRef, or any class instance), and
+    // a target that is a class instance or an array, are refused every time
+    // the construction runs, so they are refused here. Other typed targets
+    // (a union of records, say) are decided by the value at run time.
+    const typed = value.kind === "dynFrom" ? value.value.type : null;
+    if (typed !== null) {
+      if (
+        index === 1 &&
+        ((value.kind === "dynFrom" && value.liveRef === true && typed.kind === "record") ||
+          typed.kind === "object")
+      )
+        lowerer.unsupported(
+          "SC1090",
+          arg,
+          "Proxy handlers whose traps have typed signatures",
+          "declare each trap's parameters and result as 'any', for example get(target: any, key: string | symbol): any, so the handler is built as an untyped object",
+        );
+      if (index === 0 && (typed.kind === "object" || typed.kind === "array"))
+        lowerer.unsupported(
+          "SC1090",
+          arg,
+          "a Proxy over a class instance or an array",
+          "proxy a plain object: an object literal, or a value typed 'any'",
+        );
     }
     return value;
   });

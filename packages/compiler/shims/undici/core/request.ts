@@ -5,15 +5,21 @@ import { channels } from "./diagnostics.ts";
 import { InvalidArgumentError, NotSupportedError } from "./errors.ts";
 import type { DispatchHandlers, DispatchOptions, Profile } from "./types.ts";
 
-const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
-const headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
+export const tokenRegExp = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+export const headerCharRegex = /[^\t\x20-\x7e\x80-\xff]/;
 const invalidPathRegex = /[^!-ÿ]/;
 
 export class Request {
   origin: string;
   method: string;
   path: string;
-  body: Buffer | null;
+  /** Null until the constructor derives it; the initializer is what keeps
+   * the field definitely assigned when a project disables
+   * strictPropertyInitialization. */
+  /** Null until the constructor derives it; the initializer is what keeps
+   * the field definitely assigned when a project disables
+   * strictPropertyInitialization. */
+  body: Buffer | null = null;
   /** Header name/value pairs in insertion order (host and content-length
    * are consumed into their own fields, like undici). */
   headerPairs: string[];
@@ -23,6 +29,7 @@ export class Request {
   completed: boolean;
   aborted: boolean;
   idempotent: boolean;
+  framedAsNode: boolean;
   blocking: boolean;
   reset: boolean | null;
   headersTimeout: number | null;
@@ -87,15 +94,20 @@ export class Request {
       this.body = null;
     } else if (typeof body === "string") {
       this.body = body.length > 0 ? Buffer.from(body) : null;
-    } else {
+    } else if (body instanceof Uint8Array) {
       this.body =
         body.byteLength > 0 ? Buffer.from(body.buffer, body.byteOffset, body.byteLength) : null;
+    } else {
+      throw new NotSupportedError(
+        "scriptc's undici client sends string and byte bodies (string, Buffer, Uint8Array); a stream, an iterable, a Blob or a FormData body is not supported yet",
+      );
     }
 
     this.completed = false;
     this.profile = profile;
     this.aborted = false;
     this.idempotent = opts.idempotent ?? (method === "HEAD" || method === "GET");
+    this.framedAsNode = opts.__framedAsNode === true;
     this.blocking = opts.blocking ?? (profile.major >= 7 ? method !== "HEAD" : false);
     this.reset = opts.reset ?? null;
     this.host = null;

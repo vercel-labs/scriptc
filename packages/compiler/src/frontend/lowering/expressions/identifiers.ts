@@ -1,14 +1,25 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { isJsIteratorGlobal, iteratorConstructorExpr } from "../iterator-prototype.js";
 import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
+import {
+  NODE_GLOBALS_WITHOUT_NATIVE,
+  hostGlobalCallTarget,
+  hostGlobalNameOfIdentifier,
+} from "../host-globals.js";
+import { hostGlobalValue } from "../host-global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
+import { cryptoConstantsValue, zlibConstantsValue } from "../builtins/constants.js";
+import { legacyUrlClassValue } from "../builtins/url.js";
+import { captureRejectionSymbolValue } from "../lower-event-emitter.js";
 import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
-import { InternalCompilerError } from "../../../errors.js";
+import { globalFunctionValue } from "../global-function-values.js";
 import * as posix from "node:path/posix";
 import { type Lowerer, PoisonError } from "../lowerer.js";
 import {
+  BIGINT_BYTES_NAMES,
   BOOL,
   BYTES_ELEMENT_NAME,
   DATE_T,
@@ -26,15 +37,27 @@ import {
   recordTextCodecClass,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { isNodeModuleHandle, lowerNodeModuleIdentifier } from "../lower-node-module.js";
+import { builtinImportBindingByName } from "../builtins/module-bindings.js";
+import { createRequireLoaderValue } from "../builtins/module-resolution.js";
 import { lowerCjsExportsObjectValue } from "../cjs-exports-object.js";
 import {
+  cjsAbsentMemberValue,
+  cjsDestructuredModuleBindingOf,
+  cjsExportsObjectValue,
+  cjsModuleLacksExport,
+  cjsNestedExportReplacementOf,
   splitRequireBindingOfIdent,
   wholeExportSymbolOfModule,
   wholeExportValue,
+  wholeExportValueOfModuleBinding,
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
-import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import {
+  argumentsOwner,
+  forwardedOnlyTupleValue,
+  typedArgumentsCandidate,
+} from "../typed-arguments.js";
 import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
@@ -47,31 +70,40 @@ import { builtinClassAliasOwnsNoSlot, runtimeClassValueOf } from "../builtins/cl
 import {
   cjsAccessorCall,
   cjsAccessorSnapshotOf,
-  primitiveCtorClosure,
+  cjsImportedDataSnapshotOf,
+  isArrayIterationCallback,
+  primitiveConversionCallback,
+  primitiveCtorValue,
   runtimeOptionalElementKey,
   runtimeOptionalUseOf,
 } from "../lower-exprs.js";
 import { runtimeOptionalReceiverRead } from "./narrowing.js";
+import { requiredLibraryCallbackRead } from "./library-callbacks.js";
 import { iterableUnionOf } from "../iterable-values.js";
 import { builtinGlobalValueAt } from "./property-access.js";
 import { varRef } from "../../../ir/build.js";
 import {
+  ambientTypesOnlyGlobalSymbolOf,
   ambientUndefReadType,
   ambientUndefinedFnSymbolOf,
   ambientUndefinedVarSymbolOf,
   contextualUndefReadType,
   fenceEarlyAliasUse,
-  isTemporalGlobalRoot,
+  isNodeUndefinedGlobalRoot,
   cjsNamespaceImportDep,
+  cjsNamespaceMemberSnapshotOf,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
+import { lowerFunduleMemberRead } from "../lower-fundule.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "../global-object-writes.js";
 import {
   blockedBindingUseDiag,
   unsupportedDiag,
   unsupportedPackageValueDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { dirname } from "node:path";
+import { packageDirOf } from "../../../node-islands/origin.js";
 import { funcTypeFromParamShapes } from "../call-signatures.js";
 import { threadsImportOf } from "../../threads-import.js";
 import { nodeApiBindingOf } from "../../node-api-import.js";
@@ -83,20 +115,26 @@ import {
   builtinFenceHintOf,
   builtinModuleConstOf,
   builtinModuleFnOf,
-  builtinModulesArrayLit,
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
+import {
+  builtinConstantsEsmNamespace,
+  builtinConstantsObject,
+  pathModuleValue,
+} from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
+import { unloweredGlobalValue, unloweredModuleMemberValue } from "../node-value-reads.js";
 import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
 import { lowerGlobalValue } from "../lower-global-value.js";
-import { fenceEnumObjectValue } from "../lower-enums.js";
+import { lowerEnumObjectValue } from "../enum-objects.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
 import { envSnapshotHelper, heldEnvValueType } from "../builtins/environment.js";
+import { processDataMemberValue } from "../builtins/process.js";
+import { adoptingResolveUse } from "../promise-resolution.js";
 
 /** Whether this identifier is the RECEIVER of a member access — the dotted
  * or bracketed `held.X` / `held[k]`, read or written, through any erasure
@@ -138,6 +176,26 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
   }
 
+  // A member read through a CommonJS namespace binding for a member the
+  // module's own functions reassign: Node's namespace object kept the value
+  // the module finished evaluating with (lower-modules.ts,
+  // registerCjsNamespaceSnapshotGlobals), so the read is the snapshot slot.
+  {
+    const parent = expr.parent;
+    if (parent !== undefined && ts.isPropertyAccessExpression(parent) && parent.name === expr) {
+      const snapshot = cjsNamespaceMemberSnapshotOf(lowerer, parent);
+      if (snapshot) return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc };
+    }
+  }
+
+  // A createRequire loader as a VALUE (not the callee of a lowered call or
+  // a resolve read, which their own lowerings own): a run-time require
+  // function over the runtime resolver. Checked before the node:module
+  // identifier fold, which would otherwise read the destructured factory
+  // binding as the function value that refuses when it is called.
+  const createRequireValue = createRequireLoaderValue(lowerer, expr, loc);
+  if (createRequireValue !== null) return createRequireValue;
+
   const moduleValue = lowerNodeModuleIdentifier(lowerer, expr);
   if (moduleValue) return moduleValue;
   if (expr.text === "exports") {
@@ -152,8 +210,33 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // type and lowerLambda declared the local.
   if (expr.text === "arguments") {
     const binding = captureContextArguments(lowerer.fnStack);
-    if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
-      throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
+    // A forwarded-only `arguments` read as a value after all (a call path
+    // that takes its spread operand as a list): the tuple is built here
+    // from its slots (typed-arguments.ts forwardedOnlyTupleValue).
+    const forwardedSlots = binding ? lowerer.ctx.pureTuples.get(binding.id) : undefined;
+    if (binding && forwardedSlots) {
+      // A position that may be undefined, or holds an untyped value, may
+      // also be absent at the call: the native signature always passes it,
+      // so the tuple built from the slots would hand the callee an argument
+      // the caller did not pass (a rest parameter one element longer). The
+      // rest tuple with optional positions is refused the same way
+      // (forwardedOnlyTupleValue), and so is `arguments.length`
+      // (typedArgumentsArity).
+      if (
+        forwardedSlots.some(
+          (slot) =>
+            slot.type.kind === "dyn" ||
+            (slot.type.kind === "union" &&
+              lowerer.armTag(slot.type.unionId, { kind: "undefinedT" }) >= 0),
+        )
+      ) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          "'arguments' with positions that may be omitted, used other than forwarded into a call of a program function with one signature (its length varies per call, so it has no tuple value to pass on)",
+        );
+      }
+      return lowerer.tupleOfSlots(forwardedSlots, binding.type, expr, loc);
     }
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
     const owner = argumentsOwner(expr);
@@ -164,6 +247,39 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature)",
       );
     }
+  }
+  // A read of a Node 24 global the native runtime does not implement
+  // (WebSocket, FormData, …) answers the constructor Node has
+  // (host-global-values.ts); constructing or calling it is the use that
+  // refuses (SC2020, host-global). Imports, locals and program
+  // declarations of the same name are the program's own bindings and
+  // never reach here.
+  {
+    const hostGlobal = hostGlobalNameOfIdentifier(lowerer, expr);
+    if (hostGlobal !== null) {
+      if (hostGlobalCallTarget(expr)) lowerer.hostGlobalFence(hostGlobal, expr);
+      return hostGlobalValue(lowerer, hostGlobal, expr);
+    }
+  }
+  // A global only a types-only package declares (`XRWebGLLayer` from
+  // @types/webxr): Node has no such value, so the read is an ordinary
+  // global lookup — the catchable ReferenceError "<name> is not defined"
+  // (typeof answers "undefined" in static-typeof.ts). It is never an
+  // import: the declaration's package ships no implementation.
+  if (ambientTypesOnlyGlobalSymbolOf(lowerer, expr) !== null) {
+    // A program that installs the name on the global object answers the
+    // installed value, exactly as an undeclared or erased global does
+    // (global-object-writes.ts): the read is the global object's own.
+    if (programMayWriteGlobalName(lowerer, expr.text, expr))
+      return {
+        kind: "libCall",
+        fn: "global.bindingRead",
+        args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    const t = ambientUndefReadType(lowerer, expr) ?? F64;
+    return nsUndefRead(lowerer, expr.text, expr, t);
   }
   // A compiler-projected adapter as a VALUE: the adapter has no
   // runtime function object (its calls rewrite directly) — call it
@@ -185,6 +301,15 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         `a promisified builtin as a value (call '${expr.text}' directly)`,
       );
     }
+    if (projection?.kind === "client-function") {
+      // The client-function lowering works per call site (the module's
+      // protocol and secure defaults); there is no function object to read.
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `an http client function alias as an escaping value (call '${expr.text}' directly)`,
+      );
+    }
     if (projection?.kind === "builtin-function") {
       if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         const callable = lowerer.lowerBuiltinCallableValue(
@@ -201,7 +326,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
     // `EventEmitter`, `Readable` or `TypeError` (or a const alias of
     // one) as a value in a TypeScript file: the runtime class's class
-    // object. JavaScript files keep the identity token.
+    // object. JavaScript files read the runtime's untyped constructor or
+    // the function value their own rule answers (node-value-reads.ts).
     if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) {
       const runtimeClass = runtimeClassValueOf(lowerer, expr);
       if (runtimeClass) return lowerer.classValueRef(runtimeClass, expr);
@@ -216,10 +342,24 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       );
     }
   }
+  // A forwarded-only rest tuple read as a value after all.
+  const forwardedTuple = forwardedOnlyTupleValue(lowerer, expr, loc);
+  if (forwardedTuple) return forwardedTuple;
   // Union-typed bindings read through tsc's control-flow narrowing:
   // when the checker types this USE as a single arm, maybeNarrow
   // bridges the tagged representation with a unionNarrow.
   const local = lowerer.resolveLocal(expr);
+  // The resolve parameter of a typed promise's executor, at a use that gives
+  // it a value with a promise arm: the function that adopts that arm.
+  if (local && lowerer.adoptingResolves.size > 0) {
+    const adopting = adoptingResolveUse(lowerer, expr, {
+      kind: "varRef",
+      localId: local.id,
+      type: local.type,
+      loc,
+    });
+    if (adopting) return adopting;
+  }
   // A BARE use of a value HELD from process.env (`{ ...env }`, Object.keys,
   // an argument, a return) reads the environment as it is HERE: Node's hold
   // IS the environment object, so its contents at use time are the live
@@ -311,6 +451,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           lowerer.armTag(local.type.unionId, UNDEFINED_T) >= 0
         )
           return { kind: "varRef", localId: local.id, type: local.type, loc };
+        if (use.kind !== "call")
+          return { kind: "varRef", localId: local.id, type: local.type, loc };
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -340,6 +482,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         }
         return runtimeOptionalReceiverRead(lowerer, expr, local, null, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, local, loc);
+      if (callback) return callback;
       if (runtimeOptionalObjectWalkerArg(lowerer, expr)) {
         const narrowed = lowerer.mapTypeOf(lowerer.typeOf(expr));
         if (local.type.kind === "union" && narrowed) {
@@ -361,7 +505,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
-    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+    // A binding whose storage holds a CommonJS Module view reads that view:
+    // the checker's module type is the numeric handle, which cannot hold the
+    // object Node stores.
+    if (
+      local.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
@@ -387,10 +537,21 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     }
     return narrowed;
   }
+  // An EXPORTED member of a function+namespace merge reads as the merged
+  // function object's own property (Node's transform qualifies the bare
+  // reference to `fn.member`), not as a module binding — lower-fundule.ts.
+  {
+    const fundule = lowerFunduleMemberRead(lowerer, expr, loc);
+    if (fundule !== null) return fundule;
+  }
   // `import x = N.y` aliases resolve transparently through globalOf/
   // fnSigOf below; their source-order guards live here (a no-op for
   // every non-import= binding — see lower-namespaces.ts).
   fenceEarlyAliasUse(lowerer, expr, expr);
+  {
+    const snapshot = cjsImportedDataSnapshotOf(lowerer, expr);
+    if (snapshot !== null) return varRef(snapshot.id, snapshot.type, loc);
+  }
   const g = lowerer.globalOf(expr);
   if (g) {
     // A global typed by a class that never REGISTERED (its collection
@@ -456,6 +617,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         const helper = lowerer.narrowedArmHelper(g.type.unionId, narrowed, loc);
         if (helper) return lowerer.checkedNarrowCall(helper, ref, narrowed, loc);
       }
+      const callback = requiredLibraryCallbackRead(lowerer, expr, g, loc);
+      if (callback) return callback;
       const use = runtimeOptionalUseOf(expr);
       // The enclosing logical/conditional expression consumes the union
       // before any member operation runs (`(value ?? fallback).length`).
@@ -478,7 +641,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
-    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
+    if (
+      g.type.kind === "dyn" &&
+      (isJsWidenedBinding(lowerer, expr) || isNodeModuleHandle(lowerer, expr))
+    )
+      return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name
@@ -621,7 +788,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const bi = lowerer.builtinImportOf(expr);
     if (bi) {
       if (bi.module === "worker_threads") {
-        const value = lowerWorkerMetadata(bi.member, loc);
+        const value = lowerWorkerMetadata(lowerer, bi.member, loc);
         if (value) return value;
       }
       // A named import of defaultMaxListeners reads the ES module
@@ -638,6 +805,19 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "read require('events').defaultMaxListeners or EventEmitter.defaultMaxListeners where the value is needed",
         );
       }
+      // events.captureRejectionSymbol is Symbol.for('nodejs.rejection'):
+      // one symbol at every read, so a destructured or named binding holds
+      // the same value the property read answers.
+      if (bi.module === "events" && bi.member === "captureRejectionSymbol") {
+        return captureRejectionSymbolValue(loc);
+      }
+      // node:cluster: a named import reads the same runtime values the
+      // namespace member does (isPrimary/isWorker/isMaster, the policy,
+      // settings/workers/worker).
+      if (bi.module === "cluster") {
+        const value = lowerer.clusterMemberValue(bi.member, loc);
+        if (value) return value;
+      }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);
       // `import { posix, win32 } from "node:path"` as VALUES: the platform
@@ -650,10 +830,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       ) {
         return pathModuleValue(lowerer, `path/${bi.member}`, loc);
       }
-      // module.builtinModules — the baked Node v24 list, a fresh
-      // string[] per read.
+      // module.builtinModules — the baked Node v24 list as Node's one
+      // frozen array (same identity at every read).
       if (bi.module === "module" && bi.member === "builtinModules") {
-        return builtinModulesArrayLit(loc);
+        return lowerer.builtinModulesValue(loc);
       }
       if (bi.module === "http" && bi.member === "METHODS") {
         return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
@@ -673,8 +853,20 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (bi.module === "os" && bi.member === "constants") {
         return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
       }
-      if (bi.module === "fs" && bi.member === "constants")
+      if (bi.module === "module" && bi.member === "constants") {
+        return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
+      }
+      if ((bi.module === "fs" || bi.module === "fs/promises") && bi.member === "constants")
         return { kind: "libCall", fn: "fs.constants", args: [], type: DYN, loc };
+      // `import { constants } from "node:zlib"`: the module's singleton
+      // record (zlibConstantsValue), the same object the property form
+      // answers.
+      if (bi.module === "zlib" && bi.member === "constants")
+        return zlibConstantsValue(lowerer, loc);
+      // `import { constants } from "node:crypto"`: the same singleton the
+      // property form answers.
+      if (bi.module === "crypto" && bi.member === "constants")
+        return cryptoConstantsValue(lowerer, loc);
       // `import { O_RDONLY } from "constants"`: the member of the frozen
       // module object.
       if (bi.module === "constants") {
@@ -700,53 +892,139 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // node:crypto's webcrypto is the WebCrypto global's object.
       if (bi.module === "crypto" && bi.member === "webcrypto")
         return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
-      // JavaScript sources: an otherwise unsupported builtin VALUE is
-      // the same identity-token story as stdlib globals above (the
-      // harness adds worker_threads.Worker to its identity Set).
+      // crypto.fips is getFips() behind a once-per-process DEP0093
+      // deprecation report, which the runtime emits on the read.
+      if (bi.module === "crypto" && bi.member === "fips")
+        return { kind: "libCall", fn: "crypto.fipsGet", args: [], type: F64, loc };
+      // `import { argv, execArgv } from "node:process"`: a data member of
+      // the process module reads what `process.<member>` reads. `env` stays
+      // out: the spelled read answers a snapshot record, and a write through
+      // the import (`env.NAME = value`) must reach the environment.
+      if (bi.module === "process" && bi.member !== "env") {
+        const value = processDataMemberValue(lowerer, bi.member, expr, loc);
+        if (value !== null) return value;
+      }
+      // url.Url is Node's legacy Url constructor (JavaScript sources;
+      // @types/node declares Url as a type only), the class of url.parse()
+      // results.
+      if (bi.module === "url" && bi.member === "Url") return legacyUrlClassValue(loc);
+      // JavaScript sources: a builtin member no lowering above has a value
+      // for reads what Node's own kind of value calls for
+      // (node-value-reads.ts): a function or class is a function value that
+      // refuses when it is called or constructed, so identity flows and
+      // feature tests are Node's (the harness adds worker_threads.Worker to
+      // its identity Set); any other value is refused by name where it is
+      // read. It is never a stand-in the program could observe.
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         // A member that is a global object reads as the global does.
-        const global = globalMemberValue(lowerer, bi, loc);
+        const global = globalMemberValue(lowerer, bi, expr, loc);
         if (global) return global;
         // EventEmitter and the stream classes are the runtime's untyped
         // constructors, so constructor functions can inherit from them.
         const classKind = builtinMemberClassKind(bi.module, bi.member);
         if (classKind !== null) return builtinClassValue(classKind, loc);
-        // A function member is a function value that fences when called.
-        if (builtinModuleFnOf(lowerer, bi.module, bi.member))
+        // A member that is a supported module in its own right
+        // (`import { promises } from "node:dns"`) reads as that module's
+        // namespace, below.
+        if (lowerer.builtinNamespaceModuleOf(expr) === null) {
+          return unloweredModuleMemberValue(
+            lowerer,
+            bi,
+            expr,
+            loc,
+            esmImportBindingKind(lowerer, expr) === "named",
+          );
+        }
+      } else {
+        // util.getCallSites has a direct-call lowering but no function value:
+        // reading it hands back a callable (Node's typeof, identity and
+        // length), and only calling that value refuses, so a module that
+        // stores, compares or re-exports it keeps loading.
+        if (bi.module === "util" && bi.member === "getCallSites")
           return builtinFunctionFenceValue(lowerer, bi, expr, loc);
-        return {
-          kind: "strLit",
-          value: `[builtin ${bi.module}.${bi.member}]`,
-          type: STRING,
-          loc,
-        };
-      }
-      if (builtinModuleFnOf(lowerer, bi.module, bi.member)) {
-        lowerer.unsupported(
-          "SC1090",
+        if (builtinModuleFnOf(lowerer, bi.module, bi.member)) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `library functions as values (call '${expr.text}' directly)`,
+          );
+        }
+        lowerer.noLowering(
+          `${bi.module}.${bi.member}`,
           expr,
-          `library functions as values (call '${expr.text}' directly)`,
+          builtinFenceHintOf(bi.module, bi.member),
+          lowerer.resolveValueSymbol(expr),
         );
       }
-      lowerer.noLowering(
-        `${bi.module}.${bi.member}`,
-        expr,
-        builtinFenceHintOf(bi.module, bi.member),
-        lowerer.resolveValueSymbol(expr),
-      );
     }
   }
   // A builtin namespace import used as a bare VALUE (`const f = fs`):
   // the namespace object has no representation — members lower at
   // their access sites only. The CommonJS namespace binding
   // (`const lib = require("./lib.js")`) gets the same fence.
-  const builtinNamespace = lowerer.builtinNamespaceModuleOf(expr);
-  if (builtinNamespace === "constants") return builtinConstantsObject(lowerer, loc);
-  if (builtinNamespace !== null) {
-    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinNamespace}` };
-    return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc };
+  const builtinShape = lowerer.builtinNamespaceShapeOf(expr);
+  if (builtinShape !== null) {
+    // node:constants has a value on each side of the import: the CommonJS
+    // object a require and a default import bind, and the ES module
+    // namespace an `import * as` binding binds (sorted names plus "default",
+    // null prototype).
+    if (builtinShape.module === "constants")
+      return builtinShape.flavor === "esm"
+        ? builtinConstantsEsmNamespace(lowerer, loc)
+        : builtinConstantsObject(lowerer, loc);
+    const type: IrType = { kind: "moduleNs", moduleId: `builtin:${builtinShape.module}` };
+    // Only the ES module spelling's value is a module namespace OBJECT;
+    // require()/default-import/named-import spellings answer the module's
+    // CommonJS exports object (util.types.isModuleNamespaceObject says so).
+    return {
+      kind: "moduleNsRef",
+      moduleId: type.moduleId,
+      type,
+      loc,
+      ...(builtinShape.flavor === "esm" ? { esmNamespace: true as const } : {}),
+    };
+  }
+  // A binding of a SINGLE-VALUE module used as a bare value: Node's
+  // require answers module.exports, so the read IS that value (the same
+  // answer the split-binding path below gives).
+  {
+    const required = wholeExportValueOfModuleBinding(lowerer, expr);
+    if (required !== null) return required;
   }
   if (lowerer.cjsLocalModuleBindingOf(expr)) {
+    const dep = lowerer.cjsModuleBindingDepOf(expr);
+    // A require binding used as a value IS its exports object: the
+    // runtime's per-module view over the module's export globals, which is
+    // what Node's require answers, so enumeration and member calls through
+    // the value match the module. A module whose whole export is chosen at
+    // run time between statically known tables (React's index.js) has one
+    // slot per table member, so the view answers the branch that ran — the
+    // same object a UMD-style module does not have. A namespace import
+    // keeps its own member fences.
+    const exportsObject = dep !== null ? cjsExportsObjectValue(lowerer, dep, expr) : null;
+    if (exportsObject !== null) return exportsObject;
+    // A module that assigns module.exports inside a function (a UMD
+    // wrapper) exports whatever that statement chose when it ran: the
+    // binding is that value under Node, and the static export table this
+    // build reads does not hold it. The refusal names that cause; "access
+    // its members" would not help.
+    const nested = dep === null ? null : cjsNestedExportReplacementOf(dep);
+    if (dep !== null && nested !== null) {
+      const pkg = packageDirOf(dep.fileName);
+      const line = ts.getLineAndCharacterOfPosition(dep, locOf(nested).start).line + 1;
+      const where =
+        pkg === null
+          ? `line ${line} of its module`
+          : `${posix.relative(pkg.dir, dep.fileName.split("\\").join("/"))}:${line}`;
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `the value of '${expr.text}' (its module assigns module.exports inside a function or under a condition, at ${where}, so what it exports is decided when it runs)`,
+        pkg === null
+          ? "assign module.exports in a top-level statement of the module, or mark the module to run in a Node island"
+          : `run the package in a Node island: --node-island=${pkg.name}, or leave the choice to the build with --node-islands=auto`,
+      );
+    }
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -754,6 +1032,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     );
   }
   if (lowerer.stdlibGlobalFnOf(expr)) {
+    // JavaScript reads the global functions with values as those values
+    // (global-function-values.ts).
+    const canonical = stdlibGlobalNameOf(lowerer, expr);
+    const value =
+      canonical !== null && isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? globalFunctionValue(lowerer, canonical, loc)
+        : null;
+    if (value !== null) return value;
     lowerer.unsupported(
       "SC1090",
       expr,
@@ -794,13 +1080,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   // The primitive constructors as VALUES (`const f = String`, an
   // option table's `type: Boolean` field, `opt.type === Number`): the
-  // interned coercion closure — one synthesized module function per
-  // constructor per program, so every reference is the SAME zero-
-  // capture closure and `===` is JS identity (the type mapping in
-  // type-mapper.ts pins the one concrete signature `(value: string) =>
-  // primitive`; direct calls `String(x)` never reach here — the call
-  // lowering intercepts them with the wider static coercions).
-  const jsPrimitiveCtorSelector = isJsSourceFile(ts.getSourceFileOfNode(expr));
+  // program's one function for the constructor (primitiveCtorClosure),
+  // so every reference is the SAME zero-capture closure and `===` is JS
+  // identity. Direct calls `String(x)` never reach here: the call
+  // lowering intercepts them with the static coercions. The callback of
+  // an array iteration method (`xs.map(Number)`) is the conversion too:
+  // the method only calls it.
   const primitiveName = stdlibGlobalNameOf(lowerer, expr);
   if (
     primitiveName === "String" ||
@@ -808,14 +1093,21 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     primitiveName === "Boolean" ||
     primitiveName === "BigInt"
   ) {
-    return primitiveCtorClosure(lowerer, primitiveName, loc, jsPrimitiveCtorSelector);
+    if (isArrayIterationCallback(lowerer, expr))
+      return primitiveConversionCallback(
+        lowerer,
+        primitiveName,
+        loc,
+        isJsSourceFile(ts.getSourceFileOfNode(expr)),
+      );
+    return primitiveCtorValue(lowerer, primitiveName, loc);
   }
   if (lowerer.isStdlibGlobal(expr, "ArrayBuffer"))
     return { kind: "libCall", fn: "arrayBuffer.constructor", args: [], type: DYN, loc };
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.isStdlibGlobal(expr, "Array"))
     return { kind: "libCall", fn: "dyn.arrayConstructor", args: [], type: DYN, loc };
   if (
-    Object.values(BYTES_ELEMENT_NAME).includes(expr.text) &&
+    (Object.values(BYTES_ELEMENT_NAME).includes(expr.text) || BIGINT_BYTES_NAMES.has(expr.text)) &&
     lowerer.isStdlibGlobal(expr, expr.text)
   ) {
     return {
@@ -841,7 +1133,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   const nativeAlias = stdlibGlobalNameOf(lowerer, expr);
   if (nativeAlias === "Buffer" && expr.text !== "Buffer") {
     // An alias through a cast of globalThis carries the cast's static type,
-    // which the identity token below does not have.
+    // which the Buffer function's value below does not have.
     const aliasSymbol = identifierReadSymbol(lowerer, expr);
     if (aliasSymbol && lowerer.castGlobalAliases.has(aliasSymbol)) {
       lowerer.unsupported(
@@ -851,10 +1143,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "test it in a condition, read its typeof, or call its members",
       );
     }
-    // JavaScript reads the Buffer function's value (builtinGlobalValue).
-    if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
-      return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
-    return { kind: "strLit", value: "[builtin Buffer]", type: STRING, loc };
+    // The alias reads the Buffer function's value (builtinGlobalValue), in
+    // both source languages: a condition over it is true, `typeof` answers
+    // "function", and a value that escapes is the function Node passes.
+    return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
   }
   if (lowerer.isStdlibGlobal(expr, "fetch")) {
     return { kind: "libCall", fn: "fetch.function", args: [], type: DYN, loc };
@@ -866,12 +1158,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // setInterval, URL, ...). Reaching one that no lowering above
   // claimed is SC2020, never an ICE — EXCEPT in JavaScript sources,
   // where a stdlib global taken as a VALUE (never called through this
-  // path — call sites lower earlier) becomes an opaque IDENTITY TOKEN:
-  // an interned string naming the global. Identity flows (the
-  // harness's knownGlobals Set, === comparisons) are exact — one
-  // global, one token; what a token cannot do (be called, answer
-  // typeof "function") meets per-site fences/divergences, and
-  // SEMANTICS.md documents the stance.
+  // path — call sites lower earlier) reads what Node's kind of value
+  // calls for: a function or class is a function value with Node's name
+  // and length that refuses when it is called or constructed, so identity
+  // flows (the harness's knownGlobals Set, === comparisons) and `typeof`
+  // are exact; any other value is refused by name where it is read
+  // (node-value-reads.ts).
   {
     const webStream = lowerWebStreamClassRead(lowerer, expr);
     if (webStream) return webStream;
@@ -881,15 +1173,51 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   }
   {
     const sym = identifierReadSymbol(lowerer, expr);
-    // The temporal global is typed (TS 7's lib slice) but Node 24 does
-    // not define it: the read throws Node's ReferenceError.
-    if (isTemporalGlobalRoot(lowerer, expr, sym)) {
+    // A global the declarations type and Node 24 does not define (the
+    // temporal global, localStorage): the read throws Node's
+    // ReferenceError.
+    if (isNodeUndefinedGlobalRoot(lowerer, expr, sym)) {
       const t =
         ambientUndefReadType(lowerer, expr) ?? contextualUndefReadType(lowerer, expr) ?? F64;
       return nsUndefRead(lowerer, expr.text, expr, t);
     }
-    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis") {
+    // `require` in an ES module: Node defines no `require` binding there, so
+    // the READ throws its catchable ReferenceError "require is not defined"
+    // (probed on Node 24.22.0 for `.ts`, `.mts` and `.mjs` ES modules; the
+    // CommonJS "in ES module scope" suffix belongs to Node's `createRequire`
+    // shim, not to the bare global). The read always throws, so the dummy is
+    // dynamic and never observed.
+    if (
+      expr.text === "require" &&
+      lowerer.isStdlibGlobal(expr, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
+    ) {
+      return {
+        kind: "libCall",
+        fn: "global.undefRead",
+        args: [{ kind: "strLit", value: "require", type: STRING, loc }],
+        type: DYN,
+        loc,
+      };
+    }
+    // A JavaScript binding that names a global and owns no storage (`const
+    // p = process`, `import process from "node:process"`, `var Buffer =
+    // buffer.Buffer`): its member reads resolve through to the global, and
+    // its value is the value the global's own name reads. A TypeScript
+    // binding of this kind is reported at its declaration
+    // (rejectUnresolvedSymbol).
+    const aliasedGlobal =
+      sym !== undefined &&
+      !lowerer.isStdlibSymbol(sym) &&
+      expr.text !== "globalThis" &&
+      isJsSourceFile(ts.getSourceFileOfNode(expr))
+        ? stdlibGlobalNameOf(lowerer, expr)
+        : null;
+    if (lowerer.isStdlibSymbol(sym) || expr.text === "globalThis" || aliasedGlobal !== null) {
       const canonical = stdlibGlobalNameOf(lowerer, expr) ?? expr.text;
+      // %Iterator% in JavaScript: the live constructor (scr_js_iterator.c).
+      if (canonical === "Iterator" && isJsIteratorGlobal(lowerer, expr))
+        return iteratorConstructorExpr(loc);
       // Builtin constructors have real function values in both source
       // languages (TypeScript reads them as dynamic values).
       const builtinValue = builtinGlobalValueAt(
@@ -900,9 +1228,11 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         isJsSourceFile(ts.getSourceFileOfNode(expr)),
       );
       if (builtinValue !== null) return builtinValue;
-      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-        return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
-      }
+      // A JavaScript source reads what Node's kind of value calls for
+      // (node-value-reads.ts): a refusing function value for a function or
+      // class, a named refusal for anything else.
+      if (isJsSourceFile(ts.getSourceFileOfNode(expr)))
+        return unloweredGlobalValue(lowerer, canonical, expr, loc);
       const untyped = tsUntypedGlobalValue(lowerer, expr, canonical, loc);
       if (untyped !== null) return untyped;
       // The families with a WHY: each hint states what makes the
@@ -912,12 +1242,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "Proxy constructor values have no native lowering; use a direct new Proxy with checked-native plain objects",
         Reflect:
           "reflective property access has no static lowering — read and call members directly",
-        Intl: 'native Intl supports Intl.Segmenter with grapheme or word granularity and the composed new Intl.NumberFormat("en-US").format(x), x.toLocaleString("en-US") and x.toLocaleString(); formatter objects, locale negotiation and the other Intl constructors remain unsupported',
+        Intl: 'native Intl supports Intl.NumberFormat and Intl.DateTimeFormat objects with format() (the default locale, "en-US" or "en"), the toLocaleString() forms that construct them, and Intl.Segmenter with grapheme or word granularity; locale negotiation and the other Intl constructors remain unsupported',
         SharedArrayBuffer: "use direct new SharedArrayBuffer(length) for fixed shared storage",
         ArrayBuffer:
           "ArrayBuffer constructor values have no native lowering; use new ArrayBuffer(length) for fixed-length shared storage",
-        WeakRef:
-          "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
       lowerer.noLowering(
@@ -925,13 +1253,33 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         expr,
         globalHints[expr.text],
         sym ?? undefined,
-        expr.text === "WeakRef" || expr.text === "FinalizationRegistry"
+        expr.text === "FinalizationRegistry"
           ? "weak-ref"
           : expr.text === "eval"
             ? "code-from-string"
             : undefined,
       );
     }
+  }
+  // A GLOBAL binding the program declares and TypeScript erases (`declare
+  // var document: T` in a declaration file, `declare const`, or a `declare
+  // global` block) is not a variable Node has: Node resolves the reference
+  // through the global object, exactly as it resolves a name no declaration
+  // binds. The read takes the same checked-dynamic lowering an undeclared
+  // name takes in JavaScript, so a value the program stored on
+  // `globalThis.<name>` before the read is what the read answers (the
+  // checker's declared type is the claim the use site validates it against).
+  // The census gate keeps every declared global the program never writes
+  // there on its static lowering, so a program that does not assign globals
+  // pays nothing (global-object-writes.ts).
+  if (erasedGlobalBindingOf(lowerer, expr) && programMayWriteGlobalName(lowerer, expr.text, expr)) {
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
   }
   // An ambient global nothing defines compiles to exactly what Node does
   // at the access: the catchable ReferenceError "<name> is not defined".
@@ -980,6 +1328,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   {
     const sym = lowerer.resolveValueSymbol(expr);
     let classInfo = sym ? lowerer.classBySymbol.get(sym) : undefined;
+    // A binding the checker models as an ALIAS of the class — an import or
+    // re-export whose exported name also declares a JSDoc namespace, as
+    // `@typedef {Object} GLTFLoader~LoadObject` does in three's
+    // GLTFLoader.js — is not the symbol classBySymbol keys; its aliased
+    // target is.
+    if (
+      classInfo === undefined &&
+      sym &&
+      (sym.flags & ts.SymbolFlags.Alias) !== 0 &&
+      !lowerer.isStdlibSymbol(sym)
+    )
+      classInfo = lowerer.classBySymbol.get(lowerer.checker.getAliasedSymbol(sym));
     // A class local to a function lowered once per instantiation
     // (`$constructor` called with different argument types) registers per
     // instance under the same symbol: a hoisted function of a later
@@ -1031,9 +1391,12 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       return lowerer.classValueRef(classInfo, expr);
     }
     // The enum OBJECT as a value (member reads never reach here — the
-    // access hooks fold them): iteration, storage, reverse lookups
-    // through variables all land on this pointed fence.
-    if (sym) fenceEnumObjectValue(lowerer, expr, sym);
+    // access hooks fold them): the record its declaration built, or a
+    // pointed fence for an enum that has no object (enum-objects.ts).
+    if (sym) {
+      const enumObject = lowerEnumObjectValue(lowerer, expr, sym);
+      if (enumObject) return enumObject;
+    }
     // A MIXIN function as a first-class value: no runtime function
     // exists — calls instantiate a class per call site
     // (lower-mixins.ts). Generic mixins took the generic-fn value
@@ -1130,7 +1493,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // read always unwinds before any of them observes it. A WRITE to the same
   // name is not a read: it reaches rejectUnresolved and its SC1091 story.
   // Typed sources keep the compile error (preflight's JS relaxation is
-  // `isJsSourceFileName`-gated, so no TS file reaches this branch).
+  // `isJsSourceFileName`-gated), except a name that only a library of the
+  // project's `lib` declares and Node does not define (the DOM's
+  // `document`): the project's own tsc resolves it, preflight admits it
+  // (projectLibraryNameAt), and the read is Node's, as in a `.js` file.
   // In shorthand position (`{ x }`) `resolveValueSymbol` answers the
   // PROPERTY symbol, so the declaration test there is the checker's
   // shorthand-VALUE symbol.
@@ -1139,7 +1505,39 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
       ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
       : lowerer.resolveValueSymbol(expr) === null;
+  // `const { name } = require("./m")` over a member the module's exports
+  // object does not carry: Node copies undefined into the binding.
+  {
+    const destructured = cjsDestructuredModuleBindingOf(lowerer, expr);
+    if (destructured !== null && cjsModuleLacksExport(lowerer, destructured.dep, destructured.key))
+      return cjsAbsentMemberValue(lowerer, expr);
+  }
+  // In a `.js` source the read is the global object's own property of that
+  // name when the program created one (`globalThis.X = class X {}`, in this
+  // module or another), as in Node, and the ReferenceError otherwise.
   if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // A named import of a builtin whose export the checker resolves to a
+    // declared TYPE (an ambient interface) leaves the read with no value
+    // symbol, but it is still that module's member: keep the member's own
+    // refusal (node-value-reads.ts) instead of compiling a global read of
+    // the name, which would answer a ReferenceError at run time.
+    const importedMember = builtinImportBindingByName(
+      lowerer,
+      ts.getSourceFileOfNode(expr),
+      expr.text,
+    );
+    if (importedMember !== null)
+      return unloweredModuleMemberValue(lowerer, importedMember, expr, loc, true);
+    if (NODE_GLOBALS_WITHOUT_NATIVE.has(expr.text)) lowerer.hostGlobalFence(expr.text, expr);
+    return {
+      kind: "libCall",
+      fn: "global.bindingRead",
+      args: [{ kind: "strLit", value: expr.text, type: STRING, loc }],
+      type: DYN,
+      loc,
+    };
+  }
+  if (undeclared && lowerer.projectLibraryNameAt(expr)) {
     return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here
@@ -1251,7 +1649,7 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
 export function uriFunctionValue(lowerer: Lowerer, which: string, loc: SrcLoc): IrExpr {
   const name = `%builtin.${which}`;
   const type = funcOf([DYN], STRING);
-  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+  if (lowerer.liftedFnNamed(name) === undefined) {
     const value: IrExpr = {
       kind: "libCall",
       fn: "dyn.toStringCoerce",

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-esm/main.mjs"
+ ],
+ "diags": []
+}

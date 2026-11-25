@@ -1,5 +1,4 @@
 import { describe, expect, test } from "vitest";
-import type { SymbolResponse, TypeResponse } from "typescript/unstable/proto";
 import {
   isBigIntLiteralType,
   isBooleanLiteralType,
@@ -22,7 +21,7 @@ import {
   isTypeReference,
   isUnionType,
   type Type,
-} from "typescript/unstable/sync";
+} from "typescript/sync";
 import {
   SemanticNodeHandle,
   SemanticSnapshot,
@@ -34,6 +33,8 @@ import type { __String } from "./ast-types.js";
 import {
   SemanticObjectFlags as ObjectFlags,
   SemanticSignatureFlags as SignatureFlags,
+  type SemanticSymbolData as SymbolResponse,
+  type SemanticTypeData as TypeResponse,
   SemanticTypeFlags as TypeFlags,
 } from "./semantic-schema.generated.js";
 

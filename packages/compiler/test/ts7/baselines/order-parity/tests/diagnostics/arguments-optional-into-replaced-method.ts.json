@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/arguments-optional-into-replaced-method.ts"
+ ],
+ "diags": []
+}

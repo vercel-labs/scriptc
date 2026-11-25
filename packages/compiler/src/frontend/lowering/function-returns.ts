@@ -1,26 +1,39 @@
+import { untypedArrayResultType } from "./empty-array-places.js";
 import { iterableGeneratorArm } from "./iterable-values.js";
 import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { mapStmtChildren } from "../../ir/traverse.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { isRebindableFunction } from "./rebindable-functions.js";
+import { isNodeModuleType } from "./lower-node-module.js";
 import {
+  BOOL,
   DYN,
+  STRING,
+  type IrExpr,
   type IrStmt,
   type IrType,
   type SrcLoc,
   VOID,
   isUnitType,
   typeEquals,
+  sortArms,
   typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
+import {
+  documentedJsReturn,
+  returnedSlotIsClass,
+  returnsCheckedDynamicParameter,
+} from "./call-signatures.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
+import { readsReboundRequireValue } from "./rebindable-requires.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -33,6 +46,104 @@ function bodyMayFallThrough(body: readonly IrStmt[]): boolean {
       last.kind !== "rethrow" &&
       last.kind !== "runtimeFence")
   );
+}
+
+/** Whether the function `node` returns from declares the result `undefined`
+ * (not `void`). Both map to the void representation, which holds no value,
+ * so the caller of such a function reads undefined whatever the body
+ * returned: a returned value the checker could not see (`any`) has to be
+ * checked where it is dropped. An async function settles its promise with
+ * the returned value and is not answered here. */
+/** Whether `decl`'s body has a return statement with an expression: with
+ * one, the function answers a value at run time even when the checker
+ * inferred `never` from the expressions' types. */
+function returnsAValue(decl: ts.SignatureDeclaration): boolean {
+  const body = (decl as ts.SignatureDeclaration & { body?: ts.Node }).body;
+  if (body === undefined) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      found = true;
+      return;
+    }
+    // A nested function's returns answer that function, not this one.
+    if (node !== body && ts.isFunctionLike(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return found;
+}
+
+export function returnsDeclaredUndefined(lowerer: Lowerer, node: ts.Node): boolean {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  let fn: ts.Node | undefined = node.parent;
+  while (fn !== undefined && !ts.isFunctionLike(fn)) fn = fn.parent;
+  if (fn === undefined || (fn as ts.SignatureDeclaration).type === undefined) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(fn as ts.SignatureDeclaration);
+  if (signature === undefined) return false;
+  const result = lowerer.checker.getReturnTypeOfSignature(signature);
+  return (result.flags & ts.TypeFlags.Undefined) !== 0;
+}
+
+/** The check of `value`, which the checker types `any`, where it is the
+ * result of a function declared `undefined` (returnsDeclaredUndefined);
+ * null when the value needs none and lowers as it always has: the literal
+ * `undefined` behind a cast (`undefined as any`), and a value with no
+ * checked-dynamic form (a void call behind a cast). A typed value behind a
+ * cast (`5 as any`) is boxed and checked like an untyped one. */
+export function checkedUndefinedResult(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  if (value.kind === "unitLit" && value.unit === "undefined") return null;
+  if (value.type.kind === "dyn") return undefinedResultCheck(lowerer, value, loc);
+  if (value.type.kind === "void" || !lowerer.dynConvertible(value.type)) return null;
+  return undefinedResultCheck(lowerer, lowerer.coerceToExpected(value, DYN), loc);
+}
+
+/** The statements that evaluate `value`, an untyped value returned where
+ * the result is declared `undefined`, and throw a TypeError unless it is
+ * undefined (returnsDeclaredUndefined). */
+function undefinedResultCheck(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrStmt[] {
+  const held = lowerer.declareHiddenLocal("%undefinedResult", DYN);
+  return [
+    { kind: "varDecl", localId: held.id, init: value, loc },
+    {
+      kind: "if",
+      cond: {
+        kind: "dynTest",
+        test: "undefined",
+        value: { kind: "varRef", localId: held.id, type: DYN, loc },
+        type: BOOL,
+        loc,
+      },
+      then: [],
+      else_: [
+        {
+          kind: "throw",
+          value: {
+            kind: "libCall",
+            fn: "error.new",
+            args: [
+              {
+                kind: "strLit",
+                value:
+                  "a value other than undefined is not representable in a result declared 'undefined' (an untyped value returned it)",
+                type: STRING,
+                loc,
+              },
+            ],
+            type: { kind: "object", className: "%TypeError" },
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
 }
 
 /** The BODY-facing return type of a (possibly async) function: an async
@@ -105,7 +216,13 @@ export function appendImplicitUndefinedReturn(
 /** Whether the source explicitly documents a return contract. */
 export function hasExplicitJsDocReturn(decl: ts.SignatureDeclaration): boolean {
   const sourceFile = ts.getSourceFileOfNode(decl);
-  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, ts.tokenStartOfNode(decl)));
+  return ts.sourceTextRangeMatches(
+    sourceFile,
+    decl.pos,
+    ts.tokenStartOfNode(decl),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
 }
 
 export function promiseCarriesDyn(lowerer: Lowerer, type: IrType): boolean {
@@ -178,10 +295,73 @@ export function declaredReturnType(
   decl: ts.SignatureDeclaration,
   blame: ts.Node,
 ): IrType {
+  const ret = declaredReturnTypeInner(lowerer, decl, blame);
+  // A JavaScript file TypeScript does not check keeps a documented class
+  // result (`@returns {Color}`) and a result inferred from the function's own
+  // checked-dynamic parameter as hints, not promises: `reread(target = new
+  // Color()) { return target; }` answers the plain object a caller passed. A
+  // class-typed slot would convert it nominally and throw where Node answers
+  // it, so the result is checked-dynamic (an async function resolves one).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(decl)) &&
+    (documentedJsReturn(decl) || returnsCheckedDynamicParameter(lowerer, decl)) &&
+    returnedSlotIsClass(lowerer, ret)
+  )
+    return ret.kind === "promise" ? { ...ret, inner: DYN } : DYN;
+  return ret;
+}
+
+function declaredReturnTypeInner(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  blame: ts.Node,
+): IrType {
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
+  // A JavaScript function that returns a binding a for-in head writes a key
+  // into (analyzeJsForInKeyBindings) answers the key string Node stored;
+  // the checker typed the return from the binding's declaration, so
+  // converting the returned value back to it would throw. An async function
+  // resolves that value. (A generator's result channel keeps the checker's
+  // generator shape, which its consumers are typed against; the prepass
+  // does not record one.)
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && lowerer.jsWidenedReturnDecls.has(decl)) {
+    const isAsync =
+      decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) ===
+      true;
+    return isAsync ? { kind: "promise", inner: DYN } : DYN;
+  }
+  // A JavaScript body that returns a call of a function declaration the
+  // program reassigns answers whatever that binding held, so the checker's
+  // inference from the declaration's own signature cannot settle the result.
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsRebindableCall(lowerer, decl)) {
+    // An async function answers a promise of that value; a generator keeps
+    // its own channels.
+    const asyncDecl =
+      decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true;
+    const generator = (decl as ts.FunctionLikeDeclaration).asteriskToken !== undefined;
+    return asyncDecl && !generator ? { kind: "promise", inner: DYN } : DYN;
+  }
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   let retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
+  // A JavaScript function that answers the CommonJS Module object — `module`,
+  // `require.main`, `module.parent`, a child view, or a binding of one — has
+  // the checker's module type as its result, and that type is the numeric
+  // handle: the slot cannot hold the object the body returns, so the result
+  // is checked-dynamic, the way Node answers the object. An async function
+  // resolves that value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.asteriskToken === undefined &&
+    isNodeModuleType(
+      lowerer,
+      lowerer.checker.getNonNullableType(lowerer.checker.getAwaitedType(retTsType) ?? retTsType),
+    )
+  )
+    return decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // An ASYNC object-literal method with no return annotation and a
   // contextual signature takes its return from that signature, as an async
   // arrow does: the body's `return` builds at the contextually typed
@@ -221,19 +401,32 @@ export function declaredReturnType(
     (retTsType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0
   )
     return DYN;
+  // A function that returns an untyped empty array (`return o.files` over
+  // `{ files: [] }`) returns that array, at the type it was given where
+  // it was written (empty-array-places.ts).
+  {
+    const untyped = untypedArrayResultType(lowerer, decl, retTsType);
+    if (untyped !== null) return untyped;
+  }
   // A body that always throws infers `never` — as a RETURN type that is
   // void with a stronger guarantee (`() => never` is assignable to
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
-  if (retTsType.flags & ts.TypeFlags.Never) return VOID;
-  // A JS generator whose result the checker cannot infer (mutually
-  // recursive methods returning `yield*` of each other, as in yaml's
-  // Parser) has the return type `any`: a generator over untyped values.
-  if (
-    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    decl.asteriskToken &&
-    retTsType.flags & ts.TypeFlags.Any
-  )
+  if (retTsType.flags & ts.TypeFlags.Never) {
+    // In a JavaScript file the checker's `never` can come from a narrowing
+    // over a declaration that does not describe the value (a context made
+    // with `createContext(null)` and used as an object): a body that
+    // returns an expression still answers whatever the runtime produced, so
+    // its result keeps the value instead of the throw-only `void`.
+    if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && returnsAValue(decl)) return DYN;
+    return VOID;
+  }
+  // A generator whose result the checker cannot spell — a JS method
+  // returning `yield*` of itself (yaml's Parser), or a TypeScript
+  // annotation over a package generic alias the checker reduces to `any`
+  // (`Effect.fn.Return<number, never>`) — is a generator over untyped
+  // values: the channels are checked-dynamic, as `any` is everywhere.
+  if (decl.asteriskToken && retTsType.flags & ts.TypeFlags.Any)
     return {
       kind: "generator",
       ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
@@ -243,17 +436,41 @@ export function declaredReturnType(
       retT: DYN,
       nextT: DYN,
     };
+  // An `async *` declaration spelled with one of the protocol interfaces
+  // (`AsyncIterator<T>`, `AsyncIterableIterator<T>`, `AsyncIterable<T>`)
+  // builds an async generator. Where the protocol type holds the
+  // checked-dynamic value (TypeMapperCtx.asyncProtocolHoldsImplementor) the
+  // value rule answers that, and the declaration takes the generator its
+  // annotation spells; elsewhere the value rule already answers with the
+  // generator, and the fallback below only fires for an annotation it does
+  // not map.
+  const asyncStar =
+    decl.asteriskToken !== undefined &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) === true;
   let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (asyncStar && mappedReturn?.kind === "dyn")
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx) ?? mappedReturn;
   if (mappedReturn !== null)
     mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
+  // A JavaScript function whose body returns a value read out of a require
+  // binding the file reassigns (rebindable-requires.ts) has no static
+  // result: the program's storage answers the read.
+  if (
+    mappedReturn !== null &&
+    decl.asteriskToken === undefined &&
+    !decl.type &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !hasExplicitJsDocReturn(decl) &&
+    lowerer.rebindableRequireDecls.size > 0 &&
+    returnsReboundRequireValue(lowerer, decl)
+  )
+    mappedReturn = decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
-  if (
-    mappedReturn === null &&
-    decl.asteriskToken &&
-    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
-  )
+  if (mappedReturn === null && asyncStar)
     mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
   if (
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
@@ -787,7 +1004,7 @@ function widenReturnArms(
   if (extra.size === 0) return mapped;
   const joined = new Map<string, IrType>();
   for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
-  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const sorted = sortArms([...joined.values()]);
   const unionId = lowerer.unions.intern(sorted);
   lowerer.coercions.widenedReturns.add(unionId);
   return { kind: "union", unionId };
@@ -826,4 +1043,53 @@ export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrT
       );
     })
   );
+}
+
+/** Whether `decl`'s body returns a value read out of a require binding the
+ * file reassigns — directly, through a member read, or through a call
+ * (rebindable-requires.ts). Such a result has no static type: the program's
+ * storage answers the read. */
+function returnsReboundRequireValue(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  if (ts.isArrowFunction(decl) && !ts.isBlock(decl.body))
+    return readsReboundRequireValue(lowerer, decl.body);
+  let found = false;
+  const scan = (node: ts.Node): void => {
+    if (found || (node !== decl && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) {
+      if (readsReboundRequireValue(lowerer, node.expression)) found = true;
+      return;
+    }
+    ts.forEachChild(node, scan);
+  };
+  scan(decl);
+  return found;
+}
+
+/** Whether a JavaScript body returns a call of a function declaration the
+ * program reassigns (rebindable-functions.ts): the call answers whatever that
+ * binding held, so the checker's inference from the declaration's own
+ * signature cannot settle the enclosing result. A concise arrow's body IS
+ * the forwarded expression. */
+function returnsRebindableCall(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  const body = decl.body;
+  if (body === undefined) return false;
+  if (!ts.isBlock(body)) return isRebindableForwardCall(lowerer, body as ts.Expression);
+  let found = false;
+  ts.walkPreorder(body, (child) => {
+    if (found) return "skip";
+    if (child !== body && ts.isFunctionLike(child)) return "skip";
+    if (!ts.isReturnStatement(child) || child.expression === undefined) return undefined;
+    if (isRebindableForwardCall(lowerer, child.expression)) found = true;
+    return undefined;
+  });
+  return found;
+}
+
+/** Whether `expr` is a call of a function declaration the program reassigns. */
+function isRebindableForwardCall(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let value: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isCallExpression(value) || !ts.isIdentifier(value.expression)) return false;
+  const symbol = lowerer.resolveValueSymbol(value.expression);
+  return symbol !== null && symbol.declarations.some((d) => isRebindableFunction(lowerer, d));
 }

@@ -30,6 +30,7 @@ const programs = [
   "tests/corpus/7440-tls-server-add-context.ts",
   "tests/corpus/7441-tls-client-error.ts",
   "tests/corpus/7443-tls-final-flight.ts",
+  "tests/corpus/tls-session-ticket-copies.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

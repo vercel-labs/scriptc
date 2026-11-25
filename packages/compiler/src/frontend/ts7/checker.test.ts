@@ -11,7 +11,7 @@ import { ts7TestServers, type Ts7TestServer } from "./test-servers.js";
 import { Ts7Session } from "./session.js";
 import { SemanticChecker } from "./semantic-checker.js";
 import { SemanticSnapshot } from "./semantic-model.js";
-import { SignatureKind, SymbolFlags, TypeFlags } from "./enums.js";
+import { SignatureKind, SymbolFlags, SyntaxKind, TypeFlags } from "./enums.js";
 import { createProgram, Ts7Host } from "./program-adapter.js";
 import type { AstNode } from "./ast-node.js";
 import type { Identifier, SourceFile } from "./ast-types.js";
@@ -19,11 +19,15 @@ import type { Identifier, SourceFile } from "./ast-types.js";
 const tempRoot = process.platform === "win32" ? tmpdir() : "/tmp";
 const protocolPath = (path: string) => path.replaceAll("\\", "/");
 
-/** The default checker (tsc-ts) and tsc 7.1. */
+/** The default checker (tsc-ts) and tsc 7.1, which both speak the 7.1
+ * protocol; SCRIPTC_CHECKER=tsgo makes the default checker tsc 7.1 itself. */
 const servers: Ts7TestServer[] = [
-  { name: "tsc 7.0", executable: ts7Executable(), ts71: false },
+  { name: "tsc-ts", executable: ts7Executable(), ts71: true },
   ...ts7TestServers().filter((server) => server.ts71),
-];
+].filter(
+  (server, index, list) =>
+    list.findIndex((other) => other.executable === server.executable) === index,
+);
 
 function connect(server: Ts7TestServer, files: Record<string, string>) {
   const dir = mkdtempSync(join(tempRoot, "scriptc-checker-lifetime-"));
@@ -193,8 +197,10 @@ for (const server of servers)
         prefetchRoots: () => facade.prefetchRoots([]),
         prefetchSymbolRoots: () => facade.prefetchSymbolRoots([]),
         prefetchSymbolNodesExact: () => facade.prefetchSymbolNodesExact([]),
+        prefetchSymbolsAtExact: () => facade.prefetchSymbolsAtExact([]),
         prefetchCollectionTypes: () => facade.prefetchCollectionTypes([]),
         prefetchClassCollection: () => facade.prefetchClassCollection([], []),
+        prefetchTypeQueries: () => facade.prefetchTypeQueries([]),
         getTypeAtLocation: () => facade.getTypeAtLocation(name),
         getSymbolAtLocation: () => facade.getSymbolAtLocation(name),
         getTypeOfSymbol: () => facade.getTypeOfSymbol(symbol),
@@ -371,6 +377,62 @@ test("property lookup caches hits and misses by type and name within each projec
   snapshot.dispose();
 });
 
+test("immediate alias and module export answers are memoized per project", () => {
+  const requests: string[] = [];
+  const snapshot = new SemanticSnapshot(1, {
+    text: (method, payload) => {
+      const query = JSON.parse(payload) as { project: string; symbol: number };
+      requests.push(`${method}:${query.project}:${query.symbol}`);
+      if (method === "getImmediateAliasedSymbol" && query.symbol === 2) return "null";
+      if (method === "getExportsOfModule")
+        return JSON.stringify([
+          { id: 20, project: query.project, name: "member", flags: 4, checkFlags: 0 },
+        ]);
+      return JSON.stringify({
+        id: query.symbol + 10,
+        project: query.project,
+        name: "target",
+        flags: 4,
+        checkFlags: 0,
+      });
+    },
+    // Object replies are read as bytes; they carry the same JSON.
+    binary(method, payload) {
+      return Buffer.from(this.text(method, payload), "utf8");
+    },
+  });
+  const project = snapshot.addProject("project", () => undefined);
+  const facade = new CheckerFacade(new SemanticChecker(project));
+  const alias = snapshot.symbol({
+    id: 1,
+    project: "project",
+    name: "alias",
+    flags: 4,
+    checkFlags: 0,
+  });
+  const end = snapshot.symbol({ id: 2, project: "project", name: "end", flags: 4, checkFlags: 0 });
+  const module = snapshot.symbol({
+    id: 3,
+    project: "project",
+    name: "module",
+    flags: 4,
+    checkFlags: 0,
+  });
+  const target = facade.getImmediateAliasedSymbol(alias);
+  expect(facade.getImmediateAliasedSymbol(alias)).toBe(target);
+  expect(facade.getImmediateAliasedSymbol(end)).toBeUndefined();
+  expect(facade.getImmediateAliasedSymbol(end)).toBeUndefined();
+  const exports = facade.getExportsOfModule(module);
+  expect(facade.getExportsOfModule(module)).toBe(exports);
+  expect(requests).toEqual([
+    "getImmediateAliasedSymbol:project:1",
+    "getImmediateAliasedSymbol:project:2",
+    "getExportsOfModule:project:3",
+  ]);
+  snapshot.dispose();
+  expect(() => facade.getImmediateAliasedSymbol(alias)).toThrow("disposed");
+});
+
 for (const server of servers)
   test(`dependency edits invalidate positive and negative property answers (${server.name})`, () => {
     const h = connect(server, {
@@ -448,3 +510,85 @@ test("member type batches are bounded, reuse warm entries, and isolate absent or
   snapshot.dispose();
   expect(() => facade.prefetchMemberTypes(symbols, 0)).toThrow("disposed");
 });
+
+test("a server without getResolvedSignatures resolves the calls of a type query first, in order", () => {
+  for (const batches of [false, true]) {
+    const requests: string[] = [];
+    const snapshot = new SemanticSnapshot(1, {
+      text: (method, payload) => {
+        const query = JSON.parse(payload) as { location?: string; locations?: string[] };
+        requests.push(`${method} ${query.location ?? query.locations!.join(" ")}`.trimEnd());
+        if (method === "getResolvedSignatures") {
+          if (!batches)
+            throw new Error('api: invalid request: unknown API method "getResolvedSignatures"');
+          return JSON.stringify(query.locations!.map((_, index) => ({ id: index + 1, flags: 0 })));
+        }
+        if (method === "getResolvedSignature")
+          return JSON.stringify({ id: Number.parseInt(query.location!, 10), flags: 0 });
+        expect(method).toBe("getTypeAtLocations");
+        return JSON.stringify(query.locations!.map(() => ({ id: 14, flags: TypeFlags.Number })));
+      },
+      // Object replies are read as bytes; they carry the same JSON.
+      binary(method, payload) {
+        return Buffer.from(this.text(method, payload), "utf8");
+      },
+    });
+    const project = snapshot.addProject("project", () => undefined);
+    const facade = new CheckerFacade(new SemanticChecker(project));
+    const node = (index: number, kind: SyntaxKind) =>
+      ({ id: `${index}.${kind}`, kind }) as unknown as AstNode;
+    // `outer(argument, inner())`, in source order.
+    const outer = node(1, SyntaxKind.CallExpression);
+    const argument = node(2, SyntaxKind.Identifier);
+    const inner = node(3, SyntaxKind.CallExpression);
+    facade.prefetchTypeQueries([outer, argument, inner]);
+    facade.prefetchTypeQueries([outer, argument, inner]);
+    const types = `getTypeAtLocations ${outer.id} ${argument.id} ${inner.id}`;
+    expect(requests).toEqual(
+      batches
+        ? ["getResolvedSignatures", types]
+        : [
+            "getResolvedSignatures",
+            `getResolvedSignature ${outer.id}`,
+            `getResolvedSignature ${inner.id}`,
+            types,
+          ],
+    );
+    // The signatures resolved before the types answer the later queries.
+    const before = requests.length;
+    expect(facade.getResolvedSignature(inner)!.id).toBe(3);
+    expect(requests.length - before).toBe(batches ? 1 : 0);
+    snapshot.dispose();
+  }
+});
+
+for (const server of servers)
+  test(`a generic call in a call's argument resolves as in source order after a type sweep (${server.name})`, () => {
+    const h = connect(server, {
+      "tsconfig.json": config,
+      "main.ts": [
+        "interface Catalogue { models: string[] }",
+        "function has<T extends Catalogue>(entry: T | undefined, want: string): boolean {",
+        "  return entry !== undefined && entry.models.length > want.length;",
+        "}",
+        "declare function show(...data: any[]): void;",
+        'show(has(undefined, "alpha"));',
+      ].join("\n"),
+    });
+    try {
+      const snapshot = h.session.updateSnapshot({ openProjects: [h.path("tsconfig.json")] });
+      const project = snapshot.getProjects()[0]!;
+      const root = project.program.getSourceFile(h.path("main.ts"))!;
+      const facade = new CheckerFacade(project.checker, { project: project.checker.project });
+      const outer = root.statements.nodes[3]!.expression!;
+      const inner = outer.arguments!.nodes[0]!;
+      // The sweep asks the outer call's type before the inner call's.
+      facade.prefetchSourceFile(root);
+      expect(facade.typeToString(facade.getTypeAtLocation(outer))).toBe("void");
+      const [entry] = facade.getResolvedSignature(inner)!.getParameters();
+      // T is its constraint: `undefined` gives it no candidate that satisfies `T extends Catalogue`.
+      expect(facade.typeToString(facade.getTypeOfSymbol(entry!))).toBe("Catalogue | undefined");
+    } finally {
+      h.close();
+    }
+  });

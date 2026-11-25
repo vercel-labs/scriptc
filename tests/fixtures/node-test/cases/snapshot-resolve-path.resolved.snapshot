@@ -1,0 +1,13 @@
+exports[`first 1`] = `
+{
+  "id": 1
+}
+`;
+
+exports[`replacing the resolver keeps the resolved file 1`] = `
+"three"
+`;
+
+exports[`second 1`] = `
+"two"
+`;

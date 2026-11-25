@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/inspect-max-string-length.ts"
+ ],
+ "diags": []
+}

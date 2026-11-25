@@ -9,9 +9,6 @@
  * dummy returns); this file only stores, renders, and releases the value.
  */
 #include "scr_runtime.h"
-#ifdef SCR_NODE_ISLANDS
-#include "scr_node_island.h"
-#endif
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -27,11 +24,13 @@
  * unit, present in every link including the runtime's own unit-test
  * subsets) rather than in the console unit. */
 _Noreturn void scr_trap(const char *msg) {
+  scr_stdout_settle(); /* buffered stdout (--stdout-buffering) stays source-ordered */
   fputs(msg, stderr);
   abort();
 }
 
 _Noreturn void scr_trap_fmt(const char *fmt, ...) {
+  scr_stdout_settle();
   va_list ap;
   va_start(ap, fmt);
   vfprintf(stderr, fmt, ap);
@@ -177,6 +176,10 @@ ScrExcCell *scr_exc_current_cell(void) { return SCR_EXC_CUR(); }
 void scr_stack_enter(ScrStackFrame *frame, const char *text) {
   frame->previous = SCR_EXC_CUR()->stack;
   frame->text = text;
+  frame->fn = NULL;
+  frame->script = NULL;
+  frame->line = 0;
+  frame->column = 0;
   SCR_EXC_CUR()->stack = frame;
 }
 
@@ -199,6 +202,70 @@ void scr_stack_limit_set(double limit) {
   scr_stack_limit = limit;
 }
 
+/* Error.prepareStackTrace is program state, as in Node: a program may save
+ * the value, replace it (`Error.prepareStackTrace = void 0`) and restore it.
+ * Node's default is V8's formatter; native code has no call-site formatter,
+ * so the default here is a function that throws the named refusal if a
+ * program calls it. The runtime formats its own stacks, so a program's own
+ * formatter is stored and read back but is not called when a stack is
+ * formatted. */
+static SCR_TL ScrDyn *scr_prepare_stack_trace;
+static SCR_TL bool scr_prepare_stack_trace_reset_registered;
+static ScrDyn *scr_prepare_stack_trace_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char msg[] =
+      "Error.prepareStackTrace is a Node value that native code does not provide as a value";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  return NULL;
+}
+static void scr_prepare_stack_trace_reset(void) {
+  if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
+  scr_prepare_stack_trace = NULL;
+  scr_prepare_stack_trace_reset_registered = false;
+}
+/* The stored value is released at exit like every other runtime cache, so a
+ * program that only READS the member releases the default function it created
+ * before the reference-count audit runs. */
+static void scr_prepare_stack_trace_own_cleanup(void) {
+  if (scr_prepare_stack_trace_reset_registered) return;
+  scr_atexit(scr_prepare_stack_trace_reset);
+  scr_prepare_stack_trace_reset_registered = true;
+}
+ScrDyn *scr_error_prepare_stack_trace_get(void) {
+  scr_prepare_stack_trace_own_cleanup();
+  if (scr_prepare_stack_trace == NULL) {
+    ScrClosure *clo = scr_closure_new((void *)scr_prepare_stack_trace_thunk, 0);
+    scr_prepare_stack_trace = scr_dyn_new_func(clo, scr_prepare_stack_trace_thunk, 0, "",
+                                               "prepareStackTrace");
+  }
+  return scr_dyn_retain(scr_prepare_stack_trace);
+}
+void scr_error_prepare_stack_trace_set(ScrDyn *value) {
+  scr_prepare_stack_trace_own_cleanup();
+  ScrDyn *retained = value == NULL ? scr_dyn_undefined() : scr_dyn_retain(value);
+  if (scr_prepare_stack_trace != NULL) scr_dyn_release(scr_prepare_stack_trace);
+  scr_prepare_stack_trace = retained;
+}
+
+/* One frame's line: its positioned call/throw site when it holds one, and
+ * its constant line otherwise. dst may be NULL when only the length is
+ * wanted (cap 0). */
+static size_t scr_stack_line(const ScrStackFrame *frame, char *dst, size_t cap) {
+  if (frame->line == 0) {
+    size_t size = strlen(frame->text);
+    if (dst != NULL && cap >= size) memcpy(dst, frame->text, size);
+    return size;
+  }
+  int n = frame->fn != NULL
+              ? snprintf(dst, cap, "    at %s (%s:%u:%u)", frame->fn, frame->script,
+                         (unsigned)frame->line, (unsigned)frame->column)
+              : snprintf(dst, cap, "    at %s:%u:%u", frame->script, (unsigned)frame->line,
+                         (unsigned)frame->column);
+  return n < 0 ? 0 : (size_t)n;
+}
+
 /* The frames from `first` down, at most Error.stackTraceLimit of them, one
  * "\n    at ..." line each; NULL when there are none. */
 static ScrStr *scr_stack_capture_from(ScrStackFrame *first) {
@@ -208,17 +275,18 @@ static ScrStr *scr_stack_capture_from(ScrStackFrame *first) {
   size_t length = 0;
   size_t count = 0;
   for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous)
-    length += 1 + strlen(frame->text);
-  char *text = malloc(length);
+    length += 1 + scr_stack_line(frame, NULL, 0);
+  /* One spare byte lets a positioned line's snprintf write its terminator
+   * in the last frame's exact-size room. */
+  char *text = malloc(length + 1);
   if (!text) scr_trap("scriptc: out of memory\n");
   size_t offset = 0;
   count = 0;
   for (ScrStackFrame *frame = first; frame && (double)count++ < limit; frame = frame->previous) {
     text[offset++] = '\n';
-    size_t size = strlen(frame->text);
-    memcpy(text + offset, frame->text, size);
-    offset += size;
+    offset += scr_stack_line(frame, text + offset, length - offset + 1);
   }
+  text[length] = '\0';
   ScrStr *out = scr_str_new(text, length);
   free(text);
   return out;
@@ -228,6 +296,203 @@ ScrStr *scr_stack_capture(void) {
   return scr_stack_capture_from(SCR_EXC_CUR()->stack);
 }
 
+/* V8's CallSite function names drop the class: a method's name alone, a
+ * getter's `get p`, and a constructor's class name without `new `. */
+static void scr_call_site_name(const char *fn, const char **name, size_t *len) {
+  const char *out = fn != NULL ? fn : "";
+  if (strncmp(out, "new ", 4) == 0) out += 4;
+  else {
+    const char *dot = strrchr(out, '.');
+    if (dot != NULL) out = dot + 1;
+  }
+  *name = out;
+  *len = strlen(out);
+}
+
+static bool scr_call_site_digits(const char *s, size_t n, unsigned *out) {
+  if (n == 0) return false;
+  unsigned value = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (s[i] < '0' || s[i] > '9') return false;
+    value = value * 10 + (unsigned)(s[i] - '0');
+  }
+  *out = value;
+  return true;
+}
+
+/* The script and position inside a `file:line:column` (or bare `file`). */
+static void scr_call_site_where(const char *s, size_t n, size_t *script_len, unsigned *line,
+                                unsigned *column) {
+  *script_len = n;
+  *line = 0;
+  *column = 0;
+  const char *last = NULL;
+  const char *prev = NULL;
+  for (size_t i = n; i > 0; i--) {
+    if (s[i - 1] == ':') {
+      if (last == NULL) last = s + i - 1;
+      else {
+        prev = s + i - 1;
+        break;
+      }
+    }
+  }
+  if (last == NULL || prev == NULL) return;
+  unsigned parsed_line;
+  unsigned parsed_column;
+  if (!scr_call_site_digits(prev + 1, (size_t)(last - prev - 1), &parsed_line) ||
+      !scr_call_site_digits(last + 1, (size_t)(s + n - last - 1), &parsed_column))
+    return;
+  *script_len = (size_t)(prev - s);
+  *line = parsed_line;
+  *column = parsed_column;
+}
+
+/* A frame's call-site fields: its structured position when the build
+ * records one, else the positioned `at name (file:line:column)` line a dev
+ * build keeps (a release line without a position still names the frame). */
+static void scr_call_site_fields(const ScrStackFrame *frame, const char **name, size_t *name_len,
+                                 const char **script, size_t *script_len, unsigned *line,
+                                 unsigned *column) {
+  if (frame->line != 0) {
+    scr_call_site_name(frame->fn, name, name_len);
+    *script = frame->script != NULL ? frame->script : "";
+    *script_len = strlen(*script);
+    *line = frame->line;
+    *column = frame->column;
+    return;
+  }
+  const char *text = frame->text != NULL ? frame->text : "";
+  size_t n = strlen(text);
+  size_t i = 0;
+  while (i < n && text[i] == ' ') i++;
+  if (n - i >= 3 && memcmp(text + i, "at ", 3) == 0) i += 3;
+  const char *rest = text + i;
+  size_t rest_len = n - i;
+  const char *inner = rest;
+  size_t inner_len = rest_len;
+  size_t name_end = 0;
+  if (rest_len > 0 && rest[rest_len - 1] == ')') {
+    for (size_t j = rest_len - 1; j > 0; j--) {
+      if (rest[j - 1] == '(') {
+        name_end = j - 1;
+        inner = rest + j;
+        inner_len = rest_len - j - 1;
+        break;
+      }
+    }
+  } else {
+    name_end = 0;
+  }
+  while (name_end > 0 && rest[name_end - 1] == ' ') name_end--;
+  if (name_end > 0) {
+    /* The parsed name is a prefix of the frame text: copy it before
+     * mapping, so the result reads no further than the name. */
+    char stack_name[96];
+    size_t copy = name_end < sizeof stack_name - 1 ? name_end : sizeof stack_name - 1;
+    memcpy(stack_name, rest, copy);
+    stack_name[copy] = '\0';
+    static SCR_TL char kept[96];
+    scr_call_site_name(stack_name, name, name_len);
+    memcpy(kept, *name, *name_len);
+    kept[*name_len] = '\0';
+    *name = kept;
+  } else {
+    *name = "";
+    *name_len = 0;
+  }
+  scr_call_site_where(inner, inner_len, script_len, line, column);
+  *script = inner;
+}
+
+/* Node's ERR_OUT_OF_RANGE for getCallSites' frameCount. */
+static void scr_call_sites_range(const char *must, double value) {
+  char shown[32];
+  scr_f64_to_str(value, shown);
+  char message[160];
+  int n = snprintf(message, sizeof message,
+                   "The value of \"frameCount\" is out of range. It must be %s. Received %s", must,
+                   shown);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, message, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+}
+
+ScrDyn *scr_util_call_sites(ScrDyn *frame_count, ScrDyn *options) {
+  double count = 10;
+  /* getCallSites(options): an object (or null) in the count slot is the
+   * options bag — Node dispatches on the value's type, so a string or
+   * other primitive there is still the frameCount and fails its number
+   * check, while null fails the options object check. */
+  if (frame_count != NULL && frame_count->kind != SCR_DYN_UNDEF &&
+      frame_count->kind != SCR_DYN_NUM &&
+      (frame_count->kind == SCR_DYN_NULL || scr_dyn_is_object(frame_count)) &&
+      (options == NULL || options->kind == SCR_DYN_UNDEF)) {
+    options = frame_count;
+    frame_count = NULL;
+  }
+  if (frame_count != NULL && frame_count->kind != SCR_DYN_UNDEF) {
+    if (frame_count->kind != SCR_DYN_NUM) {
+      scr_dyn_arg_type_fail("frameCount", "of type number", frame_count);
+      return NULL;
+    }
+    double value = frame_count->v.num;
+    if (!(value == trunc(value))) {
+      scr_call_sites_range("an integer", value);
+      return NULL;
+    }
+    if (!(value >= 1 && value <= 200)) {
+      scr_call_sites_range(">= 1 && <= 200", value);
+      return NULL;
+    }
+    count = value;
+  }
+  if (options != NULL && options->kind != SCR_DYN_UNDEF) {
+    if (options->kind != SCR_DYN_OBJ) {
+      scr_dyn_arg_type_fail("options", "of type object", options);
+      return NULL;
+    }
+    ScrDyn *source_map = scr_dyn_obj_read(options, "sourceMap", 9);
+    /* A sourceMap accessor that throws answers NULL with its exception
+     * pending; Node reads the property the same way, so the error reaches
+     * the caller instead of being dereferenced here. */
+    if (!source_map) return NULL;
+    if (source_map->kind != SCR_DYN_UNDEF && source_map->kind != SCR_DYN_BOOL) {
+      scr_dyn_prop_type_fail("options.sourceMap", "of type boolean", source_map);
+      scr_dyn_release(source_map);
+      return NULL;
+    }
+    scr_dyn_release(source_map);
+  }
+  ScrDyn *out = scr_dyn_new_arr();
+  size_t made = 0;
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame != NULL && (double)made < count;
+       frame = frame->previous) {
+    const char *name;
+    size_t name_len;
+    const char *script;
+    size_t script_len;
+    unsigned line;
+    unsigned column;
+    scr_call_site_fields(frame, &name, &name_len, &script, &script_len, &line, &column);
+    ScrDyn *entry = scr_dyn_new_obj();
+    ScrStr *name_text = scr_str_new(name, name_len);
+    scr_dyn_obj_set(entry, "functionName", 12, scr_dyn_new_str(name_text));
+    scr_str_release(name_text);
+    ScrStr *script_id = scr_str_new("0", 1);
+    scr_dyn_obj_set(entry, "scriptId", 8, scr_dyn_new_str(script_id));
+    scr_str_release(script_id);
+    ScrStr *script_text = scr_str_new(script, script_len);
+    scr_dyn_obj_set(entry, "scriptName", 10, scr_dyn_new_str(script_text));
+    scr_str_release(script_text);
+    scr_dyn_obj_set(entry, "lineNumber", 10, scr_dyn_new_num((double)line));
+    scr_dyn_obj_set(entry, "columnNumber", 12, scr_dyn_new_num((double)column));
+    scr_dyn_obj_set(entry, "column", 6, scr_dyn_new_num((double)column));
+    /* push moves its ownership in. */
+    scr_dyn_arr_push(out, entry);
+    made++;
+  }
+  return out;
+}
+
 /* The frames below the topmost frame whose text is `through` (a function's
  * "    at name (file)" line), as Error.captureStackTrace's constructorOpt
  * leaves them; NULL when no such frame is on the stack. */
@@ -235,6 +500,27 @@ ScrStr *scr_stack_capture_after(const char *through) {
   for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous)
     if (frame->text == through || strcmp(frame->text, through) == 0)
       return scr_stack_capture_from(frame->previous);
+  return NULL;
+}
+
+/* The same trim for a function the runtime holds as a value: the topmost
+ * frame its name heads ("    at name (file)"), not an identity comparison.
+ * A frame of a class constructor ("    at new C (...)") or a member
+ * ("    at C.m (...)") keeps V8's spelling, which the name alone cannot
+ * match; those leave every frame in place. */
+ScrStr *scr_stack_capture_after_name(const char *name) {
+  static const char prefix[] = "    at ";
+  const size_t plen = sizeof prefix - 1;
+  const size_t nlen = strlen(name);
+  for (ScrStackFrame *frame = SCR_EXC_CUR()->stack; frame; frame = frame->previous) {
+    const char *text = frame->text;
+    if (strncmp(text, prefix, plen) != 0) continue;
+    const char *at = text + plen;
+    size_t rest = strlen(at);
+    if (rest < nlen || memcmp(at, name, nlen) != 0) continue;
+    if (rest == nlen || at[nlen] == ' ' || at[nlen] == '(')
+      return scr_stack_capture_from(frame->previous);
+  }
   return NULL;
 }
 
@@ -700,19 +986,20 @@ void scr_exc_print_uncaught(void) {
   }
 #endif
   scr_exit_code_note(scr_uncaught_handler_failed ? 7 : 1);
-  /* Settle any runtime-internal stdout fragment before the stderr line when
-   * both share an fd. JavaScript-visible writes already flush themselves. */
+  /* Settle stdout before the stderr line when both share an fd: the
+   * runtime's own fragments, and — in a --stdout-buffering build — the
+   * JavaScript-visible bytes it buffers. */
+  scr_stdout_settle();
   fflush(stdout);
-#ifdef SCR_NODE_ISLANDS
   /* An error thrown by Node island code: Node's own report (the throw
-   * site's source line, the stack, the Node.js version). */
-  if (scr_exc_kind == SCR_EXC_OBJ && scr_error_is(scr_exc_payload) &&
-      scr_ni_report_uncaught((ScrError *)scr_exc_payload)) {
+   * site's source line, the stack, the Node.js version). The island units
+   * install the table; it is NULL in a program without them. */
+  if (scr_ni_dyn_ops != NULL && scr_exc_kind == SCR_EXC_OBJ && scr_error_is(scr_exc_payload) &&
+      scr_ni_dyn_ops->report_uncaught((ScrError *)scr_exc_payload)) {
     scr_exc_reset(); /* the payload counts as live until released */
     scr_exc_cell_changed();
     return;
   }
-#endif
   fputs("Uncaught ", stderr);
   switch (scr_exc_kind) {
   case SCR_EXC_F64: {
@@ -732,7 +1019,9 @@ void scr_exc_print_uncaught(void) {
   case SCR_EXC_OBJ:
     /* Error instances (builtin or user subclass) render like Node's first
      * line: "name: message" (toString rules for the empty halves). Node
-     * appends a stack trace; scriptc has none (documented divergence). */
+     * appends a stack trace; scriptc appends the frames the error captured
+     * when it was created, which only builds that keep source frames have
+     * (the compiler's observesStacks). */
     if (scr_error_is(scr_exc_payload)) {
       const ScrError *error = (const ScrError *)scr_exc_payload;
       ScrStr *s = scr_error_to_string((ScrError *)scr_exc_payload);
@@ -743,6 +1032,7 @@ void scr_exc_print_uncaught(void) {
       if (scr_uncaught_unnamed_sc_code(error->code, s))
         fprintf(stderr, " [%.*s]", (int)error->code->len, error->code->data);
       scr_str_release(s);
+      scr_error_report_frames(error);
       break;
     }
     /* fall through: non-Error hierarchy objects render like other refs */

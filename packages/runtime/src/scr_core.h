@@ -81,7 +81,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v48(void);
+void scr_runtime_abi_v52(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -124,6 +124,12 @@ static inline void scr_glibc_random_buf(void *buf, size_t n) {
 #endif
 #endif
 _Noreturn void scr_trap_fmt(const char *fmt, ...);
+
+/* worker.performance: installed by the worker unit on a worker thread and
+ * called by the perf_hooks loop metrics on each loop turn with the loop's
+ * start and its idle time, both in milliseconds on the process timeline. One
+ * pointer, set only by a worker thread, so every flavor declares it. */
+extern SCR_TL void (*scr_context_publish_loop_metrics)(double loop_start_ms, double idle_ms);
 
 /* ── library mode (scr_library.c, linked only into library artifacts) ─────
  * A library artifact has no main, no event loop, no signal handlers, no
@@ -304,7 +310,10 @@ ScrStr *scr_library_cstr_in(const char *p, const char *trap_msg); /* +1 */
 const char *scr_library_cstr_out(ScrStr *s);
 const char *scr_library_cstr_arg(const ScrStr *s);
 
-#define scr_atexit(fn) scr_library_register_reset(fn)
+/* A library registers its reset callbacks where it can: the registration
+ * itself never fails there, and callers that test the result compare it
+ * with 0. */
+#define scr_atexit(fn) ((void)scr_library_register_reset(fn), 0)
 #elif defined(SCR_WORKERS)
 /* Executable workers drain their own cleanup stack before their TLS dies.
  * Registering their callbacks with libc would execute them on the process
@@ -345,10 +354,28 @@ extern SCR_TL void (*scr_context_report_error)(void);
 extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
-void scr_context_env_free(ScrContextEnv *environment);
+/* This thread's private environment, or NULL while it reads and writes the
+ * process environment. Borrowed. */
+ScrContextEnv *scr_context_env_current(void);
+/* Environments are reference counted: a SHARE_ENV worker enters the creating
+ * thread's environment, so either thread may exit first. */
+ScrContextEnv *scr_context_env_retain(ScrContextEnv *environment);
+void scr_context_env_release(ScrContextEnv *environment);
+/* A fresh empty environment (the Worker env option) and one entry set on
+ * an environment the caller owns; both arguments are NUL-terminated UTF-8,
+ * borrowed. */
+ScrContextEnv *scr_context_env_new(void);
+void scr_context_env_assign(ScrContextEnv *environment, const char *name, const char *value);
+/* Enters the environment for this thread, taking ownership of one
+ * reference; the thread's cleanup releases it. */
 void scr_context_env_enter(ScrContextEnv *environment);
 bool scr_context_env_set(const char *name, const char *value);
 const char *scr_context_getenv(const char *name);
+/* The process environment, for the writers and walkers that reach it
+ * directly (a thread with no environment of its own): a write or a walk holds
+ * the lock across the environ access. */
+void scr_context_env_process_lock(void);
+void scr_context_env_process_unlock(void);
 struct ScrArr *scr_context_env_pairs(void);
 #define scr_atexit(fn) scr_context_atexit(fn)
 #else
@@ -382,6 +409,26 @@ uint64_t scr_context_script_end_ns(void);
 extern SCR_TL uintptr_t scr_stack_guard;
 void scr_stack_guard_init(void);
 SCR_COLD void scr_stack_overflow(void);
+/* The base of the allocator's window (scr_alloc.c), which holds the small
+ * blocks and the program-lifetime region that compressed class fields refer
+ * to (llvm/emitter.ts lowRegionTarget): a 32-bit reference is the address's
+ * offset from the base over 8, and the window lies in [base, base + 32 GiB).
+ * Linux places it in the low 32 GiB (base 0). On macOS the low 32 GiB holds
+ * the executable, the shared cache and the system allocator's zones, and the
+ * system places large anonymous reservations from 448 GiB up; the window
+ * takes 1 TiB, far above them. Every bit of that base lies above the 35 bits
+ * of an offset, so a reference is still the address over 8 truncated to 32
+ * bits, and decoding ORs the base back in. */
+#if defined(__APPLE__) && UINTPTR_MAX == UINT64_MAX
+#define SCR_WINDOW_BASE ((uint64_t)1 << 40)
+#else
+#define SCR_WINDOW_BASE ((uint64_t)0)
+#endif
+/* The address a 32-bit compact reference names; 0 is NULL. */
+static inline uint64_t scr_compact_ref_address(uint32_t ref) {
+  return (uint64_t)ref << 3 | (ref ? SCR_WINDOW_BASE : 0);
+}
+
 #if defined(SCR_WORKERS) && !defined(SCR_LIB) && defined(__APPLE__) && \
     (defined(__aarch64__) || defined(__x86_64__))
 /* Darwin worker executables: reading a thread-local variable calls its TLV

@@ -1,0 +1,1 @@
+{ "name": "island-probe-order-nested", "private": true, "scriptc": { "packages": { "pkg-a": "node", "pkg-b": "node", "common-pkg": "node" } } }

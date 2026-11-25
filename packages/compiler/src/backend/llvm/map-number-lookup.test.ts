@@ -175,14 +175,14 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
     expect(helper).toMatch(/br i1 %ix\d+, label %slot, label %slow\n/);
     expect(helper).not.toContain("dense.any");
     const hashed =
-      /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) noinline [^]*?^}/m.exec(
+      /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) align 64 noinline [^]*?^}/m.exec(
         module,
       )![0];
-    // The SameValueZero key word (canonical NaN, +0 for -0) and the
-    // scr_key_mix multipliers 0xbf58476d1ce4e5b9 and 0x94d049bb133111eb.
-    expect(hashed).toContain("select i1 %nan, i64 9221120237041090560, i64 %kzb");
-    expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
-    expect(hashed).toContain("mul i64 %x3, -7723592293110705685");
+    // The SameValueZero key word (canonical NaN, +0 for -0) from integer
+    // tests alone, and the scr_key_word_hash multiplier 0x9e3779b97f4a7c15.
+    expect(hashed).toContain("select i1 %iszero, i64 0, i64 %ksn");
+    expect(hashed).not.toContain("fcmp");
+    expect(hashed).toContain("mul i64 %x1, -7046029254386353131");
     // Filter (field 10) before the small-map scan of the entry count (field
     // 8) only, and compact buckets (fields 13 and 14) tagged with the hash's
     // top byte.
@@ -223,14 +223,14 @@ test("a key with an integer view tests the direct index on the integer", () => {
     // that double. The probe converts nothing itself (cvtsi2sd would wait
     // for its register's last value).
     const hashed =
-      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki, double %k\) noinline [^]*?^}/m.exec(
+      /^define internal ptr @sc_map_entry_f64_hashed_int\(ptr %m, i64 %ki, double %k\) align 64 noinline [^]*?^}/m.exec(
         integral.module,
       )![0];
     expect(hashed).toContain("bitcast double %k to i64");
     expect(hashed).toContain("select i1 %kzero, i64 0, i64 %kbits");
     expect(hashed).not.toContain("sitofp");
     expect(hashed).not.toContain("fcmp");
-    expect(hashed).toContain("mul i64 %x1, -4658895280553007687");
+    expect(hashed).toContain("mul i64 %x1, -7046029254386353131");
     expect(hashed).toContain(
       "call ptr @scr_map_entry_f64(ptr %m, double %k) memory(read) nounwind willreturn",
     );
@@ -252,7 +252,7 @@ test("a lookup inside a loop calls the flavor that inlines the hashed probe", ()
     // They only read memory and always return, so a has() and get() of one
     // key merge before they are inlined.
     const helper = new RegExp(
-      `^define internal ptr @${name}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn [^]*?^}`,
+      `^define internal ptr @${name}\\.loop\\([^)]*\\) align 64 alwaysinline memory\\(read\\) nounwind willreturn [^]*?^}`,
       "m",
     ).exec(module)![0];
     const hashed =
@@ -260,7 +260,7 @@ test("a lookup inside a loop calls the flavor that inlines the hashed probe", ()
     expect(helper).toContain(`call ptr @${hashed}.loop(`);
     expect(module).toMatch(
       new RegExp(
-        `^define internal ptr @${hashed}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn `,
+        `^define internal ptr @${hashed}\\.loop\\([^)]*\\) align 64 alwaysinline memory\\(read\\) nounwind willreturn `,
         "m",
       ),
     );

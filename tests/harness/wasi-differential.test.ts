@@ -1,8 +1,10 @@
+// @requires-wasi-runtime-pack: needs @scriptc/runtime-wasm32-wasi/runtime-pack.json.
 /* wasm32-wasi is a production LLVM target. This lane compares
  * pointer-width-sensitive corpus seeds against Node and pins the backend
  * selection independently of the host platform.
  */
 import { execFile, execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -15,6 +17,12 @@ import { WASM32_WASI_TARGET } from "../../packages/compiler/src/backend/targets.
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
+
+/** The wasm32-wasi runtime pack is built by the wasm artifacts job; a checkout
+ * without it (the fast tier) cannot compile these programs. */
+function wasmPackInstalled(): boolean {
+  return existsSync(join(repoRoot, "packages/runtime-wasm32-wasi/runtime-pack.json"));
+}
 
 function zigOnPath(): boolean {
   try {
@@ -93,7 +101,7 @@ function expectedExitCode(entry: string): number {
   return match === null ? 0 : Number(match[1]);
 }
 
-describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
+describe.skipIf(!zigOnPath() || !wasmPackInstalled())("wasm32-wasi differential", () => {
   let oldCc: string | undefined;
   let oldTarget: string | undefined;
 
@@ -132,6 +140,7 @@ describe.skipIf(!zigOnPath())("wasm32-wasi differential", () => {
     "js-array-constructor.js",
     "array-numeric-own-keys.ts",
     "synchronous-callback-lifetimes.ts",
+    "string-union-collection-keys.ts",
     "error-inherited-message.mjs",
     "js-class-shadowed-methods.js",
     "js-default-listener-arguments.cjs",

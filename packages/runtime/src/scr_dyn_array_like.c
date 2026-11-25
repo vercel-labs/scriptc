@@ -32,7 +32,7 @@
 static bool al_iteration(size_t step) {
   if (step < 1000000) return true;
   static const char msg[] = "array-like iteration over one million entries is not supported yet";
-  scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
   return false;
 }
 
@@ -74,7 +74,7 @@ static ScrDyn *al_get(ScrDyn *recv, const ScrStr *key) {
   }
   if (recv->kind == SCR_DYN_ARR || recv->kind == SCR_DYN_STR || recv->kind == SCR_DYN_BYTES) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
-      double length = recv->kind == SCR_DYN_ARR ? (double)recv->v.arr.len
+      double length = recv->kind == SCR_DYN_ARR ? (double)scr_dyn_arr_length(recv)
         : recv->kind == SCR_DYN_STR ? scr_str_utf16_len(recv->v.str)
         : (double)recv->v.bytes->len;
       return scr_dyn_new_num(length);
@@ -194,7 +194,25 @@ static void al_refuse_primitive(const ScrStr *method) {
   scr_jb_puts(&b, "Array.prototype.");
   scr_jb_write(&b, method->data, method->len);
   scr_jb_puts(&b, " on a primitive receiver is not supported yet");
-  scr_throw_error(SCR_ERR_ERROR, scr_jb_finish(&b));
+  { ScrStr *refused = scr_jb_finish(&b); scr_throw_error_msg_code(SCR_ERR_ERROR, refused->data, refused->len, "SC2020"); scr_str_release(refused); }
+}
+
+/* IsConcatSpreadable(value) for concat's receiver: an array is spreadable;
+ * anything else reads @@isConcatSpreadable and converts it with ToBoolean
+ * (a getter that throws leaves the exception pending and answers false). */
+static bool al_concat_spreadable(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_ARR) return true;
+  ScrStr *name = scr_str_new("isConcatSpreadable", 18);
+  ScrSym *symbol = scr_sym_well_known(name);
+  scr_str_release(name);
+  ScrDyn *key = scr_dyn_new_symbol(symbol);
+  scr_sym_release(symbol);
+  ScrDyn *flag = scr_dyn_symbol_key_get(value, key, true);
+  scr_dyn_release(key);
+  if (!flag) return false;
+  bool spreadable = scr_dyn_truthy(flag);
+  scr_dyn_release(flag);
+  return spreadable;
 }
 
 /* A String wrapper's indexes below its UTF-16 length are read-only and
@@ -361,14 +379,28 @@ ScrDyn *scr_dyn_array_like_call(ScrDyn *recv, ScrStr *method, ScrDyn *args) {
   ScrDyn *const *argv = args->v.arr.items;
   size_t argc = args->v.arr.len;
   if (al_is(method, "concat")) {
-    /* A receiver that is not an array is not spreadable: it is the result's
-     * first element, and its length is never read. The arguments then
-     * spread as they do for an array receiver, so the array dispatch
-     * answers `[receiver].concat(...args)`. A primitive receiver's first
-     * element would be its wrapper object. */
+    /* IsConcatSpreadable(O): a receiver that is not an array spreads only
+     * when its @@isConcatSpreadable is true, and a spread receiver's length
+     * is then read through ToLength — a throwing length throws here, as in
+     * Node. The elements become the result's head, which the array dispatch
+     * then concatenates with the arguments. An index the receiver does not
+     * carry stays a hole: concat creates a property only where HasProperty
+     * holds, so the result's missing indexes are absent too. A receiver that
+     * does not spread is the result's first element (a primitive receiver's
+     * would be its wrapper object). */
     if (al_primitive(recv)) { al_refuse_primitive(method); return NULL; }
     ScrDyn *head = scr_dyn_new_arr();
-    scr_dyn_arr_push(head, scr_dyn_retain(recv));
+    if (al_concat_spreadable(recv)) {
+      size_t len;
+      if (!al_length(recv, &len)) { scr_dyn_release(head); return NULL; }
+      for (size_t i = 0; i < len; i++) {
+        if (len > 1000000 && !al_iteration(i)) { scr_dyn_release(head); return NULL; }
+        if (!al_copy_item(head, recv, i)) { scr_dyn_release(head); return NULL; }
+      }
+    } else {
+      if (scr_exc_pending()) { scr_dyn_release(head); return NULL; }
+      scr_dyn_arr_push(head, scr_dyn_retain(recv));
+    }
     ScrDyn *out = scr_dyn_invoke(head, "concat", argv, argc, "concat");
     scr_dyn_release(head);
     return out;

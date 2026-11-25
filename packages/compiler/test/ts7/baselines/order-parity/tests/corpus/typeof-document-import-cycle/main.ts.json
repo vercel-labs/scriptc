@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typeof-document-import-cycle/document.ts",
+  "<repo>/tests/corpus/typeof-document-import-cycle/dom.ts",
+  "<repo>/tests/corpus/typeof-document-import-cycle/lib.js",
+  "<repo>/tests/corpus/typeof-document-import-cycle/main.ts"
+ ],
+ "diags": []
+}

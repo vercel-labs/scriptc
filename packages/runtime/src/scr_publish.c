@@ -173,7 +173,7 @@ void scr_pub_refuse(ScrPub *ctx, const char *message) {
 
 /* An emitted refusing walker: the static path is diagnostic only. */
 void scr_pub_refuse_at(ScrPub *ctx, const char *message, const char *detail) {
-  if (!ctx->refusal && getenv("SCRIPTC_PUBLISH_TRACE"))
+  if (!ctx->refusal && scr_getenv("SCRIPTC_PUBLISH_TRACE"))
     fprintf(stderr, "scriptc: publish refused %s\n", detail);
   scr_pub_refuse(ctx, message);
 }
@@ -249,7 +249,7 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
       : m->key_kind == SCR_MAP_KEY_DYN ? scr_pub_dyn_fn
       : m->key_kind == SCR_MAP_KEY_REF || m->key_kind == SCR_MAP_KEY_UNION_REF ||
               m->key_kind == SCR_MAP_KEY_BIGINT || m->key_kind == SCR_MAP_KEY_UNION_VALUE ||
-              m->key_kind == SCR_MAP_KEY_CLOSURE
+              m->key_kind == SCR_MAP_KEY_CLOSURE || m->key_kind == SCR_MAP_KEY_PROMISE
           ? key
           : NULL;
   ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF || m->val_kind == SCR_MAP_VAL_CREF ? val : NULL;
@@ -438,7 +438,7 @@ void scr_publish(void *root, ScrPubFn fn) {
   ctx.refusal = NULL;
   int traced = atomic_load_explicit(&scr_pub_trace, memory_order_relaxed);
   if (traced < 0) {
-    traced = getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
+    traced = scr_getenv("SCRIPTC_PUBLISH_TRACE") != NULL;
     atomic_store_explicit(&scr_pub_trace, traced, memory_order_relaxed);
   }
   bool trace = traced != 0;
@@ -530,12 +530,15 @@ void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
 }
 
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  return scr_array_frozen_error(op, a->len, index, n, 0);
+/* The emitted array guards: SCR_FROZEN_THREW after throwing, SCR_FROZEN_NOOP
+ * when the operation writes nothing (the receiver is the result), else
+ * SCR_FROZEN_RUN (scr_array.h). */
+int scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
+  return scr_array_frozen_guard(op, a, a->len, index, n, 0);
 }
 
-bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
-  return scr_array_frozen_error(op, a->len, x, y, z);
+int scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
+  return scr_array_frozen_guard(op, a, a->len, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

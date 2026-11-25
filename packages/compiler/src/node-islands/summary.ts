@@ -84,8 +84,8 @@ const REASON_SENTENCES: Readonly<Record<string, string>> = {
   "builtin-patch": "it patches a builtin module's CommonJS export, which only code in Node can see",
 };
 
-/** "R2.1 constructor functions: 'new Foo()' of a function" or
- * "SC2012: <message>". */
+/** "R2.3 shape mutation outside the checker's view: a write of the class
+ * prototype 'C.prototype.m'" or "SC2012: <message>". */
 export function describe(r: NodeIslandReason): string {
   const sentence = REASON_SENTENCES[r.reason];
   if (sentence !== undefined)

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8906-set-map-computed-key-reads.js"
+ ],
+ "diags": []
+}

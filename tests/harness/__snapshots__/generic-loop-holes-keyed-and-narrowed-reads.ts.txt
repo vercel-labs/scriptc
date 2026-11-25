@@ -1,0 +1,20 @@
+generic-loop-holes-keyed-and-narrowed-reads.ts:26:53 - error SC1090: a direct read from a runtime-optional capture with multiple value arms are not supported yet (instantiating 'keyed' with <({ grade: number; trail: string; warden: string } | { grade: null | undefined...>)
+
+  25 |   const lines: string[] = [];
+  26 |   for (const segment of segments) lines.push(String(segment["grade"]));
+     |                                                     ^~~~~~~
+  27 |   return lines;
+
+generic-loop-holes-keyed-and-narrowed-reads.ts:33:40 - error SC1090: a direct read from a runtime-optional capture with multiple value arms are not supported yet (instantiating 'narrowed' with <({ grade: number; trail: string; warden: string } | { grade: null | undefined...>)
+
+  32 |   for (const segment of segments) {
+  33 |     if (hasWarden(segment)) lines.push(segment.warden);
+     |                                        ^~~~~~~
+  34 |   }
+
+generic-loop-holes-keyed-and-narrowed-reads.ts:40:47 - error SC1090: a direct read from a runtime-optional capture with multiple value arms are not supported yet (instantiating 'asserted' with <({ grade: number; trail: string; warden: string } | { grade: null | undefined...>)
+
+  39 |   const lines: string[] = [];
+  40 |   for (const segment of segments) lines.push((segment as Segment).trail);
+     |                                               ^~~~~~~
+  41 |   return lines;

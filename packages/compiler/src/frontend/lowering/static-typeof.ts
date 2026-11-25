@@ -1,6 +1,16 @@
 import * as ts from "../ts7/adapter.js";
+import { isJsSourceFile } from "../program.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import type { Lowerer } from "./lowerer.js";
-import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower-namespaces.js";
+import { hostGlobalNameOfIdentifier } from "./host-globals.js";
+import { undeclaredGlobalTypeof } from "./global-object-names.js";
+import { erasedGlobalBindingOf, programMayWriteGlobalName } from "./global-object-writes.js";
+import { isUnresolvedCjsExports } from "./cjs-exports-object.js";
+import {
+  ambientTypesOnlyGlobalSymbolOf,
+  ambientUndefinedFnSymbolOf,
+  ambientUndefinedVarSymbolOf,
+} from "./lower-namespaces.js";
 
 /** The answer `typeof <operand>` gives without evaluating anything, for
  * the global-detection idioms (`typeof window < "u"`, `typeof global !==
@@ -8,17 +18,48 @@ import { ambientUndefinedFnSymbolOf, ambientUndefinedVarSymbolOf } from "./lower
  * ambiently and nothing defines, answers "undefined" (Node's answer for an
  * undeclared global such as window or self, and typeof never throws for
  * one), and the Node global object and process answer "object". Null for
- * every other operand. */
+ * every other operand. A Node 24 global the native runtime does not provide
+ * answers "function" statically: Node has the constructor, and typeof is a
+ * read, not a use (host-global-values.ts). */
 export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): string | null {
   let e = operand;
   while (ts.isParenthesizedExpression(e)) e = e.expression;
   if (!ts.isIdentifier(e)) return null;
-  if (lowerer.checker.getSymbolAtLocation(e) === undefined) return "undefined";
+  if (hostGlobalNameOfIdentifier(lowerer, e) !== null) return "function";
+  // The exports object of a CommonJS module is a value, read where it is
+  // tested (cjs-exports-object.ts), not an undeclared name.
+  if (isUnresolvedCjsExports(lowerer, e)) return null;
+  // A name nothing declares is undeclared at run time unless Node's global
+  // object has or inherits it (`navigator`, `toString`). In a JavaScript
+  // source there is one more answer: the program itself can give the global
+  // object that property (`globalThis.feature = …`, here or in another
+  // module), so a `typeof feature` the program may see that write answers at
+  // run time and no constant folds; the comparison lowers through the
+  // global object's read instead (typeof.ts), which answers without reading
+  // the name. A name the program never writes on the global object is
+  // absent at every point, so its static answer stands.
+  if (lowerer.checker.getSymbolAtLocation(e) === undefined) {
+    if (isJsSourceFile(ts.getSourceFileOfNode(e)) && programMayWriteGlobalName(lowerer, e.text, e))
+      return null;
+    return undeclaredGlobalTypeof(e.text) ?? "undefined";
+  }
   for (const name of ["global", "globalThis", "process"])
     if (lowerer.isStdlibGlobal(e, name)) return "object";
+  // A global binding the program declares and TypeScript erases answers
+  // "undefined" only while the global object has no such property: a
+  // censused write of the name gives typeof a value to read at run time
+  // (typeof.ts), so no answer folds.
+  if (erasedGlobalBindingOf(lowerer, e) && programMayWriteGlobalName(lowerer, e.text, e))
+    return null;
   // A name the program declares ambiently but nothing defines (`declare
   // const Bun`): undeclared at run time.
-  if (ambientUndefinedVarSymbolOf(lowerer, e) || ambientUndefinedFnSymbolOf(lowerer, e))
+  if (
+    ambientUndefinedVarSymbolOf(lowerer, e) ||
+    ambientUndefinedFnSymbolOf(lowerer, e) ||
+    // A name the program installs on the global object answers at run time
+    // (typeof.ts reads it), so no static answer folds.
+    (ambientTypesOnlyGlobalSymbolOf(lowerer, e) && !programMayWriteGlobalName(lowerer, e.text, e))
+  )
     return "undefined";
   return null;
 }
@@ -28,12 +69,8 @@ export function staticTypeofAnswer(lowerer: Lowerer, operand: ts.Expression): st
  * `typeof self !== "undefined"`), folded: the operand read has no effects,
  * so only the comparison's value remains. Null for other shapes. */
 export function staticTypeofComparison(lowerer: Lowerer, e: ts.BinaryExpression): boolean | null {
-  const unwrap = (x: ts.Expression): ts.Expression => {
-    while (ts.isParenthesizedExpression(x)) x = x.expression;
-    return x;
-  };
-  const left = unwrap(e.left);
-  const right = unwrap(e.right);
+  const left = withoutParentheses(e.left);
+  const right = withoutParentheses(e.right);
   const literal = (x: ts.Expression): string | null =>
     ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x) ? x.text : null;
   let answer: string | null = null;

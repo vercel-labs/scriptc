@@ -1,13 +1,6 @@
-class-prototype-reflection.ts:6:19 - error SC1090: class prototype reflection and accessor replacement (named prototype data and methods compile) is not supported yet
+class-prototype-reflection.ts:6:15 - error SC1090: class prototype reflection and accessor replacement (named prototype data and methods compile) is not supported yet
 
-  5 | // Named slots are represented; bare prototype reflection is not.
-  6 | const prototype = Vector.prototype;
-    |                   ^~~~~~~~~~~~~~~~
-  7 | Object.getOwnPropertyDescriptors(Vector.prototype);
-
-class-prototype-reflection.ts:7:34 - error SC1090: class prototype reflection and accessor replacement (named prototype data and methods compile) is not supported yet
-
-  6 | const prototype = Vector.prototype;
-  7 | Object.getOwnPropertyDescriptors(Vector.prototype);
-    |                                  ^~~~~~~~~~~~~~~~
-  8 | // End of the prototype reflection diagnostic fixture.
+  5 | // Named slots are represented; a prototype held by a binding that could write it is not.
+  6 | let escaped = Vector.prototype;
+    |               ^~~~~~~~~~~~~~~~
+  7 | // End of the prototype reflection diagnostic fixture.

@@ -1,0 +1,64 @@
+enum-objects.ts:9:3 - error SC1090: enums with computed members ('Len' — the initializer is a runtime expression evaluated when the declaration executes; only compile-time-constant enum members lower) are not supported yet
+
+   8 |   Ok = 1,
+   9 |   Len = "abc".length,
+     |   ^~~~~~~~~~~~~~~~~~
+  10 | }
+
+enum-objects.ts:11:25 - error SC1090: enum objects as values ('Computed': the member 'Len' is computed, so its value and reverse entry exist only when the declaration runs; member reads like 'Computed.A' compile to constants) are not supported yet
+
+  10 | }
+  11 | console.log(Object.keys(Computed));
+     |                         ^~~~~~~~
+  12 | function take(table: typeof Computed): number {
+
+enum-objects.ts:12:15 - error SC1090: enum objects as values ('Computed': the member 'Len' is computed, so its value and reverse entry exist only when the declaration runs; member reads like 'Computed.A' compile to constants) are not supported yet
+
+  11 | console.log(Object.keys(Computed));
+  12 | function take(table: typeof Computed): number {
+     |               ^~~~~
+  13 |   return table.Ok;
+
+enum-objects.ts:15:13 - error SC2004: uses of 'take' inherit the blocker on its declaration
+
+  14 | }
+  15 | console.log(take(Computed));
+     |             ^~~~
+  16 | 
+
+  hint: the declaration of 'take' did not compile — fix the diagnostic reported there and these sites clear with it
+
+enum-objects.ts:27:25 - error SC1090: enum objects as values ('WithHelpers': a namespace merged into the enum adds its exports to the same object; member reads like 'WithHelpers.A' compile to constants) are not supported yet
+
+  26 | }
+  27 | console.log(Object.keys(WithHelpers), WithHelpers.parse("a"));
+     |                         ^~~~~~~~~~~
+  28 | 
+
+enum-objects.ts:35:27 - error SC1090: enum objects as values ('Proto': a member named '__proto__' is not an own property of the object; member reads like 'Proto.A' compile to constants) are not supported yet
+
+  34 | }
+  35 | console.log(Object.values(Proto));
+     |                           ^~~~~
+  36 | 
+
+enum-objects.ts:43:22 - error SC1090: enum objects as values ('Local': an enum declared inside a function creates its object on each call; member reads like 'Local.A' compile to constants) are not supported yet
+
+  42 |   }
+  43 |   return Object.keys(Local);
+     |                      ^~~~~
+  44 | }
+
+enum-objects.ts:52:25 - error SC1090: enum objects as values ('Twice': between the declarations of a merged enum the object holds only the members declared so far) are not supported yet
+
+  51 | }
+  52 | console.log(Object.keys(Twice));
+     |                         ^~~~~
+  53 | enum Twice {
+
+enum-objects.ts:62:25 - error SC1090: enum objects as values ('Ambient': a 'declare enum' emits no object; member reads like 'Ambient.A' compile to constants) are not supported yet
+
+  61 | }
+  62 | console.log(Object.keys(Ambient));
+     |                         ^~~~~~~
+  63 | 

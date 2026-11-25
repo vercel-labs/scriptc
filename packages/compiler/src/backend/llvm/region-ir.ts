@@ -101,6 +101,7 @@ const STMT_KINDS = new Set([
   "block",
   "throw",
   "runtimeFence",
+  "genBindBarrier",
   "rethrow",
   "tryCatch",
 ]);

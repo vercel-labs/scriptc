@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/function-namespace-import-alias-modules/gauge.ts",
+  "<repo>/tests/corpus/function-namespace-import-alias-modules/main.ts"
+ ],
+ "diags": []
+}

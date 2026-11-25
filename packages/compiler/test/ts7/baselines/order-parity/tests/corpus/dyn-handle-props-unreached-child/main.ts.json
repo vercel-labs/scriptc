@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-handle-props-unreached-child/helper.js",
+  "<repo>/tests/corpus/dyn-handle-props-unreached-child/main.ts"
+ ],
+ "diags": []
+}

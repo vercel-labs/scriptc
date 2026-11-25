@@ -1,7 +1,9 @@
 import { isErrorPrototypeValue } from "./class-prototypes.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesAssertionsNonNull } from "../outer-expressions.js";
 import { literalValues } from "../literal-values.js";
 import { isJsSourceFile } from "../program.js";
+import { mockMethodTarget } from "./mock-callsites.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** Members every function value has (Function.prototype and
@@ -24,6 +26,17 @@ const FUNCTION_MEMBER_NAMES = new Set([
   "valueOf",
 ]);
 
+/** Whether a setPrototypeOf call the census found may give an instance of
+ * `info` another prototype (Lowerer.reprototypedClasses). */
+export function mayReplacePrototype(
+  lowerer: Lowerer,
+  info: { decl: ts.Node | null; def: { runtime?: boolean } },
+): boolean {
+  if (info.def.runtime) return false;
+  const facts = lowerer.reprototypedClasses;
+  return facts.all || (info.decl !== null && facts.decls.has(info.decl));
+}
+
 /** Census observable slots before choosing native calls. Names are shared
  * conservatively across classes: aliases cannot hide a named replacement. */
 export function collectClassMethodMutations(
@@ -41,6 +54,10 @@ export function collectClassMethodMutations(
     site: ts.Node;
   }[] = [];
   const propertyWrites: { target: ts.PropertyAccessExpression; site: ts.Node }[] = [];
+  /** `mock.method(object, "name", …)` calls: the mock stores a wrapper in
+   * the object's property, so the name is replaced like an assignment to
+   * it. */
+  const mockWrites: { name: string; receiver: ts.Expression; site: ts.Node }[] = [];
   /** Writes and deletes of a method name through an element access with a
    * known key (`o["m"] = f`, `o[k] = f` with `k: "m" | "n"`), judged like
    * the named writes in propertyWrites. */
@@ -55,6 +72,11 @@ export function collectClassMethodMutations(
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  /** Every class of the program, and the targets of the setPrototypeOf
+   * calls the census found (null: a reference to the function that is not
+   * a call, or a call without a target). */
+  const allClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
+  const prototypeTargets: (ts.Expression | null)[] = [];
   const symbolMethods = new Set<string>();
   let unknownKey: ts.Node | undefined;
   /** Every write with an unknown key: each may install a replacement of any
@@ -105,21 +127,11 @@ export function collectClassMethodMutations(
     if (methods.has(name)) lowerer.noteMethodAccess(name, site);
     if (!arrow) receiverFields.add(name);
   };
-  const unwrap = (value: ts.Expression): ts.Expression => {
-    while (
-      ts.isParenthesizedExpression(value) ||
-      ts.isAsExpression(value) ||
-      ts.isTypeAssertion(value) ||
-      ts.isNonNullExpression(value)
-    )
-      value = value.expression;
-    return value;
-  };
   // Structural types can be live views of class instances. A fresh
   // allocation in a constant binding proves that a dictionary write cannot
   // replace a class method without relying on its declared shape.
   const freshReceiver = (value: ts.Expression): boolean => {
-    value = unwrap(value);
+    value = withoutParenthesesAssertionsNonNull(value);
     if (ts.isIdentifier(value)) {
       const symbol = lowerer.checker.getSymbolAtLocation(value);
       const decl = symbol && symbol.declarations[0];
@@ -132,7 +144,7 @@ export function collectClassMethodMutations(
         !decl.initializer
       )
         return false;
-      value = unwrap(decl.initializer);
+      value = withoutParenthesesAssertionsNonNull(decl.initializer);
     }
     if (ts.isObjectLiteralExpression(value) || ts.isArrayLiteralExpression(value)) return true;
     return (
@@ -223,7 +235,7 @@ export function collectClassMethodMutations(
     if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return null;
     const loop = list.parent;
     if (!ts.isForOfStatement(loop) || loop.initializer !== list) return null;
-    const values = unwrap(loop.expression);
+    const values = withoutParenthesesAssertionsNonNull(loop.expression);
     if (!ts.isArrayLiteralExpression(values)) return null;
     const names: (string | number)[] = [];
     for (const value of values.elements.nodes) {
@@ -234,8 +246,8 @@ export function collectClassMethodMutations(
     return names;
   };
   const sameBinding = (left: ts.Expression, right: ts.Expression): boolean => {
-    left = unwrap(left);
-    right = unwrap(right);
+    left = withoutParenthesesAssertionsNonNull(left);
+    right = withoutParenthesesAssertionsNonNull(right);
     if (!ts.isIdentifier(left) || !ts.isIdentifier(right)) return false;
     const symbol = lowerer.checker.getSymbolAtLocation(left);
     return symbol !== undefined && symbol === lowerer.checker.getSymbolAtLocation(right);
@@ -252,10 +264,10 @@ export function collectClassMethodMutations(
     if (!ts.isExpressionStatement(statement)) return false;
     const branch = statement.parent;
     if (!ts.isIfStatement(branch) || branch.thenStatement !== statement) return false;
-    const test = unwrap(branch.expression);
+    const test = withoutParenthesesAssertionsNonNull(branch.expression);
     if (!ts.isPrefixUnaryExpression(test) || test.operator !== ts.SyntaxKind.ExclamationToken)
       return false;
-    const present = unwrap(test.operand);
+    const present = withoutParenthesesAssertionsNonNull(test.operand);
     return (
       ts.isBinaryExpression(present) &&
       present.operatorToken.kind === ts.SyntaxKind.InKeyword &&
@@ -268,7 +280,8 @@ export function collectClassMethodMutations(
     receiver: ts.Expression,
     site: ts.Node,
   ): boolean => {
-    if (!ts.isDeleteExpression(site) || !ts.isIdentifier(unwrap(key))) return false;
+    if (!ts.isDeleteExpression(site) || !ts.isIdentifier(withoutParenthesesAssertionsNonNull(key)))
+      return false;
     const statement = site.parent;
     if (!ts.isExpressionStatement(statement)) return false;
     const loop = statement.parent;
@@ -276,7 +289,7 @@ export function collectClassMethodMutations(
     if (!ts.isVariableDeclarationList(loop.initializer)) return false;
     const decl = loop.initializer.declarations.nodes[0];
     if (!decl || !ts.isIdentifier(decl.name) || !sameBinding(key, decl.name)) return false;
-    const keys = unwrap(loop.expression);
+    const keys = withoutParenthesesAssertionsNonNull(loop.expression);
     return (
       ts.isCallExpression(keys) &&
       ts.isPropertyAccessExpression(keys.expression) &&
@@ -304,7 +317,7 @@ export function collectClassMethodMutations(
     receiver?: ts.Expression,
     target?: ts.ElementAccessExpression,
   ): void => {
-    const value = unwrap(key);
+    const value = withoutParenthesesAssertionsNonNull(key);
     if (ts.isStringLiteralLike(value)) markKeyed(value.text, site, receiver, target);
     else if (ts.isNumericLiteral(value))
       markKeyed(String(Number(value.text)), site, receiver, target);
@@ -313,7 +326,7 @@ export function collectClassMethodMutations(
     else computedWrites.push(target ? { key, receiver, target, site } : { key, receiver, site });
   };
   const markFields = (value: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
-    value = unwrap(value);
+    value = withoutParenthesesAssertionsNonNull(value);
     if (!ts.isObjectLiteralExpression(value)) {
       computedWrites.push({ key: undefined, receiver, site });
       return;
@@ -327,7 +340,7 @@ export function collectClassMethodMutations(
     }
   };
   const markTarget = (target: ts.Expression, site: ts.Node, arrow = false): void => {
-    target = unwrap(target);
+    target = withoutParenthesesAssertionsNonNull(target);
     if (ts.isPropertyAccessExpression(target)) {
       const name = target.name.text;
       // A named write to a method name is judged by the written property's
@@ -356,6 +369,7 @@ export function collectClassMethodMutations(
   };
   for (const file of files)
     ts.walkPreorder(file, (node) => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) allClasses.push(node);
       if (
         (ts.isPropertyDeclaration(node) ||
           ts.isPropertyAssignment(node) ||
@@ -383,7 +397,7 @@ export function collectClassMethodMutations(
         if (
           ts.isPropertyDeclaration(node) &&
           node.initializer &&
-          ts.isArrowFunction(unwrap(node.initializer))
+          ts.isArrowFunction(withoutParenthesesAssertionsNonNull(node.initializer))
         )
           arrowFields.add(node.name.text);
         else receiverFields.add(node.name.text);
@@ -394,7 +408,10 @@ export function collectClassMethodMutations(
           ts.isStringLiteralLike(node.name) ||
           ts.isNumericLiteral(node.name))
       ) {
-        if (!ts.isPropertyAssignment(node) || !ts.isArrowFunction(unwrap(node.initializer)))
+        if (
+          !ts.isPropertyAssignment(node) ||
+          !ts.isArrowFunction(withoutParenthesesAssertionsNonNull(node.initializer))
+        )
           receiverFields.add(node.name.text);
       }
       if (ts.isParameter(node) && ts.isIdentifier(node.name) && node.modifiers?.nodes.length)
@@ -407,6 +424,10 @@ export function collectClassMethodMutations(
       ) {
         receiverFields.add(node.name.text);
       }
+      if (ts.isCallExpression(node)) {
+        const mock = mockMethodTarget(lowerer, node);
+        if (mock) mockWrites.push({ ...mock, site: node });
+      }
       if (
         ts.isBinaryExpression(node) &&
         node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -416,7 +437,7 @@ export function collectClassMethodMutations(
           node.left,
           node,
           node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-            ts.isArrowFunction(unwrap(node.right)),
+            ts.isArrowFunction(withoutParenthesesAssertionsNonNull(node.right)),
         );
         if (
           isJsSourceFile(file) &&
@@ -450,7 +471,7 @@ export function collectClassMethodMutations(
       )
         lowerer.errorPrototypeValues = true;
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-        const base = unwrap(node.expression);
+        const base = withoutParenthesesAssertionsNonNull(node.expression);
         const prototype =
           (ts.isPropertyAccessExpression(base) && base.name.text === "prototype") ||
           (ts.isElementAccessExpression(base) &&
@@ -461,8 +482,11 @@ export function collectClassMethodMutations(
         const builtinCall =
           ts.isPropertyAccessExpression(node) &&
           ts.isPropertyAccessExpression(base) &&
-          ts.isIdentifier(unwrap(base.expression)) &&
-          lowerer.isStdlibGlobal(unwrap(base.expression) as ts.Identifier, "Object") &&
+          ts.isIdentifier(withoutParenthesesAssertionsNonNull(base.expression)) &&
+          lowerer.isStdlibGlobal(
+            withoutParenthesesAssertionsNonNull(base.expression) as ts.Identifier,
+            "Object",
+          ) &&
           ts.isPropertyAccessExpression(node.parent) &&
           node.parent.expression === node &&
           (node.parent.name.text === "call" || node.parent.name.text === "apply") &&
@@ -520,8 +544,13 @@ export function collectClassMethodMutations(
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") {
       markUnknownKey(node);
+      const call = node.parent;
+      const target =
+        ts.isCallExpression(call) && call.expression === node ? call.arguments.nodes[0] : undefined;
+      prototypeTargets.push(target && !ts.isSpreadElement(target) ? target : null);
+    }
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -535,11 +564,45 @@ export function collectClassMethodMutations(
       continue;
     }
     const receiver = call.arguments.nodes[0];
+    const receiverNode =
+      receiver !== undefined && !ts.isSpreadElement(receiver)
+        ? withoutParenthesesAssertionsNonNull(receiver)
+        : null;
+    const prototypeTarget =
+      receiverNode !== null &&
+      ts.isPropertyAccessExpression(receiverNode) &&
+      receiverNode.name.text === "prototype";
+    // Every name a definition on a class's prototype writes may replace an
+    // accessor or a method there, which the instances' compiled dispatch
+    // must observe (a read or write through the prototype view).
+    const notePrototypeKeys = (value: ts.Expression | undefined): void => {
+      if (!prototypeTarget || value === undefined) return;
+      const map = withoutParenthesesAssertionsNonNull(value);
+      if (!ts.isObjectLiteralExpression(map)) return;
+      for (const field of map.properties.nodes) {
+        if (ts.isSpreadAssignment(field) || !field.name) continue;
+        const name = field.name;
+        if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name))
+          lowerer.noteMethodAccess(
+            ts.isNumericLiteral(name) ? String(Number(name.text)) : name.text,
+            call,
+          );
+      }
+    };
+    if (single && prototypeTarget && call.arguments.nodes[1]) {
+      const key = withoutParenthesesAssertionsNonNull(call.arguments.nodes[1]);
+      if (ts.isStringLiteralLike(key) || ts.isNumericLiteral(key))
+        lowerer.noteMethodAccess(String(key.text), call);
+    }
     if (single && call.arguments.nodes[1]) markKey(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "defineProperties" && call.arguments.nodes[1])
+    else if (objectMethod === "defineProperties" && call.arguments.nodes[1]) {
+      notePrototypeKeys(call.arguments.nodes[1]);
       markFields(call.arguments.nodes[1], call, receiver);
-    else if (objectMethod === "assign")
-      for (const source of call.arguments.nodes.slice(1)) markFields(source, call, receiver);
+    } else if (objectMethod === "assign")
+      for (const source of call.arguments.nodes.slice(1)) {
+        notePrototypeKeys(source);
+        markFields(source, call, receiver);
+      }
   }
   lowerer.checker.prefetchClassCollection(
     computedWrites.flatMap((write) => [
@@ -589,7 +652,7 @@ export function collectClassMethodMutations(
   // class is an instance of that class (or a subclass); `this` elsewhere,
   // other type parameters, `any` and `unknown` answer null.
   const receiverType = (receiver: ts.Expression): ts.Type | null => {
-    receiver = unwrap(receiver);
+    receiver = withoutParenthesesAssertionsNonNull(receiver);
     if (receiver.kind === ts.SyntaxKind.ThisKeyword) {
       let member: ts.Node = receiver;
       while (
@@ -624,6 +687,25 @@ export function collectClassMethodMutations(
       return null;
     return type;
   };
+  // The classes whose instances a setPrototypeOf call may reprototype: every
+  // class whose instances its target's type admits, or all of them for a
+  // target `receiverType` cannot judge.
+  for (const target of prototypeTargets) {
+    const type = target ? receiverType(target) : null;
+    if (type === null) {
+      lowerer.reprototypedClasses.all = true;
+      break;
+    }
+    for (const cls of allClasses) {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      if (!symbol) {
+        lowerer.reprototypedClasses.decls.add(cls);
+        continue;
+      }
+      if (lowerer.checker.isTypeAssignableTo(lowerer.checker.getDeclaredTypeOfSymbol(symbol), type))
+        lowerer.reprototypedClasses.decls.add(cls);
+    }
+  }
   // A function-typed write shadows a method only on an object that has the
   // method: an instance of a class with method `name` that the receiver's
   // type admits. Without one (a callback field of an unrelated class that
@@ -656,7 +738,7 @@ export function collectClassMethodMutations(
   for (const { key, receiver, target, site } of computedWrites) {
     // A class method declared with a well-known symbol key is not a write;
     // any other write with one can replace that method.
-    const symbolName = key ? wellKnownMethodName(unwrap(key)) : null;
+    const symbolName = key ? wellKnownMethodName(withoutParenthesesAssertionsNonNull(key)) : null;
     if (symbolName) {
       const declaration =
         (ts.isMethodDeclaration(site) ||
@@ -668,7 +750,10 @@ export function collectClassMethodMutations(
       continue;
     }
     const type = key ? lowerer.typeOf(key) : undefined;
-    const names = type && (literalValues(type) ?? (key ? literalLoopKeys(unwrap(key)) : null));
+    const names =
+      type &&
+      (literalValues(type) ??
+        (key ? literalLoopKeys(withoutParenthesesAssertionsNonNull(key)) : null));
     if (names) {
       for (const name of names) markKeyed(String(name), site, receiver, target);
       continue;
@@ -702,6 +787,16 @@ export function collectClassMethodMutations(
       (functionFree(lowerer.typeOf(target)) || !methodOwnerCanInhabit(receiver, name))
     )
       continue;
+    if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
+    else lowerer.noteMethodAccess(name, site);
+  }
+  // A mock on a class instance or on a class's prototype object replaces
+  // that method for the class's compiled calls: the call sites must be able
+  // to observe the property the mock writes.
+  for (const { name, receiver, site } of mockWrites) {
+    const base = withoutParenthesesAssertionsNonNull(receiver);
+    const prototype = ts.isPropertyAccessExpression(base) && base.name.text === "prototype";
+    if (!prototype && !methodOwnerCanInhabit(receiver, name)) continue;
     if (lowerer.prototypeMethodAccesses.has(name)) lowerer.noteMethodSite(name, site);
     else lowerer.noteMethodAccess(name, site);
   }

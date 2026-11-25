@@ -1,0 +1,6 @@
+jsdoc-unchecked-field-project-entry.js:10:3 - error SC0001: Property 'slot_def' has no initializer and is not definitely assigned in the constructor.
+
+   9 |   /** @type {string} */
+  10 |   slot_def;
+     |   ^~~~~~~~
+  11 | 

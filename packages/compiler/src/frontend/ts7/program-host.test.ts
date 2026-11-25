@@ -8,6 +8,7 @@ import {
   Ts7Host,
   type Ts7ApiOptions,
   type Ts7CompilerOptions,
+  type Ts7ProjectLineage,
 } from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "./session-path.js";
@@ -283,6 +284,39 @@ test("disposing a shared program retires its config and closes only that project
   } finally {
     second.dispose();
   }
+});
+
+test("one lineage updates a shared project and keeps unchanged syntax trees", () => {
+  const { directory, entry } = fixture();
+  const other = join(directory, "other.ts");
+  writeFileSync(other, "export const other = 1;\n");
+  const { host, api, connection } = makeHost(directory);
+  const update = vi.spyOn(api, "updateSnapshot");
+  const lineage: Ts7ProjectLineage = {};
+  const first = host.createProgram([entry], options, false, lineage);
+  const config = update.mock.calls[0]![0]!.openProjects![0] as string;
+  const source = first.getSourceFile(entry)!;
+  // The next pass adds a root: same config path, notified as changed, so the
+  // server updates one project instead of opening another.
+  const second = host.createProgram([entry, other], options, false, lineage);
+  try {
+    expect(update.mock.calls[1]![0]!.openProjects).toEqual([config]);
+    expect(update.mock.calls[1]![0]!.closeProjects).toEqual([]);
+    expect(update.mock.calls[1]![0]!.fileChanges).toEqual({
+      created: [],
+      changed: [tsgoPath(config)],
+    });
+    expect(second.project.id).toBe(first.project.id);
+    expect(second.getSourceFile(entry)).toBe(source);
+    expect(second.getSourceFile(other)?.text).toBe("export const other = 1;\n");
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+  // A program leaves the shared project open; the load retires it.
+  expect(connection.fs.readFile(config)).not.toBeNull();
+  host.releaseLineage(lineage);
+  expect(connection.fs.readFile(config)).toBeNull();
 });
 
 test("failed program updates retire their config and can be retried", () => {

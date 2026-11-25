@@ -198,6 +198,10 @@ int main(int argc, char **argv) {
   scr_dyn_release(no);
   scr_dyn_release(yes);
 #ifdef SCR_RC_AUDIT
+  /* The Url class (constructor and prototype) is initialized by the first
+   * parse() result and kept for the process; the emptiness audit runs before
+   * atexit, so release it here. */
+  scr_url_legacy_class_release();
   if (scr_str_live_count() != 0) {
     fprintf(stderr, "live strings at exit: %ld\n", scr_str_live_count());
     failed++;

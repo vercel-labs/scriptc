@@ -22,6 +22,9 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
       // not codegen, so -O0 keeps every assertion and sanitizer check and
       // builds in about 15s.
       "-O0",
+      // The build a program with promise adapters links: a boxed promise is
+      // keyed by the identity cell its adapters share.
+      "-DSCR_DYN_PROMISE_KEYS",
       "-Wall",
       "-Wextra",
       "-fsanitize=address,undefined",
@@ -63,7 +66,9 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
         UBSAN_OPTIONS: "halt_on_error=1",
       },
     });
-    expect(result.stdout).toBe("number-key maps passed\n");
+    // The same binary first checks that a checked-dynamic key is an object's
+    // identity and never its box (identity_keys in scr_map.test.c).
+    expect(result.stdout).toBe("identity keys passed\nnumber-key maps passed\n");
     expect(result.stderr).toBe("");
   } finally {
     await rm(scratch, { recursive: true, force: true });

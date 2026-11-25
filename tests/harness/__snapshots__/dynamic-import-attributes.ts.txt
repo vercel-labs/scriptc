@@ -1,0 +1,13 @@
+dynamic-import-attributes.ts:6:10 - error SC1090: dynamic import() with import attributes are not supported yet
+
+  5 | function load(name: string): Promise<unknown> {
+  6 |   return import(name, { with: { type: "json" } });
+    |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  7 | }
+
+dynamic-import-attributes.ts:10:9 - error SC1090: dynamic import() with import attributes are not supported yet
+
+   9 | async function main(): Promise<void> {
+  10 |   await import("node:path", { with: { type: "json" } });
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 |   await load("node:path");

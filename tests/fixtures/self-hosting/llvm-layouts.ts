@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { deserializeModule } from "../../../packages/compiler/src/ir/serialize.js";
 import { computeTraced } from "../../../packages/compiler/src/backend/cycle-analysis.js";
@@ -37,6 +38,21 @@ try {
   const mapOps: string[] = [];
   const literals: string[] = [];
   const units: { union: string; tag: number }[] = [];
+  // The names the emitter's contentSymbol has taken, so a digest collision
+  // retries the same way.
+  const contentSymbols = new Set<string>();
+  const contentSymbol = (prefix: string, text: string): string => {
+    for (let attempt = 0; ; attempt++) {
+      const digest = createHash("sha256")
+        .update(attempt === 0 ? text : `${attempt}\0${text}`)
+        .digest("hex");
+      const symbol = `${prefix}${parseInt(digest.slice(0, 13), 16)}`;
+      if (!contentSymbols.has(symbol)) {
+        contentSymbols.add(symbol);
+        return symbol;
+      }
+    }
+  };
   let needsOom = false;
   let needsBadTag = false;
   let cycKinds = 0;
@@ -52,6 +68,7 @@ try {
     needOom: () => { needsOom = true; },
     needBadTag: () => { needsBadTag = true; },
     mayHoldForeign: () => false,
+    contentSymbol,
     internLiteral: (text) => {
       let index = literals.indexOf(text);
       if (index === -1) { index = literals.length; literals.push(text); }
@@ -70,6 +87,8 @@ try {
     nullableUnions,
     inlineUnions,
     unionNoneRef: () => { needsUnionNone = true; return "@sc_union_none"; },
+    // Mirrors the emitter: the optional-dyn ABSENT marker is one immortal.
+    dynAbsentRef: () => "@sc_dyn_absent",
     recordCloneShapes: new Set(request.clones),
     rcHelpers: null,
     unitInstanceRef: (union, tag) => {

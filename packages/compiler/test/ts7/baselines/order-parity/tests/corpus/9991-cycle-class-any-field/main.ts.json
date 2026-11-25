@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9991-cycle-class-any-field/helper.ts",
+  "<repo>/tests/corpus/9991-cycle-class-any-field/hub.ts",
+  "<repo>/tests/corpus/9991-cycle-class-any-field/main.ts"
+ ],
+ "diags": []
+}

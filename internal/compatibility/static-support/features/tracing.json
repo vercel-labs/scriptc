@@ -1,0 +1,4 @@
+[
+    { "chapter": "tracing", "symbols": ["node:trace_events", "trace_events.createTracing", "trace_events.getEnabledCategories"], "status": "supported", "evidence": ["tests/corpus/trace-events-tracing.cjs"], "reason": "A compiled binary carries no trace-event agent, so enabling a category records no trace data; the module's objects and answers behave as in Node run without the --trace-event-* flags." },
+    { "chapter": "tracing", "symbols": ["Tracing", "tracing.enable", "tracing.disable", "categories", "enabled"], "status": "supported", "evidence": ["tests/corpus/trace-events-tracing.cjs"], "reason": "The Tracing object keeps Node's categories string, enabled flag and enable()/disable() behavior; with no trace-event agent in a compiled binary it records nothing, as Node does without the --trace-event-* flags." }
+]

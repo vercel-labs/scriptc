@@ -329,8 +329,10 @@ export function validatorCases(): ValidatorCase[] {
           const reference: IrType = { kind: "record", shapeId: "key" };
           const key: IrType = { kind: "union", unionId: "keys" };
           m.records = [{ id: "key", fields: [{ name: "id", type: F64 }] }];
-          const other =
-            domain === "identity" ? arrayOf(F64) : domain === "mixed" ? STRING : mapOf(STRING, F64);
+          // A Map arm is an identity key now: the unsupported arm is the
+          // regular-expression kind, which has no key representation.
+          const other: IrType =
+            domain === "identity" ? arrayOf(F64) : domain === "mixed" ? STRING : { kind: "regex" };
           m.unions = [{ id: "keys", arms: [reference, other] }];
           const expr: IrExpr =
             collection === "map"
@@ -346,7 +348,8 @@ export function validatorCases(): ValidatorCase[] {
       );
     }
   }
-  for (const value of [F64, mapOf(STRING, F64)]) {
+  const unsupportedElement: IrType = { kind: "child" };
+  for (const value of [F64, mapOf(STRING, F64), unsupportedElement]) {
     add(
       `map valueSet ${value.kind}`,
       (m) => {
@@ -362,7 +365,9 @@ export function validatorCases(): ValidatorCase[] {
           }),
         ];
       },
-      value.kind === "f64" ? undefined : "mapIntrinsic valueSet element kind map",
+      value.kind === "f64" || value.kind === "map"
+        ? undefined
+        : `mapIntrinsic valueSet element kind ${value.kind}`,
     );
   }
   add(

@@ -16,6 +16,20 @@ static inline uint64_t scr_key_mix(uint64_t value) {
   return value ^ (value >> 31);
 }
 
+/* The number and identity-word key hash of native maps. Float exponents and
+ * aligned pointers need their high bits folded down, or the multiply never
+ * reaches the low bucket-index bits; the first xor folds the high half into
+ * the low, the multiply spreads both across all bits, and the last xor brings
+ * the product's high half back down. One multiply keeps the chain from key to
+ * bucket index short, which is the whole cost of a warm lookup. The LLVM
+ * backend's inline number-key probe (sc_map_entry_f64_hashed) expands the
+ * same steps. */
+static inline uint64_t scr_key_word_hash(uint64_t value) {
+  value ^= value >> 32;
+  value *= UINT64_C(0x9e3779b97f4a7c15);
+  return value ^ (value >> 29);
+}
+
 /* Pack at most eight bytes with fixed-size, unaligned loads. The overlapping
  * ends cover every byte at lengths four through eight; the three selected
  * bytes cover lengths one through three. No terminator or padding is read. */

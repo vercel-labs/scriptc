@@ -120,7 +120,7 @@ CodeGenOptLevel codeGenLevel(StringRef Level) {
 
 static bool ProfileLayout = false;
 
-void enableProfileLayout() { ProfileLayout = true; }
+void setProfileLayout(bool Enabled) { ProfileLayout = Enabled; }
 
 TargetOptions targetOptions(const Triple &TargetTriple) {
   TargetOptions Options;

@@ -7,6 +7,10 @@
  * interleaves with timers or other fibers — observable only in concurrent
  * code. readFile is utf8-only, like readFileSync. */
 declare module "fs/promises" {
+  /* fs/promises.constants IS the fs.constants group (Node re-exports the
+   * same object). */
+  export const constants: typeof import("node:fs").constants;
+
   export interface FileReadResult<T extends Uint8Array> {
     bytesRead: number;
     buffer: T;
@@ -39,6 +43,7 @@ declare module "fs/promises" {
     start?: number;
     end?: number;
     highWaterMark?: number;
+    signal?: AbortSignal;
   }
   export interface CreateWriteStreamOptions {
     encoding?: BufferEncoding | null;
@@ -54,10 +59,16 @@ declare module "fs/promises" {
     createReadStream(options?: CreateReadStreamOptions): import("node:fs").ReadStream;
     createWriteStream(options?: CreateWriteStreamOptions): import("node:fs").WriteStream;
     readLines(options?: CreateReadStreamOptions): import("node:readline").Interface;
+    /** The handle's content as Node's type: "bytes" web stream. */
+    readableWebStream(options?: {
+      type?: "bytes";
+      autoClose?: boolean;
+    }): ReadableStream<Uint8Array>;
     sync(): Promise<void>;
     datasync(): Promise<void>;
     truncate(len?: number): Promise<void>;
     chmod(mode: number): Promise<void>;
+    chown(uid: number, gid: number): Promise<void>;
     utimes(atime: number | string | Date, mtime: number | string | Date): Promise<void>;
     readv<T extends Uint8Array[]>(
       buffers: T,
@@ -95,10 +106,30 @@ declare module "fs/promises" {
       position?: number | null,
       encoding?: "utf8" | "utf-8" | null,
     ): Promise<FileWriteResult<string>>;
-    readFile(options?: null): Promise<Buffer>;
-    readFile(encoding: "utf8" | "utf-8"): Promise<string>;
-    writeFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
-    appendFile(data: string | Uint8Array, encoding?: "utf8" | "utf-8" | null): Promise<void>;
+    /* readFile's options: the record's encoding (or the bare encoding
+     * name) selects the codec, and a nullish encoding answers the bytes.
+     * `flag` is read off the record and ignored over an open handle. */
+    readFile(options?: { encoding?: null; flag?: string | number } | null): Promise<Buffer>;
+    readFile(
+      options: { encoding: BufferEncoding; flag?: string | number } | BufferEncoding,
+    ): Promise<string>;
+    /* writeFile and appendFile encode string data with the record's
+     * encoding (or the bare encoding name); mode and flag are ignored over
+     * an open handle and flush fences at the call site. */
+    writeFile(
+      data: string | ScriptcBufferView,
+      options?:
+        | BufferEncoding
+        | { encoding?: BufferEncoding | null; mode?: number | string; flag?: string | number }
+        | null,
+    ): Promise<void>;
+    appendFile(
+      data: string | ScriptcBufferView,
+      options?:
+        | BufferEncoding
+        | { encoding?: BufferEncoding | null; mode?: number | string; flag?: string | number }
+        | null,
+    ): Promise<void>;
     stat(): Promise<import("node:fs").Stats>;
     [Symbol.asyncDispose](): Promise<void>;
   }
@@ -147,7 +178,7 @@ declare module "fs/promises" {
   export function readFile(path: string | URL): Promise<Buffer>;
   export function writeFile(
     path: string | URL,
-    data: string,
+    data: string | ScriptcBufferView,
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";
@@ -157,7 +188,7 @@ declare module "fs/promises" {
   ): Promise<void>;
   export function writeFile(
     path: string | URL,
-    data: string,
+    data: string | ScriptcBufferView,
     encoding: "utf8" | "utf-8",
   ): Promise<void>;
   export function mkdir(
@@ -165,6 +196,18 @@ declare module "fs/promises" {
     options?: { recursive?: boolean; mode?: number },
   ): Promise<void>;
   export function readdir(path: string | URL): Promise<string[]>;
+  /* The bare encoding spellings and the bytes record, like readdirSync's. */
+  export function readdir(path: string | URL, options: "buffer"): Promise<Buffer[]>;
+  export function readdir(path: string | URL, options: BufferEncoding): Promise<string[]>;
+  export function readdir(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Promise<Buffer[]>;
+  /* The names decoded with the record's encoding (utf8 by default). */
+  export function readdir(
+    path: string | URL,
+    options: { encoding?: BufferEncoding | null; withFileTypes?: false; recursive?: boolean },
+  ): Promise<string[]>;
   export function readdir(
     path: string | URL,
     options: {
@@ -207,17 +250,45 @@ declare module "fs/promises" {
   export function chmod(path: string | URL, mode: number): Promise<void>;
   export function chown(path: string | URL, uid: number, gid: number): Promise<void>;
   export function lchown(path: string | URL, uid: number, gid: number): Promise<void>;
+  /** Platform-specific: defined everywhere as a promise, rejecting with
+   * ERR_METHOD_NOT_IMPLEMENTED where lchmod(2) does not exist (Linux). */
+  export function lchmod(path: string | URL, mode: number): Promise<void>;
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
-  export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
+  export function appendFile(path: string | URL, data: string | ScriptcBufferView): Promise<void>;
   export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
+  /** The object fsPromises.mkdtempDisposable answers: the created path, its
+   * removal, and the Symbol.asyncDispose hook. */
+  export interface DisposableTempDir extends AsyncDisposable {
+    path: string;
+    remove(): Promise<void>;
+  }
+  export function mkdtempDisposable(
+    prefix: string | URL,
+    options?: string | { encoding?: string },
+  ): Promise<DisposableTempDir>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;
   export function opendir(
     path: string | URL,
     options?: import("node:fs").OpenDirOptions,
   ): Promise<import("node:fs").Dir>;
+  /** One entry of fsPromises.watch's iteration: the event kind and the
+   * entry name the platform reported. */
+  export interface FileChangeInfo {
+    eventType: string;
+    filename: string | null;
+  }
+  export interface WatchOptions {
+    persistent?: boolean;
+    recursive?: boolean;
+    encoding?: string;
+  }
+  export function watch(
+    filename: string | URL,
+    options?: WatchOptions,
+  ): AsyncIterable<FileChangeInfo>;
 }
 
 declare module "node:fs/promises" {

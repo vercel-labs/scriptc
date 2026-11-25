@@ -1,8 +1,11 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { clearVirtualSources, setVirtualSource } from "../frontend/input-tracker.js";
 import {
+  ModuleSpecifierScans,
   NodeIslandModuleCollector,
   namedDataPaths,
   nodeIslandManifest,
@@ -91,6 +94,96 @@ describe("module specifiers in JavaScript", () => {
     expect(scan.computed).toEqual([]);
   });
 
+  test("a program module's syntactically bounded loads name every value", () => {
+    expect(
+      scanModuleSpecifiers(
+        `
+        const flag = Math.random() > 0.5;
+        require(flag ? "./c.js" : "./d.js");
+        require("./a/" + "x.js");
+        require(("./b" + ".js"));
+        require(("./x" + ".js") || "./g.js");
+        require(("." + "/h.js") ?? "./i.js");
+      `,
+        undefined,
+        { bounds: true },
+      ),
+    ).toEqual({
+      specifiers: [
+        "./c.js",
+        "./d.js",
+        "./a/x.js",
+        "./b.js",
+        "./x.js",
+        "./g.js",
+        "./h.js",
+        "./i.js",
+      ],
+      computed: [],
+    });
+  });
+
+  test("a bounded scan still reports the loads it cannot bound", () => {
+    const forms = (text: string) =>
+      scanModuleSpecifiers(text, undefined, { bounds: true }).computed.map((c) => c.form);
+    expect(forms("require('./a/' + name)")).toEqual(["require() with a computed specifier"]);
+    expect(forms("import(`./x/${y}`)")).toEqual(["import() with a computed specifier"]);
+    expect(forms("require(flag ? './a.js' : name)")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    // The scan reads literals only: a bound the frontend's const analysis
+    // proves (a `process.env` branch, a no-span template) is not one here.
+    expect(forms("require(process.env.SCRIPTC_M ?? './e.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(forms("require(`./g.js`)")).toEqual(["require() with a computed specifier"]);
+    // `+` binds tighter than `||`, so this concatenates the union as a whole:
+    // no flat chain names its values (parenthesized, it would bound).
+    expect(forms("require('./a.js' || './b' + '.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(
+      scanModuleSpecifiers("require(('./a.js' || './b') + '.js')", undefined, { bounds: true }),
+    ).toEqual({
+      specifiers: ["./a.js.js", "./b.js"],
+      computed: [],
+    });
+  });
+
+  test("without bounds a computed load is neither bound nor traced", () => {
+    expect(scanModuleSpecifiers('require("./a/" + "x.js")')).toEqual({
+      specifiers: [],
+      computed: [{ at: 0, form: "require() with a computed specifier" }],
+    });
+  });
+
+  test("type-only import and export declarations name no runtime module", () => {
+    const text = `
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as c from "./c.ts";
+      import type d = require("./d.ts");
+      export type { E } from "./e.ts";
+      export type * from "./f.ts";
+      import type from "./value.ts";
+      import type, { K } from "./value2.ts";
+      import { type G, h } from "./g.ts";
+      import { type I } from "./i.ts";
+      export { type J } from "./j.ts";
+    `;
+    // Node's type stripper erases `import type` / `export type` whole. The
+    // `type` modifier inside a value import's or export's name list keeps
+    // its statement, which loads the module.
+    expect(scanModuleSpecifiers(text).specifiers).toEqual([
+      "./value.ts",
+      "./value2.ts",
+      "./g.ts",
+      "./i.ts",
+      "./j.ts",
+    ]);
+    expect(scanModuleSpecifiers(text).computed).toEqual([]);
+  });
+
   test("computed loads are reported", () => {
     const forms = (text: string) => scanModuleSpecifiers(text).computed.map((c) => c.form);
     expect(forms("require(name)")).toEqual(["require() with a computed specifier"]);
@@ -110,6 +203,18 @@ describe("module specifiers in JavaScript", () => {
       "require as a value",
     ]);
     expect(forms("function require(x) {} typeof require")).toEqual([]);
+  });
+
+  test("a shared scan answers for the text it was scanned from, and no other", () => {
+    const scans = new ModuleSpecifierScans();
+    const first = scans.of("/pkg/index.js", 'require("zoo");');
+    expect(first.specifiers).toEqual(["zoo"]);
+    // The same file with the same text is not scanned again.
+    expect(scans.of("/pkg/index.js", 'require("zoo");')).toBe(first);
+    // The file's text changed: the answer is the new text's.
+    expect(scans.of("/pkg/index.js", 'require("yak");').specifiers).toEqual(["yak"]);
+    // Another file with the first text has an answer of its own.
+    expect(scans.of("/pkg/other.js", 'require("zoo");').specifiers).toEqual(["zoo"]);
   });
 });
 
@@ -154,6 +259,98 @@ describe("the collected module tree", () => {
     );
   });
 
+  // Node's type stripping erases a `import type`/`export type` clause whole, so
+  // the module it names never loads, while `import { type I } from "./i.ts"`
+  // keeps its statement and does load the module for its side effects.
+  test("a type-only clause loads nothing, and a default binding named type does", () => {
+    const scan = scanModuleSpecifiers(`
+      import type { A } from "./a.ts";
+      import type B from "./b.ts";
+      import type * as C from "./c.ts";
+      export type { D } from "./d.ts";
+      export type * from "./e.ts";
+      import type F = require("./f.ts");
+      import type from "./g.ts";
+      import type, { H } from "./h.ts";
+      import { type I } from "./i.ts";
+    `);
+    expect(scan.specifiers).toEqual(["./g.ts", "./h.ts", "./i.ts"]);
+    expect(scan.computed).toEqual([]);
+  });
+
+  // Without a `;` the clause ends where the next statement begins, and the
+  // runtime loads after it still load: an exported type alias or a type-only
+  // import-equals must not swallow them, nor a type-only import written
+  // across lines lose the specifier it names.
+  test("a semicolonless type-only clause ends at the next statement", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      import { a } from "./runtime.ts";
+      import type Beta = require("./types.ts")
+      const b = require("./more.ts");
+      export type Gamma = { g: string }
+      const c = require(name);
+      export type Delta =
+        | { d: string }
+        | string;
+      const e = require("./last.ts");
+      import type {
+        F,
+        G,
+      } from "./only-types.ts"
+      const h = require("./after-braces.ts");
+      export type Epsilon = Map<
+        string,
+        number
+      >
+      const i = require("./after-generics.ts");
+    `);
+    expect(scan.specifiers).toEqual([
+      "./runtime.ts",
+      "./more.ts",
+      "./last.ts",
+      "./after-braces.ts",
+      "./after-generics.ts",
+    ]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
+  // A statement can begin with `typeof`, so the guard after a semicolonless
+  // type clause is runtime code: the loads it makes still load, and a
+  // computed one is still refused. A type query inside the clause keeps it
+  // open and names no load.
+  test("a typeof guard after a semicolonless type clause still loads", () => {
+    const scan = scanModuleSpecifiers(`
+      export type Alpha = string
+      typeof require === "function" && require("./guarded.ts");
+      export type Beta = { b: string }
+      typeof require !== "undefined" && require(name);
+      export type Gamma =
+        typeof require
+      const d = require("./after-typeof.ts");
+      export type Delta = keyof
+        typeof require
+      const e = require("./after-keyof.ts");
+    `);
+    expect(scan.specifiers).toEqual(["./guarded.ts", "./after-typeof.ts", "./after-keyof.ts"]);
+    expect(scan.computed.map((c) => c.form)).toEqual(["require() with a computed specifier"]);
+  });
+
+  test("a type-only import of a module with a computed load is not refused", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": 'import type { Env } from "./env.ts";\nconst x: Env = {};\nexport { x };',
+      "src/env.ts":
+        "type DynamicImport = (specifier: string) => Promise<unknown>;\nconst load: DynamicImport = (specifier) => import(specifier);\nexport type Env = typeof load;\n",
+      "src/reexport.ts": 'export type { Env } from "./env.ts";',
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    expect(collector.add(join(root, "src/main.ts"), "./reexport.ts")).toBeNull();
+    // The program's module ships; the module its type-only clause names does not.
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["loader.ts", "reexport.ts"]);
+  });
+
   test("a package ships whole, with its dependencies, but not its nested node_modules", () => {
     const root = project({
       "main.ts": "",
@@ -174,6 +371,34 @@ describe("the collected module tree", () => {
       "node_modules/pkg/lib/extra.json",
       "node_modules/pkg/package.json",
     ]);
+  });
+
+  test("a source the compiler synthesized beside a package's files is not shipped", () => {
+    // A package compiled natively gets generated declarations in the
+    // compiler's file shadow; an island that depends on the package ships
+    // its directory, which lists them, and they are on no disk.
+    const root = project({
+      "main.ts": "",
+      "node_modules/pkg/package.json": JSON.stringify({ dependencies: { dep: "1" } }),
+      "node_modules/pkg/index.js": "module.exports = require('dep');",
+      "node_modules/dep/package.json": "{}",
+      "node_modules/dep/index.js": "module.exports = 1;",
+    });
+    setVirtualSource(join(root, "node_modules/dep/index.scriptc-types.d.ts"), "export type T = 1;");
+    try {
+      const collector = new NodeIslandModuleCollector();
+      expect(collector.add(join(root, "main.ts"), "pkg")).toBeNull();
+      const tree = collector.tree()!;
+      expect(tree.files.map((f) => f.path)).toEqual([
+        "node_modules/dep/index.js",
+        "node_modules/dep/package.json",
+        "node_modules/pkg/index.js",
+        "node_modules/pkg/package.json",
+      ]);
+      expect(readNodeIslandModules(tree)).toBeInstanceOf(Uint8Array);
+    } finally {
+      clearVirtualSources();
+    }
   });
 
   test("packages a package loads without declaring them ship too", () => {
@@ -204,6 +429,41 @@ describe("the collected module tree", () => {
       "node_modules/zoo/index.js",
       "node_modules/zoo/package.json",
     ]);
+  });
+
+  test("collectors that share their scans build the same tree as one that does not", () => {
+    const root = project({
+      "main.ts": "",
+      "node_modules/bridge/package.json": "{}",
+      "node_modules/bridge/index.js": 'const zoo = require("zoo");\nmodule.exports = zoo;',
+      "node_modules/zoo/package.json": "{}",
+      "node_modules/zoo/index.js": "exports.a = 1;",
+    });
+    const paths = (collector: NodeIslandModuleCollector): string[] => {
+      expect(collector.addLoaded(join(root, "node_modules/bridge/index.js"))).toBeNull();
+      return collector.tree()!.files.map((f) => f.path);
+    };
+    const alone = paths(new NodeIslandModuleCollector());
+    const scans = new ModuleSpecifierScans();
+    // Two passes of one round: the second collector reads the first's scans.
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(paths(new NodeIslandModuleCollector(scans))).toEqual(alone);
+    expect(alone).toContain("node_modules/zoo/index.js");
+  });
+
+  test("type-only imports ship nothing and are not traced", () => {
+    const root = project({
+      "main.ts":
+        'import type { T } from "./types.ts";\nimport "./shared.ts";\nexport const t: T = 0;\n',
+      "types.ts": 'import type { U } from "./other.ts";\nexport type T = U;\n',
+      // Node never loads this file, so its computed load is not a problem.
+      "other.ts":
+        "const load = (specifier: string) => import(specifier);\nexport type U = number;\n",
+      "shared.ts": "export const y = 1;\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.addLoaded(join(root, "main.ts"))).toBeNull();
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual(["main.ts", "shared.ts"]);
   });
 
   test("pnpm's links between package directories stay links inside the tree", () => {
@@ -370,7 +630,14 @@ describe("the collected module tree", () => {
     const collector = new NodeIslandModuleCollector();
     collector.add(join(root, "main.ts"), "./m.cjs");
     const tree = collector.tree()!;
-    expect(nodeIslandManifest(tree)).not.toContain(root);
+    const manifest = nodeIslandManifest(tree);
+    expect(manifest).not.toContain(root);
+    // The tree's name is the digest of its files and links, first in the
+    // text, in the one form the runtime reads without a JSON parser.
+    const { tree: name, ...rest } = JSON.parse(manifest) as { tree: string };
+    expect(name).toBe(createHash("sha256").update(JSON.stringify(rest)).digest("hex"));
+    expect(manifest.startsWith(`{"tree":"${name}","files":[["m.cjs",20,"`)).toBe(true);
+    expect(manifest.endsWith(`"]],"links":[]}`)).toBe(true);
     expect(readNodeIslandModules(tree)).toEqual(new TextEncoder().encode("exports.f = () => 1;"));
     writeFileSync(join(root, "m.cjs"), "exports.f = () => 2;");
     expect(readNodeIslandModules(tree)).toBe(`${join(root, "m.cjs")} changed during the build`);

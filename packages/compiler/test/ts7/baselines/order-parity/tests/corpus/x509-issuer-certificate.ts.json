@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/x509-issuer-certificate.ts"
+ ],
+ "diags": []
+}

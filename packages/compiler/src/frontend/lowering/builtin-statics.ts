@@ -13,12 +13,15 @@ import {
   DYN,
   F64,
   STRING,
+  SYMBOL_T,
+  VOID,
   type IrExpr,
   type IrFunction,
   type IrStmt,
   type IrType,
   type SrcLoc,
   funcOf,
+  primitiveConstructorType,
 } from "../../ir/ir.js";
 import { varRef } from "../../ir/build.js";
 import { everyStmtList } from "../../ir/traverse.js";
@@ -32,6 +35,8 @@ import {
 } from "./lower-builtin-values.js";
 import { lowerArrayFromValue } from "./containers/array-construction.js";
 import { numberPredicateValue } from "./builtins/numbers.js";
+import { reflectMemberValue } from "./builtins/reflection.js";
+import type { FunctionCensus } from "./function-census.js";
 
 const LOOKUP_FN = "%builtin.staticValue";
 
@@ -68,15 +73,50 @@ function staticValueMembers(owner: string): Readonly<Record<string, number>> {
       return { now: 0 };
     case "Error":
       return { captureStackTrace: 2 };
+    case "Symbol": {
+      const members: Record<string, number> = { for: 1, keyFor: 1 };
+      for (const key of WELL_KNOWN_SYMBOLS) members[key] = SYMBOL_CONSTANT;
+      return members;
+    }
     default:
       return {};
   }
 }
 
+/** Node 24's well-known symbols, the Symbol constructor's constant
+ * members. */
+const WELL_KNOWN_SYMBOLS = [
+  "asyncIterator",
+  "hasInstance",
+  "isConcatSpreadable",
+  "iterator",
+  "match",
+  "matchAll",
+  "replace",
+  "search",
+  "species",
+  "split",
+  "toPrimitive",
+  "toStringTag",
+  "unscopables",
+  "dispose",
+  "asyncDispose",
+];
+
+/** The length staticValueMembers gives a well-known symbol: the lookup
+ * answers it whether or not the program names it. */
+const SYMBOL_CONSTANT = -1;
+
 /** The compiled closures the primitive constructors read as (lower-exprs.ts
- * primitiveCtorClosure). The runtime does not intern them, so the lookup
- * names their constructor when the runtime asks for the key "". */
+ * primitiveCtorClosure, and Symbol's in global-function-values.ts), and the
+ * conversion closures an array callback position holds in their place
+ * (primitiveConversionCallback). The runtime does not intern them, so the
+ * lookup names their constructor when the runtime asks for the key "". */
 const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
+  ["%builtin.constructor.String", "String"],
+  ["%builtin.constructor.Number", "Number"],
+  ["%builtin.constructor.Boolean", "Boolean"],
+  ["%builtin.constructor.BigInt", "BigInt"],
   ["%builtin.String", "String"],
   ["%builtin.String.dyn", "String"],
   ["%builtin.Number", "Number"],
@@ -85,6 +125,7 @@ const PRIMITIVE_CONSTRUCTORS: ReadonlyMap<string, string> = new Map([
   ["%builtin.Boolean.dyn", "Boolean"],
   ["%builtin.BigInt", "BigInt"],
   ["%builtin.BigInt.dyn", "BigInt"],
+  ["%builtin.global.Symbol", "Symbol"],
 ]);
 
 /** The function value the static spelling `owner.key` reads, or null when
@@ -121,13 +162,66 @@ export function constructorStaticValue(
             loc,
           )
         : null;
+    case "Symbol":
+      return symbolStaticValue(lowerer, key, loc);
     case "Error":
       return key === "captureStackTrace"
         ? { kind: "libCall", fn: "dyn.errorCaptureStackTraceFunction", args: [], type: DYN, loc }
         : null;
+    // The Reflect namespace reads as its member values: the same closures
+    // its JavaScript namespace object answers, with Node's name and length.
+    case "Reflect":
+      return reflectMemberValue(lowerer, key, loc);
     default:
       return null;
   }
+}
+
+/** Symbol.for, Symbol.keyFor and the well-known symbols. */
+function symbolStaticValue(lowerer: Lowerer, key: string, loc: SrcLoc): IrExpr | null {
+  if (WELL_KNOWN_SYMBOLS.includes(key))
+    return {
+      kind: "dynFrom",
+      value: {
+        kind: "libCall",
+        fn: "sym.wellKnown",
+        args: [{ kind: "strLit", value: key, type: STRING, loc }],
+        type: SYMBOL_T,
+        loc,
+      },
+      type: DYN,
+      loc,
+    };
+  if (key !== "for" && key !== "keyFor") return null;
+  const name = `%builtin.Symbol.${key}`;
+  const argument = varRef("value", DYN, loc);
+  const value: IrExpr =
+    key === "for"
+      ? {
+          kind: "dynFrom",
+          value: {
+            kind: "libCall",
+            fn: "sym.for",
+            args: [
+              { kind: "libCall", fn: "dyn.toStringCoerce", args: [argument], type: STRING, loc },
+            ],
+            type: SYMBOL_T,
+            loc,
+          },
+          type: DYN,
+          loc,
+        }
+      : { kind: "libCall", fn: "sym.keyForDyn", args: [argument], type: DYN, loc };
+  if (lowerer.liftedFnNamed(name) === undefined)
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "value", name: "value", type: DYN }],
+      locals: [{ id: "value", name: "value", type: DYN, mutable: false }],
+      returnType: DYN,
+      body: [{ kind: "return", value, loc }],
+      loc,
+    });
+  return { kind: "closure", fnName: name, captures: [], type: funcOf([DYN], DYN), loc };
 }
 
 /** Object.freeze as a function value. It can freeze any untyped value it
@@ -135,7 +229,7 @@ export function constructorStaticValue(
 export function objectFreezeValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   lowerer.untypedIntegrity = true;
   const name = "%builtin.Object.freeze";
-  if (!lowerer.liftedFns.some((fn) => fn.name === name))
+  if (lowerer.liftedFnNamed(name) === undefined)
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "value", name: "value", type: DYN }],
@@ -221,12 +315,59 @@ function constructorValueOf(expr: IrExpr): ConstructorValue | null {
   return null;
 }
 
+/** In a program with Node islands, registers the program's functions for
+ * the primitive constructors (`%builtin.constructor.String`) with the island
+ * runtime at the start of the entry module, so one that crosses into an
+ * island is the island's own `String` there, and the island's comes back as
+ * the program's (scr_node_island_export.c, SCR_NVF_INTRINSIC). Programs
+ * that never call into Node (through an island package or @scriptc/node),
+ * or that hold no such function, emit nothing. */
+export function registerIslandIntrinsics(lowerer: Lowerer, functions: IrFunction[]): void {
+  if (!lowerer.usesNodeIsland) return;
+  const entryInit = lowerer.initNameOf.get(lowerer.entry);
+  const entry = functions.find((fn) => fn.name === entryInit);
+  if (entry === undefined) return;
+  const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
+  const registrations: IrStmt[] = [];
+  for (const fn of functions) {
+    const owner = fn.name.startsWith("%builtin.constructor.")
+      ? PRIMITIVE_CONSTRUCTORS.get(fn.name)
+      : undefined;
+    if (owner === undefined) continue;
+    const type = primitiveConstructorType(fn.returnType);
+    registrations.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "nodeIsland.intrinsic",
+        args: [
+          { kind: "strLit", value: owner, type: STRING, loc },
+          {
+            kind: "dynFrom",
+            value: { kind: "closure", fnName: fn.name, captures: [], type, loc },
+            type: DYN,
+            loc,
+          },
+        ],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
+  }
+  if (registrations.length > 0) entry.body.unshift(...registrations);
+}
+
 /** Installs the program's static-member lookup at the start of the entry
  * module when `functions` read a builtin constructor value or a
  * `constructor` member of an untyped value. The lookup answers the static
  * members with function values whose names the program spells (as a
  * member name or a string), and the runtime the others. */
-export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[]): void {
+export function installBuiltinStatics(
+  lowerer: Lowerer,
+  functions: IrFunction[],
+  census: FunctionCensus,
+): void {
   const entryInit = lowerer.initNameOf.get(lowerer.entry);
   const entry = functions.find((fn) => fn.name === entryInit);
   if (entry === undefined) return;
@@ -234,6 +375,22 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
   const names = new Set<string>();
   let readsConstructor = false;
   for (const fn of functions) {
+    // The scan reads member names from strings and dynamic accesses, and
+    // constructor values from a `dynFrom` of a builtin closure or a library
+    // entry point: a body holding none of these finds nothing, and a body
+    // holding only the closure form still finds a constructor value there.
+    if (
+      !census.hasAnyExpr(fn, [
+        "strLit",
+        "dynHasKey",
+        "dynInvoke",
+        "dynKeyGet",
+        "libCall",
+        "newValue",
+        "dynFrom",
+      ])
+    )
+      continue;
     everyStmtList(fn.body, {
       expr: (expr) => {
         if (expr.kind === "strLit") names.add(expr.value);
@@ -273,7 +430,7 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
     }
   const loc: SrcLoc = { ...entry.loc, end: entry.loc.start };
   const lifted = lowerer.liftedFns.length;
-  if (!lowerer.liftedFns.some((fn) => fn.name === LOOKUP_FN)) {
+  if (lowerer.liftedFnNamed(LOOKUP_FN) === undefined) {
     const value: IrExpr = { kind: "varRef", localId: "value.0", type: DYN, loc };
     const key: IrExpr = { kind: "varRef", localId: "key.0", type: STRING, loc };
     const body: IrStmt[] = [];
@@ -295,7 +452,7 @@ export function installBuiltinStatics(lowerer: Lowerer, functions: IrFunction[])
           ];
       const lengths = staticValueMembers(constructor.owner);
       for (const member of Object.keys(lengths)) {
-        if (!names.has(member)) continue;
+        if (!names.has(member) && lengths[member] !== SYMBOL_CONSTANT) continue;
         // Untyped values carry integrity words only in programs that can
         // freeze them, which lowering has settled by now.
         if (member === "freeze" && !lowerer.untypedIntegrity) continue;

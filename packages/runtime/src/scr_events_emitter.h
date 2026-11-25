@@ -5,6 +5,14 @@
 
 #include "scr_closure.h"
 
+/* scr_dyn.h's checked-dynamic call entry (the closure-to-dynamic adapter a
+ * function value carries), spelled here so these declarations need no
+ * inclusion of the dyn unit; scr_dyn.h repeats both typedefs unchanged
+ * (C11 repeat, as its own header notes), and scr_dyn.h reaches this header
+ * through scr_stream.h before its body defines them. */
+typedef struct ScrDyn ScrDyn;
+typedef ScrDyn *(*ScrDynThunk)(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+
 /* ── node:events EventEmitter (scr_events_emitter.c, link-gated) ──────
  * The runtime-provided emitter base class — the ScrError precedent:
  * ScrEmitter lays out exactly like a compiler-emitted hierarchy class
@@ -39,6 +47,9 @@ extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
 ScrStr *scr_emitter_class_name(const ScrEmitter *em); /* +1 */
+/* NodeEventTarget registries: suppress the newListener/removeListener meta
+ * events (emit through scr_emitter_emit_flex is already raw). */
+void scr_emitter_mark_plain(ScrEmitter *em);
 /* Internal owner hook; observes listener presence without running script. */
 void scr_emitter_observe(ScrEmitter *em,
                         void (*observe)(void *, const ScrStr *, bool), void *context);
@@ -64,16 +75,26 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
                             ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
                             ScrEeInvoke err_inv);
 void scr_events_once_fire(ScrClosure *cb, ScrArr *args);
-/* events.once(emitter, name, { signal }) (scr_events_once_signal.c): the
- * scr_events_once arguments plus the checked-dynamic signal (borrowed;
- * undefined for the plain form). Never throws: a non-AbortSignal value,
- * an aborted signal or a throwing 'newListener' listener rejects the +1
- * result. Its adapters end in scr_events_once_signal_fire. */
+/* events.once(emitter, name, options) (scr_events_once_signal.c): the
+ * scr_events_once arguments plus the checked-dynamic options object
+ * (borrowed; undefined for the plain form). Never throws: invalid options,
+ * a non-AbortSignal options.signal, an aborted signal or a throwing
+ * 'newListener' listener rejects the +1 result. Its adapters end in
+ * scr_events_once_signal_fire. */
 typedef struct ScrDyn ScrDyn; /* full definition below (C11 repeat) */
 ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
                                    ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
-                                   ScrEeInvoke err_inv, ScrDyn *signal);
+                                   ScrEeInvoke err_inv, ScrDyn *options);
 void scr_events_once_signal_fire(ScrClosure *cb, ScrArr *args);
+/* events.once over a name the program does not resolve statically — a
+ * computed name, a symbol, a meta event, or a stream's chunk event
+ * (scr_events_once_signal.c). The listeners are checked-dynamic function
+ * values, so the event's arguments reach the promise as the emit provides
+ * them; the name crosses as the value the receiver's once() receives (a
+ * symbol keeps its identity). Never throws: invalid options, a name that
+ * cannot key the registry, an aborted signal, a throwing 'newListener'
+ * listener and every event failure reject the +1 result. */
+ScrPromise *scr_events_once_any(ScrEmitter *em, ScrDyn *name_value, ScrDyn *options);
 /* Removes the listener entry whose closure is `cb` (borrowed) without a
  * 'removeListener' event: the undo of an add whose 'newListener'
  * announcement threw. */
@@ -95,6 +116,13 @@ void scr_emitter_check_listener(const ScrDyn *cb);
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
+/* on_dyn whose untyped emits call `flex` — a function value over an adapter
+ * that binds the receiver — while `cb` keeps the entry's identity (a
+ * stream's listeners read the stream as `this` on both paths). cb and flex
+ * are borrowed, adapter MOVES; returns em +1. */
+ScrEmitter *scr_emitter_on_dyn_bound(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                                     const ScrDyn *flex, ScrClosure *adapter /*moves*/,
+                                     ScrEeInvoke inv, bool once, bool prepend);
 /* Listeners registered as checked-dynamic functions retain the original
  * closure and its checked-dynamic call thunk, preserving the number of
  * arguments passed to an untyped emit. on_dyn entries also carry the typed
@@ -102,6 +130,9 @@ ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
  * program emits only through untyped values or computed names. */
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 bool once, bool prepend);
+/* NodeEventTarget's Set semantics: whether `fn` is already registered for
+ * `name` by a plain on()/addListener() (once() wrappers do not match). */
+bool scr_emitter_has_listener_fn(ScrEmitter *em, const ScrStr *name, const ScrDyn *fn);
 /* Registration and emit through an untyped value (the class dispatch of
  * compiled emitters): on_any adds runtime typed adapters under 'error' and
  * the meta events and installs the dynamic half; emit_any keeps Node's
@@ -123,10 +154,14 @@ extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 /* The adapter-mediated registration (the LLVM backend's listeners): the
  * ADAPTER closure is what emit invokes, the ORIGINAL closure is the
  * entry's identity (the on_dyn split, with a plain-closure identity).
- * Both MOVE in; returns em +1 (chaining). */
+ * Both MOVE in; returns em +1 (chaining). `fallback` (may be NULL) is the
+ * checked-dynamic call thunk over the original closure: an untyped emit
+ * that carries no tuple for the event invokes the listener through it,
+ * converting the arguments to the listener's parameters. */
 ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
                                 ScrClosure *adapter /*moves*/,
-                                ScrEeInvoke inv, bool once, bool prepend);
+                                ScrEeInvoke inv, ScrDynThunk fallback /*may be NULL*/, bool once,
+                                bool prepend);
 /* The same registrations for a listener that can read `this`: each call of
  * the listener runs with the emitter as the receiver (scr_dyn_this_push_typed
  * with `recv`, the typed-ref recipe of the registration's receiver type), as
@@ -134,8 +169,25 @@ ScrEmitter *scr_emitter_on_via(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*
  * constant. */
 typedef struct ScrDynTypedRefRecipe ScrDynTypedRefRecipe; /* scr_dyn.h */
 ScrEmitter *scr_emitter_on_via_this(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
-                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
-                                    bool prepend, const ScrDynTypedRefRecipe *recv);
+                                    ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                    ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                    const ScrDynTypedRefRecipe *recv);
+/* scr_emitter_on_via and _this for an event name whose ARGUMENT value is
+ * not the registry key it converts to: Node's listener table keys `null`
+ * and `"null"` alike, but the leak warning's `type` carries the argument
+ * as given, so the registration hands the value across beside the key
+ * (borrowed; the warning takes its own reference when it fires). */
+ScrEmitter *scr_emitter_on_via_named(ScrEmitter *em, ScrStr *name, ScrClosure *orig /*moves*/,
+                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                     ScrDynThunk fallback /*may be NULL*/, bool once, bool prepend,
+                                     const ScrDyn *name_value /*borrowed*/);
+ScrEmitter *scr_emitter_on_via_this_named(ScrEmitter *em, ScrStr *name,
+                                          ScrClosure *orig /*moves*/,
+                                          ScrClosure *adapter /*moves*/, ScrEeInvoke inv,
+                                          ScrDynThunk fallback /*may be NULL*/, bool once,
+                                          bool prepend,
+                                          const ScrDynTypedRefRecipe *recv,
+                                          const ScrDyn *name_value /*borrowed*/);
 ScrEmitter *scr_emitter_on_dyn_this(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                     ScrClosure *adapter /*moves*/, ScrEeInvoke inv, bool once,
                                     bool prepend, const ScrDynTypedRefRecipe *recv);
@@ -182,22 +234,64 @@ bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, si
 struct ScrMessage;
 bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
                               ScrDyn *(*decode)(const struct ScrMessage *));
+/* The same emit, handing the decoded value the listeners read to the caller
+ * (+1, NULL when none was decoded): a MessagePort delivers that one object
+ * to its EventTarget listeners too, as Node's dispatch does. */
+bool scr_emitter_emit_message_out(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
+                                  ScrDyn *(*decode)(const struct ScrMessage *), ScrDyn **out);
 /* An untyped emit of an event with a fixed tuple: the arguments as given
  * for dynamic listeners, plus the tuple converted by the caller as
  * scr_emitter_emit's variadics for typed listeners. has_typed answers
  * whether any listener of the name needs the converted tuple. */
 bool scr_emitter_emit_mixed(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...);
 bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name);
+/* The inverse: a typed emit's arguments must also convert to checked-
+ * dynamic values when a listener of the name was registered through an
+ * untyped value with no typed form (its thunk alone). Also true for
+ * 'error' when errorMonitor has such a listener. */
+bool scr_emitter_has_dyn(ScrEmitter *em, ScrStr *name);
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error);
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
+/* emit('error', err) with the emitted arguments as checked-dynamic values
+ * too, for listeners registered through untyped values. err is borrowed;
+ * the unhandled form throws its +1. */
+bool scr_emitter_emit_error_mixed(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                  ScrDyn *const *args, size_t argc);
+/* emit('error') of a value that is not an Error where the emitting unit
+ * holds it as one: args[0] is the value and `err` stands for it. Typed
+ * listeners with a checked-dynamic call receive the value through it; only
+ * the runtime's own listeners receive `err`. Both borrowed. */
+bool scr_emitter_emit_error_carried(ScrEmitter *em, ScrStr *name, ScrError *err,
+                                    ScrDyn *const *args, size_t argc);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
 double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *fn);
 double scr_emitter_listener_count_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *fn);
-ScrArr *scr_emitter_event_names(ScrEmitter *em);          /* +1 string[] */
+ScrDyn *scr_emitter_event_names(ScrEmitter *em); /* +1 checked-dynamic array */
 /* events.errorMonitor's event key (immortal). Every name parameter above
  * accepts it; the registry matches it by identity, so no string name,
  * whatever its bytes, reaches the errorMonitor listeners. */
 ScrStr *scr_emitter_error_monitor(void);
+/* A symbol event name's argument for every name parameter above: +1
+ * scr_str_symbol_key of `sym` (scr_string.h), matched by symbol identity
+ * like the errorMonitor key. The compiler's `emitter.symName`, and the
+ * conversion `emitter.nameDyn` applies to an untyped name that is a
+ * symbol. */
+ScrStr *scr_emitter_symbol_name(ScrSym *sym);
+ScrStr *scr_emitter_name_dyn(const ScrDyn *name); /* +1 name key of an untyped name */
+/* The checked-dynamic member dispatch of the capsule this unit creates over
+ * an emitter (the leak warning's `emitter` value): EventEmitter's own
+ * instance members, answered over the registry with the entries the
+ * compiler's untyped-emitter dispatch uses. invoke answers whether it
+ * handled the member, with *out a +1 value — or with the exception pending
+ * when the member threw. Installed beside the capsule's creation, so it is
+ * NULL in programs that never build one; the variable lives in the
+ * always-linked dyn core so emitter-free binaries link no more than
+ * before. */
+typedef struct ScrEmitterRefHooks {
+  bool (*invoke)(ScrDyn *d, const char *method, ScrDyn *const *args, size_t argc,
+                 const char *what, ScrDyn **out);
+} ScrEmitterRefHooks;
+extern SCR_TL const ScrEmitterRefHooks *scr_emitter_ref_hooks;
 /* Pre-create a name's eventNames() rank with no listener (Node's stream
  * classes pre-create their known _events keys; empty = absent for every
  * other read). The stream constructors call this. */
@@ -213,6 +307,23 @@ void scr_emitter_esm_sync(void);
 /* True when the emitter has at least one listener for `name` — the
  * stream unit's registration probe (and anyone else's). */
 bool scr_emitter_has(ScrEmitter *em, const char *name);
+
+/* A NodeEventTarget (Worker, MessagePort) is an emitter behind a dyn
+ * handle: the node:events helpers (getEventListeners, listenerCount,
+ * getMaxListeners, setMaxListeners) accept one, like Node's do. The
+ * worker unit installs this accessor (the scr_message_port_ops pattern —
+ * scr_event_target.c is linked without it); NULL when no NodeEventTarget
+ * can exist. Answers the view's emitter, borrowed, or NULL. */
+typedef struct ScrNodeEventTargetOps {
+  ScrEmitter *(*emitter_of)(const ScrDyn *self);
+  /* events.getMaxListeners(value) over a NodeEventTarget-shaped handle:
+   * Node reads `_maxListeners` off an EventEmitter (a Worker), while a
+   * MessagePort keeps its limit in kMaxEventTargetListeners and the static
+   * helper answers the process default. Writes the emitter's limit and
+   * answers true for the emitter kind; false leaves the default. */
+  bool (*emitter_max)(const ScrDyn *self, double *out);
+} ScrNodeEventTargetOps;
+extern SCR_TL const ScrNodeEventTargetOps *scr_node_event_target_ops;
 /* Post-registration hook (one registrant: scr_stream_install) — called at
  * the END of scr_emitter_on with the emitter and the event name, so the
  * stream unit can start flowing on the first 'data' listener. NULL when

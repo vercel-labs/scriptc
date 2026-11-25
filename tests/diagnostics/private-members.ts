@@ -71,6 +71,31 @@ class ViaValue {
 class ViaValueSub extends ViaValue {}
 console.log(ViaValue.read(ViaValueSub));
 
+// A cast that erases the class value's type keeps that fence: the read is
+// still of the private name, not of a public property of that spelling.
+class ViaErasedValue {
+  static #origin = 7;
+  read(k: typeof ViaErasedValue): number {
+    return (k as any).#origin;
+  }
+}
+class ViaErasedValueSub extends ViaErasedValue {}
+console.log(new ViaErasedValue().read(ViaErasedValueSub));
+
+// The private name resolves in the enclosing class body, so through an
+// erased cast it can name a class other than the receiver's.
+class ForeignBrand {
+  static #origin = 8;
+  static label = "foreign";
+}
+class LexicalBrand {
+  static #origin = 9;
+  read(k: typeof ForeignBrand): number {
+    return (k as any).#origin;
+  }
+}
+console.log(ForeignBrand.label, new LexicalBrand().read(ForeignBrand));
+
 // Generic classes share ONE brand across every instantiation in JS; these
 // layouts mint one class per instantiation, so private-in fences there.
 class GenBrand<T> {

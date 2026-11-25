@@ -1,8 +1,0 @@
-{
- "order": [
-  "<repo>/tests/diagnostics/cycle-class-early/dogs.ts",
-  "<repo>/tests/diagnostics/cycle-class-early/pets.ts",
-  "<repo>/tests/diagnostics/cycle-class-early/main.ts"
- ],
- "diags": []
-}

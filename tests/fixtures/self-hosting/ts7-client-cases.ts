@@ -172,8 +172,10 @@ export function runTs7Client(client: Ts7RpcClient, directory: string, report: st
   const windowsPaths = new Ts7Paths("C:/Work", false);
   check(windowsPaths.canonical("..\\Lib\\File.ts") === "c:/lib/file.ts", "Windows path identity");
   check(new Ts7Paths("/work", true).canonical("bundled:///lib.esnext.d.ts") === "bundled:///lib.esnext.d.ts", "bundled path identity");
-  check(ts7DocumentFile({uri: "file:///C%3A/dir/a%20b.ts"}) === "c:/dir/a b.ts", "file URI decoding");
-  check(ts7DocumentFile({uri: "untitled:Untitled-1"}) === "^/untitled/ts-nul-authority/Untitled-1", "virtual URI decoding");
+  // The pinned SDK's documentURIToFileName keeps the volume's own case; the
+  // protocol path's canonical form folds it where the server is insensitive.
+  check(ts7DocumentFile({uri: "file:///C%3A/dir/a%20b.ts"}) === "C:/dir/a b.ts", "file URI decoding");
+  check(ts7DocumentFile({uri: "untitled:Untitled-1"}) === "^/~ts-uri~/untitled/ts-nul-authority/Untitled-1", "virtual URI decoding");
 
   function protocolPath(path: string): string {
     return process.platform === "win32" ? path.split("\\").join("/") : path;
@@ -191,6 +193,7 @@ export function runTs7Client(client: Ts7RpcClient, directory: string, report: st
   content += semanticSource();
   content += checkerSource();
   let reads = 0;
+  // The harness starts the pinned server, which speaks 7.1's callback replies.
   registerTs7FileSystem(client, {
     readFile: (path) => {
       reads++;
@@ -207,7 +210,7 @@ export function runTs7Client(client: Ts7RpcClient, directory: string, report: st
     directoryExists: () => undefined,
     realpath: () => undefined,
     getAccessibleEntries: () => undefined,
-  });
+  }, () => true);
 
   const session = new Ts7Session(client, true);
   try {

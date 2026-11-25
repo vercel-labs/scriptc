@@ -48,10 +48,11 @@ spawnSync("true", [], looseOptions);
 // no separate args either.
 const typedOptions: SpawnSyncOptionsWithStringEncoding = { encoding: "utf8", shell: true };
 spawnSync("printf %s", ["unsafe"], typedOptions);
-// The callback slice accepts inline utf8/maxBuffer/cwd/shell options, but
-// not all of Node's options or the optional-callback overload family.
+// The callback slice accepts inline utf8/maxBuffer/cwd/env/timeout/
+// killSignal/shell options, but not the rest of Node's options or the
+// optional-callback overload family.
 execFile("true");
-execFile("true", [], { killSignal: "SIGTERM" }, () => {});
+execFile("true", [], { input: "x" }, () => {});
 execFile("printf", ["%s", "unsafe"], { encoding: "utf8", shell: true }, () => {});
 const bufferLimit = 1024;
 execFile("true", [], { maxBuffer: bufferLimit }, () => {});

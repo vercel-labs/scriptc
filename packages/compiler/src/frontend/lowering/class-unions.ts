@@ -1,6 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
-import { BOOL, typeKey, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
+import { BOOL, sortArms, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import type { Lowerer } from "./lowerer.js";
@@ -35,7 +35,7 @@ export function structuralNarrowing(
     narrowed,
     ...peers.map((className) => ({ kind: "object" as const, className })),
   ];
-  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  sortArms(arms);
   return { kind: "union", unionId: lowerer.unions.intern(arms) };
 }
 
@@ -215,13 +215,30 @@ export function narrowStoredClassValue(
     return checkedClassAssertion(lowerer, value, target, value.loc);
   }
   if (target.kind !== "union") return null;
-  const present = lowerer.stripUndefinedArm(value.type);
-  if (present.kind !== "object") return null;
   const targetArms = lowerer.unions.get(target.unionId)?.arms;
+  if (!targetArms?.length || !targetArms.every((arm) => arm.kind === "object")) return null;
+  let present = lowerer.stripUndefinedArm(value.type);
+  if (present.kind !== "object") {
+    // The storage's class arm stands beside others (`Base | number`) when
+    // the checker narrowed the value to subclasses of that class
+    // (`A | B`): the arm that holds every target arm is the value's class,
+    // and the extraction below traps the arms the guard ruled out.
+    const covering = arms.find((arm) => {
+      if (arm.kind !== "object") return false;
+      const className = arm.className;
+      return targetArms.every(
+        (targetArm) =>
+          targetArm.kind === "object" && lowerer.isSubclassOf(targetArm.className, className),
+      );
+    });
+    if (covering?.kind !== "object") return null;
+    present = covering;
+  }
+  if (present.kind !== "object") return null;
+  const presentClass = present.className;
   if (
-    !targetArms?.length ||
     !targetArms.every(
-      (arm) => arm.kind === "object" && lowerer.isSubclassOf(arm.className, present.className),
+      (arm) => arm.kind === "object" && lowerer.isSubclassOf(arm.className, presentClass),
     )
   )
     return null;

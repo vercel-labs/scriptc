@@ -19,19 +19,37 @@ runs:
         if test "$RUNNER_OS" = Linux; then
           echo "zig=$(zig version)" >> "$GITHUB_OUTPUT"
         fi
-    - uses: actions/cache/restore@v4
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: helper
       if: inputs.helper == 'true'
       with:
         path: packages/llvm-${{ inputs.target }}/bin
-        key: helper-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**') }}
-    - uses: actions/cache/restore@v4
+        key: helper-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**', 'packages/runtime/vendor/quickjs-ng/**', 'packages/runtime/src/scr_ieee754.*') }}
+    # The pack's key names every file its build reads: the runtime sources,
+    # the pack build's scripts, matrices, forced include and committed
+    # profiles, and the LLVM helper's sources, because the helper compiles the
+    # speed units and applies the profile to them.
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       id: runtime
       with:
         path: |
           packages/runtime-${{ inputs.target }}/artifacts
           packages/runtime-${{ inputs.target }}/runtime-pack.json
-        key: runtime-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'packages/runtime/package.json', 'packages/runtime/LICENSE', 'packages/runtime/src/**', 'packages/runtime/vendor/**', 'packages/runtime-*/package.json', 'packages/runtime-*/scripts/**', 'packages/runtime-*/*.mjs') }}
+        key: runtime-v1-${{ inputs.target }}-${{ steps.host.outputs.image }}-${{ steps.host.outputs.zig }}-${{ hashFiles('.node-version', '.github/actions/native-packages/action.yml', '.github/actions/llvm-linux/action.yml', 'packages/runtime/package.json', 'packages/runtime/LICENSE', 'packages/runtime/src/**', 'packages/runtime/vendor/**', 'packages/runtime-*/package.json', 'packages/runtime-*/scripts/**', 'packages/runtime-*/*.mjs', 'packages/runtime-*/*.h', 'packages/runtime-pack-common/profiles/**', 'native/llvm-codegen/**', 'packages/llvm-*/package.json', 'packages/llvm-*/scripts/**', 'packages/runtime/vendor/quickjs-ng/**', 'packages/runtime/src/scr_ieee754.*') }}
+    # ICU's release archives are the one build input the pack build downloads
+    # (packages/runtime-pack-common/scripts/icu-inputs.mjs). They are cached
+    # apart from the built pack and keyed by their pins alone, so a pack whose
+    # key missed does not also depend on the release host answering. The build
+    # verifies the restored archives against their pins and downloads again
+    # when they do not match.
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      id: icu
+      if: steps.runtime.outputs.cache-hit != 'true'
+      with:
+        path: |
+          node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz
+          node_modules/.cache/scriptc-icu-data/icu4c-*-data-bin-l.zip
+        key: icu-downloads-v1-${{ hashFiles('packages/runtime-pack-common/scripts/icu-inputs.mjs') }}
     - name: Install macOS LLVM
       if: runner.os == 'macOS' && inputs.helper == 'true' && steps.helper.outputs.cache-hit != 'true'
       shell: bash
@@ -53,17 +71,29 @@ runs:
         else
           pnpm --filter "@scriptc/runtime-$SCRIPTC_PACKAGE_TARGET" build:native
         fi
+    # Saved right after the build, and only by a build that downloaded both
+    # archives (a pack without ICU downloads neither).
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      if: >-
+        steps.runtime.outputs.cache-hit != 'true' && steps.icu.outputs.cache-hit != 'true' &&
+        hashFiles('node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz') != '' &&
+        hashFiles('node_modules/.cache/scriptc-icu-data/icu4c-*-data-bin-l.zip') != ''
+      with:
+        path: |
+          node_modules/.cache/scriptc-icu-sources/icu4c-*-sources.tgz
+          node_modules/.cache/scriptc-icu-data/icu4c-*-data-bin-l.zip
+        key: ${{ steps.icu.outputs.cache-primary-key }}
     - name: Verify runtime content
       shell: bash
       env:
         SCRIPTC_PACKAGE_TARGET: ${{ inputs.target }}
       run: node "packages/runtime-$SCRIPTC_PACKAGE_TARGET/scripts/verify.mjs"
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: inputs.helper == 'true' && steps.helper.outputs.cache-hit != 'true'
       with:
         path: packages/llvm-${{ inputs.target }}/bin
         key: ${{ steps.helper.outputs.cache-primary-key }}
-    - uses: actions/cache/save@v4
+    - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.runtime.outputs.cache-hit != 'true'
       with:
         path: |

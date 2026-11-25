@@ -1,0 +1,14 @@
+- **Built-in members:** A program that replaces, deletes or shadows a member of one of the language's built-in objects and also uses that member natively is refused at build time, a deliberate difference from Node.js.
+  Compiled code reaches a built-in such as `Array.prototype.push` or `Math.random` directly and never reads it from its object, so that use would keep running the built-in.
+  The write is refused with `SC1092`, which names the write and the use: an assignment, `delete`, `Object.defineProperty`, `Object.defineProperties`, `Object.assign`, or a `Reflect` call whose target is a built-in constructor, its `prototype`, `Math`, `JSON`, `Reflect`, or the global object.
+  A use is a call of the member through a value of the built-in, a call or a read through the built-in object, another built-in that reads it (`promise.catch()` reads `then`, `String(array)` reads `join`), or a language construct that reads it: a string or numeric conversion (`toString`, `valueOf`, `Symbol.toPrimitive`), an iteration (`Symbol.iterator`), an awaited or resolved value (`then`), or `JSON.stringify` (`toJSON`).
+  The write and the use may be in different modules or packages, and the rule applies to TypeScript and JavaScript sources alike.
+  Adding `then`, `toJSON`, `Symbol.iterator` or `Symbol.toPrimitive` to a built-in prototype that does not have it counts as such a write.
+  A write whose member nothing in the program uses natively compiles as it did before this rule.
+  The readers that do see a change are a value read of the member through `Array.prototype` or through an untyped value, `for…of`, array spread and `Array.from` over an untyped value, and the `Map`, `Set`, `WeakMap` and `WeakSet` constructors reading their adder.
+  A use that runs before every write of the member, such as `const original = Date.now` at the top of the module that then replaces `Date.now`, is not counted.
+  A polyfill guarded by a test of the member, such as `if (!Array.prototype.at) { ... }`, compiles: the member exists in Node 24, so the guarded code never runs, and a program that also changes the tested member is refused.
+  Redefining a member with the same value to change its attributes, assigning `Error.stackTraceLimit`, and a write Node itself rejects, such as an assignment to `Math.PI`, are not refused.
+  A write the build cannot see, where the object or the key arrives as a value, is not refused: `Math`, `JSON` and `Reflect` members throw at run time, and for other built-ins compiled code keeps calling the built-in.
+  To change what a built-in does, for a test mock for instance, call a function of your own and replace that.
+  A package that contains a refused write runs in a Node island under the default `--node-islands=auto`.

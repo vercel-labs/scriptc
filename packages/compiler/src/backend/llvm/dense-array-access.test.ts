@@ -114,7 +114,9 @@ test("reference reads retain inline and keep a cold +1 runtime fallback", () => 
     module("word", STRING, [truncate, { kind: "return", value: read, loc }]),
   );
   const fn = body(llvm, "word");
-  expect(fn).toMatch(/icmp ne ptr .*, null/);
+  // A null slot the guard admits is the element itself, and the retain is
+  // null-tolerant: no null branch of its own.
+  expect(fn).not.toMatch(/icmp ne ptr .*, null/);
   expect(fn).toContain("@scr_str_retain_v(");
   // The retaining getter writes reference counts, so it gets no read-only effect.
   expect(fn).toMatch(/call ptr @scr_arr_get_ref\(.*\) cold$/m);

@@ -1,0 +1,17 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/effect.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/mixed.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/live-ns.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/base.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/late.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/partial.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/leaf.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/alias-lib.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/aliases.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/relay.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/star.ts",
+  "<repo>/tests/corpus/8918-tsc-import-elision-order/main.ts"
+ ],
+ "diags": []
+}

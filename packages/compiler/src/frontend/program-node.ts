@@ -7,12 +7,14 @@ import {
 } from "./program.js";
 import { createNodeFrontendServices } from "./services-node.js";
 import type { Ts7Host } from "./ts7/program-host.js";
+import type { Defines } from "./defines.js";
 import type { FrontendServices } from "./services.js";
 export * from "./program.js";
 
 export interface NodeProgramLoadOptions {
   npmStatic?: Iterable<string>;
   externalTypes?: ReadonlyMap<string, string> | Readonly<Record<string, string>> | undefined;
+  define?: Defines | undefined;
 }
 
 function serviceOptions(options: NodeProgramLoadOptions | undefined) {
@@ -22,6 +24,7 @@ function serviceOptions(options: NodeProgramLoadOptions | undefined) {
       options?.externalTypes instanceof Map
         ? [...options.externalTypes]
         : Object.entries(options?.externalTypes ?? {}),
+    define: options?.define,
   };
 }
 

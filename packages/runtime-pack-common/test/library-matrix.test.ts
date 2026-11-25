@@ -46,19 +46,60 @@ test("library pack modes preserve pure runtime features and exclude ambient even
         "scr_zlib.c",
         "scr_inspect.c",
         "scr_console_native.c",
+        "scr_util_style.c",
         "scr_copying.c",
+        "scr_js_buffers.c",
       ])
         expect(sources).toContain(source);
+      // A library whose program moves a buffer names scr_js_buffers_arm, so
+      // the unit keeps its object model build here too.
+      expect(
+        flavor.runtime_units
+          .find((unit) => unit.source === "scr_js_buffers.c")
+          .variants.map((variant) => variant.id),
+      ).toEqual(["default", "js-om"]);
       for (const unit of flavor.runtime_units)
         for (const variant of unit.variants) expect(variant.defines).not.toContain("SCR_DYNAMIC");
+      // BigInt typed arrays read their elements through the JavaScript object
+      // model build (t262-da §J), so each build has its object model twin
+      // here too.
       expect(
         flavor.runtime_units
           .find((unit) => unit.source === "scr_bytes.c")
           .variants.map((variant) => variant.id),
-      ).toEqual(["default", "text-decoder-legacy"]);
+      ).toEqual(["default", "text-decoder-legacy", "js-om", "js-om-text-decoder-legacy"]);
     }
   }
   expect(matrix.runtime_units.some((unit) => unit.source === "scr_library.c")).toBe(false);
+});
+
+test("library flavors keep the kept-source read for a record-to-record conversion", () => {
+  // A library whose program projects a record calls scr_record_source_get, so
+  // its flavors must carry the same optional unit the executable flavors do
+  // (library-matrix's own optional allow-list, not the runtime matrix's).
+  for (const optimization of ["release", "dev"]) {
+    for (const mode of ["library", "library-thread"]) {
+      const unit = matrix.flavors[`${mode}-${optimization}`].runtime_units.find(
+        (entry) => entry.source === "scr_record_source_get.c",
+      );
+      expect(unit?.predicate).toBe("recordSourceGet");
+      expect(unit?.variants.map((variant) => variant.id)).toEqual(["default"]);
+    }
+  }
+});
+
+test("library flavors keep the typed join of an array of strings", () => {
+  // A library whose program joins a string array calls scr_arr_join_str, so
+  // its flavors must carry the same optional unit the executable flavors do.
+  for (const optimization of ["release", "dev"]) {
+    for (const mode of ["library", "library-thread"]) {
+      const unit = matrix.flavors[`${mode}-${optimization}`].runtime_units.find(
+        (entry) => entry.source === "scr_arr_join_str.c",
+      );
+      expect(unit?.predicate).toBe("arrJoinStr");
+      expect(unit?.variants.map((variant) => variant.id)).toEqual(["default"]);
+    }
+  }
 });
 
 test("the young-in nursery collector is an executable-only variant of scr_cycle.c", () => {
@@ -114,6 +155,8 @@ test("Wasm packs include reactor runtimes without thread-local state or a JS eng
     const sources = wasm.flavors[name].runtime_units.map((unit) => unit.source);
     expect(sources).toContain("scr_library.c");
     expect(sources).not.toContain("scr_island.c");
-    expect(sources).not.toContain("scr_async.c");
+    // The wasm pack adds the EventTarget unit to every flavor, and that unit
+    // spawns through the async runtime, so the library flavors link it.
+    expect(sources).toContain("scr_async.c");
   }
 });

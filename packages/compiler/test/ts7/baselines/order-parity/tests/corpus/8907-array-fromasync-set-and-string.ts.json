@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8907-array-fromasync-set-and-string.ts"
+ ],
+ "diags": []
+}

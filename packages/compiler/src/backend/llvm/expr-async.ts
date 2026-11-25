@@ -225,7 +225,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         }
         return out;
       }
-      if (e.name !== "console.log" && e.name !== "console.error") {
+      if (e.name !== "console.log" && e.name !== "console.error" && e.name !== "console.trace") {
         throw new LlvmUnsupportedError(`intrinsic:${e.name}`, e.loc);
       }
       // The ScrLogArg protocol: one entry-block array (sized to the
@@ -282,9 +282,13 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           B.line(`store i8 ${z}, ptr ${vp}`);
         }
       });
-      const fn =
-        (e.name === "console.error" ? "scr_console_error" : "scr_console_log") +
-        (usesParts ? "_parts" : "");
+      const consoleFn =
+        e.name === "console.trace"
+          ? "scr_console_trace"
+          : e.name === "console.error"
+            ? "scr_console_error"
+            : "scr_console_log";
+      const fn = consoleFn + (usesParts ? "_parts" : "");
       host.declare(`declare void @${fn}(${host.sizeType}, ptr)`);
       B.line(`call void @${fn}(${host.sizeType} ${args.length}, ptr %logargs)`);
       return { name: "", type: e.type };
@@ -380,12 +384,24 @@ export function emitSerializationExpr(
         e.origin === undefined || host.mod.lib !== undefined
           ? undefined
           : host.mod.declOrigins?.[e.origin];
-      const note =
+      const named =
         origin === undefined
           ? undefined
           : (): void => {
               host.declare("declare void @scr_type_origin_note(ptr)");
               B.line(`call void @scr_type_origin_note(ptr ${host.cstr(origin)})`);
+            };
+      // A dev build reports the failure with the conversion's position
+      // (scr_conversion_trace.c), after the origin note so that the report
+      // carries the declaration too. An analysis-proven check that fails is
+      // a compiler bug with a report of its own.
+      const trace = e.inferredSite === undefined ? host.conversionTraceAt(e.loc) : undefined;
+      const note =
+        named === undefined || trace === undefined
+          ? (named ?? trace)
+          : (): void => {
+              named();
+              trace();
             };
       const parsed = e.value;
       if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {
@@ -407,8 +423,16 @@ export function emitSerializationExpr(
         );
         return host.own({ name: retained, type: e.type });
       }
+      const sourceBorrowed = e.shared === true && host.canBorrowCallArgument(e.value);
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
+      // A typed slot's conversion keeps one object (dynCheck.shared): its
+      // helper also adopts the source where the check built a value from a
+      // plain object or array. The helper itself for every other conversion.
+      const adopting =
+        e.shared === true
+          ? host.dyn.dynCheckAdoptingHelper(e.type, e.preserveRefs === true, sourceBorrowed)
+          : helper;
       // A check of an analysis-proven fact (shape inference's overlay)
       // names its site, so a failure reports a compiler bug.
       const site = e.inferredSite !== undefined ? host.cstr(e.inferredSite) : null;
@@ -421,11 +445,34 @@ export function emitSerializationExpr(
         if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
         return checked;
       }
+      // An array literal's element check names its position: the path
+      // spine starts at the root and appends the index, so a failure
+      // reports `$[0]` instead of the bare `$` a standalone check names.
+      let path = "null";
+      if (e.pathIndex !== undefined) {
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca %ScrDynPath`);
+        const parent = B.tmp();
+        const key = B.tmp();
+        const index = B.tmp();
+        B.line(`${parent} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 0`);
+        B.line(`store ptr null, ptr ${parent}`);
+        B.line(`${key} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 1`);
+        B.line(`store ptr null, ptr ${key}`);
+        B.line(`${index} = getelementptr inbounds %ScrDynPath, ptr ${slot}, i64 0, i32 2`);
+        B.line(`store ${host.sizeType} ${e.pathIndex}, ptr ${index}`);
+        path = slot;
+      }
       const ty = host.llType(e.type);
-      const t = B.tmp();
-      B.line(
-        `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
-      );
+      let t: string;
+      if (e.type.kind === "record") {
+        t = host.dyn.checkedRecordConversion(B, e.type, dynV.name, path, e.preserveRefs, adopting);
+      } else {
+        t = B.tmp();
+        B.line(
+          `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${adopting}(ptr ${dynV.name}, ptr ${path})`,
+        );
+      }
       if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck(undefined, false, undefined, note);
@@ -1161,32 +1208,92 @@ export function emitAsyncExpr(
         B.line(`call void @scr_promise_run_executor0(ptr ${p}, ptr ${exec0.name})`);
         return out;
       }
-      let resolve: string;
-      const kindNums: Partial<Record<IrType["kind"], number>> = {
-        f64: 0,
-        bool: 1,
-        string: 2,
-        void: 3,
+      // A typed promise's resolve closure fulfils with a value of the
+      // inner type.
+      const fulfilling = (): string => {
+        const kindNums: Partial<Record<IrType["kind"], number>> = {
+          f64: 0,
+          bool: 1,
+          string: 2,
+          void: 3,
+        };
+        const kindNum = kindNums[inner.kind];
+        let made: string;
+        if (kindNum !== undefined) {
+          host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
+          made = B.tmp();
+          B.line(`${made} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+        } else {
+          host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
+          made = B.tmp();
+          B.line(
+            `${made} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
+          );
+        }
+        return made;
       };
-      const kindNum = kindNums[inner.kind];
-      if (kindNum !== undefined) {
-        host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
-        resolve = B.tmp();
-        B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
-      } else {
-        host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
-        resolve = B.tmp();
+      if (e.resolves === true) {
+        // The resolve function runs the promise resolution procedure, and
+        // shares its target with the reject function so that a resolution
+        // that adopts a promise ends both. The reject maker follows the
+        // closure's signature, as below.
+        const rejectType = e.executor.type.kind === "func" ? e.executor.type.params[1] : undefined;
+        let reject = "null";
+        if (rejectType !== undefined) {
+          const maker =
+            rejectType.kind === "func" && rejectType.params[0]?.kind === "dyn"
+              ? "scr_make_reject_dyn"
+              : "scr_make_reject";
+          host.declare(`declare ptr @${maker}(ptr)`);
+          reject = B.tmp();
+          B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
+        }
+        let resolving: string;
+        if (inner.kind === "dyn") {
+          // A checked-dynamic value is asked whether it is a promise
+          // (scr_make_resolve_dyn).
+          host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
+          resolving = B.tmp();
+          B.line(`${resolving} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
+        } else {
+          // A typed value is not: the closure fulfils, and the executor
+          // hands it a promise where the value's static type has a promise
+          // arm (promise.adopt, scr_resolve_adopt).
+          resolving = fulfilling();
+          if (reject !== "null") {
+            host.declare(`declare void @scr_resolve_join(ptr, ptr)`);
+            B.line(`call void @scr_resolve_join(ptr ${resolving}, ptr ${reject})`);
+          }
+        }
+        const exec = host.emitExpr(e.executor);
+        host.declare(`declare void @scr_promise_run_executor_dyn(ptr, ptr, ptr, ptr)`);
         B.line(
-          `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
+          `call void @scr_promise_run_executor_dyn(ptr ${p}, ptr ${exec.name}, ptr ${resolving}, ptr ${reject})`,
         );
+        return out;
       }
+      const resolve = fulfilling();
       if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
         // Two-param executor: reject is a runtime-provided closure
-        // rejecting the promise with its Error reason. First settle
-        // wins in the runtime; both closures' +1 move into the call.
-        host.declare(`declare ptr @scr_make_reject(ptr)`);
+        // rejecting the promise with its Error reason — or, for an executor
+        // whose reject parameter is checked-dynamic, with the dyn value the
+        // program rejected with. The maker follows the closure's signature,
+        // not the promise's payload: a promise lowered with an Error-taking
+        // reject (the typed `util.promisify` family, whose reason is the
+        // callback's Error) keeps scr_make_reject even when its settled
+        // value is unknown. First settle wins in the runtime; both closures'
+        // +1 move into the call.
+        const rejectType = e.executor.type.params[1];
+        const dynReject =
+          inner.kind === "dyn" &&
+          rejectType !== undefined &&
+          rejectType.kind === "func" &&
+          rejectType.params[0] !== undefined &&
+          rejectType.params[0].kind === "dyn";
+        const maker = dynReject ? "scr_make_reject_dyn" : "scr_make_reject";
+        host.declare(`declare ptr @${maker}(ptr)`);
         const reject = B.tmp();
-        B.line(`${reject} = call ptr @scr_make_reject(ptr ${p})`);
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
         const exec2 = host.emitExpr(e.executor);
         host.declare(`declare void @scr_promise_run_executor2(ptr, ptr, ptr, ptr)`);
         B.line(
@@ -1212,8 +1319,18 @@ export function emitAsyncExpr(
         throw new InternalCompilerError("llvm emitter bug: promiseWithResolvers record shape");
       }
       const inner = promT.inner;
+      // Same stance as `new Promise`: the reject maker follows the record's
+      // reject field, which a checked-dynamic promise types with the dyn
+      // reason the program settles on and every other promise with `Error`.
+      const rejectField = shape.fields.find((f) => f.name === "reject")?.type;
+      const maker =
+        inner.kind === "dyn" &&
+        rejectField?.kind === "func" &&
+        rejectField.params[0]?.kind === "dyn"
+          ? "scr_make_reject_dyn"
+          : "scr_make_reject";
       host.declare(`declare ptr @scr_promise_new()`);
-      host.declare(`declare ptr @scr_make_reject(ptr)`);
+      host.declare(`declare ptr @${maker}(ptr)`);
       const p = B.tmp();
       B.line(`${p} = call ptr @scr_promise_new()`);
       const kindNums: Partial<Record<IrType["kind"], number>> = {
@@ -1223,18 +1340,31 @@ export function emitAsyncExpr(
         void: 3,
       };
       const kindNum = kindNums[inner.kind];
-      const resolve = B.tmp();
-      if (kindNum !== undefined) {
-        host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
-        B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+      let resolve: string;
+      let reject: string;
+      if (inner.kind === "dyn") {
+        // The callers of a checked-dynamic promise's resolve function are
+        // not known here, so it runs the promise resolution procedure and
+        // shares its target with the reject function (scr_make_resolve_dyn).
+        reject = B.tmp();
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
+        host.declare(`declare ptr @scr_make_resolve_dyn(ptr, ptr)`);
+        resolve = B.tmp();
+        B.line(`${resolve} = call ptr @scr_make_resolve_dyn(ptr ${p}, ptr ${reject})`);
       } else {
-        host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
-        B.line(
-          `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
-        );
+        resolve = B.tmp();
+        if (kindNum !== undefined) {
+          host.declare(`declare ptr @scr_make_resolve(ptr, i32)`);
+          B.line(`${resolve} = call ptr @scr_make_resolve(ptr ${p}, i32 ${kindNum})`);
+        } else {
+          host.declare(`declare ptr @scr_make_resolve_fn(ptr, ptr)`);
+          B.line(
+            `${resolve} = call ptr @scr_make_resolve_fn(ptr ${p}, ptr @${host.resolveThunkFor(inner)})`,
+          );
+        }
+        reject = B.tmp();
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
       }
-      const reject = B.tmp();
-      B.line(`${reject} = call ptr @scr_make_reject(ptr ${p})`);
       const rec = B.tmp();
       B.line(`${rec} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
       const out = host.own({ name: rec, type: e.type });

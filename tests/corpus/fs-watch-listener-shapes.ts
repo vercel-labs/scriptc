@@ -67,23 +67,35 @@ function startPolling(): void {
   let zeroCalls = 0;
   let oneCalls = 0;
   let size = 0;
+  let nextSize = 11;
+  let reported = false;
+  /* A poll reports the size the file has when it samples, and how many of
+   * the writes below it sees depends on when it samples. Write a fixed
+   * series and report when the listener observes the last size, so the
+   * report does not depend on the number of callbacks a change produces. */
+  const lastSize = 13;
   const zero = (): void => {
     zeroCalls++;
+  };
+  const report = (): void => {
+    reported = true;
+    fs.unwatchFile(file);
+    clearTimeout(bound);
+    console.log("watchFile calls", zeroCalls === oneCalls, "size", size);
+    fs.rmSync(dir, { recursive: true, force: true });
+    console.log("done");
   };
   const one = (current: fs.Stats): void => {
     oneCalls++;
     size = current.size;
-    if (oneCalls < 3) {
-      setTimeout(() => fs.writeFileSync(file, "x".repeat(oneCalls + 10)), 30);
+    if (reported) return;
+    if (nextSize <= lastSize) {
+      const target = nextSize;
+      nextSize++;
+      setTimeout(() => fs.writeFileSync(file, "x".repeat(target)), 30);
       return;
     }
-    setTimeout(() => {
-      console.log("watchFile calls", zeroCalls === oneCalls, oneCalls, "size", size);
-      fs.unwatchFile(file);
-      clearTimeout(bound);
-      fs.rmSync(dir, { recursive: true, force: true });
-      console.log("done");
-    }, 60);
+    if (size === lastSize) report();
   };
   fs.watchFile(file, { interval: 20 }, zero);
   fs.watchFile(file, { interval: 20 }, one);

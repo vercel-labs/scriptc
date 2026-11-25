@@ -1,0 +1,10 @@
+{
+  "name": "node-island-symbols",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "symbol-pkg": "node"
+    }
+  }
+}

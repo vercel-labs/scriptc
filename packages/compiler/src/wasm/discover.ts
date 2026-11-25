@@ -149,10 +149,10 @@ class Discovery {
   // ── source 1 and 2: the program's source text ───────────────────────
 
   scanFile(sf: ts.SourceFile): void {
-    const text = sf.text;
-    const paths = text.includes(".wasm") || SHARED_LIBRARY_PATH.test(text);
-    const base64 = text.includes(BASE64_MAGIC);
-    const bytes = BYTES_MAGIC.test(text);
+    const paths =
+      ts.sourceTextIncludes(sf, ".wasm") || ts.sourceTextMatches(sf, SHARED_LIBRARY_PATH);
+    const base64 = ts.sourceTextIncludes(sf, BASE64_MAGIC);
+    const bytes = ts.sourceTextMatches(sf, BYTES_MAGIC);
     if (!paths && !base64 && !bytes) return;
     const file = sf.fileName;
     const lineOf = (node: ts.Node): number =>
@@ -263,7 +263,7 @@ class Discovery {
     for (const sf of this.input.files) {
       const root = packageRootOf(sf.fileName);
       if (root === null) continue;
-      const mentions = sf.text.includes("WebAssembly");
+      const mentions = ts.sourceTextIncludes(sf, "WebAssembly");
       roots.set(root, (roots.get(root) ?? false) || mentions);
     }
     for (const [root, mentions] of roots) {

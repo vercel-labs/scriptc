@@ -382,6 +382,7 @@ double scr_perf_resource_mark(ScrDyn *args);
 void scr_perf_resource_clear(ScrDyn *args);
 void scr_perf_resource_buffer_size(ScrDyn *args);
 double scr_perf_entry_resource_num(double i, double which);
+double scr_perf_entry_resource_has(double i, double which);
 ScrStr *scr_perf_entry_resource_str(double i, double which);
 /* The entry objects themselves: entry_keep stores the program's object
  * for the last mark or measure (borrowed, retained), entry_ref answers

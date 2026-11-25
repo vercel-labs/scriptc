@@ -34,6 +34,7 @@ export const perfSignatures = defineLibFnSignatures({
   "perf.resourceClear": { argTypes: [DYN], result: VOID },
   "perf.resourceBufferSize": { argTypes: [DYN], result: VOID },
   "perf.entryResourceNum": { argTypes: [F64, F64], result: F64 },
+  "perf.entryResourceHas": { argTypes: [F64, F64], result: F64 },
   "perf.entryResourceStr": { argTypes: [F64, F64], result: STRING },
   "perf.entryKeep": { argTypes: [DYN], result: VOID },
   "perf.entryRef": { argTypes: [F64], result: DYN },

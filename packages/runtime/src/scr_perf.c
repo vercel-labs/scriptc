@@ -28,6 +28,9 @@ typedef struct {
   double service_worker_start;
   double network_request_start, network_response_start, interim_response_start;
   bool has_connection;
+  /* Bit i set: the field with selector i was present in the timing info
+   * Node reads it from; reading it otherwise answers undefined. */
+  uint32_t present;
   double dns_start, dns_end, connection_start, connection_end, secure_connection_start;
   ScrStr *alpn; /* owned */
   double encoded_body_size, decoded_body_size;
@@ -727,6 +730,16 @@ static void scr_perf_push_resource(ScrPerfEntry entry) {
  * internal/perf/resource_timing.js builds from fetch's timing info. It is
  * buffered and observed like mark/measure, and also handed back to the
  * caller (the view's index 0). */
+/* True when the object carries `key` as a value (an absent or undefined
+ * member answers false, as Node's optional-chain reads do). */
+static bool scr_perf_has_member(const ScrDyn *object, const char *key, size_t len) {
+  (void)len;
+  ScrDyn *value = scr_perf_member(object, key);
+  bool has = value != NULL && value->kind != SCR_DYN_UNDEF;
+  scr_dyn_release(value);
+  return has;
+}
+
 double scr_perf_resource_mark(ScrDyn *args) {
   if (!scr_perf_args_ok(args, "markResourceTiming")) return 0;
   ScrDyn *timing = scr_perf_arg(args, 0);
@@ -776,9 +789,28 @@ double scr_perf_resource_mark(ScrDyn *args) {
     r->connection_end = scr_perf_num_member(conn, "connectionEndTime", 0);
     r->secure_connection_start = scr_perf_num_member(conn, "secureConnectionStartTime", 0);
     r->alpn = scr_perf_str_member(conn, "ALPNNegotiatedProtocol");
-  } else {
-    r->alpn = scr_str_new("", 0);
   }
+  /* No connection: ALPNNegotiatedProtocol stays absent (the string field
+   * answers "" but nextHopProtocol reads as undefined, as Node's
+   * optional-chain getter does). */
+  if (scr_perf_has_member(timing, "finalServiceWorkerStartTime", 27)) r->present |= 1u << 0;
+  if (scr_perf_has_member(timing, "redirectStartTime", 17)) r->present |= 1u << 1;
+  if (scr_perf_has_member(timing, "redirectEndTime", 15)) r->present |= 1u << 2;
+  if (scr_perf_has_member(timing, "postRedirectStartTime", 21)) r->present |= 1u << 3;
+  if (r->has_connection && scr_perf_has_member(conn, "domainLookupStartTime", 21)) r->present |= 1u << 4;
+  if (r->has_connection && scr_perf_has_member(conn, "domainLookupEndTime", 19)) r->present |= 1u << 5;
+  if (r->has_connection && scr_perf_has_member(conn, "connectionStartTime", 19)) r->present |= 1u << 6;
+  if (r->has_connection && scr_perf_has_member(conn, "connectionEndTime", 17)) r->present |= 1u << 7;
+  if (r->has_connection && scr_perf_has_member(conn, "secureConnectionStartTime", 25))
+    r->present |= 1u << 8;
+  if (scr_perf_has_member(timing, "finalNetworkRequestStartTime", 28)) r->present |= 1u << 9;
+  bool has_response_start = scr_perf_has_member(timing, "finalNetworkResponseStartTime", 29);
+  if (has_response_start) r->present |= 1u << 10;
+  if (r->interim_response_start != 0 || has_response_start) r->present |= 1u << 12;
+  if (scr_perf_has_member(timing, "encodedBodySize", 15)) r->present |= 1u << 15;
+  if (scr_perf_has_member(timing, "decodedBodySize", 15)) r->present |= 1u << 16;
+  if (status != NULL && status->kind != SCR_DYN_UNDEF) r->present |= 1u << 17;
+  if (r->alpn != NULL) r->present |= 1u << 18;
   scr_dyn_release(conn);
   r->cache_local = cache_mode->len == 5 && memcmp(cache_mode->data, "local", 5) == 0;
   r->cache_validated = cache_mode->len == 9 && memcmp(cache_mode->data, "validated", 9) == 0;
@@ -864,10 +896,26 @@ double scr_perf_entry_resource_num(double i, double which) {
     case 14:
       if (r->cache_local) return 0;
       if (r->cache_validated) return 300;
+      if ((r->present & (1u << 15)) == 0) return NAN;
       return r->encoded_body_size + 300;
     case 15: return r->encoded_body_size;
     case 16: return r->decoded_body_size;
     default: return r->response_status;
+  }
+}
+
+/* Whether the resource entry's field `which` is present (1) or absent (0):
+ * the field a timing info omits reads as undefined, as Node's getters
+ * answer it. A mark or measure answers present. */
+double scr_perf_entry_resource_has(double i, double which) {
+  const ScrPerfEntry *e = scr_perf_at(i);
+  const ScrPerfResource *r = e->resource;
+  if (r == NULL) return 0;
+  int sel = (int)which;
+  if (sel < 0 || sel > 18) return 1;
+  switch (sel) {
+    case 11: case 13: case 14: return 1; /* ?? 0, endTime and the transfer rule */
+    default: return (r->present & (1u << sel)) != 0;
   }
 }
 

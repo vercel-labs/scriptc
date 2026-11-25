@@ -1763,10 +1763,17 @@ export function perfEntryShape(shapes: ShapeRegistry, unions: UnionRegistry): st
       { name: "entryType", type: STRING },
       { name: "name", type: STRING },
       { name: "startTime", type: F64 },
-      ...PERF_RESOURCE_FIELDS.map((field) => ({
-        name: field.name,
-        type: field.type === "number" ? F64 : STRING,
-      })),
+      ...PERF_RESOURCE_FIELDS.map((field) => {
+        /* Node answers undefined for a timing the caller's timing info
+         * omits — every numeric field, and the connection's negotiated
+         * protocol — even though the declaration types them number/string. */
+        const optional = field.type === "number" || field.name === "nextHopProtocol";
+        const base = field.type === "number" ? F64 : STRING;
+        return {
+          name: field.name,
+          type: optional ? (withUndefinedArm(base, unions) ?? base) : base,
+        };
+      }),
     ].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
     false,
     undefined,

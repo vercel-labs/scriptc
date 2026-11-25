@@ -553,23 +553,85 @@ function perfEntryRecord(
   for (const field of PERF_RESOURCE_FIELDS) {
     const selectorById = PERF_RESOURCE_NUM_SELECTORS.get(field.name);
     if (selectorById !== undefined) {
-      values[field.name] = {
+      const number: IrExpr = {
         kind: "libCall",
         fn: "perf.entryResourceNum",
         args: [index, numLit(selectorById, loc)],
         type: F64,
         loc,
       };
+      /* A timing the caller's timing info omits is absent, not 0: the slot
+       * is an undefined-armed union, so the record carries absence and a
+       * read answers undefined as Node's getters do. */
+      const shapeField = lowerer.shapes.get(t.shapeId)?.fields.find((f) => f.name === field.name);
+      const absent = shapeField ? lowerer.absentFieldValue(shapeField, loc) : null;
+      if (shapeField && absent?.kind === "fieldAbsent") {
+        const present = lowerer.coerceToExpected(number, shapeField.type);
+        values[field.name] = {
+          kind: "ternary",
+          cond: {
+            kind: "bin",
+            op: "!==",
+            left: {
+              kind: "libCall",
+              fn: "perf.entryResourceHas",
+              args: [index, numLit(selectorById, loc)],
+              type: F64,
+              loc,
+            },
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          then: present,
+          else_: absent,
+          type: shapeField.type,
+          loc,
+        };
+      } else {
+        values[field.name] = number;
+      }
       continue;
     }
     const selector = PERF_RESOURCE_STR_SELECTORS.get(field.name)!;
-    values[field.name] = {
+    const text: IrExpr = {
       kind: "libCall",
       fn: "perf.entryResourceStr",
       args: [index, numLit(selector, loc)],
       type: STRING,
       loc,
     };
+    /* nextHopProtocol is the connection's negotiated protocol: absent when
+     * the timing info carries no connection (Node's optional-chain read). */
+    const presenceById = PERF_RESOURCE_STR_PRESENCE.get(field.name);
+    const shapeField = lowerer.shapes.get(t.shapeId)?.fields.find((f) => f.name === field.name);
+    const absent = shapeField ? lowerer.absentFieldValue(shapeField, loc) : null;
+    if (presenceById !== undefined && shapeField && absent?.kind === "fieldAbsent") {
+      const present = lowerer.coerceToExpected(text, shapeField.type);
+      values[field.name] = {
+        kind: "ternary",
+        cond: {
+          kind: "bin",
+          op: "!==",
+          left: {
+            kind: "libCall",
+            fn: "perf.entryResourceHas",
+            args: [index, numLit(presenceById, loc)],
+            type: F64,
+            loc,
+          },
+          right: numLit(0, loc),
+          type: BOOL,
+          loc,
+        },
+        then: present,
+        else_: absent,
+        type: shapeField.type,
+        loc,
+      };
+    } else {
+      values[field.name] = text;
+    }
   }
   return {
     kind: "recordLit",
@@ -604,6 +666,10 @@ const PERF_RESOURCE_NUM_SELECTORS: ReadonlyMap<string, number> = new Map([
 ]);
 
 /** The string PerformanceResourceTiming fields, as scr_perf.c's selectors. */
+/** The string resource fields whose presence the timing info decides, as the
+ * runtime's presence ids (18 = the connection's negotiated protocol). */
+const PERF_RESOURCE_STR_PRESENCE: ReadonlyMap<string, number> = new Map([["nextHopProtocol", 18]]);
+
 const PERF_RESOURCE_STR_SELECTORS: ReadonlyMap<string, number> = new Map([
   ["initiatorType", 0],
   ["nextHopProtocol", 1],

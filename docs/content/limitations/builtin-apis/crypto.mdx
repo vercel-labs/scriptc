@@ -42,6 +42,8 @@
   `generateKeyPairSync` and `generateKeyPair` check their arguments in Node's order, with Node's errors, including the OpenSSL errors for RSA modulus lengths below 512 or above 2147483647 bits and for public exponents of 0, 1, or an even number, which `generateKeyPair` passes to its callback.
   RSA keys generate with modulus lengths from 512 to 8192 bits, an odd length from 2048 bits yielding one bit less as in Node, and odd public exponents up to 4294967295; longer moduli that Node accepts, and `paramEncoding: 'explicit'`, throw a coded SC2020 error.
   The EC curves are prime256v1 (P-256), secp384r1 (P-384), secp521r1 (P-521), and secp256k1.
+  `generateKeyPairSync('dh')` and `generateKeyPair('dh')` make DH KeyObjects from a named group (`modp1`, `modp2`, `modp5`, or `modp14` through `modp18`), an explicit prime and generator, or a generated `primeLength`, with Node's option checks and errors; they export as PKCS#8 for the private key and SubjectPublicKeyInfo for the public one, in PEM and DER, and have no JWK form.
+  Reading DH keys with `createPrivateKey`/`createPublicKey` and `crypto.diffieHellman` with DH KeyObjects are not supported yet.
   Keys read and write PEM and DER as PKCS#1, SEC1, PKCS#8, and SubjectPublicKeyInfo, and JWK (Ed25519, X25519, and X448 keys use PKCS#8, SubjectPublicKeyInfo, and JWK); `createPublicKey` also takes a private key or an X.509 certificate.
   EC, Ed25519, and X25519 keys also read and write the `raw-public` and `raw-private` formats, including compressed EC points.
   Raw X448, Ed448, and post-quantum keys, EC scalars of 0 or at least the curve order, and the EC point at infinity, which Node accepts, throw a coded SC2020 error.
@@ -63,7 +65,7 @@
   Sign and Verify values are Writable streams: `write()` accumulates data as `update()` does, `end()` finishes the stream, and `pipe()` can pipe into one; they have no Readable side, as in Node.
   Private keys export encrypted (`cipher`, `passphrase`) with aes-128, aes-192, and aes-256 in CBC and ECB modes and with des-ede3-cbc, PKCS#8 as PBES2 with PBKDF2-HMAC-SHA256 and PKCS#1 and SEC1 as traditional PEM, and the ciphers OpenSSL refuses for a form throw its errors; a cipher option can also be an OID; other ciphers Node encrypts with throw a coded SC2020 error.
   Encrypted private keys import with a `passphrase` from PBES2 with HMAC-SHA PRFs and the CBC and ECB ciphers, and from traditional PEM with the CBC ciphers, with Node's errors for a missing or wrong passphrase; other schemes and ciphers throw a coded SC2020 error once a passphrase is given.
-  The other key types (`dsa`, `dh`, `ed448`, `ml-dsa`, and the rest) and wasm32-wasi builds throw a coded SC2020 error or are refused.
+  The other key types (`dsa`, `ed448`, `ml-dsa`, and the rest) and wasm32-wasi builds throw a coded SC2020 error or are refused.
   `crypto.getFips()` answers 0 and `crypto.setFips()` is refused at compile time: a compiled binary has no OpenSSL property query to switch, where Node's `setFips(true)` succeeds, makes `getFips()` answer 1, and makes later crypto fetches fail with `ERR_OSSL_EVP_UNSUPPORTED` on a build without a FIPS provider.
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.
   `publicEncrypt`/`privateDecrypt` remain unsupported.

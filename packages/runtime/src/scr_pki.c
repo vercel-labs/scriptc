@@ -26,6 +26,7 @@
 #include "mbedtls/base64.h"
 #include "mbedtls/cipher.h"
 #include "mbedtls/bignum.h"
+#include "mbedtls/dhm.h"
 #include "mbedtls/ecdh.h"
 #include "mbedtls/ecdsa.h"
 #include "mbedtls/ecp.h"
@@ -37,6 +38,7 @@
 #include "mbedtls/rsa.h"
 #include "mbedtls/x509_crt.h"
 
+#include "scr_dh_groups.h"
 #include "scr_pki.h"
 #include "scr_cipher_names.h"
 
@@ -234,6 +236,12 @@ typedef struct SpKey {
   uint8_t mlkem_seed[64];
   uint8_t mlkem_pk[1568];
   uint8_t mlkem_sk[3168];
+  /* A DH key: the parameters p and g, the private x (private keys) and the
+   * public y, all big-endian; dh_priv_len is the parameter set's private
+   * key length in bytes. */
+  bool dh;
+  unsigned char *dh_p, *dh_g, *dh_x, *dh_y;
+  size_t dh_p_len, dh_g_len, dh_x_len, dh_y_len, dh_priv_len;
   /* An RSA-PSS key (id-RSASSA-PSS): signatures only, with PSS padding.
    * With RSASSA-PSS-params it signs only with pss_md and MGF1 over
    * pss_mgf1, and salts of at least pss_salt bytes. */
@@ -252,6 +260,15 @@ static void *sp_key_retain(void *h) {
 static void sp_key_release(void *h) {
   SpKey *k = h;
   if (!k || k->rc == SIZE_MAX || --k->rc != 0) return;
+  if (k->dh) {
+    if (k->dh_p) free(k->dh_p);
+    if (k->dh_g) free(k->dh_g);
+    if (k->dh_x) {
+      mbedtls_platform_zeroize(k->dh_x, k->dh_x_len);
+      free(k->dh_x);
+    }
+    if (k->dh_y) free(k->dh_y);
+  }
   mbedtls_pk_free(&k->pk);
   mbedtls_platform_zeroize(k, sizeof *k);
   free(k);
@@ -300,6 +317,36 @@ static bool sp_is_ed(const SpKey *k) { return k->ed25519; }
 static bool sp_is_x(const SpKey *k) { return k->x25519; }
 static bool sp_is_x448(const SpKey *k) { return k->x448; }
 static bool sp_is_mlkem(const SpKey *k) { return k->mlkem; }
+static bool sp_is_dh(const SpKey *k) { return k->dh; }
+
+/* Node's getDiffieHellman groups, which generateKeyPair('dh') also takes as
+ * `group`: the RFC 2409 and RFC 3526 primes, all with the generator 2, and
+ * the private key length OpenSSL uses for each (modp1 and modp2 set none).
+ * Every group is fetched by its exact name. */
+typedef struct {
+  const char *name;
+  const unsigned char *p;
+  size_t p_len;
+  int keylength;
+} SpDhGroup;
+static const SpDhGroup sp_dh_groups[] = {
+    {"modp1", scr_dh_modp1_p, sizeof scr_dh_modp1_p, 0},
+    {"modp2", scr_dh_modp2_p, sizeof scr_dh_modp2_p, 0},
+    {"modp5", scr_dh_modp5_p, sizeof scr_dh_modp5_p, 200},
+    {"modp14", scr_dh_modp14_p, sizeof scr_dh_modp14_p, 225},
+    {"modp15", scr_dh_modp15_p, sizeof scr_dh_modp15_p, 275},
+    {"modp16", scr_dh_modp16_p, sizeof scr_dh_modp16_p, 325},
+    {"modp17", scr_dh_modp17_p, sizeof scr_dh_modp17_p, 375},
+    {"modp18", scr_dh_modp18_p, sizeof scr_dh_modp18_p, 400},
+};
+
+static const SpDhGroup *sp_dh_group(const ScrStr *name) {
+  for (size_t i = 0; i < sizeof sp_dh_groups / sizeof sp_dh_groups[0]; i++) {
+    size_t n = strlen(sp_dh_groups[i].name);
+    if (name->len == n && memcmp(name->data, sp_dh_groups[i].name, n) == 0) return &sp_dh_groups[i];
+  }
+  return NULL;
+}
 /* The OKP key material and its size: X25519 32 bytes, X448 56. */
 static const uint8_t *sp_okp_seed(const SpKey *k) { return k->x448 ? k->x448_seed : k->ed_seed; }
 static uint8_t *sp_okp_pub_mut(SpKey *k) { return k->x448 ? k->x448_pub : k->ed_pub; }
@@ -602,6 +649,93 @@ static int sp_write_mlkem_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
   return len + r;
 }
 
+/* ── DH key encodings ───────────────────────────────────────────────────
+ * OpenSSL's DH shapes: DHParameters ::= SEQUENCE { INTEGER p, INTEGER g },
+ * the dhKeyAgreement AlgorithmIdentifier (1.2.840.113549.1.3.1) over those
+ * parameters, PKCS#8 with the private INTEGER x in its OCTET STRING and
+ * SubjectPublicKeyInfo with the public INTEGER y in its BIT STRING. */
+
+/* The OID content of dhKeyAgreement. */
+static const unsigned char sp_dh_oid[9] = {0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x03, 0x01};
+
+static int sp_write_dh_mpi(unsigned char **c, unsigned char *start, const unsigned char *bytes,
+                           size_t len) {
+  mbedtls_mpi x;
+  mbedtls_mpi_init(&x);
+  int r = mbedtls_mpi_read_binary(&x, bytes, len);
+  if (r == 0) r = mbedtls_asn1_write_mpi(c, start, &x);
+  mbedtls_mpi_free(&x);
+  return r;
+}
+
+/* The AlgorithmIdentifier with its parameters, written backwards; the
+ * written length or a negative error. */
+static int sp_write_dh_alg(unsigned char **c, unsigned char *start, const SpKey *k) {
+  int r, len = 0;
+  int params = 0;
+  if ((r = sp_write_dh_mpi(c, start, k->dh_g, k->dh_g_len)) < 0) return r;
+  params += r;
+  if ((r = sp_write_dh_mpi(c, start, k->dh_p, k->dh_p_len)) < 0) return r;
+  params += r;
+  if ((r = mbedtls_asn1_write_len(c, start, (size_t)params)) < 0) return r;
+  params += r;
+  if ((r = mbedtls_asn1_write_tag(c, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  len += params + r;
+  if ((r = mbedtls_asn1_write_oid(c, start, (const char *)sp_dh_oid, sizeof sp_dh_oid)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(c, start, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(c, start, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+static int sp_write_dh_spki(SpKey *k, unsigned char *buf, size_t size) {
+  unsigned char inner[SP_DER_MAX];
+  unsigned char *ic = inner + sizeof inner;
+  int n = sp_write_dh_mpi(&ic, inner, k->dh_y, k->dh_y_len);
+  if (n < 0) return n;
+  unsigned char *c = buf + size;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_bitstring(&c, buf, inner + sizeof inner - n, (size_t)n * 8)) < 0)
+    return r;
+  len += r;
+  if ((r = sp_write_dh_alg(&c, buf, k)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
+static int sp_write_dh_pkcs8(SpKey *k, unsigned char *buf, size_t size) {
+  unsigned char inner[SP_DER_MAX];
+  unsigned char *ic = inner + sizeof inner;
+  int n = sp_write_dh_mpi(&ic, inner, k->dh_x, k->dh_x_len);
+  if (n < 0) return n;
+  size_t inner_len = (size_t)n;
+  memmove(inner, inner + sizeof inner - inner_len, inner_len);
+  unsigned char *c = buf + size;
+  int r, len = 0;
+  if ((r = mbedtls_asn1_write_raw_buffer(&c, buf, inner, inner_len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, inner_len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_OCTET_STRING)) < 0) return r;
+  len += r;
+  if ((r = sp_write_dh_alg(&c, buf, k)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_int(&c, buf, 0)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_len(&c, buf, (size_t)len)) < 0) return r;
+  len += r;
+  if ((r = mbedtls_asn1_write_tag(&c, buf, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE)) < 0)
+    return r;
+  return len + r;
+}
+
 /* A digest AlgorithmIdentifier with NULL parameters, written backwards
  * at *c; the written length or a negative error. */
 static int sp_write_md_alg(unsigned char **c, unsigned char *start, mbedtls_md_type_t md) {
@@ -680,6 +814,7 @@ static int sp_write_pss_alg(unsigned char **c, unsigned char *start, const SpKey
 static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size);
 
 static int sp_write_spki_der(SpKey *k, unsigned char *buf, size_t size) {
+  if (sp_is_dh(k)) return sp_write_dh_spki(k, buf, size);
   if (sp_is_mlkem(k)) return sp_write_mlkem_spki(k, buf, size);
   if (sp_is_okp(k)) {
     if (k->x448) return sp_write_okp_der(sp_x448_spki_prefix, 12, k->x448_pub, 56, buf, size);
@@ -714,6 +849,7 @@ static int sp_write_pkcs1_public_der(SpKey *k, unsigned char *buf, size_t size) 
  * parameters, or id-ecPublicKey with the curve OID), and the inner key,
  * which for EC omits the parameters field. */
 static int sp_write_pkcs8_der(SpKey *k, unsigned char *buf, size_t size) {
+  if (sp_is_dh(k)) return sp_write_dh_pkcs8(k, buf, size);
   if (sp_is_mlkem(k)) return sp_write_mlkem_pkcs8(k, buf, size);
   if (sp_is_okp(k)) {
     if (k->x448) return sp_write_okp_der(sp_x448_pkcs8_prefix, 16, k->x448_seed, 56, buf, size);
@@ -2084,6 +2220,22 @@ static SpKey *sp_key_from_jwk_plain(const ScrDyn *jwk, bool want_private) {
 
 /* The private key of a public SpKey derived from `k`. */
 static SpKey *sp_public_of(SpKey *k) {
+  if (sp_is_dh(k)) {
+    SpKey *pub = sp_key_alloc(false);
+    pub->dh = true;
+    pub->dh_p = malloc(k->dh_p_len);
+    pub->dh_g = malloc(k->dh_g_len);
+    pub->dh_y = malloc(k->dh_y_len);
+    if (!pub->dh_p || !pub->dh_g || !pub->dh_y) scr_trap("scriptc: out of memory\n");
+    memcpy(pub->dh_p, k->dh_p, k->dh_p_len);
+    memcpy(pub->dh_g, k->dh_g, k->dh_g_len);
+    memcpy(pub->dh_y, k->dh_y, k->dh_y_len);
+    pub->dh_p_len = k->dh_p_len;
+    pub->dh_g_len = k->dh_g_len;
+    pub->dh_y_len = k->dh_y_len;
+    pub->dh_priv_len = k->dh_priv_len;
+    return pub;
+  }
   if (sp_is_mlkem(k)) {
     SpKey *pub = sp_key_alloc(false);
     pub->mlkem = true;
@@ -2971,6 +3123,10 @@ static void sp_invalid_key_data(void) { sp_throw(SCR_ERR_TYPE, "ERR_INVALID_ARG_
  * every encoding of an RSA key, throw ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS.
  * NULL with the error pending. */
 static ScrDyn *sp_export_raw(SpKey *k, bool private_part, bool seed, bool compressed) {
+  if (sp_is_dh(k)) {
+    sp_incompatible_key_type();
+    return NULL;
+  }
   /* ML-KEM keys hold no mbedTLS key context: their raw forms are the
    * encoded public key and the seed (raw-private has no encoding). */
   if (sp_is_mlkem(k)) {
@@ -3229,7 +3385,7 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
     return NULL;
   }
   if (sp_is_str(format, "jwk")) {
-    if (k->rsa_pss) {
+    if (k->rsa_pss || sp_is_dh(k)) {
       sp_throw(SCR_ERR_ERROR, "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE", "Unsupported JWK Key Type.");
       return NULL;
     }
@@ -3334,7 +3490,7 @@ static ScrDyn *sp_export_plain(SpKey *k, const ScrDyn *options) {
 
 static ScrDyn *sp_key_details(SpKey *k) {
   ScrDyn *details = scr_dyn_new_obj();
-  if (sp_is_okp(k) || sp_is_mlkem(k)) return details;
+  if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k)) return details;
   if (sp_is_rsa(k)) {
     mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
     mbedtls_mpi e;
@@ -3366,7 +3522,7 @@ static ScrDyn *sp_key_details(SpKey *k) {
 /* The DER that identifies a key for equals(): its private encoding for a
  * private key, its SubjectPublicKeyInfo otherwise. */
 static int sp_identity_der(SpKey *k, unsigned char *buf, size_t size) {
-  if (sp_is_okp(k) || sp_is_mlkem(k))
+  if (sp_is_okp(k) || sp_is_mlkem(k) || sp_is_dh(k))
     return k->private_key ? sp_write_pkcs8_der(k, buf, size) : sp_write_spki_der(k, buf, size);
   return k->private_key ? sp_write_private_der(k, buf, size) : sp_write_spki_der(k, buf, size);
 }
@@ -3415,8 +3571,9 @@ static ScrDyn *sp_key_get(void *h, const char *name, size_t len) {
   if (len == 4 && memcmp(name, "type", 4) == 0)
     return k->private_key ? sp_dyn_str(scr_str_new("private", 7)) : sp_dyn_str(scr_str_new("public", 6));
   if (len == 17 && memcmp(name, "asymmetricKeyType", 17) == 0)
-    return sp_is_mlkem(k) ? sp_dyn_str(scr_str_new(sp_mlkem_name(k->mlkem_level),
-                                                   strlen(sp_mlkem_name(k->mlkem_level))))
+    return sp_is_dh(k)      ? sp_dyn_str(scr_str_new("dh", 2))
+           : sp_is_mlkem(k) ? sp_dyn_str(scr_str_new(sp_mlkem_name(k->mlkem_level),
+                                                     strlen(sp_mlkem_name(k->mlkem_level))))
            : sp_is_ed(k)    ? sp_dyn_str(scr_str_new("ed25519", 7))
            : sp_is_x448(k) ? sp_dyn_str(scr_str_new("x448", 4))
            : sp_is_x(k)   ? sp_dyn_str(scr_str_new("x25519", 6))
@@ -3640,7 +3797,8 @@ typedef struct {
     SP_GEN_ED25519,
     SP_GEN_X25519,
     SP_GEN_X448,
-    SP_GEN_MLKEM
+    SP_GEN_MLKEM,
+    SP_GEN_DH
   } kind;
   int mlkem_level;
   double bits, exponent; /* RSA */
@@ -3649,6 +3807,13 @@ typedef struct {
   mbedtls_md_type_t md, mgf1;
   int salt;
   const SpCurve *curve;  /* EC */
+  /* DH: a named group, explicit prime material (borrowed from the options
+   * for the duration of the job), or a generated prime of primeLength
+   * bits; the generator defaults to 2. */
+  const SpDhGroup *dh_group;
+  const ScrDyn *dh_prime;
+  double dh_prime_len;
+  double dh_generator;
 } SpKeyGen;
 
 
@@ -3760,6 +3925,99 @@ static bool sp_pss_keygen_options(const ScrDyn *options, SpKeyGen *gen) {
   return true;
 }
 
+
+/* Node's OpenSSL-shaped Error for a DH parameter failure: no code, the
+ * library and reason members, and the packed error in the message. */
+static void sp_dh_keygen_error(const char *packed, const char *reason) {
+  char message[96];
+  snprintf(message, sizeof message, "error:%s:Diffie-Hellman routines::%s", packed, reason);
+  ScrStr *text = scr_str_new(message, strlen(message));
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
+  scr_str_release(text);
+  ScrStr *library = scr_str_new("Diffie-Hellman routines", 23);
+  scr_error_set_prop(e, "library", 7, scr_dyn_new_str(library));
+  scr_str_release(library);
+  ScrStr *reason_text = scr_str_new(reason, strlen(reason));
+  scr_error_set_prop(e, "reason", 6, scr_dyn_new_str(reason_text));
+  scr_str_release(reason_text);
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
+/* Number options generator and primeLength, which Node reads with its
+ * 0..2147483647 integer check. */
+static bool sp_check_dh_int(const ScrDyn *v, const char *name, double *out) {
+  if (v->kind != SCR_DYN_NUM) {
+    scr_dyn_prop_type_fail(name, "of type number", v);
+    return false;
+  }
+  double x = v->v.num;
+  bool integer = isfinite(x) && trunc(x) == x;
+  if (!integer || x < 0 || x > 2147483647.0) {
+    ScrStr *received = sp_received(v, true);
+    scr_pki_throw_fmt(SCR_ERR_RANGE, "ERR_OUT_OF_RANGE",
+                      "The value of \"%s\" is out of range. It must be %s. Received %.*s", name,
+                      integer ? ">= 0 && <= 2147483647" : "an integer", (int)received->len,
+                      received->data);
+    scr_str_release(received);
+    return false;
+  }
+  *out = x + 0.0;
+  return true;
+}
+
+/* generateKeyPair('dh') options: exactly one of group, prime or
+ * primeLength; a generator may accompany prime or primeLength but not a
+ * group. False with Node's error pending. */
+static bool sp_dh_keygen_options(const ScrDyn *options, SpKeyGen *gen) {
+  const ScrDyn *group = sp_opt(options, "group");
+  const ScrDyn *prime = sp_opt(options, "prime");
+  const ScrDyn *prime_len = sp_opt(options, "primeLength");
+  const ScrDyn *generator = sp_opt(options, "generator");
+  bool has_group = group->kind != SCR_DYN_UNDEF && group->kind != SCR_DYN_NULL;
+  bool has_prime = prime->kind != SCR_DYN_UNDEF && prime->kind != SCR_DYN_NULL;
+  bool has_len = prime_len->kind != SCR_DYN_UNDEF && prime_len->kind != SCR_DYN_NULL;
+  bool has_generator = generator->kind != SCR_DYN_UNDEF && generator->kind != SCR_DYN_NULL;
+  if (!has_group && !has_prime && !has_len) {
+    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_MISSING_OPTION", "%s",
+                      "At least one of the group, prime, or primeLength options is required");
+    return false;
+  }
+  if (has_group && (has_prime || has_len || has_generator)) {
+    const char *other = has_prime ? "prime" : has_len ? "primeLength" : "generator";
+    char message[96];
+    snprintf(message, sizeof message,
+             "Option \"group\" cannot be used in combination with option \"%s\"", other);
+    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INCOMPATIBLE_OPTION_PAIR", "%s", message);
+    return false;
+  }
+  gen->dh_generator = 2;
+  if (has_group) {
+    if (group->kind != SCR_DYN_STR) {
+      scr_dyn_prop_type_fail("options.group", "of type string", group);
+      return false;
+    }
+    gen->dh_group = sp_dh_group(group->v.str);
+    if (!gen->dh_group) {
+      scr_pki_throw_fmt(SCR_ERR_ERROR, "ERR_CRYPTO_UNKNOWN_DH_GROUP", "%s", "Unknown DH group");
+      return false;
+    }
+    return true;
+  }
+  if (has_generator && !sp_check_dh_int(generator, "options.generator", &gen->dh_generator)) return false;
+  if (has_prime) {
+    if (!(prime->kind == SCR_DYN_BYTES || scr_buffer_storage_is(prime))) {
+      scr_dyn_prop_type_fail("options.prime", "an instance of Buffer, TypedArray, or DataView", prime);
+      return false;
+    }
+    ScrBytes *view = scr_bytes_buffer_source(prime);
+    if (!view) return false;
+    scr_bytes_release(view);
+    gen->dh_prime = prime;
+    return true;
+  }
+  return sp_check_dh_int(prime_len, "options.primeLength", &gen->dh_prime_len);
+}
+
 /* createJob's checks for generateKeyPair(Sync)(type, options) in Node's
  * order: the type, the options object, the public and private key
  * encodings, then the options of the type. False with the error pending.
@@ -3787,9 +4045,13 @@ static bool sp_keygen_check(const ScrDyn *type, const ScrDyn *options, SpKeyGen 
       return false;
     gen->pss = pss;
     if (pss && !sp_pss_keygen_options(options, gen)) return false;
-  } else if (sp_is_str(type, "dsa") || sp_is_str(type, "dh")) {
+  } else if (sp_is_str(type, "dsa")) {
     if (!sp_check_object(options, "options")) return false;
     if (!refusal) refusal = "generateKeyPairSync for this key type";
+  } else if (sp_is_str(type, "dh")) {
+    if (!sp_check_object(options, "options")) return false;
+    gen->kind = SP_GEN_DH;
+    if (!sp_dh_keygen_options(options, gen)) return false;
   } else if (sp_is_str(type, "ec")) {
     if (!sp_check_object(options, "options")) return false;
     gen->kind = SP_GEN_EC;
@@ -3923,8 +4185,104 @@ static const char *sp_rsa_keygen_failure(double bits, double exponent) {
 
 /* Generates the key `gen` describes: NULL with the error pending, and
  * *job_error set for the errors generateKeyPair passes to its callback. */
+/* The big-endian bytes of an mpi, minimally encoded (+1, never NULL). */
+static unsigned char *sp_mpi_bytes(const mbedtls_mpi *x, size_t *len) {
+  size_t n = mbedtls_mpi_size(x);
+  if (n == 0) n = 1;
+  unsigned char *bytes = malloc(n);
+  if (!bytes) scr_trap("scriptc: out of memory\n");
+  if (mbedtls_mpi_write_binary(x, bytes, n) != 0) {
+    free(bytes);
+    *len = 0;
+    return NULL;
+  }
+  *len = n;
+  return bytes;
+}
+
+/* A fresh DH key from the options: the named group's parameters, the
+ * explicit prime and generator, or parameters generated at primeLength
+ * with the generator (2, as OpenSSL generates them). */
+static SpKey *sp_dh_keygen(const SpKeyGen *gen) {
+  mbedtls_dhm_context ctx;
+  mbedtls_dhm_init(&ctx);
+  SpKey *k = NULL;
+  bool ok = true;
+  bool have_keys = false;
+  size_t x_size = 0;
+  if (gen->dh_group) {
+    ok = mbedtls_mpi_read_binary(&ctx.MBEDTLS_PRIVATE(P), gen->dh_group->p, gen->dh_group->p_len) == 0 &&
+         mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), 2) == 0;
+    int bits = gen->dh_group->keylength;
+    x_size = bits > 0 ? (size_t)((bits + 7) / 8) : mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
+  } else if (gen->dh_prime) {
+    ScrBytes *view = scr_bytes_buffer_source((ScrDyn *)gen->dh_prime);
+    if (!view) return NULL;
+    ok = mbedtls_mpi_read_binary(&ctx.MBEDTLS_PRIVATE(P), view->data,
+                                 (size_t)scr_bytes_byte_len(view)) == 0;
+    scr_bytes_release(view);
+    if (ok && mbedtls_mpi_bitlen(&ctx.MBEDTLS_PRIVATE(P)) < 512) {
+      sp_dh_keygen_error("0280007E", "modulus too small");
+      ok = false;
+    }
+    if (ok && gen->dh_generator < 2) {
+      sp_dh_keygen_error("02800065", "bad generator");
+      ok = false;
+    }
+    if (ok) {
+      ok = mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), (mbedtls_mpi_sint)gen->dh_generator) == 0;
+      x_size = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
+    }
+  } else if (gen->dh_prime_len < 512) {
+    sp_dh_keygen_error("0280007E", "modulus too small");
+    ok = false;
+  } else if (gen->dh_generator != 2) {
+    sp_dh_keygen_error("02800065", "bad generator");
+    ok = false;
+  } else {
+    /* mbedTLS's DHM entry points take the parameters; a generated set is a
+     * safe prime of primeLength bits with the generator 2, as OpenSSL
+     * generates. */
+    if (mbedtls_mpi_gen_prime(&ctx.MBEDTLS_PRIVATE(P), (size_t)gen->dh_prime_len,
+                              MBEDTLS_MPI_GEN_PRIME_FLAG_DH, sp_random, NULL) != 0 ||
+        mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), 2) != 0) {
+      sp_unsupported_input();
+      ok = false;
+    } else {
+      x_size = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
+    }
+  }
+  if (ok && !have_keys) {
+    /* mbedtls_dhm_make_public writes exactly the modulus width. */
+    size_t public_len = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
+    unsigned char *public_bytes = malloc(public_len ? public_len : 1);
+    if (!public_bytes) scr_trap("scriptc: out of memory\n");
+    if (mbedtls_dhm_make_public(&ctx, (int)x_size, public_bytes, public_len, sp_random, NULL) != 0) {
+      sp_unsupported_input();
+      ok = false;
+    }
+    free(public_bytes);
+  }
+  if (ok) {
+    k = sp_key_alloc(true);
+    k->dh = true;
+    k->dh_p = sp_mpi_bytes(&ctx.MBEDTLS_PRIVATE(P), &k->dh_p_len);
+    k->dh_g = sp_mpi_bytes(&ctx.MBEDTLS_PRIVATE(G), &k->dh_g_len);
+    k->dh_x = sp_mpi_bytes(&ctx.MBEDTLS_PRIVATE(X), &k->dh_x_len);
+    k->dh_y = sp_mpi_bytes(&ctx.MBEDTLS_PRIVATE(GX), &k->dh_y_len);
+    k->dh_priv_len = x_size;
+    if (!k->dh_p || !k->dh_g || !k->dh_x || !k->dh_y) {
+      sp_key_release(k);
+      k = NULL;
+    }
+  }
+  mbedtls_dhm_free(&ctx);
+  return k;
+}
+
 static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
   *job_error = false;
+  if (gen->kind == SP_GEN_DH) return sp_dh_keygen(gen);
   SpKey *k = sp_key_alloc(true);
   if (gen->kind == SP_GEN_ED25519) {
     k->ed25519 = true;

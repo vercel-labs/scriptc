@@ -435,6 +435,11 @@ typedef struct ScrTlsSrv {
    * The engine's ticket callbacks keep their key context here. */
   mbedtls_ssl_ticket_context ticket_ctx;
   bool ticket_ready;
+  /* server.getTicketKeys()/setTicketKeys(): the 48 bytes of random key
+   * material this server answers (Node's contract). The engine's ticket
+   * keys are derived from them, and a new set re-keys the server so
+   * tickets minted under the old material no longer resume. */
+  unsigned char ticket_keys[48];
   /* new tls.TLSSocket(socket, { secureContext }): the context whose
    * certificate and key this config serves (+1; NULL when cert/key are the
    * config's own) */
@@ -476,18 +481,42 @@ static const char *SCR_TLS_ALPN_HTTP11[] = {"http/1.1", NULL};
 static const char *SCR_TLS_ALPN_H2[] = {"h2", NULL};
 static const char *SCR_TLS_ALPN_H2_HTTP11[] = {"h2", "http/1.1", NULL};
 
+/* Derives the engine's ticket keys from `s->ticket_keys` and writes BOTH
+ * key slots, so tickets minted under the previous material no longer parse
+ * (Node's setTicketKeys invalidates them) and every ticket carries a name
+ * for the current material. */
+#if defined(MBEDTLS_SSL_TICKET_C)
+static void scr_tls_ticket_install(ScrTlsSrv *s) {
+  if (!s->ticket_ready) return;
+  unsigned char digest[32];
+  if (mbedtls_sha256(s->ticket_keys, sizeof s->ticket_keys, digest, 0) != 0) return;
+  /* rotate writes the inactive slot and flips it active: twice leaves
+   * both slots holding this material */
+  (void)mbedtls_ssl_ticket_rotate(&s->ticket_ctx, digest, sizeof digest, digest, sizeof digest,
+                                  86400);
+  (void)mbedtls_ssl_ticket_rotate(&s->ticket_ctx, digest, sizeof digest, digest, sizeof digest,
+                                  86400);
+}
+#endif
+
 /* The ticket key context every server config needs: the engine's own
  * ticket module writes and parses them, minted under a key kept here. */
 static void scr_tls_srv_session_tickets(ScrTlsSrv *s) {
 #if defined(MBEDTLS_SSL_TICKET_C)
+  /* Node answers 48 bytes of random key material per server; the engine
+   * keys derive from them. */
+  if (mbedtls_ctr_drbg_random(&scr_tls_drbg, s->ticket_keys, sizeof s->ticket_keys) != 0) {
+    memset(s->ticket_keys, 0, sizeof s->ticket_keys);
+  }
   mbedtls_ssl_ticket_init(&s->ticket_ctx);
   if (mbedtls_ssl_ticket_setup(&s->ticket_ctx, mbedtls_ctr_drbg_random, &scr_tls_drbg,
                                MBEDTLS_CIPHER_AES_256_GCM, 86400) != 0) {
     return;
   }
+  s->ticket_ready = true;
+  scr_tls_ticket_install(s);
   mbedtls_ssl_conf_session_tickets_cb(&s->conf, mbedtls_ssl_ticket_write,
                                       mbedtls_ssl_ticket_parse, &s->ticket_ctx);
-  s->ticket_ready = true;
 #else
   (void)s;
 #endif
@@ -3863,6 +3892,47 @@ void scr_tls_server_set_secure_context(ScrNetServer *server, const ScrDyn *optio
   scr_secure_ctx_release(s->default_ctx);
   s->default_ctx = c;
   mbedtls_ssl_conf_cert_cb(&s->conf, &scr_tls_f_cert);
+}
+
+/* server.getTicketKeys(): the 48 bytes of key material this server mints
+ * its tickets under, as a fresh Buffer (+1 dyn): Node's getter answers
+ * independent copies, so mutating one never changes the next answer. */
+ScrDyn *scr_tls_server_get_ticket_keys(ScrNetServer *server) {
+  ScrTlsSrv *s = scr_tls_srv_of_server(server, "server.getTicketKeys");
+  if (s == NULL) return NULL;
+  ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)sizeof s->ticket_keys);
+  b->is_buffer = true;
+  memcpy(b->data, s->ticket_keys, sizeof s->ticket_keys);
+  ScrDyn *d = scr_dyn_new_bytes(b);
+  scr_bytes_release(b);
+  return d;
+}
+
+/* server.setTicketKeys(keys): Node's validation ladder — a Buffer,
+ * TypedArray or DataView whose BYTE length is 48 — then re-keys the
+ * server, so tickets minted under the previous material no longer resume
+ * and the next connection gets a full handshake. */
+void scr_tls_server_set_ticket_keys(ScrNetServer *server, const ScrDyn *keys) {
+  ScrTlsSrv *s = scr_tls_srv_of_server(server, "server.setTicketKeys");
+  if (s == NULL) return;
+  const ScrDyn *v = keys != NULL ? keys : scr_dyn_undefined();
+  if (v->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", v);
+    return;
+  }
+  const ScrBytes *b = v->v.bytes;
+  if ((size_t)scr_bytes_byte_len(b) != sizeof s->ticket_keys) {
+    static const char msg[] =
+        "Session ticket keys must be a 48-byte buffer\n"
+        "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\n"
+        "Please open an issue with this stack trace at https://github.com/nodejs/node/issues\n";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_INTERNAL_ASSERTION");
+    return;
+  }
+  memcpy(s->ticket_keys, b->data, sizeof s->ticket_keys);
+#if defined(MBEDTLS_SSL_TICKET_C)
+  scr_tls_ticket_install(s);
+#endif
 }
 
 /* ── new tls.TLSSocket(socket, options) ───────────────────────────────── */

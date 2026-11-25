@@ -2512,7 +2512,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   http: { maxHeaderSize: 16384 },
   // Node's default protocol range, the TLS 1.2 to 1.3 range the bundled
   // mbedTLS negotiates
-  tls: { DEFAULT_MIN_VERSION: "TLSv1.2", DEFAULT_MAX_VERSION: "TLSv1.3" },
+  tls: {
+    DEFAULT_MIN_VERSION: "TLSv1.2",
+    DEFAULT_MAX_VERSION: "TLSv1.3",
+    DEFAULT_ECDH_CURVE: "auto",
+  },
   path: { sep: "/", delimiter: ":" },
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },

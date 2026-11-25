@@ -518,6 +518,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "tls.serverAddContext",
   "tls.serverAddContextCtx",
   "tls.serverSetSecureContext",
+  // getTicketKeys/setTicketKeys: the non-TLS-server fence, setTicketKeys'
+  // validateBuffer and its ERR_INTERNAL_ASSERTION length ladder.
+  "tls.serverGetTicketKeys",
+  "tls.serverSetTicketKeys",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free

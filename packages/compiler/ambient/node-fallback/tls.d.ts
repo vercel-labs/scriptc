@@ -18,6 +18,12 @@ declare module "tls" {
     addContext(hostname: string, context: TlsOptions | SecureContext): void;
     /* new connections serve a context made from `options` */
     setSecureContext(options: TlsOptions): void;
+    /* the 48 bytes of ticket key material the server mints tickets under;
+     * mutating the answer never changes the server's keys */
+    getTicketKeys(): Buffer;
+    /* re-key the server from 48 bytes: tickets minted under the previous
+     * material no longer resume */
+    setTicketKeys(keys: Buffer): void;
   }
   /** The value side of the class: `new tls.Server(options[, listener])`
    * builds the same server createServer does. */
@@ -135,6 +141,8 @@ declare module "tls" {
   }
   export const DEFAULT_MIN_VERSION: string;
   export const DEFAULT_MAX_VERSION: string;
+  /* the curve the provider chooses when it negotiates ECDH ("auto") */
+  export const DEFAULT_ECDH_CURVE: string;
   /** tls.connect options — the RUNTIME options record (members read at
    * runtime; port/host/socket/rejectUnauthorized/ca/servername are the
    * honestly-implemented set, every other documented member throws the

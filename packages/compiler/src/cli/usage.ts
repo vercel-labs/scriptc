@@ -53,6 +53,7 @@ export const CLI_OPTIONS = {
   native: { type: "string", multiple: true },
   node: { type: "string" },
   "explain-island": { type: "string" },
+  strict: { type: "boolean", default: false },
   "strict-user-js": { type: "boolean", default: false },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
@@ -615,6 +616,21 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       },
     ],
   },
+  strict: {
+    entries: [
+      {
+        term: "--strict",
+        help: [
+          "build, run and coverage: fail on the findings that measure",
+          "distance from optimal code (SC6001 conversions that copy,",
+          "the SC61xx performance hints) and on any Node island use.",
+          "A // scriptc-allow <code> comment on the finding's line",
+          'opts that line out. "scriptc": { "strict": true } in',
+          "package.json turns it on too",
+        ],
+      },
+    ],
+  },
   "strict-user-js": {
     entries: [
       {
@@ -730,6 +746,7 @@ const EXECUTABLE_OPTIONS: readonly CliOptionName[] = [
   "dynamic-tier-warning",
   "copy-warning",
   "key-order-warning",
+  "strict",
   ...NODE_ISLAND_OPTIONS,
 ];
 
@@ -796,6 +813,7 @@ export const CLI_COMMANDS: readonly CliCommand[] = [
       "dynamic-tier-warning",
       "copy-warning",
       "key-order-warning",
+      "strict",
       ...NODE_ISLAND_OPTIONS,
       "explain-island",
       "strict-user-js",
@@ -1017,6 +1035,7 @@ export const CLI_FAST_PATHS = {
       "npm-static",
       "shape-overlay",
       "dynamic-tier-warning",
+      "strict",
     ],
   },
   /** `coverage` replaying the verdict of an unchanged program. */
@@ -1029,6 +1048,7 @@ export const CLI_FAST_PATHS = {
       "dynamic-tier-warning",
       "copy-warning",
       "key-order-warning",
+      "strict",
     ],
   },
 } satisfies Record<string, CliFastPath>;

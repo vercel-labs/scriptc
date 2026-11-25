@@ -22,6 +22,8 @@ import {
 import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
 import { buildWarnings, renderBuildWarnings } from "../diagnostics/build-warnings.js";
+import { strictErrors, strictIslandError } from "../diagnostics/strict.js";
+import { readProjectConfig } from "../project-config.js";
 import { isNativeOptimization } from "../backend/optimization.js";
 import { renderNativeProfileMatch } from "../backend/native-profile.js";
 import {
@@ -381,6 +383,14 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
   const failOn = failOnRaw as CoverageFailOn | undefined;
+  // Strict mode: --strict, or "scriptc": { "strict": true } in the project's
+  // package.json. It fails on the findings that measure distance from
+  // optimal code, so a flag that hides one of them cannot be combined.
+  const strict = values.strict === true || readProjectConfig(input).strict;
+  if (strict && !dynamicTierWarning)
+    fail(`--strict checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
+  if (strict && !copyWarning)
+    fail(`--strict checks the warning --no-copy-warning leaves out\n\n${USAGE}`);
   const tierRaw = values.tier;
   if (tierRaw !== undefined && !(TIER_MODES as readonly string[]).includes(tierRaw)) {
     fail(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})\n\n${USAGE}`);
@@ -610,6 +620,31 @@ async function main(args: string[], host: CliHost): Promise<number> {
       coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6001");
     if (!keyOrderWarning && coverage.divergences !== undefined)
       coverage.divergences = coverage.divergences.filter((d) => d.code !== "SC6014");
+    let strictFailed = false;
+    if (strict) {
+      const islandDiags = (coverage.nodeIslands?.islands ?? []).map((island) =>
+        strictIslandError(
+          island.importedFrom[0] ?? { file: input, start: 0, end: 0 },
+          [island.package],
+          island.reason,
+        ),
+      );
+      const promoted = strictErrors(
+        [...(coverage.divergences ?? []), ...(coverage.performance ?? []), ...islandDiags],
+        sourceTexts,
+      );
+      if (promoted.length > 0) {
+        strictFailed = true;
+        const lifted = new Set(promoted.map((d) => `${d.code}\0${d.loc.file}\0${d.loc.start}`));
+        coverage.divergences = (coverage.divergences ?? []).filter(
+          (d) => !lifted.has(`${d.code}\0${d.loc.file}\0${d.loc.start}`),
+        );
+        coverage.performance = (coverage.performance ?? []).filter(
+          (d) => !lifted.has(`${d.code}\0${d.loc.file}\0${d.loc.start}`),
+        );
+        coverage.diagnostics = [...coverage.diagnostics, ...promoted];
+      }
+    }
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -647,7 +682,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         );
       }
     }
-    return coveragePasses(coverage, failOn) ? 0 : 1;
+    return coveragePasses(coverage, failOn) && !strictFailed ? 0 : 1;
   }
 
   if (output === null || !output.ok) throw new Error("internal output-option state");
@@ -737,6 +772,39 @@ async function main(args: string[], host: CliHost): Promise<number> {
       copy: copyWarning,
       keyOrder: keyOrderWarning,
     });
+    if (strict) {
+      const texts = result.sourceTexts ?? new Map<string, string>();
+      const islands = result.islands;
+      const islandDiags =
+        islands === undefined || islands.packages.length + islands.modules.length === 0
+          ? []
+          : [
+              strictIslandError({ file: input, start: 0, end: 0 }, [
+                ...islands.packages,
+                ...islands.modules,
+              ]),
+            ];
+      const promoted = strictErrors([...warnings, ...islandDiags], texts);
+      if (promoted.length > 0) {
+        if (printDiagnostics) {
+          const envelope = buildEnvelope({
+            compilerVersion: host.version(),
+            entry: input,
+            ok: false,
+            diagnostics: promoted,
+            sourceTexts: texts,
+          });
+          process.stdout.write(`${JSON.stringify(envelope, null, 2)}\n`);
+          throw new CliExit(1);
+        }
+        const color = process.stderr.isTTY ?? false;
+        process.stderr.write(
+          renderDiagnostics(promoted, texts, { color }) +
+            `\n\n${promoted.length} error${promoted.length === 1 ? "" : "s"}: strict mode requires optimal code; fix the findings above or add a // scriptc-allow <code> comment on the line.\n`,
+        );
+        throw new CliExit(1);
+      }
+    }
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
         compilerVersion: host.version(),

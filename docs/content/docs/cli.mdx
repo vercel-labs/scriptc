@@ -212,6 +212,9 @@ Each command is one tool: `scriptc_build`, `scriptc_run`, `scriptc_coverage`, `s
   <dt><code>--external-types &lt;specifier=file.d.ts&gt;</code></dt>
   <dd>Coverage only. Map an exact bare module specifier to a local declaration file supplied by an embedder. Repeat the option for multiple modules. The declaration supplies checker types so application coverage can continue; runtime imports and values remain explicit <code>SC1010</code> blockers. Relative paths resolve from the current working directory. Accepted files end in <code>.d.ts</code>, <code>.d.mts</code>, or <code>.d.cts</code>.</dd>
 
+  <dt><code>--strict</code></dt>
+  <dd>Build, run and coverage. Treat the findings that measure distance from optimal code as errors: <code>SC6001</code> conversions that copy a value the program could keep, the <code>SC61xx</code> performance hints, and any Node island use. Each error keeps its fix hint. A <code>// scriptc-allow &lt;code&gt;</code> comment on the finding's line opts that line out, and several codes may be listed. <code>"scriptc": { "strict": true }</code> in <code>package.json</code> turns it on too. See <a href="/docs/coverage#strict-mode">Strict mode</a>.</dd>
+
   <dt><code>--tier &lt;auto|static-only&gt;</code></dt>
   <dd>The tier policy for code that has no static lowering. <code>auto</code> is the default. <code>static-only</code> guarantees that the program contains no dynamic-tier demotions: every such construct stays a compile error in TypeScript and a deferred runtime error in JavaScript, which is how both modes behave today. Use it in CI to keep a program fully static. Library mode is always static-only. See <a href="/docs/coverage#dynamic-tier">Dynamic tier</a>.</dd>
 

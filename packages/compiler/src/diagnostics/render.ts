@@ -133,7 +133,11 @@ export function renderDiagnostic(
   // SC8021 are notes.
   const note = isNodeIslandNoteCode(diag.code);
   const warning = isWarningCode(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
-  const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
+  const severity = note
+    ? c(CYAN, "note")
+    : diag.severity === "error" || (diag.severity !== "warning" && !warning)
+      ? c(RED, "error")
+      : c(YELLOW, "warning");
   out.push(
     `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,
   );

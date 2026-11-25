@@ -20,8 +20,10 @@ const scopeScript = scopeJob.steps!.find((step) => step.id === "scope")!.run!;
 // Validation jobs that run only nightly and on manual runs, outside the
 // required check (the shape overlay over the real-package suites).
 const nightlyJobs = ["shape_overlay_native", "shape_overlay"];
+// The tag job follows the required check and is not part of it.
 const heavyJobs = Object.keys(workflow.jobs).filter(
-  (name) => !["validation_scope", "code_quality", "test", ...nightlyJobs].includes(name),
+  (name) =>
+    !["validation_scope", "code_quality", "test", "green_main", ...nightlyJobs].includes(name),
 );
 
 const repository = "vercel-labs/scriptc";

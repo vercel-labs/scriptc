@@ -1,0 +1,585 @@
+name: Bisect main
+
+# A failed post-merge CI run on main starts this. It re-runs the tests that failed, twice, to screen out a flake;
+# if they still fail it searches green-main..main in parallel for the first commit that fails them, confirms the
+# boundary with three failures on the culprit and three passes on the commit before it, and opens a revert pull
+# request. When it cannot confirm a culprit it opens an issue instead. It never pushes main and never force-pushes.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# One search at a time: a burst of failing runs narrows to the newest one, and the older range stays in it.
+concurrency:
+  group: bisect-main
+  cancel-in-progress: false
+
+env:
+  # How many commits one probe round tests. Eight covers a range of sixteen in one round; a second round covers
+  # larger ranges up to 128 commits.
+  WIDTH: "8"
+
+jobs:
+  plan:
+    name: plan the search
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      applicable: ${{ steps.trigger.outputs.applicable }}
+      proceed: ${{ steps.plan.outputs.proceed || 'false' }}
+      reason: ${{ steps.plan.outputs.reason || steps.trigger.outputs.reason }}
+      head: ${{ steps.plan.outputs.head || steps.trigger.outputs.head }}
+      base: ${{ steps.plan.outputs.base }}
+      commits: ${{ steps.plan.outputs.commits }}
+      specs: ${{ steps.plan.outputs.specs }}
+      probe_slots: ${{ steps.plan.outputs.probe_slots || steps.trigger.outputs.probe_slots }}
+      probe_count: ${{ steps.plan.outputs.probe_count || '0' }}
+      low: ${{ steps.plan.outputs.low }}
+      high: ${{ steps.plan.outputs.high }}
+      resolved: ${{ steps.plan.outputs.resolved || 'false' }}
+      culprit_sha: ${{ steps.plan.outputs.culprit_sha }}
+      predecessor_sha: ${{ steps.plan.outputs.predecessor_sha }}
+      failing_jobs: ${{ steps.plan.outputs.failing_jobs }}
+    steps:
+      # The trigger is checked here rather than in the job's own condition, so the job (and its probe-slot outputs)
+      # always exists: the probe jobs' matrices then always receive a valid list, even for a run that is not a
+      # failed post-merge one.
+      - id: trigger
+        env:
+          EVENT: ${{ github.event.workflow_run.event }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_PATH: ${{ github.event.workflow_run.path }}
+          HEAD: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          EMPTY=$(jq -c --argjson width "$WIDTH" '[range(0; $width) | { index: -1, sha: "" }]')
+          if [ "$EVENT" = push ] && [ "$BRANCH" = main ] && [ "$CONCLUSION" = failure ] &&
+             [ "$RUN_PATH" = .github/workflows/ci.yml ]; then
+            echo "applicable=true" >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "applicable=false"
+              echo "proceed=false"
+              echo "reason=not a failed post-merge run"
+              echo "head=$HEAD"
+              echo "probe_slots=$EMPTY"
+            } >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.trigger.outputs.applicable == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: main
+          fetch-depth: 0
+      # The failed run uploads one report per test job, from scripts/ci-failure-reporter.mjs. A run that failed
+      # before any test job, or only in a build or bootstrap job, has none.
+      - if: steps.trigger.outputs.applicable == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: failure-report-*
+          path: failure-reports
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - id: plan
+        if: steps.trigger.outputs.applicable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          # Every output a later job reads is written on every path, so a search that stops early still leaves the
+          # probe matrix a valid (empty) list.
+          fail() {
+            EMPTY=$(jq -c --argjson width "$WIDTH" '[range(0; $width) | { index: -1, sha: "" }]')
+            {
+              echo "proceed=false"
+              echo "reason=$1"
+              echo "probe_slots=$EMPTY"
+              echo "probe_count=0"
+              echo "specs=[]"
+              echo "commits=[]"
+              echo "low=-1"
+              echo "high=0"
+              echo "resolved=false"
+              echo "culprit_sha="
+              echo "predecessor_sha="
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          trap 'fail "the search stopped unexpectedly"' ERR
+          echo "head=$RED" >> "$GITHUB_OUTPUT"
+          REPO="$GITHUB_REPOSITORY"
+          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --slurp \
+            --jq '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' \
+            > "$RUNNER_TEMP/failing-jobs.json"
+          echo "failing_jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")" >> "$GITHUB_OUTPUT"
+          # The baseline is the newest passing main commit before this run. Candidates are the green-main tag and
+          # every successful push run's head, newest first; the search takes the newest one that is an ancestor of
+          # the failed head. Scanning all of them, not just the newest run, keeps the search alive when main has
+          # already passed a newer commit, and a repository with no tag still searches.
+          TAG_BASE=$(gh api "repos/$REPO/git/ref/tags/green-main" --jq .object.sha 2>/dev/null || true)
+          gh api "repos/$REPO/actions/workflows/ci.yml/runs?event=push&branch=main&status=success&per_page=100" \
+            --paginate --slurp > "$RUNNER_TEMP/success-runs.json" 2>/dev/null ||
+            echo '[]' > "$RUNNER_TEMP/success-runs.json"
+          CANDIDATES=$( {
+            [ -n "$TAG_BASE" ] && printf '%s\n' "$TAG_BASE"
+            jq -r '[.[] | .workflow_runs[].head_sha] | .[]' "$RUNNER_TEMP/success-runs.json"
+          } | awk 'NF' )
+          BASE=""
+          for candidate in $CANDIDATES; do
+            [ "$candidate" = "$RED" ] && continue
+            git cat-file -e "$candidate^{commit}" 2>/dev/null ||
+              git fetch --no-tags --quiet origin "$candidate" 2>/dev/null || continue
+            git merge-base --is-ancestor "$candidate" "$RED" || continue
+            if [ -z "$BASE" ] || git merge-base --is-ancestor "$BASE" "$candidate"; then
+              BASE=$candidate
+            fi
+          done
+          [ -n "$BASE" ] || fail "no passing main commit before this run to search from"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          if ! find failure-reports -name '*.json' -print -quit 2>/dev/null | grep -q .; then
+            fail "the failed run kept no failing-test report"
+          fi
+          node scripts/ci/bisect.mjs collect --reports failure-reports > "$RUNNER_TEMP/specs.json"
+          [ "$(jq length "$RUNNER_TEMP/specs.json")" -gt 0 ] || fail "the failure reports name no failing test"
+          # Only the first-parent chain: a history-preserving push brings the pull request's own commits along as
+          # second parents, and those snapshots were never the reviewed, merged tip. They are never probed.
+          node scripts/ci/bisect.mjs commits --base "$BASE" --head "$RED" > "$RUNNER_TEMP/commits.json"
+          COUNT=$(jq length "$RUNNER_TEMP/commits.json")
+          [ "$COUNT" -gt 0 ] || fail "main has no first-parent commit after the baseline"
+          [ "$COUNT" -le 128 ] || fail "the first-parent range holds $COUNT commits, more than one search should cover"
+          node scripts/ci/bisect.mjs plan --commits "$RUNNER_TEMP/commits.json" --base "$BASE" --head "$RED" \
+            --width "$WIDTH" > "$RUNNER_TEMP/plan.json"
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "commits=$(jq -c .commits "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "specs=$(jq -c . "$RUNNER_TEMP/specs.json")" >> "$GITHUB_OUTPUT"
+          echo "low=$(jq -r .low "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "high=$(jq -r .high "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "resolved=$(jq -r .resolved "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          # The probe jobs take a fixed number of slots; a short round pads with empty ones, which their conditions
+          # skip. A range that is already one commit has no slots at all.
+          echo "probe_slots=$(jq -c --argjson width "$WIDTH" \
+            '.probes + [range(0; $width - (.probes | length)) | { index: -1, sha: "" }]' \
+            "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          echo "probe_count=$(jq -r '.probes | length' "$RUNNER_TEMP/plan.json")" >> "$GITHUB_OUTPUT"
+          culprit=$(jq -r 'if .resolved then .commits[.culprit] else "" end' "$RUNNER_TEMP/plan.json")
+          predecessor=$(jq -r 'if .resolved then (if .predecessor >= 0 then .commits[.predecessor] else $base end) else "" end' \
+            --arg base "$BASE" "$RUNNER_TEMP/plan.json")
+          echo "culprit_sha=$culprit" >> "$GITHUB_OUTPUT"
+          echo "predecessor_sha=$predecessor" >> "$GITHUB_OUTPUT"
+          echo "Planned $COUNT commit(s) since green-main with $(jq length "$RUNNER_TEMP/specs.json") failing test(s)"
+
+  # The search could not start: no green-main, no reported test, or a range too large. An issue names why, and the
+  # failing jobs, so a person can follow up.
+  unresolved:
+    needs: plan
+    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.plan.outputs.proceed != 'true' }}
+    name: report an unresolved failure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RANGE: ${{ needs.plan.outputs.reason }}
+          JOBS: ${{ needs.plan.outputs.failing_jobs }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Post-merge CI failed on main and no culprit could be searched" \
+            --body "$(printf 'The post-merge run on `%s` failed.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${RED:0:9}" "${RANGE:-the search did not start}" "${JOBS:-none recorded}" "$RUN")"
+
+  # Re-run the reported tests twice on the failing commit. A test that passes both times is a flake: nothing is
+  # bisected or reverted.
+  flake_screen:
+    needs: plan
+    if: ${{ needs.plan.outputs.applicable == 'true' && needs.plan.outputs.proceed == 'true' }}
+    name: screen for flakes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      outcome: ${{ steps.screen.outputs.outcome }}
+    steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/bisect-probe
+        with:
+          sha: ${{ needs.plan.outputs.head }}
+          red: ${{ needs.plan.outputs.head }}
+          specs: ${{ needs.plan.outputs.specs }}
+          repeat: "2"
+          run_id: ${{ github.event.workflow_run.id }}
+          artifact: flake-screen
+      - id: screen
+        run: |
+          if [ ! -f "$RUNNER_TEMP/result.json" ]; then
+            echo "outcome=infra" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "outcome=$(jq -r 'if .infra then "infra" elif .pass then "flake" else "failing" end' \
+            "$RUNNER_TEMP/result.json")" >> "$GITHUB_OUTPUT"
+
+  # The first probe round: the reported tests at up to eight commits between green-main and the failing head.
+  probe_1:
+    needs: [plan, flake_screen]
+    if: ${{ needs.plan.outputs.applicable == 'true' && needs.flake_screen.outputs.outcome == 'failing' }}
+    name: probe ${{ matrix.index }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.probe_slots) }}
+    steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - if: matrix.sha != ''
+        uses: ./.github/actions/bisect-probe
+        with:
+          sha: ${{ matrix.sha }}
+          red: ${{ needs.plan.outputs.head }}
+          specs: ${{ needs.plan.outputs.specs }}
+          repeat: "1"
+          run_id: ${{ github.event.workflow_run.id }}
+          artifact: probe1-${{ matrix.sha }}
+
+  narrow_1:
+    needs: [plan, flake_screen, probe_1]
+    # Always runs, so probe_2's matrix always has a valid list from here; the body below does nothing unless the
+    # screen found a real failure.
+    if: ${{ always() && needs.plan.result == 'success' }}
+    name: narrow the range
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      resolved: ${{ steps.narrow.outputs.resolved }}
+      reason: ${{ steps.narrow.outputs.reason }}
+      low: ${{ steps.narrow.outputs.low }}
+      high: ${{ steps.narrow.outputs.high }}
+      probe_slots: ${{ steps.narrow.outputs.probe_slots }}
+      has_probes: ${{ steps.narrow.outputs.has_probes }}
+      probe_count: ${{ steps.narrow.outputs.probe_count }}
+      culprit_sha: ${{ steps.narrow.outputs.culprit_sha }}
+      predecessor_sha: ${{ steps.narrow.outputs.predecessor_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: probe1-*
+          path: probe-results
+      - id: narrow
+        env:
+          APPLICABLE: ${{ needs.plan.outputs.applicable }}
+          PROCEED: ${{ needs.plan.outputs.proceed }}
+          SCREEN: ${{ needs.flake_screen.outputs.outcome }}
+          RESOLVED: ${{ needs.plan.outputs.resolved }}
+          CULPRIT: ${{ needs.plan.outputs.culprit_sha }}
+          PREDECESSOR: ${{ needs.plan.outputs.predecessor_sha }}
+          COMMITS: ${{ needs.plan.outputs.commits }}
+          LOW: ${{ needs.plan.outputs.low }}
+          HIGH: ${{ needs.plan.outputs.high }}
+          BASE: ${{ needs.plan.outputs.base }}
+          WIDTH: ${{ env.WIDTH }}
+          EXPECTED: ${{ needs.plan.outputs.probe_count }}
+        run: |
+          EMPTY=$(jq -c --argjson width "$WIDTH" '[range(0; $width) | { index: -1, sha: "" }]')
+          blocked() {
+            printf 'resolved=false\nreason=%s\nhas_probes=false\nprobe_count=0\nprobe_slots=%s\n' \
+              "$1" "$EMPTY" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [ "$APPLICABLE" != true ] || [ "$PROCEED" != true ] || [ "$SCREEN" != failing ]; then
+            printf 'resolved=false\nreason=\nhas_probes=false\nprobe_count=0\nprobe_slots=%s\n' "$EMPTY" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$RESOLVED" = true ]; then
+            printf 'resolved=true\nreason=\nhas_probes=false\nprobe_count=0\nprobe_slots=%s\nculprit_sha=%s\npredecessor_sha=%s\n' \
+              "$EMPTY" "$CULPRIT" "$PREDECESSOR" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$COMMITS" > "$RUNNER_TEMP/commits.json"
+          results="[]"
+          for dir in probe-results/*/; do
+            [ -d "$dir" ] || continue
+            sha=$(basename "$dir" | sed 's/^probe1-//')
+            [ -f "$dir/result.json" ] || blocked "probe $sha did not report"
+            results=$(jq -c --arg sha "$sha" --slurpfile result "$dir/result.json" \
+              '. + [$result[0] | { sha: $sha, pass: (.pass and (.infra | not)), infra: .infra }]' <<< "$results")
+          done
+          printf '%s' "$results" > "$RUNNER_TEMP/results.json"
+          if jq -e 'length == 0 or any(.infra)' <<< "$results" > /dev/null; then
+            blocked "a probe could not run the tests"
+          fi
+          if [ "$(jq length "$RUNNER_TEMP/results.json")" -ne "$EXPECTED" ]; then
+            blocked "a probe did not report"
+          fi
+          node scripts/ci/bisect.mjs narrow --commits "$RUNNER_TEMP/commits.json" --low "$LOW" --high "$HIGH" \
+            --results "$RUNNER_TEMP/results.json" --base "$BASE" --width "$WIDTH" > "$RUNNER_TEMP/narrow.json"
+          jq -c --argjson width "$WIDTH" \
+            '.next + [range(0; $width - (.next | length)) | { index: -1, sha: "" }]' \
+            "$RUNNER_TEMP/narrow.json" > "$RUNNER_TEMP/slots.json"
+          count=$(jq '[.[] | select(.sha != "")] | length' "$RUNNER_TEMP/slots.json")
+          {
+            echo "resolved=$(jq -r .resolved "$RUNNER_TEMP/narrow.json")"
+            echo "low=$(jq -r .low "$RUNNER_TEMP/narrow.json")"
+            echo "high=$(jq -r .high "$RUNNER_TEMP/narrow.json")"
+            echo "probe_slots=$(cat "$RUNNER_TEMP/slots.json")"
+            echo "probe_count=$count"
+            echo "culprit_sha=$(jq -r '.culpritSha // ""' "$RUNNER_TEMP/narrow.json")"
+            echo "predecessor_sha=$(jq -r '.predecessorSha // ""' "$RUNNER_TEMP/narrow.json")"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then echo "has_probes=true" >> "$GITHUB_OUTPUT"; else echo "has_probes=false" >> "$GITHUB_OUTPUT"; fi
+
+  probe_2:
+    needs: [plan, narrow_1]
+    # Runs after round one even when it resolved: a skipped job would suppress the jobs that need it, and the empty
+    # slots simply skip their steps.
+    if: ${{ needs.plan.outputs.applicable == 'true' }}
+    name: probe again ${{ matrix.index }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.narrow_1.outputs.probe_slots || needs.plan.outputs.probe_slots) }}
+    steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - if: matrix.sha != ''
+        uses: ./.github/actions/bisect-probe
+        with:
+          sha: ${{ matrix.sha }}
+          red: ${{ github.event.workflow_run.head_sha }}
+          specs: ${{ needs.plan.outputs.specs }}
+          repeat: "1"
+          run_id: ${{ github.event.workflow_run.id }}
+          artifact: probe2-${{ matrix.sha }}
+
+  narrow_2:
+    needs: [plan, narrow_1, probe_2]
+    # Always runs, like narrow_1: when round one resolved, its body reports no second bracket instead of skipping,
+    # so the jobs that need it are never suppressed.
+    if: ${{ always() && needs.plan.result == 'success' }}
+    name: narrow the range again
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      resolved: ${{ steps.narrow.outputs.resolved }}
+      reason: ${{ steps.narrow.outputs.reason }}
+      culprit_sha: ${{ steps.narrow.outputs.culprit_sha }}
+      predecessor_sha: ${{ steps.narrow.outputs.predecessor_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: probe2-*
+          path: probe-results
+      - id: narrow
+        env:
+          COMMITS: ${{ needs.plan.outputs.commits }}
+          LOW: ${{ needs.narrow_1.outputs.low }}
+          HIGH: ${{ needs.narrow_1.outputs.high }}
+          BASE: ${{ needs.plan.outputs.base }}
+          WIDTH: ${{ env.WIDTH }}
+          EXPECTED: ${{ needs.narrow_1.outputs.probe_count }}
+        run: |
+          blocked() { printf 'resolved=false\nreason=%s\n' "$1" >> "$GITHUB_OUTPUT"; exit 0; }
+          if [ "${{ needs.narrow_1.outputs.resolved }}" = true ] ||
+             [ "${{ needs.narrow_1.outputs.has_probes }}" != true ] ||
+             [ -n "${{ needs.narrow_1.outputs.reason }}" ]; then
+            printf 'resolved=false\nreason=\nculprit_sha=\npredecessor_sha=\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          printf '%s' "$COMMITS" > "$RUNNER_TEMP/commits.json"
+          results="[]"
+          for dir in probe-results/*/; do
+            [ -d "$dir" ] || continue
+            sha=$(basename "$dir" | sed 's/^probe2-//')
+            [ -f "$dir/result.json" ] || blocked "probe $sha did not report"
+            results=$(jq -c --arg sha "$sha" --slurpfile result "$dir/result.json" \
+              '. + [$result[0] | { sha: $sha, pass: (.pass and (.infra | not)), infra: .infra }]' <<< "$results")
+          done
+          printf '%s' "$results" > "$RUNNER_TEMP/results.json"
+          if jq -e 'length == 0 or any(.infra)' <<< "$results" > /dev/null; then
+            blocked "a probe could not run the tests"
+          fi
+          if [ "$(jq length "$RUNNER_TEMP/results.json")" -ne "$EXPECTED" ]; then
+            blocked "a probe did not report"
+          fi
+          node scripts/ci/bisect.mjs narrow --commits "$RUNNER_TEMP/commits.json" --low "$LOW" --high "$HIGH" \
+            --results "$RUNNER_TEMP/results.json" --base "$BASE" --width "$WIDTH" > "$RUNNER_TEMP/narrow.json"
+          {
+            echo "resolved=$(jq -r .resolved "$RUNNER_TEMP/narrow.json")"
+            echo "reason="
+            echo "culprit_sha=$(jq -r '.culpritSha // ""' "$RUNNER_TEMP/narrow.json")"
+            echo "predecessor_sha=$(jq -r '.predecessorSha // ""' "$RUNNER_TEMP/narrow.json")"
+          } >> "$GITHUB_OUTPUT"
+
+  # What the search found: the culprit to confirm, or the reason there is none.
+  decide:
+    needs: [plan, flake_screen, narrow_1, narrow_2]
+    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.plan.outputs.proceed == 'true' }}
+    name: decide the culprit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      culprit_sha: ${{ steps.decide.outputs.culprit_sha }}
+      predecessor_sha: ${{ steps.decide.outputs.predecessor_sha }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - id: decide
+        env:
+          SCREEN: ${{ needs.flake_screen.outputs.outcome }}
+          SECOND: ${{ needs.narrow_2.outputs.resolved }}
+          SECOND_CULPRIT: ${{ needs.narrow_2.outputs.culprit_sha }}
+          SECOND_PREDECESSOR: ${{ needs.narrow_2.outputs.predecessor_sha }}
+          FIRST: ${{ needs.narrow_1.outputs.resolved }}
+          FIRST_CULPRIT: ${{ needs.narrow_1.outputs.culprit_sha }}
+          FIRST_PREDECESSOR: ${{ needs.narrow_1.outputs.predecessor_sha }}
+          FIRST_REASON: ${{ needs.narrow_1.outputs.reason }}
+          SECOND_REASON: ${{ needs.narrow_2.outputs.reason }}
+        run: |
+          emit() { printf 'culprit_sha=%s\npredecessor_sha=%s\nreason=%s\n' "$1" "$2" "$3" >> "$GITHUB_OUTPUT"; }
+          if [ -z "$SCREEN" ]; then emit "" "" "the flake screen did not finish"; exit 0; fi
+          if [ "$SCREEN" = flake ]; then emit "" "" "flake"; exit 0; fi
+          if [ "$SCREEN" = infra ]; then emit "" "" "the flake screen could not run the tests"; exit 0; fi
+          if [ "$SECOND" = true ]; then emit "$SECOND_CULPRIT" "$SECOND_PREDECESSOR" ""; exit 0; fi
+          if [ "$FIRST" = true ]; then emit "$FIRST_CULPRIT" "$FIRST_PREDECESSOR" ""; exit 0; fi
+          emit "" "" "${SECOND_REASON:-${FIRST_REASON:-the search did not isolate a commit}}"
+
+  # Three failures on the culprit and three passes on the commit before it: the boundary is deterministic.
+  confirm:
+    needs: [plan, decide]
+    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.decide.outputs.culprit_sha != '' }}
+    name: confirm ${{ matrix.role }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: culprit
+            sha: ${{ needs.decide.outputs.culprit_sha }}
+            expect: fail
+          - role: predecessor
+            sha: ${{ needs.decide.outputs.predecessor_sha }}
+            expect: pass
+    steps:
+      # The local action is read from the repository, so check it out before using it.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/bisect-probe
+        with:
+          sha: ${{ matrix.sha }}
+          red: ${{ github.event.workflow_run.head_sha }}
+          specs: ${{ needs.plan.outputs.specs }}
+          repeat: "3"
+          run_id: ${{ github.event.workflow_run.id }}
+          artifact: confirm-${{ matrix.role }}
+          # Three failures on the culprit, three passes before it; a flake or an infra error fails the job.
+          expect: ${{ matrix.expect }}
+
+  # A confirmed culprit gets a revert pull request, with the failing test and the green and red commits in its
+  # body. Anything else that could not be confirmed gets an issue. A flake gets nothing.
+  conclude:
+    needs: [plan, decide, confirm]
+    if: ${{ always() && needs.plan.outputs.applicable == 'true' && needs.plan.outputs.proceed == 'true' && needs.decide.result == 'success' }}
+    name: revert or report
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Revert the culprit
+        if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
+          GREEN: ${{ needs.plan.outputs.base }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          SPECS: ${{ needs.plan.outputs.specs }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '%s' "$SPECS" > "$RUNNER_TEMP/specs.json"
+          subject=$(git log -1 --format=%s "$CULPRIT")
+          node scripts/ci/revert-pr.mjs --culprit "$CULPRIT" --subject "$subject" --green "$GREEN" \
+            --red "$RED" --specs "$RUNNER_TEMP/specs.json"
+      - name: Report a revert that conflicts
+        if: ${{ failure() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
+          JOBS: ${{ needs.plan.outputs.failing_jobs }}
+          GREEN: ${{ needs.plan.outputs.base }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Post-merge CI failed on main and the revert needs a person" \
+            --body "$(printf 'The search confirmed `%s` after green-main `%s`, but the revert could not be opened (a conflict or a failed push).\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${CULPRIT:0:9}" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
+
+      - name: Report what could not be confirmed
+        if: ${{ needs.decide.outputs.reason != '' && needs.decide.outputs.reason != 'flake' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ needs.decide.outputs.reason }}
+          JOBS: ${{ needs.plan.outputs.failing_jobs }}
+          GREEN: ${{ needs.plan.outputs.base }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Post-merge CI failed on main and no culprit was confirmed" \
+            --body "$(printf 'The post-merge run on `%s` failed after green-main `%s`.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${RED:0:9}" "${GREEN:0:9}" "$REASON" "${JOBS:-none recorded}" "$RUN")"
+      - name: Report a boundary that did not confirm
+        if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result != 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CULPRIT: ${{ needs.decide.outputs.culprit_sha }}
+          JOBS: ${{ needs.plan.outputs.failing_jobs }}
+          GREEN: ${{ needs.plan.outputs.base }}
+          RED: ${{ github.event.workflow_run.head_sha }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+        run: |
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "Post-merge CI failed on main and the culprit did not confirm" \
+            --body "$(printf 'The search named `%s` after green-main `%s`, but three runs either side did not confirm it.\n\nFailed jobs: %s\n\nRun: %s\n' \
+              "${CULPRIT:0:9}" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"

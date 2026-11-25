@@ -76,10 +76,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' && inputs.pr != '' }}
 
 # The token every job gets unless it declares its own: it can read the repository and nothing else. No job here
-# writes to the repository, comments on a pull request or requests an OIDC token; caches and artifacts do not use
-# this token.
+# writes to a branch, comments on a pull request or requests an OIDC token; the green-main job declares its own
+# contents permission for its tag alone, and caches and artifacts do not use this token.
 permissions:
   contents: read
+
+# Each test job writes the failures it reported under the workspace (scripts/ci-failure-reporter.mjs,
+# scripts/ci-test.mjs), and uploads them when it fails. The post-merge culprit search reads them
+# (.github/workflows/bisect-main.yml); a passing run leaves files nothing uploads.
+env:
+  SCRIPTC_CI_FAILURE_ARCHIVE: ${{ github.workspace }}/ci-failures
 
 jobs:
   # GitHub recommends stack.base.ref == base.ref for the lowest unmerged PR:
@@ -500,6 +506,11 @@ jobs:
               --uid="$(id -u)" --gid="$(id -g)" -- env PATH="$PATH" HOME="$HOME" NODE_OPTIONS="--max-old-space-size=4096" node scripts/ci-test.mjs
           fi
           node scripts/ci-test.mjs
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-tests-${{ matrix.flavor }}-${{ matrix.shard }}
 
   tests_macos:
     needs: [validation_scope, lanes, native_macos]
@@ -551,6 +562,11 @@ jobs:
       - uses: ./.github/actions/libnode
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-tests-macos-${{ matrix.flavor }}-${{ matrix.shard }}
 
   # Pushes to main run no macOS lane, so a darwin-only regression could land unseen until the nightly sweep. This
   # one job builds the darwin packages itself (no native_macos artifact round trip) and runs the darwin smoke suite
@@ -587,6 +603,11 @@ jobs:
       - run: pnpm build
       - name: Tests (darwin smoke suite)
         run: node scripts/ci-test.mjs
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-macos-smoke
 
   native_linux:
     needs: [validation_scope, lanes, code_quality]
@@ -665,6 +686,11 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/effect.test.ts tests/harness/effect4.test.ts
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-effects-${{ matrix.flavor }}-${{ matrix.shard }}
 
   # Node island conformance (tests/harness/island-conformance.test.ts): every
   # package program under Node, as its default build, and with each package
@@ -712,6 +738,11 @@ jobs:
       # fails rather than skips when none is configured.
       - uses: ./.github/actions/libnode
       - run: pnpm test tests/harness/island-conformance.test.ts
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-islands-${{ matrix.shard }}
 
   # The coverage report snapshots and fixtures (tests/harness/coverage.test.ts), once per run. They ran in every
   # plain shard, where one stale snapshot failed twenty jobs; the corpus half of the sweep
@@ -740,6 +771,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm test tests/harness/coverage.test.ts
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-coverage
 
   # The sanitized three.js nodes build alone: beside the san corpus's other
   # workers it took 860 to more than 1200 seconds of its shard
@@ -773,6 +809,11 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-three-san
 
   # The sanitized self-hosting native-frontend builds alone. Each of these
   # three files compiles the whole frontend under ASan in beforeAll: the
@@ -826,6 +867,11 @@ jobs:
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - name: Tests (${{ matrix.file }})
         run: taskset --cpu-list 0,1 pnpm test ${{ matrix.file }}
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-native-frontend-san-${{ matrix.suite }}
 
   # Shape inference's overlay (opt-in, SCRIPTC_SHAPE_OVERLAY=1) over the
   # suites of real packages: nightly and on manual runs only (scope
@@ -1147,6 +1193,11 @@ jobs:
           pnpm test packages/compiler/test/cc-driver.test.ts
           packages/compiler/src/native/sanitizer.test.ts
           --testNamePattern "host-native clang static build|sanitized vendor archives"
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-host-clang
 
   # The TS7 parity sweep exercises the compiler frontend, so it can run
   # alongside the Linux LLVM/runtime package build instead of following it.
@@ -1171,6 +1222,11 @@ jobs:
       - run: pnpm build
       - name: TypeScript 7 full parity sweep
         run: pnpm test:ts7
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-ts7
 
   # tsc-ts, the default checker, and tsgo (SCRIPTC_CHECKER=tsgo) serve the same TypeScript 7 API. Every corpus
   # program must compile to the same LLVM IR, with the same diagnostics, with either checker.
@@ -1202,6 +1258,11 @@ jobs:
       - run: pnpm build
       - name: Corpus LLVM IR with tsgo and with tsc-ts (${{ matrix.optimization }})
         run: pnpm test:checker-identity --optimization ${{ matrix.optimization }}
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-checker-${{ matrix.optimization }}
 
   llvm_artifacts_linux_x64:
     needs: [validation_scope, lanes, native_linux]
@@ -1258,6 +1319,11 @@ jobs:
             SCRIPTC_NO_CACHE=1 SCRIPTC_LEGACY_C_PIPELINE=0 node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o /tmp/hello
             test "$(/tmp/hello)" = "hello world"
           '
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-linux
 
   llvm_artifacts_linux_x64_musl:
     needs: [validation_scope, lanes, native_linux]
@@ -1307,6 +1373,11 @@ jobs:
       - run: pnpm build
       - name: Executable hardening and debug payload (glibc and musl)
         run: pnpm test tests/harness/executable-hardening.test.ts
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-musl
 
   llvm_artifacts_linux_x64_wasi:
     needs: [validation_scope, lanes, native_linux]
@@ -1345,6 +1416,11 @@ jobs:
         # Every test that needs this job's wasm32-wasi runtime pack says so in its source
         # (@requires-wasi-runtime-pack); the fast tier does not build the pack, so it leaves them out.
         run: pnpm test $(node scripts/ci-fast-tests.mjs --wasi-tests)
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-wasi
 
   llvm_artifacts_macos_arm64:
     needs: [validation_scope, lanes, native_macos]
@@ -1394,6 +1470,11 @@ jobs:
         env:
           SCRIPTC_TEST_WORKERS: "4"
         run: pnpm test tests/harness/llvm-differential.test.ts --reporter=verbose
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-macos-${{ matrix.shard }}
 
   llvm_artifacts_macos_arm64_contracts:
     needs: [validation_scope, lanes, native_macos]
@@ -1495,6 +1576,11 @@ jobs:
           fi
           node scripts/smoke-libnode-opt-in.mjs \
             packages/cli-darwin-arm64 packages/libnode-darwin-arm64
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-macos-contracts
 
   llvm_artifacts_macos_x64:
     needs: [validation_scope, lanes, code_quality]
@@ -1545,6 +1631,11 @@ jobs:
         run: |
           node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o "$RUNNER_TEMP/hello"
           test "$($RUNNER_TEMP/hello)" = 'hello world'
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-llvm-macos-x64
 
   # Exercises the supported Windows GNU target and the built CLI end to end:
   # TS7 must open its synthetic project, ambient files must resolve across
@@ -1637,6 +1728,11 @@ jobs:
         run: >-
           pnpm exec vitest run packages/compiler/test/cc-driver.test.ts
           --testNamePattern "Windows CA roots honor"
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-windows-cli
 
   llvm_artifacts_windows_x64:
     needs: [validation_scope, lanes, code_quality]
@@ -1730,6 +1826,11 @@ jobs:
       - uses: ./.github/actions/mobile-runtime-pack
         with:
           runtime: ${{ matrix.runtime }}
+      - name: Keep the failure report
+        if: failure()
+        uses: ./.github/actions/failure-report
+        with:
+          name: failure-report-android
 
   # The iOS runtime packs build on macOS runners, so they run in the macos lane.
   mobile_runtime_packs_ios:
@@ -1887,3 +1988,27 @@ jobs:
               exit 1
               ;;
           esac
+
+  # A post-merge run that passes moves the green-main tag to its commit: the newest main commit whose full
+  # post-merge verification passed. Releases, baselines and pre-warmed images may cut from it. The job writes that
+  # one tag and nothing else. It never writes a branch, and in particular never main; the token is GitHub Actions'
+  # own, and the job holds `contents: write` only for the tag.
+  green_main:
+    needs: [test]
+    if: ${{ github.event_name == 'push' && needs.test.result == 'success' }}
+    name: tag green-main
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # A rerun of an older push needs the newer commits to tell whether the tag already names one.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Move the green-main tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: node scripts/ci/green-main.mjs "$SHA"

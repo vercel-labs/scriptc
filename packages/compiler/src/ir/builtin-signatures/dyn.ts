@@ -489,4 +489,5 @@ export const dynSignatures = defineLibFnSignatures({
   /** The same refusal given the transfer list's first member, an
    * ArrayBuffer: a Buffer pool slab gets Node's untransferable message. */
   "dyn.cloneTransferFailWith": { argTypes: [DYN], result: DYN },
+  "dyn.isPlainObject": { argTypes: [DYN], result: BOOL },
 });

@@ -2,7 +2,7 @@ import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, jsFuncNameOf } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { builtinModuleFnOf } from "../surfaces.js";
+import { builtinModuleFnOf, stdlibGlobalNameOf } from "../surfaces.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { lowerInGlobalObject } from "../expressions/relational.js";
 import { noteUntypedIntegrity } from "../frozen-records.js";
@@ -805,6 +805,91 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
  * prototype of their boxed view. The identity-only flag marks a producer
  * the runtime can answer without materializing the prototype (a `===`).
  * Null when the value has no checked-dynamic form (the caller's fence). */
+/** The SCR_ELEM_* kind a native array of `elem` allocates as (the runtime's
+ * scr_arr_new kind argument; anything else is SCR_ELEM_REF). */
+function arrayElemKindNumber(elem: IrType): number {
+  switch (elem.kind) {
+    case "f64":
+      return 0;
+    case "bool":
+      return 1;
+    case "string":
+      return 2;
+    case "array":
+      return 3;
+    case "bytes":
+      return 4;
+    default:
+      return 5;
+  }
+}
+
+/** `Object.getPrototypeOf(value) === Object.prototype`, and its `!==`, with
+ * parentheses around either side: the plain-object test programs write
+ * (ui-sdk's `isRecord`). Answering the whole comparison keeps a primitive, a
+ * Date, an array or a class instance's view out of the prototype edge, which
+ * has no prototype object for those and refused at run time. Null when the
+ * comparison is not this shape. */
+export function plainObjectPrototypeComparison(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const op = expr.operatorToken.kind;
+  const equals = op === ts.SyntaxKind.EqualsEqualsEqualsToken;
+  if (!equals && op !== ts.SyntaxKind.ExclamationEqualsEqualsToken) return null;
+  const call =
+    prototypeOfCallIn(lowerer, expr.left, expr.right) ??
+    prototypeOfCallIn(lowerer, expr.right, expr.left);
+  if (call === null) return null;
+  let object = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (
+    object.type.kind !== "dyn" &&
+    canConvertToDyn(
+      object.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
+  if (object.type.kind !== "dyn") return null;
+  // A record's or array's checked view is rebuilt from the native value every
+  // time it is boxed, so a boxing that copies it would miss a prototype
+  // Object.setPrototypeOf gave it: the question views the live receiver.
+  if (
+    object.kind === "dynFrom" &&
+    (object.value.type.kind === "record" || object.value.type.kind === "array")
+  )
+    object.liveRef = true;
+  const test: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.isPlainObject",
+    args: [object],
+    type: BOOL,
+    loc,
+  };
+  return equals ? test : { kind: "unary", op: "!", operand: test, type: BOOL, loc };
+}
+
+/** The `Object.getPrototypeOf(arg)` call on `side`, when `other` is
+ * `Object.prototype`. */
+function prototypeOfCallIn(
+  lowerer: Lowerer,
+  side: ts.Expression,
+  other: ts.Expression,
+): ts.CallExpression | null {
+  let node: ts.Node = side;
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isCallExpression(node) || node.arguments.nodes.length !== 1) return null;
+  const callee = node.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "getPrototypeOf") return null;
+  if (stdlibGlobalNameOf(lowerer, callee.expression) !== "Object") return null;
+  let read = other;
+  while (ts.isParenthesizedExpression(read)) read = read.expression;
+  if (!ts.isPropertyAccessExpression(read) || read.name.text !== "prototype") return null;
+  return stdlibGlobalNameOf(lowerer, read.expression) === "Object" ? node : null;
+}
+
 export function lowerPrototypeReflectionCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -863,6 +948,33 @@ export function lowerPrototypeReflectionCall(
   )
     object = lowerer.coerceInto(call.arguments.nodes[0]!, object, DYN);
   if (object.type.kind !== "dyn") return null;
+  // The prototype a record or array carries lives on the receiver itself,
+  // not on a copy of it, so both reads box the live value. Setting one also
+  // records the array's element kind: every array of a kind the program
+  // prototypes is born with the collector header, so the reference the array
+  // owns is an edge the collector walks.
+  if (
+    object.kind === "dynFrom" &&
+    (object.value.type.kind === "record" || object.value.type.kind === "array")
+  )
+    object.liveRef = true;
+  // The array keeps the prototype on its own metadata, and the reference is
+  // only visible to the collector when the array carries the header: the
+  // kinds the program prototypes are stamped before the program runs. A
+  // receiver held as a checked-dynamic value (or a union that can hold an
+  // array) can be an array of any kind, so every kind is stamped.
+  if (member === "setPrototypeOf") {
+    const receiverType = object.kind === "dynFrom" ? object.value.type : null;
+    if (receiverType?.kind === "array")
+      lowerer.prototypeArrayKinds.add(arrayElemKindNumber(receiverType.elem));
+    else if (
+      receiverType === null ||
+      (receiverType.kind === "union" &&
+        (lowerer.unions.get(receiverType.unionId)?.arms.some((arm) => arm.kind === "array") ??
+          false))
+    )
+      for (const kind of [0, 1, 2, 3, 4, 5]) lowerer.prototypeArrayKinds.add(kind);
+  }
   if (member === "getPrototypeOf") {
     let parent: ts.Node | undefined = call.parent;
     while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsdoc-generic-type-argument-omitted.js"
+ ],
+ "diags": []
+}

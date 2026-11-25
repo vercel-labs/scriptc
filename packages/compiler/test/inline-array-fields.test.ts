@@ -15,9 +15,13 @@ import type { ProgramLifetime } from "@scriptc/types";
 import type { InlineArray } from "@scriptc/experimental";
 `;
 
-async function build(
-  source: string,
-): Promise<{ ok: boolean; codes: string[]; llvm: string; messages: string[] }> {
+async function build(source: string): Promise<{
+  ok: boolean;
+  codes: string[];
+  llvm: string;
+  messages: string[];
+  warnings: string[];
+}> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-inline-array-"));
   try {
     // The workspace's packages, so that the program resolves both imports.
@@ -31,6 +35,7 @@ async function build(
       ok: result.ok,
       codes: (result.diagnostics ?? []).map((d) => d.code),
       messages: (result.diagnostics ?? []).map((d) => d.message),
+      warnings: (result.ok ? (result.warnings ?? []) : []).map((d) => `${d.code}: ${d.message}`),
       llvm,
     };
   } finally {
@@ -478,18 +483,136 @@ class Holder {
 const list = new List(3, [new Item(1), new Item(2)]);
 `;
 
-test("an instance inside a dynamic value is refused", async () => {
-  for (const use of [
-    "const u: unknown = new Holder(list);\n(u as { list: { items: Item[] } }).list.items.push(new Item(3));",
-    "const u: unknown = [{ list }];\nconsole.log(u);",
-    "const u: unknown = new Map([[1, new Holder(list)]]);\nconsole.log(u);",
+const keeper = `class Keeper {
+  readonly arr: readonly Item[];
+  readonly list: List;
+  constructor(arr: readonly Item[], list: List) {
+    this.arr = arr;
+    this.list = list;
+  }
+}
+`;
+
+test("a dynamic value that may reach generic reads of the field keeps it an ordinary array", async () => {
+  for (const [use, where] of [
+    [
+      "const u: unknown = new Holder(list);\n(u as { list: { items: Item[] } }).list.items.push(new Item(3));",
+      "a checked cast to a structured type",
+    ],
+    // A record built from the instance's members, one of which is the field.
+    [
+      "const u: unknown = list;\nconsole.log((u as { pos: number; items: readonly Item[] }).pos);",
+      "a checked cast to a structured type",
+    ],
+    // An array method's callback: what `map` returns, the receiver it gets,
+    // a library function, and a receiver's own method.
+    [
+      "const u: any = [new Holder(list)];\nconst m = u.map((x: any) => x);\nm[0].list.items.push(new Item(5));",
+      "the dynamic method call 'push'",
+    ],
+    [
+      "const u: any = [new Holder(list)];\nlet kept: any = [];\nu.forEach((x: any, i: number, all: any) => {\n  kept = all;\n});\nkept.reverse();",
+      "the dynamic method call 'reverse'",
+    ],
+    [
+      "const u: any = [list];\nconst g: unknown = (globalThis as any).structuredClone;\nconsole.log(u.map(g).length);",
+      "the dynamic method call 'map' with a callback no compiled function reaches",
+    ],
+    [
+      "const u: any = { list, map(f: any) { return f(this.list); } };\nconsole.log(u.map((x: any) => x.pos));",
+      "the dynamic method call 'map' on a value that may hold a function",
+    ],
+    [
+      "const u: any = new Holder(list);\nconsole.log(u.list.items === u.list.items);",
+      "a keyed read of a member that may be the field",
+    ],
+    [
+      "const u: any = new Holder(list);\nconst key = String(Math.random() < 2 ? 'items' : 'pos');\nconsole.log(u.list[key]);",
+      "a keyed read of a member that may be the field",
+    ],
+    [
+      "const u: unknown = new Holder(list);\nconsole.log(Object.entries(u as object).length);",
+      "the library call",
+    ],
+    [
+      "const u: unknown[] = [new Holder(list)];\nconst g: (x: unknown) => unknown = (globalThis as any).structuredClone;\nconsole.log(g(u[0]) !== undefined);",
+      "a call through a value no compiled function reaches",
+    ],
+    // An array a field read gave, kept in another field of the instance.
+    [
+      `${keeper}const k: any = new Keeper(list.items, list);\nk.arr.push(new Item(9));`,
+      "the dynamic method call 'push'",
+    ],
+    [
+      `${keeper}const k: any = new Keeper(list.items, list);\nk.arr.length = 0;`,
+      "the library call dyn.keySet of an array element or length",
+    ],
   ]) {
     const result = await build(classes + holder + use);
-    expect(result.ok, use).toBe(false);
-    expect(result.messages.join("\n"), use).toContain(
-      "an instance, or a value that can hold one, becomes a dynamic value",
+    expect(result.messages, use).toEqual([]);
+    expect(result.ok, use).toBe(true);
+    expect(result.warnings.join("\n"), use).toContain(
+      `SC6105: 'List.items' keeps its elements in an ordinary array: an instance, or a value that can hold one, becomes a dynamic value that reaches ${where}`,
     );
-    expect(result.messages.join("\n"), use).toContain("(at ");
+    expect(result.warnings.join("\n"), use).toContain("(at ");
+    // The constructor stores the array; nothing copies its elements.
+    if (lowRegion) expect(result.llvm, use).not.toContain("scr_arr_copy_cref_tail");
+  }
+});
+
+test("a dynamic value that may hold an instance may be cast back, tested, printed and passed on", async () => {
+  for (const use of [
+    "const u: unknown = [{ list }];\nconsole.log(u);",
+    "const u: unknown = new Map([[1, new Holder(list)]]);\nconsole.log(u, JSON.stringify(u));",
+    `function count(u: unknown): number {
+  return u instanceof Holder ? u.list.items.length : -1;
+}
+const values: unknown[] = [new Holder(list), 1, "x"];
+for (const value of values) console.log(count(value));`,
+    // Calls through an interface several classes implement dispatch on the
+    // value's class.
+    `interface Positioned {
+  readonly label: string;
+  pos(): number;
+}
+class First implements Positioned {
+  readonly label = "first";
+  constructor(readonly holder: Holder) {}
+  pos(): number {
+    return this.holder.list.pos;
+  }
+}
+class Second implements Positioned {
+  readonly label = "second";
+  constructor(readonly list: List) {}
+  pos(): number {
+    return this.list.items.length;
+  }
+}
+const all: Positioned[] = [new First(new Holder(list)), new Second(list)];
+for (const p of all) console.log(p.label, p.pos());`,
+    // An untyped value's members are read by name.
+    "const u: any = new Holder(list);\nconsole.log(u.list.pos);",
+    // A checked cast to a record of scalars and instances reads the members
+    // its fields name.
+    "const u: unknown = new Holder(list);\nconsole.log((u as { readonly list: { pos: number; flags?: number } }).list.pos);",
+    "const u: unknown = new Holder(list);\nconsole.log((u as { list: List }).list.items.length);",
+    // A record type that holds itself.
+    "type Chain = { pos: number; next?: Chain; all: Chain[] };\nconst u: unknown = list;\nconsole.log((u as Chain).pos);",
+    // An array method's compiled callback gets the receiver's elements.
+    `const u: any = [list, new Flagged(2, [], 0)];
+u.forEach((x: any) => console.log(x.pos));
+console.log(u.map((x: List) => x.items.length).join(","));
+console.log(u.some((x: any) => x.pos === 3), u.find((x: any) => x.pos === 2).pos);
+console.log(u.filter((x: List) => x.items.length > 0).length);`,
+  ]) {
+    // Every class of the hierarchy is constructed, so each has a constructor.
+    const result = await build(
+      classes + holder + "console.log(new Flagged(4, [new Item(5)], 1).flags);\n" + use,
+    );
+    expect(result.messages, use).toEqual([]);
+    expect(result.ok, use).toBe(true);
+    expect(result.warnings, use).toEqual([]);
   }
 });
 

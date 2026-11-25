@@ -96,7 +96,7 @@ test.skipIf(!glibcHost || !hostHasStaticLibc())(
 );
 
 test.skipIf(!glibcHost || !hostHasStaticLibc())(
-  "--static refuses a glibc executable that includes user name lookups",
+  "--static links a glibc executable that includes user name lookups",
   async () => {
     await withProject(async (dir, env) => {
       const entry = join(dir, "main.ts");
@@ -105,16 +105,16 @@ test.skipIf(!glibcHost || !hostHasStaticLibc())(
         entry,
         'import { userInfo } from "node:os";\nconsole.log(userInfo().username);\n',
       );
-      const failure = await cli(["build", entry, "-o", outPath, "--static"], env).then(
-        () => null,
-        (error: { code?: number; stderr?: string }) => error,
-      );
-      expect(failure?.code).toBe(1);
-      expect(failure?.stderr).toContain("error SC3002: --static cannot link this program");
-      expect(existsSync(outPath)).toBe(false);
-      // The same program links without --static.
+      // The --static link selects the runtime pack's /etc/passwd build of the
+      // os unit, which keeps no NSS member, so the SC3002 guard admits it.
+      await cli(["build", entry, "-o", outPath, "--static"], env);
+      expect(existsSync(outPath)).toBe(true);
+      // Both builds answer the same record: this one from /etc/passwd
+      // directly, the dynamically linked one below through getpwuid_r.
+      const staticOut = (await execFileAsync(outPath)).stdout;
+      expect(staticOut).not.toBe("");
       await cli(["build", entry, "-o", outPath], env);
-      expect((await execFileAsync(outPath)).stdout).not.toBe("");
+      expect((await execFileAsync(outPath)).stdout).toBe(staticOut);
     });
   },
   180_000,

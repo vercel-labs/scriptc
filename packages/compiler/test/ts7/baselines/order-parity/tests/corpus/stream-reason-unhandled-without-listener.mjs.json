@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-reason-unhandled-without-listener.mjs"
+ ],
+ "diags": []
+}

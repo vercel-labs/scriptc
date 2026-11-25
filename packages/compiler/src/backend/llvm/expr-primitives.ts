@@ -7,15 +7,22 @@ import {
 } from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
+import {
+  isRefCounted,
+  recordTextCodecClass,
+  type IrExpr,
+  type IrStrCmpOp,
+  type IrType,
+} from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
-import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
+import { llvmBytes, wtf8Bytes } from "../literals.js";
+import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
 import { CHECKED_INT32_MIN_LENGTH } from "../../ir/int32-arrays.js";
 import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
@@ -38,6 +45,7 @@ import {
   isBitwiseOp,
   withinInt32,
   withinUint32,
+  type IntegerRange,
 } from "../../ir/integer-ranges.js";
 import { charAtUnitRead, emitArrayValues } from "./expr-containers.js";
 import {
@@ -247,6 +255,9 @@ export function emitLiteralExpr(
         // An immortal Immutable constant: nothing to count.
         if (b.kind === "global" && host.immortalGlobals.has(e.localId))
           return host.markImmortal({ name: t, type: e.type });
+        // A borrowed tree local: the read is a copy of a pointer its owner
+        // keeps, and there is no count to raise (backend/tree-classes.ts).
+        if (host.isTreeBorrow(e.localId)) return { name: t, type: e.type };
         // The binding's last read takes over its reference (lastUseRead).
         if (host.takeLastUseMove(e, b.slot, b.type)) return host.own({ name: t, type: e.type });
         return host.own({ name: host.retainFrame(t, e.type), type: e.type });
@@ -259,6 +270,88 @@ export function emitLiteralExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** The quotient range of two integer ranges, in exact integer arithmetic
+ * (BigInt division truncates toward zero, as does the instruction). */
+function quotientRange(left: IntegerRange, divisor: number): IntegerRange {
+  const d = BigInt(divisor);
+  const low = Number(BigInt(left.min) / d);
+  const high = Number(BigInt(left.max) / d);
+  return { min: Math.min(low, high), max: Math.max(low, high) };
+}
+
+/** The division whose ToInt32 conversion a bitwise operator performs, when
+ * the operator is one of the identity conversions: `(x / c) | 0`,
+ * `(x / c) ^ 0`, `(x / c) & -1`, `(x / c) << 0` and `(x / c) >> 0` for a
+ * constant divisor `c`. Null for any other shape, which keeps the ToInt32
+ * path (`>>>`, a shift whose count is not the identity operand, a literal
+ * shift count on the right of a shifted value).
+ *
+ * The identity operand is the one `bitwiseIdentityOperand` names, which for
+ * a shift is the count on the RIGHT: a literal on the left is the shifted
+ * value, so `0 << (10 / 3)` is `0 << 3`, not `10 / 3`. */
+function constantIntegerQuotient(
+  e: ExprOf<"bin">,
+): { division: IrExpr & { kind: "bin" }; divisor: number } | null {
+  if (e.op === ">>>") return null;
+  const value = bitwiseIdentityOperand(e);
+  const division = value === "left" ? e.left : value === "right" ? e.right : null;
+  if (division === null || division.kind !== "bin" || division.op !== "/") return null;
+  if (division.right.kind !== "numLit") return null;
+  const divisor = division.right.value;
+  // The instruction takes an i64 constant, so the divisor must be exactly
+  // representable there: 2 ** 64 is an integer double that truncates to 0
+  // in the emitted literal and divides by zero at run time. A safe integer
+  // is exact in a double and inside i64; a larger divisor gives the zero
+  // quotient for every int32 dividend, so the real division costs nothing
+  // and stays the ToInt32 path.
+  if (!Number.isSafeInteger(divisor) || divisor === 0) return null;
+  return { division, divisor };
+}
+
+/** The truncated quotient `(x / c)` of a dividend `x` whose integer range is
+ * within int32 and a constant nonzero integer divisor `c`: ToInt32 of a real
+ * quotient truncates toward zero, which integer division does for every
+ * dividend and divisor, and a quotient of an int32 dividend stays inside
+ * int32, so the conversion wraps nothing. The dividend is emitted by the
+ * caller exactly once and passed in, so the fallback never re-evaluates it.
+ * Null when the dividend's range is not proven, which keeps ToInt32 of the
+ * real quotient. */
+function emitIntegerQuotient(
+  host: LlvmEmitterContext,
+  e: ExprOf<"bin">,
+  division: IrExpr & { kind: "bin" },
+  divisor: number,
+  numerator: LlValue,
+): LlValue | null {
+  const B = host.B;
+  // The dividend's integer: an exact one, or the integer an element read
+  // holds when it found one (`nanInteger`), with NaN reading as the zero
+  // ToInt32 gives it.
+  const integer: LlInteger | null = exactInteger(host, numerator, division.left);
+  let range: IntegerRange | null = integer ? integer.range : null;
+  let ordered: string | null = null;
+  if (integer === null && numerator.nanInteger !== undefined && numerator.ordered !== undefined) {
+    range = integerOrNaNRange(host, division.left);
+    ordered = numerator.ordered;
+  }
+  if (range === null || !withinInt32(range)) return null;
+  const quotient = quotientRange(range, divisor);
+  // INT32_MIN / -1 is the one quotient outside int32; there ToInt32 wraps
+  // and the integer division would not.
+  if (!withinInt32(quotient)) return null;
+  const divided = B.tmp();
+  const dividend = integer ? widenInteger(host, integer) : numerator.nanInteger!;
+  B.line(`${divided} = sdiv i64 ${dividend}, ${BigInt(divisor).toString()}`);
+  let number = divided;
+  let result = quotient;
+  if (ordered !== null) {
+    number = B.tmp();
+    result = { min: Math.min(quotient.min, 0), max: Math.max(quotient.max, 0) };
+    B.line(`${number} = select i1 ${ordered}, i64 ${divided}, i64 0`);
+  }
+  return integerNumber(host, number, result, e.type);
 }
 
 export function emitOperatorExpr(
@@ -317,10 +410,36 @@ export function emitOperatorExpr(
         host.llType(e.left.type) === "ptr";
       // A sum that only feeds the conversion of a bitwise operator can be
       // computed in 32 bits (emitWrappingSum).
-      if (isBitwiseOp(e.op)) markWrappingOperands(host, e.left, e.right);
+      let preLeft: LlValue | null = null;
+      let preRight: LlValue | null = null;
+      if (isBitwiseOp(e.op)) {
+        markWrappingOperands(host, e.left, e.right);
+        // `(x / c) | 0` with a constant integer c and an integer x is the
+        // truncated quotient: ToInt32 of a real quotient truncates toward
+        // zero, which is what integer division does. The dividend is
+        // evaluated once, before the path is chosen, because the fallback
+        // is a ToInt32 of the same division: re-emitting it would run an
+        // operand with side effects twice (`(a.push(1) / 2) | 0` appends
+        // once, not twice).
+        const shape = constantIntegerQuotient(e);
+        if (shape !== null) {
+          const dividend = host.emitExpr(shape.division.left);
+          const quotient = emitIntegerQuotient(host, e, shape.division, shape.divisor, dividend);
+          if (quotient !== null) return quotient;
+          // The range was not proven: build the real ToInt32 operand from
+          // the dividend already emitted, never from the expression again.
+          const divided = B.tmp();
+          B.line(`${divided} = fdiv double ${dividend.name}, ${f64Lit(shape.divisor)}`);
+          const value: LlValue = { name: divided, type: shape.division.type };
+          // The operand opposite the division is the neutral literal, so
+          // emitting it after the dividend keeps left-to-right evaluation.
+          if (shape.division === e.left) preLeft = value;
+          else preRight = value;
+        }
+      }
       const operands = identity
         ? emitBorrowedInputs(host, [e.left, e.right])
-        : [host.emitExpr(e.left), host.emitExpr(e.right)];
+        : [preLeft ?? host.emitExpr(e.left), preRight ?? host.emitExpr(e.right)];
       const l = operands[0]!;
       const r = operands[1]!;
       const t = B.tmp();
@@ -958,8 +1077,10 @@ export function emitStringExpr(
       }
       if (v.type.kind === "record") {
         // String(record) / `${record}`: Object.prototype.toString's
-        // constant — the interned literal, retained like a strLit.
-        const sym = host.internLiteral("[object Object]");
+        // constant — the interned literal, retained like a strLit. A
+        // TextEncoder or TextDecoder answers its Symbol.toStringTag.
+        const codec = recordTextCodecClass(host.recordShape(v.type.shapeId));
+        const sym = host.internLiteral(`[object ${codec ?? "Object"}]`);
         return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {
@@ -1012,13 +1133,37 @@ export function emitStringExpr(
       let inst = host.templateStringsInstances.get(e.key);
       if (!inst) {
         inst = {
-          sym: `sc_tsa_${host.templateStringsInstances.size}`,
+          sym: host.contentSymbol("sc_tsa_", e.key),
           slots: e.cooked.map((s) => host.internLiteral(s)),
         };
         host.templateStringsInstances.set(e.key, inst);
       }
       host.journal?.entry("templateStrings", e.key, inst);
-      return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
+      if (!host.compactRegion)
+        return host.own({ name: host.retainFrame(`@${inst.sym}`, e.type), type: e.type });
+      // Class fields may hold the array as a 32-bit reference, which reaches
+      // only the allocator's window: the site uses a heap copy of the
+      // header, made on first use (scr_arr_window_header).
+      host.declare("declare ptr @scr_arr_window_header(ptr, ptr)");
+      host.declare("declare i1 @llvm.expect.i1(i1, i1)");
+      const known = B.tmp(),
+        missing = B.tmp(),
+        likely = B.tmp(),
+        made = B.tmp(),
+        header = B.tmp();
+      const from = B.currentLabel(),
+        makeL = B.newLabel("tsa.make"),
+        doneL = B.newLabel("tsa.done");
+      B.line(`${known} = load atomic ptr, ptr @${inst.sym}_win acquire, align 8`);
+      B.line(`${missing} = icmp eq ptr ${known}, null`);
+      B.line(`${likely} = call i1 @llvm.expect.i1(i1 ${missing}, i1 false)`);
+      B.line(`br i1 ${likely}, label %${makeL}, label %${doneL}`);
+      B.startBlock(makeL);
+      B.line(`${made} = call ptr @scr_arr_window_header(ptr @${inst.sym}, ptr @${inst.sym}_win)`);
+      B.line(`br label %${doneL}`);
+      B.startBlock(doneL);
+      B.line(`${header} = phi ptr [ ${known}, %${from} ], [ ${made}, %${makeL} ]`);
+      return host.own({ name: host.retainFrame(header, e.type), type: e.type });
     }
     case "regexIntrinsic":
       return host.emitRegexIntrinsic(e);
@@ -1039,6 +1184,10 @@ const RESERVE_LIMIT = 2 ** 20;
  * (SCR_ARR_SMALL_SLOTS, scr_array.c). */
 const SMALL_ARRAY_SLOTS = 3;
 
+/** How many values of an array literal one scr_arr_push_many call takes
+ * from the frame's buffer. */
+const LITERAL_BATCH = 64;
+
 /** The capacity scr_arr_reserve_len would reserve for `length` on an empty
  * array: the length truncated when it is at least 1 and at most
  * RESERVE_LIMIT, else 0. */
@@ -1058,6 +1207,98 @@ function reservedCapacity(host: LlvmEmitterContext, length: IrExpr): string {
   return capacity;
 }
 
+/** The value of a numeric literal expression, negated forms included, or
+ * null for any other expression. */
+function numericLiteral(expr: IrExpr): number | null {
+  if (expr.kind === "numLit") return expr.value;
+  if (expr.kind === "unary" && expr.op === "-") {
+    const value = numericLiteral(expr.operand);
+    return value === null ? null : -value;
+  }
+  return null;
+}
+
+/** A block of immortal string literals, one per distinct string of `values`
+ * in first-use order, and the byte offset of each value's literal in it.
+ * Every literal has the layout of the module's interned ones: the immortal
+ * reference count, the byte length and the capacity word (literalCapWord),
+ * each a little-endian word of the target, then the bytes and a NUL, padded
+ * to a word. */
+function literalBlock(
+  values: readonly string[],
+  size: string,
+): { bytes: Uint8Array; offsets: number[] } {
+  const word = size === "i64" ? 8 : 4;
+  const placed = new Map<string, number>();
+  const parts: Uint8Array[] = [];
+  const offsets: number[] = [];
+  let length = 0;
+  for (const text of values) {
+    let at = placed.get(text);
+    if (at === undefined) {
+      at = length;
+      placed.set(text, at);
+      const bytes = wtf8Bytes(text);
+      const cap = BigInt(word === 8 ? literalCapWord(bytes) : literalCapWord32(bytes));
+      const literal = new Uint8Array(Math.ceil((3 * word + bytes.length + 1) / word) * word);
+      const words = [-1n, BigInt(bytes.length), cap];
+      for (let w = 0; w < 3; w++) {
+        const bits = BigInt.asUintN(word * 8, words[w]!);
+        for (let b = 0; b < word; b++)
+          literal[w * word + b] = Number((bits >> BigInt(8 * b)) & 0xffn);
+      }
+      literal.set(bytes, 3 * word);
+      parts.push(literal);
+      length += literal.length;
+    }
+    offsets.push(at);
+  }
+  const bytes = new Uint8Array(length);
+  let at = 0;
+  for (const part of parts) {
+    bytes.set(part, at);
+    at += part.length;
+  }
+  return { bytes, offsets };
+}
+
+/** The values of the number literals from `elems[start]` up to the next
+ * element that is not one, when there are more of them than one batch of
+ * array values holds (emitArrayValues stores up to 64 and makes one call);
+ * null for a shorter run, which keeps the batch. */
+function numberRun(
+  elems: readonly IrExpr[],
+  start: number,
+  spreads: ReadonlySet<number>,
+): number[] | null {
+  const values: number[] = [];
+  for (let i = start; i < elems.length && !spreads.has(i); i++) {
+    const value = numericLiteral(elems[i]!);
+    if (value === null) break;
+    values.push(value);
+  }
+  return values.length > LITERAL_BATCH ? values : null;
+}
+
+/** The elements of `e` when they are all numeric literals whose storage is
+ * the literal's data: for an int32 array each an exact int32 that is not -0
+ * (the values its slots hold). */
+function constantElementData(e: ExprOf<"arrayLit">, acc: ArrayAccess): number[] | null {
+  if (acc !== "i32" && acc !== "f64") return null;
+  const values: number[] = [];
+  for (const elem of e.elems) {
+    const value = numericLiteral(elem);
+    if (value === null) return null;
+    if (acc === "i32") {
+      if (!Number.isInteger(value)) return null;
+      if (value < INT32_RANGE.min || value > INT32_RANGE.max) return null;
+      if (Object.is(value, -0)) return null;
+    }
+    values.push(value);
+  }
+  return values;
+}
+
 export function emitContainerExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -1066,6 +1307,7 @@ export function emitContainerExpr(
     | "arrayGet"
     | "arrayHas"
     | "arrayState"
+    | "constCell"
     | "arrIntrinsic"
     | "bytesNew"
     | "bytesIntrinsic"
@@ -1077,6 +1319,60 @@ export function emitContainerExpr(
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
+    case "constCell": {
+      // The index is the counter of the loop that builds the rows
+      // (ir/literal-tables.ts): an integer below the column's length.
+      const index = host.emitExpr(e.index);
+      const size = host.sizeType;
+      const integer = index.integer;
+      let row: string;
+      if (integer !== undefined && integer.type === size) row = integer.name;
+      else {
+        row = B.tmp();
+        if (integer === undefined) B.line(`${row} = fptoui double ${index.name} to ${size}`);
+        else
+          B.line(
+            `${row} = ${integer.type === "i32" ? "zext" : "trunc"} ${integer.type} ${integer.name} to ${size}`,
+          );
+      }
+      const cell = (n: number, type: string, column: string): string => {
+        const slot = B.tmp();
+        const value = B.tmp();
+        B.line(
+          `${slot} = getelementptr inbounds [${n} x ${type}], ptr ${column}, ${size} 0, ${size} ${row}`,
+        );
+        B.line(`${value} = load ${type}, ptr ${slot}`);
+        return value;
+      };
+      if (e.strings === undefined) {
+        const numbers = (e.numbers ?? []).map((v) => `double ${f64Lit(v)}`);
+        const n = numbers.length;
+        const column = host.imageData(`internal constant [${n} x double] [${numbers.join(", ")}]`);
+        return { name: cell(n, "double", column), type: e.type };
+      }
+      // Strings: the column is the offset of each row's literal in a block
+      // of immortal literals laid out as the module's own (emit-module.ts),
+      // one per distinct string. Offsets need no relocation, which a column
+      // of pointers would need per row.
+      const block = literalBlock(e.strings, size);
+      const n = block.offsets.length;
+      const offset = cell(
+        n,
+        "i32",
+        host.imageData(
+          `internal constant [${n} x i32] [${block.offsets.map((o) => `i32 ${o}`).join(", ")}]`,
+        ),
+      );
+      const literals = host.imageData(
+        `internal global [${block.bytes.length} x i8] c"${llvmBytes(block.bytes, false)}", align 8`,
+      );
+      const wide = size === "i64" ? B.tmp() : offset;
+      if (size === "i64") B.line(`${wide} = zext i32 ${offset} to i64`);
+      const literal = B.tmp();
+      B.line(`${literal} = getelementptr inbounds i8, ptr ${literals}, ${size} ${wide}`);
+      host.markImmortal({ name: literal, type: e.type });
+      return host.own({ name: host.retainFrame(literal, e.type), type: e.type });
+    }
     case "arrayLit": {
       // Batch adjacent plain elements. Spread boundaries flush the batch
       // so every source is copied before later expressions can mutate it.
@@ -1087,6 +1383,23 @@ export function emitContainerExpr(
       const arr = B.tmp();
       const small = host.appendedArrayLiterals.has(e);
       const spreadSet = new Set(e.spreads ?? []);
+      // A module-level table of numeric literals that the IR proves is only
+      // read (ir/constant-tables.ts): its header and element data both go in
+      // the program image, so the program neither allocates nor copies the
+      // array. A literal whose length is set right after construction keeps
+      // the ordinary path.
+      if (host.staticArrayTables.has(e) && !host.reservedArrayLengths.has(e)) {
+        const acc = host.int32Allocations.has(e) ? "i32" : elemAccess(elem);
+        const values = constantElementData(e, acc);
+        if (values !== null) {
+          // The header is written in the image with the rest of the table
+          // (emit-module.ts): initialization stores nothing, so threads that
+          // share the image never race on it. The array is immortal
+          // (`rc == SIZE_MAX`), so releasing the value is a no-op.
+          const { header } = host.staticArrayData(e, values, acc === "i32" ? "i32" : "double");
+          return host.own({ name: header, type: e.type });
+        }
+      }
       // With spreads, storage starts at the plain elements before the first
       // spread, and each spread reserves exactly its source's length plus
       // the plain elements up to the next one (scr_arr_reserve_spread).
@@ -1169,12 +1482,15 @@ export function emitContainerExpr(
       const flush = (): void => {
         if (pending.length > 1 && buffer === undefined) {
           buffer = B.tmp();
-          B.entryAllocas.push(`${buffer} = alloca [${Math.min(e.elems.length, 64)} x i64]`);
+          B.entryAllocas.push(
+            `${buffer} = alloca [${Math.min(e.elems.length, LITERAL_BATCH)} x i64]`,
+          );
         }
         if (pending.length > 0) emitArrayValues(host, arr, acc, elem, pending, false, buffer);
         pending = [];
       };
-      e.elems.forEach((el, i) => {
+      for (let i = 0; i < e.elems.length; i++) {
+        const el = e.elems[i]!;
         if (spreadSet.has(i)) {
           flush();
           const v = host.emitExpr(el);
@@ -1186,11 +1502,27 @@ export function emitContainerExpr(
           );
           // A literal with spreads is never an int32 allocation.
           host.emitArrayCopyLoop(arr, v.name, runtimeAccess(acc));
-          return;
+          continue;
+        }
+        // A run of number literals too long for one batch is appended from
+        // the program image in one call: the slots are the same double bits
+        // the batches store, so the array is the one the batches build.
+        const run = acc === "f64" || acc === "i32" ? numberRun(e.elems, i, spreadSet) : null;
+        if (run !== null) {
+          flush();
+          const data = host.imageData(
+            `internal constant [${run.length} x double] [${run.map((v) => `double ${f64Lit(v)}`).join(", ")}], align 8`,
+          );
+          host.declare(`declare double @scr_arr_push_many(ptr, ${host.sizeType}, ptr)`);
+          B.line(
+            `${B.tmp()} = call double @scr_arr_push_many(ptr ${arr}, ${host.sizeType} ${run.length}, ptr ${data})`,
+          );
+          i += run.length - 1;
+          continue;
         }
         pending.push(host.emitExpr(el));
-        if (pending.length === 64) flush();
-      });
+        if (pending.length === LITERAL_BATCH) flush();
+      }
       flush();
       return out;
     }
@@ -1464,11 +1796,30 @@ export function emitRecordExpr(
     }
     case "recordGet": {
       const obj = host.emitReadReceiver(e.obj);
+      if (host.partialFieldMissing(e.shapeId, e.field))
+        return host.own(host.readPartialField(obj.name, e.shapeId, e.field, e.type));
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
       if (inline) return host.own({ name: host.inlineFieldUnion(ptr, type), type: e.type });
       const v = host.loadRecordField(ptr, type, false);
-      if (isRefCounted(e.type))
-        return host.own({ name: host.retainFrame(v, e.type), type: e.type });
+      if (isRefCounted(e.type)) {
+        const owned = host.retainFrame(v, e.type);
+        // An optional checked-dynamic slot's ABSENT marker reads as the
+        // ordinary dyn undefined, so the state never escapes its slot.
+        if (
+          e.type.kind === "dyn" &&
+          host.recordsById.get(e.shapeId)?.fields.find((f) => f.name === e.field)?.optional === true
+        ) {
+          host.declare(`declare ptr @scr_dyn_undefined()`);
+          const absent = B.tmp();
+          const undef = B.tmp();
+          const value = B.tmp();
+          B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+          B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+          B.line(`${value} = select i1 ${absent}, ptr ${undef}, ptr ${owned}`);
+          return host.own({ name: value, type: e.type });
+        }
+        return host.own({ name: owned, type: e.type });
+      }
       return { name: v, type: e.type };
     }
     case "recordLit": {
@@ -1510,12 +1861,20 @@ export function emitRecordExpr(
       // lack its property, by holding the ABSENT state, and a PARTIAL
       // record view (record-views.ts) can lack a field its viewed record
       // does not declare.
-      const fieldType = host.recordsById
-        .get(e.shapeId)
-        ?.fields.find((f) => f.name === e.field)?.type;
+      const shapeField = host.recordsById.get(e.shapeId)?.fields.find((f) => f.name === e.field);
+      const fieldType = shapeField?.type;
+      const dynAbsent = shapeField?.optional === true && fieldType?.kind === "dyn";
       const obj = host.emitReadReceiver(e.obj);
       if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
         const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (dynAbsent) {
+          const v = host.loadField(ptr, type, inline);
+          const absent = B.tmp();
+          B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+          const present = B.tmp();
+          B.line(`${present} = xor i1 ${absent}, true`);
+          return { name: present, type: e.type };
+        }
         if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
           return { name: "true", type: e.type };
         const v = host.loadField(ptr, type, inline);
@@ -1526,15 +1885,15 @@ export function emitRecordExpr(
       }
       // A field some partial view of this shape lacks: ask the view first.
       // Only a present field's slot may be looked up — a partial view's
-      // absent field answers no slot at all (scr_record_view_slot).
+      // absent field answers no slot at all (scr_record_view_slot), and has
+      // the property only once a write left it in the view's extra store.
       const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
       host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
-      const isView = B.tmp();
+      host.declare(`declare ptr @scr_record_view_extra(ptr, ptr, ${host.sizeType})`);
+      const isView = host.recordIsView(obj.name, e.shapeId);
       const rhFrom = B.currentLabel();
       const view = B.newLabel("rh.view");
       const done = B.newLabel("rh.done");
-      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
-        B.line(line.trimStart());
       // Not a view: every field of the target has its slot.
       B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
       B.startBlock(view);
@@ -1544,10 +1903,39 @@ export function emitRecordExpr(
       );
       const hasSlot = B.tmp();
       B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      const extra = B.tmp();
+      const hasExtra = B.tmp();
+      B.line(
+        `${extra} = call ptr @scr_record_view_extra(ptr ${obj.name}, ptr ${host.cstr(e.field)}, ${host.sizeType} ${Buffer.byteLength(e.field, "utf8")})`,
+      );
+      B.line(`${hasExtra} = icmp ne ptr ${extra}, null`);
+      const fromView = B.tmp();
+      B.line(`${fromView} = select i1 ${hasSlot}, i1 true, i1 ${hasExtra}`);
       B.br(done);
       B.startBlock(done);
       const hasView = B.tmp();
-      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${hasSlot}, %${view} ]`);
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${fromView}, %${view} ]`);
+      if (dynAbsent) {
+        // A present slot still answers by its ABSENT marker, a field the
+        // view lacks by the view.
+        const check = B.newLabel("rh.present");
+        const join = B.newLabel("rh.join");
+        const from = B.currentLabel();
+        B.condBr(hasView, check, join);
+        B.startBlock(check);
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        const v = host.loadField(ptr, type, inline);
+        const absent = B.tmp();
+        B.line(`${absent} = icmp eq ptr ${v}, ${host.dynAbsentRef()}`);
+        const present = B.tmp();
+        B.line(`${present} = xor i1 ${absent}, true`);
+        const checked = B.currentLabel();
+        B.br(join);
+        B.startBlock(join);
+        const answer = B.tmp();
+        B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+        return { name: answer, type: e.type };
+      }
       if (fieldType === undefined || fieldType.kind !== "union")
         return { name: hasView, type: e.type };
       const unionId = fieldType.unionId;
@@ -1573,7 +1961,10 @@ export function emitRecordExpr(
       return { name: answer, type: e.type };
     }
     case "fieldAbsent":
-      return { name: host.absentInstanceRef(e.unionId), type: e.type };
+      return {
+        name: e.unionId !== undefined ? host.absentInstanceRef(e.unionId) : host.dynAbsentRef(),
+        type: e.type,
+      };
     case "recordOvfHas": {
       const obj = host.emitExpr(e.obj);
       const key = host.emitExpr(e.key);

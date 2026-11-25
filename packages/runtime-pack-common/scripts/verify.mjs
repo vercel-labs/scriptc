@@ -16,11 +16,7 @@ if (
   throw new Error("runtime pack identity does not match package.json");
 const artifacts = [
   ...Object.values(manifest.flavors).flatMap((flavor) =>
-    flavor.runtime_units.flatMap((unit) =>
-      unit.variants.flatMap((variant) =>
-        variant.bitcode ? [variant, variant.bitcode] : [variant],
-      ),
-    ),
+    flavor.runtime_units.flatMap((unit) => unit.variants),
   ),
   ...manifest.archives,
   ...(manifest.data ?? []),
@@ -38,3 +34,10 @@ for (const license of manifest.licenses) await access(join(root, license.path));
 process.stdout.write(
   `verified ${manifest.package}@${manifest.version}: ${artifacts.length} artifacts\n`,
 );
+// How the committed runtime profile matched the pack that was built or
+// restored (profile-match.mjs), so a log shows which profile a pack holds.
+const profile = manifest.flavors.speed?.runtime_profile;
+if (profile?.annotated_names !== undefined)
+  process.stdout.write(
+    `runtime profile: ${profile.mismatched_names} of the ${profile.annotated_names + profile.mismatched_names} functions it describes changed since it was collected (${profile.mismatched} of ${profile.annotated + profile.mismatched} per unit object), holding ${((100 * profile.mismatched_counts) / (profile.annotated_counts + profile.mismatched_counts)).toFixed(2)}% of its counts\n`,
+  );

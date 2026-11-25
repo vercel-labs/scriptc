@@ -3,11 +3,12 @@
  * must FAIL to compile, and the full rendered output (codes, spans, code
  * frames, hints) is snapshotted.
  */
-import { globSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compile, renderDiagnostics } from "@scriptc/compiler";
+import { programDefines } from "./define-directive.js";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const diagDir = join(repoRoot, "tests/diagnostics");
@@ -33,8 +34,8 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
       // any backend runs (that is the suite's contract), so the default
       // lane is irrelevant by construction — and riding it proves the
       // fallback machinery never turns a diagnostic into a build.
-      // The checker-panic programs exercise tsgo's own failures (a panic, and a
-      // +Infinity it cannot send), so they compile with tsgo.
+      // A checker-panic program exercises tsgo's own failures, so it compiles
+      // with tsgo.
       const checker = process.env["SCRIPTC_CHECKER"];
       if (name.startsWith("checker-panic-")) process.env["SCRIPTC_CHECKER"] = "tsgo";
       let result: Awaited<ReturnType<typeof compile>>;
@@ -42,10 +43,14 @@ describe(`diagnostics corpus (${files.length} programs)`, () => {
         // --tier=static-only: these programs pin today's refusals, which
         // localized failure otherwise turns into checked dynamic slots
         // (the snapshots double as its proof that static-only keeps them).
+        // `// @define` lines in the first two lines build the program with
+        // those values, as the corpus does (define-directive.ts).
+        const defines = programDefines(readFileSync(file, "utf8").split("\n", 2));
         result = await compile(file, {
           outPath: join(outDir, "never"),
           outDir,
           tier: "static-only",
+          ...(defines ? { define: defines.define } : {}),
         });
       } finally {
         if (checker === undefined) delete process.env["SCRIPTC_CHECKER"];

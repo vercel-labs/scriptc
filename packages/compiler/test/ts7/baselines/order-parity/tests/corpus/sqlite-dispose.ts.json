@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/sqlite-dispose.ts"],
+  "diags": []
+}

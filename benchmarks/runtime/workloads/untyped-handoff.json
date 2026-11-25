@@ -1,0 +1,7 @@
+{
+  "entry": "workloads/untyped-handoff.ts",
+  "args": [
+    "1"
+  ],
+  "scaleArg": 0
+}

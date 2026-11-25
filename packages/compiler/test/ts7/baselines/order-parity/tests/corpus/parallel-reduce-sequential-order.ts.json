@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/parallel-reduce-sequential-order.ts"
+ ],
+ "diags": []
+}

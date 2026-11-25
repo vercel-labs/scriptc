@@ -356,7 +356,7 @@ export function finalizePrivateBrands(lowerer: Lowerer, functions: IrFunction[])
         kind: "if",
         cond: {
           kind: "libCall",
-          fn: "dyn.typedRefIs",
+          fn: "dyn.typedRefBrandIs",
           args: [value, strLit(typeKey(candidateType), loc)],
           type: BOOL,
           loc,

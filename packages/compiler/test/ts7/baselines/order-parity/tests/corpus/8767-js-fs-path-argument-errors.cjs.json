@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8767-js-fs-path-argument-errors.cjs"
+ ],
+ "diags": []
+}

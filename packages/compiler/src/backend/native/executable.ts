@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import {
+  executableHardeningLinkerArgs,
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
@@ -83,19 +84,28 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  vendorMlkemDir,
+  mlkemArchivePath,
+  ensureMlkemArchive,
   brotliArchivePath,
+  vendorSqliteDir,
+  sqliteArchivePath,
+  ensureSqliteArchive,
   ensureIcuSources,
   icuArchivePath,
   ensureIcuArchive,
   lreObjectPaths,
   zlibObjectPaths,
+  zstdObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
   ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
+  ensureZstdObjects,
   vendorEngineDir,
   vendorZlibDir,
+  vendorZstdDir,
   vendorTlsDir,
   vendorBrotliDir,
 } from "./vendor.js";
@@ -122,11 +132,15 @@ interface RuntimeUnitContext {
   cipher: boolean;
   ecdh: boolean;
   dh: boolean;
+  argon2: boolean;
   pki: boolean;
   lreObjects: readonly string[];
   zlibObjects: readonly string[];
+  zstdObjects: readonly string[];
   tlsArchive: string | null;
+  mlkemArchive: string | null;
   brotliArchive: string | null;
+  sqliteArchive: string | null;
   icuArchive: string | null;
   /** The include roots of the ICU headers scr_intl.c compiles against: the
    * runtime pack's, or the fetched release's common/ and i18n/. */
@@ -142,6 +156,30 @@ interface RuntimeUnit {
 }
 
 const unit = (when: RuntimeUnit["when"], ...sources: string[]): RuntimeUnit => ({ when, sources });
+
+/** Whether the program links scr_async_dyn.c, the checked-dynamic promise
+ * unit. It is the one unit that makes a promise adapter, so the same answer
+ * selects the scr_map.c build that keys a boxed promise by the identity its
+ * adapters share (SCR_DYN_PROMISE_KEYS). */
+function linksDynPromiseUnit(opts: CcOptions): boolean {
+  return (
+    opts.dynAsync === true ||
+    opts.dynInvoke === true ||
+    opts.workers === true ||
+    opts.dc === true ||
+    opts.fileHandle === true ||
+    // Fetch settles its promises through the unit.
+    opts.fetch === true ||
+    // The dns resolve family settles its promise results through the unit
+    // (scr_dns_resolve.c).
+    opts.dnsResolve === true ||
+    // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
+    opts.nodeIsland === true ||
+    // t.waitFor polls a dyn condition and returns a dyn promise
+    // (scr_test.c's waitFor entry).
+    opts.nodeTest === true
+  );
+}
 const unitArgs = (args: (u: RuntimeUnitContext) => readonly string[]): RuntimeUnit => ({
   when: () => true,
   sources: [],
@@ -158,11 +196,27 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_mailbox.c",
     "scr_message.c",
   ),
+  // A generator that binds its parameters at the call (scr_gen_bind.c).
+  unit((u) => u.opts.genBind === true, "scr_gen_bind.c"),
+  // A generator function that reads `this` (scr_gen_receiver.c).
+  unit((u) => u.opts.genReceiver === true, "scr_gen_receiver.c"),
+  // The kept-source read a record width copy emits (scr_record_source_get.c).
+  unit((u) => u.opts.recordSourceGet === true, "scr_record_source_get.c"),
+  // The join of an array of strings (scr_arr_join_str.c).
+  unit((u) => u.opts.arrJoinStr === true, "scr_arr_join_str.c"),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
   // writeFile's `flag` option and the fs/promises twins; the copyFile mode
   // argument is the SCR_FS_FLAGS build of scr_fs_cp.c.
   unit((u) => u.opts.fsFlags === true, "scr_fs_flags.c"),
+  // existsSync over a path value that may not be a string (scr_fs_exists_dyn.c).
+  unit((u) => u.opts.fsExistsValue === true, "scr_fs_exists_dyn.c"),
+  // node:module's compile cache family (scr_module_cache.c).
+  unit((u) => u.opts.moduleCompileCache === true, "scr_module_cache.c"),
+  // The BYTE-data spellings of the options write and fs.promises.writeFile
+  // (scr_fs_bytes_write.c), gated apart from the string forms' unit so a
+  // program that writes no byte payload keeps both objects unchanged.
+  unit((u) => u.opts.fsBytesWrites === true, "scr_fs_bytes_write.c"),
   // string_decoder's checked-dynamic chunk forms, beside their typed twins.
   unit((u) => u.opts.strdecDyn === true, "scr_bytes_strdec_dyn.c"),
   // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
@@ -203,7 +257,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
-  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol || u.opts.workers, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit(
     (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
@@ -213,10 +267,30 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.
   unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // An untyped path of a synchronous fs function (dyn.validateFsPath).
+  unit((u) => u.opts.fsPathValue === true, "scr_fs_path_value.c"),
+  // A standard library prototype object read as a value in a JavaScript
+  // source: the dynamic tier's gated unit, whose work is JavaScript-only.
+  unit(
+    (u) => u.opts.stdlibPrototypeValue === true && u.opts.dynInvoke,
+    "scr_dyn_stdlib_prototype.c",
+  ),
+  // DataView.prototype as a value in a JavaScript source: the getter/setter
+  // family's prototype object, the dynamic tier's gated unit.
+  unit((u) => u.opts.dataViewPrototypeValue === true && u.opts.dynInvoke, "scr_data_view_proto.c"),
+  // Array.prototype's generic algorithms over array-like receivers: the
+  // dynamic tier's gated unit, whose work is JavaScript-only.
+  unit((u) => u.opts.arrayLikeDispatch === true && u.opts.dynInvoke, "scr_dyn_array_like.c"),
+  unit((u) => u.opts.builtinMethodValue === true && u.opts.dynInvoke, "scr_dyn_builtin_methods.c"),
   // createRequire's computed require and require.resolve.
   unit((u) => u.opts.computedRequire === true, "scr_require.c"),
   unit((u) => u.opts.dc, "scr_dc.c"),
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  // The buffer views registry (resizable/growable buffers): the program's
+  // %main installs its ops table, and its bytes headers stop being
+  // invariant. Every other program keeps the default bytes objects and
+  // links no part of the unit.
+  unit((u) => u.opts.mutableBuffers === true, "scr_js_buffers.c"),
   unit(
     (u) => u.opts.eventTarget || u.nativeFetch || u.opts.abortSignal === true,
     "scr_event_target.c",
@@ -228,18 +302,14 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
-  unit(
-    (u) =>
-      u.opts.dynAsync ||
-      u.opts.dynInvoke ||
-      u.opts.workers ||
-      u.opts.dc ||
-      u.opts.fileHandle ||
-      u.nativeFetch ||
-      // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
-      u.opts.nodeIsland === true,
-    "scr_async_dyn.c",
-  ),
+  // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
+  unit((u) => u.opts.iteratorProto === true, "scr_js_iterator.c"),
+  unit((u) => linksDynPromiseUnit(u.opts), "scr_async_dyn.c"),
+  // Promise statics with a foreign constructor (`Promise.all.call(C, …)`):
+  // the specification's algorithms over the checked-dynamic tier. Their
+  // values adopt through scr_async_dyn.c's thenable path, so the call
+  // selects dynAsync as well.
+  unit((u) => u.opts.promiseGeneric === true, "scr_js_promise_generic.c"),
   // The performance timeline (every perf_hooks user-timing call selects
   // dynAsync, whose unit carries the timeline's buffer warning).
   unit((u) => u.opts.dynAsync, "scr_perf.c"),
@@ -269,6 +339,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ]
       : [],
   ),
+  // zstd (scr_zstd.c) plugs into the zlib engine and links the vendored
+  // zstd objects.
+  unitArgs((u) =>
+    u.zstdObjects.length === 0
+      ? []
+      : ["-I", join(vendorZstdDir(), "lib"), u.rt(join(u.rtDir, "scr_zstd.c")), ...u.zstdObjects],
+  ),
+  // node:sqlite (scr_sqlite.c) over the vendored SQLite amalgamation.
+  unitArgs((u) =>
+    u.sqliteArchive === null
+      ? []
+      : ["-I", vendorSqliteDir(), u.rt(join(u.rtDir, "scr_sqlite.c")), u.sqliteArchive],
+  ),
   // Intl over ICU (scr_intl.c): ICU's C API only, at the default locale,
   // reading its data file from beside the executable. The ICU headers come
   // from the installed runtime pack beside its archive, or, when ICU is
@@ -284,6 +367,17 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
         ],
   ),
   unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
+  // getColorDepth and hasColors of the process stream object, for a program
+  // that holds a process stream as a value and names one of them; and a
+  // Console built with inspectOptions or colorMode, whose 'auto' mode reads
+  // the same tables.
+  unit(
+    (u) =>
+      (u.opts.events && u.opts.ttyColors === true) ||
+      u.opts.consoleOptions === true ||
+      u.opts.inspect === true,
+    "scr_tty_colors.c",
+  ),
   // readline's terminal mode: rl.terminal sets the regex unit it
   // measures with.
   unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
@@ -294,15 +388,25 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.mime === true, "scr_mime.c"),
   unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
   unit((u) => u.opts.webStreams === true, "scr_webstreams.c"),
-  unit((u) => u.opts.webStreams === true, "scr_dyn_handle_class.c"),
+  // filehandle.readableWebStream's byte stream over the handle's reads,
+  // its own gate (it links the FileHandle and web stream units with it).
+  unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
+  // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
+  // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
+  unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
+  unit((u) => u.opts.utilTraceSigInt === true, "scr_util_trace_sigint.c"),
   // The checked-dynamic HANDLE support unit (listener gate + runtime
   // adapter closures): every referencing unit is one of the emitter or
   // net families (http implies net), so handle-free binaries keep
   // their exact size class.
   unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
-  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  // The worker unit compares the env option against SHARE_ENV, its symbol
+  // (scr_worker_events.c), so a worker program links the symbol unit even
+  // when nothing else in it uses symbols.
+  unit((u) => u.opts.symbol || u.opts.workers, "scr_symbol.c"),
   unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
   unit((u) => u.opts.qs, "scr_qs.c"),
   // The legacy url unit references the regex, querystring and dyn-async
@@ -310,13 +414,19 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
   unit((u) => u.opts.parseArgs, "scr_util.c"),
   unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
-  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  // The inspect unit reads inspect.colors from the style unit's table, so
+  // any program that renders a colored value links it; styleText itself
+  // sets the inspect fact too.
+  unit((u) => u.opts.inspect, "scr_util_style.c"),
   unit(
     (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
     "scr_util_callable.c",
   ),
   // util.promisify over an untyped function: dyn promises and calls.
   unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  // util.promisify's custom protocol, which the typed lowering reads over
+  // the boxed function; both lowerings share it.
+  unit((u) => u.opts.utilPromisify === true, "scr_util_promisify_custom.c"),
   unit(
     (u) =>
       u.opts.dynBuiltinClass &&
@@ -337,22 +447,58 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_dyn_builtin_stream.c",
   ),
   unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // stream.duplexPair builds its two Duplexes on the stream constructor and
+  // its implementer hooks (scr_stream_pair.c).
+  unit((u) => u.opts.stream, "scr_stream_pair.c"),
+  // readable.wrap reads a native source's chunks into the receiver.
+  unit((u) => u.opts.stream, "scr_stream_wrap.c"),
+  // Its checked-dynamic entry point unwraps a boxed readable (scr_stream_dyn.c).
+  unit((u) => u.opts.streamDyn === true, "scr_stream_wrap_dyn.c"),
+  // The stream defaults (setDefaultHighWaterMark) are process state the net
+  // and http units read for the streams they build.
+  unit((u) => u.opts.stream || u.net || u.http, "scr_stream_defaults.c"),
   // The zlib stream classes reference both the zlib engine and the
   // stream unit.
   unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
+  // readable.iterator builds the async iterator over the readable's chunks.
+  unit((u) => u.opts.stream && u.opts.dynAsync && u.opts.symbol === true, "scr_stream_iterator.c"),
   unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
   // Checked-dynamic stream slots test values and call JavaScript stream
   // members through the dyn-invoke unit.
   unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // Node's pipe lifecycle ('unpipe' when a destination finishes, closes or
+  // errors), installed into the stream unit for programs that pipe.
+  unit((u) => u.opts.stream && u.opts.streamPipeEvents === true, "scr_stream_pipe_events.c"),
   // Own properties JavaScript adds to children.
   unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
   // ChildProcess listener removal (off/removeListener) and signalCode.
   unit((u) => u.opts.childLifecycle === true, "scr_child_lifecycle.c"),
+  // The spawnSync capture Buffers (spawnRes.stdoutBytes/stderrBytes).
+  unit((u) => u.opts.spawnCaptureBytes === true, "scr_child_capture.c"),
+  // node:cluster's process management and worker handle (scr_cluster.c).
+  unit((u) => u.opts.cluster === true, "scr_cluster.c"),
+  // process.features as a value: the stable flags object.
+  unit((u) => u.opts.processFeatures === true, "scr_process_features.c"),
+  // Object.isExtensible and Object.isSealed of a value typed dynamically.
+  unit((u) => u.opts.dynIntegrityQueries === true, "scr_dyn_integrity.c"),
+  // Reflect.getPrototypeOf's primitive-target check.
+  unit((u) => u.opts.reflectProtoTarget === true, "scr_dyn_reflect_proto.c"),
+  // The prototype read of a class test's walk.
+  unit((u) => u.opts.classTestPrototype === true, "scr_dyn_class_test.c"),
+  // `delete` of a key a record's type does not declare.
+  unit((u) => u.opts.recordSourceDelete === true, "scr_record_source_delete.c"),
+  // Record views of types whose values may also be frozen.
+  unit((u) => u.opts.recordViewFrozen === true, "scr_record_view_frozen.c"),
   // The declaration-typed boundary's adoption.
   unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
   unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // A dev executable's report of failed checked conversions.
+  unit((u) => u.opts.conversionTrace === true, "scr_conversion_trace.c"),
   // for await over checked-dynamic values.
   unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // The keyed collections' prototype objects, member values, their
+  // constructors' adder lookup and the ES2025 Set compositions.
+  unit((u) => u.opts.dynCollections === true, "scr_dyn_collections.c"),
   // for await over checked-dynamic values that may hold native streams.
   unit(
     (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
@@ -371,18 +517,27 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.http2, "scr_http2.c"),
   unit((u) => u.opts.dgram, "scr_dgram.c"),
   unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsResolve, "scr_dns_resolve.c"),
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
-  unit((u) => u.opts.watch, "scr_watch.c"),
+  unit((u) => u.opts.watch === true || u.opts.watchEvents === true, "scr_watch.c"),
   // fs.watchFile's stat poller: its own gated unit (no loop hook — the
   // re-armed timers are the liveness), linked only by programs that poll.
   unit((u) => u.opts.watchFile, "scr_watch_file.c"),
+  // fsPromises.watch's async iterator: a queue over the watcher unit, its
+  // own gate (native/executable.ts pulls scr_watch.c with it).
+  unit((u) => u.opts.watchEvents, "scr_watch_async.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
   unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
   unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
   unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // Argon2 (crypto.argon2 and crypto.argon2Sync) is self-contained.
+  unit((u) => u.opts.argon2 === true, "scr_argon2.c"),
+  // ML-KEM (node:crypto's encapsulate/decapsulate and WebCrypto): the
+  // wrapper unit over the vendored mlkem-native archive.
+  unit((u) => u.opts.mlkem === true, "scr_mlkem.c"),
   // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
   unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
@@ -423,9 +578,61 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
     "scr_node_island_gc.c",
+    "scr_node_island_events.c",
   ),
+  // One process.stdout.write for the program and its islands: only a program
+  // that holds a process output stream as a value can replace the method.
+  unit((u) => u.opts.nodeIsland === true && u.opts.stdioObject === true, "scr_node_island_stdio.c"),
+  // A native AbortSignal or AbortController crossing into an island: the
+  // signal's twin there follows it through the signal unit's watcher list.
+  unit(
+    (u) => u.opts.nodeIsland === true && (u.nativeFetch || u.opts.abortSignal === true),
+    "scr_node_island_abort.c",
+  ),
+  // A child process an island made, in a native ChildProcess slot: a
+  // program with both islands and child_process.
+  unit((u) => u.opts.islandChild === true, "scr_node_island_child.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+  // Readable.toWeb pulls a Node readable's chunks into a web stream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web.c",
+  ),
+  // Duplex.fromWeb reads and writes the web pair directly.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_duplex_from_web.c",
+  ),
+  // Writable.fromWeb wraps a web WritableStream's writer.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_from_web_writable.c",
+  ),
+  // Writable.toWeb wraps the writable in a web WritableStream.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_writable_to_web.c",
+  ),
+  // Duplex.toWeb builds both adapters over the duplex.
+  unit(
+    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair.c",
+  ),
+  // Its checked-dynamic entry point unwraps a boxed duplex (scr_stream_dyn.c)
+  // and builds the typed adapters, so it needs both units' features.
+  unit(
+    (u) => u.opts.streamDyn === true && u.opts.webStreams === true && u.opts.dynAsync,
+    "scr_stream_to_web_pair_dyn.c",
+  ),
+  // The dynamic global object's answer for the Node globals the native
+  // runtime does not implement (host-globals.ts).
+  unit((u) => u.opts.hostAbsentGlobals === true, "scr_global_host_absent.c"),
+  // The stderr report of a deferred diagnostic that fires
+  // (ir/deferred-fence.ts).
+  unit((u) => u.opts.deferredFence === true, "scr_deferred_fence.c"),
+  // `fn.constructor = value` on a value the checker types as a function.
+  unit((u) => u.opts.functionOwnWrite === true, "scr_dyn_fn_own.c"),
 ];
 
 /** The arguments of the optional runtime inputs, in link order. */
@@ -446,35 +653,64 @@ const RUNTIME_DEFINES: readonly {
   when: (opts: CcOptions) => boolean | undefined;
 }[] = [
   { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
-  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
-  // programs with dynamic-tier code select it.
-  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
   { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
-  // scr_json.c's view slot answers NULL for a field a partial record view
-  // does not have; only a program with a partial assertion selects it.
-  { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
-  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
-  // The wave's prepend registrations and stdin.isRaw (scr_events.c,
-  // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form
-  // (scr_fs_cp.c). The source build compiles these units from source, so the
-  // defines must name the same builds runtime-pack-matrix.mjs selects.
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
+  // scr_node_builtin.c's dynamic global read throws for the plain Node
+  // globals the native runtime does not implement; a program with a computed
+  // global read or `… in globalThis` selects that build (host-globals.ts).
+  { define: "SCR_GLOBAL_HOST_ABSENT", when: (opts) => opts.hostAbsentGlobals },
+  // The JavaScript object model build (t262-da §J): the code the runtime
+  // features only a JavaScript source reaches share. Its objects are separate
+  // builds selected by runtime-pack-matrix.mjs, so the source build must name
+  // the same builds.
+  { define: "SCR_JS_OBJECT_MODEL", when: (opts) => opts.jsObjectModel },
+  // The wave's prepend registrations and stdin.isRaw (scr_async_dyn.c), the
+  // server event registry's extras (scr_net.c, scr_http.c) and copyFile's
+  // mode form (scr_fs_cp.c). The source build compiles these units from
+  // source, so the defines must name the same builds runtime-pack-matrix.mjs
+  // selects.
   { define: "SCR_PROCESS_EXTRAS", when: (opts) => opts.processExtras },
   { define: "SCR_NET_SERVER_OFF", when: (opts) => opts.processExtras },
+  { define: "SCR_HTTP_SERVER_META", when: (opts) => opts.processExtras },
   { define: "SCR_FS_FLAGS", when: (opts) => opts.fsFlags },
+  // scr_map.c's checked-dynamic key of a boxed promise: the identity cell
+  // its adapters share, in the programs that link the unit that makes them.
+  { define: "SCR_DYN_PROMISE_KEYS", when: linksDynPromiseUnit },
+  // scr_json.c's function-property write/define/delete paths and
+  // scr_dyn_invoke.c's own call/apply/bind dispatch: the source build must
+  // name the builds runtime-pack-matrix.mjs selects.
+  { define: "SCR_FN_MEMBER_PROPS", when: (opts) => opts.fnMemberProps },
+  // scr_child.c's spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+  // entries.
+  { define: "SCR_CHILD_CP_OPTIONS", when: (opts) => opts.childOptionExt },
   // scr_stream.c's write-callback error publication, which the compiler's
   // error-first write adapter reads.
   { define: "SCR_STREAM_WRITE_ERRORS", when: (opts) => opts.streamWriteErrors },
-  // scr_events.c's typed process output write slot.
-  { define: "SCR_STDIO_WRITE_SLOT", when: (opts) => opts.stdioWriteSlot },
-  // scr_async.c's native promise reactions, which the web streams unit uses,
-  // scr_json.c's and scr_dyn_builtin_class.c's instanceof over its classes,
+  // scr_fs_stream.c's `signal` option, whose abort listener comes from the
+  // event-target unit.
+  { define: "SCR_FS_STREAM_SIGNAL", when: (opts) => opts.fsStreamSignal },
+  // scr_dyn_builtin_class.c's instanceof over the web streams unit's classes,
   // and scr_fetch.c's bodies of its streams.
-  { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
+  // scr_fetch.c's Blob/File request bodies: the blob's bytes, with its type
+  // as Content-Type when the request sets none.
+  { define: "SCR_WEB_BODIES", when: (opts) => opts.webBodies },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
-  // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
-  { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
+  // scr_child.c's spawnSync result keeps the spawn errno and argv so
+  // `.error` answers Node's errnoException fields (errno, syscall, path,
+  // spawnargs); a program that never reads `.error` keeps the default build.
+  { define: "SCR_CHILD_ERR_FIELDS", when: (opts) => opts.childErrorFields },
+  // scr_child.c's flowing state for a child's output streams (pause(),
+  // resume(), isPaused(), readableFlowing).
+  { define: "SCR_CHILD_STREAM_FLOW", when: (opts) => opts.childStreamFlow },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
+  // scr_node_island.c's bootstrap carries the stdio accessor and calls
+  // scr_node_island_stdio.c when Node has started.
+  { define: "SCR_NODE_ISLAND_STDIO", when: (opts) => opts.nodeIsland && opts.stdioObject },
+  // scr_events.c's stream object asks scr_tty_colors.c for getColorDepth
+  // and hasColors on a terminal.
+  { define: "SCR_TTY_COLORS", when: (opts) => opts.events && opts.ttyColors },
 ];
 
 function runtimeDefineArgs(opts: CcOptions): string[] {
@@ -503,10 +739,14 @@ export async function compileCInternal(
   const cipher = opts.cipher ?? false;
   const ecdh = opts.ecdh ?? false;
   const dh = opts.dh ?? false;
+  const argon2 = opts.argon2 ?? false;
+  const mlkem = opts.mlkem ?? false;
   const pki = opts.pki ?? false;
   const mbedtls = tls || cipher || ecdh || dh || pki;
   const brotli = (opts.zlib ?? false) && opts.brotli === true;
+  const zstd = (opts.zlib ?? false) && opts.zstd === true;
   const icu = opts.intl ?? false;
+  const sqlite = opts.sqlite ?? false;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -544,7 +784,8 @@ export async function compileCInternal(
   );
   const executableLinkFlags = [
     ...executableSectionFlags.link,
-    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization),
+    ...executableHardeningLinkerArgs(targetPlatform(driver), isMuslTarget(driver)),
+    ...executableOptimizationLinkerArgs(targetPlatform(driver), optimization, isMuslTarget(driver)),
     ...executableStripLinkerArgs(targetPlatform(driver), opts.strip ?? false),
     ...windowsSubsystemArgs,
   ];
@@ -746,8 +987,14 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let mlkemArchive = mlkem
+    ? mlkemArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
   let brotliArchive = brotli
     ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
+  let sqliteArchive = sqlite
+    ? sqliteArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
   // The installed runtime pack's ICU archive is the one this path would
   // build (uninstrumented either way), so a pack that ships it and its
@@ -780,6 +1027,11 @@ export async function compileCInternal(
     (opts.zlib ?? false) || nativeFetch
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
+  // zstd rides the same rule: the vendored library Node bundles, so its
+  // frames match Node's.
+  let zstdObjects = zstd
+    ? zstdObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : [];
   const materializeVendorPrerequisites = async (
     stageRoot?: string,
     materializeCacheRoot: string = vendorCacheRoot,
@@ -804,6 +1056,23 @@ export async function compileCInternal(
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
     }
+    if (mlkem) {
+      const cachedArchive = mlkemArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureMlkemArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "mlkem"));
+      mlkemArchive = paths[0]!;
+    }
     if (brotli) {
       const cachedArchive = brotliArchivePath(
         sanitize,
@@ -820,6 +1089,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
       brotliArchive = paths[0]!;
+    }
+    if (sqlite) {
+      const cachedArchive = sqliteArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureSqliteArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "sqlite"));
+      sqliteArchive = paths[0]!;
     }
     if (icu && icuPack === null) {
       const cachedArchive = icuArchivePath(driver, vendorBuildIdentity, materializeCacheRoot);
@@ -863,6 +1149,21 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "zlib"));
     }
+    if (zstdObjects.length > 0) {
+      for (const object of zstdObjectPaths(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      ))
+        protectCachedArtifact(cacheWarmPaths, object);
+      const materialize = async (): Promise<string[]> =>
+        await ensureZstdObjects(sanitize, driver, vendorBuildIdentity, materializeCacheRoot);
+      zstdObjects =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "zstd"));
+    }
   };
   // rt() maps each runtime source's path on the command line: identity for
   // the historical single invocation, cached-.o substitution on cache misses.
@@ -900,6 +1201,7 @@ export async function compileCInternal(
     "-Wno-deprecated-declarations", // ucontext fibers (scr_async.c)
     "-I",
     rtDir,
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
     ...runtimeUnitArgs({
       opts,
@@ -915,14 +1217,20 @@ export async function compileCInternal(
       cipher,
       ecdh,
       dh,
+      argon2,
       pki,
       lreObjects,
       zlibObjects,
+      zstdObjects,
       tlsArchive,
+      mlkemArchive,
       brotliArchive,
+      sqliteArchive,
       icuArchive,
       icuIncludeDirs,
     }),
+    // The ML-KEM cores follow the wrapper that references them.
+    ...(mlkemArchive !== null ? [mlkemArchive] : []),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET
     // triple exactly as it does for .c) — silence the -Woverride-module
@@ -970,6 +1278,8 @@ export async function compileCInternal(
     ...(regex ? ["-I", vendorEngineDir()] : []),
     ...(zlibObjects.length > 0 ? ["-I", vendorZlibDir()] : []),
     ...(tlsArchive !== null ? ["-I", join(vendorTlsDir(), "include")] : []),
+    ...(mlkem ? ["-I", vendorMlkemDir(), "-I", join(vendorMlkemDir(), "src")] : []),
+    ...(sqliteArchive !== null ? ["-I", vendorSqliteDir()] : []),
     ...icuIncludeDirs.flatMap((dir) => ["-I", dir]),
   ];
   // Keep sanitizer runtime objects optimized in both postures. Large dev

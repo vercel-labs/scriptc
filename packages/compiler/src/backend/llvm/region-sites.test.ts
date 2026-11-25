@@ -221,3 +221,131 @@ console.log(run(6));
   expect(groups.roots.has(first!)).toBe(true);
   expect(groups.roots.has(inLoop!)).toBe(false);
 });
+
+const PARTS = `
+class Part {
+  id: number;
+  label: string;
+  constructor(id: number, label: string) {
+    this.id = id;
+    this.label = label;
+  }
+}
+function parts(n: number): Part[] {
+  const out: Part[] = [];
+  for (let i = 0; i < n; i++) out.push(new Part(i, "part" + String(i * 3)));
+  return out;
+}
+function firstOf(xs: Part[]): Part[] {
+  const out: Part[] = [];
+  if (xs.length > 0) out.push(xs[0]!);
+  return out;
+}
+`;
+
+test("a call that keeps a root's members in its result runs with the arena suspended", async () => {
+  const mod = await moduleFor(`${PARTS}
+function work(n: number): string {
+  const xs = parts(n);
+  const ys = firstOf(xs);
+  return String(ys.length) + ys[0]!.label;
+}
+console.log(work(5));
+`);
+  const { groups, sites } = plan(mod);
+  const [root] = nodesIn(mod, "work", calls("parts"));
+  const [holder] = nodesIn(mod, "work", calls("firstOf"));
+  expect(groups.roots.has(root!)).toBe(true);
+  // The holder would be an object of the arena around `work(5)`, which is
+  // dropped after the root's.
+  expect(groups.roots.has(holder!)).toBe(false);
+  expect([...groups.holders(root!)]).toEqual([holder]);
+  expect(sites.heldCalls.has(holder!)).toBe(true);
+  expect(sites.heapCalls.has(holder!)).toBe(true);
+  expect(sites.arenaSites.has(holder!)).toBe(false);
+});
+
+test("the holder of a root used in place is suspended around the root", async () => {
+  const mod = await moduleFor(`${PARTS}
+function work(n: number): string {
+  const ys = firstOf(parts(n));
+  return String(ys.length) + ys[0]!.label;
+}
+console.log(work(5));
+`);
+  const { groups, sites } = plan(mod);
+  const [root] = nodesIn(mod, "work", calls("parts"));
+  const [holder] = nodesIn(mod, "work", calls("firstOf"));
+  expect(groups.roots.has(root!)).toBe(true);
+  expect(sites.heldCalls.has(holder!)).toBe(true);
+});
+
+test("a holder that opens an arena of its own keeps it", async () => {
+  const mod = await moduleFor(`${PARTS}
+interface Slot { item: Part; rank: number }
+function wrapAll(xs: Part[]): Slot[] {
+  const out: Slot[] = [];
+  for (const x of xs) out.push({ item: x, rank: x.id * 2 });
+  return out;
+}
+function work(n: number): string {
+  const xs = parts(n);
+  const ys = wrapAll(xs);
+  return ys[1]!.item.label + String(ys.length) + String(xs.length);
+}
+console.log(work(5));
+`);
+  const { groups, sites } = plan(mod);
+  const [root] = nodesIn(mod, "work", calls("parts"));
+  const [holder] = nodesIn(mod, "work", calls("wrapAll"));
+  expect(groups.roots.has(root!)).toBe(true);
+  expect(groups.roots.has(holder!)).toBe(true);
+  expect(groups.holders(root!).has(holder!)).toBe(true);
+  expect(sites.heldCalls.size).toBe(0);
+});
+
+test("a call that only reads a root's value holds nothing", async () => {
+  const mod = await moduleFor(`${PARTS}
+function widest(xs: Part[]): number {
+  let best = 0;
+  for (const x of xs) if (x.label.length > best) best = x.label.length;
+  return best;
+}
+function work(n: number): string {
+  const xs = parts(n);
+  return String(widest(xs)) + xs[0]!.label;
+}
+console.log(work(5));
+`);
+  const { groups, sites } = plan(mod);
+  const [root] = nodesIn(mod, "work", calls("parts"));
+  expect(groups.roots.has(root!)).toBe(true);
+  expect(groups.holders(root!).size).toBe(0);
+  expect(sites.heldCalls.size).toBe(0);
+});
+
+test("a holder is suspended in a function that runs in no arena too", async () => {
+  // `work` keeps what it allocates (the journal entry), so no caller's arena
+  // surrounds it; the arena open at the holder is `build`'s, whose value
+  // outlives the statement that drops `parts(n)`.
+  const mod = await moduleFor(`${PARTS}
+const journal: number[][] = [];
+function build(k: number): Part[] {
+  const out: Part[] = [];
+  for (let i = 0; i < k; i++) out.push(new Part(i, "built" + String(i)));
+  return out;
+}
+function work(n: number): string {
+  journal.push([n]);
+  const w = build(firstOf(parts(n)).length + 2);
+  return w[1]!.label + String(journal.length);
+}
+console.log(work(5));
+`);
+  const { groups, sites } = plan(mod);
+  const [root] = nodesIn(mod, "work", calls("parts"));
+  const [holder] = nodesIn(mod, "work", calls("firstOf"));
+  expect(groups.reachable.has("work")).toBe(false);
+  expect(groups.roots.has(root!)).toBe(true);
+  expect(sites.heldCalls.has(holder!)).toBe(true);
+});

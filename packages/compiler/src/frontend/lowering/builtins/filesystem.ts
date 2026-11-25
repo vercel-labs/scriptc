@@ -3,12 +3,16 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, ladderFenceExpr } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
+import { fsStreamOptionsMayHoldSignal } from "./fs-streams.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { withoutParenthesesAssertionsNonNull } from "../../outer-expressions.js";
 import {
   builtinModuleFnOf,
   FS_READDIR_DOCUMENTED_OPTIONS,
   FS_WATCH_DOCUMENTED_OPTIONS,
   FS_WATCH_FILE_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+  FS_WATCH_PROMISES_OPTION_HINTS,
   fenceOrDropOptionKey,
 } from "../surfaces.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
@@ -20,13 +24,16 @@ import {
   DYN,
   F64,
   FILEHANDLE_T,
+  MKDTEMPRESULT_T,
   FSWATCHER_T,
+  STATWATCHER_T,
   type IrExpr,
   type IrLibFn,
   type IrStmt,
   type IrType,
   STATS_T,
   STRING,
+  WATCHEVENTS_T,
   type SrcLoc,
   VOID,
   arrayOf,
@@ -35,10 +42,18 @@ import {
 } from "../../../ir/ir.js";
 import { optionMember, lowerBuiltinOptionalDefault } from "./arguments.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
+import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 
 type FsSyncBufferWindowSource =
   | { kind: "options"; node: ts.Expression | undefined }
   | { kind: "offset"; node: ts.Expression };
+
+/** The documented members of a FileHandle read or write options record that
+ * have no lowering: `flush` (fsync after the write) and `signal` (an
+ * abortable operation). `encoding` selects the codec, and `mode` and `flag`
+ * are read and ignored over an already-open handle. Any other key drops like
+ * Node drops it. */
+const FILE_HANDLE_DATA_FENCED_OPTIONS: ReadonlySet<string> = new Set(["flush", "signal"]);
 
 /** Normalize fs.readSync/fs.writeSync's shorthand and inline-options buffer
  * forms into the existing fixed-width descriptor IR. fd and buffer bind
@@ -293,36 +308,12 @@ export function lowerFsLadderCall(
   switch (bi.member) {
     case "exists": {
       // The REAL deprecated-API shape: the callback validates
-      // synchronously (Node's one throwing arm), invalid paths answer
-      // false THROUGH it, and the answer is asynchronous.
-      // A provably-non-file `new URL('<literal>')` path (the suite's
-      // https://foo probe): Node answers false through the callback
-      // synchronously — the checked-dynamic tree has no URL kind, so the path slot
-      // carries the unvalidatable token instead (construction of a
-      // parseable literal is effect-free; file: URLs keep the fence —
-      // they would need the real path conversion).
-      let pathNode: ts.Expression | undefined = args[0];
-      let pathExpr: IrExpr | null = null;
-      if (
-        pathNode &&
-        ts.isNewExpression(pathNode) &&
-        ts.isIdentifier(pathNode.expression) &&
-        pathNode.expression.text === "URL" &&
-        lowerer.mapTypeOf(lowerer.typeOf(pathNode))?.kind === "url" &&
-        pathNode.arguments?.nodes.length === 1 &&
-        ts.isStringLiteral(pathNode.arguments.nodes[0]!)
-      ) {
-        let parsed: URL | null = null;
-        try {
-          parsed = new URL(pathNode.arguments.nodes[0]!.text);
-        } catch {
-          parsed = null;
-        }
-        if (parsed === null || parsed.protocol === "file:") return null;
-        pathExpr = dynUndefinedExpr(loc);
-        pathNode = undefined;
-      }
-      pathExpr ??= dynArg(pathNode);
+      // synchronously (Node's one throwing arm), a path getValidatedPath
+      // rejects answers false THROUGH it synchronously, a file: URL converts
+      // to its path and probes, and a valid string or Buffer probes in a
+      // later loop turn. The runtime (scr_fs_exists_async) decides between
+      // those arms, so the path crosses as the value Node sees.
+      const pathExpr = dynArg(args[0]);
       const cbExpr = dynArg(args[1]);
       if (pathExpr === null || cbExpr === null) return null;
       return chk("fs.existsChk", [pathExpr, cbExpr], DYN);
@@ -414,9 +405,16 @@ export function lowerFsLadderCall(
       const a = dynArgs([args[0], args[1]]);
       if (a && args.length <= 2) {
         const readable = bi.member === "createReadStream";
+        const signal = fsStreamOptionsMayHoldSignal(lowerer, args[1]);
         return {
           kind: "libCall",
-          fn: readable ? "fs.createReadStream" : "fs.createWriteStream",
+          fn: readable
+            ? signal
+              ? "fs.createReadStreamSignal"
+              : "fs.createReadStream"
+            : signal
+              ? "fs.createWriteStreamSignal"
+              : "fs.createWriteStream",
           args: a,
           type: { kind: "object", className: readable ? "%Readable" : "%Writable" },
           loc,
@@ -440,6 +438,7 @@ export function lowerStringOrBytesWrite(
   dataType: Extract<IrType, { kind: "union" }>,
   arms: readonly IrType[],
   append: boolean,
+  staged?: { path: IrExpr; data: IrExpr },
 ): IrExpr {
   const loc = locOf(call);
   const key = `fs.${append ? "append" : "write"}:${dataType.unionId}`;
@@ -516,10 +515,14 @@ export function lowerStringOrBytesWrite(
   return {
     kind: "call",
     callee: helper,
-    args: [
-      lowerFsPath(lowerer, call.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
-    ],
+    // A caller that already staged the operands (to evaluate an option
+    // expression between them and the write) passes them in.
+    args: staged
+      ? [staged.path, staged.data]
+      : [
+          lowerFsPath(lowerer, call.arguments.nodes[0]!),
+          lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
+        ],
     type: VOID,
     loc,
   };
@@ -543,6 +546,37 @@ export function lowerFileHandleMethodCall(
   const promise = (inner: IrType): IrType => ({ kind: "promise", inner });
   if (name === "createReadStream" || name === "createWriteStream" || name === "readLines") {
     return lowerFileHandleStreamCall(lowerer, call, name, receiver(), loc);
+  }
+  if (name === "readableWebStream") {
+    // The handle's content as a checked-dynamic web stream (the stdlib
+    // ReadableStream is opaque to the compiler): Node's type: "bytes" stream
+    // over the handle's own reads. The options record crosses as one dyn
+    // value for the runtime's Node-order checks.
+    const args = call.arguments.nodes;
+    if (args.length > 1 || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`FileHandle.readableWebStream with ${args.length} arguments`, call);
+    }
+    let options: IrExpr = dynUndefinedExpr(loc);
+    if (args[0] !== undefined) {
+      const raw = lowerer.lowerExpr(args[0]);
+      if (raw.type.kind === "dyn") options = raw;
+      else if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+        options = { kind: "dynFrom", value: raw, type: DYN, loc };
+      } else {
+        lowerer.noLowering(
+          `FileHandle.readableWebStream with a '${lowerer.fmt(raw.type)}' options value`,
+          args[0],
+          "the options are a plain object",
+        );
+      }
+    }
+    return {
+      kind: "libCall",
+      fn: "fileHandle.readableWebStream",
+      args: [receiver(), options],
+      type: DYN,
+      loc,
+    };
   }
   const num = (
     node: ts.Expression | undefined,
@@ -630,6 +664,78 @@ export function lowerFileHandleMethodCall(
     }
     return { value: lowerer.coerceInto(node ?? call, value, F64), defaulted: boolLit(false, loc) };
   };
+  /* The encoding a FileHandle read or write names: the bare encoding string,
+   * the options record's `encoding` member, or the utf8 default. Node
+   * validates the name and decodes with it, and every BufferEncoding is
+   * lowered, so any string-valued expression passes. The record's other
+   * documented members take Node's own stance over an open handle — mode and
+   * flag are ignored there — while flush and signal have no lowering; an
+   * undocumented key drops like Node drops it. */
+  /* Whether an encoding-valued expression can reach the decoder: every
+   * non-nullish constituent is a string (a literal name and the
+   * BufferEncoding union both count). */
+  const encodingLike = (node: ts.Expression): boolean => {
+    const nodeType = lowerer.typeOf(node);
+    const parts: readonly ts.Type[] = nodeType.isUnionType()
+      ? ts.constituentTypes(nodeType)
+      : [nodeType];
+    return parts.every(
+      (t) =>
+        (t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+        (t.flags & ts.TypeFlags.StringLike) !== 0,
+    );
+  };
+  const dataEncoding = (node: ts.Expression | undefined): IrExpr => {
+    const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+    if (!node) return dflt;
+    if (!ts.isObjectLiteralExpression(node)) {
+      if (!encodingLike(node)) {
+        lowerer.noLowering(
+          `FileHandle.${name} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+      return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
+    }
+    let encoding: IrExpr = dflt;
+    for (const prop of node.properties.nodes) {
+      const member = optionMember(prop);
+      if (member === null) {
+        lowerer.noLowering(`FileHandle.${name} with a non-plain options member`, prop);
+      }
+      if (member.name === "encoding") {
+        const value = member.value;
+        if (!encodingLike(value)) {
+          lowerer.noLowering(
+            `FileHandle.${name} with this encoding`,
+            value,
+            "the encoding is a BufferEncoding name",
+          );
+        }
+        // Node reads the member's truthiness: null and undefined name the
+        // default codec. The helper evaluates the expression exactly once
+        // (its side effects included) and substitutes utf8 for the nullish
+        // arms, so a runtime-nullish encoding behaves like Node's.
+        encoding = lowerBuiltinOptionalDefault(lowerer, value, STRING, dflt, true);
+        continue;
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        member.name,
+        `FileHandle.${name}`,
+        FILE_HANDLE_DATA_FENCED_OPTIONS,
+        "the record carries encoding; mode and flag are ignored over an open handle, and flush and signal have no lowering",
+      );
+    }
+    return encoding;
+  };
+
+  /* FileHandle.write's string form: the fixed-width write writes the
+   * string's utf8 bytes, so any other encoding leaves this lowering and
+   * takes the checked-dynamic write, which encodes with the name Node
+   * validates. */
   const utf8 = (node: ts.Expression | undefined): IrExpr => {
     const dflt = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
     if (!node) return dflt;
@@ -646,7 +752,7 @@ export function lowerFileHandleMethodCall(
       lowerer.noLowering(
         `FileHandle.${name} with a non-utf8 encoding`,
         node,
-        "only utf8 data is supported",
+        "the fixed-width string write is utf8; another encoding takes the checked-dynamic write",
       );
     }
     return lowerBuiltinOptionalDefault(lowerer, node, STRING, dflt, true);
@@ -670,6 +776,21 @@ export function lowerFileHandleMethodCall(
       kind: "libCall",
       fn: name === "truncate" ? "fileHandle.truncate" : "fileHandle.chmod",
       args: [receiver(), num(call.arguments.nodes[0], 0).value],
+      type: promise(VOID),
+      loc,
+    };
+  }
+  if (name === "chown") {
+    if (call.arguments.nodes.length !== 2)
+      lowerer.noLowering(`FileHandle.chown with ${call.arguments.nodes.length} arguments`, call);
+    return {
+      kind: "libCall",
+      fn: "fileHandle.chown",
+      args: [
+        receiver(),
+        lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64),
+        lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64),
+      ],
       type: promise(VOID),
       loc,
     };
@@ -725,7 +846,7 @@ export function lowerFileHandleMethodCall(
     }
     const type = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (type?.kind !== "promise") lowerer.badType(call, lowerer.typeOf(call));
-    const encoding = utf8(call.arguments.nodes[0]);
+    const encoding = dataEncoding(call.arguments.nodes[0]);
     if (typeEquals(type.inner, BYTES_U8)) {
       return {
         kind: "libCall",
@@ -753,7 +874,7 @@ export function lowerFileHandleMethodCall(
     const dataT = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Evaluate a supplied utf8 encoding even for Buffer data, matching
     // Node's argument order; it does not affect the bytes.
-    const encoding = utf8(call.arguments.nodes[1]);
+    const encoding = dataEncoding(call.arguments.nodes[1]);
     if (dataT?.kind === "string") {
       return {
         kind: "libCall",
@@ -772,11 +893,16 @@ export function lowerFileHandleMethodCall(
         loc,
       };
     }
-    lowerer.noLowering(
-      `FileHandle.${name} of '${dataT ? lowerer.fmt(dataT) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
-      dataNode,
-      "string and Uint8Array data are supported",
-    );
+    // Data the static type does not pin down — a typed array of another
+    // element, the ArrayBufferView alias, a checked-dynamic value — takes
+    // the checked-data unit, which validates and writes a string or a view.
+    return {
+      kind: "libCall",
+      fn: "fileHandle.writeFileData",
+      args: [receiver(), lowerer.lowerExprExpecting(dataNode, DYN), encoding],
+      type: promise(VOID),
+      loc,
+    };
   }
 
   if (name === "read" || name === "write") {
@@ -986,9 +1112,16 @@ function lowerFileHandleStreamCall(
     }
   }
   const writable = name === "createWriteStream";
+  const signal = fsStreamOptionsMayHoldSignal(lowerer, args[0]);
   const stream: IrExpr = {
     kind: "libCall",
-    fn: writable ? "fileHandle.createWriteStream" : "fileHandle.createReadStream",
+    fn: writable
+      ? signal
+        ? "fileHandle.createWriteStreamSignal"
+        : "fileHandle.createWriteStream"
+      : signal
+        ? "fileHandle.createReadStreamSignal"
+        : "fileHandle.createReadStream",
     args: [receiver, options],
     type: { kind: "object", className: writable ? "%Writable" : "%Readable" },
     loc,
@@ -1008,16 +1141,16 @@ function lowerFileHandleStreamCall(
   };
 }
 
-/** fs.Dir's members: path, and the sync and promise read/close forms (the
- * callback overloads have no lowering; for-await lowers in
- * lower-async-iteration.ts). */
+/** fs.Dir's members: path, the sync, promise, and callback read/close
+ * forms, and disposal (for-await lowers in lower-async-iteration.ts). */
 export const DIR_METHODS = new Set(["readSync", "read", "closeSync", "close"]);
 export const DIR_MEMBERS =
-  "path, readSync(), read(), closeSync(), close(), and for-await iteration are the supported Dir members (no callbacks)";
+  "path, readSync(), read([callback]), closeSync(), close([callback]), disposal, and for-await iteration are the supported Dir members";
 
 /** Method calls on Dir-typed receivers. readSync answers the call site's
- * `Dirent | null` (the emitter builds the row); read is its promise twin.
- * Null for non-Dir receivers. */
+ * `Dirent | null` (the emitter builds the row); read is its promise twin;
+ * either takes an error-first callback instead. Null for non-Dir
+ * receivers. */
 export function lowerDirMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1028,6 +1161,18 @@ export function lowerDirMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  if ((name === "read" || name === "close") && call.arguments.nodes.length === 1) {
+    const callback = call.arguments.nodes[0]!;
+    if (ts.isSpreadElement(callback)) lowerer.noLowering(`${name} with spread arguments`, call);
+    const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+    return {
+      kind: "libCall",
+      fn: name === "read" ? "dir.readCb" : "dir.closeCb",
+      args: [receiver, lowerer.lowerExprExpecting(callback, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
   if (DIR_METHODS.has(name) && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
     if (name === "closeSync")
@@ -1066,6 +1211,191 @@ export function lowerDirMethodCall(
     DIR_MEMBERS,
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** `dir[Symbol.dispose]()` closes synchronously; `dir[Symbol.asyncDispose]()`
+ * closes through the promise form. Null for other element-access calls. */
+export function lowerDirDisposeCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  const member = lowerer.stdlibGlobalMember(key, "Symbol");
+  if (member !== "dispose" && member !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "dir") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`Dir[Symbol.${member}] with arguments`, call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, DIR_T);
+  const loc = locOf(call);
+  return member === "dispose"
+    ? { kind: "libCall", fn: "dir.dispose", args: [receiver], type: VOID, loc }
+    : {
+        kind: "libCall",
+        fn: "dir.asyncDispose",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
+}
+
+/** `filehandle[Symbol.asyncDispose]()`: Node's FileHandle implements it as
+ * `await this.close()`, so it is the close promise. Null for other
+ * element-access calls. */
+export function lowerFileHandleDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  if (lowerer.stdlibGlobalMember(key, "Symbol") !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fileHandle") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("FileHandle[Symbol.asyncDispose] with arguments", call);
+  }
+  return {
+    kind: "libCall",
+    fn: "fileHandle.close",
+    args: [lowerer.lowerExprExpecting(access.expression, FILEHANDLE_T)],
+    type: { kind: "promise", inner: VOID },
+    loc: locOf(call),
+  };
+}
+
+/** `fsPromises.mkdtempDisposable(prefix[, options])` and
+ * `fs.mkdtempDisposableSync(prefix[, options])`: the created directory plus
+ * its removal and disposal hooks. The options name an encoding for the path
+ * the call answers; the path is a string here, so utf8 (the default) is the
+ * accepted encoding and every other one fences by name. */
+export function lowerMkdtempDisposableCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  promiseForm: boolean,
+  loc: SrcLoc,
+): IrExpr | null {
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!))?.kind !== "string") return null;
+  const prefix = lowerer.lowerExprExpecting(nodes[0]!, STRING);
+  if (nodes.length === 2) {
+    const options = withoutParenthesesAssertionsNonNull(nodes[1]!);
+    let text: string | null = null;
+    if (ts.isStringLiteralLike(options)) {
+      text = options.text;
+    } else if (ts.isObjectLiteralExpression(options)) {
+      for (const prop of options.properties.nodes) {
+        if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
+          lowerer.noLowering(
+            "mkdtempDisposable options with computed keys or spreads",
+            prop,
+            'the options record is { encoding: "utf8" }',
+          );
+        }
+        if (!ts.isIdentifier(prop.name) || prop.name.text !== "encoding") {
+          lowerer.noLowering(
+            "mkdtempDisposable with this option",
+            prop,
+            'the options record is { encoding: "utf8" }',
+          );
+        }
+        const value = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name;
+        const literal = withoutParenthesesAssertionsNonNull(value);
+        text = ts.isStringLiteralLike(literal) ? literal.text : null;
+      }
+    } else {
+      lowerer.noLowering(
+        "mkdtempDisposable with a runtime options value",
+        nodes[1]!,
+        'the options are a literal: "utf8" or { encoding: "utf8" }',
+      );
+    }
+    if (text !== "utf8" && text !== "utf-8") {
+      lowerer.noLowering(
+        "mkdtempDisposable with this encoding",
+        nodes[1]!,
+        'the created path is a string: encoding: "utf8" is the accepted value',
+      );
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: promiseForm ? "fsp.mkdtempDisposable" : "fs.mkdtempDisposableSync",
+    args: [prefix],
+    type: promiseForm ? { kind: "promise", inner: MKDTEMPRESULT_T } : MKDTEMPRESULT_T,
+    loc,
+  };
+}
+
+/** Calls on the object mkdtempDisposable answers: `remove()` — the sync
+ * form's void removal, the promise form's promise. */
+export function lowerMkdtempResultMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.Expression,
+): IrExpr | null {
+  if (!ts.isPropertyAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "mkdtempResult") return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  if (access.name.text !== "remove") {
+    lowerer.noLowering(
+      `DisposableTempDir.${access.name.text}`,
+      call,
+      "path and remove() are the supported members",
+      lowerer.checker.getSymbolAtLocation(access.name),
+    );
+  }
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering("DisposableTempDir.remove with arguments", call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, MKDTEMPRESULT_T);
+  const loc = locOf(call);
+  const answer = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return answer?.kind === "promise"
+    ? { kind: "libCall", fn: "mkdtempResult.remove", args: [receiver], type: answer, loc }
+    : { kind: "libCall", fn: "mkdtempResult.removeSync", args: [receiver], type: VOID, loc };
+}
+
+/** `result[Symbol.dispose]()` (the sync form) and
+ * `result[Symbol.asyncDispose]()` (the promise form). Null for other
+ * element-access calls. */
+export function lowerMkdtempResultDisposeCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const access = call.expression;
+  if (!ts.isElementAccessExpression(access) || access.questionDotToken || call.questionDotToken) {
+    return null;
+  }
+  let key = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (!ts.isPropertyAccessExpression(key)) return null;
+  const member = lowerer.stdlibGlobalMember(key, "Symbol");
+  if (member !== "dispose" && member !== "asyncDispose") return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "mkdtempResult") return null;
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`DisposableTempDir[Symbol.${member}] with arguments`, call);
+  }
+  const receiver = lowerer.lowerExprExpecting(access.expression, MKDTEMPRESULT_T);
+  const loc = locOf(call);
+  return member === "dispose"
+    ? { kind: "libCall", fn: "mkdtempResult.dispose", args: [receiver], type: VOID, loc }
+    : {
+        kind: "libCall",
+        fn: "mkdtempResult.asyncDispose",
+        args: [receiver],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      };
 }
 
 /** The Stats type tests, each a read of the snapshot's mode. */
@@ -1111,6 +1441,9 @@ export function lowerStatsMethodCall(
   const receiverKind = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
   if (receiverKind !== "stats" && receiverKind !== "bigintStats") return null;
   if (!lowerer.isStdlibMember(access)) return null;
+  // A stats-spelled receiver holding a checked-dynamic value: the member is
+  // read and called at run time (the dyn call path).
+  if (tryLowerExpression(lowerer, access.expression)?.type.kind === "dyn") return null;
   const name = access.name.text;
   // BigIntStats' type tests are the same snapshot mode read; only the kind
   // of the handle differs.
@@ -1159,11 +1492,12 @@ function watchListenerArity(lowerer: Lowerer, cb: IrExpr): 0 | 1 | 2 | null {
  * null) — the filename is the entry name on a directory watch and the
  * watched file's basename otherwise (Linux inotify names both; a macOS
  * directory watch has no name source until F3). The options record follows the options-record
- * stance: persistent: true, recursive: false, and encoding: "utf8"
- * state the lowered behavior and are accepted; persistent: false
- * (a watcher that does NOT hold the loop), recursive: true (kqueue
- * watches one inode), signal, and non-utf8 encodings fence by name;
- * undocumented keys drop like Node. An open watcher keeps the loop
+ * stance: persistent (default true) is the watcher's loop liveness and is
+ * passed through, recursive is a run-time truthiness read the platform
+ * backends honor (a directory subtree on Linux and Windows, the FSEvents
+ * arm for a recursive macOS directory), encoding: "utf8" states the
+ * lowered behavior and is accepted; signal and non-utf8 encodings fence by
+ * name; undocumented keys drop like Node. A reffed watcher keeps the loop
  * alive until watcher.close(). */
 export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
@@ -1186,6 +1520,10 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       "pass the options as an object literal: watch(path, { recursive?, persistent?, encoding? }, listener)",
     );
   }
+  let persistent: IrExpr = boolLit(true, loc);
+  // Node reads `recursive` for truthiness; a directory subtree is watched
+  // on Linux and Windows, and a recursive macOS directory uses FSEvents.
+  let recursive: IrExpr = boolLit(false, loc);
   if (hasOptions) {
     for (const prop of (expr.arguments.nodes[1] as ts.ObjectLiteralExpression).properties.nodes) {
       if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
@@ -1205,23 +1543,19 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
       const key = prop.name.text;
       const init = ts.isPropertyAssignment(prop) ? prop.initializer : null;
       if (key === "persistent") {
-        // true IS the lowering (an open watcher holds the loop) —
-        // stating the default is a no-op; false has no lowering.
-        if (init !== null && init.kind === ts.SyntaxKind.TrueKeyword) continue;
-        lowerer.noLowering(
-          "fs.watch with persistent disabled",
-          prop,
-          "an open watcher keeps the loop alive until close() — that IS the lowering; " +
-            "persistent: false (a watcher the process does not wait for) has no lowering",
-        );
+        // The watcher's initial loop liveness: Node reads the option's
+        // truthiness (an absent one is true), so any expression lowers.
+        const value = init ?? (ts.isShorthandPropertyAssignment(prop) ? prop.name : null);
+        if (value === null) {
+          lowerer.noLowering("fs.watch with this persistent member", prop);
+        }
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
       }
       if (key === "recursive") {
-        if (init !== null && init.kind === ts.SyntaxKind.FalseKeyword) continue;
-        lowerer.noLowering(
-          "fs.watch with the recursive option",
-          prop,
-          "recursive watching has no lowering yet — kqueue watches the one opened path; watch each path",
-        );
+        if (init === null) lowerer.noLowering("fs.watch with this recursive member", prop);
+        recursive = lowerer.lowerExprExpecting(init, BOOL);
+        continue;
       }
       if (key === "encoding") {
         const enc = init !== null && ts.isStringLiteralLike(init) ? init.text : null;
@@ -1245,7 +1579,7 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
         key,
         "fs.watch",
         FS_WATCH_DOCUMENTED_OPTIONS,
-        'persistent: true, recursive: false, and encoding: "utf8" are the accepted options',
+        'persistent, recursive: false, and encoding: "utf8" are the accepted options',
       );
       // An undocumented key, dropped like Node drops it.
     }
@@ -1270,9 +1604,12 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
     }
     args.push(cb);
   }
+  const hasListener = args.length === 2;
+  args.push(persistent); // fs.watch: [path, persistent]; fs.watchCb: [path, cb, persistent]
+  args.push(recursive);
   return {
     kind: "libCall",
-    fn: args.length === 2 ? "fs.watchCb" : "fs.watch",
+    fn: hasListener ? "fs.watchCb" : "fs.watch",
     args,
     type: FSWATCHER_T,
     loc,
@@ -1290,9 +1627,11 @@ export function lowerFsWatchCall(lowerer: Lowerer, expr: ts.CallExpression, loc:
  * follows the options-record stance: interval, persistent: true/false and
  * bigint: false are accepted; bigint: true fences (BigIntStats); other
  * documented keys fence by name; undocumented keys drop like Node.
- * Statement position only — Node returns a StatWatcher, which has no
- * lowering. Returns null for any untyped shape so the checked-dynamic
- * ladder (fs.watchFileChk) keeps its current IR. */
+ * watchFile answers the path's StatWatcher (ref/unref lower as
+ * statWatcher.ref/statWatcher.unref); unwatchFile with a listener that is
+ * not registered on the path removes nothing, as in Node. Returns null for
+ * any untyped shape so the checked-dynamic ladder (fs.watchFileChk) keeps
+ * its current IR. */
 export function lowerFsWatchFileCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -1317,14 +1656,6 @@ export function lowerFsWatchFileCall(
   if (nodes.length === 2 && hasOptions) return null; /* no listener */
   const listenerArg = nodes[nodes.length - 1]!;
   if (lowerer.mapTypeOf(lowerer.typeOf(listenerArg))?.kind !== "func") return null;
-  const parent = expr.parent;
-  if (!ts.isExpressionStatement(parent) && !(ts.isArrowFunction(parent) && parent.body === expr)) {
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "using the returned StatWatcher (register the fs.watchFile call as its own statement)",
-    );
-  }
   let interval: IrExpr | null = null;
   let persistent: IrExpr | null = null;
   if (hasOptions) {
@@ -1396,30 +1727,199 @@ export function lowerFsWatchFileCall(
     kind: "libCall",
     fn: "fs.watchFile",
     args: [path, interval ?? numLit(5007, loc), persistent ?? boolLit(true, loc), cb],
-    type: VOID,
+    type: STATWATCHER_T,
+    loc,
+  };
+}
+
+/** `fsPromises.watch(path[, options])` → the async-iterator libCall the
+ * `for await` lowering drains (scr_watch_async.c). The options record
+ * follows the options-record stance: `persistent: true/false` and
+ * `encoding: "utf8"` are accepted, the documented keys this surface cannot
+ * model fence by name (recursive's non-native walker, signal's
+ * AbortSignal, ignore's matcher, and maxQueue/overflow's overflow policy),
+ * and undocumented keys drop like Node. Returns null for any untyped shape
+ * so the checked-dynamic ladder keeps its current IR. */
+/** True when the call is the iteration expression of a `for await` loop —
+ * the one position Node's async generator is consumed in. A standalone
+ * `fsPromises.watch(path)` answers an iterator Node never starts (the
+ * process exits), so lowering it would open a watch nothing closes. */
+function isForAwaitSource(call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    const parent: ts.Node | undefined = node.parent;
+    if (parent === undefined) return false;
+    if (ts.isForOfStatement(parent)) {
+      return parent.awaitModifier !== undefined && parent.expression === node;
+    }
+    if (
+      (ts.isParenthesizedExpression(parent) ||
+        ts.isAsExpression(parent) ||
+        ts.isTypeAssertion(parent) ||
+        ts.isSatisfiesExpression(parent) ||
+        ts.isNonNullExpression(parent)) &&
+      (parent as ts.Expression).expression === node
+    ) {
+      node = parent;
+      continue;
+    }
+    return false;
+  }
+}
+
+export function lowerFsPromisesWatchCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!isForAwaitSource(expr)) return null;
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) return null;
+  if (lowerer.mapTypeOf(lowerer.typeOf(nodes[0]!))?.kind !== "string") return null;
+  const path = lowerer.lowerExprExpecting(nodes[0]!, STRING);
+  let persistent: IrExpr | null = null;
+  let maxQueue: IrExpr | null = null;
+  let overflowError: IrExpr | null = null;
+  if (nodes.length === 2) {
+    const options = nodes[1]!;
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "fsPromises.watch with a non-literal options value",
+        options,
+        'the options record is a literal: persistent, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted entries',
+      );
+    }
+    for (const prop of options.properties.nodes) {
+      if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys or spreads",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      if (!ts.isIdentifier(prop.name) && !ts.isStringLiteral(prop.name)) {
+        lowerer.noLowering(
+          "fsPromises.watch options with computed keys",
+          prop,
+          "each option must be a plain `name: value` entry with a literal key",
+        );
+      }
+      const key = prop.name.text;
+      const value = ts.isPropertyAssignment(prop)
+        ? prop.initializer
+        : ts.isShorthandPropertyAssignment(prop)
+          ? prop.name
+          : null;
+      if (key === "persistent" && value !== null) {
+        persistent = lowerer.lowerExprExpecting(value, BOOL);
+        continue;
+      }
+      if (key === "maxQueue" && value !== null) {
+        maxQueue = lowerer.lowerExprExpecting(value, F64);
+        continue;
+      }
+      if (key === "overflow" && value !== null) {
+        // Node's overflow policy past maxQueue: "error" fails the
+        // iteration, "ignore" drops the event with a warning.
+        const mode = withoutParenthesesAssertionsNonNull(value);
+        const text = mode.kind === ts.SyntaxKind.StringLiteral ? (mode.text ?? null) : null;
+        if (text === "error") overflowError = boolLit(true, loc);
+        else if (text === "ignore") overflowError = boolLit(false, loc);
+        else {
+          lowerer.noLowering(
+            "fsPromises.watch with this overflow policy",
+            value,
+            'overflow: "error" and overflow: "ignore" are the two policies',
+          );
+        }
+        continue;
+      }
+      if (key === "encoding" && value !== null) {
+        // Node's `encoding: "utf8"` is the utf8 the record carries; every
+        // other codec (and "buffer") would change the entry names.
+        const enc = withoutParenthesesAssertionsNonNull(value);
+        const text = enc.kind === ts.SyntaxKind.StringLiteral ? (enc.text ?? null) : null;
+        if (text !== null && (text.toLowerCase() === "utf8" || text.toLowerCase() === "utf-8")) {
+          continue;
+        }
+        lowerer.noLowering(
+          "fsPromises.watch with this encoding",
+          value,
+          'the entry names are strings: encoding: "utf8" is the accepted value',
+        );
+      }
+      fenceOrDropOptionKey(
+        lowerer,
+        prop,
+        key,
+        "fsPromises.watch",
+        FS_WATCH_PROMISES_DOCUMENTED_OPTIONS,
+        'persistent: true/false, encoding: "utf8", maxQueue and overflow: "ignore" | "error" are the accepted options',
+        FS_WATCH_PROMISES_OPTION_HINTS,
+      );
+      // An undocumented key, dropped like Node drops it.
+    }
+  }
+  return {
+    kind: "libCall",
+    fn: "fsp.watch",
+    args: [
+      path,
+      persistent ?? boolLit(true, loc),
+      maxQueue ?? numLit(2048, loc),
+      overflowError ?? boolLit(false, loc),
+    ],
+    type: WATCHEVENTS_T,
     loc,
   };
 }
 
 /** Method calls on FSWatcher receivers: close() (idempotent, statement
- * position — Node returns void there too) and the EventEmitter surface for
- * 'change', 'error' and 'close' (on/once/addListener/prependListener/
- * prependOnceListener/off/removeListener, registered as their own
- * statement). Everything else @types/node declares (ref/unref, other
- * events) fences member-qualified. Null for non-watcher receivers. */
+ * position — Node returns void there too), ref()/unref() (the loop-liveness
+ * toggle, a statement like the bundle's other handles) and the EventEmitter
+ * surface for 'change', 'error' and 'close' (on/once/addListener/
+ * prependListener/prependOnceListener/off/removeListener, registered as
+ * their own statement). Everything else @types/node declares (other events)
+ * fences member-qualified. Null for non-watcher receivers. */
 export function lowerWatcherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "fsWatcher") return null;
+  const receiverKind = lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind;
+  if (receiverKind !== "fsWatcher" && receiverKind !== "statWatcher") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  if (receiverKind === "statWatcher") {
+    /* fs.watchFile's StatWatcher answers ref()/unref() — the registration's
+     * loop liveness — and no close(): fs.unwatchFile is the removal API.
+     * Node returns the watcher from both; the bundle's handles answer void,
+     * like dgram's and the FSWatcher's. */
+    if ((name !== "ref" && name !== "unref") || call.arguments.nodes.length !== 0) return null;
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "statWatcher.ref" : "statWatcher.unref",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "close" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExpr(access.expression);
     return { kind: "libCall", fn: "watcher.close", args: [receiver], type: VOID, loc };
+  }
+  if ((name === "ref" || name === "unref") && call.arguments.nodes.length === 0) {
+    const receiver = lowerer.lowerExpr(access.expression);
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "watcher.ref" : "watcher.unref",
+      args: [receiver],
+      type: VOID,
+      loc,
+    };
   }
   // The EventEmitter surface for the three events the watcher emits:
   // "change" (the listener shapes fs.watch takes), "error", and "close".
@@ -1496,7 +1996,7 @@ export function lowerWatcherMethodCall(
   lowerer.noLowering(
     `FSWatcher.${name}`,
     call,
-    'close(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
+    'close(), ref(), unref(), and on/once/addListener/prependListener/prependOnceListener/off/removeListener for "change", "error", and "close" are the supported FSWatcher members',
     lowerer.checker.getSymbolAtLocation(access.name),
   );
 }
@@ -1528,11 +2028,50 @@ export function lowerFsReaddirTypesCall(
   const operation = promiseForm ? "fs.promises.readdir" : "readdirSync";
   const spelling = promiseForm ? "readdir" : "readdirSync";
   const optsNode = call.arguments.nodes[1]!;
+  // The encoding the options name: the bare spelling Node accepts as the
+  // whole argument, or the record's `encoding` member. null is the utf8
+  // default; "buffer" asks for the raw entry bytes.
+  let encodingNode: ts.Expression | null = null;
+  let encodingLiteral: string | null = null;
+  const noteEncoding = (node: ts.Expression): void => {
+    const t = lowerer.typeOf(node);
+    if (t.isStringLiteralType()) encodingLiteral = t.value;
+    else {
+      // A runtime-selected name decodes at run time; a nullish value is
+      // Node's default, as getOptions reads it.
+      const parts: readonly ts.Type[] = t.isUnionType() ? ts.constituentTypes(t) : [t];
+      const nameLike = parts.every(
+        (part) =>
+          (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void | ts.TypeFlags.Null)) !== 0 ||
+          (part.flags & ts.TypeFlags.StringLike) !== 0,
+      );
+      if (!nameLike) {
+        lowerer.noLowering(
+          `${operation} with this encoding`,
+          node,
+          "the encoding is a BufferEncoding name",
+        );
+      }
+    }
+    encodingNode = node;
+  };
   if (!ts.isObjectLiteralExpression(optsNode)) {
-    lowerer.noLowering(
-      `${operation} with a non-literal options argument`,
-      optsNode,
-      `pass the options inline so each member can be checked: ${spelling}(path, { withFileTypes: true })`,
+    const bare = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
+    if (bare?.kind !== "string") {
+      lowerer.noLowering(
+        `${operation} with a non-literal options argument`,
+        optsNode,
+        `pass the options inline so each member can be checked: ${spelling}(path, { withFileTypes: true })`,
+      );
+    }
+    noteEncoding(optsNode);
+    return lowerFsReaddirNamesByEncoding(
+      lowerer,
+      call,
+      promiseForm,
+      encodingNode,
+      encodingLiteral,
+      loc,
     );
   }
   let sawWithFileTypes = false;
@@ -1557,19 +2096,12 @@ export function lowerFsReaddirTypesCall(
       }
       sawWithFileTypes = true;
     } else if (m.name === "encoding") {
-      const t = lowerer.typeOf(m.value);
-      if (!t.isStringLiteralType() || (t.value !== "utf8" && t.value !== "utf-8")) {
-        lowerer.noLowering(
-          `${operation} with a non-utf8 encoding`,
-          m.value,
-          "names decode as utf8 (the default); encoding: 'buffer' has no lowering",
-        );
-      }
-    } else if (m.name === "recursive" && !promiseForm) {
+      noteEncoding(m.value);
+    } else if (m.name === "recursive") {
       recursive = m.value;
     } else {
-      // The options-record stance: recursive (a documented knob with
-      // no lowering here) fences by name; undocumented keys drop like Node.
+      // The options-record stance: a documented knob with no lowering here
+      // fences by name; undocumented keys drop like Node.
       fenceOrDropOptionKey(
         lowerer,
         p,
@@ -1591,20 +2123,72 @@ export function lowerFsReaddirTypesCall(
         : flag.kind === ts.SyntaxKind.FalseKeyword
           ? "false"
           : null;
-    if (sawWithFileTypes && literal !== "false") {
-      lowerer.noLowering(
-        `${operation} with withFileTypes and recursive`,
+    if (sawWithFileTypes) {
+      if (literal === "true") {
+        if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+          lowerer.noLowering(
+            `${operation} with recursive and this encoding`,
+            encodingNode ?? recursive,
+            "the recursive Dirent form decodes its names as utf8; drop the encoding",
+          );
+        }
+        return lowerFsReaddirTypesRecursive(lowerer, call, promiseForm, encodingNode, loc);
+      }
+      if (literal !== "false") {
+        lowerer.noLowering(
+          `${operation} with withFileTypes and a recursive flag that is not a literal`,
+          recursive,
+          "recursive: true and recursive: false pick different listings; spell one",
+        );
+      }
+    }
+    if (!sawWithFileTypes) {
+      // recursive: false is the one-directory listing, so it keeps whatever
+      // encoding the options name; a recursive walk decodes its relative
+      // names as utf8.
+      if (literal === "false") {
+        return lowerFsReaddirNamesByEncoding(
+          lowerer,
+          call,
+          promiseForm,
+          encodingNode,
+          encodingLiteral,
+          loc,
+        );
+      }
+      if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+        lowerer.noLowering(
+          `${operation} with recursive and this encoding`,
+          encodingNode ?? recursive,
+          "a recursive listing decodes its relative names as utf8; drop the encoding",
+        );
+      }
+      return lowerFsReaddirRecursive(
+        lowerer,
+        call,
         recursive,
-        "recursive: true lists relative names; withFileTypes: true lists one directory's Dirents",
+        literal,
+        promiseForm,
+        encodingNode,
+        loc,
       );
     }
-    if (!sawWithFileTypes) return lowerFsReaddirRecursive(lowerer, call, recursive, literal, loc);
   }
   if (!sawWithFileTypes) {
-    lowerer.noLowering(
-      `${operation} with 2 arguments`,
+    return lowerFsReaddirNamesByEncoding(
+      lowerer,
       call,
-      `${spelling}(path) lists names; ${spelling}(path, { withFileTypes: true }) lists Dirents`,
+      promiseForm,
+      encodingNode,
+      encodingLiteral,
+      loc,
+    );
+  }
+  if (encodingLiteral !== null && encodingLiteral !== "utf8" && encodingLiteral !== "utf-8") {
+    lowerer.noLowering(
+      `${operation} with withFileTypes and this encoding`,
+      encodingNode ?? call,
+      "Dirent names are strings; a Buffer-named entry has no lowering",
     );
   }
   const fence: () => never = () =>
@@ -1632,13 +2216,19 @@ export function lowerFsReaddirTypesCall(
     fence();
   }
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
-  return {
-    kind: "libCall",
-    fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
-    args: [path],
-    type: callType,
+  return withReaddirEncodingEffects(
+    lowerer,
+    path,
+    encodingNode,
+    (pathArg) => ({
+      kind: "libCall",
+      fn: promiseForm ? "fsp.readdirTypes" : "fs.readdirTypesSync",
+      args: [pathArg],
+      type: callType,
+      loc,
+    }),
     loc,
-  };
+  );
 }
 
 /** `fs.readdirSync(path, { recursive })` without withFileTypes: the
@@ -1651,26 +2241,192 @@ function lowerFsReaddirRecursive(
   call: ts.CallExpression,
   recursive: ts.Expression,
   literal: string | null,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
   loc: SrcLoc,
 ): IrExpr {
   const names = arrayOf(STRING);
+  const expected: IrType = promiseForm ? { kind: "promise", inner: names } : names;
   // @types/node types the call `string[] | Buffer[]` when the options name
   // no encoding; the names are strings, so the call is the string[] arm.
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
-  if (
-    !callType ||
-    !(
-      typeEquals(callType, names) ||
-      (callType.kind === "union" && lowerer.armTag(callType.unionId, names) >= 0)
-    )
-  ) {
+  const namesArm = (t: IrType | null | undefined): boolean =>
+    t !== null &&
+    t !== undefined &&
+    (typeEquals(t, expected) ||
+      (!promiseForm && t.kind === "union" && lowerer.armTag(t.unionId, names) >= 0));
+  if (!namesArm(callType)) {
     lowerer.noLowering(
       "readdirSync(path, { recursive }) where the result is not a string array",
       call,
       "names decode as utf8 strings (the default encoding)",
     );
   }
-  return lowerFsReaddirNames(lowerer, call, recursive, literal, names, loc);
+  return lowerFsReaddirNames(
+    lowerer,
+    call,
+    recursive,
+    literal,
+    names,
+    promiseForm,
+    encodingNode,
+    loc,
+  );
+}
+
+/** `fs.readdirSync(path, { recursive: true, withFileTypes: true })` and the
+ * fs/promises spelling: a Dirent row for every entry below the path, each
+ * name its basename, each parentPath the directory holding it relative to
+ * the path (the path as given at the top level), in Node's queue order. The
+ * result must be the interned Dirent record array, as for the one-directory
+ * form. */
+function lowerFsReaddirTypesRecursive(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
+  loc: SrcLoc,
+): IrExpr {
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  let result = callType;
+  if (promiseForm && callType?.kind === "promise") result = callType.inner;
+  const shape =
+    result?.kind === "array" && result.elem.kind === "record"
+      ? lowerer.shapes.get(result.elem.shapeId)
+      : undefined;
+  if (
+    !callType ||
+    !shape ||
+    shape.tuple ||
+    shape.indexValue ||
+    shape.fields.length !== 3 ||
+    !shape.fields.some((f) => f.name === "%dtype")
+  ) {
+    lowerer.noLowering(
+      "readdir with recursive and withFileTypes where the result is not the Dirent array",
+      call,
+      "{ name, parentPath, isFile(), isDirectory(), isSymbolicLink() } rows are the supported result shape",
+    );
+  }
+  return withReaddirEncodingEffects(
+    lowerer,
+    lowerFsPath(lowerer, call.arguments.nodes[0]!),
+    encodingNode,
+    (pathArg) => ({
+      kind: "libCall",
+      fn: promiseForm ? "fsp.readdirTypesRecursive" : "fs.readdirTypesRecursiveSync",
+      args: [pathArg],
+      type: callType!,
+      loc,
+    }),
+    loc,
+  );
+}
+
+/** A listing whose names always decode as utf8 still evaluates the options
+ * record's `encoding` expression when Node would: the path binds first, the
+ * expression runs next (its side effects and exceptions included), and the
+ * call reads the binding. A literal encoding has nothing to run. */
+function withReaddirEncodingEffects(
+  lowerer: Lowerer,
+  path: IrExpr,
+  encodingNode: ts.Expression | null,
+  build: (path: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (encodingNode === null || ts.isStringLiteralLike(encodingNode)) return build(path);
+  const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
+  const pathRef = varRef(pathLocal.id, STRING, loc);
+  const effect = lowerer.lowerExpr(encodingNode);
+  const result = build(pathRef);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: pathLocal.id, init: path, loc },
+      { kind: "exprStmt", expr: effect, loc },
+    ],
+    result,
+    type: result.type,
+    loc,
+  };
+}
+
+/** `readdirSync(path[, encoding])` and `fs.promises.readdir` without
+ * withFileTypes: the directory's own names. The declared result type picks
+ * the family — Buffer[] (encoding: "buffer") answers each entry's raw
+ * bytes, string[] decodes them with the named encoding (utf8, the default,
+ * is the plain listing; every other name decodes at run time). */
+function lowerFsReaddirNamesByEncoding(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
+  encodingLiteral: string | null,
+  loc: SrcLoc,
+): IrExpr {
+  const buffers = arrayOf(BYTES_U8);
+  const names = arrayOf(STRING);
+  const expectedBuffers: IrType = promiseForm ? { kind: "promise", inner: buffers } : buffers;
+  const expectedNames: IrType = promiseForm ? { kind: "promise", inner: names } : names;
+  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  if (callType && typeEquals(callType, expectedBuffers)) {
+    // The names are Buffers, but Node still evaluates the encoding
+    // expression: its side effects and exceptions run in argument order.
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => ({
+        kind: "libCall",
+        fn: promiseForm ? "fsp.readdirBytes" : "fs.readdirBytesSync",
+        args: [pathArg],
+        type: expectedBuffers,
+        loc,
+      }),
+      loc,
+    );
+  }
+  const namesArm =
+    callType !== null &&
+    callType !== undefined &&
+    (typeEquals(callType, expectedNames) ||
+      (!promiseForm && callType.kind === "union" && lowerer.armTag(callType.unionId, names) >= 0));
+  if (!namesArm) {
+    lowerer.noLowering(
+      "readdir with this result type",
+      call,
+      "the names are strings, or Buffers with encoding: 'buffer'",
+    );
+  }
+  // No encoding argument at all, or the literal utf8 default, is the plain
+  // listing. Every other name — another literal, or one the program picks
+  // at run time — decodes the entry bytes at run time, so its expression is
+  // still evaluated (a nullish one is Node's default).
+  const plain = encodingNode === null || encodingLiteral === "utf8" || encodingLiteral === "utf-8";
+  if (plain) {
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => ({
+        kind: "libCall",
+        fn: promiseForm ? "fsp.readdir" : "fs.readdirSync",
+        args: [pathArg],
+        type: expectedNames,
+        loc,
+      }),
+      loc,
+    );
+  }
+  const utf8Default = { kind: "strLit", value: "utf8", type: STRING, loc } satisfies IrExpr;
+  return {
+    kind: "libCall",
+    fn: promiseForm ? "fsp.readdirEncoded" : "fs.readdirEncodedSync",
+    args: [path, lowerBuiltinOptionalDefault(lowerer, encodingNode!, STRING, utf8Default, true)],
+    type: expectedNames,
+    loc,
+  };
 }
 
 function lowerFsReaddirNames(
@@ -1679,35 +2435,62 @@ function lowerFsReaddirNames(
   recursive: ts.Expression,
   literal: string | null,
   names: IrType,
+  promiseForm: boolean,
+  encodingNode: ts.Expression | null,
   loc: SrcLoc,
 ): IrExpr {
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
+  const resultType: IrType = promiseForm ? { kind: "promise", inner: names } : names;
   const listing = (fn: IrLibFn, arg: IrExpr): IrExpr => ({
     kind: "libCall",
     fn,
     args: [arg],
-    type: names,
+    type: resultType,
     loc,
   });
-  if (literal === "true") return listing("fs.readdirRecursiveSync", path);
-  if (literal === "false") return listing("fs.readdirSync", path);
+  const recursiveFn: IrLibFn = promiseForm ? "fsp.readdirRecursive" : "fs.readdirRecursiveSync";
+  const plainFn: IrLibFn = promiseForm ? "fsp.readdir" : "fs.readdirSync";
+  if (literal !== null) {
+    return withReaddirEncodingEffects(
+      lowerer,
+      path,
+      encodingNode,
+      (pathArg) => listing(literal === "true" ? recursiveFn : plainFn, pathArg),
+      loc,
+    );
+  }
+  // A flag only the run time knows: the path binds first, then the options
+  // record's own expressions in the order the literal spells them (each
+  // with its side effects and exceptions), and the call reads all of them —
+  // JavaScript's argument order, which a ternary over the flag would
+  // reverse by reading it before the path.
   const pathLocal = lowerer.declareHiddenLocal("%readdirPath", STRING);
   const pathRef = varRef(pathLocal.id, STRING, loc);
-  const flag = lowerer.lowerExprExpecting(recursive, BOOL);
-  return {
-    kind: "seqExpr",
-    stmts: [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }],
-    result: {
-      kind: "ternary",
-      cond: flag,
-      then: listing("fs.readdirRecursiveSync", pathRef),
-      else_: listing("fs.readdirSync", pathRef),
-      type: names,
-      loc,
-    },
-    type: names,
+  const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc }];
+  const encodingEffect =
+    encodingNode !== null && !ts.isStringLiteralLike(encodingNode)
+      ? ({ kind: "exprStmt", expr: lowerer.lowerExpr(encodingNode), loc } satisfies IrStmt)
+      : null;
+  const encodingFirst = encodingEffect !== null && encodingNode!.pos < recursive.pos;
+  if (encodingFirst) stmts.push(encodingEffect!);
+  const flagLocal = lowerer.declareHiddenLocal("%readdirRecursive", BOOL);
+  stmts.push({
+    kind: "varDecl",
+    localId: flagLocal.id,
+    init: lowerer.lowerExprExpecting(recursive, BOOL),
+    loc,
+  });
+  if (encodingEffect !== null && !encodingFirst) stmts.push(encodingEffect);
+  const flagRef = varRef(flagLocal.id, BOOL, loc);
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: flagRef,
+    then: listing(recursiveFn, pathRef),
+    else_: listing(plainFn, pathRef),
+    type: resultType,
     loc,
   };
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 /** fs.statSync / fs.lstatSync's documented option keys. */
@@ -1715,6 +2498,28 @@ const FS_STAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint", "thro
 /** fs.fstatSync's: an open descriptor never misses, so there is no
  * throwIfNoEntry. */
 const FS_FSTAT_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set(["bigint"]);
+
+/** The boolean literal an expression is typed as ("true"/"false"), or null
+ * for any wider type: only a literal pins the member table statically. */
+function statBoolLiteral(lowerer: Lowerer, value: ts.Expression): "true" | "false" | null {
+  const t = lowerer.typeOf(value);
+  if (!(t.flags & ts.TypeFlags.BooleanLiteral)) return null;
+  return lowerer.checker.typeToString(t) === "true" ? "true" : "false";
+}
+
+/** The same literalness for a stored record's member, read off the checker
+ * through the options expression's own type. */
+function recordBoolLiteral(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  name: string,
+): "true" | "false" | null {
+  const prop = lowerer.checker.getPropertyOfType(lowerer.typeOf(node), name);
+  if (!prop) return null;
+  const t = lowerer.checker.getTypeOfSymbol(prop);
+  if (!(t.flags & ts.TypeFlags.BooleanLiteral)) return null;
+  return lowerer.checker.typeToString(t) === "true" ? "true" : "false";
+}
 
 /** The stat representation a mapped result type carries: BigIntStats and
  * `BigIntStats | undefined` read the bigint member table, Stats and
@@ -1771,12 +2576,14 @@ function checkStatBigintOption(
 
 /** fs.statSync / fs.lstatSync(path, options). The options are an object
  * literal, where throwIfNoEntry takes any boolean and bigint is the literal
- * true (BigIntStats) or false (Stats), or a stored record whose only member
- * is a boolean throwIfNoEntry. When the call's type is
- * `Stats | undefined` (or `BigIntStats | undefined`), the call lowers to the
- * probe, which answers undefined for a missing entry without building the
- * error. An explicitly undefined options argument is the one-argument
- * form. */
+ * true (BigIntStats) or false (Stats), a stored record whose members the
+ * checker pinned the same way, or any other value, where Node's whole member
+ * ladder runs at run time: bigint selects the member table, throwIfNoEntry
+ * the missing-entry answer, so the call answers a checked-dynamic Stats,
+ * BigIntStats or undefined. When the call's type is `Stats | undefined` (or
+ * `BigIntStats | undefined`), the call lowers to the probe, which answers
+ * undefined for a missing entry without building the error. An explicitly
+ * undefined options argument is the one-argument form. */
 export function lowerFsStatOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -1785,6 +2592,7 @@ export function lowerFsStatOptionsCall(
 ): IrExpr {
   const spelling = noFollow ? "lstatSync" : "statSync";
   const plainFn: IrLibFn = noFollow ? "fs.lstatSync" : "fs.statSync";
+  const dynFn: IrLibFn = noFollow ? "fs.lstatSyncDyn" : "fs.statSyncDyn";
   const optsNode = call.arguments.nodes[1]!;
   const path = lowerFsPath(lowerer, call.arguments.nodes[0]!);
   // `{ bigint: true }` selects Node's BigIntStats: the SAME snapshot handle,
@@ -1794,9 +2602,24 @@ export function lowerFsStatOptionsCall(
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const def = callType?.kind === "union" ? lowerer.unions.get(callType.unionId) : undefined;
   const representation = statRepresentation(callType, def?.arms);
-  const statsType: IrType = representation === "bigint" ? BIGINT_STATS_T : STATS_T;
+  // Node's ladder over a value the compiler did not pin down: the member
+  // table (bigint) and the missing-entry policy (throwIfNoEntry) are read
+  // off the options at the call, so the answer is checked-dynamic.
+  // A stored options record the runtime must read (`JSON.parse(...) as
+  // StatOptions`) reaches the ladder boxed: the call reads its members off
+  // the checked-dynamic object, not off a copied struct.
+  const boxDyn = (options: IrExpr): IrExpr =>
+    options.type.kind === "dyn" ? options : lowerer.coerceToExpected(options, DYN);
+  const dynamicCall = (options: IrExpr): IrExpr => {
+    lowerer.dynStatCalls.add(call);
+    return { kind: "libCall", fn: dynFn, args: [path, boxDyn(options)], type: DYN, loc };
+  };
   // The path binds first, then the options' effects, then the stat runs.
-  const plainAfter = (effect: IrExpr | null): IrExpr => {
+  const plainAfter = (
+    effect: IrExpr | null,
+    repr: "bigint" | "number" = representation === "bigint" ? "bigint" : "number",
+  ): IrExpr => {
+    const statsType: IrType = repr === "bigint" ? BIGINT_STATS_T : STATS_T;
     if (effect === null)
       return { kind: "libCall", fn: plainFn, args: [path], type: statsType, loc };
     const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
@@ -1822,57 +2645,78 @@ export function lowerFsStatOptionsCall(
     return plainAfter(isSafeToDiscard(undefinedOptions) ? null : undefinedOptions);
   }
   let throwIfNoEntry: IrExpr | null = null;
+  // The options expression itself, when reading its members does not
+  // already evaluate it: Node evaluates the argument before the stat, so
+  // the call runs as an effect in front of the result.
+  let optionsEffect: IrExpr | null = null;
+  // The representation the call's own members pin, when they differ from the
+  // call type's (a stored record's literal member).
+  let pinned: "bigint" | "number" | null = representation;
   if (!ts.isObjectLiteralExpression(optsNode)) {
     // A stored options record (`const statSyncOptions = { throwIfNoEntry:
-    // false }`): the flag is read from it at the call, as Node reads
-    // options.throwIfNoEntry.
-    const optsType = lowerer.mapTypeOf(lowerer.typeOf(optsNode));
-    const shape = optsType?.kind === "record" ? lowerer.shapes.get(optsType.shapeId) : undefined;
-    const field = shape?.fields.find((f) => f.name === "throwIfNoEntry");
+    // false } as const`): every member the call reads is pinned by the
+    // record's own type, so the lowering reads like the literal it spells.
+    // A record whose bigint member is a widened boolean has no static member
+    // table and takes the run-time ladder, and so does a JavaScript binding
+    // held as a dynamic value: Node reads its members at the call.
+    const opts = lowerer.lowerExpr(optsNode);
+    const shape = opts.type.kind === "record" ? lowerer.shapes.get(opts.type.shapeId) : undefined;
+    const fields = shape && !shape.tuple && !shape.indexValue ? shape.fields : undefined;
+    const member = (name: string) => fields?.find((f) => f.name === name);
+    const bigintField = member("bigint");
+    const throwsField = member("throwIfNoEntry");
     if (
-      optsType?.kind !== "record" ||
-      !shape ||
-      shape.tuple ||
-      shape.indexValue ||
-      shape.fields.length !== 1 ||
-      field?.type.kind !== "bool"
-    ) {
+      !fields ||
+      !fields.every((f) => f.name === "bigint" || f.name === "throwIfNoEntry") ||
+      (bigintField !== undefined && bigintField.type.kind !== "bool") ||
+      (throwsField !== undefined && throwsField.type.kind !== "bool")
+    )
+      return dynamicCall(opts);
+    const bigintLiteral = bigintField ? recordBoolLiteral(lowerer, optsNode, "bigint") : null;
+    if (bigintField !== undefined && bigintLiteral === null) return dynamicCall(opts);
+    if (bigintField !== undefined) pinned = bigintLiteral === "true" ? "bigint" : "number";
+    if (throwsField !== undefined) {
+      const literal = recordBoolLiteral(lowerer, optsNode, "throwIfNoEntry");
+      throwIfNoEntry =
+        literal === "true"
+          ? boolLit(true, loc)
+          : literal === "false"
+            ? boolLit(false, loc)
+            : {
+                kind: "recordGet",
+                obj: opts,
+                shapeId: opts.type.kind === "record" ? opts.type.shapeId : "",
+                field: "throwIfNoEntry",
+                type: BOOL,
+                loc,
+              };
+    }
+    if (pinned !== null && representation !== null && pinned !== representation) {
       lowerer.noLowering(
-        `${spelling} with this options value`,
+        `${spelling} with bigint: ${pinned === "bigint"} where the result is not ${pinned === "bigint" ? "BigIntStats" : "Stats"}`,
         optsNode,
-        `pass an object literal, or a record whose only member is a boolean throwIfNoEntry: ${spelling}(path, { throwIfNoEntry: false })`,
+        "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
       );
     }
-    const opts = lowerer.lowerExpr(optsNode);
-    if (opts.type.kind === "record") {
-      throwIfNoEntry = {
-        kind: "recordGet",
-        obj: opts,
-        shapeId: opts.type.shapeId,
-        field: "throwIfNoEntry",
-        type: BOOL,
-        loc,
-      };
-    } else if (opts.type.kind === "dyn") {
-      // A JavaScript binding held as a dynamic value: Node keeps throwing
-      // unless the member is exactly false.
-      throwIfNoEntry = {
-        kind: "dynScalarEq",
-        left: {
-          kind: "dynKeyGet",
-          key: { kind: "strLit", value: "throwIfNoEntry", type: STRING, loc },
-          optional: true,
-          value: opts,
-          type: DYN,
-          loc,
-        },
-        right: boolLit(false, loc),
-        negated: true,
-        type: BOOL,
-        loc,
-      };
-    } else {
-      lowerer.noLowering(`${spelling} with this options value`, optsNode, "pass an object literal");
+    // Every member the call reads is pinned, so only the expression's own
+    // effects remain: evaluate it before the stat, once. A runtime
+    // throwIfNoEntry is read off the lowered record in the result, which
+    // evaluates it there instead.
+    const readsOptions = throwIfNoEntry !== null && throwIfNoEntry.kind !== "boolLit";
+    if (!readsOptions && !isSafeToDiscard(opts)) optionsEffect = opts;
+  }
+  // An object literal whose bigint member is a value only the runtime knows
+  // selects the member table at the call: the whole literal takes the ladder.
+  // A literal whose members are not plain property assignments (a getter, a
+  // method, a computed key, a spread) also takes it: Node reads bigint and
+  // throwIfNoEntry off the constructed object, exactly as the ladder does.
+  if (ts.isObjectLiteralExpression(optsNode)) {
+    for (const p of optsNode.properties.nodes) {
+      const m = optionMember(p);
+      if (!m) return dynamicCall(lowerer.lowerExprExpecting(optsNode, DYN));
+      if (m.name === "bigint" && statBoolLiteral(lowerer, m.value) === null) {
+        return dynamicCall(lowerer.lowerExprExpecting(optsNode, DYN));
+      }
     }
   }
   // The members in source order, when a bigint member has an effect: the
@@ -1908,13 +2752,17 @@ export function lowerFsStatOptionsCall(
       );
     }
   }
-  // With a bigint member's effect, the path binds first, then the members
-  // run in source order (a runtime throwIfNoEntry into a local), then the
-  // stat; without one, the call evaluates its operands in that order itself.
+  // With a bigint member's effect or an options expression the result does
+  // not read, the path binds first, then the options run in source order (a
+  // runtime throwIfNoEntry into a local), then the stat; a literal without
+  // either lets the call evaluate its operands in that order itself.
   const ordered = (stat: (pathArg: IrExpr, flag: IrExpr | null) => IrExpr): IrExpr => {
-    if (!bigintEffect) return stat(path, throwIfNoEntry);
+    if (!bigintEffect && optionsEffect === null && ts.isObjectLiteralExpression(optsNode))
+      return stat(path, throwIfNoEntry);
     const pathLocal = lowerer.declareHiddenLocal("%statPath", STRING);
     const stmts: IrStmt[] = [{ kind: "varDecl", localId: pathLocal.id, init: path, loc: path.loc }];
+    if (optionsEffect !== null)
+      stmts.push({ kind: "exprStmt", expr: optionsEffect, loc: optionsEffect.loc });
     let flag = throwIfNoEntry;
     for (const member of members) {
       if (member !== "throwIfNoEntry") {
@@ -1928,6 +2776,7 @@ export function lowerFsStatOptionsCall(
     const result = stat(varRef(pathLocal.id, STRING, loc), flag);
     return { kind: "seqExpr", stmts, result, type: result.type, loc };
   };
+  const statsType: IrType = pinned === "bigint" ? BIGINT_STATS_T : STATS_T;
   if (callType?.kind === "stats" || callType?.kind === "bigintStats") {
     // A runtime flag that is false answers undefined, which a Stats result
     // cannot hold.
@@ -1938,7 +2787,8 @@ export function lowerFsStatOptionsCall(
         "the result must be Stats | undefined when throwIfNoEntry may be false",
       );
     }
-    if (!bigintEffect) return plainAfter(null);
+    if (!bigintEffect && optionsEffect === null && ts.isObjectLiteralExpression(optsNode))
+      return plainAfter(null);
     return ordered((pathArg) => ({
       kind: "libCall",
       fn: plainFn,
@@ -1970,23 +2820,37 @@ export function lowerFsStatOptionsCall(
 
 /** fs.fstatSync(fd, options): the descriptor form of the same snapshot.
  * Node documents only `bigint` here — an open descriptor cannot miss, so the
- * result is Stats or BigIntStats, never undefined. */
+ * result is Stats or BigIntStats, never undefined. A descriptor or options
+ * value the compiler did not pin down takes the run-time ladder: Node reads
+ * options.bigint before the binding validates the descriptor. */
 export function lowerFsStatFdOptionsCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
   const spelling = "fstatSync";
-  const fd = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+  const fdNode = call.arguments.nodes[0]!;
   const optsNode = call.arguments.nodes[1]!;
   const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
   const representation = statRepresentation(callType, undefined);
-  const statsType: IrType = representation === "bigint" ? BIGINT_STATS_T : STATS_T;
-  const plain = (): IrExpr => ({
+  const dynamicCall = (fd: IrExpr, options: IrExpr): IrExpr => {
+    lowerer.dynStatCalls.add(call);
+    const boxed = options.type.kind === "dyn" ? options : lowerer.coerceToExpected(options, DYN);
+    return { kind: "libCall", fn: "fs.fstatSyncDyn", args: [fd, boxed], type: DYN, loc };
+  };
+  // The descriptor is validated in the binding, after options.bigint is read.
+  const dynamicOptions = (): IrExpr =>
+    dynamicCall(lowerer.lowerExprExpecting(fdNode, DYN), lowerer.lowerExprExpecting(optsNode, DYN));
+  if (lowerer.mapTypeOf(lowerer.typeOf(fdNode))?.kind !== "f64") return dynamicOptions();
+  const fd = lowerer.lowerExprExpecting(fdNode, F64);
+  const plain = (
+    repr: "bigint" | "number" = representation === "bigint" ? "bigint" : "number",
+    fdArg: IrExpr = fd,
+  ): IrExpr => ({
     kind: "libCall",
     fn: "fs.fstatSync",
-    args: [fd],
-    type: statsType,
+    args: [fdArg],
+    type: repr === "bigint" ? BIGINT_STATS_T : STATS_T,
     loc,
   });
   const undefinedOptions = lowerStaticallyUndefinedArgument(lowerer, optsNode);
@@ -2004,19 +2868,59 @@ export function lowerFsStatFdOptionsCall(
         kind: "libCall",
         fn: "fs.fstatSync",
         args: [varRef(fdLocal.id, F64, loc)],
-        type: statsType,
+        type: plain().type,
         loc,
       },
-      type: statsType,
+      type: plain().type,
       loc,
     };
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
-    lowerer.noLowering(
-      `${spelling} with this options value`,
-      optsNode,
-      `pass an object literal: ${spelling}(fd, { bigint: true })`,
-    );
+    // A stored record the checker pinned (`const fstatOptions = { bigint:
+    // true } as const`): the member table is static. Every other value is
+    // read at the call.
+    const opts = lowerer.lowerExpr(optsNode);
+    const shape = opts.type.kind === "record" ? lowerer.shapes.get(opts.type.shapeId) : undefined;
+    const fields = shape && !shape.tuple && !shape.indexValue ? shape.fields : undefined;
+    const pinned =
+      fields &&
+      fields.every((f) => f.name === "bigint") &&
+      fields.length === 1 &&
+      fields[0]!.type.kind === "bool"
+        ? recordBoolLiteral(lowerer, optsNode, "bigint")
+        : null;
+    if (pinned === null) return dynamicCall(lowerer.lowerExprExpecting(fdNode, DYN), opts);
+    const repr = pinned === "true" ? "bigint" : "number";
+    if (representation !== null && repr !== representation) {
+      lowerer.noLowering(
+        `${spelling} with bigint: ${repr === "bigint"} where the result is not ${repr === "bigint" ? "BigIntStats" : "Stats"}`,
+        optsNode,
+        "pass bigint: true to receive BigIntStats, or omit it to receive Stats",
+      );
+    }
+    // Node evaluates the descriptor argument first, then the options
+    // expression; only the record's type was read, so its own effects run
+    // before the stat.
+    if (isSafeToDiscard(opts)) return plain(repr);
+    const fdLocal = lowerer.declareHiddenLocal("%fstatFd", F64);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: fdLocal.id, init: fd, loc: fd.loc },
+        { kind: "exprStmt", expr: opts, loc: opts.loc },
+      ],
+      result: plain(repr, varRef(fdLocal.id, F64, loc)),
+      type: plain(repr).type,
+      loc,
+    };
+  }
+  for (const p of optsNode.properties.nodes) {
+    const m = optionMember(p);
+    // A member the table cannot enumerate (a getter, a method, a computed
+    // key, a spread) and a bigint value only the runtime knows both take
+    // the run-time ladder, which reads bigint off the object.
+    if (!m) return dynamicOptions();
+    if (m.name === "bigint" && statBoolLiteral(lowerer, m.value) === null) return dynamicOptions();
   }
   const effects: IrExpr[] = [];
   for (const p of optsNode.properties.nodes) {
@@ -2055,19 +2959,16 @@ export function lowerFsStatFdOptionsCall(
       kind: "libCall",
       fn: "fs.fstatSync",
       args: [varRef(fdLocal.id, F64, loc)],
-      type: statsType,
+      type: plain().type,
       loc,
     },
-    type: statsType,
+    type: plain().type,
     loc,
   };
 }
 
-/** `d.isFile()` / `d.isDirectory()` / `d.isSymbolicLink()` on a Dirent-
- * typed receiver (the interned record — provenance via the checker's
- * Dirent symbol, the StringDecoder pattern): a read of the hidden
- * %dtype field compared against libuv's UV_DIRENT code. Node's other
- * type probes (isBlockDevice, ...) fence with the supported list. */
+/** The `d.is*()` probes on a Dirent-typed receiver: one read of the hidden
+ * %dtype field compared against libuv's UV_DIRENT code. */
 export function lowerDirentMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -2085,12 +2986,26 @@ export function lowerDirentMethodCall(
   const loc = locOf(call);
   // libuv's UV_DIRENT encoding (scr_fs_scandir answers it).
   const code =
-    name === "isFile" ? 1 : name === "isDirectory" ? 2 : name === "isSymbolicLink" ? 3 : -1;
+    name === "isFile"
+      ? 1
+      : name === "isDirectory"
+        ? 2
+        : name === "isSymbolicLink"
+          ? 3
+          : name === "isFIFO"
+            ? 4
+            : name === "isSocket"
+              ? 5
+              : name === "isCharacterDevice"
+                ? 6
+                : name === "isBlockDevice"
+                  ? 7
+                  : -1;
   if (code < 0) {
     lowerer.noLowering(
       `Dirent.${name}`,
       call,
-      "name, parentPath, isFile(), isDirectory(), and isSymbolicLink() are the supported Dirent members",
+      "name, parentPath, and the seven entry-type probes are the supported Dirent members",
       lowerer.checker.getSymbolAtLocation(access.name),
     );
   }

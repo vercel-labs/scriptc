@@ -6,7 +6,7 @@
 import type { IrFunction, IrModule, IrStmt } from "../../ir/ir.js";
 import { everyStmt, everyStmtList } from "../../ir/traverse.js";
 import { exprFunctionReference, moduleFunctionReferences } from "../../ir/function-references.js";
-import type { IntegerRangeFacts, IntegerSlotFacts } from "../../ir/integer-ranges.js";
+import type { IntegerRange, IntegerRangeFacts, IntegerSlotFacts } from "../../ir/integer-ranges.js";
 import { findLoopEntryVersions, type LoopEntryVersion } from "../../ir/loop-entry-ranges.js";
 import { f64Lit } from "./common.js";
 import type { LlEmitter } from "./emitter.js";
@@ -58,8 +58,8 @@ export function beginLoopEntryVersions(
 }
 
 /** The entry version of `loop`, when it has one and the emitter can test
- * its locals: plain double slots of the current function, outside a
- * speculative copy and a coroutine. */
+ * its locals: plain double slots or int32 locals of the current function,
+ * outside a speculative copy and a coroutine. */
 export function loopEntryVersion(emitter: LlEmitter, loop: IrStmt): LoopEntryVersion | null {
   if (loop.kind !== "while" && loop.kind !== "for") return null;
   const state = ENTRY_VERSIONS.of(emitter);
@@ -75,7 +75,11 @@ export function loopEntryVersion(emitter: LlEmitter, loop: IrStmt): LoopEntryVer
   const version = state.versions.get(loop);
   if (!version) return null;
   for (const id of version.entry.keys())
-    if (!emitter.currentLocals.has(id) || !emitter.speculativeLocal(id)) return null;
+    if (
+      !emitter.currentLocals.has(id) ||
+      !(emitter.speculativeLocal(id) || emitter.int32Locals.has(id))
+    )
+      return null;
   return version;
 }
 
@@ -91,35 +95,24 @@ export function emitLoopEntryVersion(
   const B = emitter.B;
   let ok: string | null = null;
   for (const [id, range] of version.entry) {
-    // An integer in [min, max] other than -0: the ordered comparisons
-    // reject NaN, and the bits of the value and its round trip agree only
-    // for integers that are not -0. A local the loop writes before it reads
-    // may be unset on entry, and a conversion out of range is poison:
-    // `freeze` makes both an arbitrary fixed value.
-    const raw = B.tmp(),
-      value = B.tmp(),
-      low = B.tmp(),
-      high = B.tmp(),
-      converted = B.tmp(),
-      integer = B.tmp(),
-      back = B.tmp(),
-      bits = B.tmp(),
-      backBits = B.tmp(),
-      exact = B.tmp(),
-      inRange = B.tmp(),
+    const int32 = emitter.int32Locals.get(id);
+    let passed: string;
+    if (int32 !== undefined) {
+      // An int32 local holds an integer: only its range is tested. One the
+      // loop writes before it reads may be unset on entry (`freeze`).
+      const raw = B.tmp(),
+        bits = B.tmp(),
+        wide = B.tmp(),
+        low = B.tmp(),
+        high = B.tmp();
       passed = B.tmp();
-    B.line(`${raw} = load double, ptr ${emitter.binding(id).slot}`);
-    B.line(`${value} = freeze double ${raw}`);
-    B.line(`${low} = fcmp oge double ${value}, ${f64Lit(range.min)}`);
-    B.line(`${high} = fcmp ole double ${value}, ${f64Lit(range.max)}`);
-    B.line(`${converted} = fptosi double ${value} to i64`);
-    B.line(`${integer} = freeze i64 ${converted}`);
-    B.line(`${back} = sitofp i64 ${integer} to double`);
-    B.line(`${bits} = bitcast double ${value} to i64`);
-    B.line(`${backBits} = bitcast double ${back} to i64`);
-    B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
-    B.line(`${inRange} = and i1 ${low}, ${high}`);
-    B.line(`${passed} = and i1 ${inRange}, ${exact}`);
+      B.line(`${raw} = load i32, ptr ${emitter.binding(id).slot}`);
+      B.line(`${bits} = freeze i32 ${raw}`);
+      B.line(`${wide} = ${int32.signed ? "sext" : "zext"} i32 ${bits} to i64`);
+      B.line(`${low} = icmp sge i64 ${wide}, ${range.min}`);
+      B.line(`${high} = icmp sle i64 ${wide}, ${range.max}`);
+      B.line(`${passed} = and i1 ${low}, ${high}`);
+    } else passed = doubleInRange(emitter, id, range);
     if (ok === null) ok = passed;
     else {
       const both = B.tmp();
@@ -228,4 +221,39 @@ function nodeCount(body: IrStmt[]): number {
   const visit = (): boolean => ++count <= MAX_INLINED_NODES;
   everyStmtList(body, { expr: visit, stmt: visit });
   return count;
+}
+
+/** Whether the double slot of `id` holds an integer in `range` other than -0. */
+function doubleInRange(emitter: LlEmitter, id: string, range: IntegerRange): string {
+  const B = emitter.B;
+  // An integer in [min, max] other than -0: the ordered comparisons
+  // reject NaN, and the bits of the value and its round trip agree only
+  // for integers that are not -0. A local the loop writes before it reads
+  // may be unset on entry, and a conversion out of range is poison:
+  // `freeze` makes both an arbitrary fixed value.
+  const raw = B.tmp(),
+    value = B.tmp(),
+    low = B.tmp(),
+    high = B.tmp(),
+    converted = B.tmp(),
+    integer = B.tmp(),
+    back = B.tmp(),
+    bits = B.tmp(),
+    backBits = B.tmp(),
+    exact = B.tmp(),
+    inRange = B.tmp(),
+    passed = B.tmp();
+  B.line(`${raw} = load double, ptr ${emitter.binding(id).slot}`);
+  B.line(`${value} = freeze double ${raw}`);
+  B.line(`${low} = fcmp oge double ${value}, ${f64Lit(range.min)}`);
+  B.line(`${high} = fcmp ole double ${value}, ${f64Lit(range.max)}`);
+  B.line(`${converted} = fptosi double ${value} to i64`);
+  B.line(`${integer} = freeze i64 ${converted}`);
+  B.line(`${back} = sitofp i64 ${integer} to double`);
+  B.line(`${bits} = bitcast double ${value} to i64`);
+  B.line(`${backBits} = bitcast double ${back} to i64`);
+  B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+  B.line(`${inRange} = and i1 ${low}, ${high}`);
+  B.line(`${passed} = and i1 ${inRange}, ${exact}`);
+  return passed;
 }

@@ -1,4 +1,5 @@
-- **Builtin module lookup:** `process.getBuiltinModule()` exposes native subsets of `path`, `path/posix`, `path/win32`, `os`, and current-thread `worker_threads` metadata.
+- **Builtin module lookup:** `process.getBuiltinModule()` with a string-literal id that `@types/node` types as a supported module answers that module, as an import of it does, also behind `?.`.
+  With any other id it exposes native subsets of `path`, `path/posix`, `path/win32`, `os`, `util/types`, `node:sea`, and current-thread `worker_threads` metadata, and answers `undefined` for an id Node.js does not have.
   Stored module references and functions retain identity.
   Other modules and exports, including stored `Worker` constructors, throw `SC2020`.
   Direct `Worker` imports use the native worker support described below.

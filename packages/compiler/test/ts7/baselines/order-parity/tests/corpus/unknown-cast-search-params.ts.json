@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/unknown-cast-search-params.ts"
+ ],
+ "diags": []
+}

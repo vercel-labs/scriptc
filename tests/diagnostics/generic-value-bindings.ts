@@ -8,14 +8,14 @@ flip = <T>(x: T): T => x;
 console.log(flip(1));
 
 // An ALIAS binding registers its target (calls through it monomorphize),
-// but a USE with no pinning context still keeps the generic signature —
-// the value fences at the reference, not the binding.
+// and a USE with no pinning context erases to the target's dynamic
+// closure — no diagnostic, the value is the function JavaScript has.
 const id = <T>(x: T): T => x;
 const stored = id;
 console.log(typeof stored);
 
 // An alias of a REASSIGNED binding never registers: the target's own
-// fence reports, and the alias falls back to the ordinary binding story.
+// fence reports, and the alias's uses inherit that blocker.
 const flipAlias = flip;
 console.log(flipAlias(5));
 
@@ -54,14 +54,15 @@ declare const ambient: undefined | (<T>(f: (a: T) => T) => T);
 console.log(ambient?.((n: number) => n) === undefined);
 
 // A call whose RESULT is itself a generic function: the returned signature
-// keeps its type parameters and would need the producing call's frame.
+// keeps its type parameters and erases to the closure the call produced.
 const curried = <T>(x: T) => <U>(y: U): string => `${x}|${y}`;
 console.log(curried(1)("a"));
 
 // Ambient `declare class` generic methods are signature-only. Through an
-// AMBIENT-ROOTED receiver the call now compiles to Node's ReferenceError
-// at the root (the declare-const chain stance — no diagnostic here); a
-// receiver that exists at runtime keeps the fence.
+// AMBIENT-ROOTED receiver the call compiles to Node's ReferenceError at the
+// root (the declare-const chain stance); through a receiver that exists at
+// run time the member is read from the value and called dynamically (no
+// diagnostic here).
 declare class Amb {
   m<T>(x: T): T;
 }

@@ -17,6 +17,8 @@ llvm_distro=${VERSION_CODENAME:?the Sandbox image must identify its Ubuntu relea
 curl --fail --silent --show-error --location \
   https://apt.llvm.org/llvm-snapshot.gpg.key \
   --output /tmp/llvm-snapshot.gpg.key
+# Every download below is checked against scripts/toolchain.sha256 before it is used.
+sh scripts/verify-toolchain.sh /tmp/llvm-snapshot.gpg.key
 gpg --dearmor --yes --output /tmp/llvm-snapshot.gpg /tmp/llvm-snapshot.gpg.key
 sudo install -D -m 0644 /tmp/llvm-snapshot.gpg /etc/apt/keyrings/llvm-snapshot.gpg
 echo "deb [signed-by=/etc/apt/keyrings/llvm-snapshot.gpg] https://apt.llvm.org/${llvm_distro}/ llvm-toolchain-${llvm_distro}-22 main" \
@@ -49,17 +51,12 @@ node_archive="node-v${node_version}-linux-x64.tar.xz"
 curl --fail --silent --show-error --location \
   "https://nodejs.org/dist/v${node_version}/${node_archive}" \
   --output "/tmp/${node_archive}"
-curl --fail --silent --show-error --location \
-  "https://nodejs.org/dist/v${node_version}/SHASUMS256.txt" \
-  --output /tmp/node-SHASUMS256.txt
-grep " ${node_archive}$" /tmp/node-SHASUMS256.txt \
-  | sed "s# ${node_archive}# /tmp/${node_archive}#" \
-  | sha256sum --check --strict -
+sh scripts/verify-toolchain.sh "/tmp/${node_archive}"
 sudo tar -xJf "/tmp/${node_archive}" --directory /usr/local --strip-components=1
 sh scripts/install-zig.sh "$zig_version"
 sudo npm install --global "pnpm@${pnpm_version}"
 
-rm -f "/tmp/${node_archive}" /tmp/node-SHASUMS256.txt /tmp/llvm-snapshot.gpg.key /tmp/llvm-snapshot.gpg
+rm -f "/tmp/${node_archive}" /tmp/llvm-snapshot.gpg.key /tmp/llvm-snapshot.gpg
 sudo rm -rf /var/lib/apt/lists/*
 
 node --version

@@ -12,7 +12,7 @@
  * (a documented limitation). No dynamic-tier unit is involved: every
  * built-in is a small lifted function over the record. */
 import * as ts from "../ts7/adapter.js";
-import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
@@ -34,6 +34,8 @@ import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { recordHasOwnHelper } from "./lower-calls.js";
 import { OTHER_ARM_FAILURE_MESSAGE } from "./coercions/unions.js";
+import { recordMayKeepSource } from "./record-sources.js";
+import { recordStringCall } from "./record-links.js";
 
 /** Object.prototype's methods a record answers from its prototype. */
 export const RECORD_INHERITED_METHODS: ReadonlySet<string> = new Set([
@@ -61,6 +63,33 @@ function liftedLocals(): { declare: DeclareLocal; locals: IrLocal[] } {
       return id;
     },
   };
+}
+
+/** The parameters of a built-in made as a value of `fnType`, and the
+ * arguments a call of it passes, in order. A checked-dynamic variadic type
+ * (a rest parameter, or `arguments`: the type of a held `String`) has one
+ * hidden trailing array beside its declared parameters; the built-ins read
+ * their first argument only, which is the first declared parameter or, for
+ * a type that declares none, the array's first element (undefined when the
+ * call passed nothing, as a missing argument is). */
+function builtinParams(
+  fnType: FuncType,
+  loc: SrcLoc,
+): { params: { localId: string; name: string; type: IrType }[]; args: IrExpr[] } {
+  const params = fnType.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
+  const args: IrExpr[] = params.map((p) => varRef(p.localId, p.type, loc));
+  if (fnType.rest === true && fnType.restAbi === undefined) {
+    params.push({ localId: "rest.0", name: "args", type: DYN });
+    if (args.length === 0)
+      args.push({
+        kind: "libCall",
+        fn: "dyn.arrAt",
+        args: [varRef("rest.0", DYN, loc), numLit(0, loc)],
+        type: DYN,
+        loc,
+      });
+  }
+  return { params, args };
 }
 
 /** The form a read of `type` gives a built-in method value: the union's one
@@ -338,8 +367,7 @@ function inheritedMethodImpl(
   lowerer.arrHofHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const o = varRef("o.0", recT, loc);
-  const params = fnType.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
-  const args = params.map((p) => varRef(p.localId, p.type, loc));
+  const { params, args } = builtinParams(fnType, loc);
   const body: IrStmt[] = [];
   const hidden = liftedLocals();
   const answer = builtinAnswer(lowerer, hidden.declare, o, shapeId, method, args, fnType.ret, loc);
@@ -373,8 +401,8 @@ function unboundMethodImpl(
   if (existing) return existing;
   const name = keyedHelperName(lowerer, `%obj.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
-  const params = fnType.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
-  const arg: IrExpr | undefined = params[0] && varRef(params[0].localId, params[0].type, loc);
+  const { params, args } = builtinParams(fnType, loc);
+  const arg: IrExpr | undefined = args[0];
   const coerce = "Cannot convert undefined or null to object";
   let answer: IrExpr;
   switch (method) {
@@ -466,6 +494,10 @@ function builtinAnswer(
 ): IrExpr {
   switch (method) {
     case "toString":
+      // A linked copy or a record with a kept source answers as its source
+      // does (record-links.ts).
+      if (recordMayKeepSource(lowerer, { kind: "record", shapeId }))
+        return recordStringCall(lowerer, o, "string", loc, "constant");
       return { kind: "strLit", value: "[object Object]", type: STRING, loc };
     case "toLocaleString":
       // Object.prototype.toLocaleString calls this.toString().
@@ -482,9 +514,38 @@ function builtinAnswer(
       );
     case "valueOf":
       return want.kind === "dyn" ? lowerer.coerceToExpected(o, DYN) : o;
-    case "isPrototypeOf":
-      // No object is created with a typed record as its prototype.
-      return { kind: "boolLit", value: false, type: BOOL, loc };
+    case "isPrototypeOf": {
+      // A primitive argument answers false before the receiver's chain or the
+      // argument's own chain is read, so no runtime walk is needed.
+      const arg = args[0];
+      const kind = arg?.type.kind;
+      if (
+        arg === undefined ||
+        isUnitType(arg.type) ||
+        kind === "string" ||
+        kind === "f64" ||
+        kind === "bool" ||
+        kind === "bigint"
+      )
+        return { kind: "boolLit", value: false, type: BOOL, loc };
+      // The walk answers a boolean. A declared type that cannot hold one
+      // fails the conversion after evaluating the answer, so the walk would
+      // add a runtime call that only throws away its result — and a helper
+      // holding it stops being inert for every indirect call in the module.
+      if (!boolConvertsTo(lowerer, want)) return { kind: "boolLit", value: false, type: BOOL, loc };
+      // A record is an ordinary object, and `Object.create(r)` or
+      // `{ __proto__: r }` makes that very record a live prototype: the
+      // answer is one identity walk of the argument's prototype chain, not a
+      // constant. A record with a null prototype answers the caller's
+      // "is not a function" instead (nullProtoRecordShape below).
+      return {
+        kind: "libCall",
+        fn: "dyn.isPrototypeOf",
+        args: [lowerer.coerceToExpected(o, DYN), lowerer.coerceToExpected(arg, DYN)],
+        type: BOOL,
+        loc,
+      };
+    }
     default: {
       // hasOwnProperty and propertyIsEnumerable: ToPropertyKey keeps a
       // symbol a symbol, and a record's own keys are strings, so a symbol
@@ -559,6 +620,14 @@ function propertyKeyOf(lowerer: Lowerer, arg: IrExpr | undefined, loc: SrcLoc): 
     return { kind: "toString", operand: arg, type: STRING, loc };
   // A record or class instance that answers Object.prototype.toString
   // spells "[object Object]" without running any code.
+  // A linked copy or a record with a kept source converts as its source
+  // does (record-links.ts).
+  if (
+    type.kind === "record" &&
+    defaultRecordToString(lowerer, type.shapeId) &&
+    recordMayKeepSource(lowerer, type)
+  )
+    return recordStringCall(lowerer, arg, "string", loc, "constant");
   if (
     (type.kind === "record" && defaultRecordToString(lowerer, type.shapeId)) ||
     (type.kind === "object" && defaultToString(lowerer, type.className))
@@ -615,6 +684,15 @@ function returnAs(lowerer: Lowerer, value: IrExpr, ret: IrType, loc: SrcLoc): Ir
   ];
 }
 
+/** A boolean answer converts to `want` exactly as convertTo does. */
+function boolConvertsTo(lowerer: Lowerer, want: IrType): boolean {
+  return (
+    typeEquals(BOOL, want) ||
+    (want.kind === "dyn" && lowerer.dynConvertible(BOOL)) ||
+    (want.kind === "union" && lowerer.armTag(want.unionId, BOOL) >= 0)
+  );
+}
+
 function convertTo(lowerer: Lowerer, value: IrExpr, want: IrType): IrExpr | null {
   if (typeEquals(value.type, want)) return value;
   if (want.kind === "dyn" && lowerer.dynConvertible(value.type))
@@ -627,7 +705,7 @@ function convertTo(lowerer: Lowerer, value: IrExpr, want: IrType): IrExpr | null
 /** `o.method(...args)` on a record: an own callable entry when the record
  * holds one, else the built-in. `calleeText` names the callee for Node's
  * "is not a function". */
-function callOwnOrBuiltin(
+export function callOwnOrBuiltin(
   lowerer: Lowerer,
   declare: DeclareLocal,
   o: IrExpr,
@@ -712,7 +790,7 @@ function ownEntryRead(
  * non-function throws Node's "is not a function"; a function whose
  * parameters or result cannot carry the call throws the checked-conversion
  * TypeError (the program's types claimed otherwise). */
-function callOwn(
+export function callOwn(
   lowerer: Lowerer,
   declare: DeclareLocal,
   own: IrExpr,
@@ -753,6 +831,18 @@ function callOwn(
           : convertTo(lowerer, arg, param);
       if (given === null) return lie;
       passed.push(given);
+    }
+    // A checked-dynamic variadic entry (a rest parameter, or `arguments`)
+    // takes the arguments past its declared parameters, or all of them, in
+    // its hidden array.
+    if (sig.rest === true) {
+      const packed: IrExpr[] = [];
+      for (let i = sig.argumentsAll === true ? 0 : sig.params.length; i < args.length; i++) {
+        const boxed = convertTo(lowerer, args[i]!, DYN);
+        if (boxed === null) return lie;
+        packed.push(boxed);
+      }
+      passed.push({ kind: "dynArrLit", elems: packed, type: DYN, loc });
     }
     const result: IrExpr = { kind: "callValue", callee: fn, args: passed, type: sig.ret, loc };
     if (sig.ret.kind === "void") return sequence(result, lie, loc);
@@ -817,6 +907,8 @@ export function lowerRecordInheritedCall(
   if (recvT?.kind !== "record") return null;
   const shape = lowerer.shapes.get(recvT.shapeId);
   if (!shape || shape.tuple) return null;
+  if (method !== "toString")
+    lowerer.recordMethodCalls.push({ shapeId: recvT.shapeId, method, loc: locOf(call) });
   const want =
     method === "valueOf"
       ? (lowerer.mapTypeOf(lowerer.typeOf(call)) ?? recvT)

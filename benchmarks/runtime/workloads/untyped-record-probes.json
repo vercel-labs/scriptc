@@ -1,0 +1,7 @@
+{
+  "entry": "workloads/untyped-record-probes.ts",
+  "args": [
+    "1"
+  ],
+  "scaleArg": 0
+}

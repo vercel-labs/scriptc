@@ -1,0 +1,15 @@
+exports[`assertion list wins over the default 1`] = `
+own:value
+`;
+
+exports[`default list applies 1`] = `
+custom:[object Object]
+`;
+
+exports[`default list applies 2`] = `
+custom:1,2
+`;
+
+exports[`default list chains in order 1`] = `
+[ABC]
+`;

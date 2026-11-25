@@ -1,0 +1,1 @@
+{ "name": "island-worker-many", "private": true, "type": "module", "scriptc": { "packages": { "calc-pkg": "node" } } }

@@ -17,9 +17,17 @@
 static ScrBytes *scr_strdec_dyn_view(const ScrDyn *chunk, bool *is_string) {
   *is_string = chunk->kind == SCR_DYN_STR;
   if (*is_string) return NULL;
+  /* A capsule answers by its materialized value: a typed array or Buffer
+   * decodes, and an array or record throws as below. */
+  if (chunk->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(chunk);
+    if (!materialized) return NULL;
+    ScrBytes *view = scr_strdec_dyn_view(materialized, is_string);
+    scr_dyn_release(materialized);
+    return view;
+  }
   /* An ArrayBuffer or SharedArrayBuffer is not a view: Node throws. */
-  if (chunk->kind == SCR_DYN_TYPED_REF || chunk->kind == SCR_DYN_BYTES)
-    return scr_bytes_buffer_source(chunk);
+  if (chunk->kind == SCR_DYN_BYTES) return scr_bytes_buffer_source(chunk);
   scr_dyn_arg_type_fail("buf", "an instance of Buffer, TypedArray, or DataView", chunk);
   return NULL;
 }

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8924-project-ambient-declarations/sum.ts",
+  "<repo>/tests/corpus/8924-project-ambient-declarations/main.ts"
+ ],
+ "diags": []
+}

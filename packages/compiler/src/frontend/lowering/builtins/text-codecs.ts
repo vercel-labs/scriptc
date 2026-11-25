@@ -2,7 +2,9 @@ import { keyedHelperName } from "../stable-names.js";
 import { isBuiltinClassInstance } from "./receiver-types.js";
 import { strLit, varRef, dynUndefinedExpr } from "../../../ir/build.js";
 import { staticTextDecoderEncoding } from "../text-decoder-encoding.js";
+import { checkedIterableSpread } from "../checked-iterable-spread.js";
 import * as ts from "../../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../../outer-expressions.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -18,11 +20,7 @@ import {
   STRING,
   type SrcLoc,
 } from "../../../ir/ir.js";
-import {
-  lowerBuiltinValuePreservingUndefined,
-  checkedOptionalBuiltinArm,
-  stripTypeCasts,
-} from "./arguments.js";
+import { lowerBuiltinValuePreservingUndefined, checkedOptionalBuiltinArm } from "./arguments.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 
 /** The input of `decoder.decode(input)`. An undefined input decodes no bytes,
@@ -53,6 +51,14 @@ function lowerDecodeInput(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): I
       };
   }
   return value;
+}
+
+/** The input of `encoder.encode(input)`: a statically undefined argument
+ * (after its effects) encodes "", the parameter's default in Node. */
+function lowerEncodeInput(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, node);
+  if (undefinedArg) return defaultAfterUndefined(undefinedArg, strLit("", loc));
+  return lowerer.lowerExprExpecting(node, STRING);
 }
 
 /** StringDecoder writes preserve pending bytes; end(input) performs the
@@ -151,11 +157,16 @@ export function lowerStringDecoderMethodCall(
     };
   }
   if (!(chunk.type.kind === "bytes" && chunk.type.elem === "u8")) {
-    lowerer.noLowering(
-      `StringDecoder.${name} of '${lowerer.fmt(chunk.type)}' data`,
-      node,
-      "pass a string or typed-array view (narrow unions first)",
-    );
+    // Any other value decides at run time, as Node's write does: a string
+    // passes through, an ArrayBufferView decodes, and anything else throws.
+    const op = name === "end" ? "endDyn" : "writeDyn";
+    return {
+      kind: "call",
+      callee: stringDecoderHelper(lowerer, op, receiver.type.shapeId, loc),
+      args: [receiver, lowerer.coerceInto(node, chunk, DYN)],
+      type: STRING,
+      loc,
+    };
   }
   const helper = stringDecoderHelper(
     lowerer,
@@ -424,6 +435,33 @@ type TextCodecCtor = {
   ctor: ts.NewExpression;
 };
 
+/** The arguments of `new TextEncoder(...)`. Node's constructor takes no
+ * parameters: each argument is evaluated in order and its value is
+ * discarded, so `new TextEncoder("utf-8")` is `new TextEncoder()`. A
+ * spread argument is iterated, and throws Node's TypeError when it is not
+ * iterable. */
+function textEncoderArgumentEffects(lowerer: Lowerer, ctor: ts.NewExpression): IrStmt[] {
+  const stmts: IrStmt[] = [];
+  for (const arg of ctor.arguments?.nodes ?? []) {
+    if (ts.isSpreadElement(arg)) {
+      const source = lowerer.lowerExpr(arg.expression);
+      const spelling = ts.getTextOfNode(arg.expression);
+      const iterated = checkedIterableSpread(lowerer, source, spelling, locOf(arg));
+      stmts.push({ kind: "exprStmt", expr: iterated, loc: locOf(arg) });
+      continue;
+    }
+    const value = lowerer.lowerExpr(arg);
+    if (
+      value.kind !== "unitLit" &&
+      value.kind !== "strLit" &&
+      value.kind !== "numLit" &&
+      value.kind !== "boolLit"
+    )
+      stmts.push({ kind: "exprStmt", expr: value, loc: locOf(arg) });
+  }
+  return stmts;
+}
+
 /** Box a codec's immutable encoding in an owned record. Unlike erased
  * aliases, this value can live in fields, arguments, and closure captures. */
 export function lowerTextCodecNew(
@@ -435,8 +473,9 @@ export function lowerTextCodecNew(
   const loc = locOf(ctor);
   let encoding: IrExpr = { kind: "numLit", value: -1, type: F64, loc };
   let label: IrExpr | null = null;
+  const before: IrStmt[] = [];
   if (cls === "TextEncoder") {
-    if (args.length !== 0) lowerer.noLowering("new TextEncoder with arguments", ctor);
+    before.push(...textEncoderArgumentEffects(lowerer, ctor));
   } else if (args.length !== 0) {
     const labelT = lowerer.typeOf(args[0]!);
     const parsed = labelT.isStringLiteralType() ? staticTextDecoderEncoding(labelT.value) : null;
@@ -454,13 +493,41 @@ export function lowerTextCodecNew(
       label = lowerer.lowerExprExpecting(args[0]!, STRING);
     }
   }
-  const options = args[1] ? stripTypeCasts(args[1]) : null;
+  const options = cls === "TextDecoder" && args[1] ? withoutParenthesesTypeWrappers(args[1]) : null;
   const flags = new Map<string, IrExpr>();
   for (const name of ["fatal", "ignoreBOM"])
     flags.set(name, { kind: "boolLit", value: false, type: BOOL, loc });
-  if (options) {
-    if (!ts.isObjectLiteralExpression(options))
-      lowerer.noLowering("TextDecoder options outside an object literal", options);
+  if (options && !ts.isObjectLiteralExpression(options)) {
+    // Node's order: the label and the options evaluate, String(label) runs,
+    // the options are checked (null, objects and functions pass), the label
+    // is looked up, then options.fatal and options.ignoreBOM read.
+    const held = (name: string, value: IrExpr): IrExpr => {
+      const local = lowerer.declareHiddenLocal(name, DYN);
+      before.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, DYN, loc);
+    };
+    const labelRef = held(
+      "%textDecoderLabel",
+      args.length !== 0 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc),
+    );
+    const optionsRef = held("%textDecoderOptions", lowerer.lowerExprExpecting(options, DYN));
+    encoding = {
+      kind: "libCall",
+      fn: "text.decoderEncodingOptions",
+      args: [labelRef, optionsRef],
+      type: F64,
+      loc,
+    };
+    label = null;
+    for (const name of flags.keys())
+      flags.set(name, {
+        kind: "libCall",
+        fn: "text.decoderFlag",
+        args: [optionsRef, strLit(name, loc)],
+        type: BOOL,
+        loc,
+      });
+  } else if (options) {
     for (const property of options.properties.nodes) {
       if (
         (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
@@ -488,15 +555,9 @@ export function lowerTextCodecNew(
     type,
     loc,
   };
-  return label === null || label.kind === "strLit"
-    ? result
-    : {
-        kind: "seqExpr",
-        stmts: [{ kind: "exprStmt", expr: label, loc }],
-        result,
-        type,
-        loc,
-      };
+  if (label !== null && label.kind !== "strLit")
+    before.push({ kind: "exprStmt", expr: label, loc });
+  return before.length === 0 ? result : { kind: "seqExpr", stmts: before, result, type, loc };
 }
 
 export function storedTextCodecClassOf(
@@ -529,11 +590,13 @@ function lowerStoredTextCodecCall(
   }
   const loc = locOf(call);
   let stream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+  let optionsNode: ts.Expression | null = null;
   if (cls === "TextDecoder" && call.arguments.nodes[1]) {
-    const options = stripTypeCasts(call.arguments.nodes[1]);
-    if (!ts.isObjectLiteralExpression(options))
-      lowerer.noLowering("TextDecoder.decode options outside an object literal", options);
-    for (const property of options.properties.nodes) {
+    const options = withoutParenthesesTypeWrappers(call.arguments.nodes[1]);
+    // Options outside an object literal are checked and read after the
+    // input evaluates (below).
+    if (!ts.isObjectLiteralExpression(options)) optionsNode = options;
+    for (const property of ts.isObjectLiteralExpression(options) ? options.properties.nodes : []) {
       if (
         (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
         !ts.isIdentifier(property.name) ||
@@ -555,34 +618,49 @@ function lowerStoredTextCodecCall(
         ? strLit("", loc)
         : { kind: "bytesNew", source: null, type: BYTES_U8, loc }
       : cls === "TextEncoder"
-        ? lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING)
+        ? lowerEncodeInput(lowerer, call.arguments.nodes[0]!, loc)
         : lowerDecodeInput(lowerer, call.arguments.nodes[0]!, loc);
-  if (
-    cls === "TextDecoder" &&
-    (arg.type.kind === "dyn" || (arg.type.kind === "bytes" && arg.type.elem !== "u8"))
-  ) {
-    arg = {
+  // Any input other than a Uint8Array passes as a dynamic value: the helper
+  // converts it after the options are checked, as Node does, and throws
+  // Node's TypeError for a value that is not a buffer source.
+  const dynInput = cls === "TextDecoder" && !(arg.type.kind === "bytes" && arg.type.elem === "u8");
+  if (dynInput) arg = lowerer.coerceInto(call.arguments.nodes[0]!, arg, DYN);
+  if (optionsNode !== null)
+    stream = {
       kind: "libCall",
-      fn: "bytes.bufferSource",
-      args: [lowerer.coerceInto(call.arguments.nodes[0]!, arg, DYN)],
-      type: BYTES_U8,
+      fn: "text.decodeStreamOption",
+      args: [lowerer.lowerExprExpecting(optionsNode, DYN)],
+      type: BOOL,
       loc,
     };
-  }
-  if (cls === "TextDecoder" && !(arg.type.kind === "bytes" && arg.type.elem === "u8")) {
-    lowerer.noLowering(
-      `TextDecoder.decode of '${lowerer.fmt(arg.type)}' values`,
-      call,
-      "Uint8Array/Buffer input decodes (ArrayBuffer values have no representation)",
-    );
-  }
-  const key = `textCodec.${cls}.${receiver.type.shapeId}`;
+  const key = `textCodec.${cls}.${receiver.type.shapeId}${dynInput ? ".dyn" : ""}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
     name = `%${key}`;
     lowerer.valueHelpers.set(key, name);
     const recT = receiver.type;
-    const input = varRef("input.0", arg.type, loc);
+    const field = (name: string, type: IrType): IrExpr => ({
+      kind: "recordGet",
+      obj: varRef("codec.0", recT, loc),
+      shapeId: recT.shapeId,
+      field: name,
+      type,
+      loc,
+    });
+    const input: IrExpr = dynInput
+      ? {
+          kind: "libCall",
+          fn: "text.decoderInput",
+          args: [
+            varRef("input.0", DYN, loc),
+            field("%TextDecoder", F64),
+            field("%state", DYN),
+            varRef("stream.0", BOOL, loc),
+          ],
+          type: BYTES_U8,
+          loc,
+        }
+      : varRef("input.0", arg.type, loc);
     const result: IrExpr =
       cls === "TextEncoder"
         ? {
@@ -596,31 +674,11 @@ function lowerStoredTextCodecCall(
             kind: "libCall",
             fn: "text.decodeStream",
             args: [
-              {
-                kind: "recordGet",
-                obj: varRef("codec.0", recT, loc),
-                shapeId: recT.shapeId,
-                field: "%state",
-                type: DYN,
-                loc,
-              },
+              field("%state", DYN),
               input,
-              {
-                kind: "recordGet",
-                obj: varRef("codec.0", recT, loc),
-                shapeId: recT.shapeId,
-                field: "%TextDecoder",
-                type: F64,
-                loc,
-              },
-              ...["%fatal", "%ignoreBOM"].map((field): IrExpr => ({
-                kind: "recordGet",
-                obj: varRef("codec.0", recT, loc),
-                shapeId: recT.shapeId,
-                field,
-                type: BOOL,
-                loc,
-              })),
+              field("%TextDecoder", F64),
+              field("%fatal", BOOL),
+              field("%ignoreBOM", BOOL),
               varRef("stream.0", BOOL, loc),
             ],
             type: STRING,
@@ -656,9 +714,9 @@ function lowerStoredTextCodecCall(
  * type-only wrappers. Name alone is never enough: a user class with the
  * same spelling keeps the ordinary class lowering. */
 function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodecCtor | null {
-  const ctor = stripTypeCasts(expr);
+  const ctor = withoutParenthesesTypeWrappers(expr);
   if (!ts.isNewExpression(ctor)) return null;
-  const callee = stripTypeCasts(ctor.expression);
+  const callee = withoutParenthesesTypeWrappers(ctor.expression);
   if (!ts.isIdentifier(callee)) return null;
   if (callee.text !== "TextDecoder" && callee.text !== "TextEncoder") return null;
   const sym = lowerer.resolveValueSymbol(callee);
@@ -666,6 +724,23 @@ function directTextCodecCtorOf(lowerer: Lowerer, expr: ts.Expression): TextCodec
   const name = ts.symbolName(sym);
   if (name !== "TextDecoder" && name !== "TextEncoder") return null;
   return { cls: name, ctor };
+}
+
+/** Whether `type` is the `{ read, written }` record the typed encodeInto
+ * entry fills: two number fields and nothing else. */
+function encodeIntoResultShape(
+  lowerer: Lowerer,
+  type: IrType,
+): type is IrType & { kind: "record" } {
+  if (type.kind !== "record") return false;
+  const shape = lowerer.shapes.get(type.shapeId);
+  if (shape === undefined || shape.indexValue || shape.tuple === true) return false;
+  if (shape.fields.length !== 2) return false;
+  return (
+    shape.fields.every((field) => field.type.kind === "f64") &&
+    shape.fields.some((field) => field.name === "read") &&
+    shape.fields.some((field) => field.name === "written")
+  );
 }
 
 /** Inline codec calls avoid allocating a receiver; stored receivers use
@@ -691,15 +766,59 @@ export function lowerTextCodecCall(
       lowerer.noLowering("TextEncoder.encodeInto with this argument shape", call);
     const loc = locOf(call);
     const receiver = lowerer.lowerExpr(access.expression);
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!type) lowerer.badType(call, lowerer.typeOf(call));
+    // A statically typed string into a statically typed Uint8Array takes
+    // the runtime's typed entry (scr_text_encode_into_str): neither operand
+    // is boxed as a dynamic value, and the two counts are written into the
+    // { read, written } record the call site expects instead of a dynamic
+    // object the compiler then re-checks field by field. Anything less
+    // exact — an `any` operand, a Buffer or another view, another result
+    // type — keeps the checked-dynamic call below.
+    const [sourceNode, destinationNode] = call.arguments.nodes as [ts.Expression, ts.Expression];
+    // The types are read off the expressions that evaluate: a type-only
+    // wrapper (`x as string`) states the type the call site wants, not the
+    // one the operand produces, and the typed entry needs the operand's own
+    // representation. A wrapper whose operand is a union keeps the dynamic
+    // path, which converts it.
+    const sourceOperand = withoutParenthesesTypeWrappers(sourceNode);
+    const destinationOperand = withoutParenthesesTypeWrappers(destinationNode);
+    const sourceType = lowerer.mapTypeOf(lowerer.typeOf(sourceOperand));
+    const destinationType = lowerer.mapTypeOf(lowerer.typeOf(destinationOperand));
+    if (
+      sourceType?.kind === "string" &&
+      destinationType?.kind === "bytes" &&
+      destinationType.elem === "u8" &&
+      encodeIntoResultShape(lowerer, type)
+    ) {
+      const typed: IrExpr = {
+        kind: "libCall",
+        fn: "text.encodeIntoStr",
+        args: [
+          lowerer.lowerExprExpecting(sourceOperand, STRING),
+          lowerer.lowerExpr(destinationOperand),
+        ],
+        type,
+        loc,
+      };
+      const coerced = lowerer.coerceInto(call, typed, type);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: coerced,
+        type,
+        loc,
+      };
+    }
     const result: IrExpr = {
       kind: "libCall",
       fn: "text.encodeInto",
-      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(stripTypeCasts(arg), DYN)),
+      args: call.arguments.nodes.map((arg) =>
+        lowerer.lowerExprExpecting(withoutParenthesesTypeWrappers(arg), DYN),
+      ),
       type: DYN,
       loc,
     };
-    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (!type) lowerer.badType(call, lowerer.typeOf(call));
     const checked = lowerer.coerceInto(call, result, type);
     return {
       kind: "seqExpr",
@@ -766,21 +885,20 @@ export function lowerTextCodecCall(
     }
     const argNode = call.arguments.nodes[0]!;
     let arg = lowerDecodeInput(lowerer, argNode, loc);
-    if (arg.type.kind === "dyn" || (arg.type.kind === "bytes" && arg.type.elem !== "u8")) {
+    if (!(arg.type.kind === "bytes" && arg.type.elem === "u8")) {
+      // A fresh decoder holds no stream state (undefined below).
       arg = {
         kind: "libCall",
-        fn: "bytes.bufferSource",
-        args: [lowerer.coerceInto(argNode, arg, DYN)],
+        fn: "text.decoderInput",
+        args: [
+          lowerer.coerceInto(argNode, arg, DYN),
+          { kind: "numLit", value: encoding.kind === "utf8" ? -1 : encoding.id, type: F64, loc },
+          dynUndefinedExpr(loc),
+          { kind: "boolLit", value: false, type: BOOL, loc },
+        ],
         type: BYTES_U8,
         loc,
       };
-    }
-    if (!(arg.type.kind === "bytes" && arg.type.elem === "u8")) {
-      lowerer.noLowering(
-        `TextDecoder.decode of '${lowerer.fmt(arg.type)}' values`,
-        argNode,
-        "Uint8Array/Buffer input decodes (ArrayBuffer values have no representation)",
-      );
     }
     const decoded: IrExpr =
       encoding.kind === "utf8"
@@ -794,18 +912,25 @@ export function lowerTextCodecCall(
           };
     return afterLabel(decoded);
   }
-  if (ctorArgs.length > 0) {
-    lowerer.noLowering("new TextEncoder with arguments", recv);
-  }
+  const ctorEffects = textEncoderArgumentEffects(lowerer, recv);
   if (call.arguments.nodes.length > 1) {
     lowerer.noLowering(`TextEncoder.encode with ${call.arguments.nodes.length} arguments`, call);
   }
   const s =
     call.arguments.nodes.length === 0
       ? strLit("", loc)
-      : lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
+      : lowerEncodeInput(lowerer, call.arguments.nodes[0]!, loc);
   const enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
-  return { kind: "libCall", fn: "buffer.fromStr", args: [s, enc], type: BYTES_U8, loc };
+  const encoded: IrExpr = {
+    kind: "libCall",
+    fn: "buffer.fromStr",
+    args: [s, enc],
+    type: BYTES_U8,
+    loc,
+  };
+  return ctorEffects.length === 0
+    ? encoded
+    : { kind: "seqExpr", stmts: ctorEffects, result: encoded, type: BYTES_U8, loc };
 }
 
 export function lowerBufferEncodingCall(
@@ -820,7 +945,10 @@ export function lowerBufferEncodingCall(
   const arity = bi.member === "transcode" ? 3 : 1;
   const args = Array.from({ length: arity }, (_, index) =>
     expr.arguments.nodes[index]
-      ? lowerer.lowerExprExpecting(stripTypeCasts(expr.arguments.nodes[index]!), DYN)
+      ? lowerer.lowerExprExpecting(
+          withoutParenthesesTypeWrappers(expr.arguments.nodes[index]!),
+          DYN,
+        )
       : dynUndefinedExpr(loc),
   );
   if (expr.arguments.nodes.length > arity)

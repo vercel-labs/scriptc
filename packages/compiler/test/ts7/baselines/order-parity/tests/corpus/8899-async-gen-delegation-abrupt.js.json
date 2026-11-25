@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8899-async-gen-delegation-abrupt.js"
+ ],
+ "diags": []
+}

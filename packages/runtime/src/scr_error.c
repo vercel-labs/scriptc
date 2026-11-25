@@ -354,6 +354,15 @@ ScrStr *scr_error_stack(ScrError *e) {
   return scr_str_retain(e->stack);
 }
 
+/* The frames `e` captured at creation, one "\n    at ..." line each, for
+ * the uncaught and unhandled-rejection reports, which print them under the
+ * "name: message" heading as Node prints its stack trace. Nothing for an
+ * error created where no source frame was kept. */
+void scr_error_report_frames(const ScrError *e) {
+  const ScrStr *frames = e->stack_frames;
+  if (frames != NULL) fwrite(frames->data, 1, frames->len, stderr);
+}
+
 void scr_error_set_stack(ScrError *e, ScrStr *stack) {
   ScrStr *replacement = scr_str_retain(stack);
   scr_str_release(e->stack);
@@ -420,6 +429,10 @@ const char *scr_error_message_code(const ScrStr *msg) {
       "ECONNRESET" },
     { "Parse Error: Header overflow", true, "HPE_HEADER_OVERFLOW" },
     { "certificate has expired", true, "CERT_HAS_EXPIRED" },
+    { "certificate is not yet valid", true, "CERT_NOT_YET_VALID" },
+    { "certificate signature failure", true, "CERT_SIGNATURE_FAILURE" },
+    { "path length constraint exceeded", true, "PATH_LENGTH_EXCEEDED" },
+    { "certificate revoked", true, "CERT_REVOKED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },
     { "unable to verify the first certificate", false, "UNABLE_TO_VERIFY_LEAF_SIGNATURE" },
@@ -437,6 +450,43 @@ const char *scr_error_message_code(const ScrStr *msg) {
       return known[i].code;
   }
   return NULL;
+}
+
+/* The code of an event-error message: scr_error_message_code's table, or
+ * the errno name an errnoException-style message embeds as its second
+ * token ("connect ECONNREFUSED 127.0.0.1:80", "listen EADDRINUSE: address
+ * already in use :::4000"). Every message fired to an event listener is
+ * this runtime's own construction, and the ones carrying a code embed it
+ * in this shape, as Node builds them from the code. NULL for a code-less
+ * message; otherwise a static string or a thread-local buffer valid until
+ * the next call. */
+const char *scr_error_event_code(const ScrStr *msg) {
+  static SCR_TL char buf[32];
+  const char *known = scr_error_message_code(msg);
+  if (known != NULL) return known;
+  const char *sp = strchr((const char *)msg->data, ' ');
+  if (sp == NULL || sp[1] != 'E') return NULL;
+  const char *tok = sp + 1;
+  size_t n = 1;
+  while (tok[n] != '\0' && tok[n] != ' ' && tok[n] != ':') {
+    char ch = tok[n];
+    if (!((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9'))) return NULL;
+    if (n + 1 >= sizeof buf) return NULL;
+    n++;
+  }
+  if (n < 3) return NULL; /* "EIO" is the shortest real name */
+  memcpy(buf, tok, n);
+  buf[n] = '\0';
+  return buf;
+}
+
+/* The Error an event listener receives for an event-error message, with
+ * its code. +1. */
+ScrError *scr_error_from_event_message(ScrStr *msg /*borrowed*/) {
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+  const char *code = scr_error_event_code(msg);
+  if (code != NULL) scr_error_set_code(e, code);
+  return e;
 }
 
 ScrStr *scr_error_code(ScrError *e) {
@@ -565,4 +615,14 @@ void scr_throw_error_named(ScrStr *name, ScrStr *message) {
   e->message_present = true;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v,
                  scr_error_traced ? &scr_error_trace : NULL);
+}
+
+/* The `name` a read of the error gives when it has no own one: what its
+ * class answers (a `name` getter, through the installed reader), else the
+ * name it inherits, which the slot holds. An own name is the slot. +1, or
+ * NULL with the getter's exception pending. Last in the unit: only
+ * structuredClone of an error links it. */
+ScrStr *scr_error_read_name(ScrError *e) {
+  return !e->name_present && scr_error_name_reader ? scr_error_name_reader(scr_error_retain(e))
+                                                   : scr_str_retain(e->name);
 }

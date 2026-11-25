@@ -60,6 +60,24 @@ test("detached exit refuses non-executable compiler output", async () => {
   await expect(readFile(outPath)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
+test("stdout buffering refuses non-executable compiler output", async () => {
+  const { entry, outDir } = await fixture();
+  const outPath = join(outDir, "main.ll");
+  const result = await compile(entry, {
+    outDir,
+    outPath,
+    outputKind: "llvm",
+    stdoutBuffering: true,
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    diagnostics: [
+      { code: "SC3002", message: expect.stringContaining("only supported for executable output") },
+    ],
+  });
+  await expect(readFile(outPath)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("large pages refuse non-executable compiler output", async () => {
   const { entry, outDir } = await fixture();
   const outPath = join(outDir, "main.ll");

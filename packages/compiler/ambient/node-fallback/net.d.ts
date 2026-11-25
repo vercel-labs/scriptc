@@ -12,16 +12,25 @@
  * firing once connections drain; socket write/end/destroy/pipe and the
  * data/end/close/error/connect/drain events (on and once — listeners
  * take at most the declared parameter). write returns Node's
- * backpressure boolean; end returns void here (Node returns the socket);
- * on/once return void (chaining is fenced). connect's host is a numeric IP or "localhost" (pinned to
- * 127.0.0.1 — SEMANTICS.md); every failure is the async 'error' event,
+ * backpressure boolean; end, destroy, setEncoding, setTimeout and the
+ * socket-option setters answer the socket (Node's chaining); on/once return
+ * void (chaining is fenced). connect's host is a numeric IP or "localhost"
+ * (pinned to 127.0.0.1 — SEMANTICS.md); every failure is the async 'error'
+ * event,
  * and an 'error' with no listener exits 1 like an unhandled EventEmitter
  * 'error'. */
 declare module "net" {
   export interface Socket {
-    /* Whether the socket keeps the event loop alive (ref'd by default). */
-    ref(): void;
-    unref(): void;
+    /* Whether the socket keeps the event loop alive (ref'd by default).
+     * Both chain, Node's shape. */
+    ref(): Socket;
+    unref(): Socket;
+    /* Node's socket.connect ladder: an idle socket dials like net.connect.
+     * The port form lowers; the path and options forms do not yet. */
+    connect(port: number, host: string, connectionListener?: () => void): Socket;
+    connect(port: number, connectionListener?: () => void): Socket;
+    connect(options: { port: number; host?: string }, connectionListener?: () => void): Socket;
+    connect(path: string, connectionListener?: () => void): Socket;
     readonly remoteAddress: string | undefined;
     /* The peer's fields are cached at first read, like remoteAddress; the
      * local ones are undefined while connecting and after close. */
@@ -33,6 +42,11 @@ declare module "net" {
     readonly bytesRead: number;
     readonly connecting: boolean;
     readonly pending: boolean;
+    /* new net.Socket({ allowHalfOpen }): the peer FIN leaves the write half
+     * open; setTimeout(ms) sets the idle timeout the 'timeout' event and
+     * socket.timeout report (undefined until one is set, 0 once disabled) */
+    readonly allowHalfOpen: boolean;
+    readonly timeout: number | undefined;
     readonly readyState: "opening" | "open" | "readOnly" | "writeOnly" | "closed";
     /* true once the fd is gone (destroy() or full close) — Node's flag. */
     readonly destroyed: boolean;
@@ -43,6 +57,12 @@ declare module "net" {
     /* every byte the write paths accepted (buffered included — Node
      * counts those too; plaintext on TLS sockets). */
     readonly bytesWritten: number;
+    /* The unsent bytes (Node's deprecated writableLength alias); Node
+     * answers undefined before the socket has a handle. */
+    readonly bufferSize: number;
+    /* The "$ip:$port" strings a multi-address dial tried; Node's property
+     * is absent (undefined) when the dial took the single-address path. */
+    readonly autoSelectFamilyAttemptedAddresses: string[];
     /* write's callback runs once the data is flushed, with null; end's
      * once the socket finishes. */
     /* false when the bytes this write left unsent reach the 65536-byte
@@ -52,9 +72,10 @@ declare module "net" {
     readonly writableLength: number;
     /* a write answered false and 'drain' has not fired yet */
     readonly writableNeedDrain: boolean;
-    end(callback?: () => void): void;
-    end(data: string | Uint8Array, callback?: () => void): void;
-    destroy(): void;
+    end(callback?: () => void): Socket;
+    end(data: string | Uint8Array, callback?: () => void): Socket;
+    /* An explicit destroy only; the error payload form is not lowered. */
+    destroy(): Socket;
     /* Flow control: pause holds reads off (kernel/TCP backpressure is
      * the buffer); resume flows — and discards without listeners, so
      * 'end' stays reachable. Both chain, Node's shape. */
@@ -62,8 +83,21 @@ declare module "net" {
     resume(): Socket;
     /* TCP_NODELAY on the live fd; missing means true. Chains. */
     setNoDelay(noDelay?: boolean): Socket;
-    /* SO_KEEPALIVE with the initial delay in ms. Chains. */
-    setKeepAlive(enable?: boolean, initialDelay?: number): Socket;
+    /* SO_KEEPALIVE with the initial delay in ms; interval and count tune
+     * the probes. A trailing `enable` object is Node's options form
+     * ({ enable, initialDelay, interval, count }). Chains. */
+    setKeepAlive(
+      enable?: boolean,
+      initialDelay?: number,
+      interval?: number,
+      count?: number,
+    ): Socket;
+    setKeepAlive(options: {
+      enable?: boolean;
+      initialDelay?: number;
+      interval?: number;
+      count?: number;
+    }): Socket;
     /* end() now, destroy once the FIN actually flushed. */
     destroySoon(): void;
     /* An RST instead of a FIN; a connecting socket resets once it
@@ -71,16 +105,17 @@ declare module "net" {
     resetAndDestroy(): Socket;
     /* The local address, or {} while connecting and once destroyed. */
     address(): AddressInfo | {};
-    /* setEncoding('utf8'): 'data' delivers strings — the IncomingMessage
-     * twin's contract. */
-    setEncoding(encoding: string): void;
+    /* setEncoding([encoding]): 'data' delivers strings — the IncomingMessage
+     * twin's contract. A missing encoding is 'utf8'. Chains. */
+    setEncoding(encoding?: string): Socket;
     /* socket→socket, and socket→response (the extended-CONNECT bridge
      * leg: raw chunks become response body writes; EOF ends it). */
     pipe(
       destination: Socket | import("http").ServerResponse | import("http2").Http2ServerResponse,
     ): void;
-    /* The callback is a once('timeout') listener (removed again by 0). */
-    setTimeout(ms: number, callback?: () => void): void;
+    /* The callback is a once('timeout') listener (removed again by 0).
+     * Chains. */
+    setTimeout(ms: number, callback?: () => void): Socket;
     /* The paused-mode demux surface: once('readable') + read(1) +
      * unshift — read answers exactly n buffered bytes or null. */
     read(size?: number): Buffer | null;
@@ -109,10 +144,21 @@ declare module "net" {
     on(event: "close", listener: (hadError: boolean) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(event: "session", listener: (session: Buffer) => void): void;
+    on(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     on(
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
+    ): void;
+    /* The happy-eyeballs dial's attempt events: (ip, port, family) per
+     * address tried; the failure carries the error too. */
+    on(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    on(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
     ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "data", listener: (chunk: Buffer) => void): void;
@@ -134,10 +180,19 @@ declare module "net" {
     addListener(event: "close", listener: (hadError: boolean) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
     addListener(event: "session", listener: (session: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     addListener(
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
+    ): void;
+    addListener(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    addListener(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
     ): void;
     once(event: "data", listener: (chunk: Buffer) => void): void;
     /* After setEncoding the chunk is a string. */
@@ -158,16 +213,29 @@ declare module "net" {
     once(event: "close", listener: (hadError: boolean) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "session", listener: (session: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     /* The host name's resolution, before the connect. */
     once(
       event: "lookup",
       listener: (err: Error | null, address: string, family: number, host: string) => void,
     ): void;
+    once(
+      event: "connectionAttempt" | "connectionAttemptTimeout",
+      listener: (ip: string, port: number, family: number) => void,
+    ): void;
+    once(
+      event: "connectionAttemptFailed",
+      listener: (ip: string, port: number, family: number, error: Error) => void,
+    ): void;
   }
   export interface Server {
-    /* Whether the server keeps the event loop alive (ref'd by default). */
-    ref(): void;
-    unref(): void;
+    /* Node's `promisify(this.close)()`: the promise fulfills at 'close',
+     * at once for a server that never listened. */
+    [Symbol.asyncDispose](): Promise<void>;
+    /* Whether the server keeps the event loop alive (ref'd by default).
+     * Both chain, Node's shape. */
+    ref(): Server;
+    unref(): Server;
     readonly listening: boolean;
     /* Connections past this many are closed with a 'drop' event;
      * undefined (the default) or null lifts the cap. */
@@ -176,37 +244,67 @@ declare module "net" {
     dropMaxConnection: boolean | undefined;
     /* cb(null, count) on the next tick. */
     getConnections(callback: (error: Error | null, count: number) => void): Server;
-    /* Node answers the server itself (`return this` chaining). */
-    listen(port: number, callback?: () => void): Server;
+    /* Node answers the server itself (`return this` chaining). An
+     * undefined port is an arbitrary unused one; a string is the port
+     * when it reads as a number (`process.env.PORT || 3000`) and a
+     * Unix-socket path otherwise. */
+    listen(port?: number | string, callback?: () => void): Server;
+    /* No port: an arbitrary unused one. */
+    listen(callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
-     * spelling). */
-    listen(port: number, host: string, callback?: () => void): Server;
+     * spelling); an undefined host is every interface. */
+    listen(port?: number | string, host?: string, callback?: () => void): Server;
     /* A Unix-socket server; the socket file is removed when it closes. */
     listen(path: string, callback?: () => void): Server;
-    /* The explicit-interface bind: host is an IP literal (absent = the
-     * host-less dual-stack any); ipv6Only sets IPV6_V6ONLY and reusePort
-     * requests kernel connection distribution where Node supports it. */
+    /* Adopt a socket bound at construction (net.BoundSocket): the server
+     * takes over the descriptor, reports its address, and the bound
+     * socket answers ERR_SOCKET_HANDLE_ADOPTED from then on. Its 'listening'
+     * callback fires once the server accepts. */
+    listen(handle: BoundSocket, callback?: () => void): Server;
+    /* The explicit-interface bind: host is an IP literal (absent or
+     * undefined = the host-less dual-stack any); path names a Unix socket
+     * (a leading '\0' is the abstract namespace) and is mutually exclusive
+     * with the port form; ipv6Only sets IPV6_V6ONLY and reusePort requests
+     * kernel connection distribution where Node supports it. Every field
+     * is optional, as in Node's net.ListenOptions: the runtime answers
+     * ERR_INVALID_ARG_VALUE for an option bag with neither port nor path. */
     listen(
-      options: { port: number; host?: string; ipv6Only?: boolean; reusePort?: boolean },
+      options: {
+        port?: number | string | undefined;
+        path?: string | undefined;
+        host?: string | undefined;
+        backlog?: number;
+        ipv6Only?: boolean;
+        reusePort?: boolean;
+      },
       callback?: () => void,
     ): Server;
-    close(callback?: () => void): void;
+    close(callback?: () => void): Server;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
      * stance). */
     address(): import("node:dgram").AddressInfo;
     /* The demux route: hand an accepted socket to another server. */
     emit(event: "connection", socket: Socket): boolean;
-    on(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    on(event: "connection", listener: (socket: Socket) => void): void;
+    /* tls and https servers: the socket after its handshake */
+    on(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     on(
       event: "tlsClientError",
       listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
     ): void;
+    /* tls and https servers: the NSS key-log lines of their connections;
+     * a plain server keeps the listener inert, as Node's EventEmitter does */
+    on(event: "keylog", listener: (line: Buffer) => void): void;
+    addListener(event: "keylog", listener: (line: Buffer) => void): void;
+    once(event: "keylog", listener: (line: Buffer) => void): void;
     on(event: "close" | "listening", listener: () => void): void;
     on(event: "drop", listener: (data?: DropArgument) => void): void;
     on(event: "timeout", listener: (socket: Socket) => void): void;
     on(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    on(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     /* The WebSocket handover: fires INSTEAD of 'request' for
      * Connection: upgrade requests, with the raw socket + head bytes;
      * 'connect' is its twin for CONNECT requests (HTTP tunneling). */
@@ -220,6 +318,12 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* http servers: a request past server.maxRequestsPerSocket (the
+     * server answers 503 itself). */
+    on(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
     addListener(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     /* tls and https servers: a handshake that failed */
@@ -231,6 +335,8 @@ declare module "net" {
     addListener(event: "drop", listener: (data?: DropArgument) => void): void;
     addListener(event: "timeout", listener: (socket: Socket) => void): void;
     addListener(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    addListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     addListener(
       event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
@@ -239,7 +345,12 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
-    once(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    addListener(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
+    once(event: "connection", listener: (socket: Socket) => void): void;
+    once(event: "secureConnection", listener: (socket: import("tls").TLSSocket) => void): void;
     /* tls and https servers: a handshake that failed */
     once(
       event: "tlsClientError",
@@ -249,6 +360,8 @@ declare module "net" {
     once(event: "drop", listener: (data?: DropArgument) => void): void;
     once(event: "timeout", listener: (socket: Socket) => void): void;
     once(event: "error", listener: (err: Error) => void): void;
+    /* http servers: a request the parser rejects, or a connection error */
+    once(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
     once(
       event: "upgrade" | "connect",
       listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
@@ -257,15 +370,40 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    once(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
+    /* The EventEmitter meta event: fires with the event name before a
+     * listener joins any of the server's lists. */
+    on(event: "newListener", listener: (event: string) => void): void;
+    addListener(event: "newListener", listener: (event: string) => void): void;
+    once(event: "newListener", listener: (event: string) => void): void;
     /* off / removeListener: the LAST listener standing for the same
-     * function leaves that event's list (Node's EventEmitter order). The
-     * server registries that keep a removable list: error, close,
-     * listening, connection/secureConnection, timeout, and drop. */
+     * function leaves that event's list (Node's EventEmitter order). */
     off(event: "error", listener: (err: Error) => void): void;
     off(event: "close" | "listening", listener: () => void): void;
     off(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
     off(event: "timeout", listener: (socket: Socket) => void): void;
     off(event: "drop", listener: (data?: DropArgument) => void): void;
+    off(event: "newListener", listener: (event: string) => void): void;
+    off(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    off(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    off(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    off(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    off(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
     removeListener(event: "error", listener: (err: Error) => void): void;
     removeListener(event: "close" | "listening", listener: () => void): void;
     removeListener(
@@ -274,6 +412,46 @@ declare module "net" {
     ): void;
     removeListener(event: "timeout", listener: (socket: Socket) => void): void;
     removeListener(event: "drop", listener: (data?: DropArgument) => void): void;
+    removeListener(event: "newListener", listener: (event: string) => void): void;
+    removeListener(
+      event: "tlsClientError",
+      listener: (err: Error, tlsSocket: import("tls").TLSSocket) => void,
+    ): void;
+    removeListener(event: "clientError", listener: (err: Error, socket: Socket) => void): void;
+    removeListener(
+      event: "upgrade" | "connect",
+      listener: (req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void,
+    ): void;
+    removeListener(
+      event: "request" | "checkContinue" | "checkExpectation",
+      listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
+    ): void;
+    removeListener(
+      event: "dropRequest",
+      listener: (req: import("http").IncomingMessage, socket: Socket) => void,
+    ): void;
+    /* The event's listeners in registration order, each the function the
+     * program registered (Node's identity semantics), typed by the event's
+     * listener shape. */
+    listeners(event: "error"): ((err: Error) => void)[];
+    listeners(event: "close" | "listening"): (() => void)[];
+    listeners(event: "connection" | "secureConnection"): ((socket: Socket) => void)[];
+    listeners(event: "timeout"): ((socket: Socket) => void)[];
+    listeners(event: "drop"): ((data?: DropArgument) => void)[];
+    listeners(event: "newListener"): ((event: string) => void)[];
+    listeners(
+      event: "tlsClientError",
+    ): ((err: Error, tlsSocket: import("tls").TLSSocket) => void)[];
+    listeners(event: "clientError"): ((err: Error, socket: Socket) => void)[];
+    listeners(
+      event: "upgrade" | "connect",
+    ): ((req: import("http").IncomingMessage, socket: Socket, head: Buffer) => void)[];
+    listeners(
+      event: "request" | "checkContinue" | "checkExpectation",
+    ): ((req: import("http").IncomingMessage, res: import("http").ServerResponse) => void)[];
+    listeners(
+      event: "dropRequest",
+    ): ((req: import("http").IncomingMessage, socket: Socket) => void)[];
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {
@@ -327,14 +505,47 @@ declare module "net" {
     static isBlockList(value: unknown): value is BlockList;
     static readonly PRIVATE_RANGES: readonly string[];
   }
+  /* The options a BoundSocket binds with: the TCP form takes port, host,
+   * ipv6Only and reusePort; path names a Unix socket (a leading '\0' is
+   * the Linux abstract namespace) and is mutually exclusive with them. */
+  export interface BoundSocketInitOptions {
+    port?: number | string;
+    /* A numeric IP address: net.BoundSocket does not resolve names. */
+    host?: string | null;
+    ipv6Only?: boolean;
+    reusePort?: boolean;
+    path?: string;
+  }
+  /* A socket bound at construction, adoptable by exactly one Server. The
+   * handle owns its descriptor until adoption; after it, or after close(),
+   * address(), fd() and close() throw ERR_SOCKET_HANDLE_ADOPTED, while
+   * [Symbol.dispose]() stays a no-op. */
+  export class BoundSocket {
+    constructor(options?: BoundSocketInitOptions);
+    /* The bound AddressInfo, or the path string for a Unix socket. */
+    address(): import("node:dgram").AddressInfo | string;
+    fd(): number;
+    close(): void;
+    readonly isPipe: boolean;
+    [Symbol.dispose](): void;
+  }
   /* Node's IPv4Reg and IPv6Reg tests: 4, 6, or 0 for isIP. */
   export function isIP(input: string): number;
   export function isIPv4(input: string): boolean;
   export function isIPv6(input: string): boolean;
-  /* The Socket VALUE — the `x instanceof net.Socket` narrowing target
-   * (the h2 compat 'connect' listener's test). Constructing bare sockets
-   * has no lowering; the construct signature exists for instanceof. */
-  export const Socket: abstract new () => Socket;
+  /* The Socket VALUE — the `x instanceof net.Socket` narrowing target and
+   * the unconnected-socket constructor: new net.Socket([options]) answers
+   * an idle socket that connect()/listen() style use starts. allowHalfOpen
+   * and signal lower; a descriptor (fd) and the readable/writable sides are
+   * refused by name where they run. */
+  export interface SocketConstructorOpts {
+    fd?: number;
+    allowHalfOpen?: boolean;
+    readable?: boolean;
+    writable?: boolean;
+    signal?: AbortSignal;
+  }
+  export const Socket: new (options?: SocketConstructorOpts) => Socket;
   export function createServer(connectionListener?: (socket: Socket) => void): Server;
   export function connect(port: number, host?: string, connectListener?: () => void): Socket;
   export function createConnection(
@@ -360,6 +571,7 @@ declare module "net" {
       port: number;
       host?: string;
       autoSelectFamily?: boolean;
+      autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;
     },
     connectListener?: () => void,
@@ -369,6 +581,7 @@ declare module "net" {
       port: number;
       host?: string;
       autoSelectFamily?: boolean;
+      autoSelectFamilyAttemptTimeout?: number;
       lookup?: LookupFunction;
     },
     connectListener?: () => void,
@@ -384,6 +597,10 @@ declare module "net" {
    * like Node's. */
   export function getDefaultAutoSelectFamilyAttemptTimeout(): number;
   export function setDefaultAutoSelectFamilyAttemptTimeout(value: number): void;
+  /* The process-wide autoSelectFamily switch (true by default), which a
+   * connect defaulting to it consults. */
+  export function getDefaultAutoSelectFamily(): boolean;
+  export function setDefaultAutoSelectFamily(value: boolean): void;
 }
 
 declare module "node:net" {

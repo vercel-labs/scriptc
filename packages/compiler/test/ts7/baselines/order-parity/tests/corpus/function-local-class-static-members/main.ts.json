@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/function-local-class-static-members/base.ts",
+  "<repo>/tests/corpus/function-local-class-static-members/main.ts"
+ ],
+ "diags": []
+}

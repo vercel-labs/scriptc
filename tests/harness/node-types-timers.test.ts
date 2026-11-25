@@ -53,8 +53,11 @@ const program = `class Holder {
 }
 const holder = new Holder();
 holder.timer = setTimeout(() => console.log("never"), 1000);
-// Long enough that the immediate runs first even on a loaded machine.
-const kept = setTimeout(() => console.log("fired", holder.timer === null), 200);
+// Long enough that the immediate runs first even on a loaded machine: a
+// 200 ms timer once lost to a macOS runner's start-up, so the first timers
+// phase ran it before the check phase's immediate, and the order differed
+// between Node and the compiled program.
+const kept = setTimeout(() => console.log("fired", holder.timer === null), 2000);
 kept.unref().ref();
 kept.refresh();
 console.log("hasRef", kept.hasRef());

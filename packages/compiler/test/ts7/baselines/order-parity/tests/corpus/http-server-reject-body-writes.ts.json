@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-server-reject-body-writes.ts"
+ ],
+ "diags": []
+}

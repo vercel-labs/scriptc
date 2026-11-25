@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-import-order/native-a.ts",
+  "<repo>/tests/corpus/node-island-import-order/barrel.ts",
+  "<repo>/tests/corpus/node-island-import-order/native-b.ts",
+  "<repo>/tests/corpus/node-island-import-order/user.ts",
+  "<repo>/tests/corpus/node-island-import-order/main.ts"
+ ],
+ "diags": []
+}

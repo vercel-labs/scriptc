@@ -1,9 +1,8 @@
 // One package opted in (escape-string-regexp compiles statically), one
-// UNTYPED package left on the island (typegapped ships no .d.ts and its
-// JS does not typecheck under this tsconfig). The opt-in's
-// maxNodeModuleJsDepth pulls typegapped's JS into the CHECKED program —
-// its checker errors must not gate the build (the punycode-through-
-// @types/node shape, pinned generally).
+// UNTYPED package beside it (typegapped ships no .d.ts and its JS does not
+// typecheck under this tsconfig). Compiling the first changes nothing about
+// the second: its JavaScript stays out of the checked program and its
+// import is reported as in typegap-only.ts.
 import escapeStringRegexp from "escape-string-regexp";
 import label from "typegapped";
 

@@ -12,6 +12,7 @@ import {
 import { builtinModules } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { invalidateTrackedFilesystem } from "./input-tracker.js";
 import { sourceImportsOfFile } from "./module-syntax.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 import type { Ts7SourceKind } from "./ts7/source-parser.js";
@@ -21,7 +22,10 @@ import type { ProvenancePackageSource, ProvenanceSources } from "./provenance-re
 
 export type ProvenanceParser = (path: string, source: string, kind: Ts7SourceKind) => SourceFile;
 
-const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
+// The scriptc condition is part of the import world: the published file
+// scriptc compiles is the one its own condition selects, so the source map
+// follows that branch.
+const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default", "scriptc"]);
 
 const NODE_BUILTINS = new Set(builtinModules);
 
@@ -206,6 +210,9 @@ async function fetchSourceTree(repo: string, commit: string): Promise<string> {
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
+  // The tree appeared under this compile: anything it probed as missing
+  // before the extraction answers again from disk.
+  invalidateTrackedFilesystem();
   return dest;
 }
 

@@ -1,0 +1,32 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8731-node-island-implicit-global/legacy.cjs",
+  "<repo>/tests/corpus/8731-node-island-implicit-global/main.cjs"
+ ],
+ "diags": [
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'counter' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/8731-node-island-implicit-global/legacy.cjs",
+    "start": 35,
+    "end": 42
+   },
+   "milestone": "later",
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
+  },
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'counter' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/8731-node-island-implicit-global/legacy.cjs",
+    "start": 0,
+    "end": 7
+   },
+   "milestone": "later",
+   "hint": "declare the name to keep the module native: a sloppy-mode write creates a property on Node's global object, which a native binary has none of (with --node-islands=auto, the default, a required module with this write runs in a Node island instead), and a strict-mode write throws",
+   "reason": "implicit-global-write"
+  }
+ ]
+}

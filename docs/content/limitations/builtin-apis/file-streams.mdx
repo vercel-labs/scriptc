@@ -1,4 +1,7 @@
 - **File streams:** `fs.createReadStream`, `fs.createWriteStream`, `new fs.ReadStream` and `new fs.WriteStream` (in JavaScript sources), and FileHandle `createReadStream`, `createWriteStream` and `readLines` return Readable and Writable streams.
   Options are checked when the stream is created, with Node's errors and order; `flags` and `mode` are checked when the file opens, so their errors arrive as `'error'` events.
   `bytesRead`, `bytesWritten`, `path`, `pending`, `close()`, `close(callback)` with a `() => void` callback, and the `'open'` and `'ready'` events compile.
-  Numeric `flags`, the `fs`, `signal` and `windowsHandle` options, write streams with an encoding other than UTF-8, and `instanceof fs.ReadStream` or `fs.WriteStream` are unsupported.
+  The `signal` option destroys the stream with an `AbortError` when the signal aborts, as `stream.addAbortSignal` does.
+  As in Node, a signal that is already aborted destroys the stream when it is created and the file is still opened afterwards, so `'open'` and `'ready'` follow `'close'` and that descriptor stays open.
+  A program links that support when the options of one of its file streams write `signal` or have a type that can hold it, `any` and `unknown` included; in any other program, a signal that still reaches a file stream inside a wider object, behind an options type without `signal`, throws when the stream is created.
+  Numeric `flags`, the `fs` and `windowsHandle` options, write streams with an encoding other than UTF-8, and `instanceof fs.ReadStream` or `fs.WriteStream` are unsupported.

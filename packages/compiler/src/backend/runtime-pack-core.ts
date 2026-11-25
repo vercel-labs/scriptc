@@ -2,6 +2,7 @@
  * discovery, artifact verification and staging belong to the calling host. */
 import { optimizationClass, type NativeOptimization } from "./optimization.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
+import { jsObjectModelFact } from "../ir/runtime-features.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
 
@@ -23,8 +24,6 @@ export interface RuntimePackVariant extends RuntimePackArtifact {
   id: string;
   when: Record<string, boolean>;
   defines: string[];
-  /** LLVM bitcode of the same unit, imported by the helper for inlining. */
-  bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -34,7 +33,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
+  id: "libregexp" | "zlib" | "brotli" | "zstd" | "mbedtls" | "icu" | "mlkem";
   predicate: RuntimePredicate;
 }
 
@@ -88,6 +87,11 @@ export interface RuntimePackManifest {
 }
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
+  /** The tty color-depth tables: the stream object's getColorDepth/
+   * hasColors, a Console built with inspectOptions/colorMode, or the console
+   * unit itself, which the inspect unit links and whose colorMode and table
+   * cells read the tables. */
+  ttyColorTables?: boolean;
   workers: boolean;
   youngNursery: boolean;
   eventTarget: boolean;
@@ -96,33 +100,99 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  processFeatures: boolean;
+  islandChild: boolean;
+  childOptionExt: boolean;
+  cluster: boolean;
+  spawnCaptureBytes: boolean;
+  childErrorFields: boolean;
+  childStreamFlow: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
+  conversionTrace: boolean;
   dynForAwait: boolean;
+  dynCollections: boolean;
+  dynIntegrityQueries: boolean;
+  reflectProtoTarget: boolean;
+  classTestPrototype: boolean;
+  recordSourceDelete: boolean;
+  recordViewFrozen: boolean;
+  genBind: boolean;
+  genReceiver: boolean;
+  recordSourceGet: boolean;
+  arrJoinStr: boolean;
   eventsOnceSignal: boolean;
   mime: boolean;
+  sqlite: boolean;
   largePages: boolean;
   webStreams: boolean;
+  webBodies: boolean;
   abortSignal: boolean;
   utilTiming: boolean;
+  utilMarkPromiseAsHandled: boolean;
+  utilTraceSigInt: boolean;
   dynBuffer: boolean;
+  fsPathValue: boolean;
   builtinValues: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (scr_dyn_stdlib_prototype.c). */
+  stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (scr_data_view_proto.c). */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`
+   * (scr_global_host_absent.c). */
+  hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic
+   * (scr_deferred_fence.c). */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value (scr_dyn_fn_own.c). */
+  functionOwnWrite?: boolean;
+  /** Array.prototype's generic algorithms over array-likes
+   * (scr_dyn_array_like.c). */
+  arrayLikeDispatch?: boolean;
+  /** A builtin prototype method as a function value (String's trim family,
+   * RegExp's exec/test/toString; scr_dyn_builtin_methods.c). */
+  builtinMethodValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
-  recordViewPartial: boolean;
-  stdioExtended: boolean;
+  promiseRejectDyn: boolean;
+  /** The JavaScript object model build (t262-da §J): the runtime code every
+   * feature reached only from JavaScript sources shares, the
+   * SCR_JS_OBJECT_MODEL build of the units those features touch. Implies
+   * dynTier. */
+  jsObjectModel: boolean;
+  /** The ArrayBuffer views registry (scr_js_buffers.c): selected when a
+   * JavaScript source resizes, grows or detaches an ArrayBuffer. */
+  mutableBuffers?: boolean;
   /** The program's write completion callbacks take the error argument:
    * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors: boolean;
-  /** The program reaches the process output streams' write slot: the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot: boolean;
+  /** The program holds a process output stream as a value: with Node
+   * islands, scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c. */
+  stdioObject: boolean;
+  /** The program names a terminal color method of a process stream it
+   * holds: scr_tty_colors.c and the SCR_TTY_COLORS build of the events
+   * unit. */
+  ttyColors: boolean;
+  /** The program pipes or unpipes a stream: scr_stream_pipe_events.c. */
+  streamPipeEvents: boolean;
+  /** An fs stream's options can hold a `signal`: the SCR_FS_STREAM_SIGNAL
+   * build of the fs stream unit. */
+  fsStreamSignal: boolean;
   nodeIsland: boolean;
   brotli: boolean;
+  zstd: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
   primitiveWrapper: boolean;
+  iteratorProto: boolean;
   nativeFetch: boolean;
+  /** The program links scr_async_dyn.c, the one unit that makes a promise
+   * adapter: it selects the scr_map.c build whose checked-dynamic key of a
+   * boxed promise is the identity cell the adapters share. */
+  dynPromiseKeys: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -206,7 +276,6 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
             const when = object(variant?.when);
             return (
               validArtifact(variantRaw) &&
-              (variant?.bitcode === undefined || validArtifact(variant.bitcode)) &&
               typeof variant?.id === "string" &&
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
@@ -309,42 +378,112 @@ export function effectiveRuntimeFeatures(
   const httpEffective = features.http || nativeFetch;
   const tlsEffective = features.tls || nativeFetch;
   const tlsCaEffective = features.tlsCa || tlsEffective;
+  // The JavaScript object model build (t262-da §J): the features reached only
+  // from JavaScript sources OR into one define and one runtime feature, so
+  // their migrations share one build of each unit they touch instead of one
+  // build column per feature.
+  const jsObjectModel = jsObjectModelFact(features);
+  // A Node island can hand its own AbortSignal to any native receiver of
+  // one, and a native signal then stands for it (scr_node_island_abort.c):
+  // a program with islands and a receiver links the signal unit too.
+  const abortSignal =
+    features.abortSignal === true ||
+    (features.nodeIsland === true && features.eventTarget === true);
   return {
     ...features,
     workers: features.workers === true,
+    staticLink: features.staticLink === true,
     youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
     wasm: features.wasm === true,
-    dynTier: features.dynTier === true,
+    // The JavaScript object model build's code is the dynamic tier's, so a
+    // program with it links the dynamic-tier units too.
+    dynTier: features.dynTier === true || jsObjectModel,
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    processFeatures: features.processFeatures === true,
+    islandChild: features.islandChild === true,
+    childOptionExt: features.childOptionExt === true,
+    cluster: features.cluster === true,
+    spawnCaptureBytes: features.spawnCaptureBytes === true,
+    childErrorFields: features.childErrorFields === true,
+    childStreamFlow: features.childStreamFlow === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
+    conversionTrace: features.conversionTrace === true,
     dynForAwait: features.dynForAwait === true,
+    dynCollections: features.dynCollections === true,
+    dynIntegrityQueries: features.dynIntegrityQueries === true,
+    reflectProtoTarget: features.reflectProtoTarget === true,
+    classTestPrototype: features.classTestPrototype === true,
+    recordSourceDelete: features.recordSourceDelete === true,
+    recordViewFrozen: features.recordViewFrozen === true,
+    genBind: features.genBind === true,
+    genReceiver: features.genReceiver === true,
+    recordSourceGet: features.recordSourceGet === true,
+    arrJoinStr: features.arrJoinStr === true,
     eventsOnceSignal: features.eventsOnceSignal === true,
     mime: features.mime === true,
+    sqlite: features.sqlite === true,
     largePages: features.largePages === true,
     webStreams: features.webStreams === true,
-    abortSignal: features.abortSignal === true,
+    webBodies: features.webBodies === true,
+    abortSignal,
     utilTiming: features.utilTiming === true,
+    utilMarkPromiseAsHandled: features.utilMarkPromiseAsHandled === true,
+    utilTraceSigInt: features.utilTraceSigInt === true,
     dynBuffer: features.dynBuffer === true,
+    fsPathValue: features.fsPathValue === true,
     builtinValues: features.builtinValues === true,
+    stdlibPrototypeValue: features.stdlibPrototypeValue === true,
+    dataViewPrototypeValue: features.dataViewPrototypeValue === true,
+    hostAbsentGlobals: features.hostAbsentGlobals === true,
+    deferredFence: features.deferredFence === true,
+    functionOwnWrite: features.functionOwnWrite === true,
+    arrayLikeDispatch: features.arrayLikeDispatch === true,
+    builtinMethodValue: features.builtinMethodValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
-    recordViewPartial: features.recordViewPartial === true,
-    stdioExtended: features.stdioExtended === true,
+    promiseRejectDyn: features.promiseRejectDyn === true,
+    jsObjectModel,
+    mutableBuffers: features.mutableBuffers === true,
+    bigintBytes: features.bigintBytes === true,
     streamWriteErrors: features.streamWriteErrors === true,
-    stdioWriteSlot: features.stdioWriteSlot === true,
+    stdioObject: features.stdioObject === true,
+    ttyColors: features.ttyColors === true,
+    // The tty color-depth tables: the stream object's color methods, a
+    // Console built with inspectOptions/colorMode reading colorMode 'auto',
+    // or the console unit, which the inspect unit links and which reads the
+    // tables wherever it answers colorMode and inspects table cells.
+    ttyColorTables:
+      (features.events === true && features.ttyColors === true) ||
+      features.consoleOptions === true ||
+      features.inspect === true,
+    streamPipeEvents: features.streamPipeEvents === true,
+    fsStreamSignal: features.fsStreamSignal === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
+    zstd: features.zstd === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
     primitiveWrapper: features.primitiveWrapper === true,
+    iteratorProto: features.iteratorProto === true,
     nativeFetch,
+    // The predicate of scr_async_dyn.c in runtime-pack-matrix.mjs.
+    dynPromiseKeys:
+      features.dynAsync ||
+      features.dynInvoke ||
+      features.dc ||
+      features.fileHandle ||
+      nativeFetch ||
+      features.nodeIsland === true ||
+      features.nodeTest ||
+      // The stub resolver settles its promise results through the unit.
+      features.dnsResolve,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
-    abortSignalOnly: features.abortSignal === true && !nativeFetch,
+    abortSignalOnly: abortSignal && !nativeFetch,
     netEffective,
     httpEffective,
     tlsEffective,
@@ -417,8 +556,8 @@ export function validateRuntimePackIdentity(
 
 export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
-  /** Selected unit variants; each may carry its bitcode artifact. */
-  runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
+  /** Selected unit variants. */
+  runtime: RuntimePackArtifact[];
   archives: RuntimePackArtifact[];
   /** Files to install beside the executable (ICU's data file for Intl). */
   data: RuntimePackArtifact[];
@@ -440,6 +579,41 @@ export function runtimePackFlavorKey(
     return optimized === "release" ? "library-thread-release" : "library-thread-dev";
   if (optimization === "speed" && manifest.flavors.speed !== undefined) return "speed";
   return optimized;
+}
+
+/** The warning for a build that asks for the speed posture from a pack that
+ * ships no `speed` flavor: it links the release runtime objects instead
+ * (runtimePackFlavorKey), which costs run time. Null when the pack has the
+ * flavor or the build is a library one, where speed is not a posture. The
+ * pack gains the flavor when it is built on a host that has the LLVM codegen
+ * helper (runtime-pack-common/scripts/build.mjs). */
+export function speedFlavorFallbackWarning(
+  manifest: RuntimePackManifest,
+  optimization: NativeOptimization,
+  mode: RuntimePackMode = "executable",
+): string | null {
+  if (mode !== "executable" || optimization !== "speed" || manifest.flavors.speed !== undefined)
+    return null;
+  return (
+    `scriptc: warning: --optimization=speed, but runtime pack ${manifest.package}@${manifest.version} ` +
+    `has no "speed" flavor; linking its release runtime objects instead, which costs run time. ` +
+    `Build the pack on a host with the LLVM codegen helper ` +
+    `(packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen, or name one with SCRIPTC_LLVM_CODEGEN) ` +
+    `to include the flavor.\n`
+  );
+}
+
+/** Pack directories whose speed-flavor fallback has been reported, so a build
+ * that selects more than once prints it once. */
+const reportedSpeedFallbacks = new Set<string>();
+
+/** Print the speed-flavor fallback warning for one selection, once per pack
+ * directory. The caller passes the warning it computed (or read from a stored
+ * selection), so a build that skips the manifest still reports it. */
+export function reportSpeedFlavorFallback(root: string, warning: string | null): void {
+  if (warning === null || reportedSpeedFallbacks.has(root)) return;
+  reportedSpeedFallbacks.add(root);
+  process.stderr.write(warning);
 }
 
 /** The units a flavor links for `features`, each with its selected

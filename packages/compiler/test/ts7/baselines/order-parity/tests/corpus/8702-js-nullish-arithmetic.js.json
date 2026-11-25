@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8702-js-nullish-arithmetic.js"
+ ],
+ "diags": []
+}

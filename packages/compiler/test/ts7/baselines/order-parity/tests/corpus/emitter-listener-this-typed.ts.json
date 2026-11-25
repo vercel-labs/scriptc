@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/emitter-listener-this-typed.ts"
+ ],
+ "diags": []
+}

@@ -9,7 +9,7 @@ import {
   isRefCounted,
 } from "../../ir/ir.js";
 import type { LlValue } from "./expr-context.js";
-import { guardedValue } from "./borrowed-receivers.js";
+import { guardedValue, stabilizedValue } from "./borrowed-receivers.js";
 import { InternalCompilerError } from "../../errors.js";
 import { llvmQuoted } from "../literals.js";
 import { emitBorrowedArrayRead, emitProjectedArrayRead } from "./local-array-reads.js";
@@ -47,6 +47,22 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
     // Throwing guards run in place, exactly as the sequence emits them.
     for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
     return emitter.emitReadReceiver(guarded);
+  }
+  const stabilized = stabilizedValue(emitter, e);
+  if (stabilized !== null) {
+    // The stabilized read runs in place; its stable local keeps the read's
+    // pointer, so the projection of it lends the same owner. The local is a
+    // sequence's, not the enclosing block's: it dies with the statement or
+    // branch arm that created it, so a path that skips the read never
+    // releases a pointer it did not store. The scope is opened here rather
+    // than in a closure: this function compiles with the compiler, and the
+    // closure #3563 passed here lowered it to 4,933 stack slots in the
+    // bootstrapped module instead of 409, which overran the bootstrap stack.
+    emitter.beginSequenceScope();
+    for (const s of (e as IrExpr & { kind: "seqExpr" }).stmts) emitter.emitStmt(s);
+    const lent = emitter.emitReadReceiver((e as IrExpr & { kind: "seqExpr" }).result);
+    emitter.endSequenceScope();
+    return lent;
   }
   if (e.kind === "varRef") {
     emitter.materializeSplitLocal(e.localId);
@@ -141,6 +157,8 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (e.kind === "recordGet" || e.kind === "fieldGet") {
     const receiver = emitter.emitReadReceiver(e.obj);
     if (e.kind === "recordGet") {
+      // A field a partial view may lack has no slot to lend.
+      if (emitter.partialFieldMissing(e.shapeId, e.field)) return emitter.emitExpr(e);
       // An inline union field answers a private stack box.
       const { ptr, type, inline } = emitter.recordFieldPtr(receiver.name, e.shapeId, e.field);
       return { name: emitter.loadRecordField(ptr, type, inline), type: e.type };
@@ -209,6 +227,7 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (
     (e.kind === "optChain" ||
       e.kind === "nullish" ||
+      e.kind === "logical" ||
       e.kind === "ternary" ||
       e.kind === "arrIntrinsic") &&
     isScalarOptionalSource(e, emitter.unionSources)
@@ -237,7 +256,13 @@ export function canBorrowCallArgument(emitter: LlEmitter, value: IrExpr): boolea
     return emitter.canBorrowCallArgument(value.value);
   if (value.kind === "seqExpr") {
     const guarded = guardedValue(value);
-    return guarded !== null && emitter.canBorrowCallArgument(guarded);
+    if (guarded !== null) return emitter.canBorrowCallArgument(guarded);
+    // A stabilized read's projection is lent only where the consumer reads it
+    // in place (the receiver path, through canBorrowReceiver). Stored into a
+    // stable binding, or another owner that outlives the statement, it must
+    // take its own count: the hidden local is a sequence's, and dies with the
+    // statement that created it.
+    return false;
   }
   // A nullable-union wrap reinterprets its payload pointer; an immortal
   // unit constant needs no owner at all.
@@ -316,18 +341,23 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     // An inline union field has no box to lend: projections read it
     // through emitReadReceiver's private stack box. An inline array field
     // has no array to lend.
+    // A field a partial record assertion leaves unwritten has no slot to
+    // lend either: its read answers a value of its own, which a borrower
+    // would use after the read's frame released it.
     case "fieldGet":
     case "recordGet":
       return (
         !emitter.inlineFieldGet(e) &&
         !emitter.inlineArrayRead(e) &&
+        !(e.kind === "recordGet" && emitter.partialFieldUnwritten(e.shapeId, e.field)) &&
         emitter.canBorrowReceiver(e.obj)
       );
     case "ternary":
       return emitter.canBorrowReceiver(e.then) && emitter.canBorrowReceiver(e.else_);
     case "seqExpr": {
       const guarded = guardedValue(e);
-      return guarded !== null && emitter.canBorrowReceiver(guarded);
+      if (guarded !== null) return emitter.canBorrowReceiver(guarded);
+      return stabilizedValue(emitter, e) !== null;
     }
     // The runtime always sets a pending exception; its unreachable
     // typed dummy is null and owns no receiver.

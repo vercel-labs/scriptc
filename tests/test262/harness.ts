@@ -6,6 +6,16 @@ import { throwsOutcome } from "./assert-throws.js";
 
 export class Test262Error extends Error {}
 
+// Each test is its own realm, so a rejection nothing in the test observes
+// belongs to that realm, not to the run: the engines' 262 hosts print it and
+// keep the test's own outcome. Node's process default (report, then exit 1)
+// would turn the tests that deliberately leave one unobserved -- Promise.all
+// and allSettled over an iterator that throws, a then handler that throws --
+// into failures with a passing assertion inside. The adapter takes the event
+// the way a Node-based 262 host must, and the runtime's own corpus keeps
+// pinning Node's default for programs that do not.
+process.on("unhandledRejection", () => {});
+
 let asyncDone = false;
 
 export function $DONE(error?: unknown): void {
@@ -119,3 +129,15 @@ export namespace assert {
     if (!matches) throw new Test262Error(text(message, "Expected matching array contents"));
   }
 }
+
+// The island lane (decision S4) assembles `assert` in JavaScript: a native
+// function crosses the bridge as a callable, but the namespace members
+// attached to it do not (they are properties of the native function object).
+// Test262's `assert` must be callable and carry the helpers, so each helper
+// is exported on its own and the island wrapper builds the object. The
+// assertion form of compareArray takes its own name: `compareArray` is the
+// bare function above.
+export const sameValue = assert.sameValue;
+export const notSameValue = assert.notSameValue;
+export const assertThrows = assert.throws;
+export const assertCompareArray = assert.compareArray;

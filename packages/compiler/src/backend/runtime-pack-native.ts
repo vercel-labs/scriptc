@@ -6,6 +6,7 @@
  * identities are also kept in a record beside the pack when its directory
  * can be written, which builds with an empty store read too. */
 import type { NativeOptimization } from "./optimization.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -28,7 +29,9 @@ import type { NativeTargetSpec } from "./targets.js";
 import {
   RuntimePackError,
   parseRuntimePackManifest,
+  reportSpeedFlavorFallback,
   selectRuntimePackArtifacts,
+  speedFlavorFallbackWarning,
   validateRuntimePackIdentity,
   type RuntimePackArtifact,
   type RuntimePackArtifacts,
@@ -100,10 +103,16 @@ function storeKey(text: string): string {
  * identities, returned. */
 interface StoredSelection {
   /** 2 adds the selection's data artifacts: a stored selection from before
-   * them would make an Intl build stage none of them, so it is discarded. */
-  schema: 2;
+   * them would make an Intl build stage none of them, so it is discarded.
+   * 3 adds the speed-flavor fallback warning: a stored selection from before
+   * it would make a later build link the release runtime objects silently.
+   * 4 keys the selection by the runtime ABI identity too: a selection
+   * recorded for another ABI could otherwise answer a compiler whose ABI
+   * differs from the manifest's without validating that manifest. */
+  schema: 4;
   licenses: RuntimePackManifest["licenses"];
   selected: RuntimePackArtifacts;
+  speedFallback: string | null;
 }
 
 export function selectNativeRuntimePack(
@@ -132,11 +141,14 @@ export function selectNativeRuntimePack(
       identities = [fileIdentity(packagePath), fileIdentity(manifestPath)];
       key = storeKey(
         JSON.stringify({
-          schema: 1,
+          schema: 2,
           root,
           identities,
           target: target.name,
           compilerVersion,
+          // The ABI the compiler was built for: a selection recorded under
+          // another one must be made again, so the manifest is validated.
+          abi: [RUNTIME_ABI_VERSION, RUNTIME_ABI_MARKER],
           features,
           flavor,
           mode,
@@ -151,6 +163,10 @@ export function selectNativeRuntimePack(
           sameIdentity(fileIdentity(packagePath), identities[0]!) &&
           sameIdentity(fileIdentity(manifestPath), identities[1]!)
         ) {
+          // The stored selection's manifest is not parsed, so the warning it
+          // carries is what keeps this build from linking the release runtime
+          // objects silently.
+          reportSpeedFlavorFallback(root, stored.speedFallback);
           return {
             root,
             licenses: stored.licenses,
@@ -170,6 +186,8 @@ export function selectNativeRuntimePack(
   const identity = JSON.parse(packageText) as { name?: string; version?: string };
   const manifest = parseRuntimePackManifest(JSON.parse(manifestText));
   validateRuntimePackIdentity(manifest, identity.name, identity.version, target, compilerVersion);
+  const speedFallback = speedFlavorFallbackWarning(manifest, flavor, mode);
+  reportSpeedFlavorFallback(root, speedFallback);
   const selected = selectRuntimePackArtifacts(manifest, features, flavor, process.env, mode);
   if (store !== undefined && key !== null) {
     try {
@@ -179,7 +197,12 @@ export function selectNativeRuntimePack(
         sameIdentity(fileIdentity(packagePath), identities[0]!) &&
         sameIdentity(fileIdentity(manifestPath), identities[1]!)
       ) {
-        const entry: StoredSelection = { schema: 2, licenses: manifest.licenses, selected };
+        const entry: StoredSelection = {
+          schema: 4,
+          licenses: manifest.licenses,
+          selected,
+          speedFallback,
+        };
         store.write(key, JSON.stringify(entry));
       }
     } catch {
@@ -208,8 +231,9 @@ function readStoredSelection(text: string | null): StoredSelection | null {
   if (value === null || typeof value !== "object") return null;
   const entry = value as Partial<StoredSelection>;
   if (
-    entry.schema !== 2 ||
+    entry.schema !== 4 ||
     !Array.isArray(entry.licenses) ||
+    (entry.speedFallback !== null && typeof entry.speedFallback !== "string") ||
     entry.selected === undefined ||
     entry.selected === null ||
     typeof entry.selected !== "object" ||

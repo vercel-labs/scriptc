@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8602-destructuring-for-head-patterns.ts"
+ ],
+ "diags": []
+}

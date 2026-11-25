@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8713-object-array-spread-call.ts"
+ ],
+ "diags": []
+}

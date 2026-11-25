@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/runtime-optional-conditional-receivers.ts"],
+  "diags": []
+}

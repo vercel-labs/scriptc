@@ -22,6 +22,7 @@
  * return, or a binding of the bundle other than the pure helpers copied
  * beside it). Anything else answers a degrade reason. */
 import * as ts from "./ts7/syntax.js";
+import { withoutParentheses } from "./outer-expressions.js";
 import { helperTokens } from "./helper-tokens.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
@@ -52,11 +53,6 @@ const CHUNK_SHAPE_DEGRADE =
 /** The helper a counter-suffixed bundler name spells (`__commonJS2`). */
 export function helperBase(name: string): string {
   return /^__[A-Za-z]+\d+$/.test(name) ? name.replace(/\d+$/, "") : name;
-}
-
-export function unparen(e: ts.Expression): ts.Expression {
-  while (ts.isParenthesizedExpression(e)) e = e.expression;
-  return e;
 }
 
 /** True for an identifier occurrence that reads or writes a binding (as
@@ -354,7 +350,7 @@ function helperForm(
   sf: ts.SourceFile,
   ownNames: (name: string) => boolean,
 ): HelperForm | null {
-  const fn = unparen(init);
+  const fn = withoutParentheses(init);
   if (!ts.isArrowFunction(fn) || fn.parameters.nodes.length !== 2) return null;
   const params = fn.parameters.nodes.map((p) =>
     ts.isIdentifier(p.name) && p.initializer === undefined && p.dotDotDotToken === undefined
@@ -365,7 +361,7 @@ function helperForm(
   if (cb === null || mod === null || cb === undefined || mod === undefined || cb === mod)
     return null;
   if (ts.isBlock(fn.body)) return null;
-  const body = unparen(fn.body);
+  const body = withoutParentheses(fn.body);
   if (ts.isFunctionExpression(body)) {
     if (body.parameters.nodes.length !== 0 || body.asteriskToken || body.modifiers?.nodes.length)
       return null;
@@ -393,7 +389,7 @@ function helperForm(
  * Object such as `Object.create` / `Object.prototype.hasOwnProperty`). */
 function copyableInitializer(init: ts.Expression | undefined): boolean {
   if (init === undefined) return false;
-  const e = unparen(init);
+  const e = withoutParentheses(init);
   if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) return true;
   let walk: ts.Expression = e;
   let depth = 0;
@@ -407,7 +403,7 @@ function copyableInitializer(init: ts.Expression | undefined): boolean {
 /** A top-level declaration whose value is a function. */
 function isFunctionValued(node: ts.VariableDeclaration | ts.FunctionDeclaration): boolean {
   if (ts.isFunctionDeclaration(node)) return true;
-  const init = node.initializer && unparen(node.initializer);
+  const init = node.initializer && withoutParentheses(node.initializer);
   return init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init));
 }
 
@@ -419,7 +415,7 @@ function selfCalledOnly(
   scopes: BundleScopes,
 ): boolean {
   if (!ts.isVariableDeclaration(node) || node.initializer === undefined) return true;
-  const fn = unparen(node.initializer);
+  const fn = withoutParentheses(node.initializer);
   if (!ts.isFunctionExpression(fn) || fn.name === undefined || fn.body === undefined) return true;
   const self = fn.name.text;
   // A parameter of the same name hides the function's own name everywhere
@@ -575,7 +571,7 @@ export function splitBundledChunks(
   const base = filePath.replace(/^.*[\\/]/, "");
   for (const [name, t] of top) {
     if (!ts.isVariableDeclaration(t.node) || t.node.initializer === undefined) continue;
-    const call = unparen(t.node.initializer);
+    const call = withoutParentheses(t.node.initializer);
     if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression)) continue;
     const form = forms.get(call.expression.text);
     if (form === undefined) continue;
@@ -597,7 +593,7 @@ export function splitBundledChunks(
         return { degrade: CHUNK_SHAPE_DEGRADE };
       if (ts.isStringLiteral(factory.name)) key = factory.name.text;
     } else {
-      factory = unparen(factory as ts.Expression);
+      factory = withoutParentheses(factory as ts.Expression);
       if (!ts.isArrowFunction(factory) && !ts.isFunctionExpression(factory))
         return { degrade: CHUNK_SHAPE_DEGRADE };
     }
@@ -902,7 +898,7 @@ function forwarderSpec(chunk: Chunk): string | null {
   );
   const only = stmts[0];
   if (stmts.length !== 1 || only === undefined || !ts.isExpressionStatement(only)) return null;
-  const e = unparen(only.expression);
+  const e = withoutParentheses(only.expression);
   if (
     !ts.isBinaryExpression(e) ||
     e.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
@@ -912,7 +908,7 @@ function forwarderSpec(chunk: Chunk): string | null {
     e.left.name.text !== "exports"
   )
     return null;
-  const call = unparen(e.right);
+  const call = withoutParentheses(e.right);
   if (
     !ts.isCallExpression(call) ||
     !ts.isIdentifier(call.expression) ||

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { DYN_HANDLE_KINDS } from "../../ir/ir.js";
-import { DYN_HANDLE_TAG_NUM, TEXT_CODEC_TAG_NUM } from "./dyn.js";
+import { DYN_HANDLE_TAG_NUM, ISLAND_HANDLE_TAG, TEXT_CODEC_TAG_NUM } from "./dyn.js";
 
 // scr_dyn.h declares the ScrDynHandleTag values in two lists: SCR_DYNH_TAGS
 // pins tags to explicit values, and SCR_DYNH_NEW_TAGS names tags added since
@@ -72,6 +72,11 @@ test("the backend's handle tag numbers match pinned tags in scr_dyn.h", () => {
     expect(tag, kind).toBeDefined();
     expect(values.get(tag!), `${kind} (${tag}) must be pinned with this value`).toBe(num);
   }
+});
+
+test("the backend's island handle tag matches the pinned tag in scr_dyn.h", () => {
+  const values = new Map(pinned.map((tag) => [tag.name, tag.value]));
+  expect(values.get("SCR_DYNH_NODE_ISLAND")).toBe(ISLAND_HANDLE_TAG);
 });
 
 test("the backend's codec handle tag numbers match pinned tags in scr_dyn.h", () => {

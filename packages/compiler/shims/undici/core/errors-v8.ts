@@ -1,0 +1,28 @@
+// undici 8.x's `errors` export (the implemented classes of
+// lib/core/errors.js module.exports).
+export {
+  AbortError,
+  HTTPParserError,
+  UndiciError,
+  HeadersTimeoutError,
+  HeadersOverflowError,
+  BodyTimeoutError,
+  RequestContentLengthMismatchError,
+  ConnectTimeoutError,
+  InvalidArgumentError,
+  InvalidReturnValueError,
+  RequestAbortedError,
+  ClientDestroyedError,
+  ClientClosedError,
+  InformationalError,
+  SocketError,
+  NotSupportedError,
+  ResponseContentLengthMismatchError,
+  BalancedPoolMissingUpstreamError,
+  ResponseExceededMaxSizeError,
+  RequestRetryError,
+  ResponseError,
+  MaxRedirectsError,
+  ProxyConnectionError,
+  WebAssemblyNotSupportedError,
+} from "./errors.ts";

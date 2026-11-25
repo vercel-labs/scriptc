@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9964-narrowed-error-subclass-root-members.ts"
+ ],
+ "diags": []
+}

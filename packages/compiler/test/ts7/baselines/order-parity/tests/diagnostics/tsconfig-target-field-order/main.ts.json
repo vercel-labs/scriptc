@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tsconfig-target-field-order/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'width' is used before its initialization.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/tsconfig-target-field-order/main.ts",
+    "start": 333,
+    "end": 338
+   }
+  }
+ ]
+}

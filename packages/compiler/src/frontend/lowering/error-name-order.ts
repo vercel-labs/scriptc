@@ -86,6 +86,75 @@ export function errorNameAfterField(
   return undefined;
 }
 
+export type ErrorOwnPropertyKind = "field" | "name" | "message" | "cause";
+
+/** An own enumerable property an Error subclass instance creates while its
+ * constructor runs. */
+export interface ErrorOwnProperty {
+  name: string;
+  kind: ErrorOwnPropertyKind;
+}
+
+/** The own enumerable properties an Error subclass instance creates during
+ * construction, in creation order. A class creates its parameter properties
+ * first, then its declared fields (a `name` field where the declaration
+ * sits, a declared `cause` where its initializer runs, a redeclared
+ * `message` at the base's slot), then the `this.x = ...` assignments of its
+ * constructor body; a derived class's own properties follow the base
+ * constructor's. `fields` are the instance's own enumerable fields — the
+ * ones the view lists beside the header slots. */
+export function errorConstructionOrder(
+  info: ErrorClassLink,
+  fields: ReadonlySet<string>,
+): ErrorOwnProperty[] {
+  const chain: ErrorClassLink[] = [];
+  for (let current: ErrorClassLink | null | undefined = info; current; current = current.base)
+    if (current.decl) chain.unshift(current);
+  const out: ErrorOwnProperty[] = [];
+  const created = new Set<string>();
+  const create = (name: string): void => {
+    if (created.has(name)) return;
+    const kind: ErrorOwnPropertyKind | null =
+      name === "name"
+        ? "name"
+        : name === "message"
+          ? "message"
+          : name === "cause"
+            ? "cause"
+            : fields.has(name)
+              ? "field"
+              : null;
+    if (kind === null) return;
+    created.add(name);
+    out.push({ name, kind });
+  };
+  for (const link of chain) {
+    for (const property of link.paramProps ?? []) create(property.name);
+    for (const member of link.decl!.members.nodes) {
+      if (!ts.isPropertyDeclaration(member)) continue;
+      const key = staticKeyText(member.name);
+      if (key === null) continue;
+      if (
+        member.modifiers?.nodes.some(
+          (m) => m.kind === ts.SyntaxKind.StaticKeyword || m.kind === ts.SyntaxKind.DeclareKeyword,
+        )
+      )
+        continue;
+      create(key);
+    }
+    const body = link.ctor?.body;
+    if (!body) continue;
+    ts.walkPreorder(body, (node) => {
+      if (ts.isTypeNode(node)) return "skip";
+      if (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return "skip";
+      const name = thisAssignmentName(node);
+      if (name !== null) create(name);
+      return undefined;
+    });
+  }
+  return out;
+}
+
 /** The fields an Error subclass's own-property view lists. */
 export function errorViewFields(fields: readonly { name: string }[]): Set<string> {
   return new Set(

@@ -1,0 +1,20 @@
+any-asserted-undeclared-write.ts:10:3 - error SC1090: writing 'tag' through an assertion to 'any' on a '{ x: number }' value, whose layout does not declare it (Node adds the property to the object; a native record has no slot for an undeclared member — declare 'tag' on the value's type) is not supported yet
+
+   9 | function tag(point: Point): void {
+  10 |   (point as any).tag = "t";
+     |   ^~~~~~~~~~~~~~~~~~
+  11 | }
+
+any-asserted-undeclared-write.ts:14:3 - error SC1090: writing 'tag' through an assertion to 'any' on a '{ x: number }' value, whose layout does not declare it (Node adds the property to the object; a native record has no slot for an undeclared member — declare 'tag' on the value's type) is not supported yet
+
+  13 | function tagThroughWrappers(point: Point | undefined): void {
+  14 |   (point as any)!.tag = "t";
+     |   ^~~~~~~~~~~~~~~~~~~
+  15 | }
+
+any-asserted-undeclared-write.ts:19:22 - error SC1090: 'string' values where 'number' is expected is not supported yet
+
+  18 | function retype(point: Point): void {
+  19 |   (point as any).x = "one";
+     |                      ^~~~~
+  20 | }

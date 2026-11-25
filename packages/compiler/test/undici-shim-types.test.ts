@@ -18,18 +18,37 @@
  * program the check builds includes them), since real projects compile
  * them with their own Node types.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test } from "vitest";
 import * as ad from "../src/frontend/ts7/adapter.js";
 import { createProgram, getPreEmitDiagnostics } from "../src/frontend/ts7/program-adapter.js";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const shimRoot = join(repoRoot, "packages/compiler/shims/undici");
 
+/** undici-types 5.26.5 (vendored, see the fixture's README): what
+ * @types/node 20 types the global fetch with. */
+const globalTypes5 = join(repoRoot, "tests/fixtures/undici-types-5/undici-types");
+
+/** The real package's declarations, copied to a directory that is not an
+ * installed undici. The checker reads the types entry of an installed
+ * undici as the shim (package-shims.ts: that is how a program's imports
+ * are typed), so importing the vendored package where it lies would
+ * compare the shim with itself. */
+const realCopies = mkdtempSync(join(tmpdir(), "scriptc-undici-real-"));
+afterAll(() => rmSync(realCopies, { recursive: true, force: true }));
+
 function realEntry(major: number): string {
-  return join(repoRoot, `tests/fixtures/npm/cases/undici${major}/node_modules/undici`);
+  const dir = join(realCopies, `declarations-${major}`);
+  if (!existsSync(dir)) {
+    const installed = join(repoRoot, `tests/fixtures/npm/cases/undici${major}/node_modules/undici`);
+    mkdirSync(dir);
+    cpSync(join(installed, "index.d.ts"), join(dir, "index.d.ts"));
+    cpSync(join(installed, "types"), join(dir, "types"), { recursive: true });
+  }
+  return dir;
 }
 
 /** Drops the shim's implementation members (`__`-prefixed) at every
@@ -184,6 +203,81 @@ export async function run(url: string, lookup: import("node:net").LookupFunction
 `;
 }
 
+/** A dispatcher typed by undici-types (what the global fetch's types are
+ * made of in a project) handed to something that names only the undici
+ * package's `dispatch()`. The two signatures must be related in the
+ * direction a caller uses them: the options this package's dispatch()
+ * declares are options the other accepts. */
+const dispatchOnly = `
+import type GlobalDispatcher from "GLOBAL/dispatcher";
+import type { Dispatcher } from "UNDICI";
+
+interface Sender {
+  dispatch(options: Dispatcher.DispatchOptions, handler: Dispatcher.DispatchHandlers): boolean;
+}
+
+export function sender(from: GlobalDispatcher): Sender {
+  return from;
+}
+
+// The options dispatch() declares, one member at a time: each takes at
+// least what undici-types declare for it, so the options a caller of the
+// other dispatcher passes are options this one declares.
+type Declared = Dispatcher.DispatchOptions;
+type Global = GlobalDispatcher.DispatchOptions;
+type SharedKeys = Extract<keyof Declared, keyof Global>;
+type _members = ExpectNever<{
+  [K in SharedKeys]-?: Sub<Global[K], Declared[K]> extends true ? never : K;
+}[SharedKeys]>;
+type _options = Assert<Sub<Global, Declared>>;
+`;
+
+/** A method held as a string handed to dispatch(), directly and from a
+ * subclass's override to the inherited one. undici 7 declares the method
+ * as any string; 5.x names nine, and there this is a type error in the
+ * package's own declarations. The shim takes any string in both entries
+ * (its classes are shared), which is what a program on either release
+ * needs to keep compiling. */
+const stringMethod = `
+import { Agent } from "UNDICI";
+
+// The handler record is named differently in the two releases.
+type Handler = Parameters<Agent["dispatch"]>[1];
+
+class Shouting extends Agent {
+  dispatch(options: Agent.DispatchOptions, handler: Handler): boolean {
+    const upper: string = options.method.toUpperCase();
+    return super.dispatch({ ...options, method: upper }, handler);
+  }
+}
+
+export function send(handler: Handler, verb: string): boolean {
+  return new Shouting().dispatch({ origin: "http://127.0.0.1:1", path: "/crate/7", method: verb }, handler);
+}
+`;
+
+/** The global RequestInit as @types/node 20 declares it (undici-types
+ * 5's), spread whole. */
+const wholeInit = `
+import type { RequestInit as GlobalInit } from "GLOBAL/fetch";
+import { fetch, type Dispatcher } from "UNDICI";
+import type { Dispatcher as OtherDispatcher } from "OTHER";
+
+interface WrapperInit extends Omit<GlobalInit, "dispatcher"> {
+  dispatcher?: Pick<Dispatcher, "dispatch">;
+}
+
+export function forWrapper(init: GlobalInit): WrapperInit {
+  return { ...init };
+}
+
+export function forFetch(url: string, init: GlobalInit): Promise<unknown> {
+  return fetch(url, { ...init });
+}
+
+export type Both = [Dispatcher, OtherDispatcher];
+`;
+
 /** Names the shim declares beyond a version's published declarations,
  * each because undici's runtime has it although its .d.ts does not (5.12's
  * declarations predate several runtime exports and options) or because the
@@ -201,7 +295,16 @@ const tolerated: Record<number, Record<string, string[]>> = {
     ],
     // 7.x request options in the shared DispatchOptions; 5.12 ignores them.
     // The RequestOptions members ride in DispatchOptions (see core/types.ts).
-    dispatch: ["reset", "blocking", "opaque", "signal", "onInfo", "highWaterMark"],
+    // `__framedAsNode` is the shim's own (set by its fetch, read by its client).
+    dispatch: [
+      "reset",
+      "blocking",
+      "opaque",
+      "signal",
+      "onInfo",
+      "highWaterMark",
+      "__framedAsNode",
+    ],
     // Accepted by the 5.12 Client/Pool constructors, undeclared in 5.12.
     options: ["localAddress", "connectTimeout"],
     // 5.12 declares the connector's port as a number; it passes the URL's
@@ -211,7 +314,7 @@ const tolerated: Record<number, Record<string, string[]>> = {
   7: {
     // lib/core/errors.js 7.30 exports AbortError; types/errors.d.ts omits it.
     errors: ["AbortError"],
-    dispatch: ["opaque", "signal", "onInfo", "highWaterMark"],
+    dispatch: ["opaque", "signal", "onInfo", "highWaterMark", "__framedAsNode"],
     options: [],
     connector: [],
   },
@@ -314,12 +417,56 @@ describe.each([5, 7])("undici %i.x shim types", (major) => {
   const real = realEntry(major);
   const shim = join(shimRoot, `v${major}.ts`);
 
+  // MockAgent is declared by the package and not by the shim: the two
+  // sides of every check below are different declarations.
+  test("the real declarations are the package's own", () => {
+    const names = 'import { MockAgent } from "UNDICI";\nexport const mock = MockAgent;\n';
+    expect(check("names-real.ts", names.replace(/UNDICI/g, real))).toEqual([]);
+    expect(check("names-shim.ts", names.replace(/UNDICI/g, shim))).toHaveLength(1);
+  });
+
   test("a program written against undici type-checks against the real declarations", () => {
     expect(check("usage-real.ts", helpers + usage(major).replace(/UNDICI/g, real))).toEqual([]);
   });
 
   test("the same program type-checks against the shim", () => {
     expect(check("usage-shim.ts", helpers + usage(major).replace(/UNDICI/g, shim))).toEqual([]);
+  });
+
+  // undici-types 5 names nine methods and the 5.x entry declares the
+  // same; 5.x is the package a project on @types/node 20 has beside
+  // undici 5.
+  test.runIf(major === 5)(
+    "a dispatcher typed by undici-types 5 fits something that names the package's dispatch()",
+    () => {
+      const program = helpers + dispatchOnly.replace(/GLOBAL/g, globalTypes5);
+      expect(check("dispatch-only-real.ts", program.replace(/UNDICI/g, real))).toEqual([]);
+      expect(check("dispatch-only-shim.ts", program.replace(/UNDICI/g, shim))).toEqual([]);
+    },
+  );
+
+  test("a method held as a string goes to dispatch()", () => {
+    const onReal = check("string-method-real.ts", stringMethod.replace(/UNDICI/g, real));
+    expect(check("string-method-shim.ts", stringMethod.replace(/UNDICI/g, shim))).toEqual([]);
+    if (major === 7) expect(onReal).toEqual([]);
+    else {
+      expect(onReal).toHaveLength(2);
+      for (const d of onReal) expect(d).toContain("Type 'string' is not assignable to type");
+    }
+  });
+
+  // The call a project on @types/node 20 makes: the global RequestInit
+  // (there, undici-types 5's) spread whole into a wrapper's init that
+  // names this package's dispatch(), and into the package's fetch. Both
+  // entries are in the program, as they are in a project that holds both
+  // releases: neither changes what the other declares.
+  test("the global RequestInit of undici-types 5 fits the package's dispatch() and fetch()", () => {
+    const other = join(shimRoot, `v${major === 5 ? 7 : 5}.ts`);
+    const program = wholeInit
+      .replace(/GLOBAL/g, globalTypes5)
+      .replace(/UNDICI/g, shim)
+      .replace(/OTHER/g, other);
+    expect(check("whole-init-shim.ts", program)).toEqual([]);
   });
 
   test("the shim's exports and records are a compatible subset", () => {

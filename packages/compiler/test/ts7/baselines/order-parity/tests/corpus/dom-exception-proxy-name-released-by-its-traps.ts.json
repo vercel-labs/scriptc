@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dom-exception-proxy-name-released-by-its-traps.ts"
+ ],
+ "diags": []
+}

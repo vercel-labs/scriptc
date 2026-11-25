@@ -103,7 +103,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
       mainFile: "source/index.js",
       typesFile: "source/index.d.ts",
       versions: new Map([[5, "chalk/v5.ts"]]),
-      sourceVersions: new Set([6]),
+      sourceVersions: new Set([4, 6]),
     },
   ],
   [
@@ -140,6 +140,7 @@ const IMPLEMENTATION_SHIMS: ReadonlyMap<string, ImplementationShim> = new Map<
       versions: new Map([
         [5, "undici/v5.ts"],
         [7, "undici/v7.ts"],
+        [8, "undici/v8.ts"],
       ]),
     },
   ],
@@ -400,8 +401,17 @@ export function isPackageShimFile(fileName: string): boolean {
 /** True for a name a shipped shim may declare as a bodiless runtime
  * intrinsic (lower-calls.ts lowers its calls to runtime calls). */
 export function isShimIntrinsicName(name: string): boolean {
-  return name.startsWith("scriptcUnixDgram") || name === "scriptcResponseLight";
+  return (
+    name.startsWith("scriptcUnixDgram") ||
+    name === "scriptcResponseLight" ||
+    name === FETCH_DISPATCHER_HOOK
+  );
 }
+
+/** The intrinsic the built-in undici calls once, when its module starts,
+ * with the function the global fetch hands a request to when the init
+ * carries a dispatcher (fetch-dispatcher.ts). */
+export const FETCH_DISPATCHER_HOOK = "scriptcFetchDispatcherHook";
 
 /** Resets per-compile caches. */
 export function clearPackageShimCaches(): void {

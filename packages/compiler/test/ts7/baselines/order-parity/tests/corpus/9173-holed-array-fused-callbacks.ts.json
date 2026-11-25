@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9173-holed-array-fused-callbacks.ts"
+ ],
+ "diags": []
+}

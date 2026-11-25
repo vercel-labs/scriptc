@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/runtime-chosen-export-import-snapshot/late.cjs",
+  "<repo>/tests/corpus/runtime-chosen-export-import-snapshot/swapper.cjs",
+  "<repo>/tests/corpus/runtime-chosen-export-import-snapshot/main.ts"
+ ],
+ "diags": []
+}

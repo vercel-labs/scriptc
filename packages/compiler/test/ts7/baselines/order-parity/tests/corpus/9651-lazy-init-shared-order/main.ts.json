@@ -1,0 +1,14 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/ids.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/table.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/loud.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/late.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/state.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/ring-b.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/ring-a.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/unused.ts",
+  "<repo>/tests/corpus/9651-lazy-init-shared-order/main.ts"
+ ],
+ "diags": []
+}

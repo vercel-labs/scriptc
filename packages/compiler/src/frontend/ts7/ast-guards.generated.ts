@@ -1,9 +1,9 @@
-// Generated from typescript@7.0.2 by scripts/generate-ts7-ast-schema.mjs.
+// Generated from typescript@7.1.0-beta by scripts/generate-ts7-ast-schema.mjs.
 // TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 
-import type { AbstractKeyword, AccessExpression, AccessorDeclaration, AccessorKeyword, AdditiveOperator, AdditiveOperatorOrHigher, AnyImportSyntax, ArrayBindingElement, ArrayBindingPattern, ArrayDestructuringAssignment, ArrayLiteralExpression, ArrayTypeNode, ArrowFunction, AsExpression, AssertKeyword, AssertionExpression, AssertsKeyword, AssignmentOperator, AssignmentOperatorOrHigher, AssignmentOperatorToken, AsteriskToken, AsyncKeyword, AwaitExpression, AwaitKeyword, BigIntLiteral, BinaryExpression, BinaryOperator, BinaryOperatorToken, BindingElement, BindingName, BindingPattern, BitwiseOperator, BitwiseOperatorOrHigher, Block, BlockOrExpression, BooleanLiteral, BreakOrContinueStatement, BreakStatement, CallExpression, CallLikeExpression, CallOrNewExpression, CallSignatureDeclaration, CaseBlock, CaseClause, CaseKeyword, CatchClause, ClassDeclaration, ClassExpression, ClassLikeDeclaration, ClassStaticBlockDeclaration, ColonToken, CompoundAssignmentOperator, ComputedPropertyName, ConciseBody, ConditionalExpression, ConditionalTypeNode, ConstKeyword, ConstructSignatureDeclaration, ConstructorDeclaration, ConstructorTypeNode, ContinueStatement, DebuggerStatement, DeclarationName, DeclareKeyword, Decorator, DefaultClause, DefaultKeyword, DeleteExpression, DestructuringAssignment, DoStatement, DotDotDotToken, DotToken, ElementAccessExpression, EmptyStatement, EndOfFile, EntityName, EnumDeclaration, EnumMember, EqualityOperator, EqualityOperatorOrHigher, EqualsGreaterThanToken, EqualsToken, ExclamationToken, ExponentiationOperator, ExportAssignment, ExportDeclaration, ExportKeyword, ExportSpecifier, Expression, ExpressionStatement, ExpressionWithTypeArguments, ExternalModuleReference, FalseLiteral, ForInStatement, ForInitializer, ForOfStatement, ForStatement, FunctionBody, FunctionDeclaration, FunctionExpression, FunctionLikeDeclaration, FunctionTypeNode, GetAccessorDeclaration, HeritageClause, Identifier, IfStatement, ImportAttribute, ImportAttributeName, ImportAttributes, ImportClause, ImportClauseOrBindingPattern, ImportDeclaration, ImportEqualsDeclaration, ImportExpression, ImportPhaseModifierSyntaxKind, ImportSpecifier, ImportTypeNode, InKeyword, IndexSignatureDeclaration, IndexedAccessTypeNode, InferTypeNode, InterfaceDeclaration, IntersectionTypeNode, JSDoc, JSDocAllType, JSDocAugmentsTag, JSDocCallbackTag, JSDocComment, JSDocDeprecatedTag, JSDocFullName, JSDocImplementsTag, JSDocImportTag, JSDocLink, JSDocLinkCode, JSDocLinkPlain, JSDocNameReference, JSDocNonNullableType, JSDocNullableType, JSDocOptionalType, JSDocOverloadTag, JSDocOverrideTag, JSDocParameterTag, JSDocPrivateTag, JSDocPropertyTag, JSDocProtectedTag, JSDocPublicTag, JSDocReadonlyTag, JSDocReturnTag, JSDocSatisfiesTag, JSDocSeeTag, JSDocSignature, JSDocTemplateTag, JSDocText, JSDocThisTag, JSDocThrowsTag, JSDocTypeExpression, JSDocTypeLiteral, JSDocTypeTag, JSDocTypedefTag, JSDocUnknownTag, JSDocVariadicType, JsxAttribute, JsxAttributeLike, JsxAttributeName, JsxAttributeValue, JsxAttributes, JsxChild, JsxClosingElement, JsxClosingFragment, JsxElement, JsxExpression, JsxFragment, JsxNamespacedName, JsxOpeningElement, JsxOpeningFragment, JsxOpeningLikeElement, JsxSelfClosingElement, JsxSpreadAttribute, JsxTagNameExpression, JsxText, JsxTokenSyntaxKind, KeywordExpression, KeywordExpressionSyntaxKind, KeywordTypeNode, KeywordTypeSyntaxKind, LabeledStatement, LeftHandSideExpression, LiteralExpression, LiteralLikeNode, LiteralToken, LiteralTypeNode, LogicalOperator, LogicalOperatorOrHigher, LogicalOrCoalescingAssignmentOperator, MappedTypeNode, MemberName, MetaProperty, MethodDeclaration, MethodSignatureDeclaration, MinusToken, MissingDeclaration, Modifier, ModifierLike, ModifierSyntaxKind, ModuleBlock, ModuleBody, ModuleDeclaration, ModuleExportName, ModuleName, ModuleReference, MultiplicativeOperator, MultiplicativeOperatorOrHigher, NamedExportBindings, NamedExports, NamedImportBindings, NamedImports, NamedImportsOrExports, NamedTupleMember, NamespaceExport, NamespaceExportDeclaration, NamespaceImport, NewExpression, NoSubstitutionTemplateLiteral, Node, NonNullExpression, NotEmittedStatement, NotEmittedTypeElement, NullLiteral, NumericLiteral, NumericOrStringLikeLiteral, ObjectBindingPattern, ObjectDestructuringAssignment, ObjectLiteralElementLike, ObjectLiteralExpression, ObjectLiteralLikeNode, ObjectTypeDeclaration, OmittedExpression, OptionalTypeNode, OutKeyword, OverrideKeyword, ParameterDeclaration, ParenthesizedExpression, ParenthesizedTypeNode, PartiallyEmittedExpression, PlusToken, PostfixUnaryExpression, PostfixUnaryOperator, PrefixUnaryExpression, PrefixUnaryOperator, PrivateIdentifier, PrivateKeyword, PropertyAccessExpression, PropertyAssignment, PropertyDeclaration, PropertyName, PropertyNameLiteral, PropertySignatureDeclaration, ProtectedKeyword, PseudoLiteralSyntaxKind, PseudoLiteralToken, PublicKeyword, QualifiedName, QuestionDotToken, QuestionToken, ReadonlyKeyword, RegularExpressionLiteral, RelationalOperator, RelationalOperatorOrHigher, RestTypeNode, ReturnStatement, SatisfiesExpression, SemicolonClassElement, SetAccessorDeclaration, ShiftOperator, ShiftOperatorOrHigher, ShorthandPropertyAssignment, SignatureDeclaration, SourceFile, SpreadAssignment, SpreadElement, Statement, StaticKeyword, StringLiteral, StringLiteralLikeNode, SuperExpression, SwitchStatement, SyntaxList, SyntheticExpression, SyntheticReferenceExpression, TaggedTemplateExpression, TemplateExpression, TemplateHead, TemplateLiteral, TemplateLiteralLikeNode, TemplateLiteralToken, TemplateLiteralTypeNode, TemplateLiteralTypeSpan, TemplateMiddle, TemplateMiddleOrTail, TemplateSpan, TemplateTail, ThisExpression, ThisTypeNode, ThrowStatement, Token, TriviaSyntaxKind, TrueLiteral, TryStatement, TupleTypeNode, TypeAliasDeclaration, TypeAssertion, TypeLiteralNode, TypeNode, TypeOfExpression, TypeOperatorNode, TypeParameterDeclaration, TypePredicateNode, TypePredicateParameterName, TypeQueryNode, TypeReferenceNode, UnaryExpressionBase, UnionOrIntersectionTypeNode, UnionTypeNode, VariableDeclaration, VariableDeclarationList, VariableOrParameterDeclaration, VariableOrPropertyDeclaration, VariableStatement, VoidExpression, WhileStatement, WithStatement, YieldExpression } from "./ast-types.js";
-import { SyntaxKind, NodeFlags, ScriptKind, OuterExpressionKinds } from "./enums.js";
+import type { AbstractKeyword, AccessExpression, AccessorDeclaration, AccessorKeyword, AdditiveOperator, AdditiveOperatorOrHigher, AnyImportSyntax, ArrayBindingElement, ArrayBindingPattern, ArrayDestructuringAssignment, ArrayLiteralExpression, ArrayTypeNode, ArrowFunction, AsExpression, AssertKeyword, AssertionExpression, AssertsKeyword, AssignmentOperator, AssignmentOperatorOrHigher, AssignmentOperatorToken, AsteriskToken, AsyncKeyword, AwaitExpression, AwaitKeyword, BigIntLiteral, BinaryExpression, BinaryOperator, BinaryOperatorToken, BindingElement, BindingName, BindingPattern, BitwiseOperator, BitwiseOperatorOrHigher, Block, BlockOrExpression, BooleanLiteral, BreakOrContinueStatement, BreakStatement, CallExpression, CallLikeExpression, CallOrNewExpression, CallSignatureDeclaration, CaseBlock, CaseClause, CaseKeyword, CatchClause, ClassDeclaration, ClassExpression, ClassLikeDeclaration, ClassStaticBlockDeclaration, ColonToken, CompoundAssignmentOperator, ComputedPropertyName, ConciseBody, ConditionalExpression, ConditionalTypeNode, ConstKeyword, ConstructSignatureDeclaration, ConstructorDeclaration, ConstructorTypeNode, ContinueStatement, DebuggerStatement, DeclarationName, DeclareKeyword, Decorator, DefaultClause, DefaultKeyword, DeleteExpression, DestructuringAssignment, DoStatement, DotDotDotToken, DotToken, ElementAccessExpression, EmptyStatement, EndOfFile, EntityName, EnumDeclaration, EnumMember, EqualityOperator, EqualityOperatorOrHigher, EqualsGreaterThanToken, EqualsToken, ExclamationToken, ExponentiationOperator, ExportAssignment, ExportDeclaration, ExportKeyword, ExportSpecifier, Expression, ExpressionStatement, ExpressionWithTypeArguments, ExternalModuleReference, FalseLiteral, ForInStatement, ForInitializer, ForOfStatement, ForStatement, FunctionBody, FunctionDeclaration, FunctionExpression, FunctionLikeDeclaration, FunctionTypeNode, GetAccessorDeclaration, HeritageClause, HeritageClauseElement, Identifier, IfStatement, ImportAttribute, ImportAttributeName, ImportAttributes, ImportClause, ImportClauseOrBindingPattern, ImportDeclaration, ImportEqualsDeclaration, ImportExpression, ImportPhaseModifierSyntaxKind, ImportSpecifier, ImportTypeNode, InKeyword, IndexSignatureDeclaration, IndexedAccessTypeNode, InferTypeNode, InterfaceDeclaration, IntersectionTypeNode, JSDoc, JSDocAllType, JSDocAugmentsTag, JSDocCallbackTag, JSDocComment, JSDocDeprecatedTag, JSDocFullName, JSDocImplementsTag, JSDocImportTag, JSDocLink, JSDocLinkCode, JSDocLinkPlain, JSDocNameReference, JSDocNonNullableType, JSDocNullableType, JSDocOptionalType, JSDocOverloadTag, JSDocOverrideTag, JSDocParameterTag, JSDocPrivateTag, JSDocPropertyTag, JSDocProtectedTag, JSDocPublicTag, JSDocReadonlyTag, JSDocReturnTag, JSDocSatisfiesTag, JSDocSeeTag, JSDocSignature, JSDocTemplateTag, JSDocText, JSDocThisTag, JSDocThrowsTag, JSDocTypeExpression, JSDocTypeLiteral, JSDocTypeTag, JSDocTypedefTag, JSDocUnknownTag, JSDocVariadicType, JsxAttribute, JsxAttributeLike, JsxAttributeName, JsxAttributeValue, JsxAttributes, JsxChild, JsxClosingElement, JsxClosingFragment, JsxElement, JsxExpression, JsxFragment, JsxNamespacedName, JsxOpeningElement, JsxOpeningFragment, JsxOpeningLikeElement, JsxSelfClosingElement, JsxSpreadAttribute, JsxTagNameExpression, JsxText, JsxTokenSyntaxKind, KeywordExpression, KeywordExpressionSyntaxKind, KeywordTypeNode, KeywordTypeSyntaxKind, LabeledStatement, LeftHandSideExpression, LiteralExpression, LiteralLikeNode, LiteralToken, LiteralTypeNode, LogicalOperator, LogicalOperatorOrHigher, LogicalOrCoalescingAssignmentOperator, MappedTypeNode, MemberName, MetaProperty, MethodDeclaration, MethodSignatureDeclaration, MinusToken, MissingDeclaration, Modifier, ModifierLike, ModifierSyntaxKind, ModuleBlock, ModuleBody, ModuleDeclaration, ModuleExportName, ModuleName, ModuleReference, MultiplicativeOperator, MultiplicativeOperatorOrHigher, NamedExportBindings, NamedExports, NamedImportBindings, NamedImports, NamedImportsOrExports, NamedTupleMember, NamespaceExport, NamespaceExportDeclaration, NamespaceImport, NewExpression, NoSubstitutionTemplateLiteral, Node, NonNullExpression, NotEmittedStatement, NotEmittedTypeElement, NullLiteral, NumericLiteral, NumericOrStringLikeLiteral, ObjectBindingPattern, ObjectDestructuringAssignment, ObjectLiteralElementLike, ObjectLiteralExpression, ObjectLiteralLikeNode, ObjectTypeDeclaration, OmittedExpression, OptionalTypeNode, OutKeyword, OverrideKeyword, ParameterDeclaration, ParenthesizedExpression, ParenthesizedTypeNode, PartiallyEmittedExpression, PlusToken, PostfixUnaryExpression, PostfixUnaryOperator, PrefixUnaryExpression, PrefixUnaryOperator, PrivateIdentifier, PrivateKeyword, PropertyAccessExpression, PropertyAssignment, PropertyDeclaration, PropertyName, PropertyNameLiteral, PropertySignatureDeclaration, ProtectedKeyword, PseudoLiteralSyntaxKind, PseudoLiteralToken, PublicKeyword, QualifiedName, QuestionDotToken, QuestionToken, ReadonlyKeyword, RegularExpressionLiteral, RelationalOperator, RelationalOperatorOrHigher, RestTypeNode, ReturnStatement, SatisfiesExpression, SemicolonClassElement, SetAccessorDeclaration, ShiftOperator, ShiftOperatorOrHigher, ShorthandPropertyAssignment, SignatureDeclaration, SourceFile, SpreadAssignment, SpreadElement, Statement, StaticKeyword, StringLiteral, StringLiteralLikeNode, SuperExpression, SwitchStatement, SyntaxList, SyntheticExpression, SyntheticReferenceExpression, TaggedTemplateExpression, TemplateExpression, TemplateHead, TemplateLiteral, TemplateLiteralLikeNode, TemplateLiteralToken, TemplateLiteralTypeNode, TemplateLiteralTypeSpan, TemplateMiddle, TemplateMiddleOrTail, TemplateSpan, TemplateTail, ThisExpression, ThisTypeNode, ThrowStatement, Token, TriviaSyntaxKind, TrueLiteral, TryStatement, TupleTypeNode, TypeAliasDeclaration, TypeAssertion, TypeLiteralNode, TypeNode, TypeOfExpression, TypeOperatorNode, TypeParameterDeclaration, TypePredicateNode, TypePredicateParameterName, TypeQueryNode, TypeReferenceNode, UnaryExpressionBase, UnionOrIntersectionTypeNode, UnionTypeNode, VariableDeclaration, VariableDeclarationList, VariableOrParameterDeclaration, VariableOrPropertyDeclaration, VariableStatement, VoidExpression, WhileStatement, WithStatement, YieldExpression } from "./ast-types.js";
+import { SyntaxKind, NodeFlags, ModifierFlags, ScriptKind, OuterExpressionKinds } from "./enums.js";
 import { getSourceFileOfNode } from "./node-functions.js";
 
 export function isToken(node: Node | undefined): node is Token {
@@ -998,6 +998,11 @@ export function isJSDocPropertyTag(node: Node | undefined): node is JSDocPropert
     return node.kind === SyntaxKind.JSDocPropertyTag;
 }
 
+export function isHeritageClauseElement(node: Node | undefined): node is HeritageClauseElement {
+    if (node === undefined) return false;
+    return node.kind === SyntaxKind.ExpressionWithTypeArguments || node.kind === SyntaxKind.TypeReference;
+}
+
 export function isAccessExpression(node: Node | undefined): node is AccessExpression {
     if (node === undefined) return false;
     return node.kind === SyntaxKind.PropertyAccessExpression || node.kind === SyntaxKind.ElementAccessExpression;
@@ -1006,7 +1011,7 @@ export function isAccessExpression(node: Node | undefined): node is AccessExpres
 export function isDeclarationName(node: Node | undefined): node is DeclarationName {
     if (node === undefined) return false;
     const kind = node.kind;
-    return kind === SyntaxKind.Identifier || kind === SyntaxKind.PrivateIdentifier || kind === SyntaxKind.StringLiteral || kind === SyntaxKind.NumericLiteral || kind === SyntaxKind.BigIntLiteral || kind === SyntaxKind.NoSubstitutionTemplateLiteral || kind === SyntaxKind.ComputedPropertyName || kind === SyntaxKind.ObjectBindingPattern || kind === SyntaxKind.ArrayBindingPattern || kind === SyntaxKind.ElementAccessExpression;
+    return kind === SyntaxKind.Identifier || kind === SyntaxKind.PrivateIdentifier || kind === SyntaxKind.StringLiteral || kind === SyntaxKind.NumericLiteral || kind === SyntaxKind.BigIntLiteral || kind === SyntaxKind.NoSubstitutionTemplateLiteral || kind === SyntaxKind.ComputedPropertyName || kind === SyntaxKind.ObjectBindingPattern || kind === SyntaxKind.ArrayBindingPattern || kind === SyntaxKind.PropertyAccessExpression || kind === SyntaxKind.ElementAccessExpression;
 }
 
 export function isModuleName(node: Node | undefined): node is ModuleName {
@@ -1369,7 +1374,8 @@ export function isJsxTokenKind(kind: SyntaxKind): kind is JsxTokenSyntaxKind {
 
 export function isImportPhaseModifierKind(kind: SyntaxKind): kind is ImportPhaseModifierSyntaxKind {
     return kind === SyntaxKind.TypeKeyword
-        || kind === SyntaxKind.DeferKeyword;
+        || kind === SyntaxKind.DeferKeyword
+        || kind === SyntaxKind.SourceKeyword;
 }
 
 export function isPostfixUnaryOperator(kind: SyntaxKind): kind is PostfixUnaryOperator {
@@ -1724,8 +1730,6 @@ export function isImportExpression(node: Node | undefined): node is ImportExpres
     return node.kind === SyntaxKind.ImportKeyword;
 }
 type JSDocNamespaceDeclaration = ModuleDeclaration;
-type WrappedExpression = ParenthesizedExpression | TypeAssertion | AsExpression | SatisfiesExpression | ExpressionWithTypeArguments | NonNullExpression | PartiallyEmittedExpression;
-type OuterExpression = WrappedExpression;
 
 export function isTypeNode(node: Node | undefined): node is TypeNode {
     if (node === undefined) return false;
@@ -1809,6 +1813,260 @@ export function isExpression(node: Node | undefined): node is Expression {
         || kind === SyntaxKind.ExpressionWithTypeArguments;
 }
 
+export function isValidTypeOnlyAliasUseSite(useSite: Node | undefined): boolean {
+    if (useSite === undefined) return false;
+    return !!(useSite.flags & NodeFlags.Ambient)
+        || isInJSDoc(useSite)
+        || isPartOfTypeQuery(useSite)
+        || isIdentifierInNonEmittingHeritageClause(useSite)
+        || isPartOfPossiblyValidTypeOrAbstractComputedPropertyName(useSite)
+        || !(isExpressionNode(useSite) || isShorthandPropertyNameUseSite(useSite));
+}
+
+function isInJSDoc(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    return !!(node.flags & NodeFlags.JSDoc);
+}
+
+function isPartOfTypeQuery(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    while (node.kind === SyntaxKind.QualifiedName || node.kind === SyntaxKind.Identifier) {
+        node = node.parent!;
+    }
+    return node.kind === SyntaxKind.TypeQuery;
+}
+
+function isIdentifierInNonEmittingHeritageClause(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    if (!isIdentifier(node))
+        return false;
+    const heritageClause = findAncestor(node.parent!, parent => {
+        switch (parent.kind) {
+            case SyntaxKind.HeritageClause:
+                return true;
+            case SyntaxKind.PropertyAccessExpression:
+            case SyntaxKind.ExpressionWithTypeArguments:
+                return false;
+            default:
+                return "quit";
+        }
+    });
+    return heritageClause !== undefined &&
+        isHeritageClause(heritageClause) &&
+        (heritageClause.token === SyntaxKind.ImplementsKeyword || heritageClause.parent!.kind === SyntaxKind.InterfaceDeclaration);
+}
+
+function isPartOfPossiblyValidTypeOrAbstractComputedPropertyName(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    while (node.kind === SyntaxKind.Identifier || node.kind === SyntaxKind.PropertyAccessExpression) {
+        node = node.parent!;
+    }
+    if (!isComputedPropertyName(node)) {
+        return false;
+    }
+    if (hasModifierFlags(node.parent!) && node.parent!.modifierFlags & ModifierFlags.Abstract) {
+        return true;
+    }
+    const containerKind = node.parent!.parent!.kind;
+    return containerKind === SyntaxKind.InterfaceDeclaration || containerKind === SyntaxKind.TypeLiteral;
+}
+
+function isShorthandPropertyNameUseSite(useSite: Node | undefined): boolean {
+    if (useSite === undefined) return false;
+    return isIdentifier(useSite) && isShorthandPropertyAssignment(useSite.parent!) && useSite.parent!.name === useSite;
+}
+
+function findAncestor(node: Node | undefined, callback: (node: Node) => boolean | "quit"): Node | undefined {
+    while (node) {
+        const result = callback(node);
+        if (result === "quit") {
+            return undefined;
+        }
+        if (result) {
+            return node;
+        }
+        node = node.parent!;
+    }
+}
+
+function hasModifierFlags(node: Node): boolean {
+    return "modifierFlags" in node;
+}
+
+function isExpressionNode(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    switch (node.kind) {
+        case SyntaxKind.SuperKeyword:
+        case SyntaxKind.NullKeyword:
+        case SyntaxKind.TrueKeyword:
+        case SyntaxKind.FalseKeyword:
+        case SyntaxKind.RegularExpressionLiteral:
+        case SyntaxKind.ArrayLiteralExpression:
+        case SyntaxKind.ObjectLiteralExpression:
+        case SyntaxKind.PropertyAccessExpression:
+        case SyntaxKind.ElementAccessExpression:
+        case SyntaxKind.CallExpression:
+        case SyntaxKind.NewExpression:
+        case SyntaxKind.TaggedTemplateExpression:
+        case SyntaxKind.AsExpression:
+        case SyntaxKind.TypeAssertionExpression:
+        case SyntaxKind.SatisfiesExpression:
+        case SyntaxKind.NonNullExpression:
+        case SyntaxKind.ParenthesizedExpression:
+        case SyntaxKind.FunctionExpression:
+        case SyntaxKind.ClassExpression:
+        case SyntaxKind.ArrowFunction:
+        case SyntaxKind.VoidExpression:
+        case SyntaxKind.DeleteExpression:
+        case SyntaxKind.TypeOfExpression:
+        case SyntaxKind.PrefixUnaryExpression:
+        case SyntaxKind.PostfixUnaryExpression:
+        case SyntaxKind.BinaryExpression:
+        case SyntaxKind.ConditionalExpression:
+        case SyntaxKind.SpreadElement:
+        case SyntaxKind.TemplateExpression:
+        case SyntaxKind.OmittedExpression:
+        case SyntaxKind.JsxElement:
+        case SyntaxKind.JsxSelfClosingElement:
+        case SyntaxKind.JsxFragment:
+        case SyntaxKind.YieldExpression:
+        case SyntaxKind.AwaitExpression:
+            return true;
+        case SyntaxKind.MetaProperty:
+            return !isImportCall(node.parent!) || node.parent!.expression !== node;
+        case SyntaxKind.ExpressionWithTypeArguments:
+            return !isHeritageClause(node.parent!);
+        case SyntaxKind.QualifiedName:
+            while (node.parent!.kind === SyntaxKind.QualifiedName) {
+                node = node.parent!;
+            }
+            return node.parent!.kind === SyntaxKind.TypeQuery || isInJSDocNameReference(node) || isJSXTagName(node);
+        case SyntaxKind.PrivateIdentifier:
+            return isBinaryExpression(node.parent!) && node.parent!.left === node && node.parent!.operatorToken.kind === SyntaxKind.InKeyword;
+        case SyntaxKind.Identifier:
+            if (node.parent!.kind === SyntaxKind.TypeQuery || isInJSDocNameReference(node) || isJSXTagName(node)) {
+                return true;
+            }
+            return isInExpressionContext(node);
+        case SyntaxKind.NumericLiteral:
+        case SyntaxKind.BigIntLiteral:
+        case SyntaxKind.StringLiteral:
+        case SyntaxKind.NoSubstitutionTemplateLiteral:
+        case SyntaxKind.ThisKeyword:
+            return isInExpressionContext(node);
+        default:
+            return false;
+    }
+}
+
+function isImportCall(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    if (node.kind !== SyntaxKind.CallExpression || !hasExpression(node) || !node.expression) {
+        return false;
+    }
+    return node.expression.kind === SyntaxKind.MetaProperty
+        && node.expression.keywordToken === SyntaxKind.ImportKeyword;
+}
+
+function isJSDocLinkLike(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    return isJSDocLink(node) || isJSDocLinkCode(node) || isJSDocLinkPlain(node);
+}
+
+function isInJSDocNameReference(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    return isJSDocLinkLike(node.parent!) || isJSDocNameReference(node.parent!);
+}
+
+function isInExpressionContext(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    const parent = node.parent!;
+    switch (parent.kind) {
+        case SyntaxKind.VariableDeclaration:
+        case SyntaxKind.Parameter:
+        case SyntaxKind.PropertyDeclaration:
+        case SyntaxKind.PropertySignature:
+        case SyntaxKind.EnumMember:
+        case SyntaxKind.PropertyAssignment:
+        case SyntaxKind.BindingElement:
+            return hasInitializer(parent) && parent.initializer === node;
+        case SyntaxKind.ExpressionStatement:
+        case SyntaxKind.IfStatement:
+        case SyntaxKind.DoStatement:
+        case SyntaxKind.WhileStatement:
+        case SyntaxKind.ReturnStatement:
+        case SyntaxKind.WithStatement:
+        case SyntaxKind.SwitchStatement:
+        case SyntaxKind.CaseClause:
+        case SyntaxKind.DefaultClause:
+        case SyntaxKind.ThrowStatement:
+            return hasExpression(parent) && parent.expression === node;
+        case SyntaxKind.ForStatement:
+            return isForStatementExpression(node, parent);
+        case SyntaxKind.ForInStatement:
+        case SyntaxKind.ForOfStatement:
+            return isForInOrOfStatementExpression(node, parent);
+        case SyntaxKind.TypeAssertionExpression:
+        case SyntaxKind.AsExpression:
+            return hasExpression(parent) && parent.expression === node;
+        case SyntaxKind.TemplateSpan:
+            return hasExpression(parent) && parent.expression === node;
+        case SyntaxKind.ComputedPropertyName:
+            return parent.expression === node;
+        case SyntaxKind.Decorator:
+        case SyntaxKind.JsxExpression:
+        case SyntaxKind.JsxSpreadAttribute:
+        case SyntaxKind.SpreadAssignment:
+            return true;
+        case SyntaxKind.ExpressionWithTypeArguments:
+            return parent.expression === node && !isPartOfTypeExpressionWithTypeArguments(parent);
+        case SyntaxKind.ShorthandPropertyAssignment:
+            return hasObjectAssignmentInitializer(parent) && parent.objectAssignmentInitializer === node;
+        case SyntaxKind.SatisfiesExpression:
+            return hasExpression(parent) && parent.expression === node;
+        default:
+            return isExpressionNode(parent);
+    }
+}
+
+function isPartOfTypeExpressionWithTypeArguments(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    const parent = node.parent!;
+    return isHeritageClause(parent) && (!isClassLikeDeclaration(parent.parent!) || parent.token === SyntaxKind.ImplementsKeyword) ||
+        isJSDocImplementsTag(parent) ||
+        isJSDocAugmentsTag(parent);
+}
+
+function isForStatementExpression(node: Node | undefined, parent: Node): boolean {
+    if (node === undefined) return false;
+    return parent.initializer === node && parent.initializer.kind !== SyntaxKind.VariableDeclarationList ||
+        parent.condition === node ||
+        parent.incrementor === node;
+}
+
+function isForInOrOfStatementExpression(node: Node | undefined, parent: Node): boolean {
+    if (node === undefined) return false;
+    return parent.initializer === node && parent.initializer.kind !== SyntaxKind.VariableDeclarationList ||
+        parent.expression === node;
+}
+
+function isJSXTagName(node: Node | undefined): boolean {
+    if (node === undefined) return false;
+    const parent = node.parent!;
+    switch (parent.kind) {
+        case SyntaxKind.JsxOpeningElement:
+        case SyntaxKind.JsxSelfClosingElement:
+        case SyntaxKind.JsxClosingElement:
+            return hasTagName(parent) && parent.tagName === node;
+        default:
+            return false;
+    }
+}
+
+function hasTagName(node: Node): boolean {
+    return "tagName" in node;
+}
+
 export function isBlockOrExpression(node: Node | undefined): node is BlockOrExpression {
     if (node === undefined) return false;
     return node.kind === SyntaxKind.Block || isExpression(node);
@@ -1882,7 +2140,7 @@ function isUnaryExpressionKind(kind: SyntaxKind): boolean {
     }
 }
 
-export function isOuterExpression(node: Node | undefined, kinds: OuterExpressionKinds = OuterExpressionKinds.All): node is OuterExpression {
+function isOuterExpression(node: Node | undefined, kinds: OuterExpressionKinds = OuterExpressionKinds.All): boolean {
     if (node === undefined) return false;
     switch (node.kind) {
         case SyntaxKind.ParenthesizedExpression:
@@ -1905,9 +2163,9 @@ export function isOuterExpression(node: Node | undefined, kinds: OuterExpression
     return false;
 }
 
-export function skipOuterExpressions(node: Node, kinds: OuterExpressionKinds = OuterExpressionKinds.All): Node {
+function skipOuterExpressions(node: Node, kinds: OuterExpressionKinds = OuterExpressionKinds.All): Node {
     while (isOuterExpression(node, kinds)) {
-        node = node.expression;
+        node = node.expression!;
     }
     return node;
 }
@@ -1992,4 +2250,16 @@ export function isJsxTagNameExpression(node: Node | undefined): node is JsxTagNa
         || kind === SyntaxKind.Identifier
         || kind === SyntaxKind.PropertyAccessExpression
         || kind === SyntaxKind.JsxNamespacedName;
+}
+
+function hasExpression(node: Node): boolean {
+    return "expression" in node;
+}
+
+function hasInitializer(node: Node): boolean {
+    return "initializer" in node;
+}
+
+function hasObjectAssignmentInitializer(node: Node): boolean {
+    return "objectAssignmentInitializer" in node;
 }

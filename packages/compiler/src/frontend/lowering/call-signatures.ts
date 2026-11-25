@@ -38,6 +38,7 @@ import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
 import { funcSlotAdaptable, restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
+import { mayResolveThroughThen } from "./promise-resolution.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
  * completes every call to the one full signature, so the IR and backends
@@ -58,13 +59,17 @@ export type ParamMode = "required" | "omittable" | "rest" | "dynRest" | "argumen
  * declareParams). `callDefault` is the compile-time default value for a
  * table-backed builtin's omittable slot. `entryNarrow` marks a dyn ABI slot
  * inherited from a JavaScript base method whose TypeScript override declares
- * a typed parameter: the prologue narrows the checked value to that type. */
+ * a typed parameter: the prologue narrows the checked value to that type.
+ * `slotType` is the ABI type of a function literal's parameter that the slot
+ * the literal is written into passes at another type (slotSignatureAdoption):
+ * the body binds `type`, converted from it at entry. */
 export interface ParamShape {
   type: IrType;
   mode: ParamMode;
   bodyType?: IrType;
   callDefault?: IrExpr;
   entryNarrow?: IrType;
+  slotType?: IrType;
   /** One flattened position of a fixed-tuple rest parameter
    * (restTupleShapes): the declaration's last parameter owns every shape
    * from its index on, and the body binds the tuple (declareParams). */
@@ -133,6 +138,108 @@ export function registerOverloadedCallableAlias(
   return true;
 }
 
+/** The binary operators whose result is fixed by their operand values, so a
+ * constant expression can neither throw nor observe anything. */
+const CONSTANT_BINARY_TOKENS: ReadonlySet<number> = new Set([
+  ts.SyntaxKind.PlusToken,
+  ts.SyntaxKind.MinusToken,
+  ts.SyntaxKind.AsteriskToken,
+  ts.SyntaxKind.SlashToken,
+  ts.SyntaxKind.PercentToken,
+  ts.SyntaxKind.AsteriskAsteriskToken,
+  ts.SyntaxKind.LessThanLessThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanToken,
+  ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken,
+  ts.SyntaxKind.AmpersandToken,
+  ts.SyntaxKind.BarToken,
+  ts.SyntaxKind.CaretToken,
+]);
+
+/** The initializer of the module-level `const` that `name` reads, if this
+ * source file declares one. The parameter scope of a default initializer sees
+ * module bindings, never the body's own declarations, so the outermost
+ * `const` of that name is the one the expression reads. */
+function moduleConstInitializer(name: ts.Identifier): ts.Expression | undefined {
+  let scope: ts.Node | undefined = name.parent;
+  while (scope !== undefined && !ts.isSourceFile(scope)) scope = scope.parent;
+  if (scope === undefined) return undefined;
+  for (const stmt of scope.statements.nodes) {
+    if (!ts.isVariableStatement(stmt)) continue;
+    const list = stmt.declarationList;
+    if ((list.flags & ts.NodeFlags.Const) === 0) continue;
+    for (const decl of list.declarations.nodes) {
+      if (ts.isIdentifier(decl.name) && decl.name.text === name.text) return decl.initializer;
+    }
+  }
+  return undefined;
+}
+
+/** An expression whose evaluation can neither throw nor observe anything: the
+ * defaults that leave a parameter binding unobservable at the call. Literals,
+ * arithmetic over them, and module-level `const` names bound to such an
+ * expression all qualify. `names` and `depth` terminate a `const a = b`
+ * cycle. */
+function constantExpression(expression: ts.Expression, names: Set<string>, depth: number): boolean {
+  if (depth > 8) return false;
+  let expr: ts.Expression = expression;
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (
+    ts.isNumericLiteral(expr) ||
+    ts.isStringLiteralLike(expr) ||
+    ts.isNoSubstitutionTemplateLiteral(expr) ||
+    ts.isTrueLiteral(expr) ||
+    ts.isFalseLiteral(expr) ||
+    ts.isNullLiteral(expr)
+  )
+    return true;
+  if (ts.isPrefixUnaryExpression(expr)) {
+    const operator = expr.operator;
+    if (
+      operator !== ts.SyntaxKind.MinusToken &&
+      operator !== ts.SyntaxKind.PlusToken &&
+      operator !== ts.SyntaxKind.TildeToken
+    )
+      return false;
+    return constantExpression(expr.operand, names, depth + 1);
+  }
+  if (ts.isBinaryExpression(expr)) {
+    return (
+      CONSTANT_BINARY_TOKENS.has(expr.operatorToken.kind) &&
+      constantExpression(expr.left, names, depth + 1) &&
+      constantExpression(expr.right, names, depth + 1)
+    );
+  }
+  if (ts.isIdentifier(expr)) {
+    if (expr.text === "undefined" || expr.text === "NaN" || expr.text === "Infinity") return true;
+    if (names.has(expr.text)) return false;
+    const initializer = moduleConstInitializer(expr);
+    if (initializer === undefined) return false;
+    names.add(expr.text);
+    const constant = constantExpression(initializer, names, depth + 1);
+    names.delete(expr.text);
+    return constant;
+  }
+  return false;
+}
+
+/** Whether a generator's parameter prologue is observable at the CALL.
+ *
+ * FunctionDeclarationInstantiation runs before GeneratorStart, so a
+ * parameter that destructures (RequireObjectCoercible and the property
+ * reads), a default that evaluates anything, a rest pattern, or a body that
+ * reads `arguments` must run when the generator is called. A plain
+ * identifier parameter — even one with a constant default, which only selects
+ * a value — binds nothing observable, and keeps the lowering that binds it on
+ * the first resume. */
+export function generatorParamsBindAtCall(node: ts.SignatureDeclaration): boolean {
+  for (const param of node.parameters.nodes) {
+    if (!ts.isIdentifier(param.name)) return true;
+    if (param.initializer !== undefined && !constantExpression(param.initializer, new Set(), 0))
+      return true;
+  }
+  return bodyReadsArguments(node);
+}
+
 export function generatorMeta(
   lowerer: Lowerer,
   type: IrType & { kind: "generator" },
@@ -192,6 +299,170 @@ export function checkedJsDocumentedParameter(
   return lowerer.checkedJsFile(ts.getSourceFileOfNode(param)) && documentedParameter(param);
 }
 
+/** Whether a JavaScript parameter's annotated type names a class (or a union
+ * with one): the nominal arm a caller's value would have to be an instance
+ * of, which a plain object is not. */
+function jsParameterSlotIsClass(lowerer: Lowerer, param: ts.ParameterDeclaration): boolean {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
+  if (mapped === null) return false;
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  return arms.some((arm) => arm.kind === "object");
+}
+
+/** The JSDoc block immediately above `node`, when only whitespace sits
+ * between it and the node's first token: the declaration's OWN documentation.
+ * A member's `parent.pos` reaches back to the start of its class, so a slice
+ * from there would read the tags of every earlier member. */
+function ownJsDocBlock(node: ts.Node): string | null {
+  const before = ts.getSourceFileOfNode(node).text.slice(0, ts.tokenStartOfNode(node));
+  const open = before.lastIndexOf("/**");
+  if (open < 0) return null;
+  const close = before.indexOf("*/", open + 3);
+  return close >= 0 && before.slice(close + 2).trim() === "" ? before.slice(open, close + 2) : null;
+}
+
+/** A JSDoc `@return`/`@returns` on a JavaScript function or method: the
+ * declaration's OWN documentation names the result. The tags read are the
+ * declaration's leading trivia — the span hasExplicitJsDocReturn reads, so
+ * the two answers agree. A member's `parent.pos` reaches back to the start
+ * of its class (a top-level declaration's to the start of its file), and a
+ * slice from there would read every earlier declaration's tags. */
+export function documentedJsReturn(node: ts.SignatureDeclaration): boolean {
+  return ts.sourceTextRangeMatches(
+    ts.getSourceFileOfNode(node),
+    node.pos,
+    ts.tokenStartOfNode(node),
+    /@returns?\b/,
+    ts.LEADING_SPAN,
+  );
+}
+
+/** Whether a return slot's mapped type names a class (or a promise of one):
+ * the nominal arm a returned value would have to be an instance of. */
+export function returnedSlotIsClass(lowerer: Lowerer, ret: IrType): boolean {
+  const value = ret.kind === "promise" ? ret.inner : ret;
+  const arms = value.kind === "union" ? (lowerer.unions.get(value.unionId)?.arms ?? []) : [value];
+  return arms.some((arm) => arm.kind === "object");
+}
+
+/** Whether the value an expression holds is one a checked-dynamic parameter
+ * handed in: the parameter itself, a `const` copy of it, a property read off
+ * such a value, or a conditional/coalesce of such values. A `new` expression
+ * and a call's result are values of their own (the callee builds them). */
+function holdsCheckedDynamicValue(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+  parameters: ReadonlyMap<ts.Symbol, ts.ParameterDeclaration>,
+  isDynamic: (parameter: ts.ParameterDeclaration) => boolean,
+  seen: Set<ts.Symbol>,
+): boolean {
+  let node = expression;
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  )
+    node = node.expression;
+  if (ts.isIdentifier(node)) {
+    const symbol = lowerer.resolveValueSymbol(node);
+    if (symbol === null || seen.has(symbol)) return false;
+    const parameter = parameters.get(symbol);
+    if (parameter !== undefined) return isDynamic(parameter);
+    const declarations = symbol.declarations;
+    if (declarations.length !== 1) return false;
+    const declaration = declarations[0]!;
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      !ts.isIdentifier(declaration.name) ||
+      declaration.type !== undefined ||
+      declaration.initializer === undefined
+    )
+      return false;
+    const list = declaration.parent;
+    if (!ts.isVariableDeclarationList(list) || (list.flags & ts.NodeFlags.Const) === 0)
+      return false;
+    seen.add(symbol);
+    const derived = holdsCheckedDynamicValue(
+      lowerer,
+      declaration.initializer,
+      parameters,
+      isDynamic,
+      seen,
+    );
+    seen.delete(symbol);
+    return derived;
+  }
+  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    return holdsCheckedDynamicValue(lowerer, node.expression, parameters, isDynamic, seen);
+  if (ts.isConditionalExpression(node))
+    return (
+      holdsCheckedDynamicValue(lowerer, node.whenTrue, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.whenFalse, parameters, isDynamic, seen)
+    );
+  if (
+    ts.isBinaryExpression(node) &&
+    (node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+      node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+  )
+    return (
+      holdsCheckedDynamicValue(lowerer, node.left, parameters, isDynamic, seen) ||
+      holdsCheckedDynamicValue(lowerer, node.right, parameters, isDynamic, seen)
+    );
+  return false;
+}
+
+/** Whether a function returns, at least once, a value one of its own
+ * parameters with a checked-dynamic slot handed in (directly, through a
+ * constant copy, or as a property read off one): the result is whatever the
+ * caller passed, which a documented class result does not promise. Returns
+ * inside nested functions are not this function's. */
+export function returnsCheckedDynamicParameter(
+  lowerer: Lowerer,
+  node: ts.SignatureDeclaration,
+): boolean {
+  const parameters = new Map<ts.Symbol, ts.ParameterDeclaration>();
+  for (const parameter of node.parameters.nodes) {
+    if (!ts.isIdentifier(parameter.name)) continue;
+    const symbol = lowerer.resolveValueSymbol(parameter.name);
+    if (symbol !== null) parameters.set(symbol, parameter);
+  }
+  if (parameters.size === 0) return false;
+  // The slot shape costs a type mapping per parameter, so each one is asked
+  // for only when a returned value names it.
+  const dynamicParameters = new Map<ts.ParameterDeclaration, boolean>();
+  const isDynamic = (parameter: ts.ParameterDeclaration): boolean => {
+    const known = dynamicParameters.get(parameter);
+    if (known !== undefined) return known;
+    const dynamic = paramShape(lowerer, parameter).type.kind === "dyn";
+    dynamicParameters.set(parameter, dynamic);
+    return dynamic;
+  };
+  let dynamic = false;
+  const record = (expression: ts.Expression): void => {
+    if (!dynamic && holdsCheckedDynamicValue(lowerer, expression, parameters, isDynamic, new Set()))
+      dynamic = true;
+  };
+  const visit = (child: ts.Node): void => {
+    if (dynamic) return;
+    if (ts.isFunctionLike(child) && child !== node) return;
+    if (ts.isReturnStatement(child)) {
+      if (child.expression !== undefined) record(child.expression);
+      return;
+    }
+    ts.forEachChild(child, (next) => {
+      visit(next);
+      return undefined;
+    });
+  };
+  visit(node);
+  // A concise arrow body is the return expression itself.
+  if (!dynamic && ts.isArrowFunction(node) && !ts.isBlock(node.body)) record(node.body);
+  return dynamic;
+}
+
 /** One parameter's ParamShape — the shared signature-shaped collection
  * point for function declarations, methods, constructors, and lambdas
  * (generic declarations defer to their call sites, where the resolved
@@ -213,6 +484,22 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
   if (stage) return { type: stage, mode: "required" };
   if (isJsSourceFile(ts.getSourceFileOfNode(param)) && ts.isSetAccessorDeclaration(param.parent))
     return { type: DYN, mode: "required" };
+  // A JavaScript parameter among the bindings a for-in head writes keys into
+  // (or that stores one) takes checked-dynamic storage in its slot too
+  // (analyzeJsForInKeyBindings, analyzeJsWidenedBindings): the loop writes the
+  // key through the parameter, and a caller passes whatever Node passes.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    ts.isIdentifier(param.name)
+  ) {
+    const symbol = lowerer.resolveValueSymbol(param.name);
+    const widened = symbol === null ? undefined : lowerer.runtimeOptionalBindingTypes.get(symbol);
+    if (widened?.kind === "dyn")
+      return param.initializer !== undefined
+        ? { type: DYN, mode: "omittable", bodyType: DYN }
+        : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
   if (
     isJsSourceFile(ts.getSourceFileOfNode(param)) &&
     ts.isConstructorDeclaration(param.parent) &&
@@ -239,6 +526,26 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // for constructors, JSDoc in a file TypeScript does not check
     // documents the usual types without constraining callers.
     return param.initializer
+      ? { type: DYN, mode: "omittable", bodyType: DYN }
+      : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
+  }
+  // A JSDoc-typed parameter in a JavaScript file TypeScript does not check:
+  // the annotation documents the class a caller usually passes, not a promise
+  // about the value. `Color.getRGB(_rgb)` in three.js takes a plain
+  // `{ r, g, b }`; a slot typed as the class checks the argument nominally
+  // and throws TypeError where Node stores it. Such a parameter takes
+  // checked-dynamic storage, and its reads and writes apply the same property
+  // rules dynamically. Scalar annotations keep their declared lowering.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !param.dotDotDotToken &&
+    (param.type !== undefined ||
+      (param.parent !== undefined && /@(?:param|type)\b/.test(ownJsDocBlock(param.parent) ?? "")) ||
+      param.initializer !== undefined) &&
+    !checkedJsDocumentedParameter(lowerer, param) &&
+    jsParameterSlotIsClass(lowerer, param)
+  ) {
+    return param.initializer !== undefined
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }
@@ -301,9 +608,9 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
       ? { type: DYN, mode: "omittable", bodyType: DYN }
       : { type: DYN, mode: "required" };
   }
-  const moduleNs = lowerer.moduleNsParamOverrides.get(param);
-  if (moduleNs !== undefined) {
-    return { type: moduleNs, mode: param.questionToken ? "omittable" : "required" };
+  const namespaceParam = lowerer.namespaceHandlerParamOverrides.get(param);
+  if (namespaceParam !== undefined) {
+    return { type: namespaceParam, mode: param.questionToken ? "omittable" : "required" };
   }
   if (!ts.isIdentifier(param.name)) {
     // A destructuring pattern parameter — `([label, value]) => ...`,
@@ -413,6 +720,19 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
     // contract than its JSDoc's usual value. Checked callers must deliver
     // undefined to that branch rather than reject it at the ABI boundary.
     if (acceptsUndefined) type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
+  }
+  if (
+    type.kind === "func" &&
+    !nativeExecutor &&
+    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    !lowerer.bareUndefinedArmedUnion(type)
+  ) {
+    // JavaScript callers may leave any argument out, whatever its
+    // documentation says: the callee then reads undefined. A callable
+    // parameter's slot must be able to hold it, so the parameter takes the
+    // undefined arm its JSDoc type otherwise lacks (a body that calls the
+    // callback reaches the same "not a function" answer Node gives).
+    type = lowerer.promoteRuntimeOptionalParameter(param.name, type);
   }
   if (type.kind === "void") {
     return { type: DYN, mode: param.questionToken ? "omittable" : "required" };
@@ -595,6 +915,14 @@ function defaultParameterShape(
     }
   }
   const bodyType = lowerer.stripUndefinedArm(raw);
+  // A parameter whose own type is `null` (`fallback = null` with no
+  // annotation): a null-typed binding is held in the `null | undefined`
+  // union everywhere else, and the body's binding is that union too. An
+  // omitted argument or undefined takes the default; null stays itself.
+  if (bodyType.kind === "nullT") {
+    const held = lowerer.withUndefinedArm(bodyType);
+    return { type: held, mode: "omittable", bodyType: held };
+  }
   lowerer.checkDefaultParamBodyType(param, bodyType);
   const abi =
     bodyType.kind === "union"
@@ -665,6 +993,39 @@ function lambdaSpellsCompletedAbi(
   return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
 }
 
+/** Whether `node` is the value of a property (or a method) of an object
+ * literal whose own contextual type is `any`. */
+function memberOfAnyLiteral(lowerer: Lowerer, node: ts.Node): boolean {
+  let member: ts.Node = node;
+  if (!ts.isMethodDeclaration(member)) {
+    while (member.parent !== undefined && ts.isParenthesizedExpression(member.parent))
+      member = member.parent;
+    const property = member.parent;
+    if (
+      property === undefined ||
+      !ts.isPropertyAssignment(property) ||
+      property.initializer !== member
+    )
+      return false;
+    member = property;
+  }
+  const literal = member.parent;
+  if (literal === undefined || !ts.isObjectLiteralExpression(literal)) return false;
+  const context = lowerer.checker.getContextualType(literal);
+  return context !== undefined && (context.flags & ts.TypeFlags.Any) !== 0;
+}
+
+/** funcSlotAdaptable for a slot the checker types: calls through it pass
+ * its declared parameters (function-adapters.ts, THE RULE). */
+function declaredSlotAdaptable(
+  lowerer: Lowerer,
+  value: IrType & { kind: "func" },
+  slot: IrType & { kind: "func" },
+  blame: ts.Node,
+): boolean {
+  return lowerer.withDeclaredCallList(() => funcSlotAdaptable(lowerer, value, slot, locOf(blame)));
+}
+
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
  * Optional/default parameters appear as literal `T | undefined` slots;
  * typed rest parameters appear as one trailing typed-array slot plus the
@@ -710,6 +1071,25 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // A signature that can be called with a different number of arguments
+  // (an optional, defaulted or rest parameter) reads its actual argument
+  // list from the hidden "arguments" array (appendArgumentsParameter), and
+  // no checked signature spells that array in its parameter list. A value
+  // that stays checked-dynamic keeps it: the boxed call thunk fills the
+  // array with exactly the arguments its caller passed, so
+  // `arguments.length` answers the call. A typed slot cannot, because its
+  // own parameter list carries no array, and keeps the refusal.
+  if (
+    funcType.kind === "func" &&
+    funcType.argumentsAll === true &&
+    (mapped === null || mapped.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return;
   // A lambda whose OWN signature already spells the completed ABI is a
   // value: every read of it types it that way, and its slot converts it
   // (the surplus-parameter and undefined-arm adapters). The mapped-type
@@ -733,6 +1113,21 @@ export function requireExactArityValue(
   if (
     target !== undefined &&
     ((target.flags & ts.TypeFlags.Any) !== 0 || mapped?.kind === "dyn") &&
+    canBoxFuncIntoDyn(
+      funcType,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return;
+  }
+  // A member of an object literal that is itself written under an 'any'
+  // slot (an options record handed to an untyped function): the checker
+  // gives the member no contextual type, and the literal is a
+  // checked-dynamic object whose members box like the 'any' slot above.
+  if (
+    target === undefined &&
+    memberOfAnyLiteral(lowerer, contextual ?? blame) &&
     canBoxFuncIntoDyn(
       funcType,
       (id) => lowerer.shapes.get(id),
@@ -769,10 +1164,12 @@ export function requireExactArityValue(
     // verbatim (a required narrower interface parameter where the method
     // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
     // coercion adapts the pair like any other function value.
+    // The slot is the member's declared type: calls through it pass its
+    // parameters (function-adapters.ts, THE RULE).
     if (
       slot?.kind === "func" &&
       funcType.kind === "func" &&
-      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+      declaredSlotAdaptable(lowerer, funcType, slot, blame)
     )
       return;
     // An UNCONTEXTUALIZED literal's own inferred type is what every later
@@ -834,10 +1231,13 @@ export function requireExactArityValue(
   // undefined, JavaScript's surplus-argument rule) or a parameter pair the
   // adapter converts (a required narrower interface parameter against the
   // value's `Ctx | undefined` completed slot).
+  // The slot judged here is the checker's own type for the position, a
+  // declared one; the conversion at the site the value lands in decides
+  // again, for the slot it really has.
   if (
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
-    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
+    declaredSlotAdaptable(lowerer, funcType, mappedFn, blame)
   ) {
     return;
   }
@@ -990,11 +1390,36 @@ export function collectSignatureInner(lowerer: Lowerer, decl: ts.FunctionDeclara
   });
 }
 
+/** `arguments` as the argumentsList of `fn.apply(thisArg, arguments)` where
+ * `apply` resolves to the standard library's Function.prototype.apply: the
+ * call reads the list's length and elements and never writes through it,
+ * so the object never escapes to another holder. */
+function applyArgumentsListUse(lowerer: Lowerer, id: ts.Identifier): boolean {
+  const call = id.parent;
+  if (!ts.isCallExpression(call) || call.arguments.nodes.length !== 2) return false;
+  if (call.arguments.nodes[1] !== id) return false;
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken !== undefined) return false;
+  if (callee.name.text !== "apply") return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  const declarations = symbol?.declarations;
+  if (declarations === undefined || declarations.length === 0) return false;
+  return declarations.every((d) => lowerer.isStdlibFile(d.getSourceFile()));
+}
+
 /** Arrows inherit arguments. Ordinary JS functions receive a hidden
  * array unless a declared rest parameter already owns that contract.
  * Class methods are strict; other parameterized forms require ES modules
  * because sloppy-mode arguments alias named parameters, unless the body
- * cannot observe that aliasing (argumentsAliasingUnobservable). */
+ * cannot observe that aliasing (argumentsAliasingUnobservable).
+ *
+ * A TYPED function receives the same hidden array when its callers can pass
+ * a different number of arguments than the declaration names: an optional,
+ * defaulted or rest parameter makes `arguments.length` vary per call, and a
+ * fixed-arity signature is the only one whose count folds to a constant
+ * (property-access.ts). The array holds every argument the caller passed,
+ * so `arguments.length` answers the call itself rather than the declared
+ * parameter count. */
 function appendArgumentsParameter(
   lowerer: Lowerer,
   node: ts.SignatureDeclaration,
@@ -1002,16 +1427,37 @@ function appendArgumentsParameter(
   mode: "arguments" | "dynRest",
 ): void {
   if (
-    shapes.some((s) => s.mode === "rest" || s.mode === "dynRest") ||
     !(
       ts.isFunctionExpression(node) ||
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
+  const typed = !isJsSourceFile(ts.getSourceFileOfNode(node));
+  if (typed) {
+    // Typed sources stay zero-cost for a fixed-arity signature: its count is
+    // the declared count (property-access.ts folds it). Only a parameter
+    // that can be absent makes the count a per-call fact. The array follows
+    // every declared slot, a rest array or the flattened positions of a
+    // tuple rest included (declareParams binds those first).
+    if (
+      !node.parameters.nodes.some(
+        (param) => param.questionToken || param.initializer || param.dotDotDotToken,
+      )
+    )
+      return;
+  } else if (shapes.some((s) => s.mode === "rest" || s.mode === "dynRest")) return;
+  // A typed rest spelled `any[]` or `unknown[]` is a checked-dynamic pack
+  // that already holds every argument the call passed, so the body's
+  // `arguments` is that pack (declareFunctionArguments clones it) and no
+  // second trailing array is appended: the variadic value's ABI the
+  // checked-dynamic layer fills carries one.
+  if (shapes.some((s) => s.mode === "dynRest")) return;
+  // The array is a copy of the call's arguments, so a sloppy-mode function
+  // whose `arguments` would alias its parameters keeps the refusal, typed
+  // or not.
   if (node.parameters.nodes.length > 0 || ts.isMethodDeclaration(node)) {
     const classMethod =
       ts.isMethodDeclaration(node) &&
@@ -1020,7 +1466,7 @@ function appendArgumentsParameter(
       !classMethod &&
       !isNodeEsmFile(ts.getSourceFileOfNode(node), lowerer.program) &&
       !unmappedArguments(node) &&
-      !argumentsAliasingUnobservable(node)
+      !argumentsAliasingUnobservable(node, (id) => applyArgumentsListUse(lowerer, id))
     ) {
       lowerer.unsupported(
         "SC1090",
@@ -1031,7 +1477,7 @@ function appendArgumentsParameter(
       );
     }
   }
-  shapes.push({ type: DYN, mode });
+  shapes.push({ type: DYN, mode: typed ? "arguments" : mode });
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code
@@ -1081,10 +1527,14 @@ export function lambdaSignature(
   // A parameterless function expression forwarding its `arguments`,
   // asserted to a fixed signature: that signature is its ABI.
   if (typedArgumentsCandidate(node) && !node.typeParameters?.nodes.length) {
-    const target = typedArgumentsTarget(lowerer, node);
+    const origin = { contextual: false };
+    const target = typedArgumentsTarget(lowerer, node, origin);
     if (target) {
       const shapes = typedArgumentsShapes(target);
       lowerer.typedArgumentsLambdas.add(node);
+      // Written into a declared slot, the function is a variadic function
+      // stored under that slot's signature (function-adapters.ts, THE RULE).
+      if (origin.contextual) lowerer.noteVariadicStore(node, target);
       return { shapes, funcType: funcTypeFromParamShapes(shapes, target.ret) };
     }
   }
@@ -1225,13 +1675,47 @@ export function lambdaSignature(
   let ret =
     ts.isArrowFunction(node) && !ts.isBlock(node.body) && isStreamUndefCallExpr(lowerer, node.body)
       ? VOID
-      : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-          !returnedValue &&
-          voidContextualSlot(lowerer, node, contextualSigs)
-        ? VOID
-        : lowerer.declaredReturnType(node, node);
+      : // A lambda written into a checked-dynamic member answers what its
+        // body answers: the member's storage is checked-dynamic, so the
+        // function object keeps its own value, as Node's does. The typed
+        // slot's `void` would drop it (jsDynStoredLambda).
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+          jsDynStoredLambda(lowerer, node)
+        ? DYN
+        : (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+            !returnedValue &&
+            voidContextualSlot(lowerer, node, contextualSigs)
+          ? VOID
+          : lowerer.declaredReturnType(node, node);
 
   ret = lowerer.runtimeOptionalFunctionReturnType(node, ret);
+  // A documented return in a JavaScript file TypeScript does not check: the
+  // JSDoc names the class the function usually answers, not a promise about
+  // what this body returns (`Color.getRGB` in three answers the plain object
+  // it was handed). A class-typed result slot converts a returned
+  // checked-dynamic value nominally and throws where Node answers it, so the
+  // result is checked-dynamic. Scalar, unit, generator and promise framings
+  // keep their shape (a promise keeps its arms and takes a dynamic payload).
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(node)) &&
+    documentedJsReturn(node) &&
+    returnedSlotIsClass(lowerer, ret)
+  ) {
+    ret = ret.kind === "promise" ? { ...ret, inner: DYN } : DYN;
+  }
+  // The same for a result the checker INFERRED from one of the function's own
+  // parameters (`getRGB(target) { return target; }` infers Color): the
+  // parameter's slot is checked-dynamic, so the function answers whatever the
+  // caller passed and the result slot follows it.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    !lowerer.checkedJsFile(ts.getSourceFileOfNode(node)) &&
+    returnedSlotIsClass(lowerer, ret) &&
+    returnsCheckedDynamicParameter(lowerer, node)
+  ) {
+    ret = DYN;
+  }
   // A contextually-typed arrow/function EXPRESSION whose slot signature
   // returns a composite type the inferred return doesn't spell adopts
   // the slot's return as its ABI: `(n) => work()` (inferring Promise<void>) against
@@ -1359,7 +1843,12 @@ export function lambdaSignature(
       !inferredLiteral &&
       ret.kind !== "void" &&
       ctxSigs.length === 1 &&
-      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void)
+      !(ts.isMethodDeclaration(node) ? false : jsDynStoredLambda(lowerer, node)) &&
+      !!(lowerer.checker.getReturnTypeOfSignature(ctxSigs[0]!).flags & ts.TypeFlags.Void) &&
+      !(
+        (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+        finallyObservesResult(lowerer, node)
+      )
     ) {
       ret = VOID;
     }
@@ -1408,10 +1897,98 @@ function voidContextualSlot(
     ts.isObjectLiteralExpression(node.parent.parent)
   )
     return false;
+  // An assignment stores the function VALUE, and JavaScript's function
+  // object keeps its own return type: only a call through the `void` slot
+  // discards the result, which is what the slot's signature says. Node
+  // answers the value to any other caller (a checked-dynamic read of the
+  // member, a later `typeof`), so the lambda keeps its inferred return. The
+  // store still adapts a value the slot cannot carry, exactly as an object
+  // literal's property (above) does.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+    ts.isBinaryExpression(node.parent) &&
+    node.parent.right === node &&
+    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  )
+    return false;
   const sigs = contextualSigs();
   return (
     sigs.length === 1 &&
-    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0
+    (lowerer.checker.getReturnTypeOfSignature(sigs[0]!).flags & ts.TypeFlags.Void) !== 0 &&
+    !finallyObservesResult(lowerer, node)
+  );
+}
+
+/** A JavaScript lambda written into a member of a binding whose storage is
+ * checked-dynamic (`Internals.d.f = function () { …; return v; }`): the
+ * member holds the function object, and JavaScript's function object keeps
+ * the value its body answers — only a call through a `void`-typed slot
+ * discards it. The lambda therefore answers a checked-dynamic result, which
+ * the dynamic storage carries (lower-calls.ts reads it back). */
+function jsDynStoredLambda(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) return false;
+  // The stored VALUE is the lambda, or the object literal it is a property
+  // of (however deeply nested: `d = { f: function () { … } }`).
+  let value: ts.Node = node;
+  let parent = value.parent;
+  while (
+    parent !== undefined &&
+    ts.isPropertyAssignment(parent) &&
+    parent.initializer === value &&
+    ts.isObjectLiteralExpression(parent.parent)
+  ) {
+    value = parent.parent;
+    parent = value.parent;
+  }
+  if (parent === undefined || lowerer.jsWidenedBindings.size === 0) return false;
+  // The value goes into a binding the preflight widened: either a member of
+  // one (`o.f = function () { …; return v; }`) or the binding's own
+  // initializer (`var o = { f: function () { …; return v; } }`), whose
+  // literal the checked-dynamic storage keeps as written.
+  let root: ts.Node;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === value) {
+    if (!ts.isIdentifier(parent.name)) return false;
+    root = parent.name;
+  } else if (
+    ts.isBinaryExpression(parent) &&
+    parent.right === value &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  ) {
+    let target: ts.Node = parent.left;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    if (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target))
+      return false;
+    root = target.expression;
+    while (ts.isPropertyAccessExpression(root) || ts.isElementAccessExpression(root))
+      root = root.expression;
+    while (ts.isParenthesizedExpression(root)) root = root.expression;
+  } else return false;
+  if (!ts.isIdentifier(root)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(root);
+  return symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
+}
+
+/** Whether `node` is the callback of a promise's `finally` and may return a
+ * promise or a thenable. The library types that callback `() => void`, but
+ * `finally` waits for what it returns and rejects with its rejection, so
+ * such a callback keeps its own result. One that returns a plain value is
+ * the discarded result the void slot describes. */
+function finallyObservesResult(
+  lowerer: Lowerer,
+  node: ts.ArrowFunction | ts.FunctionExpression,
+): boolean {
+  const call = node.parent;
+  if (!ts.isCallExpression(call) || call.arguments.nodes[0] !== node) return false;
+  const access = call.expression;
+  if (!ts.isPropertyAccessExpression(access) || access.name.text !== "finally") return false;
+  if (!lowerer.isStdlibMember(access)) return false;
+  const signature = lowerer.checker.getSignatureFromDeclaration(node);
+  return (
+    signature !== undefined &&
+    mayResolveThroughThen(lowerer, lowerer.checker.getReturnTypeOfSignature(signature))
   );
 }
 

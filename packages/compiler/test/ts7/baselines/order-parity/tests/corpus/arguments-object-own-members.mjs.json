@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/arguments-object-own-members.mjs"
+ ],
+ "diags": []
+}

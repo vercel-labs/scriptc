@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/net-connect-dynamic-arguments.cjs"],
+  "diags": []
+}

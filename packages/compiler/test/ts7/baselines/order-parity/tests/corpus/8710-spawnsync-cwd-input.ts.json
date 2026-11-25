@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8710-spawnsync-cwd-input.ts"
+ ],
+ "diags": []
+}

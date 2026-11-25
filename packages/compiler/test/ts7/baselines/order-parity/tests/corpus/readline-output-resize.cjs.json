@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/readline-output-resize.cjs"
+ ],
+ "diags": []
+}

@@ -114,21 +114,3 @@ identity-collection-keys.ts:35:15 - error SC2020: 'collection key assertion requ
   36 | 
 
   hint: use the original reference with the same type as the collection key
-
-identity-collection-keys.ts:39:14 - error SC2020: 'collection key assertion requiring a structural copy or dynamic conversion' is part of the standard library types but has no scriptc lowering yet
-
-  38 | const unknownKeys: unknown = [{ id: 1 }];
-  39 | new Set<Key>(unknownKeys as Key[]);
-     |              ^~~~~~~~~~~~~~~~~~~~
-  40 | new Set<Key>(unknownKeys as [Key]);
-
-  hint: use the original reference with the same type as the collection key
-
-identity-collection-keys.ts:40:14 - error SC2020: 'collection key assertion requiring a structural copy or dynamic conversion' is part of the standard library types but has no scriptc lowering yet
-
-  39 | new Set<Key>(unknownKeys as Key[]);
-  40 | new Set<Key>(unknownKeys as [Key]);
-     |              ^~~~~~~~~~~~~~~~~~~~
-  41 | 
-
-  hint: use the original reference with the same type as the collection key

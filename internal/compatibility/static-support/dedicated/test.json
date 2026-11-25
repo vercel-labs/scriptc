@@ -1,0 +1,3 @@
+[
+    { "chapter": "test", "parent": "Class: `TestContext`", "symbols": ["context.test"], "status": "supported", "evidence": ["tests/fixtures/node-test/cases/ctx-test-options.ts", "tests/fixtures/node-test/cases/subtests.ts", "tests/fixtures/node-test/cases/ctx-run-only.ts", "tests/harness/node-test.test.ts"] }
+]

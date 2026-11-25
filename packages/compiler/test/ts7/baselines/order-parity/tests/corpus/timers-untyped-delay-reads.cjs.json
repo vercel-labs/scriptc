@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/timers-untyped-delay-reads.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-class-coercion-bigint-operators.js"
+ ],
+ "diags": []
+}

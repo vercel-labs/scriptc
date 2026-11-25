@@ -1,0 +1,6 @@
+- **Compile cache in Node islands:** Node.js keeps a module compile cache only when `NODE_COMPILE_CACHE` is set, and a compiled program keeps one by default for the JavaScript it runs in a Node island.
+  In island code `module.getCompileCacheDir()` therefore returns a directory where Node.js returns `undefined`, and `module.enableCompileCache()` reports that the cache is already enabled.
+  The cache is in the user's cache directory, beside the island's extracted files, and the program uses it only when that directory belongs to the user and no one else can write to it.
+  The program runs without the cache, and reports nothing, when the directory is not private in that way, cannot be created, or is on a file system with no free space, when the user has no home directory to keep it in, and when the process's effective user or group differs from its real one.
+  `NODE_DISABLE_COMPILE_CACHE=1` turns the cache off.
+  `NODE_COMPILE_CACHE=<directory>` makes Node.js use that directory as it does on its own, without those checks.

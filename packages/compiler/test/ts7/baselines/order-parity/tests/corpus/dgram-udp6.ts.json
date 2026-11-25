@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-udp6.ts"
+ ],
+ "diags": []
+}

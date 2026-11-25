@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { findConstantNumericTables } from "./constant-tables.js";
+import { findConstantNumericTables, findStaticArrayTables } from "./constant-tables.js";
 import { arrayOf, F64, funcOf, VOID, type IrExpr, type IrModule, type IrStmt } from "./ir.js";
 import { validateModule } from "./validate.js";
 
@@ -124,5 +124,67 @@ test.each(["mutable", "spread", "effectful", "empty", "large", "missing initiali
     else if (reason === "large") init.elems = Array.from({ length: 257 }, () => num(1));
     else mod.functions[0]!.body.shift();
     expect(findConstantNumericTables(mod).size).toBe(0);
+  },
+);
+
+/** The fixture with a `count`-element literal table, and that literal. */
+function sized(count: number): { mod: IrModule; init: IrExpr } {
+  const mod = fixture();
+  const init = (mod.functions[0]!.body[0] as IrStmt & { kind: "assign" }).value;
+  if (init.kind !== "arrayLit") throw new Error("fixture");
+  init.elems = Array.from({ length: count }, (_, i) => num(i + 25));
+  return { mod, init };
+}
+
+test("static tables are the literals too large for an array's inline slots", () => {
+  const { mod, init } = sized(17);
+  expect(validateModule(mod)).toEqual([]);
+  expect([...findStaticArrayTables(mod)]).toEqual([init]);
+});
+
+test("static tables leave a literal that fits inline slots on the in-place path", () => {
+  expect(findStaticArrayTables(sized(16).mod).size).toBe(0);
+});
+
+test("static tables cover literals past the constant-data limit", () => {
+  expect(findStaticArrayTables(sized(4250).mod).size).toBe(1);
+});
+
+test("indexed reads alone keep a static table", () => {
+  const { mod } = sized(17);
+  mod.functions[0]!.body[1] = expr({
+    kind: "arrayGet",
+    arr: ref(),
+    index: num(1),
+    type: F64,
+    loc,
+  });
+  expect(validateModule(mod)).toEqual([]);
+  expect(findStaticArrayTables(mod).size).toBe(1);
+});
+
+test.each(["element", "length", "argument", "return", "reassign", "callback"])(
+  "static tables refuse %s uses",
+  (use) => {
+    const { mod } = sized(17);
+    const body = mod.functions[0]!.body;
+    const mutation: IrStmt = { kind: "arraySet", arr: ref(), index: num(0), value: num(9), loc };
+    if (use === "element") body.push(mutation);
+    else if (use === "length")
+      body.push({ kind: "arraySetLength", arr: ref(), length: num(0), loc });
+    else if (use === "argument")
+      body.push(expr({ kind: "call", callee: "external", args: [ref()], type: VOID, loc }));
+    else if (use === "return") body.push({ kind: "return", value: ref(), loc });
+    else if (use === "reassign") body.push(body[0]!);
+    else
+      mod.functions.push({
+        name: "laterCallback",
+        params: [],
+        returnType: VOID,
+        locals: [],
+        body: [mutation],
+        loc,
+      });
+    expect(findStaticArrayTables(mod).size).toBe(0);
   },
 );

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9363-catch-binding-unknown-rules.ts"
+ ],
+ "diags": []
+}

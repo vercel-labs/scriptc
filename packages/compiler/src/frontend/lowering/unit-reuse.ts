@@ -58,6 +58,7 @@ import { IrReader, IrWriter, decodeFunctionBinary } from "../../ir/codec.js";
 import { IR_CODEC_LAYOUT } from "../../ir/codec.generated.js";
 import { IR_VERSION } from "../../ir/serialize.js";
 import * as ts from "../ts7/adapter.js";
+import { invalidateTrackedPath } from "../input-tracker.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import {
   decodeRecordFunction,
@@ -109,6 +110,7 @@ export function directoryUnitStore(directory: string, key: string): UnitStore {
       const stage = `${path}.${process.pid}.tmp`;
       writeFileSync(stage, bytes);
       renameSync(stage, path);
+      invalidateTrackedPath(path);
     } catch {
       // A failed write only costs the next build its reuse.
     }
@@ -140,7 +142,7 @@ export function unitReuseVerify(): boolean {
 
 /** The first line of a program entry and of a file entry. */
 const PROGRAM_MAGIC = "scriptc-units-program-2";
-const FILE_MAGIC = "scriptc-units-file-3";
+const FILE_MAGIC = "scriptc-units-file-4";
 
 /** A unit's record as an entry holds it, with the files other than the
  * unit's own whose source positions the record holds. The function is in
@@ -771,6 +773,8 @@ export class UnitReuse {
   private readonly written = new Map<string, Map<string, StoredUnit>>();
   /** Files whose units this build lowered. */
   private readonly rewritten = new Set<string>();
+  /** The emitted-function names this build lowered rather than applied. */
+  private readonly lowered = new Set<string>();
   /** Counts, and the time opening (tables and changed names) and finishing
    * (writing entries) took, in milliseconds. */
   readonly stats = {
@@ -920,7 +924,27 @@ export class UnitReuse {
     else {
       this.stats.misses++;
       this.rewritten.add(file);
+      this.lowered.add(name);
     }
+  }
+
+  /** Notes a unit with no source file of its own: a class expression's
+   * constructor or method, or a declaration registered while lowering. Its
+   * body is lowered or applied like any unit's, but no file entry holds it,
+   * so it joins `changedUnits` without a record. */
+  noteUnfiled(name: string, applied: boolean): void {
+    if (applied) this.stats.hits++;
+    else {
+      this.stats.misses++;
+      this.lowered.add(name);
+    }
+  }
+
+  /** The emitted-function names this build lowered, sorted. A builder that
+   * consumes per-unit caches keys them by this set instead of hashing every
+   * function's IR. */
+  changedUnits(): string[] {
+    return [...this.lowered].sort();
   }
 
   /** Writes the file entries of files whose units changed and the program

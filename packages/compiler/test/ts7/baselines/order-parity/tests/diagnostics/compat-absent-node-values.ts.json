@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/compat-absent-node-values.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Property 'mainModule' does not exist on type '{ getBuiltinModule(id: string): unknown; hrtime: { (time?: [number, number] | undefined): [number, number]; bigint(): bigint; }; argv: string[]; platform: string; readonly arch: string; readonly versions: ProcessVersions; ... 69 more ...; disconnect(): void; }'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/compat-absent-node-values.ts",
+    "start": 402,
+    "end": 412
+   },
+   "typeWorld": true,
+   "hint": "the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'mainModule' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint"
+  }
+ ]
+}

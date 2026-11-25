@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dgram-bind-any-port.ts"
+ ],
+ "diags": []
+}

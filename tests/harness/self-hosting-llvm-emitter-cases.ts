@@ -72,6 +72,18 @@ export function llvmEmitterCases(): LlvmEmitterCase[] {
     "@scr_box_release",
   );
   find("synchronous callback environment").excludes.push("@scr_closure_new", "@scr_box_new");
+  find("closure captured values").contains.push("@scr_closure_new_values", "@sc_env_values.");
+  find("closure captured values").excludes.push("@sc_retain_box", "@scr_box_new");
+  find("synchronous callback values").contains.push(
+    "alloca { %ScrClosure, [0 x ptr], ptr, [1 x ptr] }",
+    "@scr_str_release",
+  );
+  find("synchronous callback values").excludes.push(
+    "@scr_closure_new",
+    "@scr_box_new",
+    "alloca %ScrBox",
+    "@sc_retain_box",
+  );
   find("thread-local library globals").contains.push("thread_local");
   for (const name of [
     "empty executable",
@@ -79,22 +91,19 @@ export function llvmEmitterCases(): LlvmEmitterCase[] {
     "class forest and virtual dispatch tables",
     "union scalar payloads and immortal units",
     "synchronous callback environment",
+    "synchronous callback values",
   ]) {
     const base = find(name);
+    const callback = name.startsWith("synchronous callback");
     cases.push({
       ...base,
       name: `WASI 32-bit ${name}`,
       request: llvmEmitterRequest({ pointerBits: 32, wasi: true }),
       contains: [
         "%ScrStr = type { i32, i32, i32 }",
-        ...(name === "synchronous callback environment"
-          ? base.contains.filter((fragment) => !fragment.includes("@main("))
-          : []),
+        ...(callback ? base.contains.filter((fragment) => !fragment.includes("@main(")) : []),
       ],
-      excludes: [
-        "%ScrStr = type { i64, i64, i64 }",
-        ...(name === "synchronous callback environment" ? base.excludes : []),
-      ],
+      excludes: ["%ScrStr = type { i64, i64, i64 }", ...(callback ? base.excludes : [])],
     });
   }
   const primitiveOrder = find("primitive array ordering");

@@ -32,15 +32,45 @@ console.log(storedSum(1, 2));
 // A function's return type carries the failure. The value arrives through
 // a cast, not an ambient declare (a declare-rooted chain would compile to
 // Node's ReferenceError at the root instead).
-const makeWeak = (0 as unknown) as () => WeakRef<object>;
+const makeWeak = (0 as unknown) as () => BigInt64Array<ArrayBuffer>;
 const storedMake = makeWeak;
 console.log(storedMake());
 
 // A record member's type carries the failure.
 interface Holder {
   label: string;
-  cache: WeakRef<object>;
+  cache: BigInt64Array<ArrayBuffer>;
 }
 const held = (0 as unknown) as Holder;
 const kept = held;
 console.log(kept.label);
+
+// A function's parameter carries the failure; the message steps past the
+// named parameter type into the member that does not compile, so a large
+// interface does not hide the one field at fault.
+interface Session {
+  started: boolean;
+  cache: BigInt64Array<ArrayBuffer>;
+}
+type Handler = (session: Session) => void;
+const handled = (0 as unknown) as Handler;
+console.log(typeof handled);
+
+// An overload set whose parameter names its own record: the message stops
+// at the record it already named rather than describing the same set again.
+interface Chain {
+  attach(next: Chain): Chain;
+  attach(next: Chain, once: boolean): Chain;
+  cache: BigInt64Array<ArrayBuffer>;
+}
+const chain = (0 as unknown) as Chain;
+console.log(chain);
+
+// The same through an overload's result.
+interface Factory {
+  make(width: number): Factory;
+  make(width: number, height: number): Factory;
+  cache: BigInt64Array<ArrayBuffer>;
+}
+const factory = (0 as unknown) as Factory;
+console.log(factory);

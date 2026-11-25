@@ -19,22 +19,22 @@ static void scr_classobj_gcfree(void *object) {
   scr_cyc_free(object);
 }
 
-ScrClassObj *scr_classobj_new(const ScrClassObj *template, size_t ncaps) {
+ScrClassObj *scr_classobj_new(const ScrClassObj *tpl, size_t ncaps) {
   if (ncaps > (SIZE_MAX - sizeof(ScrClassObj)) / sizeof(ScrBox *))
     scr_trap("scriptc: class capture allocation overflow\n");
   static ScrCycType cyc_type = { &scr_classobj_trace_v, &scr_classobj_gcfree, SCR_CYC_KIND_CLASS_OBJECT };
   ScrClassObj *c = scr_cyc_alloc(sizeof(ScrClassObj) + ncaps * sizeof(ScrBox *), &cyc_type);
   c->rc = 1;
-  c->pre = template->pre;
-  c->post = template->post;
-  c->ctor = template->ctor;
-  c->name = template->name;
+  c->pre = tpl->pre;
+  c->post = tpl->post;
+  c->ctor = tpl->ctor;
+  c->name = tpl->name;
   c->ncaps = ncaps;
-  c->length = template->length;
+  c->length = tpl->length;
   c->prototype_data = NULL;
   c->static_data = NULL;
-  c->base_name = template->base_name;
-  c->own_static_fields = template->own_static_fields;
+  c->base_name = tpl->base_name;
+  c->own_static_fields = tpl->own_static_fields;
   scr_obj_alloc_note();
   return c;
 }

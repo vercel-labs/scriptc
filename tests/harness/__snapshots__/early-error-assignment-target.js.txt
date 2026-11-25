@@ -1,0 +1,6 @@
+early-error-assignment-target.js:6:1 - error SC0010: the left-hand side of an assignment must be a variable reference or a property access
+
+  5 | // relax — so the grammar check is the compiler's own early error.
+  6 | import("./mod.js") -= 1;
+    | ^~~~~~~~~~~~~~~~~~~~~~~
+  7 | 

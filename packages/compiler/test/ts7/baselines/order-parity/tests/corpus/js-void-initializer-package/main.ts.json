@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-void-initializer-package/main.ts"
+ ],
+ "diags": []
+}

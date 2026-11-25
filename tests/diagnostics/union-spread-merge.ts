@@ -4,6 +4,12 @@
 // can represent it (naming one would drop the other arms' fields, which Node
 // keeps), and no runtime tag would be honest. The refusal names the candidate
 // arms; the repair is one arm per merge or one open all-optional record type.
+//
+// This fixture pins the refusal under `--tier=static-only`. The default tier
+// builds the object Node builds instead — a checked-dynamic copy whose keys
+// are written in source order and validated at each typed slot (see
+// tests/corpus/union-spread-merge.ts and the dyncheck fixture
+// "union spread merge") — so it is static-only that keeps this diagnostic.
 interface OpenAiCompat {
   kind: "openai";
   supportsStore?: boolean;

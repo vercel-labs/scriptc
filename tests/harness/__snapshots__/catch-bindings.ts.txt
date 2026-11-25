@@ -1,22 +1,6 @@
-catch-bindings.ts:28:10 - error SC1062: destructuring catch clause bindings are not supported yet
-
-  27 |   throw 4;
-  28 | } catch ({ message }: any) {
-     |          ^~~~~~~~~~~~~~~~
-  29 |   // destructuring patterns stay out
-
-  hint: bind an identifier (catch (e)) and narrow it — 'e instanceof Error' exposes .name/.message, typeof tests expose primitives
-
 catch-bindings.ts:35:3 - error SC1090: assignments to catch bindings are not supported yet
 
   34 | } catch (e) {
   35 |   e = "reassigned"; // the binding is read-only
      |   ^
   36 | }
-
-catch-bindings.ts:40:20 - error SC1090: 'typeof' catch-binding tests against "function" (only "string"/"number"/"boolean"/"object" are supported) is not supported yet
-
-  39 | } catch (e) {
-  40 |   if (typeof e === "function") {
-     |                    ^~~~~~~~~~
-  41 |     // callable catch tests remain outside the supported narrowing set

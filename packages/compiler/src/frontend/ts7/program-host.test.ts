@@ -8,6 +8,7 @@ import {
   Ts7Host,
   type Ts7ApiOptions,
   type Ts7CompilerOptions,
+  type Ts7ProjectLineage,
 } from "./program-host.js";
 import { ModuleDetectionKind, ModuleKind, ModuleResolutionKind, ScriptTarget } from "./enums.js";
 import { tsgoPath } from "./session-path.js";
@@ -285,6 +286,39 @@ test("disposing a shared program retires its config and closes only that project
   }
 });
 
+test("one lineage updates a shared project and keeps unchanged syntax trees", () => {
+  const { directory, entry } = fixture();
+  const other = join(directory, "other.ts");
+  writeFileSync(other, "export const other = 1;\n");
+  const { host, api, connection } = makeHost(directory);
+  const update = vi.spyOn(api, "updateSnapshot");
+  const lineage: Ts7ProjectLineage = {};
+  const first = host.createProgram([entry], options, false, lineage);
+  const config = update.mock.calls[0]![0]!.openProjects![0] as string;
+  const source = first.getSourceFile(entry)!;
+  // The next pass adds a root: same config path, notified as changed, so the
+  // server updates one project instead of opening another.
+  const second = host.createProgram([entry, other], options, false, lineage);
+  try {
+    expect(update.mock.calls[1]![0]!.openProjects).toEqual([config]);
+    expect(update.mock.calls[1]![0]!.closeProjects).toEqual([]);
+    expect(update.mock.calls[1]![0]!.fileChanges).toEqual({
+      created: [],
+      changed: [tsgoPath(config)],
+    });
+    expect(second.project.id).toBe(first.project.id);
+    expect(second.getSourceFile(entry)).toBe(source);
+    expect(second.getSourceFile(other)?.text).toBe("export const other = 1;\n");
+  } finally {
+    first.dispose();
+    second.dispose();
+  }
+  // A program leaves the shared project open; the load retires it.
+  expect(connection.fs.readFile(config)).not.toBeNull();
+  host.releaseLineage(lineage);
+  expect(connection.fs.readFile(config)).toBeNull();
+});
+
 test("failed program updates retire their config and can be retried", () => {
   const { directory, entry } = fixture();
   const { host, api, connection } = makeHost(directory);
@@ -331,5 +365,99 @@ test("closed hosts refuse every operation and release virtual contents", () => {
   expect(() => host.addVirtualFile(virtual, "again")).toThrow("closed");
   expect(() => host.parseConfigFile(entry)).toThrow("closed");
   expect(() => host.getTimingInfo()).toThrow("closed");
+  expect(() => host.createProgram([entry], options)).toThrow("closed");
+});
+
+/** What a program answers that a reused host could answer stale: its file
+ * list, each file's text, and its diagnostics. */
+function answers(program: ReturnType<Ts7Host["createProgram"]>) {
+  const names = [...program.getSourceFileNames()];
+  return {
+    names,
+    texts: names.map((name) => program.getSourceFile(name)?.text),
+    diagnostics: getPreEmitDiagnostics(program),
+  };
+}
+
+test("a rebound host answers as a new host when shadows, disk files and in-memory files change", () => {
+  const { directory, entry } = fixture();
+  const dep = join(directory, "dep.ts");
+  const extra = join(directory, "extra.d.ts");
+  const virtual = join(directory, "virtual.ts");
+  writeFileSync(
+    entry,
+    '/// <reference path="./extra.d.ts" />\nimport { value } from "./dep.js";\nimport { v } from "./virtual.js";\nexport const sum: number = value + extra + v;\n',
+  );
+  writeFileSync(dep, "export const value: number = 1;\n");
+  writeFileSync(extra, "declare const extra: number;\n");
+  // Load 1: dep.ts reads as a string-typed replacement, extra.d.ts is
+  // hidden, and virtual.ts exists in memory only.
+  const shadow = {
+    readFile: (path: string) =>
+      tsgoPath(path) === tsgoPath(dep) ? 'export const value: string = "1";\n' : undefined,
+    hideFile: (path: string) => tsgoPath(path) === tsgoPath(extra),
+  };
+  const factory = vi.fn((connection: Ts7ApiOptions) => new Ts7Api(connection));
+  const reused = new Ts7Host(factory, { cwd: directory, fsShadow: shadow }, () => {});
+  hosts.push(reused);
+  reused.addVirtualFile(virtual, "export const v = 2;\n");
+  const first = reused.createProgram([entry], options);
+  const firstAnswers = answers(first);
+  first.dispose();
+  expect(firstAnswers.diagnostics.map((d) => d.code).sort()).toEqual([2304, 2322, 6053]);
+  // Load 2: no shadow, no in-memory file, and dep.ts changed on disk
+  // without a change notification.
+  writeFileSync(dep, "export const value: boolean = true;\n");
+  reused.rebind(null);
+  const second = reused.createProgram([entry], options);
+  const fresh = makeHost(directory).host.createProgram([entry], options);
+  try {
+    expect(factory).toHaveBeenCalledTimes(1);
+    expect(answers(second)).toEqual(answers(fresh));
+    expect(
+      answers(second)
+        .diagnostics.map((d) => d.code)
+        .sort(),
+    ).toEqual([2307, 2365]);
+  } finally {
+    second.dispose();
+    fresh.dispose();
+  }
+  // Load 3: the first load's shadow again answers as it did.
+  writeFileSync(dep, "export const value: number = 1;\n");
+  reused.rebind(shadow);
+  reused.addVirtualFile(virtual, "export const v = 2;\n");
+  const third = reused.createProgram([entry], options);
+  try {
+    expect(answers(third)).toEqual(firstAnswers);
+  } finally {
+    third.dispose();
+  }
+});
+
+test("a reusable host returns to its owner on close and closes its connection only once", () => {
+  const { directory, entry } = fixture();
+  const released: Ts7Host[] = [];
+  let api!: Ts7Api;
+  const host = new Ts7Host(
+    (connection) => (api = new Ts7Api(connection)),
+    { cwd: directory },
+    (h) => released.push(h),
+  );
+  hosts.push(host);
+  const program = host.createProgram([entry], options);
+  program.dispose();
+  const close = vi.spyOn(api, "close");
+  host.close();
+  host.close();
+  expect(released).toEqual([host]);
+  expect(close).not.toHaveBeenCalled();
+  // Still open: the next load rebinds it.
+  host.rebind(null);
+  expect(host.loads).toBe(2);
+  host.createProgram([entry], options).dispose();
+  host.closeConnection();
+  host.close();
+  expect(close).toHaveBeenCalledTimes(1);
   expect(() => host.createProgram([entry], options)).toThrow("closed");
 });

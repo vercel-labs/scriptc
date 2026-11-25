@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-lifecycle-throw-vs-reject/main.mjs"
+ ],
+ "diags": []
+}

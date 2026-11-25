@@ -60,6 +60,10 @@ ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value);
  * (ERR_MISSING_ARGS). All borrow; +1, or NULL with Node's error pending. */
 ScrDyn *scr_url_legacy_parse(const ScrDyn *url, const ScrDyn *parse_query, const ScrDyn *slashes,
                              bool warn);
+/* url.Url as a value: Node's legacy Url constructor, one per thread. Its
+ * prototype is the one url.parse() results carry. +1. */
+ScrDyn *scr_url_legacy_class(void);
+void scr_url_legacy_class_release(void); /* drops the cached Url class (process-lifetime state) */
 ScrStr *scr_url_legacy_format(const ScrDyn *object, const ScrDyn *options, bool warn);
 ScrStr *scr_url_legacy_resolve(const ScrDyn *from, const ScrDyn *to, bool warn);
 ScrStr *scr_url_domain_to_ascii(const ScrDyn *domain, bool missing);
@@ -86,6 +90,25 @@ ScrUrl *scr_url_from_path_platform(ScrStr *path, bool windows); /* +1; explicit 
  * like Node's { windows: true } options on fileURLToPath/pathToFileURL. */
 ScrStr *scr_url_to_path_w32(ScrUrl *u);      /* +1, or throws */
 ScrUrl *scr_url_from_path_w32(ScrStr *path); /* +1, or throws */
+
+/* Object URLs (URL.createObjectURL): a Blob or File is registered under a
+ * fresh "blob:nodedata:<uuid v4>" and that id answers; any other value
+ * THROWS Node's ERR_INVALID_ARG_TYPE naming `obj`. The registry is per
+ * thread (Node's is per environment) and holds one reference to every id
+ * and blob until revokeObjectURL (or the thread's cleanup) drops it.
+ * scr_url_lookup_object_url answers the registered blob (+1) for exactly
+ * this serialized URL (fetch's request URL, no fragment), or NULL. */
+ScrStr *scr_url_create_object_url(ScrDyn *blob);     /* +1, or throws */
+ScrDyn *scr_url_lookup_object_url(const ScrStr *id); /* +1 or NULL */
+/* buffer.resolveObjectURL's registration lookup: the registered Blob (+1) for
+ * the object URL's id, or NULL when the id names nothing. */
+ScrDyn *scr_url_resolve_object_url(const ScrStr *id);
+
+/* URL.revokeObjectURL(id): the id is already coerced to a string; the
+ * registration whose id is exactly that string is dropped, and any other
+ * string misses (Node keys its registry by the id it answered). The
+ * argument is borrowed (the caller releases it); never throws. */
+void scr_url_revoke_object_url(ScrStr *id);
 
 /* ── URLSearchParams (scr_url.c) ─────────────────────────────────────
  * A refcounted, MUTABLE ordered list of decoded (name, value) pairs —

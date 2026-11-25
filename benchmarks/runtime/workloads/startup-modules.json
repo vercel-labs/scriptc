@@ -1,0 +1,5 @@
+{
+  "entry": "../startup/modules/main.ts",
+  "launches": 20,
+  "args": []
+}

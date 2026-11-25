@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-function-name-module-alias/names.js",
+  "<repo>/tests/corpus/js-function-name-module-alias/main.js"
+ ],
+ "diags": []
+}

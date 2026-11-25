@@ -3,17 +3,17 @@
 // declaration; the body's own unsupported statement reports itself, with
 // the reached diagnostics for a function the entry calls and as unreached
 // for one nothing calls.
-function measure(target: WeakRef<object>, label: string): number {
-  const extra = new WeakRef({ label });
+function measure(target: BigInt64Array<ArrayBuffer>, label: string): number {
+  const extra = new BigInt64Array(8);
   console.log(target);
   return label.length + (extra === undefined ? 0 : 1);
 }
-function unused(target: WeakRef<object>): number {
-  const extra = new WeakRef({ target });
+function unused(target: BigInt64Array<ArrayBuffer>): number {
+  const extra = new BigInt64Array(8);
   return extra === undefined ? 0 : 1;
 }
-console.log(measure(new WeakRef({}), "abc"));
+console.log(measure(new BigInt64Array(8), "abc"));
 // A declared `this` parameter gives the body its receiver.
-function described(this: { label: string }, target: WeakRef<object>): string {
+function described(this: { label: string }, target: BigInt64Array<ArrayBuffer>): string {
   return this.label + String(target);
 }

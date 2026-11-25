@@ -19,6 +19,7 @@
  * copied at the documented checked-value boundary.
  */
 import * as ts from "../ts7/adapter.js";
+import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
 import type { IrType } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -35,27 +36,12 @@ export function extractionCopiesReference(lowerer: Lowerer, type: IrType): boole
   return copies(type);
 }
 
-/** The asserted expression without parentheses, `!` and nested
- * assertions (`globalThis as unknown as T`). */
-function assertedSource(expr: ts.Expression): ts.Expression {
-  let e = expr;
-  while (
-    ts.isParenthesizedExpression(e) ||
-    ts.isNonNullExpression(e) ||
-    ts.isAsExpression(e) ||
-    ts.isTypeAssertion(e) ||
-    ts.isSatisfiesExpression(e)
-  )
-    e = e.expression;
-  return e;
-}
-
 /** `expr` asserts the global object (`globalThis`, `global`). */
 export function assertsGlobalObject(
   lowerer: Lowerer,
   expr: ts.AsExpression | ts.TypeAssertion,
 ): boolean {
-  const name = stdlibGlobalNameOf(lowerer, assertedSource(expr.expression));
+  const name = stdlibGlobalNameOf(lowerer, withoutParenthesesTypeWrappers(expr.expression));
   return name === "globalThis" || name === "global";
 }
 

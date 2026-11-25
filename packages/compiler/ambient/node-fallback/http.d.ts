@@ -19,8 +19,17 @@ declare module "http" {
   export const METHODS: string[];
   export const STATUS_CODES: { [status: number]: string | undefined };
   export const maxHeaderSize: number;
+  /* Node 24: turn on the module's environment proxy for the default agent.
+   * Without an argument the process environment is read (HTTP_PROXY /
+   * HTTPS_PROXY / NO_PROXY, and their lowercase spellings); an object
+   * supplies those variables explicitly. */
+  export function setGlobalProxyFromEnv(proxyEnv?: { [name: string]: string | undefined }): void;
   export interface Server extends NetServer {
     timeout: number;
+    /* The incoming header count cap (null = unset; 0 = no limit) and the
+     * per-connection request cap (0 = no limit). */
+    maxHeadersCount: number | null;
+    maxRequestsPerSocket: number;
     setTimeout(msecs: number, callback?: (socket: Socket) => void): this;
     closeAllConnections(): void;
     closeIdleConnections(): void;
@@ -70,6 +79,10 @@ declare module "http" {
     readonly httpVersion: string;
     readonly complete: boolean;
     readonly aborted: boolean;
+    readonly destroyed: boolean;
+    /* IncomingMessage.signal: one AbortSignal per request, aborted when the
+     * request is destroyed before it completes. */
+    readonly signal: AbortSignal;
     readonly statusCode: number | undefined;
     readonly statusMessage: string | undefined;
     readonly socket: Socket;
@@ -80,6 +93,10 @@ declare module "http" {
     readonly trailers: { [name: string]: string | undefined };
     readonly trailersDistinct: { [name: string]: string[] | undefined };
     readonly rawTrailers: string[];
+    /* The message's abort signal: one AbortSignal for every read, aborted
+     * when the message is destroyed or the connection closes before it
+     * completed. */
+    readonly signal: AbortSignal;
     resume(): void;
     pause(): void;
     destroy(): void;
@@ -110,6 +127,15 @@ declare module "http" {
     readonly finished: boolean;
     readonly writableFinished: boolean;
     readonly writableCorked: number;
+    readonly writableHighWaterMark: number;
+    readonly writableObjectMode: boolean;
+    /* OutgoingMessage's write-buffer state: the bytes not yet on the wire
+     * (the corked chunk with its framing, a held head, the socket's own
+     * buffer) and whether a write() that answered false is still waiting
+     * for 'drain'. */
+    readonly writableLength: number;
+    readonly writableNeedDrain: boolean;
+    readonly destroyed: boolean;
     readonly req: IncomingMessage;
     readonly socket: Socket | null;
     readonly connection: Socket | null;
@@ -122,6 +148,9 @@ declare module "http" {
      * array that was set. */
     setHeader(name: string, value: number | string | readonly string[]): void;
     appendHeader(name: string, value: string | readonly string[]): void;
+    /* Node's OutgoingMessage.setHeaders: a Map (or Headers object) of
+     * names to values, set-cookie's values kept as one array. */
+    setHeaders(headers: Headers | Map<string, number | string | readonly string[]>): this;
     getHeader(name: string): number | string | string[] | undefined;
     getHeaderNames(): string[];
     getRawHeaderNames(): string[];
@@ -133,13 +162,20 @@ declare module "http" {
     writeHead(statusCode: number, headers?: OutgoingHttpHeaders | string[]): ServerResponse;
     writeHead(
       statusCode: number,
-      statusMessage: string,
+      statusMessage?: string,
       headers?: OutgoingHttpHeaders | string[],
     ): ServerResponse;
     writeContinue(callback?: () => void): void;
     writeProcessing(callback?: () => void): void;
+    /* Node's generic informational response: any 1xx status but 101,
+     * answered with write()'s backpressure boolean. */
+    writeInformation(statusCode: number, headers?: OutgoingHttpHeaders): boolean;
     writeEarlyHints(hints: Record<string, string | string[]>, callback?: () => void): void;
-    write(data: string | Uint8Array): void;
+    /* Answers whether the buffer is still below its 64 KiB high-water
+     * mark; a false answer fires 'drain' once the bytes are out. */
+    write(data: string | Uint8Array): boolean;
+    write(data: string | Uint8Array, callback: () => void): boolean;
+    write(data: string | Uint8Array, encoding: string, callback?: () => void): boolean;
     flushHeaders(): void;
     cork(): void;
     uncork(): void;
@@ -150,10 +186,15 @@ declare module "http" {
     end(data?: string | Uint8Array, callback?: () => void): void;
     end(callback: () => void): void;
     destroy(): void;
-    on(event: "close" | "finish", listener: () => void): void;
+    /* 'prefinish' fires inside end(), before 'finish'; 'drain' follows a
+     * write() that answered false once its bytes are out. */
+    on(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
     /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "close" | "finish", listener: () => void): void;
-    once(event: "close" | "finish", listener: () => void): void;
+    addListener(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    once(event: "close" | "finish" | "prefinish" | "drain", listener: () => void): void;
+    /* OutgoingMessage.pipe(): an outgoing message is write-only, so Node
+     * emits ERR_STREAM_CANNOT_PIPE whatever the arguments. */
+    pipe(destination?: unknown, options?: unknown): void;
   }
   /* The CLIENT slice (http.request/http.get): the options-object form
    * with hostname/host, port, path, method, timeout, and headers; the
@@ -171,8 +212,9 @@ declare module "http" {
     /* The caller's own dialer (the proxy's loopback dial): invoked once,
      * synchronously; its socket carries the exchange. */
     createConnection?: () => Socket;
-    /* agent: false is a one-shot dial with Connection: close — exactly
-     * the compiled client's model; null/undefined are the default; an
+    /* agent: false is a one-shot dial through a throwaway agent (the
+     * head asks the server to close) — exactly the compiled client's
+     * model; null/undefined are the default; an
      * Agent VALUE threads through (getName-keyed maxSockets accounting
      * over one-dial-per-request connections). */
     agent?: Agent | boolean | null;
@@ -215,8 +257,33 @@ declare module "http" {
       socketPath?: string;
       [option: string]: unknown;
     }): string;
+    /* 'lifo' by default; a plain property, so an assignment is kept as
+     * given (the constructor validates its own option). */
+    scheduling: "fifo" | "lifo";
+    /* The keep-alive hooks the agent's pool runs: the socket is kept alive
+     * with the agent's keepAliveMsecs and unref'd (answering true), then
+     * referenced again for the next request. The dial hook,
+     * createConnection, is not supported. */
+    keepSocketAlive(socket: Socket): boolean;
+    reuseSocket(socket: Socket, request: ClientRequest): void;
+    /* Node's default dialer, net.createConnection: the options record and the
+     * trailing connect listener dial one connection. */
+    createConnection(
+      options: {
+        port?: number;
+        host?: string;
+        path?: string;
+        localAddress?: string;
+        family?: number;
+        [option: string]: unknown;
+      },
+      connectListener?: () => void,
+    ): Socket;
     maxSockets: number;
     maxFreeSockets: number;
+    /* Node's cap across every name: requests queue once the agent's live
+     * and idle sockets reach it (Infinity by default). */
+    maxTotalSockets: number;
     keepAliveMsecs: number;
     readonly keepAlive: boolean;
     readonly protocol: string;
@@ -230,12 +297,31 @@ declare module "http" {
   }
   /* Node's keepAlive global agent for requests without an agent option. */
   export const globalAgent: Agent;
+  /* The argument of a ClientRequest's 'information' event: the status line
+   * and headers of a 1xx response. An ordinary object, as in Node. */
+  export interface InformationEvent {
+    statusCode: number;
+    statusMessage: string;
+    httpVersion: string;
+    httpVersionMajor: number;
+    httpVersionMinor: number;
+    headers: { [name: string]: string | undefined };
+    rawHeaders: string[];
+  }
   export interface ClientRequest {
+    /* The response's incoming header count cap (null = unset; 0 = no
+     * limit). */
+    maxHeadersCount: number | null;
     readonly destroyed: boolean;
     readonly aborted: boolean;
     readonly socket: Socket;
     readonly connection: Socket;
     readonly writableCorked: number;
+    readonly writableHighWaterMark: number;
+    readonly writableObjectMode: boolean;
+    /* OutgoingMessage's write-buffer state, as the response's. */
+    readonly writableLength: number;
+    readonly writableNeedDrain: boolean;
     readonly method: string;
     readonly path: string;
     readonly host: string;
@@ -245,8 +331,9 @@ declare module "http" {
     readonly writableFinished: boolean;
     readonly finished: boolean;
     readonly reusedSocket: boolean;
-    setHeader(name: string, value: string): void;
-    getHeader(name: string): string | undefined;
+    setHeader(name: string, value: number | string | readonly string[]): void;
+    appendHeader(name: string, value: string | readonly string[]): void;
+    getHeader(name: string): number | string | string[] | undefined;
     hasHeader(name: string): boolean;
     removeHeader(name: string): void;
     getHeaderNames(): string[];
@@ -259,35 +346,55 @@ declare module "http" {
     setNoDelay(noDelay?: boolean): void;
     setSocketKeepAlive(enable?: boolean, initialDelay?: number): void;
     setTimeout(timeout: number, callback?: () => void): this;
-    write(data: string | Uint8Array): void;
+    /* Answers whether the buffer is still below its 64 KiB high-water
+     * mark; a false answer fires 'drain' once the bytes are out. */
+    write(data: string | Uint8Array): boolean;
     end(data?: string | Uint8Array): void;
+    /* OutgoingMessage.pipe(): a request is write-only, so Node emits
+     * ERR_STREAM_CANNOT_PIPE on the request's 'error' list, whatever the
+     * arguments. */
+    pipe(destination?: unknown, options?: unknown): void;
     destroy(error?: Error): void;
     abort(): void;
-    on(event: "response", listener: (res: IncomingMessage) => void): void;
-    on(event: "socket", listener: (socket: Socket) => void): void;
+    on(event: "response", listener: (res: IncomingMessage) => void): this;
+    on(event: "socket", listener: (socket: Socket) => void): this;
+    /* 'connect' is the response to a CONNECT request: the tunnel's socket. */
     on(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    on(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    on(event: "error", listener: (err: Error) => void): void;
-    /* addListener IS on (Node aliases them) — the suite spells both. */
-    addListener(event: "response", listener: (res: IncomingMessage) => void): void;
-    addListener(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    on(
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
+      listener: () => void,
+    ): this;
+    on(event: "information", listener: (info: InformationEvent) => void): this;
+    on(event: "error", listener: (err: Error) => void): this;
+    /* addListener IS on (Node aliases them) — the suite spells both. Each
+     * answers the request, as Node's does. */
+    addListener(event: "response", listener: (res: IncomingMessage) => void): this;
+    addListener(event: "socket", listener: (socket: Socket) => void): this;
     addListener(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    addListener(event: "timeout" | "close" | "finish" | "abort", listener: () => void): void;
-    addListener(event: "error", listener: (err: Error) => void): void;
-    once(event: "response", listener: (res: IncomingMessage) => void): void;
-    once(event: "socket", listener: (socket: Socket) => void): void;
+    ): this;
+    addListener(
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
+      listener: () => void,
+    ): this;
+    addListener(event: "information", listener: (info: InformationEvent) => void): this;
+    addListener(event: "error", listener: (err: Error) => void): this;
+    once(event: "response", listener: (res: IncomingMessage) => void): this;
+    once(event: "socket", listener: (socket: Socket) => void): this;
     once(
-      event: "upgrade",
+      event: "upgrade" | "connect",
       listener: (res: IncomingMessage, socket: Socket, head: Buffer) => void,
-    ): void;
-    once(event: "timeout" | "close" | "finish" | "abort" | "continue", listener: () => void): void;
-    once(event: "error", listener: (err: Error) => void): void;
+    ): this;
+    once(
+      event: "timeout" | "close" | "finish" | "abort" | "continue" | "drain",
+      listener: () => void,
+    ): this;
+    once(event: "information", listener: (info: InformationEvent) => void): this;
+    once(event: "error", listener: (err: Error) => void): this;
   }
   export function createServer(
     requestListener?: (req: IncomingMessage, res: ServerResponse) => void,
@@ -308,15 +415,22 @@ declare module "http" {
    * `target` is a URL string or URL object (the spelling a from-scratch
    * client reaches for first — dialed directly, with a non-http scheme
    * an ERR_INVALID_PROTOCOL at runtime rather than a type error), or
-   * the options record. */
+   * the options record. A URL target's second argument is the response
+   * callback or the options value the runtime merges under the URL's
+   * fields (`request(url, options[, callback])`); the lowering tells
+   * the two apart by the argument's own type. */
   export function request(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
   export function get(
     target: RequestOptions | string | URL,
+    optionsOrCallback?: RequestOptions | ((res: IncomingMessage) => void),
     callback?: (res: IncomingMessage) => void,
   ): ClientRequest;
+  /* Node's argument validation; the compiled parser has no pool to size. */
+  export function setMaxIdleHTTPParsers(max: number): void;
   export function validateHeaderName(name: string, label?: string): void;
   export function validateHeaderValue(name: string, value: unknown): void;
 }

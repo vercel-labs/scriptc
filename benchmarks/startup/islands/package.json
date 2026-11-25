@@ -1,0 +1,12 @@
+{
+  "name": "startup-islands",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "gridkit": "node",
+      "envkit": "node",
+      "sparekit": "node"
+    }
+  }
+}

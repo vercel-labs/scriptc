@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/logical-value-over-closure-assigned-binding.ts"
+ ],
+ "diags": []
+}

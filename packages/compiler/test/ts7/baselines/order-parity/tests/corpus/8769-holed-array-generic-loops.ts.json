@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8769-holed-array-generic-loops.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8775-node-island-stdio-exit-drain/main.ts"
+ ],
+ "diags": []
+}

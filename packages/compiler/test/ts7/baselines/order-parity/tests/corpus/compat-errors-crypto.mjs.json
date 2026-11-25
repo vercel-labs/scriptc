@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/compat-errors-crypto.mjs"
+ ],
+ "diags": []
+}

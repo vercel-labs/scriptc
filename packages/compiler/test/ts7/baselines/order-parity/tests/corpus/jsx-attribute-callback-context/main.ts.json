@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/jsx-attribute-callback-context/runtime/jsx-runtime.ts",
+  "<repo>/tests/corpus/jsx-attribute-callback-context/page.tsx",
+  "<repo>/tests/corpus/jsx-attribute-callback-context/main.ts"
+ ],
+ "diags": []
+}

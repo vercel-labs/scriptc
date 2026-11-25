@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/declared-global-binding-reads/probe.ts",
+  "<repo>/tests/corpus/declared-global-binding-reads/install.ts",
+  "<repo>/tests/corpus/declared-global-binding-reads/report.ts",
+  "<repo>/tests/corpus/declared-global-binding-reads/main.ts"
+ ],
+ "diags": []
+}

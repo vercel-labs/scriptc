@@ -145,6 +145,10 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* The readable a stream/consumers call reads (+1): a native stream, or a
+ * web ReadableStream as Readable.from builds one (Node's consumers iterate
+ * their argument); NULL with `message` thrown for every other value. */
+ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *message);
 /* Whether pipeline() keeps a checked-dynamic first stage as an iterable
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
@@ -199,6 +203,76 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
     ScrClosure *flush_fb, ScrStreamPlainInv flush_fb_inv,
     ScrClosure *destroy_fb, ScrStreamErrInv destroy_fb_inv);
 
+/* Readable.toWeb(readable[, options]) (scr_stream_to_web.c): a web
+ * ReadableStream over the readable's chunks. +1. flags bit 1 asks for a byte
+ * stream. */
+struct ScrDyn *scr_stream_to_web_readable(ScrStream *s, double flags);
+/* Readable.toWeb with an options strategy: the strategy (borrowed; NULL for
+ * none) supplies the stream's highWaterMark and size, as Node's adapter
+ * passes options.strategy to the ReadableStream constructor. */
+struct ScrDyn *scr_stream_to_web_readable_opts(ScrStream *s, double flags, struct ScrDyn *strategy);
+/* The same over a checked-dynamic value (a boxed native stream unwraps; any
+ * other value throws the not-supported Error). */
+struct ScrDyn *scr_stream_to_web_readable_dyn(const struct ScrDyn *value, double flags);
+struct ScrDyn *scr_stream_to_web_readable_dyn_opts(const struct ScrDyn *value, double flags,
+                                                   struct ScrDyn *strategy);
+/* Writable.toWeb(writable) (scr_stream_writable_to_web.c): a web
+ * WritableStream over the writable, +1. */
+struct ScrDyn *scr_stream_writable_to_web(ScrStream *w, double flags);
+
+/* Duplex.toWeb(duplex[, options]) (scr_stream_to_web_pair.c): the
+ * { writable, readable } pair of web streams over the duplex, +1. flags bit
+ * 1 asks for a byte readable side (options.readableType === 'bytes'). */
+struct ScrDyn *scr_stream_to_web_duplex(ScrStream *d, double flags);
+/* The same over a checked-dynamic value: a boxed native Duplex unwraps; any
+ * other value throws ERR_INVALID_ARG_TYPE. */
+struct ScrDyn *scr_stream_to_web_duplex_dyn(const struct ScrDyn *value, double flags);
+
+/* stream.duplexPair([options]) (scr_stream_pair.c): two Duplexes connected to
+ * each other, as a +1 array of the two streams. options is borrowed and
+ * builds both sides; NULL means none. */
+ScrArr *scr_stream_duplexpair(struct ScrDyn *options);
+
+/* readable.wrap(stream) (scr_stream_wrap.c): reads the native readable into
+ * this one (its chunks pushed here, this one ended and destroyed with it),
+ * answering this readable +1. The dyn form throws the not-supported Error
+ * for a value that is not a native readable stream. */
+ScrStream *scr_stream_wrap(ScrStream *self, ScrStream *src);
+ScrStream *scr_stream_wrap_dyn(ScrStream *self, const struct ScrDyn *value);
+
+/* Writable.fromWeb(writableStream[, options]) (scr_stream_from_web_writable.c):
+ * a Writable over the web stream's writer, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending for a value that is not a WritableStream. */
+ScrStream *scr_stream_writable_from_web(struct ScrDyn *web, double flags);
+/* The same with the options: flags bit 2 objectMode and bit 4
+ * decodeStrings: false; hwm < 0 takes the default; signal may be NULL. */
+ScrStream *scr_stream_writable_from_web_opts(struct ScrDyn *web, double flags, double hwm,
+                                             struct ScrDyn *signal);
+/* Duplex.fromWeb(pair[, options]) (scr_stream_duplex_from_web.c): a Duplex
+ * over the pair's web readable and writable, +1, or NULL with
+ * ERR_INVALID_ARG_TYPE pending. */
+ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
+/* The web stream unit's pair adaptation (set by its install): a value with
+ * web ReadableStream and WritableStream members answers a Duplex over the
+ * pair (+1) — a web { readable, writable } pair, or a TransformStream whose
+ * members are the same — in the mode `flags` names (scr_stream_duplex_from_web's
+ * flags), and any other value answers NULL with nothing pending. */
+extern ScrStream *(*scr_stream_web_pair_hook)(struct ScrDyn *value, double flags);
+/* The same with the options: flags bit 1 allowHalfOpen, bit 2 objectMode,
+ * bit 4 decodeStrings: false. Bit 8 marks a pipeline stage's adaptation,
+ * whose chunks are web values (null passes through, where Duplex.fromWeb
+ * ends its readable on one and rejects a null write). hwm < 0 takes the
+ * default; encoding is NULL when absent; signal may be NULL. */
+ScrStream *scr_stream_duplex_from_web_opts(struct ScrDyn *pair, double flags, double hwm,
+                                           struct ScrDyn *signal, struct ScrStr *encoding);
+
+/* stream.setDefaultHighWaterMark(objectMode, value) and
+ * stream.getDefaultHighWaterMark(objectMode): what a stream created without
+ * a highWaterMark takes (64 KiB bytes on every platform except win32's
+ * 16 KiB; 16 objects), and what a program can change them to. */
+void scr_stream_set_default_hwm(bool object_mode, double value);
+double scr_stream_get_default_hwm(bool object_mode);
+
 /* stream.finished(s, cb) — the callback form: cb fires once at the
  * stream's terminal point (right after 'close'; asynchronously when
  * already closed) through the ErrInv ABI with the finish status (NULL /
@@ -207,6 +281,10 @@ void scr_stream_init_passthrough_dyn(ScrStream *s, struct ScrDyn *opts,
  * watcher marks lifecycle errors handled (no unhandled-'error' crash —
  * Node's eos registers listeners). */
 ScrClosure *scr_stream_finished(ScrStream *s, ScrClosure *cb, ScrStreamErrInv inv);
+/* finished() for a watcher that must report at the stream's close step even
+ * when the stream does not emit 'close' (emitClose off), so an owner such as
+ * an adapter can let go of the stream. */
+ScrClosure *scr_stream_finished_always(ScrStream *s, ScrClosure *cb /*moves*/, ScrStreamErrInv inv);
 /* The dyn-valued finished/pipeline callback inv (a mustCall wrapper in
  * the slot): success calls with NO arguments, errors box through the
  * boundary encoding. cb's cap boxes the dyn callable. */
@@ -294,9 +372,9 @@ bool scr_stream_push_str_enc(ScrStream *s, ScrStr *str, ScrStr *enc);
  * answers +1 (the setEncoding chaining shape). */
 ScrStream *scr_stream_set_push_encoding(ScrStream *s, ScrStr *enc);
 bool scr_stream_push_null(ScrStream *s);
-void scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
-void scr_stream_unshift_str(ScrStream *s, ScrStr *str);
-void scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
+bool scr_stream_unshift(ScrStream *s, ScrBytes *chunk);
+bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
+bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
@@ -305,6 +383,18 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0
  * payload slots; see scr_stream_emit_data), lengths count JS string
  * units. Borrows the canonical encoding name; receiver +1. */
 ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc);
+/* Readable.from's `encoding` option value at run time: an explicitly falsy
+ * value leaves the readable undecoded; a truthy one validates like the state
+ * constructor (ERR_UNKNOWN_ENCODING thrown) and installs the decoder with
+ * its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const struct ScrDyn *v);
+/* readableEncoding: NULL (null) without a decoder, else the `encoding`
+ * option as the program spelled it, or the decoder's canonical name after
+ * setEncoding(). +1. scr_stream_set_encoding_name records an option's
+ * spelling once its decoder is installed (name borrowed; answers the
+ * receiver +1). */
+ScrStr *scr_stream_readable_encoding(ScrStream *s);
+ScrStream *scr_stream_set_encoding_name(ScrStream *s, ScrStr *name);
 typedef struct ScrPromise ScrPromise; /* full declaration below (C11 repeat) */
 /* for-await: a +1 promise of the next chunk — buffered content (one
  * whole entry in Readable.from mode, the whole buffer otherwise —
@@ -320,8 +410,25 @@ bool scr_stream_write_dyn(ScrStream *s, const ScrDyn *d, ScrClosure *cb); /* cb 
 bool scr_stream_write_enc(ScrStream *s, const ScrDyn *chunk, ScrDyn *enc, ScrClosure *cb);
 ScrPromise *scr_stream_next_chunk(ScrStream *s);
 ScrPromise *scr_stream_next_chunk_dyn(ScrStream *s);
+/* One buffered chunk per read (Readable.toWeb's 'data' granularity). */
+ScrPromise *scr_stream_next_chunk_dyn_single(ScrStream *s);
+/* Whether the readable side buffers object entries (objectMode). */
+bool scr_stream_readable_object_entries(ScrStream *s);
 /* The same step resolving with an iterator result ({ value, done }). */
 ScrPromise *scr_stream_next_result_dyn(ScrStream *s);
+/* readable.iterator([options]) (scr_stream_iterator.c): the async iterator
+ * over the readable's chunks, +1. */
+struct ScrDyn *scr_stream_iterator(ScrStream *s, bool destroy_on_return);
+/* The same for a checked-dynamic receiver, validating the options. */
+/* Installed by the iterator unit (scr_stream_iterator.c) so the stream unit's
+ * checked-dynamic dispatch links it only when the unit is present. */
+/* Marks the stream's next error as consumed by an internal listener (the
+ * iterator's throw): it still reaches stream.errored and user listeners but is
+ * not an unhandled 'error' event. */
+void scr_stream_next_error_consumed(ScrStream *s);
+extern struct ScrDyn *(*scr_stream_iterator_hook)(ScrStream *s, struct ScrDyn *const *args,
+                                                 size_t argc);
+struct ScrDyn *scr_stream_dyn_iterator(ScrStream *s, struct ScrDyn *const *args, size_t argc);
 /* The native readable stream behind a checked-dynamic value (+1), or NULL. */
 ScrStream *scr_stream_native_readable_of_dyn(const struct ScrDyn *value);
 /* for await over a checked-dynamic value in a program with streams
@@ -349,6 +456,8 @@ ScrPromise *scr_sc_text(ScrStream *s);
 ScrPromise *scr_sc_json(ScrStream *s);
 ScrPromise *scr_sc_buffer(ScrStream *s);
 ScrPromise *scr_sc_array_buffer(ScrStream *s);
+ScrPromise *scr_sc_bytes(ScrStream *s); /* sc_buffer's bytes as a plain Uint8Array */
+ScrPromise *scr_sc_blob(ScrStream *s);  /* the chunks as a Blob (type "") */
 /* Readable.from over a typed source: arr holds the string or Buffer
  * elements (one element under SCR_FROM_SINGLE, from.js's string/Buffer
  * case). Elements push lazily, one _read at a time, as whole entries
@@ -404,11 +513,30 @@ ScrStream *scr_stream_from_async_gen(struct ScrGen *g, ScrClosure *next, ScrClos
                                      double hwm);
 ScrDyn *scr_stream_from_done(void); /* +1, the process-lived marker (scr_stream.c) */
 ScrStream *scr_stream_pause(ScrStream *s);            /* recv +1 */
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
+/* Whether the stream's lifecycle emits 'close' (the emitClose option). */
+bool scr_stream_emits_close(ScrStream *s);
 ScrStream *scr_stream_resume(ScrStream *s);           /* recv +1 */
 bool scr_stream_is_paused(ScrStream *s);
 double scr_stream_flowing(ScrStream *s); /* -1 = null, 0 = false, 1 = true */
 ScrStream *scr_stream_pipe(ScrStream *src, ScrStream *dst, bool end); /* dst +1 */
 ScrStream *scr_stream_unpipe(ScrStream *src, ScrStream *dst /*NULL = all*/); /* recv +1 */
+/* Node's pipe lifecycle: pipe() registers listeners on the destination
+ * ('unpipe', 'error', 'close', 'finish') and on a source piped with end:
+ * false ('end'), so the destination hears 'unpipe' when it finishes,
+ * closes or errors; unpipe pauses the source, with 'pause', once it pipes
+ * nowhere. scr_stream_pipe and scr_stream_unpipe call through
+ * scr_stream_pipe_ops when it is set. scr_stream_pipe_events.c sets it to
+ * scr_stream_pipe_events_ops (the implementation, in scr_stream.c beside
+ * the state it reads) in a program that pipes; any other program keeps
+ * the table NULL and links none of the implementation. */
+typedef struct ScrStreamPipeOps {
+  void (*listen)(ScrStream *src, ScrStream *dst, bool end);
+  ScrStream *(*unpipe)(ScrStream *src, ScrStream *dst);
+} ScrStreamPipeOps;
+extern const ScrStreamPipeOps *scr_stream_pipe_ops;
+extern const ScrStreamPipeOps scr_stream_pipe_events_ops;
 
 /* The writable surface. write borrows its chunk; cb (when non-NULL)
  * MOVES and fires after the chunk's user write completes. */
@@ -426,10 +554,18 @@ void scr_stream_uncork(ScrStream *s);
  * fn(cb, err-or-NULL)) receives the error this write completion carries
  * (NULL is Node's null). */
 ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrError *));
+/* The error the current write callback is receiving (NULL for success): read
+ * inside a write completion that forwards the error to another stream. */
+ScrError *scr_stream_write_cb_error(void);
 #endif
 
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
+/* Marks both halves ended and finished without running them, the state a
+ * stream that already wrote and flushed its whole input reports
+ * (writableEnded, writableFinished and readableEnded true). zlib's `info`
+ * results hand their finished engine over this way. s is borrowed. */
+void scr_stream_mark_ended(ScrStream *s);
 /* Readable async-iterator return(): destroy with Node's AbortError payload;
  * the iterator's internal error consumer suppresses an unhandled crash when
  * no user error listener exists. Receiver +1. */
@@ -517,6 +653,25 @@ ScrPromise *scr_sp_pipeline_stages_opts(double n, ScrStream **streams, double co
                                         ScrDyn *outer, ScrAbortAddFn add);
 double scr_stream_prop(ScrStream *s, const char *name);
 ScrError *scr_stream_errored(ScrStream *s); /* +1 or NULL */
+/* stream.isDestroyed / isErrored / isDisturbed / isReadable / isWritable
+ * (`which` 0 to 4, in that order): a boolean, or null where Node answers
+ * null. scr_stream_util_is_dyn takes any checked-dynamic value: a native stream
+ * answers as scr_stream_util_is, a primitive as Node's duck typing does, and
+ * any other value throws SC2020. scr_stream_util_is_value is the same with
+ * `native_of` (NULL or a function) finding more native streams first;
+ * scr_dyn_builtin_stream_util_is (scr_dyn_builtin_stream.c) passes the
+ * constructor-function streams. +1, or NULL with the error. */
+struct ScrDyn *scr_stream_util_is(ScrStream *s, double which);
+struct ScrDyn *scr_stream_util_is_dyn(const struct ScrDyn *value, double which);
+struct ScrDyn *scr_stream_util_is_value(const struct ScrDyn *value, double which,
+                                        ScrStream *(*native_of)(const struct ScrDyn *));
+/* readableAborted, readableDidRead, readableEncoding, writableAborted
+ * (`which` 0 to 3): the getter's value, or undefined on a stream class
+ * whose prototype does not define it in Node. +1. */
+struct ScrDyn *scr_stream_state_dyn(ScrStream *s, double which);
+/* stream[Symbol.asyncDispose](): destroys an unfinished stream with an
+ * AbortError and settles when the stream has finished. +1. */
+ScrPromise *scr_stream_async_dispose(ScrStream *s);
 
 /* The underscore-method assignment surface (`r._read = fn` after
  * construction — Node's own-property shadow of the prototype method):
@@ -589,6 +744,10 @@ typedef struct ScrStreamTypedDesc {
   void (*release)(void *);
   struct ScrDyn *(*box)(void *rec); /* +1 capsule; borrows rec */
 } ScrStreamTypedDesc;
+/* The typed-record descriptor of the write in progress (NULL for an ordinary
+ * or checked-dynamic write): what an implementer hook forwards with
+ * scr_stream_push_typed when it moves the chunk to another stream. */
+const ScrStreamTypedDesc *scr_stream_write_desc(const ScrStream *s);
 /* push(rec): borrows rec. */
 bool scr_stream_push_typed(ScrStream *s, void *rec, const ScrStreamTypedDesc *desc);
 /* write(rec[, cb]): borrows rec; cb moves. */
@@ -661,6 +820,9 @@ ScrStream *scr_stream_duplexify(ScrStream *r, ScrStream *w);
 ScrStream *scr_stream_duplexify_readable(ScrStream *r);
 ScrStream *scr_stream_duplexify_writable(ScrStream *w);
 ScrStream *scr_stream_duplexify_pair(ScrStream *r, ScrStream *w);
+/* The same pair with an explicit allowHalfOpen (Duplex.fromWeb's default is
+ * false where Duplex.from's is true). */
+ScrStream *scr_stream_duplexify_pair_opt(ScrStream *r, ScrStream *w, bool allow_half_open);
 /* Duplex.from(promise): a readable Duplexify of the promise's value. p and
  * box (the compiler's promise → dyn promise helper) borrowed. +1. */
 ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box);
@@ -669,6 +831,10 @@ ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box)
  * setDefaultEncoding (validated; answers the stream +1). The chaining
  * forms answer the stream (+1). */
 void scr_stream_set_decode_strings(ScrStream *s, bool decode);
+/* The web pair adapter's chunks pass through as web values: in object mode
+ * a null chunk is one entry or one write, not EOF and not the null-values
+ * error. */
+void scr_stream_set_web_chunks(ScrStream *s, bool on);
 ScrStream *scr_stream_decode_strings(ScrStream *s, bool decode);
 /* Runtime decodeStrings/defaultEncoding option values: checked before
  * construction (ERR_UNKNOWN_ENCODING thrown), then applied to the fresh

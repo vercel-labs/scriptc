@@ -65,26 +65,26 @@ void scr_dyn_listener_fire_err(ScrClosure *cb, ScrStr *msg) {
     scr_dyn_release(fn);
     return;
   }
-  /* The checked-dynamic tree's error encoding (caughtToDyn's shape) — what a dyn 'error'
-   * listener body can instanceof-test and read .message from. */
-  ScrDyn *arg = scr_dyn_new_obj();
-  scr_dyn_obj_set(arg, "%error", 6, scr_dyn_new_bool(true));
-  {
-    ScrStr *name = scr_str_new("Error", 5);
-    scr_dyn_obj_set(arg, "name", 4, scr_dyn_new_str(name));
-    scr_str_release(name);
-  }
-  scr_dyn_obj_set(arg, "message", 7, scr_dyn_new_str(msg));
+  /* The Error a typed listener receives (scr_child_err_thunk_error's):
+   * the message's code, message and name as Node's own properties. */
+  ScrError *e = scr_error_from_event_message(msg);
+  ScrDyn *arg = scr_dyn_from_error(e);
   ScrDyn *args[1] = { arg };
   ScrDyn *r = scr_dyn_call(fn, args, 1, "listener");
   scr_dyn_release(r);
   scr_dyn_release(arg);
+  scr_error_release(e);
   scr_dyn_release(fn);
 }
 
+/* The box is traced: a stream keeps these adapters in its listener registry
+ * for as long as it lives, and a listener that captures the stream's owner
+ * closes a cycle through the function value held here (stream -> registry
+ * -> adapter -> function -> owner -> stream). Behind an untraced box the
+ * collector would count the function as referenced from outside forever. */
 static ScrClosure *scr_dyn_listener_closure(const ScrDyn *cb, void *fire) {
   ScrClosure *clo = scr_closure_new(fire, 1);
-  ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, NULL);
+  ScrBox *box = scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
   scr_box_set_ref(box, scr_dyn_retain((ScrDyn *)cb));
   clo->caps[0] = box;
   return clo;

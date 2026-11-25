@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8843-error-subclass-own-property.ts"
+ ],
+ "diags": []
+}

@@ -143,6 +143,10 @@ export function eachStringField(
       visit(node.fnName, "fnName");
       return;
     }
+    case "constCell": {
+      visit(node.kind, "kind");
+      return;
+    }
     case "continue": {
       visit(node.kind, "kind");
       if (typeof node.label === "string") visit(node.label, "label");
@@ -226,7 +230,7 @@ export function eachStringField(
     }
     case "fieldAbsent": {
       visit(node.kind, "kind");
-      visit(node.unionId, "unionId");
+      if (typeof node.unionId === "string") visit(node.unionId, "unionId");
       return;
     }
     case "fieldGet": {
@@ -255,6 +259,10 @@ export function eachStringField(
     case "forOf": {
       visit(node.kind, "kind");
       visit(node.localId, "localId");
+      return;
+    }
+    case "genBindBarrier": {
+      visit(node.kind, "kind");
       return;
     }
     case "genResume": {
@@ -573,6 +581,16 @@ export function eachStringField(
       visit(node.localId, "localId");
       return;
     }
+    case "viewOf": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
+    case "viewSource": {
+      visit(node.kind, "kind");
+      if (typeof node.adapter === "string") visit(node.adapter, "adapter");
+      return;
+    }
     case "virtualCall": {
       visit(node.kind, "kind");
       visit(node.className, "className");
@@ -823,6 +841,23 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       }
       return;
     }
+    case "constCell": {
+      walker.string(node.kind);
+      if (node.numbers !== undefined && node.numbers !== null) {
+        for (const item8 of node.numbers) {
+        }
+      }
+      if (node.strings !== undefined && node.strings !== null) {
+        for (const item9 of node.strings) {
+          walker.string(item9);
+        }
+      }
+      walkExprFields(node.index, walker, skipType);
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
     case "downcast": {
       walker.string(node.kind);
       walkExprFields(node.value, walker, skipType);
@@ -833,8 +868,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     }
     case "dynArrLit": {
       walker.string(node.kind);
-      for (const item8 of node.elems) {
-        walkExprFields(item8, walker, skipType);
+      for (const item10 of node.elems) {
+        walkExprFields(item10, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -851,12 +886,12 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
         walkExprFields(node.calleeNameValue, walker, skipType);
       }
-      for (const item9 of node.args) {
-        walkExprFields(item9, walker, skipType);
+      for (const item11 of node.args) {
+        walkExprFields(item11, walker, skipType);
       }
       if (node.spreads !== undefined && node.spreads !== null) {
-        for (const item10 of node.spreads) {
-          walker.string(item10.what);
+        for (const item12 of node.spreads) {
+          walker.string(item12.what);
         }
       }
       if (!skipType) {
@@ -915,8 +950,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
         walkExprFields(node.calleeNameValue, walker, skipType);
       }
-      for (const item11 of node.args) {
-        walkExprFields(item11, walker, skipType);
+      for (const item13 of node.args) {
+        walkExprFields(item13, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -946,9 +981,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "dynObjLit": {
       walker.string(node.kind);
       if (node.fields !== undefined && node.fields !== null) {
-        for (const item12 of node.fields) {
-          walkExprFields(item12.key, walker, skipType);
-          walkExprFields(item12.value, walker, skipType);
+        for (const item14 of node.fields) {
+          walkExprFields(item14.key, walker, skipType);
+          walkExprFields(item14.value, walker, skipType);
         }
       }
       if (!skipType) {
@@ -980,8 +1015,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "ffiCall": {
       walker.string(node.kind);
       walker.string(node.import);
-      for (const item13 of node.args) {
-        walkExprFields(item13, walker, skipType);
+      for (const item15 of node.args) {
+        walkExprFields(item15, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -990,7 +1025,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     }
     case "fieldAbsent": {
       walker.string(node.kind);
-      walker.string(node.unionId);
+      if (node.unionId !== undefined && node.unionId !== null) {
+        walker.string(node.unionId);
+      }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }
@@ -1059,8 +1096,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "intrinsic": {
       walker.string(node.kind);
       walker.string(node.name);
-      for (const item14 of node.args) {
-        walkExprFields(item14, walker, skipType);
+      for (const item16 of node.args) {
+        walkExprFields(item16, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1081,8 +1118,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "libCall": {
       walker.string(node.kind);
       walker.string(node.fn);
-      for (const item15 of node.args) {
-        walkExprFields(item15, walker, skipType);
+      for (const item17 of node.args) {
+        walkExprFields(item17, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1108,8 +1145,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walker.string(node.method);
       walkExprFields(node.receiver, walker, skipType);
-      for (const item16 of node.args) {
-        walkExprFields(item16, walker, skipType);
+      for (const item18 of node.args) {
+        walkExprFields(item18, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1119,9 +1156,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "mapNew": {
       walker.string(node.kind);
       if (node.seed !== undefined && node.seed !== null) {
-        for (const item17 of node.seed) {
-          walkExprFields(item17.key, walker, skipType);
-          walkExprFields(item17.value, walker, skipType);
+        for (const item19 of node.seed) {
+          walkExprFields(item19.key, walker, skipType);
+          walkExprFields(item19.value, walker, skipType);
         }
       }
       if (!skipType) {
@@ -1140,8 +1177,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "new": {
       walker.string(node.kind);
       walker.string(node.className);
-      for (const item18 of node.args) {
-        walkExprFields(item18, walker, skipType);
+      for (const item20 of node.args) {
+        walkExprFields(item20, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1159,8 +1196,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "newValue": {
       walker.string(node.kind);
       walkExprFields(node.callee, walker, skipType);
-      for (const item19 of node.args) {
-        walkExprFields(item19, walker, skipType);
+      for (const item21 of node.args) {
+        walkExprFields(item21, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1226,9 +1263,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "recordClone": {
       walker.string(node.kind);
       walkExprFields(node.source, walker, skipType);
-      for (const item20 of node.overrides) {
-        walker.string(item20.name);
-        walkExprFields(item20.value, walker, skipType);
+      for (const item22 of node.overrides) {
+        walker.string(item22.name);
+        walkExprFields(item22.value, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1267,9 +1304,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     }
     case "recordLit": {
       walker.string(node.kind);
-      for (const item21 of node.fields) {
-        walker.string(item21.name);
-        walkExprFields(item21.value, walker, skipType);
+      for (const item23 of node.fields) {
+        walker.string(item23.name);
+        walkExprFields(item23.value, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1308,8 +1345,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walker.string(node.method);
       walkExprFields(node.receiver, walker, skipType);
-      for (const item22 of node.args) {
-        walkExprFields(item22, walker, skipType);
+      for (const item24 of node.args) {
+        walkExprFields(item24, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1334,8 +1371,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     }
     case "seqExpr": {
       walker.string(node.kind);
-      for (const item23 of node.stmts) {
-        walkStmtFields(item23, walker, skipType);
+      for (const item25 of node.stmts) {
+        walkStmtFields(item25, walker, skipType);
       }
       walkExprFields(node.result, walker, skipType);
       if (!skipType) {
@@ -1347,8 +1384,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walker.string(node.method);
       walkExprFields(node.receiver, walker, skipType);
-      for (const item24 of node.args) {
-        walkExprFields(item24, walker, skipType);
+      for (const item26 of node.args) {
+        walkExprFields(item26, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1397,8 +1434,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walker.string(node.method);
       walkExprFields(node.receiver, walker, skipType);
-      for (const item25 of node.args) {
-        walkExprFields(item25, walker, skipType);
+      for (const item27 of node.args) {
+        walkExprFields(item27, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1416,8 +1453,8 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
     case "templateStrings": {
       walker.string(node.kind);
       walker.string(node.key);
-      for (const item26 of node.cooked) {
-        walker.string(item26);
+      for (const item28 of node.cooked) {
+        walker.string(item28);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -1521,7 +1558,7 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walker.string(node.fromId);
       walker.string(node.unionId);
-      for (const item27 of node.tags) {
+      for (const item29 of node.tags) {
       }
       walkExprFields(node.value, walker, skipType);
       if (!skipType) {
@@ -1562,19 +1599,41 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       }
       return;
     }
+    case "viewOf": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
+    case "viewSource": {
+      walker.string(node.kind);
+      walkExprFields(node.value, walker, skipType);
+      if (node.adapter !== undefined && node.adapter !== null) {
+        walker.string(node.adapter);
+      }
+      if (!skipType) {
+        walkTypeFields(node.type, walker, skipType);
+      }
+      return;
+    }
     case "virtualCall": {
       walker.string(node.kind);
       walker.string(node.className);
       walker.string(node.method);
-      for (const item28 of node.args) {
-        walkExprFields(item28, walker, skipType);
+      for (const item30 of node.args) {
+        walkExprFields(item30, walker, skipType);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
       }
       if (node.targets !== undefined && node.targets !== null) {
-        for (const item29 of node.targets) {
-          walker.string(item29);
+        for (const item31 of node.targets) {
+          walker.string(item31);
         }
       }
       return;
@@ -1636,12 +1695,12 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
     case "block": {
       walker.string(node.kind);
       if (node.labels !== undefined && node.labels !== null) {
-        for (const item30 of node.labels) {
-          walker.string(item30);
+        for (const item32 of node.labels) {
+          walker.string(item32);
         }
       }
-      for (const item31 of node.body) {
-        walkStmtFields(item31, walker, skipType);
+      for (const item33 of node.body) {
+        walkStmtFields(item33, walker, skipType);
       }
       return;
     }
@@ -1668,13 +1727,13 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
     }
     case "doWhile": {
       walker.string(node.kind);
-      for (const item32 of node.body) {
-        walkStmtFields(item32, walker, skipType);
+      for (const item34 of node.body) {
+        walkStmtFields(item34, walker, skipType);
       }
       walkExprFields(node.cond, walker, skipType);
       if (node.labels !== undefined && node.labels !== null) {
-        for (const item33 of node.labels) {
-          walker.string(item33);
+        for (const item35 of node.labels) {
+          walker.string(item35);
         }
       }
       return;
@@ -1703,20 +1762,6 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
       if (node.update !== undefined && node.update !== null) {
         walkStmtFields(node.update, walker, skipType);
       }
-      for (const item34 of node.body) {
-        walkStmtFields(item34, walker, skipType);
-      }
-      if (node.labels !== undefined && node.labels !== null) {
-        for (const item35 of node.labels) {
-          walker.string(item35);
-        }
-      }
-      return;
-    }
-    case "forOf": {
-      walker.string(node.kind);
-      walker.string(node.localId);
-      walkExprFields(node.iterable, walker, skipType);
       for (const item36 of node.body) {
         walkStmtFields(item36, walker, skipType);
       }
@@ -1727,15 +1772,33 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
       }
       return;
     }
+    case "forOf": {
+      walker.string(node.kind);
+      walker.string(node.localId);
+      walkExprFields(node.iterable, walker, skipType);
+      for (const item38 of node.body) {
+        walkStmtFields(item38, walker, skipType);
+      }
+      if (node.labels !== undefined && node.labels !== null) {
+        for (const item39 of node.labels) {
+          walker.string(item39);
+        }
+      }
+      return;
+    }
+    case "genBindBarrier": {
+      walker.string(node.kind);
+      return;
+    }
     case "if": {
       walker.string(node.kind);
       walkExprFields(node.cond, walker, skipType);
-      for (const item38 of node.then) {
-        walkStmtFields(item38, walker, skipType);
+      for (const item40 of node.then) {
+        walkStmtFields(item40, walker, skipType);
       }
       if (node.else_ !== undefined && node.else_ !== null) {
-        for (const item39 of node.else_) {
-          walkStmtFields(item39, walker, skipType);
+        for (const item41 of node.else_) {
+          walkStmtFields(item41, walker, skipType);
         }
       }
       return;
@@ -1784,17 +1847,17 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
     case "switch": {
       walker.string(node.kind);
       walkExprFields(node.disc, walker, skipType);
-      for (const item40 of node.cases) {
-        if (item40.test !== undefined && item40.test !== null) {
-          walkExprFields(item40.test, walker, skipType);
+      for (const item42 of node.cases) {
+        if (item42.test !== undefined && item42.test !== null) {
+          walkExprFields(item42.test, walker, skipType);
         }
-        for (const item41 of item40.body) {
-          walkStmtFields(item41, walker, skipType);
+        for (const item43 of item42.body) {
+          walkStmtFields(item43, walker, skipType);
         }
       }
       if (node.labels !== undefined && node.labels !== null) {
-        for (const item42 of node.labels) {
-          walker.string(item42);
+        for (const item44 of node.labels) {
+          walker.string(item44);
         }
       }
       return;
@@ -1806,20 +1869,20 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
     }
     case "tryCatch": {
       walker.string(node.kind);
-      for (const item43 of node.tryBody) {
-        walkStmtFields(item43, walker, skipType);
+      for (const item45 of node.tryBody) {
+        walkStmtFields(item45, walker, skipType);
       }
       if (node.catchBody !== undefined && node.catchBody !== null) {
-        for (const item44 of node.catchBody) {
-          walkStmtFields(item44, walker, skipType);
+        for (const item46 of node.catchBody) {
+          walkStmtFields(item46, walker, skipType);
         }
       }
       if (node.catchLocalId !== undefined && node.catchLocalId !== null) {
         walker.string(node.catchLocalId);
       }
       if (node.finallyBody !== undefined && node.finallyBody !== null) {
-        for (const item45 of node.finallyBody) {
-          walkStmtFields(item45, walker, skipType);
+        for (const item47 of node.finallyBody) {
+          walkStmtFields(item47, walker, skipType);
         }
       }
       return;
@@ -1835,12 +1898,12 @@ export function walkStmtFields(node: IrStmt, walker: IrFieldWalker, skipType: bo
     case "while": {
       walker.string(node.kind);
       walkExprFields(node.cond, walker, skipType);
-      for (const item46 of node.body) {
-        walkStmtFields(item46, walker, skipType);
+      for (const item48 of node.body) {
+        walkStmtFields(item48, walker, skipType);
       }
       if (node.labels !== undefined && node.labels !== null) {
-        for (const item47 of node.labels) {
-          walker.string(item47);
+        for (const item49 of node.labels) {
+          walker.string(item49);
         }
       }
       return;
@@ -1935,8 +1998,8 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
     }
     case "func": {
       walker.string(node.kind);
-      for (const item48 of node.params) {
-        walkTypeFields(item48, walker, skipType);
+      for (const item50 of node.params) {
+        walkTypeFields(item50, walker, skipType);
       }
       walkTypeFields(node.ret, walker, skipType);
       if (node.restAbi !== undefined && node.restAbi !== null) {
@@ -1979,6 +2042,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       walkTypeFields(node.key, walker, skipType);
       walkTypeFields(node.value, walker, skipType);
+      return;
+    }
+    case "mkdtempResult": {
+      walker.string(node.kind);
       return;
     }
     case "moduleNs": {
@@ -2038,6 +2105,10 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       return;
     }
+    case "statWatcher": {
+      walker.string(node.kind);
+      return;
+    }
     case "stats": {
       walker.string(node.kind);
       return;
@@ -2071,7 +2142,1053 @@ export function walkTypeFields(node: IrType, walker: IrFieldWalker, skipType: bo
       walker.string(node.kind);
       return;
     }
+    case "watchEvents": {
+      walker.string(node.kind);
+      return;
+    }
   }
+}
+
+/** Replaces the child expression `from` of `node` with `to`: the field,
+ * array element or field of a plain object under it that holds `from`
+ * (child IR nodes are not entered). Returns false when no slot holds it. */
+export function replaceChildExpr(node: IrExpr | IrStmt, from: IrExpr, to: IrExpr): boolean {
+  switch (node.kind) {
+    case "arrIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index54 = 0; index54 < node.args.length; index54++) {
+        const item53 = node.args[index54]!;
+        if (item53 === from) {
+          node.args[index54] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "arrayDelete": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayGet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayHas": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayLit": {
+      for (let index58 = 0; index58 < node.elems.length; index58++) {
+        const item57 = node.elems[index58]!;
+        if (item57 === from) {
+          node.elems[index58] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "arrayNewLen": {
+      if (node.length === from) {
+        node.length = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySetLength": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.length === from) {
+        node.length = to;
+        return true;
+      }
+      return false;
+    }
+    case "arraySetUndefined": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "arrayState": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "assign": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "assignExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "awaitExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "awaitUnionExpr": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "bin": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "bytesIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index68 = 0; index68 < node.args.length; index68++) {
+        const item67 = node.args[index68]!;
+        if (item67 === from) {
+          node.args[index68] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "bytesNew": {
+      if (node.source !== undefined && node.source !== null) {
+        if (node.source === from) {
+          node.source = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "bytesSet": {
+      if (node.arr === from) {
+        node.arr = to;
+        return true;
+      }
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "call": {
+      for (let index72 = 0; index72 < node.args.length; index72++) {
+        const item71 = node.args[index72]!;
+        if (item71 === from) {
+          node.args[index72] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "callValue": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      if (node.receiver !== undefined && node.receiver !== null) {
+        if (node.receiver === from) {
+          node.receiver = to;
+          return true;
+        }
+      }
+      for (let index76 = 0; index76 < node.args.length; index76++) {
+        const item75 = node.args[index76]!;
+        if (item75 === from) {
+          node.args[index76] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "caughtCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtNarrow": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtTest": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "caughtToDyn": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "constCell": {
+      if (node.index === from) {
+        node.index = to;
+        return true;
+      }
+      return false;
+    }
+    case "doWhile": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "downcast": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynArrLit": {
+      for (let index92 = 0; index92 < node.elems.length; index92++) {
+        const item91 = node.elems[index92]!;
+        if (item91 === from) {
+          node.elems[index92] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynCall": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      if (node.receiver !== undefined && node.receiver !== null) {
+        if (node.receiver === from) {
+          node.receiver = to;
+          return true;
+        }
+      }
+      if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
+        if (node.calleeNameValue === from) {
+          node.calleeNameValue = to;
+          return true;
+        }
+      }
+      for (let index96 = 0; index96 < node.args.length; index96++) {
+        const item95 = node.args[index96]!;
+        if (item95 === from) {
+          node.args[index96] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynDestrCheck": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynFrom": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynHasKey": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynInvoke": {
+      if (node.recv === from) {
+        node.recv = to;
+        return true;
+      }
+      if (node.calleeNameValue !== undefined && node.calleeNameValue !== null) {
+        if (node.calleeNameValue === from) {
+          node.calleeNameValue = to;
+          return true;
+        }
+      }
+      for (let index102 = 0; index102 < node.args.length; index102++) {
+        const item101 = node.args[index102]!;
+        if (item101 === from) {
+          node.args[index102] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "dynIterN": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynKeyGet": {
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynObjLit": {
+      if (node.fields !== undefined && node.fields !== null) {
+        for (let index106 = 0; index106 < node.fields.length; index106++) {
+          const item105 = node.fields[index106]!;
+          if (item105.key === from) {
+            item105.key = to;
+            return true;
+          }
+          if (item105.value === from) {
+            item105.value = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "dynScalarEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "dynTest": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "exprStmt": {
+      if (node.expr === from) {
+        node.expr = to;
+        return true;
+      }
+      return false;
+    }
+    case "ffiCall": {
+      for (let index110 = 0; index110 < node.args.length; index110++) {
+        const item109 = node.args[index110]!;
+        if (item109 === from) {
+          node.args[index110] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "fieldGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "fieldIncDec": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "fieldSet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "for": {
+      if (node.cond !== undefined && node.cond !== null) {
+        if (node.cond === from) {
+          node.cond = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "forOf": {
+      if (node.iterable === from) {
+        node.iterable = to;
+        return true;
+      }
+      return false;
+    }
+    case "genResume": {
+      if (node.gen === from) {
+        node.gen = to;
+        return true;
+      }
+      if (node.arg !== undefined && node.arg !== null) {
+        if (node.arg === from) {
+          node.arg = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "if": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "instanceOf": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "instanceOfValue": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      if (node.classValue === from) {
+        node.classValue = to;
+        return true;
+      }
+      return false;
+    }
+    case "intrinsic": {
+      for (let index126 = 0; index126 < node.args.length; index126++) {
+        const item125 = node.args[index126]!;
+        if (item125 === from) {
+          node.args[index126] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "jsonStringify": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "libCall": {
+      for (let index130 = 0; index130 < node.args.length; index130++) {
+        const item129 = node.args[index130]!;
+        if (item129 === from) {
+          node.args[index130] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "logical": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "mapIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index134 = 0; index134 < node.args.length; index134++) {
+        const item133 = node.args[index134]!;
+        if (item133 === from) {
+          node.args[index134] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "mapNew": {
+      if (node.seed !== undefined && node.seed !== null) {
+        for (let index138 = 0; index138 < node.seed.length; index138++) {
+          const item137 = node.seed[index138]!;
+          if (item137.key === from) {
+            item137.key = to;
+            return true;
+          }
+          if (item137.value === from) {
+            item137.value = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "new": {
+      for (let index142 = 0; index142 < node.args.length; index142++) {
+        const item141 = node.args[index142]!;
+        if (item141 === from) {
+          node.args[index142] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "newPromise": {
+      if (node.executor === from) {
+        node.executor = to;
+        return true;
+      }
+      return false;
+    }
+    case "newValue": {
+      if (node.callee === from) {
+        node.callee = to;
+        return true;
+      }
+      for (let index146 = 0; index146 < node.args.length; index146++) {
+        const item145 = node.args[index146]!;
+        if (item145 === from) {
+          node.args[index146] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "nullish": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "optChain": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      if (node.body === from) {
+        node.body = to;
+        return true;
+      }
+      return false;
+    }
+    case "orDefault": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "promiseVoidWiden": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordClone": {
+      if (node.source === from) {
+        node.source = to;
+        return true;
+      }
+      for (let index150 = 0; index150 < node.overrides.length; index150++) {
+        const item149 = node.overrides[index150]!;
+        if (item149.value === from) {
+          item149.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "recordGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordHas": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeyDelete": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeyGet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordKeySet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordLit": {
+      for (let index154 = 0; index154 < node.fields.length; index154++) {
+        const item153 = node.fields[index154]!;
+        if (item153.value === from) {
+          item153.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "recordNullProto": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordOvfHas": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordOvfKeys": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      return false;
+    }
+    case "recordSet": {
+      if (node.obj === from) {
+        node.obj = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "regexIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index158 = 0; index158 < node.args.length; index158++) {
+        const item157 = node.args[index158]!;
+        if (item157 === from) {
+          node.args[index158] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "return": {
+      if (node.value !== undefined && node.value !== null) {
+        if (node.value === from) {
+          node.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "seqExpr": {
+      if (node.result === from) {
+        node.result = to;
+        return true;
+      }
+      return false;
+    }
+    case "setIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index164 = 0; index164 < node.args.length; index164++) {
+        const item163 = node.args[index164]!;
+        if (item163 === from) {
+          node.args[index164] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "setNew": {
+      if (node.seed !== undefined && node.seed !== null) {
+        if (node.seed === from) {
+          node.seed = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "strCmp": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strConcat": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "strIntrinsic": {
+      if (node.receiver === from) {
+        node.receiver = to;
+        return true;
+      }
+      for (let index168 = 0; index168 < node.args.length; index168++) {
+        const item167 = node.args[index168]!;
+        if (item167 === from) {
+          node.args[index168] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "switch": {
+      if (node.disc === from) {
+        node.disc = to;
+        return true;
+      }
+      for (let index174 = 0; index174 < node.cases.length; index174++) {
+        const item173 = node.cases[index174]!;
+        if (item173.test !== undefined && item173.test !== null) {
+          if (item173.test === from) {
+            item173.test = to;
+            return true;
+          }
+        }
+      }
+      return false;
+    }
+    case "ternary": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      if (node.then === from) {
+        node.then = to;
+        return true;
+      }
+      if (node.else_ === from) {
+        node.else_ = to;
+        return true;
+      }
+      return false;
+    }
+    case "throw": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "toBool": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "toString": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "unary": {
+      if (node.operand === from) {
+        node.operand = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionDisc": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionEq": {
+      if (node.left === from) {
+        node.left = to;
+        return true;
+      }
+      if (node.right === from) {
+        node.right = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionFuncEq": {
+      if (node.union === from) {
+        node.union = to;
+        return true;
+      }
+      if (node.func === from) {
+        node.func = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionIsTag": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionKeyGet": {
+      if (node.key === from) {
+        node.key = to;
+        return true;
+      }
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionNarrow": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionRetype": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "unionWrap": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "upcast": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "varDecl": {
+      if (node.init !== undefined && node.init !== null) {
+        if (node.init === from) {
+          node.init = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "viewOf": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "viewSource": {
+      if (node.value === from) {
+        node.value = to;
+        return true;
+      }
+      return false;
+    }
+    case "virtualCall": {
+      for (let index192 = 0; index192 < node.args.length; index192++) {
+        const item191 = node.args[index192]!;
+        if (item191 === from) {
+          node.args[index192] = to;
+          return true;
+        }
+      }
+      return false;
+    }
+    case "while": {
+      if (node.cond === from) {
+        node.cond = to;
+        return true;
+      }
+      return false;
+    }
+    case "yieldExpr": {
+      if (node.value !== undefined && node.value !== null) {
+        if (node.value === from) {
+          node.value = to;
+          return true;
+        }
+      }
+      return false;
+    }
+  }
+  return false;
 }
 
 /** A field ir.ts declares that this file does not read. */
@@ -2104,7 +3221,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "bytesNew" }>, "kind" | "source" | "from" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "bytesNew" }>["from"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "call" }>, "kind" | "callee" | "args" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "callValue" }>, "kind" | "callee" | "receiver" | "args" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "callValue" }>, "kind" | "callee" | "receiver" | "args" | "untyped" | "type" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "callValue" }>["untyped"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtCheck" }>, "kind" | "value" | "className" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtNarrow" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtTest" }>, "kind" | "value" | "test" | "className" | "negated" | "type" | "loc">>,
@@ -2112,22 +3230,27 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "caughtToDyn" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "chainRecv" }>, "kind" | "id" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "classRef" }>, "kind" | "className" | "type" | "loc" | "captures">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "closure" }>, "kind" | "fnName" | "captures" | "adapts" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "closure" }>, "kind" | "fnName" | "captures" | "adapts" | "length" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "closure" }>["adapts"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "closure" }>["length"]>>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "constCell" }>, "kind" | "numbers" | "strings" | "index" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "downcast" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynArrLit" }>, "kind" | "elems" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>, "arg" | "what">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>["arg"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCall" }>, "kind" | "callee" | "receiver" | "calleeName" | "calleeNameValue" | "args" | "spreads" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "exact" | "partialView" | "inferredSite" | "origin" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "shared" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["shared"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["origin"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["pathIndex"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynDestrCheck" }>, "kind" | "value" | "spelling" | "firstProp" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynFrom" }>, "kind" | "value" | "type" | "loc" | "liveRef" | "fnName" | "fnLength">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynFrom" }>, "kind" | "value" | "type" | "loc" | "liveRef" | "fnName" | "fnNameMainThreadOnly" | "fnLength">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynFrom" }>["liveRef"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynFrom" }>["fnNameMainThreadOnly"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynFrom" }>["fnLength"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynHasKey" }>, "kind" | "key" | "negated" | "value" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynHasKey" }>["negated"]>>,
@@ -2158,16 +3281,20 @@ export type IrFieldsCurrent = [
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "jsonStringify" }>["circular"]>>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "libCall" }>["assertOptions"]>, object>, "diff" | "skipPrototype">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "libCall" }>["assertOptions"]>, object>["skipPrototype"]>>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "libCall" }>, "kind" | "fn" | "args" | "type" | "loc" | "prototypeIdentityOnly" | "realTimer" | "assertOptions">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "libCall" }>, "kind" | "fn" | "args" | "type" | "loc" | "prototypeIdentityOnly" | "realTimer" | "assertOptions" | "bindsThis" | "namedKey">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["prototypeIdentityOnly"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["realTimer"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["bindsThis"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "libCall" }>["namedKey"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "logical" }>, "kind" | "op" | "left" | "right" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "mapIntrinsic" }>, "kind" | "method" | "receiver" | "args" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "mapNew" }>["seed"]>, readonly unknown[]>[number]>, object>, "key" | "value">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "mapNew" }>, "kind" | "seed" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>, "kind" | "moduleId" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>, "kind" | "moduleId" | "type" | "loc" | "esmNamespace">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "moduleNsRef" }>["esmNamespace"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "new" }>, "kind" | "className" | "args" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "newPromise" }>, "kind" | "executor" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "newPromise" }>, "kind" | "executor" | "resolves" | "type" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "newPromise" }>["resolves"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "newValue" }>, "kind" | "callee" | "args" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "nullish" }>, "kind" | "left" | "right" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "numLit" }>, "kind" | "value" | "spelling" | "type" | "loc">>,
@@ -2228,6 +3355,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "unitLit" }>, "kind" | "unit" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "upcast" }>, "kind" | "value" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "varRef" }>, "kind" | "localId" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewOf" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "viewSource" }>, "kind" | "value" | "adapter" | "type" | "loc">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "virtualCall" }>, "kind" | "className" | "method" | "args" | "type" | "loc" | "targets">>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<IrExpr, { kind: "yieldExpr" }>["captureCompletion"]>, object>, "returnType">>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "yieldExpr" }>, "kind" | "value" | "awaited" | "delegated" | "captureCompletion" | "type" | "loc">>,
@@ -2253,6 +3382,7 @@ export type IrFieldsCurrent = [
   Unread<ValuesNotRead<Extract<IrStmt, { kind: "fieldSet" }>["attributesChecked"]>>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "for" }>, "kind" | "init" | "cond" | "update" | "body" | "labels" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "forOf" }>, "kind" | "localId" | "iterable" | "body" | "labels" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrStmt, { kind: "genBindBarrier" }>, "kind" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "if" }>, "kind" | "cond" | "then" | "else_" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "recordKeyDelete" }>, "kind" | "obj" | "shapeId" | "key" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "recordKeySet" }>, "kind" | "obj" | "shapeId" | "key" | "value" | "overflowOnly" | "loc">>,
@@ -2261,7 +3391,8 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "rethrow" }>, "kind" | "localId" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "return" }>, "kind" | "value" | "awaited" | "loc">>,
   Unread<ValuesNotRead<Extract<IrStmt, { kind: "return" }>["awaited"]>>,
-  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrStmt, { kind: "runtimeFence" }>, "kind" | "code" | "message" | "guarded" | "loc">>,
+  Unread<ValuesNotRead<Extract<IrStmt, { kind: "runtimeFence" }>["guarded"]>>,
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrStmt, { kind: "switch" }>["cases"]>, readonly unknown[]>[number]>, object>, "test" | "body">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "switch" }>, "kind" | "disc" | "cases" | "labels" | "loc">>,
   Unread<FieldsNotRead<Extract<IrStmt, { kind: "throw" }>, "kind" | "value" | "loc">>,
@@ -2290,9 +3421,10 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "f64" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "fileHandle" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "fsWatcher" }>, "kind">>,
-  Unread<FieldsNotRead<Extract<IrType, { kind: "func" }>, "kind" | "params" | "ret" | "rest" | "restAbi" | "argumentsAll">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "func" }>, "kind" | "params" | "ret" | "rest" | "restAbi" | "argumentsAll" | "argumentsPresence">>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["rest"]>>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["argumentsAll"]>>,
+  Unread<ValuesNotRead<Extract<IrType, { kind: "func" }>["argumentsPresence"]>>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "generator" }>, "kind" | "async" | "yieldT" | "retT" | "nextT">>,
   Unread<ValuesNotRead<Extract<IrType, { kind: "generator" }>["async"]>>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "http2Session" }>, "kind">>,
@@ -2302,6 +3434,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "httpRes" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "jsval" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "map" }>, "kind" | "key" | "value">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "mkdtempResult" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "moduleNs" }>, "kind" | "moduleId">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "netServer" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "netSocket" }>, "kind">>,
@@ -2315,6 +3448,7 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "secureCtx" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "set" }>, "kind" | "elem">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "spawnRes" }>, "kind">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "statWatcher" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "stats" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "string" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "symbol" }>, "kind">>,
@@ -2323,4 +3457,5 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<IrType, { kind: "union" }>, "kind" | "unionId">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "url" }>, "kind">>,
   Unread<FieldsNotRead<Extract<IrType, { kind: "void" }>, "kind">>,
+  Unread<FieldsNotRead<Extract<IrType, { kind: "watchEvents" }>, "kind">>,
 ];

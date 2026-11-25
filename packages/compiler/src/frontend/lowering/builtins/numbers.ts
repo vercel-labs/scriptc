@@ -2,7 +2,8 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { lowerCheckedPredicateValue } from "../lower-builtin-values.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { BOOL, F64, STRING, type IrExpr, type IrLibFn } from "../../../ir/ir.js";
+import { BOOL, F64, STRING, type IrExpr, type IrLibFn, type SrcLoc } from "../../../ir/ir.js";
+import { boolLit } from "../../../ir/build.js";
 import { lowerBuiltinValuePreservingUndefined, lowerOptionalNumberPredicate } from "./arguments.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerStaticNumberGlobal } from "../lower-calls.js";
@@ -19,10 +20,40 @@ function isStringLike(lowerer: Lowerer, type: IrType): boolean {
   );
 }
 
+/** Types whose values are never a JavaScript number: the primitives other
+ * than number, and the native containers and objects. A union is one when
+ * every arm is. Anything a number could hide behind (an untyped value, an
+ * opaque runtime handle) is not. */
+function neverNumber(lowerer: Lowerer, type: IrType): boolean {
+  switch (type.kind) {
+    case "string":
+    case "bool":
+    case "bigint":
+    case "symbol":
+    case "undefinedT":
+    case "nullT":
+    case "void":
+    case "array":
+    case "map":
+    case "set":
+    case "regex":
+    case "date":
+    case "record":
+    case "func":
+      return true;
+    case "union":
+      return (lowerer.unions.get(type.unionId)?.arms ?? [type]).every(
+        (arm) => arm !== type && neverNumber(lowerer, arm),
+      );
+    default:
+      return false;
+  }
+}
+
 /** The lowered Number statics, by member name. The predicate quartet has
  * static C implementations (JS-exact: the ES2015 statics never coerce, so
- * only f64-typed arguments route through — anything else fences honestly
- * instead of folding to false past possible side effects). */
+ * only f64-typed arguments route through; an argument of any other type
+ * evaluates and the predicate answers false). */
 const NUMBER_STATIC_PREDICATES: Record<string, IrLibFn | undefined> = {
   isFinite: "number.isFinite",
   isNaN: "number.isNaN",
@@ -62,11 +93,26 @@ export function lowerNumberStaticCall(
 
     const optional = lowerOptionalNumberPredicate(lowerer, arg, fn, loc);
     if (optional) return optional;
+    if (neverNumber(lowerer, arg.type)) {
+      // The statics never coerce: a value that is not a number answers
+      // false, after the argument has evaluated. Generic JavaScript reaches
+      // this form (`IsNumber(value)` instantiated for a string).
+      // A literal has nothing to evaluate.
+      if (arg.kind === "unitLit" || arg.kind === "strLit" || arg.kind === "boolLit")
+        return boolLit(false, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: arg, loc: locOf(argNode) }],
+        result: boolLit(false, loc),
+        type: BOOL,
+        loc,
+      };
+    }
     if (arg.type.kind !== "f64") {
       lowerer.noLowering(
         `Number.${member} of '${lowerer.fmt(arg.type)}' values`,
         argNode,
-        "the Number statics never coerce — a statically non-number argument is constantly false in JS (narrow unions first, or write the constant)",
+        "the Number statics never coerce — narrow the value to a number first",
       );
     }
     return { kind: "libCall", fn, args: [arg], type: BOOL, loc };
@@ -124,6 +170,15 @@ export function lowerNumberStaticCall(
   return null; // other Number statics land on the member fence
 }
 
+/** `Number.isFinite`, `Number.isNaN`, `Number.isInteger` or
+ * `Number.isSafeInteger` as a function value; null for other members. */
+export function numberPredicateValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
+  const predicate = own(NUMBER_STATIC_PREDICATES, member);
+  return predicate
+    ? lowerCheckedPredicateValue(lowerer, `Number.${member}`, "number", loc, predicate)
+    : null;
+}
+
 /** Property READS on THE `Number` global: the finite constants bake as
  * number literals. NaN/POSITIVE_INFINITY/NEGATIVE_INFINITY and method
  * members as values fall through to the member fence. Null for
@@ -134,15 +189,8 @@ export function lowerNumberStaticProperty(
 ): IrExpr | null {
   const member = lowerer.stdlibGlobalMember(expr, "Number");
   if (member === null) return null;
-  const predicate = own(NUMBER_STATIC_PREDICATES, member);
-  if (predicate)
-    return lowerCheckedPredicateValue(
-      lowerer,
-      `Number.${member}`,
-      "number",
-      locOf(expr),
-      predicate,
-    );
+  const predicate = numberPredicateValue(lowerer, member, locOf(expr));
+  if (predicate) return predicate;
   const value = own(NUMBER_CONSTANTS, member);
   if (value === undefined) return null;
   return { kind: "numLit", value, type: F64, loc: locOf(expr) };
@@ -165,6 +213,49 @@ export function lowerEventStaticProperty(
     lowerer.stdlibGlobalMember(expr, "Event") ?? lowerer.stdlibGlobalMember(expr, "CustomEvent");
   if (member === null) return null;
   const value = own(EVENT_PHASES, member);
+  if (value === undefined) return null;
+  return { kind: "numLit", value, type: F64, loc: locOf(expr) };
+}
+
+/** The DOMException legacy code constants (DOMException.INDEX_SIZE_ERR ...
+ * DATA_CLONE_ERR), the numbers `domException.code` answers for the matching
+ * name; the constructor and its prototype both carry them in Node. */
+const DOM_EXCEPTION_CODES: Record<string, number | undefined> = {
+  INDEX_SIZE_ERR: 1,
+  DOMSTRING_SIZE_ERR: 2,
+  HIERARCHY_REQUEST_ERR: 3,
+  WRONG_DOCUMENT_ERR: 4,
+  INVALID_CHARACTER_ERR: 5,
+  NO_DATA_ALLOWED_ERR: 6,
+  NO_MODIFICATION_ALLOWED_ERR: 7,
+  NOT_FOUND_ERR: 8,
+  NOT_SUPPORTED_ERR: 9,
+  INUSE_ATTRIBUTE_ERR: 10,
+  INVALID_STATE_ERR: 11,
+  SYNTAX_ERR: 12,
+  INVALID_MODIFICATION_ERR: 13,
+  NAMESPACE_ERR: 14,
+  INVALID_ACCESS_ERR: 15,
+  VALIDATION_ERR: 16,
+  TYPE_MISMATCH_ERR: 17,
+  SECURITY_ERR: 18,
+  NETWORK_ERR: 19,
+  ABORT_ERR: 20,
+  URL_MISMATCH_ERR: 21,
+  QUOTA_EXCEEDED_ERR: 22,
+  TIMEOUT_ERR: 23,
+  INVALID_NODE_TYPE_ERR: 24,
+  DATA_CLONE_ERR: 25,
+};
+
+export function lowerDOMExceptionStaticProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const member = lowerer.stdlibGlobalMember(expr, "DOMException");
+  if (process.env.SCRIPTC_DBG_DOMEX) console.error("[dbg domex]", expr.getText(), member);
+  if (member === null) return null;
+  const value = own(DOM_EXCEPTION_CODES, member);
   if (value === undefined) return null;
   return { kind: "numLit", value, type: F64, loc: locOf(expr) };
 }

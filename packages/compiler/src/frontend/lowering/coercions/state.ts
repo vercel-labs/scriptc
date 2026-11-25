@@ -16,10 +16,29 @@ export class CoercionState {
    * parameters may width-lift, and union fields may retag with trapping
    * arms (WidthLift checkedRetag). */
   checkedRetags = 0;
+  /** > 0 while a type assertion's operand lowers. The program claimed the
+   * value's shape, so a union slot inside it may retag with trapping arms
+   * (an arm the asserted target excludes throws, divergence 38's
+   * lying-assertion stance) instead of refusing the conversion. */
+  assertedOperand = 0;
+  /** Plans with the type assertion's checked context suspended: what the
+   * program's own types reach without the claim. */
+  withoutAssertedClaim<T>(plan: () => T): T {
+    const held = this.assertedOperand;
+    this.assertedOperand = 0;
+    try {
+      return plan();
+    } finally {
+      this.assertedOperand = held;
+    }
+  }
   // Registry revisions invalidate only fully validated copy-only routes.
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.
   readonly checkedNarrows = new Set<string>();
+  // The re-tags that read a union-typed deferred-init field as its declared
+  // union, throwing for an unassigned slot (Lowerer.deferredFieldSlot).
+  readonly deferredRetags = new Set<string>();
   // The extracted arm of each checked (non-defaulting) extraction helper.
   readonly checkedNarrowArms = new Map<
     string,
@@ -33,6 +52,12 @@ export class CoercionState {
     }
   >();
   readonly retags = new Map<string, string>();
+  /** The factories of the general signature adapters (funcCoerceAdapter
+   * and its rest-packing form), each with the mode it was built in
+   * ("checked" or ""). Provenance for function-views.ts, which builds
+   * the same conversions with more parameters; it must not be inferred
+   * from the helper's name. */
+  readonly signatureAdapters = new Map<string, string>();
   readonly narrows = new Map<string, string>();
   readonly widthNarrows = new Map<string, string>();
   /** Unions widenReducedReturn produced: only these read through the

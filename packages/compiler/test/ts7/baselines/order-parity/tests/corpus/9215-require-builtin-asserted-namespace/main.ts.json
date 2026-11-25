@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9215-require-builtin-asserted-namespace/main.ts"
+ ],
+ "diags": []
+}

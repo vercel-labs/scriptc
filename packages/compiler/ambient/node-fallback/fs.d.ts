@@ -1,64 +1,145 @@
 /// <reference path="./fs-promises.d.ts" />
 /// <reference path="./stream.d.ts" />
 
-/* The synchronous node:fs surface — utf8-only, no options objects, no
- * Buffers. Importing "node:fs" resolves here (preflight allowlists exactly
- * the ambient-declared node: modules); every function lowers to a `libCall`
- * with a scr_fs_* runtime implementation. Failures throw CATCHABLE string
- * values formatted like Node's error messages ("ENOENT: no such file or
- * directory, open 'x'"). `rmSync` removes FILES only (like Node without
- * `recursive`); empty directories go through `rmdirSync`. */
+/* The synchronous node:fs surface — the subset that compiles natively:
+ * utf8 path strings, string, Buffer, TypedArray and DataView data, and
+ * the documented option records that have a lowering. Importing "node:fs"
+ * resolves here (preflight allowlists exactly the ambient-declared node:
+ * modules); every function lowers to a `libCall` with a scr_fs_* runtime
+ * implementation.
+ * Failures throw CATCHABLE string values formatted like Node's error
+ * messages ("ENOENT: no such file or directory, open 'x'"). `rmSync`
+ * removes FILES only (like Node without `recursive`); empty directories go
+ * through `rmdirSync`. */
 declare module "node:fs" {
   import { Readable, Writable } from "stream";
+  /* The options record carries the encoding the file is decoded with and/or
+   * the open(2) flag it is read through (a name from stringToFlags or the
+   * raw bits); the path form opens at Node's 0o666. Without an encoding the
+   * read answers a Buffer. */
   export function readFileSync(path: string | number | URL, encoding: BufferEncoding): string;
   export function readFileSync(
     path: string | number | URL,
-    options: { encoding: BufferEncoding },
+    options: { encoding?: null; flag?: string | number },
+  ): Buffer;
+  export function readFileSync(
+    path: string | number | URL,
+    options: { encoding: BufferEncoding; flag?: string | number },
   ): string;
   export function readFileSync(path: string | number | URL): Buffer;
+  export function readFileSync(
+    path: string | URL,
+    options: {
+      encoding?: BufferEncoding | null;
+      flag?: string | number;
+      [option: string]: unknown;
+    },
+  ): string | Buffer;
   export function readFileSync(path: string | URL, options: unknown): string | Buffer;
   /* Error-first callbacks select string or Buffer data from their encoding.
-   * Unknown options retain that union until the caller validates the value. */
+   * Unknown options retain that union until the caller validates the value.
+   * Without options the data is the file's bytes. A failed read calls back
+   * with the error and NO data, so the parameter is `any` (the stance the
+   * stat family's completion takes): read or test whatever arrived. */
+  export function readFile(
+    path: string,
+    callback: (error: NodeJS.ErrnoException | null, data: any) => void,
+  ): void;
   export function readFile(
     path: string,
     options: unknown,
-    callback: (error: Error | null, data: string | Buffer) => void,
+    callback: (error: NodeJS.ErrnoException | null, data: any) => void,
   ): void;
-  /* The options form carries the mode (applied at CREATION only, like
-   * Node — an existing file keeps its permissions) and/or the utf8
-   * encoding spelling. */
+  /* The options form carries the mode (a number or an octal string,
+   * applied at CREATION only, like Node — an existing file keeps its
+   * permissions), the encoding the string data is written with, and/or
+   * the open(2) flag. */
   export function writeFileSync(
     path: string | URL,
-    data: string,
+    data: string | ScriptcBufferView,
     /* The options-record stance (see http.RequestOptions): an unsupported
      * flag fences by name at the call site; undocumented keys drop like
-     * Node. The lowered flags are "w" (truncate-or-create) and "wx"
-     * (exclusive create). */
+     * Node. The flag names are Node's ("w", "wx", "a", "as+", ...), and a
+     * number is open(2) bits, as in stringToFlags. */
     options?: {
-      mode?: number;
-      encoding?: "utf8" | "utf-8";
-      flag?: string;
+      mode?: number | string;
+      encoding?: BufferEncoding;
+      flag?: string | number;
       [option: string]: unknown;
     },
   ): void;
   /* The bare-encoding spelling — the options record's encoding key alone. */
-  export function writeFileSync(path: string | URL, data: string, encoding: "utf8" | "utf-8"): void;
-  export function writeFileSync(path: string | URL, data: string | Uint8Array): void;
+  export function writeFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    encoding: BufferEncoding,
+  ): void;
+  export function writeFileSync(path: string | URL, data: string | ScriptcBufferView): void;
+  /* Buffer and TypedArray data with the mode and/or flag options; the
+   * bytes are written as they are, and Node ignores an encoding key here. */
+  export function writeFileSync(
+    path: string | URL,
+    data: ScriptcBufferView,
+    options: {
+      mode?: number | string;
+      encoding?: BufferEncoding;
+      flag?: string | number;
+      [option: string]: unknown;
+    },
+  ): void;
   /* The file-descriptor form: Node writes the whole data to an already
    * open descriptor and leaves it open (closeSync owns its lifetime, and
    * the write lands at the descriptor's current offset). */
-  export function writeFileSync(fd: number, data: string): void;
-  export function writeFileSync(fd: number, data: string, encoding: "utf8" | "utf-8"): void;
-  export function appendFileSync(path: string | URL, data: string | Uint8Array): void;
-  export function existsSync(path: string | URL): boolean;
-  export function mkdirSync(path: string | URL): void;
+  export function writeFileSync(fd: number, data: string | ScriptcBufferView): void;
+  export function writeFileSync(
+    fd: number,
+    data: string | ScriptcBufferView,
+    encoding: "utf8" | "utf-8",
+  ): void;
+  /* appendFileSync opens with the "a" flag by default; the options record
+   * and the bare encoding replace the encoding and can name another flag
+   * (and the creation mode). */
+  export function appendFileSync(path: string | URL, data: string | ScriptcBufferView): void;
+  /* The bare-encoding spelling is the options record's encoding key alone. */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    encoding: BufferEncoding,
+  ): void;
+  /* The options record: `encoding` names the encoding the string data is
+   * appended with; `mode` and `flag` change what an append creates (see the
+   * writeFileSync stance). */
+  export function appendFileSync(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options?: {
+      mode?: number | string;
+      encoding?: BufferEncoding;
+      flag?: string | number;
+      [option: string]: unknown;
+    },
+  ): void;
+  export function existsSync(path: string | Uint8Array | URL): boolean;
+  /* Node's overload set: `recursive: true` answers the first directory the
+   * walk created (or undefined when the path already existed), the single
+   * mkdir forms answer undefined. The mode is a number or an octal string. */
   export function mkdirSync(
     path: string | URL,
-    options: { recursive?: boolean; mode?: number },
+    options: { recursive: true; mode?: number | string },
+  ): string | undefined;
+  export function mkdirSync(
+    path: string | URL,
+    options?: number | string | { recursive?: false | undefined; mode?: number | string } | null,
   ): void;
+  export function mkdirSync(
+    path: string | URL,
+    options?: number | string | { recursive?: boolean; mode?: number | string } | null,
+  ): string | undefined;
   export function unlinkSync(path: string | URL): void;
-  export function chmodSync(path: string | URL, mode: number): void;
-  export function fchmodSync(fd: number, mode: number): void;
+  /* The mode is a number or an octal string (Node's `Mode`), parsed by
+   * parseFileMode's ladder. */
+  export function chmodSync(path: string | URL, mode: number | string): void;
+  export function fchmodSync(fd: number, mode: number | string): void;
   export function fsyncSync(fd: number): void;
   export function linkSync(
     existingPath: string | Uint8Array | URL,
@@ -178,29 +259,52 @@ declare module "node:fs" {
     path: string | URL,
     options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
   ): void;
+  /* The callback forms of rmSync: the removal runs when called and the
+   * callback receives the error, or null. */
+  export function rm(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function rm(
+    path: string | URL,
+    options: { recursive?: boolean; force?: boolean; maxRetries?: number; retryDelay?: number },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
   export function rmdirSync(path: string | URL): void;
   export function readdirSync(path: string | URL): string[];
-  /* The recursive form: every entry below the path, relative to it. */
+  /* The bare encoding spellings name the codec for the entry names; the
+   * bytes form answers them as Buffers, byte for byte. */
+  export function readdirSync(path: string | URL, options: "buffer"): Buffer[];
+  export function readdirSync(path: string | URL, options: BufferEncoding): string[];
+  export function readdirSync(
+    path: string | URL,
+    options: { encoding: "buffer"; withFileTypes?: false; recursive?: false },
+  ): Buffer[];
+  /* The recursive form: every entry below the path, relative to it. A
+   * recursive listing decodes its names as utf8. */
   export function readdirSync(
     path: string | URL,
     options: {
       recursive?: boolean;
       withFileTypes?: false;
-      encoding?: "utf8" | "utf-8";
+      encoding?: BufferEncoding | null;
       [option: string]: unknown;
     },
   ): string[];
   /* The withFileTypes form: Dirent rows (name + parentPath + the type
-   * probes — the honest subset of Node's Dirent surface). The type is
-   * interned explicitly in type-mapper.ts (the record's hidden %dtype field
-   * carries the entry kind; isFile/isDirectory/isSymbolicLink lower as
-   * reads of it in builtins/process.ts). */
+   * probes). The type is interned explicitly in type-mapper.ts (the
+   * record's hidden %dtype field carries the entry kind; the probes lower
+   * as reads of it in builtins/filesystem.ts). */
   export interface Dirent {
     name: string;
     parentPath: string;
     isFile(): boolean;
     isDirectory(): boolean;
     isSymbolicLink(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    isCharacterDevice(): boolean;
+    isBlockDevice(): boolean;
   }
   export function readdirSync(
     path: string | URL,
@@ -244,20 +348,35 @@ declare module "node:fs" {
     readonly path: string;
     readSync(): Dirent | null;
     read(): Promise<Dirent | null>;
+    read(callback: (err: NodeJS.ErrnoException | null, dirent: Dirent | null) => void): void;
     closeSync(): void;
     close(): Promise<void>;
+    close(callback: (err: NodeJS.ErrnoException | null) => void): void;
     [Symbol.asyncIterator](): AsyncIterableIterator<Dirent>;
+    [Symbol.dispose](): void;
+    [Symbol.asyncDispose](): Promise<void>;
   }
   export interface OpenDirOptions {
     encoding?: "utf8" | "utf-8";
     bufferSize?: number;
   }
+  export function opendir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
+  export function opendir(
+    path: string | URL,
+    options: OpenDirOptions,
+    callback: (err: NodeJS.ErrnoException | null, dir: Dir) => void,
+  ): void;
   export function opendirSync(path: string | URL, options?: OpenDirOptions): Dir;
   /* fs.ReadStream / fs.WriteStream: runtime Readable and Writable streams
    * over a file (scr_fs_stream.c). The options are checked at runtime
    * with Node's rules; flags and mode are checked when the file opens, so
    * their errors arrive as 'error' events. Instances also emit 'open'
-   * (with the fd) and 'ready'. */
+   * (with the fd) and 'ready'. `signal` destroys the stream with an
+   * AbortError when it aborts, as stream.addAbortSignal does; null is in
+   * the type as in @types/node, and Node throws for it. */
   export interface StreamOptions {
     flags?: string;
     encoding?: BufferEncoding;
@@ -266,6 +385,7 @@ declare module "node:fs" {
     autoClose?: boolean;
     emitClose?: boolean;
     start?: number;
+    signal?: AbortSignal | null;
     highWaterMark?: number;
   }
   export interface ReadStreamOptions extends StreamOptions {
@@ -296,6 +416,16 @@ declare module "node:fs" {
   ): WriteStream;
   export function accessSync(path: string | URL, mode?: number): void;
   export function mkdtempSync(prefix: string | URL): string;
+  /** The object fs.mkdtempDisposableSync answers: the created path, its
+   * removal, and the Symbol.dispose hook. */
+  export interface DisposableTempDir extends Disposable {
+    path: string;
+    remove(): void;
+  }
+  export function mkdtempDisposableSync(
+    prefix: string,
+    options?: string | { encoding?: string },
+  ): DisposableTempDir;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;
@@ -471,9 +601,13 @@ declare module "node:fs" {
   ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
-   * the raw fd. Numeric flags use an inline OR of the O_* constants. */
-  export function openSync(path: string | URL, flags: string): number;
-  export function openSync(path: string | URL, flags: number, mode?: number): number;
+   * the raw fd. Numeric flags use an inline OR of the O_* constants. The
+   * mode is open(2)'s creation mode and applies to both flag forms. */
+  export function openSync(
+    path: string | URL,
+    flags: string | number,
+    mode?: number | string,
+  ): number;
   export function closeSync(fd: number): void;
   export function fdatasyncSync(fd: number): void;
   export function ftruncateSync(fd: number, len?: number): void;
@@ -553,6 +687,9 @@ declare module "node:fs" {
   /* statSync over an open fd — the same snapshot. */
   export function fstatSync(fd: number, options?: StatSyncOptions & { bigint?: false }): Stats;
   export function fstatSync(fd: number, options: StatSyncOptions & { bigint: true }): BigIntStats;
+  /* A runtime-valued `bigint` selects the member table at the call; an open
+   * descriptor cannot miss, so there is no undefined arm. */
+  export function fstatSync(fd: number, options: StatSyncOptions): Stats | BigIntStats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
    * shapes for missing paths. */
   export function realpathSync(path: string | URL): string;
@@ -564,6 +701,7 @@ declare module "node:fs" {
   export interface StatsFsBase<T> {
     type: T;
     bsize: T;
+    frsize: T;
     blocks: T;
     bfree: T;
     bavail: T;
@@ -617,6 +755,11 @@ declare module "node:fs" {
   export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    /* The loop-liveness toggles: a reffed open watcher keeps the process
+     * alive (the default), an unref'd one lets it exit. Node returns the
+     * watcher; the bundle's handles answer void, like dgram's. */
+    ref(): void;
+    unref(): void;
     on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
     on(event: "error", listener: (error: Error) => void): this;
     on(event: "close", listener: () => void): this;
@@ -632,10 +775,13 @@ declare module "node:fs" {
     off(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
     removeListener(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
   }
-  /* The options-record stance (see http.RequestOptions): persistent: true,
-   * recursive: false, and encoding: "utf8" state the lowered behavior and
-   * are accepted; persistent: false, recursive: true, and signal fence by
-   * name at the call site; undocumented keys drop like Node. */
+  /* The options-record stance (see http.RequestOptions): persistent (a
+   * boolean; true is Node's default) is the watcher's initial loop
+   * liveness, recursive watches the whole directory subtree (Linux and
+   * Windows today; a recursive macOS directory watch throws SC2020 until
+   * the FSEvents backend lands), encoding: "utf8" states the lowered
+   * behavior and is accepted; signal fences by name at the call site;
+   * undocumented keys drop like Node. */
   export interface WatchOptions {
     persistent?: boolean;
     recursive?: boolean;
@@ -654,9 +800,16 @@ declare module "node:fs" {
    * path that cannot be stat'd polls as all-zero Stats. One poller per
    * resolved path is shared by every listener on it. interval defaults to
    * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
-   * no lowering. The call is a statement: Node's StatWatcher has no
-   * lowering. */
-  export interface StatWatcher {}
+   * no lowering. The call answers the StatWatcher its listener registered
+   * on, whose ref()/unref() move that registration's loop liveness. */
+  export interface StatWatcher {
+    /* The registration's loop liveness: a reffed watcher keeps the process
+     * alive (the default, and what the `persistent` option sets), an
+     * unref'd one lets it exit. fs.unwatchFile is the removal API; after it
+     * removes this listener both are no-ops. */
+    ref(): void;
+    unref(): void;
+  }
   export function watchFile(
     filename: string,
     options: { interval?: number; persistent?: boolean; bigint?: false },
@@ -670,6 +823,438 @@ declare module "node:fs" {
     filename: string,
     listener?: (current: Stats, previous: Stats) => void,
   ): void;
+  /* The error-first callback forms of the operations above. The work runs
+   * when the call is made and the completion reaches the callback in a
+   * later turn; the call itself answers undefined, and a validation or
+   * path failure that Node throws from the call is thrown here too. */
+  export function access(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function access(
+    path: string | URL,
+    mode: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  /* Node validates these calls' arguments at run time (a malformed
+   * shape is legal JavaScript and reports Node's TypeError from the
+   * call), so each form carries a permissive tail after its typed
+   * overloads: a dynamic call site keeps its shape and the runtime
+   * answers with Node's own check. */
+  export function access(...args: any[]): void;
+  export function close(fd: number, callback?: (err: NodeJS.ErrnoException | null) => void): void;
+  export function close(...args: any[]): void;
+  export function chmod(
+    path: string | URL,
+    mode: number | string,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function chmod(...args: any[]): void;
+  export function fchmod(
+    fd: number,
+    mode: number | string,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function fchmod(...args: any[]): void;
+  export function chown(
+    path: string | URL,
+    uid: number,
+    gid: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function chown(...args: any[]): void;
+  export function lchown(
+    path: string | URL,
+    uid: number,
+    gid: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function lchown(...args: any[]): void;
+  export function fchown(
+    fd: number,
+    uid: number,
+    gid: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function fchown(...args: any[]): void;
+  export function fsync(fd: number, callback: (err: NodeJS.ErrnoException | null) => void): void;
+  export function fsync(...args: any[]): void;
+  export function fdatasync(
+    fd: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function fdatasync(...args: any[]): void;
+  export function ftruncate(
+    fd: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function ftruncate(
+    fd: number,
+    len: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function ftruncate(...args: any[]): void;
+  export function truncate(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function truncate(
+    path: string | URL,
+    len: number | undefined,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function truncate(...args: any[]): void;
+  export function unlink(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function unlink(...args: any[]): void;
+  export function rmdir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function rmdir(...args: any[]): void;
+  /* mkdir's recursive form answers the first directory it created, or
+   * undefined when the path already existed. */
+  export function mkdir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function mkdir(
+    path: string | URL,
+    options: number | string | { recursive?: false; mode?: number | string },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function mkdir(
+    path: string | URL,
+    options: { recursive: true; mode?: number | string },
+    callback: (err: NodeJS.ErrnoException | null, path?: string) => void,
+  ): void;
+  export function mkdir(...args: any[]): void;
+  export function mkdtemp(
+    prefix: string,
+    callback: (err: NodeJS.ErrnoException | null, folder?: string) => void,
+  ): void;
+  export function mkdtemp(
+    prefix: string,
+    options: BufferEncoding | null,
+    callback: (err: NodeJS.ErrnoException | null, folder?: string) => void,
+  ): void;
+  export function mkdtemp(
+    prefix: string,
+    options: "buffer" | { encoding: "buffer" },
+    callback: (err: NodeJS.ErrnoException | null, folder?: Buffer) => void,
+  ): void;
+  export function mkdtemp(...args: any[]): void;
+  export function readdir(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, files?: string[]) => void,
+  ): void;
+  export function readdir(
+    path: string | URL,
+    options:
+      | BufferEncoding
+      | null
+      | { encoding?: BufferEncoding | null; withFileTypes?: false; recursive?: boolean },
+    callback: (err: NodeJS.ErrnoException | null, files?: string[]) => void,
+  ): void;
+  export function readdir(
+    path: string | URL,
+    options: "buffer" | { encoding: "buffer"; withFileTypes?: false },
+    callback: (err: NodeJS.ErrnoException | null, files?: Buffer[]) => void,
+  ): void;
+  export function readdir(
+    path: string | URL,
+    options: { withFileTypes: true; recursive?: boolean; [option: string]: unknown },
+    callback: (err: NodeJS.ErrnoException | null, files?: Dirent[]) => void,
+  ): void;
+  export function readdir(
+    path: string | URL,
+    options:
+      | BufferEncoding
+      | { encoding?: BufferEncoding | null; [option: string]: unknown }
+      | null,
+    callback: (err: NodeJS.ErrnoException | null, files?: string[] | Buffer[]) => void,
+  ): void;
+  export function readdir(...args: any[]): void;
+  /* The stat family's completion carries Node's Stats (or BigIntStats)
+   * object as a dynamic value — its own fields, its lazy Date accessors and
+   * its is*() probes, but not the Stats handle statSync answers (that
+   * handle cannot cross the callback boundary), so the parameter is `any`:
+   * read or call whatever the object carries. throwIfNoEntry: false is
+   * fs.stat's alone, and its completion is (null, undefined). */
+  export function stat(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(
+    path: string | URL,
+    options: StatSyncOptions & { bigint?: false; throwIfNoEntry: false },
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry: false },
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(
+    path: string | URL,
+    options: (StatSyncOptions & { bigint?: false; throwIfNoEntry?: true }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(
+    path: string | URL,
+    options: StatSyncOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function stat(...args: any[]): void;
+  export function lstat(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function lstat(
+    path: string | URL,
+    options: (StatSyncOptions & { bigint?: false; throwIfNoEntry?: true }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function lstat(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function lstat(
+    path: string | URL,
+    options: StatSyncOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function lstat(...args: any[]): void;
+  export function fstat(
+    fd: number,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: (StatSyncOptions & { bigint?: false }) | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: StatSyncOptions & { bigint: true },
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function fstat(
+    fd: number,
+    options: StatSyncOptions | undefined,
+    callback: (err: NodeJS.ErrnoException | null, stats: any) => void,
+  ): void;
+  export function fstat(...args: any[]): void;
+  export function open(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
+  ): void;
+  export function open(
+    path: string | URL,
+    flags: string | number | undefined,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
+  ): void;
+  export function open(
+    path: string | URL,
+    flags: string | number | undefined,
+    mode: number | string,
+    callback: (err: NodeJS.ErrnoException | null, fd: number) => void,
+  ): void;
+  export function open(...args: any[]): void;
+  export function writeFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function writeFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options: BufferEncoding,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function writeFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options: {
+      mode?: number | string;
+      encoding?: BufferEncoding;
+      flag?: string | number;
+      [option: string]: unknown;
+    },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function writeFile(...args: any[]): void;
+  export function appendFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function appendFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options: BufferEncoding,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function appendFile(
+    path: string | URL,
+    data: string | ScriptcBufferView,
+    options: {
+      mode?: number | string;
+      encoding?: BufferEncoding;
+      flag?: string | number;
+      [option: string]: unknown;
+    },
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function appendFile(...args: any[]): void;
+  /* read's full form fills a window of the caller's buffer and answers
+   * (err, bytesRead, buffer); the options form names that window. */
+  export interface ReadOptions extends ReadSyncOptions {}
+  export function read(
+    fd: number,
+    buffer: Uint8Array | null | undefined,
+    options: ReadOptions | null | undefined,
+    callback: (err: NodeJS.ErrnoException | null, bytesRead?: number, buffer?: Uint8Array) => void,
+  ): void;
+  export function read(
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number | null | undefined,
+    callback: (err: NodeJS.ErrnoException | null, bytesRead?: number, buffer?: Uint8Array) => void,
+  ): void;
+  export function read(
+    fd: number,
+    options: ReadOptions | null | undefined,
+    callback: (err: NodeJS.ErrnoException | null, bytesRead?: number, buffer?: Buffer) => void,
+  ): void;
+  export function read(...args: any[]): void;
+  /* write's buffer form answers (err, written, buffer); the string form
+   * answers (err, written, string). */
+  export function write(
+    fd: number,
+    buffer: Uint8Array,
+    offset: number | null | undefined,
+    length: number | null | undefined,
+    position: number | null | undefined,
+    callback: (err: NodeJS.ErrnoException | null, written?: number, buffer?: Uint8Array) => void,
+  ): void;
+  export function write(
+    fd: number,
+    buffer: Uint8Array,
+    options: WriteSyncOptions | null | undefined,
+    callback: (err: NodeJS.ErrnoException | null, written?: number, buffer?: Uint8Array) => void,
+  ): void;
+  export function write(
+    fd: number,
+    string: string,
+    callback: (err: NodeJS.ErrnoException | null, written?: number, string?: string) => void,
+  ): void;
+  export function write(
+    fd: number,
+    string: string,
+    position?: number | null,
+    encoding?: "utf8" | "utf-8",
+    callback?: (err: NodeJS.ErrnoException | null, written?: number, string?: string) => void,
+  ): void;
+  export function write(...args: any[]): void;
+  export function writev(
+    fd: number,
+    buffers: readonly Uint8Array[],
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      bytesWritten?: number,
+      buffers?: Uint8Array[],
+    ) => void,
+  ): void;
+  export function writev(
+    fd: number,
+    buffers: readonly Uint8Array[],
+    position: number,
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      bytesWritten?: number,
+      buffers?: Uint8Array[],
+    ) => void,
+  ): void;
+  export function writev(...args: any[]): void;
+  export function readv(
+    fd: number,
+    buffers: readonly Uint8Array[],
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      bytesRead?: number,
+      buffers?: Uint8Array[],
+    ) => void,
+  ): void;
+  export function readv(
+    fd: number,
+    buffers: readonly Uint8Array[],
+    position: number,
+    callback: (
+      err: NodeJS.ErrnoException | null,
+      bytesRead?: number,
+      buffers?: Uint8Array[],
+    ) => void,
+  ): void;
+  export function readv(...args: any[]): void;
+  export function copyFile(
+    src: string | URL,
+    dest: string | URL,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function copyFile(
+    src: string | URL,
+    dest: string | URL,
+    mode: number,
+    callback: (err: NodeJS.ErrnoException | null) => void,
+  ): void;
+  export function copyFile(...args: any[]): void;
+  /* An error reaches the callback alone, so the resolved path is absent
+   * then — the optional parameter is Node's own arity. */
+  export function realpath(
+    path: string | URL,
+    callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
+  ): void;
+  export function realpath(
+    path: string | URL,
+    options: BufferEncoding | null,
+    callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
+  ): void;
+  export function realpath(
+    path: string | URL,
+    options: "buffer" | { encoding: "buffer" },
+    callback: (err: NodeJS.ErrnoException | null, resolvedPath?: Buffer) => void,
+  ): void;
+  export function realpath(...args: any[]): void;
+  /* fs.realpath.native is the same realpath binding (Node's .name there
+   * is empty, and it takes the same arguments). */
+  export namespace realpath {
+    function native(
+      path: string | URL,
+      callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
+    ): void;
+    function native(
+      path: string | URL,
+      options: BufferEncoding | null,
+      callback: (err: NodeJS.ErrnoException | null, resolvedPath?: string) => void,
+    ): void;
+    function native(
+      path: string | URL,
+      options: "buffer" | { encoding: "buffer" },
+      callback: (err: NodeJS.ErrnoException | null, resolvedPath?: Buffer) => void,
+    ): void;
+    function native(...args: any[]): void;
+  }
   /* fs.promises IS the fs/promises module (Node's rule) — the namespace-
    * import form `fs.promises.readFile(...)` lowers through the same
    * fs/promises table as `import { readFile } from "node:fs/promises"`. */

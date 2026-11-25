@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-server-limit-values.ts"
+ ],
+ "diags": []
+}

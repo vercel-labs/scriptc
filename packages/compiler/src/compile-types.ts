@@ -5,8 +5,11 @@ import type { NativeOptimization } from "./backend/optimization.js";
 import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
+import type { LowerStats } from "./frontend/lowering/lowerer.js";
+import type { WidthCopyFact } from "./frontend/lowering/width-copies.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
 import type { NodeIslandOptions } from "./node-islands/policy.js";
+import type { Defines } from "./frontend/defines.js";
 
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
@@ -47,6 +50,13 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Keep JavaScript-visible stdout in the runtime's 64 KiB buffer when fd 1
+   * is not a terminal, settling it when the buffer fills and at every point
+   * the runtime has to publish output (a stderr write, the event loop's
+   * sleep, a blocking stdin read, process.kill, process.exit, an uncaught
+   * exception, exit). A terminal keeps one submission per call. Executables
+   * only; the observable contract on a pipe or file is the opting build's. */
+  stdoutBuffering?: boolean;
   /** Where a program that calls into Node.js (@scriptc/node) loads Node
    * from: a libnode pack directory recorded into the executable, or
    * "beside" to copy the pack next to the executable. Default: the pack in
@@ -89,6 +99,16 @@ export interface CompileBaseOptions {
    * merge-profiles`). Code the profile does not describe, or describes
    * from an older version of the program, is optimized as without one. */
   profileUse?: string;
+  /** Compiler development: also write the lowered program, what the frontend
+   * hands the backend, to this file (executable/lowered.ts). */
+  emitLowered?: string;
+  /** Compiler development: build from the lowered program in this file
+   * instead of running the frontend. The build refuses a file whose
+   * compiler, options or inputs differ from its own. */
+  fromLowered?: string;
+  /** The differences a `fromLowered` build accepts: "compiler", "options",
+   * "inputs". */
+  fromLoweredAccept?: readonly string[];
   /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
    * the name ends in .gz): the listed functions are written first, by tier,
    * so the code that runs together sits together in the executable. The
@@ -97,6 +117,11 @@ export interface CompileBaseOptions {
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** `--define`: the executable sets each defined `process.env.NAME` when
+   * it starts, whatever its environment holds, and JavaScript `if`
+   * statements the values decide compile only their taken branches (the
+   * untaken branches' modules never load). */
+  define?: Defines;
   /** Shape inference's typed overlay for opted-in packages' JavaScript.
    * True enables it, false disables it (`--no-shape-overlay`); unset
    * follows SCRIPTC_SHAPE_OVERLAY. A package opts out with
@@ -165,6 +190,19 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
+  /** What the build's frontend pass lowered (lowerer.ts's coverage stats):
+   * statements attempted, statements that could not be lowered, functions
+   * whose signatures were skipped, and how many statements compile into
+   * dynamic-tier functions. The build measured these on the program it
+   * compiled, so a caller can assert its lowering quality without a second
+   * `analyze()` pass over the same program. Absent on an executable cache
+   * hit, which skips the frontend; `scriptc coverage` reports coverage from
+   * the analysis that always lowers. */
+  stats?: LowerStats;
 }
 
 export type CompileSourceResult =
@@ -219,11 +257,23 @@ export type CompileLibraryResult =
     }
   | { ok: false; diagnostics: ScrDiagnostic[]; sourceTexts: Map<string, string> };
 
+/** What a coverage analysis lowers. "full" lowers the unreached remainder
+ * in a throwaway pass; "reached" skips it, so the report covers the entry
+ * path only. */
+export type CoverageMode = "full" | "reached";
+
 export interface AnalyzeOptions {
+  /** `--coverage`: "full" (the default) also lowers the code the entry never
+   * reaches, in a throwaway pass. "reached" skips it: the report has no
+   * unreached group, its statement totals count reached statements only,
+   * and it says the unreached code was not analyzed. */
+  coverage?: CoverageMode;
   /** --npm-static (see CompileOptions.npmStatic): the analysis compiles
    * opted-in packages' JS as program modules and the coverage report
    * carries each package's native/refused status. */
   npmStatic?: readonly string[] | "auto";
+  /** `--define` (see CompileBaseOptions.define). */
+  define?: Defines;
   /** Analyze with the outbound native bindings from this FFI manifest. */
   ffiProfilePath?: string;
   /** Coverage-only external host type surfaces: exact bare module
@@ -247,4 +297,7 @@ export interface AnalyzeOptions {
 export interface AnalyzeResult {
   coverage: CoverageInput;
   sourceTexts: Map<string, string>;
+  /** The conversions of the lowered program that build a new object
+   * (frontend/lowering/width-copies.ts), present when it has any. */
+  widthCopies?: WidthCopyFact[];
 }

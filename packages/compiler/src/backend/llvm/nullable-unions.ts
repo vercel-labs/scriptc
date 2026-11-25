@@ -181,6 +181,17 @@ export class NullableUnions {
   readonly retainWrappers = new Map<string, string>();
   /** Some nullable union encodes `null` with NULLABLE_NULL. */
   readonly usesNullSentinel: boolean = false;
+  /** The classes whose instances a value of the NULLABLE_NULL sentinel
+   * stands for: the reference arm of a two-unit-arm nullable union
+   * (`C | null | undefined`), whose values reach the arm's own retain and
+   * release entry points as the sentinel, never as an instance. A class with
+   * a lifetime region has no header word to test immortality in, so its
+   * bodies must skip the sentinel explicitly. */
+  private readonly sentinelClasses = new Set<string>();
+  /** Some Map or Set is keyed by a string-key union (stringKey): the
+   * module defines the two key strings its unit arms are stored as
+   * (string-union-keys.ts). */
+  readonly usesUnitKeys: boolean;
   /** The shape union whose release and trace helpers each shape union
    * uses: the first one over the same record arms; likewise for class
    * unions over the same classes. */
@@ -205,8 +216,9 @@ export class NullableUnions {
     for (const cls of mod.classes ?? []) if (!cls.runtime) emitted.add(cls.name);
     const records = new Set<string>();
     for (const shape of mod.records ?? []) records.add(shape.id);
-    const boxed = boxedUnionIds(mod, nodes);
+    const { boxed, stringKeys } = boxedUnionIds(mod, nodes);
     for (const id of kept) boxed.add(id);
+    this.usesUnitKeys = [...stringKeys].some((id) => !boxed.has(id));
     // Shape unions stay out of library builds (their host ABI marshals
     // boxes) and of programs with lifetime regions (whose walks report a
     // reference slot by its type's release entry point).
@@ -227,7 +239,11 @@ export class NullableUnions {
         (classes !== null ? classUnion(def, classes) : null);
       if (!nullable) continue;
       this.byId.set(def.id, nullable);
-      if (nullable.nullTag >= 0) this.usesNullSentinel = true;
+      if (nullable.nullTag >= 0) {
+        this.usesNullSentinel = true;
+        if (nullable.repr === "single" && nullable.arm.kind === "object")
+          this.sentinelClasses.add(nullable.arm.className);
+      }
       if (nullable.repr === "shapes")
         for (const arm of nullable.arms)
           if (!this.shapeNumbers.has(arm.shapeId))
@@ -273,10 +289,36 @@ export class NullableUnions {
     return type.kind === "union" ? this.get(type.unionId) : null;
   }
 
+  /** Whether a value of `type` can be the NULLABLE_NULL sentinel: the type
+   * is a nullable union with both unit arms (`C | null | undefined`), where
+   * NULL is `undefined` and the sentinel is `null`. */
+  mayHoldNullSentinel(type: IrType): boolean {
+    const nullable = this.of(type);
+    return nullable?.repr === "single" && nullable.nullTag >= 0;
+  }
+
+  /** Whether a retain or release of an instance of class `name` must skip the
+   * NULLABLE_NULL sentinel: the class is the reference arm of a two-unit-arm
+   * nullable union, so a value of that union reaches this class's entry
+   * points as the sentinel, never as an instance. */
+  classMayBeNullSentinel(name: string): boolean {
+    return this.sentinelClasses.has(name);
+  }
+
   /** The single-reference-arm form only (shape unions answer null). */
   single(unionId: string): NullableUnion | null {
     const nullable = this.byId.get(unionId);
     return nullable?.repr === "single" ? nullable : null;
+  }
+
+  /** The union of a string and one or two unit arms whose values are the
+   * string pointer: as the key of a Map or the element of a Set it is
+   * stored as a string key (string-union-keys.ts). Null for every other
+   * type, and for such a union that stays a box. */
+  stringKey(type: IrType): NullableUnion | null {
+    if (type.kind !== "union") return null;
+    const nullable = this.byId.get(type.unionId);
+    return nullable?.repr === "single" && nullable.arm.kind === "string" ? nullable : null;
   }
 
   /** The shape-union form only. */
@@ -512,27 +554,43 @@ function classUnion(def: IrUnionDef, classes: ClassForest): ClassUnion | null {
 /** Unions the runtime itself inspects as tagged boxes keep that
  * representation: Map keys and Set elements hash and compare union keys by
  * tag and payload inside the C map. A union whose arms all compare by
- * identity (records, class instances, arrays, functions), with at most an
+ * pointer identity (records, class instances, arrays), with at most an
  * undefined and a null arm, is the exception: a pointer representation
  * carries that identity, with NULL and the null sentinel as two more
- * distinct keys, so the map keys it by reference. Library builds keep
+ * distinct keys, so the map keys it by reference. A function arm keeps its
+ * union boxed: a function keys by its identity root (SCR_MAP_KEY_CLOSURE).
+ * A promise arm keeps it boxed too: a promise keys by the identity cell its
+ * adapter boxes share (SCR_MAP_KEY_PROMISE), which the payload pointer does
+ * not carry. A union of a string and unit arms is the other exception: the
+ * collection stores string keys, with a key string for each unit arm
+ * (string-union-keys.ts), so the union keeps its pointer representation;
+ * `stringKeys` names the ones that key a collection. Library builds keep
  * such unions boxed, except unions of records alone. */
-function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
+function boxedUnionIds(
+  mod: IrModule,
+  nodes?: IrNodeIndex,
+): { boxed: Set<string>; stringKeys: Set<string> } {
   const boxed = new Set<string>();
+  const stringKeys = new Set<string>();
   // Only the module's union definitions consult the result.
-  if (!mod.unions?.length) return boxed;
+  if (!mod.unions?.length) return { boxed, stringKeys };
   const identityKeys = new Set<string>();
-  for (const def of mod.unions)
+  const stringKeyUnions = new Set<string>();
+  for (const def of mod.unions) {
     if (mod.lib === undefined ? identityKeyUnion(def) : recordsOnly(def)) identityKeys.add(def.id);
+    else if (mod.lib === undefined && stringKeyUnion(def)) stringKeyUnions.add(def.id);
+  }
   const mark = (t: IrType): void => {
-    if (t.kind === "union" && !identityKeys.has(t.unionId)) boxed.add(t.unionId);
+    if (t.kind !== "union" || identityKeys.has(t.unionId)) return;
+    if (stringKeyUnions.has(t.unionId)) stringKeys.add(t.unionId);
+    else boxed.add(t.unionId);
   };
   if (nodes !== undefined) {
     for (const t of nodes.types) {
       if (t.kind === "map") mark(t.key);
       else if (t.kind === "set") mark(t.elem);
     }
-    return boxed;
+    return { boxed, stringKeys };
   }
   everyModuleNode(mod, {
     expr: () => true,
@@ -543,15 +601,30 @@ function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
       return true;
     },
   });
-  return boxed;
+  return { boxed, stringKeys };
+}
+
+/** One string arm beside an undefined arm, a null arm or both (the
+ * nullableShape of a string). */
+function stringKeyUnion(def: IrUnionDef): boolean {
+  let strings = 0,
+    undefinedArms = 0,
+    nullArms = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "undefinedT") undefinedArms++;
+    else if (arm.kind === "nullT") nullArms++;
+    else if (arm.kind === "string") strings++;
+    else return false;
+  }
+  return strings === 1 && undefinedArms <= 1 && nullArms <= 1 && undefinedArms + nullArms >= 1;
 }
 
 function recordsOnly(def: IrUnionDef): boolean {
   return def.arms.length >= 2 && def.arms.every((arm) => arm.kind === "record");
 }
 
-/** Every arm compares by identity as a key, beside at most one undefined
- * and one null arm. */
+/** Every arm compares by pointer identity as a key, beside at most one
+ * undefined and one null arm. */
 function identityKeyUnion(def: IrUnionDef): boolean {
   let refs = 0,
     undefinedArms = 0,
@@ -559,7 +632,7 @@ function identityKeyUnion(def: IrUnionDef): boolean {
   for (const arm of def.arms) {
     if (arm.kind === "undefinedT") undefinedArms++;
     else if (arm.kind === "nullT") nullArms++;
-    else if (isIdentityCollectionKey(arm)) refs++;
+    else if (isIdentityCollectionKey(arm) && arm.kind !== "func" && arm.kind !== "promise") refs++;
     else return false;
   }
   return refs > 0 && undefinedArms <= 1 && nullArms <= 1;

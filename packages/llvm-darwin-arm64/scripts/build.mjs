@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { buildComptimeEvaluator } from "../../../native/llvm-codegen/comptime/build.mjs";
 import { nativeTargetCmakeArgs } from "../../../native/llvm-codegen/targets.mjs";
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -55,3 +56,10 @@ if (
 ) {
   throw new Error(`built helper reported an incompatible identity: ${JSON.stringify(version)}`);
 }
+// The evaluator targets the macOS release compiled programs target.
+buildComptimeEvaluator({
+  compiler: ["clang", "-arch", "arm64", "-mmacosx-version-min=14.0"],
+  platform: "darwin",
+  build: join(repoRoot, "node_modules/.cache/scriptc-llvm-darwin-arm64-comptime"),
+  output: join(binDir, "scriptc-comptime"),
+});

@@ -31,7 +31,10 @@
  *     `function () { return <pure>; }`;
  *   - import declarations of admitted files and allowlisted builtins;
  *     export declarations of the above; `export default <pure>`;
- *     `export … from` of admitted files.
+ *     `export … from` of admitted files;
+ *   - in a TypeScript file (a program module that runs in an island, which
+ *     Node runs by erasing its types): interfaces, type aliases, and
+ *     type-only imports and exports, which are erased.
  *
  * Pure expressions: literals (also regular expressions and templates with
  * pure parts), identifiers bound in the file, CommonJS's `require`,
@@ -44,7 +47,10 @@
  * assignments or increments) and the conditional operator over pure
  * operands; CommonJS's top-level `this`; `Symbol(…)`, `Symbol.for(…)`,
  * `Object.freeze(…)` and `Object.create(…)` over pure arguments; `new` of
- * Map, Set, WeakMap and WeakSet without arguments.
+ * Map, Set, WeakMap and WeakSet without arguments; `import.meta.url`;
+ * `createRequire(<pure>)` of node:module, and a call of the function it
+ * made with a literal specifier, as CommonJS's `require`; TypeScript's
+ * `as`, `satisfies` and `!` over a pure operand.
  *
  * Everything else (calls of the package's own functions, IIFEs, `this`,
  * conditionals, loops, `try`, TypeScript's and Babel's interop helpers)
@@ -231,7 +237,7 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
     text,
     parser.ScriptTarget.Latest,
     true,
-    parser.ScriptKind.JS,
+    /\.[cm]?ts$/.test(file) ? parser.ScriptKind.TS : parser.ScriptKind.JS,
   );
   const SK = parser.SyntaxKind;
   const refuse = (node: ts.Node, what: string): never => {
@@ -262,6 +268,35 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
   // Top-level bindings and what they hold. A class whose member reads can
   // run code ("accessors") is no readable receiver.
   const locals = new Map<string, "fn" | "class" | "accessors" | "module" | "value">();
+  // node:module's createRequire as this file imports it, and the require
+  // functions the file makes with it (`const require = createRequire(…)`).
+  let createRequireName: string | null = null;
+  const requireFunctions = new Set<string>();
+  for (const stmt of sf.statements) {
+    if (!parser.isImportDeclaration(stmt) || stmt.importClause?.isTypeOnly === true) continue;
+    const from = (stmt.moduleSpecifier as ts.StringLiteral).text;
+    const named = stmt.importClause?.namedBindings;
+    if ((from !== "module" && from !== "node:module") || named === undefined) continue;
+    if (!parser.isNamedImports(named)) continue;
+    for (const el of named.elements)
+      if ((el.propertyName ?? el.name).text === "createRequire") createRequireName = el.name.text;
+  }
+  const isCreateRequireCall = (e: ts.Expression): boolean =>
+    parser.isCallExpression(e) &&
+    createRequireName !== null &&
+    parser.isIdentifier(e.expression) &&
+    e.expression.text === createRequireName &&
+    e.arguments.length === 1;
+  for (const stmt of sf.statements) {
+    if (!parser.isVariableStatement(stmt)) continue;
+    for (const d of stmt.declarationList.declarations)
+      if (
+        parser.isIdentifier(d.name) &&
+        d.initializer !== undefined &&
+        isCreateRequireCall(d.initializer)
+      )
+        requireFunctions.add(d.name.text);
+  }
   for (const stmt of sf.statements) {
     if (parser.isFunctionDeclaration(stmt) && stmt.name) locals.set(stmt.name.text, "fn");
     else if (parser.isClassDeclaration(stmt) && stmt.name)
@@ -312,12 +347,17 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       for (const el of name.elements) if (!parser.isOmittedExpression(el)) bindNames(el.name, kind);
   }
   function isRequireish(e: ts.Expression): boolean {
-    while (parser.isPropertyAccessExpression(e) || parser.isParenthesizedExpression(e))
+    while (
+      parser.isPropertyAccessExpression(e) ||
+      parser.isParenthesizedExpression(e) ||
+      parser.isAsExpression(e) ||
+      parser.isNonNullExpression(e)
+    )
       e = e.expression;
     return (
       parser.isCallExpression(e) &&
       parser.isIdentifier(e.expression) &&
-      e.expression.text === "require"
+      (e.expression.text === "require" || requireFunctions.has(e.expression.text))
     );
   }
 
@@ -367,10 +407,9 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
   };
 
   const isRequireCall = (e: ts.CallExpression): boolean =>
-    !esm &&
     parser.isIdentifier(e.expression) &&
-    e.expression.text === "require" &&
-    !locals.has("require") &&
+    (requireFunctions.has(e.expression.text) ||
+      (!esm && e.expression.text === "require" && !locals.has("require"))) &&
     e.arguments.length === 1 &&
     parser.isStringLiteralLike(e.arguments[0]!);
 
@@ -391,6 +430,11 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
         return;
       case SK.ParenthesizedExpression:
         return pure((e as ts.ParenthesizedExpression).expression);
+      case SK.AsExpression:
+      case SK.SatisfiesExpression:
+      case SK.NonNullExpression:
+        // Erased with the file's types.
+        return pure((e as ts.AsExpression).expression);
       case SK.FunctionExpression:
       case SK.ArrowFunction:
         return;
@@ -427,6 +471,8 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
         return;
       case SK.PropertyAccessExpression: {
         const pa = e as ts.PropertyAccessExpression;
+        // `import.meta.url`: the module's own location.
+        if (pa.expression.kind === SK.MetaProperty && pa.name.text === "url") return;
         if (pa.questionDotToken === undefined && readable(pa.expression)) {
           if (parser.isCallExpression(pa.expression)) pure(pa.expression);
           return;
@@ -483,6 +529,8 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
           resolveSpec((call.arguments[0] as ts.StringLiteral).text, call, "require");
           return;
         }
+        // Making a require function loads nothing.
+        if (isCreateRequireCall(call)) return pure(call.arguments[0]!);
         const callee = call.expression;
         if (
           call.questionDotToken === undefined &&
@@ -675,6 +723,10 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
 
   const checkStatement = (stmt: ts.Statement): void => {
     if (parser.isEmptyStatement(stmt) || parser.isFunctionDeclaration(stmt)) return;
+    // Erased with the file's types.
+    if (parser.isInterfaceDeclaration(stmt) || parser.isTypeAliasDeclaration(stmt)) return;
+    if (parser.isImportDeclaration(stmt) && stmt.importClause?.isTypeOnly === true) return;
+    if (parser.isExportDeclaration(stmt) && stmt.isTypeOnly) return;
     if (parser.isClassDeclaration(stmt)) return checkClass(stmt);
     if (parser.isVariableStatement(stmt)) {
       for (const d of stmt.declarationList.declarations) {

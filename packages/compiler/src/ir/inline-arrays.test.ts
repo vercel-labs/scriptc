@@ -176,6 +176,14 @@ test("other writes, class values and dynamic values keep an ordinary field", () 
   ]);
   expect(planInlineArrays(value, lifetime).rejected[0]?.reason).toContain("used as a value");
 
+  // A dynamic value that reaches a generic read of the members
+  // (inline-array-views.ts).
+  const boxed: IrExpr = {
+    loc,
+    kind: "dynFrom",
+    value: ref("list", obj("List")),
+    type: { kind: "dyn" },
+  };
   const dynamic = mod([
     fn(
       "%show",
@@ -184,12 +192,23 @@ test("other writes, class values and dynamic values keep an ordinary field", () 
         {
           loc,
           kind: "exprStmt",
-          expr: { loc, kind: "dynFrom", value: ref("list", obj("List")), type: { kind: "dyn" } },
+          expr: { loc, kind: "libCall", fn: "dyn.objValues", args: [boxed], type: { kind: "dyn" } },
         },
       ],
     ),
   ]);
-  expect(planInlineArrays(dynamic, lifetime).rejected[0]?.reason).toContain("dynamic value");
+  const viewed = planInlineArrays(dynamic, lifetime).rejected[0];
+  expect(viewed?.reason).toContain(
+    "becomes a dynamic value that reaches the library call dyn.objValues",
+  );
+  // The field keeps an ordinary array; the other rejections are errors.
+  expect(viewed?.ordinary).toBe(true);
+  expect(planInlineArrays(value, lifetime).rejected[0]?.ordinary).toBeUndefined();
+  // One that goes nowhere keeps the layout.
+  const discarded = mod([
+    fn("%show", [{ id: "list", type: obj("List") }], [{ loc, kind: "exprStmt", expr: boxed }]),
+  ]);
+  expect(planInlineArrays(discarded, lifetime).rejected).toEqual([]);
 });
 
 test("an alias that only indexes the field reads the field", () => {
@@ -235,6 +254,151 @@ test("an alias that only indexes the field reads the field", () => {
   expect(text).not.toContain('"localId":"nodes"');
   expect(text).toContain('"kind":"fieldGet"');
   expect(out.body[0]).toMatchObject({ kind: "block", body: [] });
+});
+
+test("a copy of an alias and the checked element reader read the field", () => {
+  const MAYBE: IrType = { kind: "union", unionId: "maybeItem" };
+  // `(a, i) => a's element at i, or undefined`, as the lowering emits it.
+  const reader = fn(
+    "%arr.idxOr.items",
+    [
+      { id: "a", type: ITEMS },
+      { id: "i", type: F64 },
+    ],
+    [
+      {
+        loc,
+        kind: "return",
+        value: {
+          loc,
+          kind: "unionWrap",
+          unionId: "maybeItem",
+          tag: 0,
+          value: {
+            loc,
+            kind: "arrayGet",
+            arr: ref("a", ITEMS),
+            index: ref("i", F64),
+            type: obj("Item"),
+          },
+          type: MAYBE,
+        },
+      },
+    ],
+  );
+  const read = (arr: IrExpr, index: IrExpr): IrStmt => ({
+    loc,
+    kind: "exprStmt",
+    expr: { loc, kind: "call", callee: "%arr.idxOr.items", args: [arr, index], type: MAYBE },
+  });
+  const walk = fn(
+    "%walk",
+    [{ id: "list", type: obj("List") }],
+    [
+      {
+        loc,
+        kind: "varDecl",
+        localId: "nodes",
+        init: get(ref("list", obj("List")), "List", "items", ITEMS),
+      },
+      // A `for...of` over the alias iterates a copy of it.
+      { loc, kind: "varDecl", localId: "iterator", init: ref("nodes", ITEMS) },
+      read(ref("iterator", ITEMS), { loc, kind: "numLit", value: 0, type: F64 }),
+      read(get(ref("list", obj("List")), "List", "items", ITEMS), ref("i", F64)),
+    ],
+    [
+      { id: "nodes", type: ITEMS },
+      { id: "iterator", type: ITEMS },
+      { id: "i", type: F64 },
+    ],
+  );
+  const m = mod([reader, walk]);
+  const out = inlineArrayReads(m, planInlineArrays(m, lifetime)).functions.find(
+    (f) => f.name === "%walk",
+  )!;
+  const text = JSON.stringify(out.body);
+  // Neither local is left, and the reader's expression reads the field.
+  expect(text).not.toContain('"localId":"nodes"');
+  expect(text).not.toContain('"localId":"iterator"');
+  expect(text).not.toContain("%arr.idxOr.items");
+  expect(text.match(/"kind":"arrayGet"/g)).toHaveLength(2);
+  expect(text.match(/"kind":"fieldGet"/g)).toHaveLength(2);
+});
+
+test("the checked element reader reads the instance from before its index evaluates", () => {
+  const MAYBE: IrType = { kind: "union", unionId: "maybeItem" };
+  const reader = fn(
+    "%arr.idxOr.items",
+    [
+      { id: "a", type: ITEMS },
+      { id: "i", type: F64 },
+    ],
+    [
+      {
+        loc,
+        kind: "return",
+        value: {
+          loc,
+          kind: "unionWrap",
+          unionId: "maybeItem",
+          tag: 0,
+          value: {
+            loc,
+            kind: "arrayGet",
+            arr: ref("a", ITEMS),
+            index: ref("i", F64),
+            type: obj("Item"),
+          },
+          type: MAYBE,
+        },
+      },
+    ],
+  );
+  // `list.items[(list = other, 0)]`: the read is of the first list's elements.
+  const index: IrExpr = {
+    loc,
+    kind: "seqExpr",
+    stmts: [{ loc, kind: "assign", localId: "list", value: ref("other", obj("List")) }],
+    result: { loc, kind: "numLit", value: 0, type: F64 },
+    type: F64,
+  };
+  const pick = fn(
+    "%pick",
+    [{ id: "other", type: obj("List") }],
+    [
+      { loc, kind: "varDecl", localId: "list", init: ref("other", obj("List")) },
+      {
+        loc,
+        kind: "exprStmt",
+        expr: {
+          loc,
+          kind: "call",
+          callee: "%arr.idxOr.items",
+          args: [get(ref("list", obj("List")), "List", "items", ITEMS), index],
+          type: MAYBE,
+        },
+      },
+    ],
+    [{ id: "list", type: obj("List"), mutable: true }],
+  );
+  const m = mod([reader, pick]);
+  const out = inlineArrayReads(m, planInlineArrays(m, lifetime)).functions.find(
+    (f) => f.name === "%pick",
+  )!;
+  const read = (out.body[1] as IrStmt & { kind: "exprStmt" }).expr as IrExpr & { kind: "seqExpr" };
+  expect(read.kind).toBe("seqExpr");
+  // The instance goes into a local, then the index; the field is read off that local.
+  const [owner, at] = read.stmts as (IrStmt & { kind: "varDecl" })[];
+  expect(owner!.init).toMatchObject({ kind: "varRef", localId: "list" });
+  expect(at!.init).toEqual(index);
+  expect(read.result).toMatchObject({
+    kind: "unionWrap",
+    value: {
+      kind: "arrayGet",
+      arr: { kind: "fieldGet", obj: { kind: "varRef", localId: owner!.localId } },
+      index: { kind: "varRef", localId: at!.localId },
+    },
+  });
 });
 
 test("an alias that escapes stays an array local", () => {

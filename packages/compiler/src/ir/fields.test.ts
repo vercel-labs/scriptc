@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile, deserializeModule } from "../index.js";
 import type { IrExpr, IrStmt } from "./ir.js";
-import { everyStmtList } from "./traverse.js";
-import { eachStringField, walkStmtFields } from "./fields.generated.js";
+import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
+import { eachStringField, replaceChildExpr, walkStmtFields } from "./fields.generated.js";
 
 // Programs with many node kinds: classes, closures, async, generators,
 // dynamic values, streams and records.
@@ -104,6 +104,48 @@ test("eachStringField reads every string field a key walk of a node finds", asyn
       };
       for (const fn of mod.functions) everyStmtList(fn.body, { expr: check, stmt: check });
       expect(nodes, program).toBeGreaterThan(0);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 300_000);
+
+// Every expression a traversal reaches is a child replaceChildExpr can
+// replace through its parent: passes that rewrite a node replace it there
+// instead of changing its kind in place.
+test("replaceChildExpr replaces every child expression through its parent", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-ir-replace-"));
+  try {
+    for (const program of PROGRAMS) {
+      const mod = await lowered(program, dir);
+      let replaced = 0;
+      const children = (parent: IrExpr | IrStmt) => ({
+        expr: (child: IrExpr): boolean => {
+          const stand: IrExpr = { kind: "unitLit", unit: "null", type: child.type, loc: child.loc };
+          const where = `${program}: ${parent.kind}`;
+          expect(replaceChildExpr(parent, child, stand), where).toBe(true);
+          // The slot now holds the stand-in; putting the child back restores it.
+          expect(replaceChildExpr(parent, child, stand), where).toBe(false);
+          expect(replaceChildExpr(parent, stand, child), where).toBe(true);
+          replaced++;
+          visitExpr(child);
+          return true;
+        },
+        stmt: (child: IrStmt): boolean => {
+          visitStmt(child);
+          return true;
+        },
+      });
+      function visitExpr(node: IrExpr): void {
+        const { expr, stmt } = children(node);
+        everyExprChild(node, expr, stmt);
+      }
+      function visitStmt(node: IrStmt): void {
+        const { expr, stmt } = children(node);
+        everyStmtChild(node, expr, stmt);
+      }
+      for (const fn of mod.functions) for (const stmt of fn.body) visitStmt(stmt);
+      expect(replaced, program).toBeGreaterThan(0);
     }
   } finally {
     await rm(dir, { recursive: true, force: true });

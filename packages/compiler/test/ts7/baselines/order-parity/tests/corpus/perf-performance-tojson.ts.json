@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/perf-performance-tojson.ts"
+ ],
+ "diags": []
+}

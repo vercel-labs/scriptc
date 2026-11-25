@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/logical-assignment-property-members.ts"
+ ],
+ "diags": []
+}

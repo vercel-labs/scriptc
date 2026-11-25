@@ -6,7 +6,7 @@ import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
-import { emitAlwaysThrowLibCall } from "./lib-shared.js";
+import { emitAlwaysThrowLibCall, LIB_FN_SYMS } from "./lib-shared.js";
 import { emitTruncF64 } from "./trunc.js";
 import { markWrappingOperands } from "./wrapping-sums.js";
 
@@ -191,6 +191,9 @@ function watchChangeAdapter(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The value form reports DEP0187 on a next tick, so the loop runs even when
+  // nothing else in the program is asynchronous.
+  if (e.fn === "fs.existsSyncValue") host.usesTimers = true;
   const alwaysThrowSym = FS_ALWAYS_THROW_SYMS[e.fn];
   if (alwaysThrowSym !== undefined) {
     return emitAlwaysThrowLibCall(host, e, alwaysThrowSym);
@@ -266,6 +269,58 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const adapter = host.zlibBytesThunkFor(cbT);
     const sym =
       e.fn === "zlib.cbOpts" ? "scr_zlib_codec_async_opts" : "scr_zlib_codec_async_opts_dyn";
+    host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
+    B.line(
+      `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "zlib.infoSync" || e.fn === "zlib.infoSyncDyn") {
+    // (mode, data, options): the same run as syncOpts, answering the
+    // checked { buffer, engine } object; +1 dyn or NULL with a pending throw.
+    host.usesTimers = true; // the fabricated engine is a runtime stream
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoSync" ? "scr_zlib_sync_opts_info" : "scr_zlib_sync_opts_info_dyn";
+    host.declare(`declare ptr @${sym}(double, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(double ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "zlib.infoPromise" || e.fn === "zlib.infoPromiseDyn") {
+    // (mode, data, options): the promise settles with the checked object.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const sym =
+      e.fn === "zlib.infoPromise"
+        ? "scr_zlib_codec_promise_info"
+        : "scr_zlib_codec_promise_info_dyn";
+    host.declare(`declare ptr @${sym}(ptr, double, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "zlib.infoCb" || e.fn === "zlib.infoCbDyn") {
+    // (mode, data, options, callback): the callback's result parameter is
+    // the checked object, so the adapter passes the dyn through.
+    host.usesTimers = true;
+    const args = e.args.map((a) => host.emitExpr(a));
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: zlib callback not a func");
+    host.toHeap(args[3]!);
+    const adapter = host.zlibDynThunkFor(cbT);
+    const sym =
+      e.fn === "zlib.infoCb"
+        ? "scr_zlib_codec_async_opts_info"
+        : "scr_zlib_codec_async_opts_info_dyn";
     host.declare(`declare void @${sym}(ptr, double, ptr, ptr, ptr)`);
     B.line(
       `call void @${sym}(ptr ${args[1]!.name}, double ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr @${adapter})`,
@@ -460,13 +515,17 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
   }
   if (e.fn === "fs.watch") {
     // The callback-less form: NULL listener/adapter. Throws Node-shaped
-    // fs errors when the path won't open; an open watcher holds the
-    // loop (usesTimers).
+    // fs errors when the path won't open; a reffed watcher holds the
+    // loop (usesTimers), one created with persistent: false does not.
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    const persistent = host.emitExpr(e.args[1]!);
+    const recursive = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false)`);
+    B.line(
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false, i1 ${persistent.name}, i1 ${recursive.name})`,
+    );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
@@ -483,16 +542,125 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       throw new InternalCompilerError("llvm emitter bug: fs.watchCb callback not a func");
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
+    const persistent = host.emitExpr(e.args[2]!);
+    const recursive = host.emitExpr(e.args[3]!);
     host.toHeap(cb);
     const adapter = watchChangeAdapter(host, cbT);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`);
     const t = B.tmp();
     B.line(
-      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"})`,
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"}, i1 ${persistent.name}, i1 ${recursive.name})`,
     );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
+  }
+  if (e.fn === "fileHandle.readableWebStream") {
+    // A checked-dynamic web stream over the handle's reads. May throw (a
+    // closed or locked handle is Node's ERR_INVALID_STATE) — the standard
+    // pending check.
+    const handle = host.emitExpr(e.args[0]!);
+    const options = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_file_handle_readable_web_stream(ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_file_handle_readable_web_stream(ptr ${handle.name}, ptr ${options.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "fsp.mkdtempDisposable") {
+    // The temp directory plus its hooks. A failed mkdtemp settles the
+    // promise as a rejection, so there is no pending check here; the
+    // options were validated at the call.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fsp_mkdtemp_disposable(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fsp_mkdtemp_disposable(ptr ${prefix.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "fs.mkdtempDisposableSync") {
+    // May throw (mkdtemp's own error) — the standard pending check.
+    const prefix = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_mkdtemp_disposable_sync(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_fs_mkdtemp_disposable_sync(ptr ${prefix.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "mkdtempResult.path") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_path(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_path(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.remove" || e.fn === "mkdtempResult.asyncDispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_mkdtemp_result_remove(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_mkdtemp_result_remove(ptr ${handle.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "mkdtempResult.removeSync" || e.fn === "mkdtempResult.dispose") {
+    const handle = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_mkdtemp_result_remove_sync(ptr)`);
+    B.line(`call void @scr_mkdtemp_result_remove_sync(ptr ${handle.name})`);
+    host.emitPendingCheck();
+    return host.own({ name: "null", type: e.type });
+  }
+  if (e.fn === "fsp.watch") {
+    // fsPromises.watch(path, persistent, maxQueue, overflowIsError): the
+    // iterator state (+1). The watch opens NOW, so a bad or unopenable path
+    // throws here (Node's first next() does the same), as does a maxQueue
+    // validateInteger rejects; a reffed state holds the loop like a reffed
+    // fs.watch handle. The standard pending check.
+    host.usesTimers = true;
+    const path = host.emitExpr(e.args[0]!);
+    const persistent = host.emitExpr(e.args[1]!);
+    const maxQueue = host.emitExpr(e.args[2]!);
+    const overflowError = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_watch_events_new(ptr, i1 zeroext, double, i1 zeroext)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_watch_events_new(ptr ${path.name}, i1 zeroext ${persistent.name}, double ${maxQueue.name}, i1 zeroext ${overflowError.name})`,
+    );
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.wait") {
+    // The loop's wait for the next event: a +1 bool promise, settled now
+    // with true when an entry is queued and false when the state closed.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_wait(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_wait(ptr ${st.name})`);
+    return host.own({ name: t, type: e.type });
+  }
+  if (e.fn === "watchEvents.take") {
+    // The dynamic `{ eventType, filename }` record the iterator queued
+    // (+1); the loop only takes one after a true wait, and checks it into
+    // the iteration record there. A queue that overflowed under
+    // overflow: "error" throws Node's ERR_FS_WATCH_QUEUE_OVERFLOW here —
+    // the standard pending check.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_watch_events_take(ptr)`);
+    const t = B.tmp();
+    B.line(`${t} = call ptr @scr_watch_events_take(ptr ${st.name})`);
+    const out = host.own({ name: t, type: e.type });
+    host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "watchEvents.close") {
+    // The loop's finally: closes the watch (idempotent) and drops the
+    // queue. Never throws.
+    const st = host.emitExpr(e.args[0]!);
+    host.declare(`declare void @scr_watch_events_close(ptr)`);
+    B.line(`call void @scr_watch_events_close(ptr ${st.name})`);
+    return host.own({ name: "null", type: e.type });
   }
   if (e.fn === "watcher.on") {
     // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
@@ -549,6 +717,15 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "watcher.ref" || e.fn === "watcher.unref") {
+    // The loop-liveness toggle; a closed watcher ignores both, so neither
+    // throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "watcher.ref" ? "scr_watcher_ref" : "scr_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "fs.watchFile") {
     // (path, interval, persistent, listener) — the listener MOVES into
     // the poller's registry and the adapter is runtime-provided per
@@ -567,11 +744,22 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     host.toHeap(cb);
     const adapter = `scr_watch_file_thunk${cbT.params.length}`;
     host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    const w = B.tmp();
     B.line(
-      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+      `${w} = call ptr @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
     );
+    const out = host.own({ name: w, type: e.type });
     host.emitPendingCheck();
+    return out;
+  }
+  if (e.fn === "statWatcher.ref" || e.fn === "statWatcher.unref") {
+    // The registration's loop-liveness toggle; a registration fs.unwatchFile
+    // already removed makes both no-ops, so neither throws.
+    const w = host.emitExpr(e.args[0]!);
+    const sym = e.fn === "statWatcher.ref" ? "scr_stat_watcher_ref" : "scr_stat_watcher_unref";
+    host.declare(`declare void @${sym}(ptr)`);
+    B.line(`call void @${sym}(ptr ${w.name})`);
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.unwatchFile") {
@@ -651,6 +839,35 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(`call void @scr_fs_glob_free(ptr ${snap})`);
     return arrayOut;
   }
+  if (
+    e.fn === "fs.mkdirObjSync" ||
+    e.fn === "fs.mkdirObjStrSync" ||
+    e.fn === "fs.mkdirDynSync" ||
+    e.fn === "fs.mkdirModeValueSync" ||
+    e.fn === "fs.mkdirModeStrValueSync"
+  ) {
+    // `string | undefined` — the first directory a recursive walk created,
+    // or NULL when it created none (the non-recursive forms always answer
+    // NULL). The runtime answers +1, which the call site owns.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (strTag < 0 || undefTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const args = e.args.map((a) => host.emitExpr(a));
+    const decls = args.map((a) => {
+      const ty = host.llType(a.type);
+      return ty === "i1" ? "i1 zeroext" : ty;
+    });
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(${decls.join(", ")})`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(${args.map((a, i) => `${decls[i]} ${a.name}`).join(", ")})`);
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, STRING, strTag, e.type, undefTag);
+  }
   if (e.fn === "fs.statProbeSync" || e.fn === "fs.lstatProbeSync") {
     // `Stats | undefined` — the runtime answers a +1 Stats, or NULL for a
     // missing entry when throwIfNoEntry is false (other failures throw).
@@ -672,6 +889,28 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     B.line(
       `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
     );
+    host.emitPendingCheck();
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
+  }
+  if (e.fn === "fs.statsFromDynOpt") {
+    // `Stats | undefined` — the runtime answers a +1 Stats extracted from
+    // the checked-dynamic object, or NULL for the dynamic undefined a
+    // suppressed missing entry answers (a value outside the type throws).
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
+    const undefTag = undefinedArmTag(e.type, host.unionsById);
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const value = host.emitExpr(e.args[0]!);
+    const sym = LIB_FN_SYMS[e.fn]!;
+    host.declare(`declare ptr @${sym}(ptr)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${sym}(ptr ${value.name})`);
     host.emitPendingCheck();
     return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
@@ -746,12 +985,90 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     );
     return host.own({ name: promise, type: e.type });
   }
+  if (e.fn === "fs.readdirTypesRecursiveSync" || e.fn === "fsp.readdirTypesRecursive") {
+    // The recursive Dirent form: one walk snapshot (scr_fs_scandir_recursive)
+    // whose rows carry the basename and the directory holding it, assembled
+    // into the call site's Dirent record exactly like the one-directory form.
+    const promiseForm = e.fn === "fsp.readdirTypesRecursive";
+    const arrayT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
+    if (arrayT.kind !== "array" || arrayT.elem.kind !== "record") {
+      throw new InternalCompilerError(
+        `llvm emitter bug: ${e.fn} result is not a Dirent record array`,
+      );
+    }
+    const recT = arrayT.elem;
+    const path = host.emitExpr(e.args[0]!);
+    host.declare(`declare ptr @scr_fs_scandir_recursive(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_recursive_async(ptr, i1 zeroext)`);
+    host.declare(`declare ${host.sizeType} @scr_fs_scandir_count(ptr)`);
+    host.declare(`declare ptr @scr_fs_scandir_name(ptr, ${host.sizeType})`);
+    host.declare(`declare ptr @scr_fs_scandir_parent(ptr, ${host.sizeType})`);
+    host.declare(`declare double @scr_fs_scandir_type(ptr, ${host.sizeType})`);
+    host.declare(`declare void @scr_fs_scandir_free(ptr)`);
+    const snap = B.tmp();
+    // The promise form answers Node's async walk (depth-first, and it does
+    // not follow a symlinked directory); the sync form keeps the queue.
+    B.line(
+      promiseForm
+        ? `${snap} = call ptr @scr_fs_scandir_recursive_async(ptr ${path.name}, i1 false)`
+        : `${snap} = call ptr @scr_fs_scandir_recursive(ptr ${path.name})`,
+    );
+    if (!promiseForm) host.emitPendingCheck();
+    const cnt = B.tmp();
+    B.line(`${cnt} = call ${host.sizeType} @scr_fs_scandir_count(ptr ${snap})`);
+    const arr = B.tmp();
+    B.line(`${arr} = ${arrNewCall(host.shapeHost, recT, cnt)}`);
+    const arrayOut = host.own({ name: arr, type: arrayT });
+    const iSlot = B.slot();
+    B.entryAllocas.push(`${iSlot} = alloca ${host.sizeType}`);
+    B.line(`store ${host.sizeType} 0, ptr ${iSlot}`);
+    const lc = B.newLabel("sdr.c");
+    const lb = B.newLabel("sdr.b");
+    const le = B.newLabel("sdr.e");
+    B.br(lc);
+    B.startBlock(lc);
+    const i = B.tmp();
+    const cont = B.tmp();
+    B.line(`${i} = load ${host.sizeType}, ptr ${iSlot}`);
+    B.line(`${cont} = icmp ult ${host.sizeType} ${i}, ${cnt}`);
+    B.condBr(cont, lb, le);
+    B.startBlock(lb);
+    const row = B.tmp();
+    B.line(`${row} = call ptr @${mangleRecordNew(recT.shapeId)}()`);
+    const dt = B.tmp();
+    B.line(`${dt} = call double @scr_fs_scandir_type(ptr ${snap}, ${host.sizeType} ${i})`);
+    host.storeField(host.recordFieldPtr(row, recT.shapeId, "%dtype").ptr, F64, dt, false);
+    const nm = B.tmp();
+    B.line(`${nm} = call ptr @scr_fs_scandir_name(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${nm}, ptr ${host.recordFieldPtr(row, recT.shapeId, "name").ptr}`);
+    const par = B.tmp();
+    B.line(`${par} = call ptr @scr_fs_scandir_parent(ptr ${snap}, ${host.sizeType} ${i}) ; +1`);
+    B.line(`store ptr ${par}, ptr ${host.recordFieldPtr(row, recT.shapeId, "parentPath").ptr}`);
+    host.arrPush(arr, "ref", row, null);
+    const i2 = B.tmp();
+    B.line(`${i2} = add ${host.sizeType} ${i}, 1`);
+    B.line(`store ${host.sizeType} ${i2}, ptr ${iSlot}`);
+    B.br(lc);
+    B.startBlock(le);
+    B.line(`call void @scr_fs_scandir_free(ptr ${snap})`);
+    if (!promiseForm) return arrayOut;
+    const rc = vAdapters(host.shapeHost, arrayT);
+    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.toHeap(arrayOut);
+    const promise = B.tmp();
+    B.line(
+      `${promise} = call ptr @scr_promise_settled_ref(ptr ${arr}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, arrayT)})`,
+    );
+    return host.own({ name: promise, type: e.type });
+  }
   if (e.fn === "dir.readSync" || e.fn === "dir.read") {
     // `Dirent | null`: scr_dir_read answers the next entry's +1 name and
     // kind, or false at the end; the row is the call site's Dirent record
-    // (parentPath is the Dir's path), built only for an entry. The sync
-    // form checks a closed-Dir error first; the promise form lets
-    // settled_ref turn it into a rejection of the (null) dummy.
+    // (parentPath is the Dir's path), built only for an entry. The promise
+    // form consumes without the concurrent-operations check (its result is
+    // delivered in the Dir's operation order) and hands the entry to
+    // scr_dir_read_promise, which settles at the entry's delivery point; a
+    // closed Dir leaves the pending error for the promise to reject with.
     const promiseForm = e.fn === "dir.read";
     const unionT = promiseForm && e.type.kind === "promise" ? e.type.inner : e.type;
     if (unionT.kind !== "union")
@@ -765,19 +1082,27 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (!recT || recT.kind !== "record" || nullTag < 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const dir = host.emitExpr(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`);
+    host.declare(
+      promiseForm
+        ? `declare zeroext i1 @scr_dir_read_async(ptr, ptr, ptr, ptr)`
+        : `declare zeroext i1 @scr_dir_read(ptr, ptr, ptr)`,
+    );
     host.declare(`declare ptr @scr_dir_path(ptr)`);
     const nameSlot = B.slot();
     const kindSlot = B.slot();
     const rowSlot = B.slot();
+    const bufferedSlot = promiseForm ? B.slot() : "";
     B.entryAllocas.push(
       `${nameSlot} = alloca ptr`,
       `${kindSlot} = alloca double`,
       `${rowSlot} = alloca ptr`,
+      ...(promiseForm ? [`${bufferedSlot} = alloca i1`] : []),
     );
     const has = B.tmp();
     B.line(
-      `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
+      promiseForm
+        ? `${has} = call zeroext i1 @scr_dir_read_async(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot}, ptr ${bufferedSlot})`
+        : `${has} = call zeroext i1 @scr_dir_read(ptr ${dir.name}, ptr ${nameSlot}, ptr ${kindSlot})`,
     );
     if (!promiseForm) host.emitPendingCheck();
     B.line(`store ptr null, ptr ${rowSlot}`);
@@ -804,11 +1129,13 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const value = host.wrapNullable(raw, raw, recT, recTag, unionT, nullTag);
     if (!promiseForm) return value;
     const rc = vAdapters(host.shapeHost, unionT);
-    host.declare(`declare ptr @scr_promise_settled_ref(ptr, ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_dir_read_promise(ptr, ptr, i1, ptr, ptr, ptr)`);
     host.toHeap(value);
+    const buffered = B.tmp();
+    B.line(`${buffered} = load i1, ptr ${bufferedSlot}`);
     const promise = B.tmp();
     B.line(
-      `${promise} = call ptr @scr_promise_settled_ref(ptr ${value.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
+      `${promise} = call ptr @scr_dir_read_promise(ptr ${dir.name}, ptr ${value.name}, i1 ${buffered}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, unionT)})`,
     );
     return host.own({ name: promise, type: e.type });
   }
@@ -833,7 +1160,7 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${raw} = call ptr @scr_sp_get(ptr ${args[0]!.name}, ptr ${args[1]!.name})`);
     return host.wrapNullable(raw, raw, STRING, strTag, e.type, nullTag);
   }
-  if (e.fn === "qs.parse") {
+  if (e.fn === "qs.parse" || e.fn === "qs.parseCustom") {
     // The ParsedUrlQuery dictionary: a fresh pure-index-signature
     // record whose overflow map the runtime scan fills
     // (scr_qs_parse_into groups repeats into string[] buckets).
@@ -851,7 +1178,12 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (strTag < 0 || arrTag < 0)
       throw new InternalCompilerError("llvm emitter bug: qs.parse index union lacks its arms");
     const args = e.args.map((a) => host.emitExpr(a));
-    host.declare(`declare void @scr_qs_parse_into(ptr, ptr, ptr, ptr, double, i32, i32)`);
+    const custom = e.fn === "qs.parseCustom";
+    host.declare(
+      custom
+        ? `declare void @scr_qs_parse_into_custom(ptr, ptr, ptr, ptr, double, ptr, i32, i32)`
+        : `declare void @scr_qs_parse_into(ptr, ptr, ptr, ptr, double, i32, i32)`,
+    );
     const dict = B.tmp();
     B.line(`${dict} = call ptr @${mangleRecordNew(e.type.shapeId)}()`);
     const out = host.own({ name: dict, type: e.type });
@@ -859,8 +1191,12 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(dict, e.type.shapeId)}`);
     const ovf = host.recordOvfPtr(dict, e.type.shapeId);
     B.line(
-      `call void @scr_qs_parse_into(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, i32 ${strTag}, i32 ${arrTag})`,
+      custom
+        ? `call void @scr_qs_parse_into_custom(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, ptr ${args[4]!.name}, i32 ${strTag}, i32 ${arrTag})`
+        : `call void @scr_qs_parse_into(ptr ${ovf}, ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, double ${args[3]!.name}, i32 ${strTag}, i32 ${arrTag})`,
     );
+    // A custom decoder can answer a value the dictionary cannot hold.
+    if (custom) host.emitPendingCheck();
     return out;
   }
   if (e.fn === "os.networkInterfaces") {

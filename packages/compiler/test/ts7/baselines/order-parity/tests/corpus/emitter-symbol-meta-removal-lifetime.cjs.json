@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/emitter-symbol-meta-removal-lifetime.cjs"
+ ],
+ "diags": []
+}

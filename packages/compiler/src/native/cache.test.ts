@@ -11,7 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { contentDigest, fileDigest, NativeCache, openNativeCache } from "./cache.js";
+import {
+  contentDigest,
+  fileDigest,
+  NativeCache,
+  openCompilerStateCache,
+  openNativeCache,
+  partsDigest,
+} from "./cache.js";
 
 const directories: string[] = [];
 function directory(): string {
@@ -64,6 +71,19 @@ test("text parts publish one digest-checked entry and oversized reads are misses
   );
   expect(cache.read("frontend", key, bytes!.length)).toEqual(bytes);
   expect(cache.read("frontend", key, bytes!.length - 1)).toBeNull();
+});
+
+test("text parts written by content are named by their digest and read back only intact", () => {
+  const cache = new NativeCache(directory());
+  const parts = ["define void @f() {", "\u00e9😀", "", "}\n"];
+  const digest = cache.writeContentParts("frontend-llvm", generate(parts));
+  expect(digest).toBe(partsDigest(parts));
+  expect(cache.readContent("frontend-llvm", digest!)?.toString("utf8")).toBe(parts.join(""));
+  const length = Buffer.byteLength(parts.join(""));
+  expect(cache.readContent("frontend-llvm", digest!, length - 1)).toBeNull();
+  writeFileSync(join(cache.root, "frontend-llvm", digest!), parts.join("") + " ");
+  expect(cache.readContent("frontend-llvm", digest!)).toBeNull();
+  expect(cache.readContent("frontend-llvm", contentDigest("absent"))).toBeNull();
 });
 
 test("a failed cache publication does not fail the build or replace unrelated files", () => {
@@ -124,4 +144,36 @@ test("private-directory admission and cache disable options fail closed", () => 
   const disabled = vi.fn(() => true);
   expect(openNativeCache(disabled)).toBeNull();
   expect(disabled).not.toHaveBeenCalled();
+});
+
+test("the compiler-level store opens at its own root and fails closed", () => {
+  vi.stubEnv("SCRIPTC_NO_CACHE", "0");
+  vi.stubEnv("SCRIPTC_CACHE_DIR", "/nonexistent/cache-dir");
+  const root = join(directory(), "state");
+  vi.stubEnv("SCRIPTC_STATE_DIR", root);
+  // An override must be private already; a default root is hardened.
+  const inspect = vi.fn(() => false);
+  expect(openCompilerStateCache(inspect)).toBeNull();
+  expect(inspect).toHaveBeenCalledWith(root, false);
+  expect(openCompilerStateCache(() => true)?.root).toBe(join(root, "native-v1"));
+  vi.stubEnv("SCRIPTC_NO_CACHE", "1");
+  const disabled = vi.fn(() => true);
+  expect(openCompilerStateCache(disabled)).toBeNull();
+  expect(disabled).not.toHaveBeenCalled();
+
+  // The build cache's location does not move the store.
+  vi.stubEnv("SCRIPTC_NO_CACHE", "0");
+  vi.unstubAllEnvs();
+  vi.stubEnv("SCRIPTC_STATE_DIR", undefined);
+  const xdg = directory();
+  vi.stubEnv("XDG_CACHE_HOME", xdg);
+  vi.stubEnv("SCRIPTC_CACHE_DIR", join(directory(), "build"));
+  expect(openCompilerStateCache(() => true)?.root).toBe(
+    join(xdg, "scriptc", "compiler", "native-v1"),
+  );
+  // An empty build cache asks for no persistent cache at all.
+  vi.stubEnv("SCRIPTC_CACHE_DIR", "");
+  const empty = vi.fn(() => true);
+  expect(openCompilerStateCache(empty)).toBeNull();
+  expect(empty).not.toHaveBeenCalled();
 });

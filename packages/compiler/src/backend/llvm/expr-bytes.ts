@@ -145,7 +145,21 @@ export function emitBytesIndex(
   let ok: string;
   let wide: string;
   const nanIndex = integerOrNaNIndex(host, value, expr);
-  if (nanIndex) {
+  if (nanIndex && !nanIndex.bounded) {
+    // A range no bound holds — an induction local times an input, say. Past
+    // 2^63 the conversion is poison, so the double itself is tested against
+    // [0, length) and the conversion is used only past that test; a NaN or a
+    // huge value fails both compares.
+    const lenD = B.tmp(),
+      nonNegative = B.tmp(),
+      belowD = B.tmp();
+    B.line(`${lenD} = sitofp ${host.sizeType} ${len} to double`);
+    B.line(`${nonNegative} = fcmp oge double ${value.name}, 0.0`);
+    B.line(`${belowD} = fcmp olt double ${value.name}, ${lenD}`);
+    ok = B.tmp();
+    B.line(`${ok} = and i1 ${nonNegative}, ${belowD}`);
+    wide = nanIndex.wide;
+  } else if (nanIndex) {
     // An exact integer or NaN: in range when ordered and below the length.
     const wideLength = host.sizeType === "i64" ? len : B.tmp();
     if (host.sizeType !== "i64") B.line(`${wideLength} = zext ${host.sizeType} ${len} to i64`);
@@ -579,10 +593,13 @@ export function emitToUint32(
     B.line(`${out} = trunc i64 ${integer} to i32`);
     return out;
   }
-  if (expr && integerOrNaNRange(host, expr)) {
-    // An exact integer or NaN (an Int32[] or typed-array element read that
-    // may miss, `charCodeAt`): the integer's low 32 bits, or 0 for NaN. The
-    // conversion of NaN is poison, but the select then picks 0.
+  const range = expr ? integerOrNaNRange(host, expr) : null;
+  if (range && Number.isFinite(range.min) && Number.isFinite(range.max)) {
+    // An exact integer or NaN within the exact-integer range (an Int32[] or
+    // typed-array element read that may miss, `charCodeAt`): the integer's
+    // low 32 bits, or 0 for NaN. A value whose range is unbounded may lie
+    // past the i64 conversion's domain, so it takes the ranged path below.
+    // The conversion of NaN is poison, but the select then picks 0.
     const integer = B.tmp();
     const low = B.tmp();
     const ordered = B.tmp();
@@ -786,12 +803,17 @@ export function emitBytesIntrinsic(
     sig: string,
     argText: string,
     owned: boolean,
-    fallible: boolean,
+    mayThrow: boolean,
   ): LlValue => {
     const m = /^(.+?) \((.*)\)$/.exec(sig);
     if (!m) throw new InternalCompilerError(`llvm emitter bug: bad bytesIntrinsic sig ${sig}`);
     host.declare(`declare ${m[1]} @${sym}(${m[2]})`);
     const retTy = m[1] === "zeroext i1" ? "i1" : m[1]!;
+    // A mutable-buffers program (IrModule.bytesHeadersMutable) routes every
+    // view operation through the registry's detached/out-of-bounds guard,
+    // which reports Node's TypeError, so even an otherwise infallible
+    // entry may leave an exception pending.
+    const fallible = mayThrow || host.mod.bytesHeadersMutable === true;
     if (retTy === "void") {
       B.line(`call void @${sym}(${argText})`);
       if (fallible) host.emitPendingCheck();
@@ -897,6 +919,13 @@ export function emitBytesIntrinsic(
       if (e.receiver.type.kind !== "bytes") {
         throw new InternalCompilerError("llvm emitter bug: bytesIntrinsic byteLength on non-bytes");
       }
+      // A mutable-buffers program (IrModule.bytesHeadersMutable) can detach
+      // or shrink the view's buffer behind this getter, and Node's DataView
+      // getter throws on a detached or out-of-bounds view while a typed
+      // array answers 0; the registry answers both. Every other program
+      // keeps the inline header load.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_length", "double (ptr)", `ptr ${r.name}`, false, true);
       return host.emitBytesLength(e.receiver.type.elem, r.name, true);
     case "get":
       // Any invalid index traps (the array runtime's discipline).
@@ -1164,6 +1193,9 @@ export function emitBytesIntrinsic(
     case "buffer":
       return call("scr_array_buffer_from_bytes", "ptr (ptr)", `ptr ${r.name}`, true, false);
     case "byteOffset":
+      // As byteLength: a DataView's getter throws on a detached buffer.
+      if (host.mod.bytesHeadersMutable === true)
+        return call("scr_js_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, true);
       return call("scr_bytes_byte_offset", "double (ptr)", `ptr ${r.name}`, false, false);
     case "dataViewNew":
       // new DataView(x.buffer, byteOffset?, byteLength?) — the has_len

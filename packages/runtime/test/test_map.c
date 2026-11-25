@@ -516,6 +516,34 @@ static void test_identity_key_ownership(void) {
   scr_map_release(m);
 }
 
+static double closure_key_fn(void) { return 1; }
+
+/* Closure keys hash and compare identity roots: a signature adapter is the
+ * key of the function it adapts, and the map keeps the closure it stored. */
+static void test_closure_identity_keys(void) {
+  ScrClosure *fn = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *wide = scr_closure_new((void *)closure_key_fn, 0);
+  ScrClosure *other = scr_closure_new((void *)closure_key_fn, 0);
+  scr_closure_adopt_identity(wide, fn, 0);
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_CLOSURE, SCR_MAP_VAL_F64,
+      ops_of(scr_closure_retain_v, scr_closure_release_v, NULL, NULL, NULL, NULL, NULL));
+  scr_map_set_ref_f64(m, wide, 1);
+  check(scr_map_has_ref(m, fn), "an adapter's key finds the function it adapts");
+  scr_map_set_ref_f64(m, fn, 2);
+  check(scr_map_size(m) == 1, "a function and its adapter are one key");
+  double value = 0;
+  check(scr_map_get_ref_f64(m, wide, &value) && value == 2, "the overwrite reaches the adapter's entry");
+  void *key = scr_map_iter_key_ref(m, 0);
+  check(key == wide, "the map keeps the closure it stored");
+  scr_closure_release(key);
+  check(!scr_map_has_ref(m, other), "another closure of the same code is another key");
+  check(scr_map_delete_ref(m, fn) && scr_map_size(m) == 0, "delete by the original removes the adapter's entry");
+  scr_map_release(m);
+  scr_closure_release(fn);
+  scr_closure_release(wide);
+  scr_closure_release(other);
+}
+
 static void test_identity_scalar_values(void) {
   ScrArr *key = scr_arr_new(SCR_ELEM_F64, 0);
   ScrArr *other = scr_arr_new(SCR_ELEM_F64, 0);
@@ -694,7 +722,7 @@ static uint64_t entry_hash(const ScrMap *m, size_t e) {
   if (!scr_map_entry_live(m, e)) return 0;
   const ScrMapEntry *entry = scr_map_entry_at(m, e);
   if (m->key_kind != SCR_MAP_KEY_F64) return entry->hash;
-  uint64_t h = scr_key_mix(entry->key);
+  uint64_t h = scr_key_word_hash(entry->key);
   return h ? h : 1;
 }
 
@@ -831,8 +859,13 @@ static void test_absent_key_filter(void) {
 
 /* SCR_MAP_VAL_CREF: string keys with compact class values in 16-byte
  * entries (a 32-bit hash, the value as an address over 8). The values here
- * are stand-in addresses, never dereferenced. */
-static uint64_t cref_val(size_t i) { return (uint64_t)(i + 1) * 8; }
+ * are stand-in addresses, never dereferenced. A slot keeps the address over
+ * 8, and darwin's compact references OR in a window base, so the expected
+ * pointer is built with the helper the map decodes through. */
+static uint64_t cref_slot(size_t i) { return (uint64_t)(i + 1); }
+static void *cref_ref(size_t i) {
+  return (void *)(uintptr_t)scr_compact_ref_address((uint32_t)cref_slot(i));
+}
 
 static void test_compact_values(void) {
   ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_CREF, NULL);
@@ -842,28 +875,28 @@ static void test_compact_values(void) {
   for (size_t i = 0; i < N; i++) {
     snprintf(buf, sizeof buf, "k%zu", i);
     keys[i] = S(buf);
-    scr_map_set_str_ref(m, keys[i], (void *)(uintptr_t)cref_val(i));
+    scr_map_set_str_ref(m, keys[i], cref_ref(i));
   }
   check(scr_map_size(m) == N, "cref: size after inserts");
   bool all = true;
   for (size_t i = 0; i < N; i++) {
-    all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i);
+    all &= scr_map_get_str_ref(m, keys[i]) == cref_ref(i);
     const ScrMapCEntry *e = scr_map_entry_str_c(m, keys[i]);
-    all &= e && ((uint64_t)e->val << 3) == cref_val(i) && e->key == (uint64_t)(uintptr_t)keys[i];
+    all &= e && e->val == cref_slot(i) && e->key == (uint64_t)(uintptr_t)keys[i];
   }
   check(all, "cref: get and entry_str_c find every value");
   ScrStr *missing = S("absent");
   check(!scr_map_get_str_ref(m, missing) && !scr_map_entry_str_c(m, missing), "cref: absent key");
-  check(scr_map_get_span_ref(m, "k7", 2) == (void *)(uintptr_t)cref_val(7), "cref: span lookup");
+  check(scr_map_get_span_ref(m, "k7", 2) == cref_ref(7), "cref: span lookup");
   /* A key object other than the stored one, equal bytes. */
   ScrStr *again = S("k42");
-  check(scr_map_entry_str_c(m, again) && scr_map_get_str_ref(m, again) == (void *)(uintptr_t)cref_val(42),
+  check(scr_map_entry_str_c(m, again) && scr_map_get_str_ref(m, again) == cref_ref(42),
         "cref: equal key bytes, other object");
   scr_str_release(again);
-  for (size_t i = 0; i < N; i += 2) scr_map_set_str_ref(m, keys[i], (void *)(uintptr_t)cref_val(i + N));
+  for (size_t i = 0; i < N; i += 2) scr_map_set_str_ref(m, keys[i], cref_ref(i + N));
   all = true;
   for (size_t i = 0; i < N; i++)
-    all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i % 2 ? i : i + N);
+    all &= scr_map_get_str_ref(m, keys[i]) == cref_ref(i % 2 ? i : i + N);
   check(all && scr_map_size(m) == N, "cref: overwrite keeps the entry");
   for (size_t i = 0; i < N; i++)
     if (i % 4) scr_map_delete_str(m, keys[i]);
@@ -872,7 +905,7 @@ static void test_compact_values(void) {
   for (size_t i = 0; i < N; i++) {
     bool want = i % 4 == 0;
     all &= scr_map_has_str(m, keys[i]) == want;
-    if (want) all &= scr_map_get_str_ref(m, keys[i]) == (void *)(uintptr_t)cref_val(i + N);
+    if (want) all &= scr_map_get_str_ref(m, keys[i]) == cref_ref(i + N);
   }
   check(all, "cref: lookups after compaction");
   /* Iteration order and values. */
@@ -884,7 +917,7 @@ static void test_compact_values(void) {
     void *v = scr_map_iter_val_ref(m, i);
     size_t want = seen * 4;
     all &= k->len == keys[want]->len && memcmp(k->data, keys[want]->data, k->len) == 0;
-    all &= v == (void *)(uintptr_t)cref_val(want + N);
+    all &= v == cref_ref(want + N);
     scr_str_release(k);
     seen++;
   }
@@ -895,17 +928,17 @@ static void test_compact_values(void) {
   ScrMap *set = scr_map_clone(m, true, NULL);
   all = scr_map_size(copy) == N / 4 && scr_map_size(set) == N / 4;
   for (size_t i = 0; i < N; i += 4) {
-    all &= scr_map_get_str_ref(copy, keys[i]) == (void *)(uintptr_t)cref_val(i + N);
+    all &= scr_map_get_str_ref(copy, keys[i]) == cref_ref(i + N);
     all &= scr_map_has_str(set, keys[i]);
   }
   all &= !scr_map_has_str(set, keys[1]);
   check(all, "cref: clone and key-only clone");
-  scr_map_set_str_ref(copy, keys[1], (void *)(uintptr_t)cref_val(1));
+  scr_map_set_str_ref(copy, keys[1], cref_ref(1));
   check(!scr_map_has_str(m, keys[1]) && scr_map_size(copy) == N / 4 + 1, "cref: copies are independent");
   scr_map_clear(m);
   check(scr_map_size(m) == 0 && !scr_map_has_str(m, keys[0]), "cref: clear");
-  scr_map_set_str_ref(m, keys[3], (void *)(uintptr_t)cref_val(3));
-  check(scr_map_get_str_ref(m, keys[3]) == (void *)(uintptr_t)cref_val(3), "cref: reuse after clear");
+  scr_map_set_str_ref(m, keys[3], cref_ref(3));
+  check(scr_map_get_str_ref(m, keys[3]) == cref_ref(3), "cref: reuse after clear");
   scr_map_release(copy);
   scr_map_release(set);
   scr_map_release(m);
@@ -931,6 +964,7 @@ int main(void) {
   test_small_storage_transitions();
   test_identity_key_ownership();
   test_identity_scalar_values();
+  test_closure_identity_keys();
   test_reboxed_keys_and_rehash();
   test_value_keys_and_copies();
   test_absent_key_filter();

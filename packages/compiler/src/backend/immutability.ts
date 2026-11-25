@@ -92,17 +92,28 @@ export function computeImmutableFields(
  *   A subclass constructor's code only runs after this body returns.
  *
  * Library builds keep every guard: their constructors can be invoked by an
- * embedder in ways the module does not show. */
+ * embedder in ways the module does not show.
+ *
+ * A private store is also fresh when it is the first write to a field the
+ * constructor's own class declares: no ancestor constructor can write that
+ * field, nothing outside the construction can reach `this` yet, and no
+ * earlier store of the body (in evaluation order, where every case test of
+ * a switch precedes its bodies) or store in a loop that contains it writes
+ * the same field. Its slot still holds the value `new`
+ * gave it (NULL or an immortal unit), so the store has no old value to
+ * release. */
 export interface ConstructionFacts {
   /** `fieldSet` statements whose target is a still-private `this`. */
   privateStores: Set<IrStmt>;
+  /** Private stores that write a field's first value (initializations). */
+  freshStores: Set<IrStmt>;
 }
 
 /** The nodes that can reach a constructor with a reused receiver. */
 const CONSTRUCTOR_USE_KINDS: readonly IrNodeKind[] = ["call", "closure"];
 
 export function computeConstructionFacts(mod: IrModule, nodes?: IrNodeIndex): ConstructionFacts {
-  const facts: ConstructionFacts = { privateStores: new Set() };
+  const facts: ConstructionFacts = { privateStores: new Set(), freshStores: new Set() };
   if (mod.lib !== undefined) return facts;
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c] as const));
   const ctorClass = new Map([...classes.keys()].map((name) => [`%${name}.constructor`, name]));
@@ -184,10 +195,53 @@ export function computeConstructionFacts(mod: IrModule, nodes?: IrNodeIndex): Co
       (e.kind === "varRef" && aliases.has(e.localId)) ||
       (e.kind === "upcast" && isOwn(e.value)) ||
       (e.kind === "seqExpr" && isOwn(e.result));
-    const expr = (e: IrExpr): boolean => everyExprChild(e, expr, stmt);
+    // Fields of this class's own, unwritten so far on some path to the
+    // current statement; a loop writes its fields before its body runs.
+    const cls = classes.get(name)!;
+    const inherited = new Set(
+      cls.base === undefined ? [] : (classes.get(cls.base)?.fields ?? []).map((f) => f.name),
+    );
+    const unwritten = new Set(
+      cls.fields.map((f) => f.name).filter((field) => !inherited.has(field)),
+    );
+    const write = (field: string): void => {
+      unwritten.delete(field);
+    };
+    const loopWrites = (loop: IrStmt): void => {
+      const inner = (e: IrExpr): boolean => {
+        if (e.kind === "fieldIncDec" && isOwn(e.obj)) write(e.field);
+        return everyExprChild(e, inner, innerStmt);
+      };
+      const innerStmt = (s: IrStmt): boolean => {
+        if (s.kind === "fieldSet" && isOwn(s.obj)) write(s.field);
+        return everyStmtChild(s, inner, innerStmt);
+      };
+      innerStmt(loop);
+    };
+    const expr = (e: IrExpr): boolean => {
+      everyExprChild(e, expr, stmt);
+      if (e.kind === "fieldIncDec" && isOwn(e.obj)) write(e.field);
+      return true;
+    };
     const stmt = (s: IrStmt): boolean => {
-      if (s.kind === "fieldSet" && isOwn(s.obj)) facts.privateStores.add(s);
-      return everyStmtChild(s, expr, stmt);
+      if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf")
+        loopWrites(s);
+      if (s.kind === "switch") {
+        // Every case test can run before any body (a `default` clause runs
+        // after the tests of the cases that follow it), and the bodies run
+        // in source order.
+        expr(s.disc);
+        for (const c of s.cases) if (c.test !== null) expr(c.test);
+        for (const c of s.cases) for (const inner of c.body) stmt(inner);
+        return true;
+      }
+      everyStmtChild(s, expr, stmt);
+      if (s.kind === "fieldSet" && isOwn(s.obj)) {
+        facts.privateStores.add(s);
+        if (unwritten.has(s.field)) facts.freshStores.add(s);
+        write(s.field);
+      }
+      return true;
     };
     for (let i = 0; i < point; i++) stmt(fn.body[i]!);
   }

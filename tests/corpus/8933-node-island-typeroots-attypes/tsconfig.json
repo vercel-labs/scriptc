@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "verbatimModuleSyntax": true,
+    "typeRoots": ["./node_modules/@types"],
+    "types": ["paint-kit"]
+  },
+  "include": ["*.ts"]
+}

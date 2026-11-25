@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9583-long-call-chains.ts"
+ ],
+ "diags": []
+}

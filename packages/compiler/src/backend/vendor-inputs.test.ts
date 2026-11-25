@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "vitest";
 import {
   ZLIB_SOURCES,
+  ZSTD_SOURCES,
   ICU_VERSION,
   ICU_SOURCE_URL,
   ICU_SOURCE_SHA256,
@@ -16,10 +17,15 @@ import {
   ICU_DATA_ZIP_SIZE,
   icuSourceList,
   zlibInputs,
+  zstdInputs,
+  sqliteInputs,
+  SQLITE_VERSION,
 } from "./vendor-inputs.js";
 
 const repoRoot = fileURLToPath(new URL("../../../..", import.meta.url));
 const zlibDir = join(repoRoot, "packages/runtime/vendor/zlib");
+const zstdDir = join(repoRoot, "packages/runtime/vendor/zstd/lib");
+const sqliteDir = join(repoRoot, "packages/runtime/vendor/sqlite");
 
 const TRIPLES = [
   // The runtime packs' targets.
@@ -91,6 +97,100 @@ test("zlib inputs follow Node's deps/zlib/zlib.gyp", () => {
   expect(wasm.sources).toContain("inflate.c");
   expect(wasm.sources).not.toContain("contrib/optimizations/inflate.c");
   expect(wasm.defines).toEqual(["HAVE_HIDDEN", "CPU_NO_SIMD"]);
+});
+
+test("the compiler's zstd inputs match the runtime packs' for every target", async () => {
+  const packInputs = (await import(
+    pathToFileURL(join(repoRoot, "packages/runtime-pack-common/scripts/zstd-inputs.mjs")).href
+  )) as {
+    zstdInputs(triple: string): {
+      sources: string[];
+      defines: string[];
+      compileFlags: string[];
+    };
+  };
+  for (const triple of TRIPLES) {
+    expect(zstdInputs(triple), triple).toEqual(packInputs.zstdInputs(triple));
+  }
+});
+
+test("every zstd input exists, and ZSTD_SOURCES lists every source a target compiles", () => {
+  const listed = new Set<string>(ZSTD_SOURCES);
+  for (const triple of TRIPLES) {
+    for (const source of zstdInputs(triple).sources) {
+      expect(listed.has(source), `${triple}: ${source}`).toBe(true);
+      expect(existsSync(join(zstdDir, source)), source).toBe(true);
+    }
+  }
+});
+
+test("zstd inputs follow Node's deps/zstd/zstd.gyp", () => {
+  // The whole library: no dictionary builder or legacy decoder, which the
+  // vendored tree does not carry either.
+  expect(ZSTD_SOURCES).toHaveLength(26);
+  expect(ZSTD_SOURCES.every((source) => existsSync(join(zstdDir, source)))).toBe(true);
+  const linux = zstdInputs("x86_64-unknown-linux-gnu");
+  expect(linux.defines).toEqual(["XXH_NAMESPACE=ZSTD_", "ZSTD_MULTITHREAD", "ZSTD_DISABLE_ASM"]);
+  expect(linux.compileFlags).toEqual(["-pthread"]);
+  // Threads exist on every native target, through pthread.h on POSIX and
+  // through Win32 primitives on Windows (where the flag does not apply).
+  expect(zstdInputs("x86_64-pc-windows-msvc").defines).toContain("ZSTD_MULTITHREAD");
+  expect(zstdInputs("x86_64-pc-windows-msvc").compileFlags).toEqual([]);
+  expect(zstdInputs("arm64-apple-macosx14.0.0").compileFlags).toEqual(["-pthread"]);
+  // WASI has no threads: the multi-threaded compressor is left out.
+  const wasm = zstdInputs("wasm32-unknown-wasi");
+  expect(wasm.defines).toEqual(["XXH_NAMESPACE=ZSTD_", "ZSTD_DISABLE_ASM"]);
+  expect(wasm.compileFlags).toEqual([]);
+});
+
+test("the compiler's sqlite inputs match the runtime packs' for every target", async () => {
+  const packInputs = (await import(
+    pathToFileURL(join(repoRoot, "packages/runtime-pack-common/scripts/sqlite-inputs.mjs")).href
+  )) as {
+    SQLITE_VERSION: string;
+    sqliteInputs(triple: string): {
+      sources: string[];
+      defines: string[];
+      compileFlags: string[];
+    };
+  };
+  expect(packInputs.SQLITE_VERSION).toBe(SQLITE_VERSION);
+  for (const triple of TRIPLES) {
+    expect(sqliteInputs(triple), triple).toEqual(packInputs.sqliteInputs(triple));
+  }
+});
+
+test("the vendored sqlite amalgamation is the version Node's oracle bundles", () => {
+  expect(process.versions.sqlite).toBe(SQLITE_VERSION);
+  const header = readFileSync(join(sqliteDir, "sqlite3.h"), "utf8");
+  expect(header).toContain(`#define SQLITE_VERSION        "${SQLITE_VERSION}"`);
+  for (const source of sqliteInputs("x86_64-unknown-linux-gnu").sources)
+    expect(existsSync(join(sqliteDir, source)), source).toBe(true);
+});
+
+test("sqlite inputs follow Node's deps/sqlite/sqlite.gyp", () => {
+  const linux = sqliteInputs("x86_64-unknown-linux-gnu");
+  expect(linux.sources).toEqual(["sqlite3.c"]);
+  // Node's sqlite.gyp defines, verbatim: the extensions the engine carries
+  // and what `pragma compile_options` reports.
+  expect(linux.defines).toEqual([
+    "SQLITE_DEFAULT_MEMSTATUS=0",
+    "SQLITE_ENABLE_COLUMN_METADATA",
+    "SQLITE_ENABLE_DBSTAT_VTAB",
+    "SQLITE_ENABLE_FTS3",
+    "SQLITE_ENABLE_FTS3_PARENTHESIS",
+    "SQLITE_ENABLE_FTS5",
+    "SQLITE_ENABLE_GEOPOLY",
+    "SQLITE_ENABLE_MATH_FUNCTIONS",
+    "SQLITE_ENABLE_PERCENTILE",
+    "SQLITE_ENABLE_PREUPDATE_HOOK",
+    "SQLITE_ENABLE_RBU",
+    "SQLITE_ENABLE_RTREE",
+    "SQLITE_ENABLE_SESSION",
+  ]);
+  // The amalgamation builds the same way on every target.
+  expect(sqliteInputs("wasm32-unknown-wasi")).toEqual(linux);
+  expect(sqliteInputs("x86_64-pc-windows-msvc")).toEqual(linux);
 });
 
 test("the pinned ICU is the release the oracle Node bundles", () => {

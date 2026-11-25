@@ -1,5 +1,11 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
+import { isTerminalStreamMethodRead } from "../builtins/process.js";
+import { memberCallHolder, withMemberCallReceiver } from "../member-call-receivers.js";
+import { shadowedHandleMember } from "../handle-properties.js";
+import { SNAPSHOT_GLOBALS, stdlibGlobalNameOf } from "../surfaces.js";
+import { reflectOverNamespaceExpr } from "../builtin-namespace-probe.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
+import { overloadValueResult } from "../lower-calls.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
@@ -113,8 +119,35 @@ export function isOptionalChainTail(lowerer: Lowerer, expr: ts.Expression): bool
   // undefined-armed value, and `a[0]?.b.c` must then short-circuit `.c`
   // too. The chain lowering inspects the lowered receiver: a present value
   // re-dispatches the plain lowering, so only genuinely optional receivers
-  // change shape.
-  return lowerer.isRuntimeOptionalOrigin(tail.expression);
+  // change shape. A conditional or logical expression that carries such a
+  // read in an arm carries the absent arm through, so it qualifies too
+  // (`(flag ? capture : capture)?.inner.label`).
+  return chainReceiverMayBeAbsent(lowerer, tail.expression);
+}
+
+/** Whether the lowered value of `node` can hold a hidden undefined the
+ * checker type does not admit: the runtime-optional origins the lowerer
+ * already names, and the lazy logical/conditional operators that carry an
+ * operand's absent arm through to their result. */
+function chainReceiverMayBeAbsent(lowerer: Lowerer, node: ts.Expression): boolean {
+  let e: ts.Expression = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (lowerer.isRuntimeOptionalOrigin(e)) return true;
+  if (
+    ts.isConditionalExpression(e) &&
+    (chainReceiverMayBeAbsent(lowerer, e.whenTrue) ||
+      chainReceiverMayBeAbsent(lowerer, e.whenFalse))
+  )
+    return true;
+  if (
+    ts.isBinaryExpression(e) &&
+    (e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+      e.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      e.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken) &&
+    (chainReceiverMayBeAbsent(lowerer, e.left) || chainReceiverMayBeAbsent(lowerer, e.right))
+  )
+    return true;
+  return false;
 }
 
 /** True when an EARLIER step of this access chain carries `?.` — JS
@@ -156,6 +189,8 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   if (!symbol || !(symbol.flags & ts.SymbolFlags.Method) || symbol.flags & ts.SymbolFlags.Optional)
     return false;
   if (!lowerer.isStdlibSymbol(symbol)) return false;
+  // A process stream has its terminal methods only on a terminal.
+  if (isTerminalStreamMethodRead(lowerer, node)) return false;
   const nullable =
     ts.TypeFlags.Any |
     ts.TypeFlags.Unknown |
@@ -172,10 +207,60 @@ function alwaysPresentStdlibMethod(lowerer: Lowerer, node: ts.Expression): boole
   );
 }
 
+/** `f?.()` where the checker types the callee never-nullish: the guard can
+ * never short-circuit, so the step IS `f()`. `any`/`unknown` stay out — a
+ * type that could hold anything could hold nullish. */
+function neverNullishCallee(lowerer: Lowerer, node: ts.Expression): boolean {
+  const nullable =
+    ts.TypeFlags.Any |
+    ts.TypeFlags.Unknown |
+    ts.TypeFlags.Undefined |
+    ts.TypeFlags.Null |
+    ts.TypeFlags.Void;
+  const parts = (type: ts.Type): readonly ts.Type[] =>
+    type.flags & ts.TypeFlags.Union ? constituentTypes(type) : [type];
+  return parts(lowerer.typeOf(node)).every((part) => !(part.flags & nullable));
+}
+
+/** `proc?.env` for `const proc = (globalThis as { process?: P }).process`,
+ * and `globalThis.process?.env`: the receiver is a global Node always
+ * defines (a snapshot alias is plumbing for the global itself), so the
+ * guarded step is the plain member read (the navigator rule). */
+function alwaysDefinedGlobal(lowerer: Lowerer, node: ts.Expression): boolean {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  // The bare global's own spelling (`console?.log`) keeps its existing path.
+  if (ts.isIdentifier(inner)) {
+    const symbol = lowerer.resolveValueSymbol(inner);
+    if (symbol === null || !lowerer.stdlibGlobalAliases.has(symbol)) return false;
+  } else if (!ts.isPropertyAccessExpression(inner)) {
+    return false;
+  }
+  const name = stdlibGlobalNameOf(lowerer, inner);
+  return name !== null && SNAPSHOT_GLOBALS.has(name);
+}
+
+/** The receiver an optional call of a member (`x.f?.()`) passes, while that
+ * call lowers (member-call-receivers.ts). */
+const optionalCallReceivers = new Map<ts.CallExpression, IrExpr | null>();
+
 export function lowerOptionalChain(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.PropertyAccessExpression | ts.ElementAccessExpression,
 ): IrExpr {
+  // `x.f?.()`: the call passes `x` as its receiver, as `x.f()` does.
+  if (ts.isCallExpression(expr) && expr.questionDotToken && !optionalCallReceivers.has(expr)) {
+    const holder = memberCallHolder(lowerer, expr);
+    if (holder !== null)
+      return withMemberCallReceiver(lowerer, expr, holder, (receiver) => {
+        optionalCallReceivers.set(expr, receiver ?? null);
+        try {
+          return lowerOptionalChain(lowerer, expr);
+        } finally {
+          optionalCallReceivers.delete(expr);
+        }
+      });
+  }
   const loc = locOf(expr);
   // The node CARRYING the ?. token and the receiver expression it guards.
   let dotNode: ts.Node;
@@ -225,7 +310,43 @@ export function lowerOptionalChain(
   // reports its own diagnostics) instead of failing on the value read.
   // `navigator?.userAgent`: Node's navigator global is never nullish and
   // has no value form, so the guarded step is the plain member read.
-  if (isNavigatorGlobal(lowerer, recvNode)) {
+  if (isNavigatorGlobal(lowerer, recvNode) || alwaysDefinedGlobal(lowerer, recvNode)) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `process.getBuiltinModule("node:os")?.arch()`, `ns?.member`: a builtin
+  // module's namespace object is never nullish, and its members lower at
+  // their access sites (the namespace has no value form to guard), so the
+  // guarded step is the plain member access. The member answers statically
+  // but the receiver still evaluates first: `loadOs()?.arch()` calls loadOs
+  // and keeps its side effects and exceptions, as Node does.
+  if (
+    ts.isPropertyAccessExpression(dotNode) &&
+    lowerer.builtinNamespaceModuleOf(recvNode) !== null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return reflectOverNamespaceExpr(lowerer, recvNode, lowerer.lowerExpr(expr), locOf(expr));
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
+  // `d?.getTime()` on a handle whose JavaScript shadows `getTime`: the
+  // guard cannot short-circuit a receiver the checker types never nullish,
+  // so the step is the plain call, which reads the own property
+  // (handle-properties.ts) instead of the native member.
+  if (
+    dotNode === expr.expression &&
+    ts.isCallExpression(expr) &&
+    neverNullishCallee(lowerer, recvNode) &&
+    (ts.isPropertyAccessExpression(expr.expression) ||
+      ts.isElementAccessExpression(expr.expression)) &&
+    shadowedHandleMember(lowerer, expr.expression)
+  ) {
     lowerer.chainHandled.add(dotNode);
     try {
       return lowerer.lowerExpr(expr);
@@ -234,6 +355,27 @@ export function lowerOptionalChain(
     }
   }
   let loweredReceiver: IrExpr | null;
+  // `rmSync?.(…)`: a callee the checker types never-nullish whose value has
+  // NO lowering at all — a module function exists only as a call (its value
+  // form is fenced). The guard cannot short-circuit, so the step is the
+  // plain call; re-dispatch it and let it report its own diagnostics when
+  // it has no lowering either.
+  if (
+    dotNode === expr &&
+    ts.isCallExpression(expr) &&
+    !alwaysPresentStdlibMethod(lowerer, recvNode) &&
+    // A process stream's terminal method is optional and has no value form
+    // either: its call tests the stream itself.
+    (neverNullishCallee(lowerer, recvNode) || isTerminalStreamMethodRead(lowerer, recvNode)) &&
+    tryLowerExpression(lowerer, recvNode) === null
+  ) {
+    lowerer.chainHandled.add(dotNode);
+    try {
+      return lowerer.lowerExpr(expr);
+    } finally {
+      lowerer.chainHandled.delete(dotNode);
+    }
+  }
   if (dotNode === expr && alwaysPresentStdlibMethod(lowerer, recvNode)) {
     loweredReceiver = tryLowerExpression(lowerer, recvNode);
     if (loweredReceiver === null) {
@@ -405,7 +547,7 @@ export function lowerOptionalChain(
     if (!hadNarrow) {
       lowerer.chainNarrowedType.set(
         recvNode,
-        lowerer.checker.getNonNullableType(lowerer.checker.getTypeAtLocation(recvNode)),
+        lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode)),
       );
     }
     try {
@@ -455,21 +597,30 @@ export function lowerOptionalChain(
     // effect-free surplus argument is ignored. The completion runs INSIDE
     // the guard, so a nullish callee still evaluates no argument.
     const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+    const supplied = optionalCallReceivers.get(expr);
     const body: IrExpr = {
       kind: "callValue",
       callee: recvRef,
+      ...(supplied ? { receiver: supplied } : {}),
       args: completed,
       type: narrowed.ret,
       loc,
     };
-    return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
+    // A callee VALUE of an overloaded type holds the set's erased function:
+    // the call's result converts to the resolved overload's type inside the
+    // guard, exactly as the same call without `?.` does (lower-calls.ts).
+    return lowerer.finishOptionalChain(
+      expr,
+      id,
+      receiver,
+      overloadValueResult(lowerer, expr, recvRef, body),
+      loc,
+    );
   }
 
   // Member forms: re-dispatch the normal lowering with the receiver node
   // bound to the chain (reads as chainRecv, types as non-nullish).
-  const narrowedTs = lowerer.checker.getNonNullableType(
-    lowerer.checker.getTypeAtLocation(recvNode),
-  );
+  const narrowedTs = lowerer.checker.getNonNullableType(chainReceiverType(lowerer, recvNode));
   lowerer.chainRecvByNode.set(recvNode, recvRef);
   lowerer.chainNarrowedType.set(recvNode, narrowedTs);
   lowerer.chainHandled.add(dotNode);
@@ -515,6 +666,16 @@ export function lowerOptionalChain(
   return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
 }
 
+/** The type of a chain's receiver before the chain narrows it: the
+ * checker's, or, where the checker calls it `any` while a refused statement
+ * lowers again (Lowerer.bindingTypedRetry), the type its bindings declare. */
+function chainReceiverType(lowerer: Lowerer, recvNode: ts.Expression): ts.Type {
+  const checked = lowerer.checker.getTypeAtLocation(recvNode);
+  return lowerer.bindingTypedRetry && (checked.flags & ts.TypeFlags.Any) !== 0
+    ? lowerer.typeOf(recvNode)
+    : checked;
+}
+
 /** The optChain node around a lowered chain body: void bodies keep the
  * statement form (`cb?.();` — the checker's `void | undefined` result IS
  * void here); value bodies wrap into the checker's undefined-armed
@@ -555,7 +716,16 @@ export function finishOptionalChain(
       `'?.' where the result '${lowerer.fmt(type)}' has no undefined arm (narrow the receiver with 'if (x !== undefined)' instead)`,
     );
   }
-  const wrapped = lowerer.coerceToExpected(body, type);
+  let wrapped = lowerer.coerceToExpected(body, type);
+  // The checker narrowed the CHAIN itself (`typeof j?.n === "string" ? … :
+  // j?.n` reads `number | undefined` in the false arm) while the guarded
+  // read still answers the member's stored union. The chain node's type
+  // names the arms still possible, so the stranded ones trap, as at every
+  // slot a narrowed union flows into (coerceIntoSlot's sub-union bridge).
+  if (wrapped.type.kind === "union" && type.kind === "union" && !typeEquals(wrapped.type, type)) {
+    const helper = lowerer.narrowedRetagHelper(expr, wrapped.type.unionId, type.unionId, loc);
+    if (helper) wrapped = { kind: "call", callee: helper, args: [wrapped], type, loc };
+  }
   if (!typeEquals(wrapped.type, type)) lowerer.badType(expr, lowerer.typeOf(expr));
   return { kind: "optChain", id, receiver, body: wrapped, type, loc };
 }

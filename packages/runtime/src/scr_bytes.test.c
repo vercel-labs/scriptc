@@ -180,3 +180,174 @@ void scr_bytes_test_buffer_pool(void) {
   assert(scr_buffer_pool_size() == 65536);
   assert(scr_bytes_live_count() == before);
 }
+
+/* src.copy(dst, targetStart?, sourceStart?, sourceEnd?): every index
+ * converts through copyImpl's toInteger — a fractional index floors, and
+ * NaN, ±Infinity and a value outside the safe-integer range become the
+ * default 0 — so no index is ever reported as a non-integer. Only the
+ * sign and the bounds Node checks remain, and an absent index keeps its
+ * default (0, or the source length for sourceEnd) without converting. */
+void scr_bytes_test_copy_ladder(void) {
+  long before = scr_bytes_live_count();
+  ScrBytes *src = scr_bytes_new(SCR_BYTES_U8, 8);
+  for (size_t i = 0; i < 8; i++) scr_bytes_set(src, (double)i, (double)('a' + i));
+  ScrBytes *dst = scr_bytes_new(SCR_BYTES_U8, 8);
+
+  /* Fractional positions floor (toward -infinity, as Node's toInteger). */
+  for (size_t i = 0; i < 5; i++) scr_bytes_set(dst, (double)i, 'x');
+  assert(scr_bytes_copy_into(src, dst, 3, 1.9, 2.9, 4.9) == 2);
+  assert(dst->data[0] == 'x' && dst->data[1] == 'c' && dst->data[2] == 'd' && dst->data[3] == 'x');
+
+  /* NaN and ±Infinity in every position are 0, never a range error. */
+  assert(scr_bytes_copy_into(src, dst, 1, NAN, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 1, INFINITY, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 1, -INFINITY, 0, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, NAN, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, -INFINITY, 0) == 8);
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, NAN) == 0);
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, INFINITY) == 0);
+
+  /* An integer-valued index beyond the safe-integer range is kept (it
+   * starts past both buffers), while a non-integer one there becomes 0. */
+  assert(scr_bytes_copy_into(src, dst, 1, 1e300, 0, 0) == 0);
+  assert(scr_bytes_copy_into(src, dst, 2, 0, 1e300, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 1, 1e300) == 7);
+
+  /* The bounds Node checks after conversion still throw. */
+  assert(scr_bytes_copy_into(src, dst, 1, -1, 0, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 2, 0, -1, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 2, 0, 9, 0) == 0 && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_bytes_copy_into(src, dst, 3, 0, 0, -1) == 0 && scr_exc_pending());
+  scr_exc_clear();
+
+  /* Absent positions keep their defaults: the whole source at target 0. */
+  assert(scr_bytes_copy_into(src, dst, 0, -5, -5, -5) == 8);
+  assert(memcmp(dst->data, src->data, 8) == 0);
+
+  scr_bytes_release(dst);
+  scr_bytes_release(src);
+  assert(scr_bytes_live_count() == before);
+}
+
+/* indexOf/lastIndexOf's byteOffset ladder: a negative offset counts from
+ * the end, one that starts before the first byte searches nothing going
+ * back — except for an empty needle, which matches at 0 — NaN searches
+ * everything (0 forward, the end backward), and fractions truncate. */
+void scr_bytes_test_search_offsets(void) {
+  long before = scr_bytes_live_count();
+  ScrBytes *hay = scr_bytes_new(SCR_BYTES_U8, 9);
+  for (size_t i = 0; i < 9; i++) scr_bytes_set(hay, (double)i, "abcabcabc"[i]);
+  ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+  ScrBytes *bc = scr_bytes_new(SCR_BYTES_U8, 2);
+  scr_bytes_set(bc, 0, 'b');
+  scr_bytes_set(bc, 1, 'c');
+  const double offsets[] = { -99, -9, -10, -1, 0, 1, NAN, 9, 99, 1.5, INFINITY, -INFINITY };
+  /* Node's answers for indexOf(needle, offset) and lastIndexOf(needle, offset). */
+  const double want_empty_fwd[] = { 0, 0, 0, 8, 0, 1, 0, 9, 9, 1, 9, 0 };
+  const double want_empty_back[] = { 0, 0, 0, 8, 0, 1, 9, 9, 9, 1, 9, 0 };
+  const double want_bc_fwd[] = { 1, 1, 1, -1, 1, 1, 1, -1, -1, 1, -1, 1 };
+  const double want_bc_back[] = { -1, -1, -1, 7, -1, 1, 7, 7, 7, 1, 7, -1 };
+  for (size_t i = 0; i < sizeof offsets / sizeof offsets[0]; i++) {
+    assert(scr_bytes_index_of(hay, empty, offsets[i], 1, true) == want_empty_fwd[i]);
+    assert(scr_bytes_index_of(hay, empty, offsets[i], 1, false) == want_empty_back[i]);
+    assert(scr_bytes_index_of(hay, bc, offsets[i], 1, true) == want_bc_fwd[i]);
+    assert(scr_bytes_index_of(hay, bc, offsets[i], 1, false) == want_bc_back[i]);
+  }
+  /* utf16le searches whole 2-byte units. */
+  ScrBytes *u16 = scr_bytes_new(SCR_BYTES_U8, 6);
+  const uint8_t u16bytes[] = { 0x61, 0x00, 0x62, 0x00, 0x63, 0x00 };
+  for (size_t i = 0; i < 6; i++) scr_bytes_set(u16, (double)i, u16bytes[i]);
+  ScrBytes *b16 = scr_bytes_new(SCR_BYTES_U8, 2);
+  scr_bytes_set(b16, 0, 'b');
+  scr_bytes_set(b16, 1, 0);
+  assert(scr_bytes_index_of(u16, b16, -99, 2, true) == 2);
+  assert(scr_bytes_index_of(u16, b16, -1, 2, true) == -1);
+  assert(scr_bytes_index_of(u16, b16, NAN, 2, false) == 2);
+  assert(scr_bytes_index_of(u16, b16, 99, 2, false) == 2);
+  scr_bytes_release(b16);
+  scr_bytes_release(u16);
+  scr_bytes_release(bc);
+  scr_bytes_release(empty);
+  scr_bytes_release(hay);
+  assert(scr_bytes_live_count() == before);
+}
+/* Buffer.copyBytesFrom(view[, offset[, length]]): a pooled copy of the
+ * view's underlying bytes over [offset, offset + length) in element
+ * indices — a wider typed array copies BYTES_PER_ELEMENT bytes per element
+ * — with Node's validateInteger ladder on the supplied positions only, and
+ * an empty view answering an empty Buffer before either position is read. */
+void scr_bytes_test_copy_bytes_from(void) {
+  scr_buffer_pool_reset();
+  long before = scr_bytes_live_count();
+  ScrBytes *u8 = scr_bytes_new(SCR_BYTES_U8, 3);
+  for (size_t i = 0; i < 3; i++) scr_bytes_set(u8, (double)i, (double)(i + 1));
+  ScrBytes *u16 = scr_bytes_new(SCR_BYTES_U16, 2);
+  scr_bytes_set(u16, 0, 0x0102);
+  scr_bytes_set(u16, 1, 0x0304);
+  ScrBytes *empty = scr_bytes_new(SCR_BYTES_U8, 0);
+
+  ScrBytes *all = scr_buffer_copy_bytes_from(u8, 0, 0, 0);
+  assert(all->len == 3 && all->data[0] == 1 && all->data[2] == 3 && all->backing != NULL);
+  scr_bytes_release(all);
+
+  ScrBytes *tail = scr_buffer_copy_bytes_from(u8, 1, 0, 1);
+  assert(tail->len == 2 && tail->data[0] == 2 && tail->data[1] == 3);
+  scr_bytes_release(tail);
+
+  ScrBytes *one = scr_buffer_copy_bytes_from(u8, 1, 1, 3);
+  assert(one->len == 1 && one->data[0] == 2);
+  scr_bytes_release(one);
+
+  ScrBytes *clamped = scr_buffer_copy_bytes_from(u8, 2, 9, 3);
+  assert(clamped->len == 1 && clamped->data[0] == 3);
+  scr_bytes_release(clamped);
+
+  ScrBytes *past = scr_buffer_copy_bytes_from(u8, 3, 0, 1);
+  assert(past->len == 0);
+  scr_bytes_release(past);
+
+  ScrBytes *zero = scr_buffer_copy_bytes_from(u8, 0, 0, 3);
+  assert(zero->len == 0);
+  scr_bytes_release(zero);
+
+  /* Element indices: the wider view copies its bytes, not its count. */
+  ScrBytes *wide = scr_buffer_copy_bytes_from(u16, 0, 0, 0);
+  assert(wide->len == 4 && wide->data[0] == 0x02 && wide->data[1] == 0x01 &&
+         wide->data[2] == 0x04 && wide->data[3] == 0x03);
+  scr_bytes_release(wide);
+  ScrBytes *wide_second = scr_buffer_copy_bytes_from(u16, 1, 0, 1);
+  assert(wide_second->len == 2 && wide_second->data[0] == 0x04 && wide_second->data[1] == 0x03);
+  scr_bytes_release(wide_second);
+
+  /* An empty view answers an empty Buffer before a bad position is read. */
+  ScrBytes *empty_copy = scr_buffer_copy_bytes_from(empty, -1, -1, 3);
+  assert(empty_copy->len == 0 && !scr_exc_pending());
+  scr_bytes_release(empty_copy);
+
+  /* Supplied positions take validateInteger, in argument order. */
+  assert(scr_buffer_copy_bytes_from(u8, -1, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 1.5, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, NAN, 0, 1) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 0, -1, 2) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  assert(scr_buffer_copy_bytes_from(u8, 0, 1.5, 2) == NULL && scr_exc_pending());
+  scr_exc_clear();
+  /* An absent position skips its validation even when the value is junk. */
+  ScrBytes *absent = scr_buffer_copy_bytes_from(u8, -1, -1, 0);
+  assert(absent->len == 3);
+  scr_bytes_release(absent);
+
+  scr_bytes_release(empty);
+  scr_bytes_release(u16);
+  scr_bytes_release(u8);
+  scr_buffer_pool_reset();
+  assert(scr_bytes_live_count() == before);
+}
+

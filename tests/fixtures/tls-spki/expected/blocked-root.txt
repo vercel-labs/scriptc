@@ -1,0 +1,11 @@
+client client-default failure Error CERT_REVOKED certificate revoked
+client client-noreject authorized false error CERT_REVOKED error-type string
+client client-empty-ca failure Error UNABLE_TO_VERIFY_LEAF_SIGNATURE unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca
+client client-verified-unrelated failure Error CERT_REVOKED certificate revoked
+client client-wrong-name failure Error CERT_REVOKED certificate revoked
+client client-trusted-intermediate failure Error CERT_REVOKED certificate revoked
+client client-blocked-ancestor failure Error CERT_REVOKED certificate revoked
+client client-tls12-unselected failure Error UNABLE_TO_VERIFY_LEAF_SIGNATURE unable to verify the first certificate; if the root CA is installed locally, try running Node.js with --use-system-ca
+client client-tls12-default failure Error CERT_REVOKED certificate revoked
+server server-noreject tlsClientError ECONNRESET socket hang up socket-error null
+server server-reject tlsClientError ECONNRESET socket hang up socket-error null

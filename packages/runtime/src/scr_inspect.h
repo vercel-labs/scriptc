@@ -4,6 +4,7 @@
 #define SCR_INSPECT_H
 
 #include "scr_bytes.h"
+#include "scr_bigint.h"
 
 /* ── util.inspect (scr_inspect.c — linked ONLY when the program calls
  * util.inspect/format; see native-toolchain.ts) ─────────────────────────────────────
@@ -21,19 +22,29 @@
  * indentation. Empty composites and depth placeholders never touch the
  * stack (the frontend emits their literals directly). */
 ScrStr *scr_insp_f64(double x);   /* JS ToString, except -0 → "-0" */
+/* formatBigInt: the decimal digits and the trailing n (+1). */
+ScrStr *scr_insp_bigint(ScrBigInt *value);
+/* ctx.numericSeparator for the renders that follow; answers the previous
+ * value so a wrapper can restore it. */
+bool scr_insp_numeric_separator(bool enabled);
+/* ctx.maxStringLength for the renders that follow; answers the previous
+ * value so a wrapper can restore it. */
+double scr_insp_max_string_length(double value);
 ScrStr *scr_insp_str(ScrStr *s);  /* the quoting ladder + line splitting */
 ScrStr *scr_insp_regex(ScrRegex *re);  /* /source/flags */
 /* A Date (its time value): toISOString(), or "Invalid Date" for NaN (+1). */
 ScrStr *scr_insp_date(double ms);
 ScrStr *scr_insp_buffer(ScrBytes *b);  /* <Buffer aa bb ...>, 50-byte cap */
-/* The stackless error form: [Name: message] / [Name], then a runtime
- * error's own properties through its checked-dynamic node, or another
- * error's stamped code slot as its one extra property ({ code: 'X' });
- * [Name] beyond depth when a code makes it composite. */
+/* An error in Node's formatError form: its stack (the "Name: message"
+ * heading and the frames under it), bracketed as [Name: message] / [Name]
+ * when the stack carries no frame line or is empty, then its own
+ * properties through its checked-dynamic node — a stamped code slot is the
+ * one extra property ({ code: 'X' }) — and [Name] beyond depth when a
+ * code makes it composite. */
 ScrStr *scr_insp_error(ScrError *e, double recurse, double depth);
 /* A runtime error rendered through its checked-dynamic node (the cached
  * one, or one built from its fields), so Node's own properties follow the
- * bracket form. */
+ * stack. */
 ScrStr *scr_insp_error_node(ScrError *e, double recurse, double depth);
 bool scr_insp_error_bag_has_properties(ScrDyn *bag);
 bool scr_insp_error_has_cause(ScrError *e);
@@ -64,10 +75,21 @@ typedef struct ScrInspFormatOptions {
   int depth_kind;
   double depth_number;
   bool colors;
+  bool show_hidden;
+  /* Whether the render is util.format's %o, which the refusal of the
+   * kinds whose hidden entries the walk does not render names. */
+  bool hidden_spec;
   bool custom_inspect;
   double break_length;
   double compact; /* -1 for false */
   bool sorted;
+  double max_array_length; /* Infinity for null */
+  bool numeric_separator;
+  double max_string_length; /* Infinity for null */
+  /* Whether an accessor property's getter runs: 0 the labels only,
+   * 1 every getter, 2 the getters without a setter, 3 the getters with
+   * one. */
+  int getters;
   /* The options object, when it holds keys inspect does not read: custom
    * inspect functions receive them (borrowed; NULL otherwise). */
   const ScrDyn *user_options;
@@ -77,9 +99,17 @@ void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface);
  * SC2020 refusal pending for values that have no lowering. */
 bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o);
 ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o);
+/* new StringDecoder(encoding) for an encoding of any type: Node's
+ * normalizeEncoding, ERR_UNKNOWN_ENCODING formatted with %s (+1 or NULL). */
+ScrStr *scr_strdec_encoding_value(const ScrDyn *enc);
 /* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
  * dyn array of the arguments (+1). */
 ScrStr *scr_insp_format_pack(ScrDyn *pack);
+/* The same over a private copy of the pack's elements: a published console
+ * argument array can be retained by a subscriber and mutated from a value's
+ * toString or inspect hook while the formatter runs, so the formatter must
+ * not borrow that array's element vector. */
+ScrStr *scr_insp_format_pack_snapshot(ScrDyn *pack);
 /* util.format over a native list of checked values, the compiled calls'
  * held arguments (+1). */
 struct ScrArr;
@@ -93,19 +123,60 @@ ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack);
  * argument count (+1, or NULL with the exception pending). */
 ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *colors,
                          double argc);
+/* console.dir(value[, options]) over a checked-dynamic value: inspect with
+ * custom inspection off over the program's util.inspect.defaultOptions,
+ * then the call's own options; argc is the call's argument count (+1, or
+ * NULL with the exception pending). */
+ScrStr *scr_insp_inspect_dir(ScrDyn *value, ScrDyn *options, double argc);
+/* A Console instance's formatting: util.formatWithOptions over the
+ * instance's inspectOptions with `surface`'s defaults, and an explicit
+ * colors override (0 keeps the options' answer, 1 forces colors, 2 forces
+ * none — the instance's colorMode decides unless inspectOptions.colors is
+ * spelled). +1, or NULL with the exception pending. */
+ScrStr *scr_insp_console_format(ScrDyn *pack, ScrDyn *inspect_options, const char *surface,
+                                int colors_mode);
+/* A Console instance's inspect (dir, dirxml): custom inspection off,
+ * inspectOptions first, then the call's own options over it, with the same
+ * colors override. +1, or NULL with the exception pending. */
+ScrStr *scr_insp_console_inspect(ScrDyn *value, ScrDyn *inspect_options, ScrDyn *call_options,
+                                 double argc, int colors_mode);
 /* Whether a format string has a '%' before its last character, the only
  * strings whose substitutions can change the output. */
 bool scr_insp_format_specifies(ScrStr *first);
 bool scr_insp_format_specifies_dyn(ScrDyn *first);
-/* format's %s over a dyn value: scr_insp_dyn_s, except that values whose
- * class defines its own toString print String(value). */
+/* Reads a styleType's SGR pair from inspect.colors and inspect.styles as
+ * the program left them (scr_inspect.c's insp_style_pair). The inspect
+ * value's creation stores it, so only a program that read util.inspect as
+ * a value — the one that can have replaced either table — loads the live
+ * tables; every other rendering uses the built-in codes. The slot has
+ * external linkage so a static rendering's call stays indirect and its
+ * object keeps no reference to the reader. NULL until then. */
+extern SCR_TL bool (*scr_insp_style_pair_hook)(const char *type, size_t len, ScrStr **open,
+                                               ScrStr **close);
+/* Copies the values a program put on util.inspect.defaultOptions over the
+ * built-in defaults (scr_inspect.c's insp_apply_default_options). The
+ * defaults object's creation stores it, so only a program that read
+ * defaultOptions — which is the only way its values can be there — loads
+ * the object reader; every other rendering keeps the constants. As above,
+ * the slot's external linkage keeps the call indirect. NULL until then. */
+extern SCR_TL void (*scr_insp_apply_defaults_hook)(ScrInspFormatOptions *o);
+/* format's %s over a dyn value: strings verbatim, numbers and bigints by
+ * their formatNumber/formatBigInt spellings, an object whose toString the
+ * program owns as String(value), and everything else inspected at depth 0
+ * with compact 3 and no colors — the caller's depth is not used. */
 ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
+/* A showHidden render for `surface`; custom < 0 keeps the caller's custom
+ * inspection setting, 0 disables it (console.dir). */
+ScrStr *scr_insp_dyn_hidden_as(ScrDyn *d, double depth, const char *surface, bool spec, int custom);
 void scr_insp_begin(double recurse);
-/* util.inspect's breakLength, compact (-1 for false) and sorted for the
- * renders that follow; the call site restores the defaults (80, 3, false)
- * afterwards. */
-void scr_insp_layout(double break_length, double compact, bool sorted);
+/* util.inspect's breakLength, compact (-1 for false), sorted and
+ * maxArrayLength (Infinity for null) for the renders that follow; the
+ * call site restores the defaults (80, 3, false, 100) afterwards. */
+void scr_insp_layout(double break_length, double compact, bool sorted, double max_array_length);
+/* The maxArrayLength the render in progress uses, read by the compiler's
+ * array, Map and Set renderings. */
+double scr_insp_max_array_length(void);
 void scr_insp_entry(ScrStr *s, bool is_num);
 /* Circular references, Node-exact (<ref *N> / [Circular *N]): the
  * compiler-emitted helpers over CYCLE-CAPABLE composites call circ_check
@@ -121,6 +192,12 @@ ScrStr *scr_insp_circular(double id);
 ScrStr *scr_insp_ref_wrap(const void *v, ScrStr *s);
 ScrStr *scr_insp_more_items(double remaining); /* "... N more items" */
 ScrStr *scr_insp_key(ScrStr *k); /* bare-or-quoted property-name ladder; +1 */
+/* The property entry `key: value` (Node's formatProperty), with an object
+ * property's width/newline rule under compact: true. Borrows both; +1. */
+ScrStr *scr_insp_property(ScrStr *key, ScrStr *value, bool object_type);
+/* Marks the next composite rendered as an object property's value, whose
+ * frame indents one extra level under compact: true. */
+void scr_insp_prop_child(bool object_type);
 ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
                      bool array_extras, bool trailing_more);
 /* A nested util.inspect inside a custom rendering (PerformanceEntry's):
@@ -134,6 +211,15 @@ void scr_insp_nested_restore(void);
 /* ctx.customInspect for the renders that follow; answers the previous
  * value for the caller to restore. */
 bool scr_insp_custom_inspect(bool enabled);
+/* ctx.getters for the renders that follow (0 the labels only, 1 every
+ * getter, 2 the getters without a setter, 3 the getters with one), the
+ * value the interned per-type helpers read, and an invoked accessor's
+ * result rendered by kind: `[Label: <primitive>]`, `[Label] <object>`.
+ * +1 values; the setter answers the previous value for the caller to
+ * restore, the result NULL with an exception pending. */
+double scr_insp_getters(double value);
+double scr_insp_getters_mode(void);
+ScrStr *scr_insp_accessor_result(ScrDyn *value, ScrStr *label, double recurse, double depth);
 /* Around a custom inspect function's call: begin gives the calls it makes
  * a fresh inspect context with the default options and answers a token;
  * end(token) restores the caller's, also after calls that threw. */
@@ -200,16 +286,27 @@ bool scr_dataview_write_u64_raw(ScrBytes *b, double offset, bool le, uint64_t va
  * Buffer forms of scr_lib.c's utf8 pair, byte-exact and NUL-safe.
  * Failures THROW catchably (scr_fs_throw, Node-shaped messages). */
 ScrBytes *scr_fs_read_file_bytes(ScrStr *path); /* +1 */
-/* readFileSync's runtime-encoding form (scr_bytes_io.c's note): +1 dyn
- * value — a Buffer box for nullish/empty encodings, a decoded string otherwise — or NULL
- * with the exception pending. */
-ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *enc);
+/* readFileSync(path, options)'s full ladder (scr_bytes_io.c's note) in its
+ * three answer types: a decoded string, the raw Buffer bytes, or the
+ * unchecked dyn value that picks between them at run time. The options
+ * argument is the raw second argument (a string, a bag, or the defaults);
+ * failures THROW catchably. */
+ScrStr *scr_fs_read_file_str_opts(ScrStr *path, const ScrDyn *options);   /* +1 string */
+ScrBytes *scr_fs_read_file_bytes_opts(ScrStr *path, const ScrDyn *options); /* +1 Buffer */
+ScrDyn *scr_fs_read_file_sync_dyn(ScrStr *path, const ScrDyn *options);   /* +1 dyn */
+/* statSync / lstatSync / fstatSync with the options held at run time: the
+ * bigint member picks Stats or BigIntStats, throwIfNoEntry (stat and lstat)
+ * the missing-entry answer. A +1 dynamic Stats object, or NULL with the
+ * exception pending. */
+ScrDyn *scr_fs_stat_sync_dyn(ScrStr *path, const ScrDyn *options);        /* +1 dyn */
+ScrDyn *scr_fs_lstat_sync_dyn(ScrStr *path, const ScrDyn *options);       /* +1 dyn */
+ScrDyn *scr_fs_fstat_sync_dyn(const ScrDyn *fd, const ScrDyn *options); /* +1 dyn */
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding);
 /* readFileSync's encoding check (ERR_INVALID_ARG_VALUE), on its own: the
  * check Node runs before it converts a URL path. */
 void scr_fs_check_read_encoding(ScrStr *encoding);
 ScrStr *scr_fs_read_fd_encoded(double fd, ScrStr *encoding);
-ScrDyn *scr_fs_callback_value(ScrStr *member);
+ScrDyn *scr_fs_callback_value(ScrStr *member, double length);
 ScrDyn *scr_fs_callback_call(ScrStr *member, const ScrDyn *args);
 /* The error-first callback queue (scr_bytes_io.c): a pending exception
  * becomes [err], otherwise [null, result(, buffer)]; the callback runs on
@@ -223,7 +320,16 @@ ScrStr *scr_fs_validated_path(const ScrDyn *value, const char *name);
 ScrDyn *scr_fs_option_get(const ScrDyn *options, const char *name);
 ScrBytes *scr_fs_read_fd_bytes(double fd);      /* +1; the fd form (scr_lib.c) */
 void scr_fs_write_file_bytes(ScrStr *path, const ScrBytes *data);
+void scr_fs_write_file_flags_bytes(ScrStr *path, const ScrBytes *data, double mode,
+                                   double exclusive);
 void scr_fs_append_file_bytes(ScrStr *path, const ScrBytes *data);
+/* The two-argument writes and the { mode, flag } write over a checked data
+ * argument (string or Buffer/TypedArray/DataView): the string arm keeps the
+ * plain write of its own shape, the view arm writes the bytes it covers. */
+void scr_fs_write_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_append_file_data(ScrStr *path, const ScrDyn *data);
+void scr_fs_write_file_flags_data(ScrStr *path, const ScrDyn *data, double mode,
+                                  double exclusive);
 
 /* fs/promises readFile(path) [no encoding]: the same read behind an
  * already-settled promise — failure REJECTS (catchable at the await). */

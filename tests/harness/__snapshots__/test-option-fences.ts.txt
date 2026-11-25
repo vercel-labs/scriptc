@@ -1,35 +1,26 @@
-test-option-fences.ts:13:45 - error SC2020: 'test(...) with a non-literal concurrency value' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:12:45 - error SC2020: 'test(...) with a non-literal concurrency value' is part of the standard library types but has no scriptc lowering yet
 
-  12 | const parallel = process.argv.length > 2;
-  13 | test("computed concurrency", { concurrency: parallel }, () => {});
+  11 | const parallel = process.argv.length > 2;
+  12 | test("computed concurrency", { concurrency: parallel }, () => {});
      |                                             ^~~~~~~~
-  14 | 
+  13 | 
 
   hint: concurrency takes the literal true/false or a number here
 
-test-option-fences.ts:15:29 - error SC2020: 'describe(...) option 'timeout'' is part of the standard library types but has no scriptc lowering yet
+test-option-fences.ts:14:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
 
-  14 | 
-  15 | describe("suite timeout", { timeout: 100 }, () => {});
-     |                             ^~~~~~~~~~~~
-  16 | 
-
-  hint: skip, todo, only, and concurrency are the supported suite options
-
-test-option-fences.ts:17:26 - error SC2020: 'describe(...) option 'plan'' is part of the standard library types but has no scriptc lowering yet
-
-  16 | 
-  17 | describe("suite plan", { plan: 1 }, () => {});
+  13 | 
+  14 | describe("suite plan", { plan: 1 }, () => {});
      |                          ^~~~~~~
+  15 | 
+
+  hint: skip, todo, only, concurrency, timeout, signal and tags are the supported suite options
+
+test-option-fences.ts:17:31 - error SC2020: 'test(...) with this plan value' is part of the standard library types but has no scriptc lowering yet
+
+  16 | const count = 2;
+  17 | test("computed plan", { plan: count }, () => {});
+     |                               ^~~~~
   18 | 
 
-  hint: skip, todo, only, and concurrency are the supported suite options
-
-test-option-fences.ts:20:31 - error SC2020: 'test(...) with a non-literal plan value' is part of the standard library types but has no scriptc lowering yet
-
-  19 | const count = 2;
-  20 | test("computed plan", { plan: count }, () => {});
-     |                               ^~~~~
-  21 | 
-
-  hint: plan takes a non-negative integer literal here
+  hint: plan takes a literal integer in 0..4294967295 here (Node validates the same range at registration)

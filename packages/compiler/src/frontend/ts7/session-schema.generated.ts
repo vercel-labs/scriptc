@@ -1,4 +1,4 @@
-// Generated from typescript@7.0.2 by scripts/generate-ts7-ast-schema.mjs.
+// Generated from typescript@7.1.0-beta, with response shapes from typescript@7.0.2, by scripts/generate-ts7-ast-schema.mjs.
 // TypeScript is Copyright Microsoft Corporation, licensed under Apache-2.0.
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 

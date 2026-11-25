@@ -117,6 +117,14 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSettingsDynCb": "scr_http2_session_settings_dyncb",
     "http2.sessionOnSettingsDyn": "scr_http2_session_on_settings_dyn",
+    "http2.streamRespondWait": "scr_http2_stream_respond_wait",
+    "http2.streamSendTrailers": "scr_http2_stream_send_trailers",
+    "http2.streamAdditionalHeaders": "scr_http2_stream_additional_headers",
+    "http2.responseWriteInformation": "scr_http_h2_res_write_information",
+    "http2.sessionPingPayload": "scr_http2_session_ping",
+    "http2.sessionConnecting": "scr_http2_session_connecting",
+    "http2.getPackedSettings": "scr_http2_get_packed_settings",
+    "http2.getUnpackedSettings": "scr_http2_get_unpacked_settings",
     "http2.sessionSettingsGet": "scr_http2_session_settings_get",
     "http2.sessionPendingSettingsAck": "scr_http2_session_pending_settings_ack",
     "http2.getDefaultSettings": "scr_http2_get_default_settings",
@@ -143,7 +151,20 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     "http2.streamClosed": "scr_http2_stream_closed",
     "http2.streamAborted": "scr_http2_stream_aborted",
     "http2.streamPending": "scr_http2_stream_pending",
+    "http2.streamHeadersSent": "scr_http2_stream_headers_sent",
+    "http2.reqComplete": "scr_http2_req_complete",
+    "http2.pairsValues": "scr_http2_pairs_values",
     "http2.streamSession": "scr_http2_stream_session",
+    "http2.statusMessageUnsupported": "scr_http2_status_message_unsupported",
+    "http2.statusMessageRead": "scr_http2_status_message_read",
+    "http2.streamSentHeaders": "scr_http2_stream_sent_headers",
+    "http2.streamSentInfoHeaders": "scr_http2_stream_sent_info_headers",
+    "http2.streamSentTrailers": "scr_http2_stream_sent_trailers",
+    "http2.streamState": "scr_http2_stream_state",
+    "http2.reqAuthority": "scr_http2_req_authority",
+    "http2.reqScheme": "scr_http2_req_scheme",
+    "http2.streamEndAfterHeaders": "scr_http2_stream_end_after_headers",
+    "http2.streamBufferSize": "scr_http2_stream_buffer_size",
     "http2.streamUndefCall": "scr_http2_stream_undef_call",
   };
   const symbol = direct[e.fn];
@@ -151,6 +172,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
   switch (e.fn) {
     case "http2.streamNoop":
       return { name: "", type: e.type };
+    case "http2.sessionPing":
+      return finishRuntimeCall(host, e, "scr_http2_session_ping", [a[0]!, ptr(), a[1]!]);
+    case "http2.getPackedSettings0":
+      return finishRuntimeCall(host, e, "scr_http2_get_packed_settings", [ptr()]);
     case "http2.createServerReq":
       return finishRuntimeCall(
         host,
@@ -209,6 +234,19 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         ...caBytes(host, args[2]!),
         ...handler,
       ]);
+    }
+    case "http2.streamRespondWithFile":
+    case "http2.streamRespondWithFD": {
+      // The trailing statCheck value crosses as a checked-dynamic callable;
+      // without one the runtime sees no check.
+      return finishRuntimeCall(
+        host,
+        e,
+        e.fn === "http2.streamRespondWithFile"
+          ? "scr_http2_stream_respond_with_file"
+          : "scr_http2_stream_respond_with_fd",
+        [...a.slice(0, 8)],
+      );
     }
     case "http2.sessionClose":
     case "http2.sessionCloseCb":
@@ -273,7 +311,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.sessionOnGoaway":
       runtime = "scr_http2_session_on_goaway";
       thunk = `scr_http2_goaway_thunk${Math.min(arity, 2)}`;
-      params = ["ptr", "double", "double"];
+      params = ["ptr", "double", "double", "ptr"];
       break;
     case "http2.sessionOnError":
       runtime = "scr_http2_session_on_error";
@@ -281,7 +319,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       break;
     case "http2.streamOnError":
       runtime = "scr_http2_stream_on_error";
-      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_child_err_thunk_error";
+      thunk = arity === 0 ? "scr_child_err_thunk0" : "scr_http2_stream_err_thunk";
       break;
     case "http2.sessionOnSettings0":
       runtime = "scr_http2_session_on_settings";
@@ -302,10 +340,33 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             : type.params[0]!.kind === "string"
               ? "scr_net_data_thunk_str"
               : "scr_net_data_thunk_bytes";
-      params = ["ptr", "ptr", "ptr"];
+      params = ["ptr", "ptr"];
+      break;
+    case "http2.sessionOnPing":
+      runtime = "scr_http2_session_on_ping";
+      thunk =
+        arity === 0
+          ? "scr_net_data_thunk0"
+          : type.params[0]!.kind === "dyn"
+            ? "scr_net_data_thunk_dyn"
+            : "scr_net_data_thunk_bytes";
+      params = ["ptr", "ptr"];
       break;
     case "http2.sessionOnClose":
       runtime = "scr_http2_session_on_close";
+      break;
+    case "http2.streamOnTrailers":
+      // The header-record adapter is already the runtime ABI (pairs, flags).
+      runtime = "scr_http2_stream_on_trailers";
+      break;
+    case "http2.streamOnHeaders":
+      runtime = "scr_http2_stream_on_headers";
+      break;
+    case "http2.streamOnWantTrailers":
+      runtime = "scr_http2_stream_on_want_trailers";
+      break;
+    case "http2.streamOnContinue":
+      runtime = "scr_http2_stream_on_continue";
       break;
     case "http2.streamOnEnd":
       runtime = "scr_http2_stream_on_end";

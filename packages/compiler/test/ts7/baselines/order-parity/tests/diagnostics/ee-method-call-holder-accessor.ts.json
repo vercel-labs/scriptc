@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/ee-method-call-holder-accessor.ts"
+ ],
+ "diags": []
+}

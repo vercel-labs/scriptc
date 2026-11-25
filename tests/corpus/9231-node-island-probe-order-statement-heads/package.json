@@ -1,0 +1,16 @@
+{
+  "name": "island-probe-order-statement-heads",
+  "private": true,
+  "scriptc": {
+    "packages": {
+      "step-a": "node",
+      "step-b": "node",
+      "step-c": "node",
+      "step-d": "node",
+      "step-e": "node",
+      "step-f": "node",
+      "step-g": "node",
+      "step-h": "node"
+    }
+  }
+}

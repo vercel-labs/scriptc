@@ -1,0 +1,8 @@
+contract-immutable-spread-copy.ts:17:18 - error SC7004: the value stored into 'Config.objects' (Immutable) may be referenced elsewhere: '[...sharedObjects]' is not a fresh literal, construction or factory result
+
+  16 | config.values = [...shared];
+  17 | config.objects = [...sharedObjects];
+     |                  ^~~~~~~~~~~~~~~~~~
+  18 | sharedObjects[0]!.n = 4;
+
+  hint: build the value in place (a literal, `new`, or a function that returns what it builds), so no mutable reference to it remains

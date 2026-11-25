@@ -17,10 +17,17 @@ import { InternalCompilerError } from "../../errors.js";
  * jsonStringify emission site runs the pending check (join still walks
  * only f64/string/bool/unit arms — the frontend's fence). */
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
-import { isRefCounted, typeKey } from "../../ir/ir.js";
+import { isPerfEntryShape } from "../../ir/ir.js";
+import {
+  isPerfNodeTimingShape,
+  isRefCounted,
+  PERF_ENTRY_JSON_FIELDS,
+  PERF_NODE_TIMING_JSON_FIELDS,
+  typeKey,
+} from "../../ir/ir.js";
 import { jsonObjectKeyLabel } from "../json-literal.js";
 import { llvmBytes, wtf8Bytes } from "../literals.js";
-import { mangleRecordStruct } from "../mangle.js";
+import { mangleFunction, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
 import {
@@ -42,6 +49,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * ToString), and NUL-terminated C-string constants (scr_jb_puts /
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
+  /** See LlEmitter.contentSymbol. */
+  contentSymbol(prefix: string, text: string): string;
   readonly unionsById: Map<string, IrUnionDef>;
   /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
   mayHoldForeign(elem: IrType): boolean;
@@ -54,6 +63,9 @@ export interface WalkerHost extends ShapeHost {
   /** i1: a value loaded from an undefined-armed record field slot is the
    * slot's ABSENT state. */
   fieldAbsentTestIn(B: BlockBuilder, value: string, unionId: string): string;
+  /** `@`-ref of the optional checked-dynamic field slot's ABSENT marker
+   * (an immortal ScrDyn, address-compared). */
+  dynAbsentRef(): string;
 }
 
 const FN_ATTRS = "#0";
@@ -209,7 +221,7 @@ export class LlWalkers {
     const key = typeKey(t);
     const existing = this.jsonWriters.get(key);
     if (existing) return existing;
-    const name = `sc_jw_${this.jsonWriters.size}`;
+    const name = this.host.contentSymbol("sc_jw_", key);
     this.jsonWriters.set(key, name);
     this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
@@ -259,8 +271,19 @@ export class LlWalkers {
       case "union":
         this.emitUnionWriter(B, t.unionId);
         break;
+      case "map":
+      case "set":
+        // A Map or a Set held by a record, an array or a tuple has no own
+        // enumerable property and no toJSON: the empty object, whatever it
+        // holds (isJsonSafeAt admits it in those positions only).
+        this.puts(B, "%b", "{}");
+        break;
       default:
-        throw new LlvmUnsupportedError(`jsonStringify:${t.kind}`);
+        throw new LlvmUnsupportedError(
+          `jsonStringify:${t.kind}`,
+          undefined,
+          `JSON.stringify reaching a value of type ${typeKey(t)}`,
+        );
     }
     B.terminate("ret void");
     this.defs.push(
@@ -295,6 +318,7 @@ export class LlWalkers {
         this.host.rcMode === undefined,
         (text) => this.host.cstr(text),
         this.host.recordViews?.partialTargets.has(shapeId) === true,
+        this.host.recordViews?.marked.has(shapeId) === true,
       );
     } else {
       p = B.tmp();
@@ -330,6 +354,7 @@ export class LlWalkers {
       );
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
     const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
+    this.emitLinkedRecordWriter(B, shapeId);
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -355,10 +380,21 @@ export class LlWalkers {
     // Fields serialize in DECLARED order (JS insertion order), or in the
     // value's own order for a shape with orderVariants; internal
     // '%'-fields stay hidden — jsonWriteHelper's contract, ported comment
-    // and all.
-    emitPerKeyOrder(B, shape, fieldBase, "%v", (order) => {
+    // and all. performance.nodeTiming is the exception: stringify runs its
+    // toJSON first, which answers the class's own field list (without
+    // uvMetricsInfo), so that list is what serializes.
+    const toJsonOrder = isPerfNodeTimingShape(shape)
+      ? PERF_NODE_TIMING_JSON_FIELDS
+      : isPerfEntryShape(shape)
+        ? PERF_ENTRY_JSON_FIELDS
+        : null;
+    emitPerKeyOrder(B, shape, fieldBase, "%v", (declaredOrder) => {
+      const order = toJsonOrder ?? declaredOrder;
       const inOrder = new Set(order);
-      if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
+      if (
+        toJsonOrder === null &&
+        shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))
+      ) {
         throw new InternalCompilerError(
           `llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`,
         );
@@ -370,8 +406,11 @@ export class LlWalkers {
         .filter((f) => f !== undefined)
         .filter((f) => f.type.kind !== "func");
       const droppable =
-        emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
-        !!shape.indexValue;
+        emitFields.some(
+          (f) =>
+            undefinedArmTag(f.type, this.host.unionsById) >= 0 ||
+            (f.optional === true && f.type.kind === "dyn"),
+        ) || !!shape.indexValue;
       this.putc(B, "%b", "123"); // '{'
       if (!droppable) {
         emitFields.forEach((f, i) => {
@@ -409,6 +448,15 @@ export class LlWalkers {
             skip = B.newLabel("jwf.s");
             B.condBr(isu, skip, lw);
             B.startBlock(lw);
+          } else if (f.optional === true && f.type.kind === "dyn") {
+            // An ABSENT optional checked-dynamic field is dropped, like
+            // Node; a present undefined still serializes as null.
+            const isa = B.tmp();
+            B.line(`${isa} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+            const lw = B.newLabel("jwf.w");
+            skip = B.newLabel("jwf.s");
+            B.condBr(isa, skip, lw);
+            B.startBlock(lw);
           }
           comma();
           this.puts(B, "%b", jsonObjectKeyLabel(f.name));
@@ -424,6 +472,16 @@ export class LlWalkers {
     });
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
+  }
+
+  /** A record copy linked to its source (IrModule.recordLinks) serializes
+   * as its composed record, a record of the source's type with the copy's
+   * values for the fields both declare. */
+  private emitLinkedRecordWriter(B: BlockBuilder, shapeId: string): void {
+    emitLinkedRecordBranches(this.host, B, shapeId, "%v", (sourceT, composed) => {
+      B.line(`call void @${this.jsonWriteHelper(sourceT)}(ptr %b, ptr ${composed})`);
+      return "ret void";
+    });
   }
 
   /** A record that kept the undeclared properties of its checked source
@@ -442,7 +500,7 @@ export class LlWalkers {
     // installs the dispose hook, so a NULL hook means the table is empty.
     const lHooked = B.newLabel("jw.hooked");
     const kept = B.tmp();
-    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.line(`${kept} = load i1, ptr ${this.host.recordSourcesGate ?? RECORD_SOURCES_GATE}`);
     B.condBr(kept, lHooked, lNative);
     B.startBlock(lHooked);
     const hook = B.tmp();
@@ -494,7 +552,7 @@ export class LlWalkers {
     const shape = this.host.recordsById.get(shapeId);
     if (!shape)
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
-    const name = `sc_jwf_${this.recordFieldWriters.size}`;
+    const name = this.host.contentSymbol("sc_jwf_", shapeId);
     this.recordFieldWriters.set(shapeId, name);
     this.host.journalAllocated?.(name, "walkers.recordFieldWriter", [shapeId]);
     const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
@@ -524,6 +582,13 @@ export class LlWalkers {
         B.line(`${isUndefined} = icmp eq i32 ${tag}, ${utag}`);
         const lWrite = B.newLabel("jwf.write");
         B.condBr(isUndefined, lSkip, lWrite);
+        B.startBlock(lWrite);
+      } else if (f.optional === true && f.type.kind === "dyn") {
+        // An ABSENT optional checked-dynamic field contributes no key.
+        const isAbsent = B.tmp();
+        B.line(`${isAbsent} = icmp eq ptr ${v}, ${this.host.dynAbsentRef()}`);
+        const lWrite = B.newLabel("jwf.write");
+        B.condBr(isAbsent, lSkip, lWrite);
         B.startBlock(lWrite);
       }
       const lComma = B.newLabel("jwf.comma");
@@ -561,10 +626,16 @@ export class LlWalkers {
         return true;
       case "array":
         return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
-      case "union":
+      case "union": {
+        // A union can reach itself through an array arm; its other arms
+        // are already being asked.
+        const key = `union:${t.unionId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
         );
+      }
       case "record": {
         if (seen.has(t.shapeId)) return false;
         seen.add(t.shapeId);
@@ -955,7 +1026,7 @@ export class LlWalkers {
     if (existing) return existing;
     const def = this.host.unionsById.get(unionId);
     if (!def) throw new InternalCompilerError(`llvm emitter bug: join of unknown union ${unionId}`);
-    const name = `sc_uj_${this.unionJoinFns.size}`;
+    const name = this.host.contentSymbol("sc_uj_", unionId);
     this.unionJoinFns.set(unionId, name);
     this.host.journalAllocated?.(name, "walkers.unionJoinHelper", [unionId]);
 
@@ -1065,7 +1136,11 @@ export class LlWalkers {
             break;
           }
           default:
-            throw new LlvmUnsupportedError(`unionJoin:${arm.kind}`);
+            throw new LlvmUnsupportedError(
+              `unionJoin:${arm.kind}`,
+              undefined,
+              `Array.prototype.join over a union with an arm of type ${typeKey(arm)}`,
+            );
         }
         B.br(written);
       });
@@ -1086,5 +1161,48 @@ export class LlWalkers {
     );
     this.host.journalBuilt?.();
     return name;
+  }
+}
+
+/** Branches for a record copy linked to its source (IrModule.recordLinks):
+ * when the record `value` of shape `shapeId` links through one of the
+ * module's pairs into that shape, `answer` emits the code for its composed
+ * record (a +1 reference, released after `answer`) of the pair's source
+ * type and names the terminator. Unlinked records fall through. */
+export function emitLinkedRecordBranches(
+  host: ShapeHost,
+  B: BlockBuilder,
+  shapeId: string,
+  value: string,
+  answer: (sourceT: IrType & { kind: "record" }, composed: string) => string,
+): void {
+  const links = (host.recordLinks ?? []).filter((link) => link.to === shapeId);
+  if (links.length === 0) return;
+  host.declare(`declare i32 @scr_record_link_pair(ptr)`);
+  host.declare(`declare ptr @scr_record_link_source(ptr)`);
+  const pair = B.tmp();
+  B.line(`${pair} = call i32 @scr_record_link_pair(ptr ${value})`);
+  for (const link of links) {
+    const copyT: IrType = { kind: "record", shapeId };
+    const sourceT: IrType & { kind: "record" } = { kind: "record", shapeId: link.from };
+    const matches = B.tmp();
+    const lLinked = B.newLabel("link.linked");
+    const lNext = B.newLabel("link.unlinked");
+    B.line(`${matches} = icmp eq i32 ${pair}, ${link.pair}`);
+    B.condBr(matches, lLinked, lNext);
+    B.startBlock(lLinked);
+    const source = B.tmp(),
+      copy = B.tmp(),
+      owned = B.tmp(),
+      composed = B.tmp();
+    // The compose entry takes both references.
+    B.line(`${source} = call ptr @scr_record_link_source(ptr ${value})`);
+    B.line(`${owned} = call ptr ${retainSym(host, sourceT)}(ptr ${source})`);
+    B.line(`${copy} = call ptr ${retainSym(host, copyT)}(ptr ${value})`);
+    B.line(`${composed} = call ptr @${mangleFunction(link.compose)}(ptr ${copy}, ptr ${owned})`);
+    const terminator = answer(sourceT, composed);
+    B.line(`call void ${releaseSym(host, sourceT)}(ptr ${composed})`);
+    B.terminate(terminator);
+    B.startBlock(lNext);
   }
 }

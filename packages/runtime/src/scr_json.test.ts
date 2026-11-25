@@ -20,6 +20,9 @@ test.each([false, true])(
         "-Wall",
         "-Wextra",
         "-fsanitize=address,undefined",
+        // Test entry points only (a pass at one generation); the collector
+        // itself is the one every executable links.
+        "-DSCR_CYC_TESTING",
         ...(audit ? ["-DSCR_RC_AUDIT"] : []),
         "-I",
         src,
@@ -28,6 +31,7 @@ test.each([false, true])(
         ...[
           "scr_json.test.c",
           "scr_json.c",
+          "scr_record_source_get.c",
           "scr_string.c",
           "scr_array.c",
           "scr_arena.c",

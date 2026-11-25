@@ -18,31 +18,60 @@ const features = {
   streamDyn: false,
   handleProps: false,
   childLifecycle: false,
+  processFeatures: false,
+  islandChild: false,
+  childOptionExt: false,
+  cluster: false,
+  spawnCaptureBytes: false,
+  childErrorFields: false,
+  childStreamFlow: false,
   declAdopt: false,
   typeOrigins: false,
+  conversionTrace: false,
   dynForAwait: false,
+  dynCollections: false,
+  dynIntegrityQueries: false,
+  reflectProtoTarget: false,
+  classTestPrototype: false,
+  recordSourceDelete: false,
+  recordViewFrozen: false,
+  genBind: false,
+  genReceiver: false,
+  recordSourceGet: false,
+  arrJoinStr: false,
   eventsOnceSignal: false,
   mime: false,
+  sqlite: false,
   largePages: false,
   webStreams: false,
+  webBodies: false,
   abortSignal: false,
   utilTiming: false,
+  utilMarkPromiseAsHandled: false,
+  utilTraceSigInt: false,
   dynBuffer: false,
+  fsPathValue: false,
   builtinValues: false,
   computedRequire: false,
   warningReplace: false,
-  recordViewPartial: false,
-  stdioExtended: false,
+  promiseRejectDyn: false,
+  jsObjectModel: false,
   streamWriteErrors: false,
-  stdioWriteSlot: false,
+  stdioObject: false,
+  ttyColors: false,
+  streamPipeEvents: false,
+  fsStreamSignal: false,
   nodeIsland: false,
   brotli: false,
+  zstd: false,
   moduleNamespace: false,
   moduleNamespaceDyn: false,
   primitiveWrapper: false,
+  iteratorProto: false,
   regex: true,
   copying: false,
   textDecoderLegacy: false,
+  bigintBytes: false,
   fileHandle: false,
   fetch: false,
   zlib: false,
@@ -67,10 +96,12 @@ const features = {
   http2: false,
   dgram: false,
   dnsPromises: false,
+  dnsResolve: false,
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
   watchFile: false,
+  watchEvents: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -78,12 +109,15 @@ const features = {
   cipher: false,
   ecdh: false,
   dh: false,
+  argon2: false,
+  mlkem: false,
   pki: false,
   ed25519: false,
   x509: false,
   webcrypto: false,
   perfLoop: false,
   nativeFetch: false,
+  dynPromiseKeys: false,
   abortSignalOnly: false,
   netEffective: false,
   httpEffective: false,
@@ -108,6 +142,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
     ) as { version: string };
     const directory = mkdtempSync("/tmp/scriptc-sanitized-vendor-");
     const artifact = { path: "libscriptc-libregexp.a", sha256: "0".repeat(64), size: 0 };
+    const mlkemArtifact = { path: "libscriptc-mlkem.a", sha256: "0".repeat(64), size: 0 };
     const manifest: RuntimePackManifest = {
       schema: "scriptc.runtime-pack.v1",
       format: 1,
@@ -124,7 +159,10 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       compiler: { command: "clang", identity: "test", target: target.llvmTriple },
       macros: { executable: [], excluded: [], sanitizer: "external-toolchain-required" },
       flavors: { dev: { optimization: "-O0", runtime_units: [] } },
-      archives: [{ ...artifact, id: "libregexp", predicate: true }],
+      archives: [
+        { ...artifact, id: "libregexp", predicate: true },
+        { ...mlkemArtifact, id: "mlkem", predicate: true },
+      ],
       system_libraries: [],
       licenses: [],
     };
@@ -154,7 +192,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           flavor: "dev",
           selected: {
             runtime: [],
-            archives: [artifact],
+            archives: [artifact, mlkemArtifact],
             data: [],
             systemLibraries: [],
             features,
@@ -166,10 +204,18 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       );
       expect(built.runtimeObjects).toEqual([]);
       const archive = join(directory, "libscriptc-libregexp.a");
-      expect(built.archives).toEqual([archive]);
+      const mlkemArchive = join(directory, "libscriptc-mlkem.a");
+      expect(built.archives).toEqual([archive, mlkemArchive]);
       expect(statSync(archive).size).toBeGreaterThan(0);
       expect(execFileSync("ar", ["t", archive], { encoding: "utf8" }).trim().split("\n")).toEqual(
         expect.arrayContaining(["libregexp-libregexp.o", "libregexp-libunicode.o"]),
+      );
+      // One object per ML-KEM parameter set, as the pack's archive holds.
+      expect(statSync(mlkemArchive).size).toBeGreaterThan(0);
+      expect(
+        execFileSync("ar", ["t", mlkemArchive], { encoding: "utf8" }).trim().split("\n"),
+      ).toEqual(
+        expect.arrayContaining(["mlkem-mlkem512.o", "mlkem-mlkem768.o", "mlkem-mlkem1024.o"]),
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });

@@ -1,6 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
+import { withoutParentheses } from "../outer-expressions.js";
 import { isJsSourceFile } from "../program.js";
 import {
   BOOL,
@@ -8,15 +9,19 @@ import {
   DYN,
   F64,
   isUnitType,
+  STRING,
   VOID,
   type IrExpr,
+  type IrStmt,
   type IrType,
   type SrcLoc,
   typeKey,
 } from "../../ir/ir.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
 import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
+import { refuseCallbackThis } from "./callback-arg.js";
 
 /** setTimeout invokes its callback with NO arguments, but @types/node's
  * generic signature admits callbacks DECLARED with parameters — the
@@ -73,6 +78,10 @@ export function adaptZeroArgTimerCallback(
               expr: {
                 kind: "callValue",
                 callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+                // The wrapper is the callback the timer calls, so it runs
+                // with the timer's receiver on the ambient stack; the call
+                // forwards it so the original callback reads the same one.
+                receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
                 args: [],
                 type: fromT.ret,
                 loc,
@@ -135,6 +144,9 @@ export function adaptZeroArgTimerCallback(
             expr: {
               kind: "callValue",
               callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+              // As in the return-dropping wrapper: the callback sees the
+              // receiver the timer called the wrapper with.
+              receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
               args: [dynUndefinedExpr(loc)],
               type: VOID,
               loc,
@@ -147,6 +159,71 @@ export function adaptZeroArgTimerCallback(
     );
   }
   return { kind: "call", callee: name, args: [cb], type: toT, loc };
+}
+
+/** Node validates a timer callback synchronously — after every argument
+ * expression has evaluated, before the delay converts and before anything
+ * schedules — throwing ERR_INVALID_ARG_TYPE for a non-function. A
+ * callback without a static function type is retained in a hidden local
+ * and `timers.checkCallback` runs on the dynamic value behind it; a
+ * statically known function needs no gate, so typed callers keep their
+ * exact IR. A cast to a function type (`cb as () => void`) lowers to a
+ * dynCheck over the dynamic value: Node sees the cast erased and
+ * validates at the timer, so the gate takes the bottom of that chain and
+ * the checked casts are rebuilt over the retained value. Null when there
+ * is nothing to check. */
+function retainedTimerCallback(
+  lowerer: Lowerer,
+  cb: IrExpr,
+  loc: SrcLoc,
+): { value: IrExpr; callback: IrExpr; hold: IrStmt[] } | null {
+  const casts: (IrExpr & { kind: "dynCheck"; value: IrExpr })[] = [];
+  let source = cb;
+  while (source.type.kind !== "dyn") {
+    if (source.kind !== "dynCheck") return null;
+    casts.push(source);
+    source = source.value;
+  }
+  const held = lowerer.declareHiddenLocal("%timerCallbackArg", DYN);
+  const value = varRef(held.id, DYN, loc);
+  let callback: IrExpr = value;
+  for (const cast of casts.reverse()) callback = { ...cast, value: callback };
+  return { value, callback, hold: [{ kind: "varDecl", localId: held.id, init: source, loc }] };
+}
+
+/** A timer's callback argument, lowered. One that is statically not a
+ * function (`setTimeout("x")`, a number, undefined) crosses untyped, so
+ * the gate below throws Node's ERR_INVALID_ARG_TYPE where the call runs,
+ * exactly as it does for an untyped value that turns out not to be a
+ * function. A function, an untyped value and a checked cast are returned
+ * as lowered. */
+function timerCallbackArgument(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
+  refuseCallbackThis(lowerer, node, "a timer", "the timer object");
+  const cb = lowerer.lowerExpr(node);
+  if (cb.type.kind === "func" || cb.type.kind === "dyn") return cb;
+  if (cb.kind !== "unitLit" && !lowerer.dynConvertible(cb.type)) return cb;
+  return { kind: "dynFrom", value: cb, type: DYN, loc };
+}
+
+/** The gate over a retained callback: a non-function throws Node's
+ * ERR_INVALID_ARG_TYPE synchronously (scr_timers_check_callback). */
+function timerCallbackCheck(cb: IrExpr, loc: SrcLoc): IrStmt {
+  return {
+    kind: "exprStmt",
+    expr: { kind: "libCall", fn: "timers.checkCallback", args: [cb], type: VOID, loc },
+    loc,
+  };
+}
+
+/** A delay expression with no effects of its own: the gate may run before
+ * it without changing what a program observes. */
+function pureDelay(expr: IrExpr): boolean {
+  return (
+    expr.kind === "numLit" ||
+    expr.kind === "strLit" ||
+    expr.kind === "boolLit" ||
+    expr.kind === "unitLit"
+  );
 }
 
 /** The trailing-argument timer forms — `setTimeout(cb, ms, ...args)`,
@@ -169,18 +246,62 @@ export function timerStyleCallback(
   // parameterized ones ride the checked-dynamic boundary, trailing
   // call arguments ride the interned per-arity dyn thunk.
   return callArgs.length > 1
-    ? makeTimerArgsThunk(lowerer, callArgs[0]!, callArgs.slice(1), what, loc)
+    ? makeTimerArgsThunk(
+        lowerer,
+        lowerer.lowerExpr(callArgs[0]!),
+        callArgs[0]!,
+        callArgs.slice(1),
+        what,
+        loc,
+      )
     : adaptZeroArgTimerCallback(lowerer, lowerer.lowerExpr(callArgs[0]!), callArgs[0]!, loc);
+}
+
+/** The callback turn shared by the timer surfaces that validate their
+ * callback synchronously at the call (setImmediate's lowering inline and
+ * process.nextTick's): adapt the callback and its trailing arguments, and
+ * when the runtime has to validate the value, run the gate between the
+ * argument evaluation and the call itself. `call` builds the scheduling
+ * call over the adapted callback; the result is its expression, wrapped in
+ * the gate's sequence when the gate runs. */
+export function checkedTimerStyleCallback(
+  lowerer: Lowerer,
+  callArgs: readonly ts.Expression[],
+  what: string,
+  loc: SrcLoc,
+  call: (cb: IrExpr) => IrExpr,
+): IrExpr {
+  const cbNode = callArgs[0]!;
+  const trailing = callArgs.slice(1);
+  const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+  const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+  const cbValue = retained ? (trailing.length > 0 ? retained.value : retained.callback) : cbLowered;
+  let cb =
+    trailing.length > 0
+      ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, what, loc)
+      : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc);
+  if (!retained) return call(cb);
+  // The gate follows the callback and its trailing arguments — the only
+  // other expressions the call evaluates.
+  const preStmts: IrStmt[] = [...retained.hold];
+  if (trailing.length > 0) {
+    const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+    preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+    cb = varRef(held.id, cb.type, loc);
+  }
+  preStmts.push(timerCallbackCheck(retained.value, loc));
+  const result = call(cb);
+  return { kind: "seqExpr", stmts: preStmts, result, type: result.type, loc };
 }
 
 function makeTimerArgsThunk(
   lowerer: Lowerer,
+  cbLowered: IrExpr,
   cbNode: ts.Expression,
   argNodes: readonly ts.Expression[],
   what: string,
   loc: SrcLoc,
 ): IrExpr {
-  const cbLowered = lowerer.lowerExpr(cbNode);
   let boxedCb: IrExpr;
   if (cbLowered.type.kind === "dyn") {
     boxedCb = cbLowered;
@@ -315,7 +436,7 @@ function optionalTimerHandle(lowerer: Lowerer, handle: IrExpr, loc: SrcLoc): IrE
   return { kind: "nullish", left: handle, right: numLit(0, loc), type: F64, loc };
 }
 
-const MOCKABLE_TIMER_FNS: ReadonlySet<string> = new Set([
+const MOCKABLE_TIMER_FNS: ReadonlySet<IrLibFn> = new Set<IrLibFn>([
   "timers.setTimeout",
   "timers.setTimeoutHandle",
   "timers.setInterval",
@@ -339,14 +460,18 @@ function isRealTimerCallee(lowerer: Lowerer, callee: ts.Expression): boolean {
 }
 
 /** Marks a lowered timer call `realTimer` when its callee is a binding
- * mock.timers does not replace. */
+ * mock.timers does not replace. A call whose delay is stored first returns a
+ * `seqExpr` around the call, so the mark goes on the call inside it. */
 function markRealTimerCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   lowered: IrExpr | null,
 ): IrExpr | null {
-  if (lowered?.kind !== "libCall" || !MOCKABLE_TIMER_FNS.has(lowered.fn)) return lowered;
-  return isRealTimerCallee(lowerer, expr.expression) ? { ...lowered, realTimer: true } : lowered;
+  const call = lowered?.kind === "seqExpr" ? lowered.result : lowered;
+  if (call?.kind !== "libCall" || !MOCKABLE_TIMER_FNS.has(call.fn)) return lowered;
+  if (!isRealTimerCallee(lowerer, expr.expression)) return lowered;
+  const marked: IrExpr = { ...call, realTimer: true };
+  return lowered?.kind === "seqExpr" ? { ...lowered, result: marked } : marked;
 }
 
 /** One timer call by MEMBER NAME — the shared lowering behind the ambient
@@ -378,48 +503,164 @@ function lowerTimerCall(
         `the supported form is ${member}(callback, ms?, ...args)`,
       );
     }
-    const cb =
-      expr.arguments.nodes.length > 2
-        ? makeTimerArgsThunk(
-            lowerer,
-            expr.arguments.nodes[0]!,
-            expr.arguments.nodes.slice(2),
-            member,
-            loc,
-          )
-        : adaptZeroArgTimerCallback(
-            lowerer,
-            lowerer.lowerExpr(expr.arguments.nodes[0]!),
-            expr.arguments.nodes[0]!,
-            loc,
-          );
+    const cbNode = expr.arguments.nodes[0]!;
+    const trailing = expr.arguments.nodes.slice(2);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+    const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+    // With trailing arguments the interned thunk boxes the callback and
+    // dynCalls it when the timer fires, so the gate's dynamic value is
+    // exactly what it captures: the erased cast validates at the fire-time
+    // call instead, as Node's erased cast would.
+    const cbValue = retained
+      ? trailing.length > 0
+        ? retained.value
+        : retained.callback
+      : cbLowered;
+    let cb = withTimerThis(
+      lowerer,
+      cbNode,
+      trailing.length > 0
+        ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, member, loc)
+        : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc),
+      loc,
+    );
+    // A callback that may read `this` is bound to its timer handle, so the
+    // call needs the handle form even in statement position. The answer is
+    // recorded here because the retention below replaces the expression
+    // with a hidden local for a checked-dynamic callback with trailing
+    // arguments.
+    const cbBindsThis = cb.kind === "libCall" && cb.fn === "timers.thisCallback";
     // An omitted delay is NaN, Node's undefined: the loop clamps it to
     // 1ms, and mock.timers queues it to run at the next tick.
+    let warned = false;
+    let throwingDelay = false;
+    // An element read past the end is undefined in Node, which warns
+    // nothing; here it reads as NaN, so the runtime skips the NaN warning.
+    let delayNode = expr.arguments.nodes[1];
+    while (delayNode !== undefined && ts.isParenthesizedExpression(delayNode))
+      delayNode = delayNode.expression;
+    const delayKind =
+      (isRealTimerCallee(lowerer, expr.expression) ? 2 : member === "setInterval" ? 1 : 0) +
+      (delayNode !== undefined && ts.isElementAccessExpression(delayNode) ? 4 : 0);
     let ms: IrExpr =
       expr.arguments.nodes.length >= 2
         ? lowerer.lowerExpr(expr.arguments.nodes[1]!)
         : { kind: "numLit", value: NaN, type: F64, loc };
-    // A delay that may be a boolean (execa's `forceKillAfterTimeout = true`
-    // default flowing on to setTimeout): Node converts it with ToNumber
-    // (`after *= 1`).
-    if (ms.type.kind === "bool" || hasBoolArm(lowerer, ms.type)) {
-      ms = {
-        kind: "libCall",
-        fn: "dyn.numberConstructor",
-        args: [lowerer.coerceToExpected(ms, DYN)],
-        type: F64,
-        loc,
-      };
-    } else if (ms.type.kind === "union") {
+    // A callback the runtime gate will validate: Node runs the gate after
+    // every argument expression has evaluated (the delay expression
+    // included) and before the delay converts, so the delay and the
+    // trailing-argument thunk are retained and the gate follows them.
+    const preStmts: IrStmt[] = retained ? [...retained.hold] : [];
+    if (retained) {
+      if (!pureDelay(ms)) {
+        const held = lowerer.declareHiddenLocal("%timerDelayArg", ms.type);
+        preStmts.push({ kind: "varDecl", localId: held.id, init: ms, loc });
+        ms = varRef(held.id, ms.type, loc);
+      }
+      if (trailing.length > 0) {
+        // The thunk's construction is where the trailing arguments
+        // evaluate; retaining it puts them between the delay and the gate.
+        const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+        preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+        cb = varRef(held.id, cb.type, loc);
+      }
+      preStmts.push(timerCallbackCheck(retained.value, loc));
+    }
+    if (ms.type.kind === "union" && !hasBoolArm(lowerer, ms.type)) {
       // A delay that may be undefined: an optional `ms?: number` passed on,
       // or an element read (`delays[0]`) whose storage keeps the
       // out-of-range undefined. Node converts the delay with ToNumber
-      // (`after *= 1`), so undefined is NaN, the omitted delay. Other
-      // unions stay as they are, and the lib boundary refuses them.
+      // (`after *= 1`), so undefined is NaN, the omitted delay.
       ms = lowerOptionalNumber(lowerer, ms, loc, expr.arguments.nodes[1]);
+      // The defined arm is never the undefined, so an element read's NaN
+      // there warns.
+      if (ms.type.kind === "f64") warned = warnOnDefinedDelay(ms, delayKind & 3, loc);
     }
+    // Any other delay that is not a number (a boolean such as execa's
+    // `forceKillAfterTimeout = true` default, a BigInt, a string, another
+    // union) converts through the checked-dynamic path below.
+    if (ms.type.kind !== "f64" && ms.type.kind !== "dyn" && lowerer.dynConvertible(ms.type)) {
+      ms = lowerer.coerceToExpected(ms, DYN);
+    }
+    if (ms.type.kind === "dyn") {
+      // An untyped delay converts as Node's `after *= 1` does: ToNumber,
+      // with the TypeError a BigInt throws there. Undefined stays the
+      // omitted delay (Node's `after === undefined` branch), tested before
+      // the conversion, so a NaN after it warns, element reads included.
+      const tmp = lowerer.declareHiddenLocal("%timerDelay", DYN);
+      const stable: IrExpr = { kind: "varRef", localId: tmp.id, type: DYN, loc };
+      const converted: IrExpr = {
+        kind: "dynCheck",
+        value: {
+          kind: "libCall",
+          fn: "dyn.arithmetic",
+          args: [
+            stable,
+            { kind: "dynFrom", value: numLit(1, loc), type: DYN, loc },
+            { kind: "strLit", value: "*", type: STRING, loc },
+          ],
+          type: DYN,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+      ms = {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: tmp.id, init: ms, loc }],
+        result: {
+          kind: "ternary",
+          cond: { kind: "dynTest", test: "undefined", value: stable, type: BOOL, loc },
+          then: { kind: "numLit", value: NaN, type: F64, loc },
+          else_: userDelay(converted, delayKind & 3, loc),
+          type: F64,
+          loc,
+        },
+        type: F64,
+        loc,
+      };
+      warned = true;
+      throwingDelay = true;
+    }
+    // A delay Node sets to 1 emits its Timeout warning; a literal delay in
+    // range needs no check, and an omitted delay is undefined, which warns
+    // nothing.
+    if (
+      !warned &&
+      expr.arguments.nodes.length >= 2 &&
+      ms.type.kind === "f64" &&
+      !(ms.kind === "numLit" && ms.value >= 1 && ms.value <= 2147483647)
+    ) {
+      ms = userDelay(ms, delayKind, loc);
+    }
+    // A delay conversion that can throw (a BigInt) runs after the callback
+    // is built: the callback and the converted delay wait in hidden locals,
+    // so a throw leaves only the callback's local, which the frame
+    // releases.
+    let callback = cb;
+    const callbackFirst: IrStmt[] = [...preStmts];
+    if (throwingDelay) {
+      const held = lowerer.declareHiddenLocal("%timerCallback", cb.type);
+      const delay = lowerer.declareHiddenLocal("%timerDelayMs", F64);
+      callbackFirst.push(
+        { kind: "varDecl", localId: held.id, init: cb, loc },
+        { kind: "varDecl", localId: delay.id, init: ms, loc },
+      );
+      callback = varRef(held.id, cb.type, loc);
+      ms = varRef(delay.id, F64, loc);
+    }
+    const scheduled = (call: IrExpr): IrExpr =>
+      callbackFirst.length === 0
+        ? call
+        : { kind: "seqExpr", stmts: callbackFirst, result: call, type: call.type, loc };
     if (member === "setInterval") {
-      return { kind: "libCall", fn: "timers.setInterval", args: [cb, ms], type: F64, loc };
+      return scheduled({
+        kind: "libCall",
+        fn: "timers.setInterval",
+        args: [callback, ms],
+        type: F64,
+        loc,
+      });
     }
     // The use position decides the shape: a Timeout handle (mapped to
     // f64) when the call is USED (assigned, `.unref()`d, cleared) — the
@@ -427,10 +668,22 @@ function lowerTimerCall(
     // historic fire-and-forget setTimeout, no clear surface). Both ride
     // the same heap; only the handle form can be unref'd/cleared.
     const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
-    if (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent)) {
-      return { kind: "libCall", fn: "timers.setTimeoutHandle", args: [cb, ms], type: F64, loc };
+    if (cbBindsThis || (resultT?.kind === "f64" && !ts.isExpressionStatement(expr.parent))) {
+      return scheduled({
+        kind: "libCall",
+        fn: "timers.setTimeoutHandle",
+        args: [callback, ms],
+        type: F64,
+        loc,
+      });
     }
-    return { kind: "libCall", fn: "timers.setTimeout", args: [cb, ms], type: VOID, loc };
+    return scheduled({
+      kind: "libCall",
+      fn: "timers.setTimeout",
+      args: [callback, ms],
+      type: VOID,
+      loc,
+    });
   }
   // clearTimeout(handle): shares the interval clear (the handle ids
   // share one space). An optional handle clears nothing when absent.
@@ -440,26 +693,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearTimeout with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    let handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
-    if (handle.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-      const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
-      const ref = varRef(stored.id, DYN, loc);
-      handle = {
-        kind: "seqExpr",
-        stmts: [{ kind: "varDecl", localId: stored.id, init: handle, loc }],
-        result: {
-          kind: "ternary",
-          cond: { kind: "dynTest", test: "number", value: ref, type: BOOL, loc },
-          then: lowerer.coerceInto(expr.arguments.nodes[0]!, ref, F64),
-          else_: numLit(0, loc),
-          type: F64,
-          loc,
-        },
-        type: F64,
-        loc,
-      };
-    }
-    handle = optionalTimerHandle(lowerer, handle, loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, 0, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearTimeout of '${lowerer.fmt(handle.type)}' handles`,
@@ -475,7 +709,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearInterval with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, 1, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearInterval of '${lowerer.fmt(handle.type)}' handles`,
@@ -486,8 +720,9 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.clearInterval", args: [handle], type: VOID, loc };
   }
   // setImmediate/clearImmediate: Node's check-phase pair. The handle is
-  // the f64 immediate id (its own space — clearTimeout of an Immediate
-  // no-ops, like Node); the callback adapts like setTimeout's.
+  // the f64 immediate id, drawn from the timer sequence so its number
+  // never names a timeout (clearTimeout of an Immediate no-ops, like
+  // Node); the callback adapts like setTimeout's.
   if (member === "setImmediate") {
     if (expr.arguments.nodes.length === 0) {
       lowerer.noLowering(
@@ -496,22 +731,43 @@ function lowerTimerCall(
         "the supported form is setImmediate(callback, ...args)",
       );
     }
-    const cb =
-      expr.arguments.nodes.length > 1
-        ? makeTimerArgsThunk(
-            lowerer,
-            expr.arguments.nodes[0]!,
-            expr.arguments.nodes.slice(1),
-            "setImmediate",
-            loc,
-          )
-        : adaptZeroArgTimerCallback(
-            lowerer,
-            lowerer.lowerExpr(expr.arguments.nodes[0]!),
-            expr.arguments.nodes[0]!,
-            loc,
-          );
-    return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
+    const cbNode = expr.arguments.nodes[0]!;
+    const trailing = expr.arguments.nodes.slice(1);
+    const cbLowered = timerCallbackArgument(lowerer, cbNode, loc);
+    const retained = retainedTimerCallback(lowerer, cbLowered, loc);
+    // As with setTimeout's trailing form: the thunk captures the gate's
+    // dynamic value and calls it at fire time.
+    const cbValue = retained
+      ? trailing.length > 0
+        ? retained.value
+        : retained.callback
+      : cbLowered;
+    let cb = withTimerThis(
+      lowerer,
+      cbNode,
+      trailing.length > 0
+        ? makeTimerArgsThunk(lowerer, cbValue, cbNode, trailing, "setImmediate", loc)
+        : adaptZeroArgTimerCallback(lowerer, cbValue, cbNode, loc),
+      loc,
+    );
+    if (!retained)
+      return { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc };
+    // The gate follows the callback and its trailing arguments, the only
+    // other expressions the call evaluates.
+    const preStmts: IrStmt[] = [...retained.hold];
+    if (trailing.length > 0) {
+      const held = lowerer.declareHiddenLocal("%timerCallbackFn", cb.type);
+      preStmts.push({ kind: "varDecl", localId: held.id, init: cb, loc });
+      cb = varRef(held.id, cb.type, loc);
+    }
+    preStmts.push(timerCallbackCheck(retained.value, loc));
+    return {
+      kind: "seqExpr",
+      stmts: preStmts,
+      result: { kind: "libCall", fn: "timers.setImmediate", args: [cb], type: F64, loc },
+      type: F64,
+      loc,
+    };
   }
   if (member === "clearImmediate") {
     const noop = tolerantClearNoop(lowerer, expr, loc);
@@ -519,7 +775,7 @@ function lowerTimerCall(
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`clearImmediate with ${expr.arguments.nodes.length} arguments`, expr);
     }
-    const handle = optionalTimerHandle(lowerer, lowerer.lowerExpr(expr.arguments.nodes[0]!), loc);
+    const handle = optionalTimerHandle(lowerer, untypedTimerHandle(lowerer, expr, 2, loc), loc);
     if (handle.type.kind !== "f64") {
       lowerer.noLowering(
         `clearImmediate of '${lowerer.fmt(handle.type)}' handles`,
@@ -530,6 +786,150 @@ function lowerTimerCall(
     return { kind: "libCall", fn: "timers.clearImmediate", args: [handle], type: VOID, loc };
   }
   return null;
+}
+
+/** The handle argument of a clear call. A checked-dynamic handle in
+ * JavaScript (a timer callback's `this`, an untyped binding) clears when it
+ * holds a number, the handle's representation; any other value clears
+ * nothing, as Node's clear functions ignore values that are not timers.
+ *
+ * In a program with Node islands the value may be a timer island code
+ * created (an island's Timeout or Immediate object): Node's own clear
+ * function clears it (`which` is 0 for clearTimeout, 1 for clearInterval, 2
+ * for clearImmediate). Such a program takes a checked-dynamic handle in
+ * TypeScript too, where an island's values are untyped. */
+function untypedTimerHandle(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  which: 0 | 1 | 2,
+  loc: SrcLoc,
+): IrExpr {
+  const handle = lowerer.lowerExpr(expr.arguments.nodes[0]!);
+  if (handle.type.kind !== "dyn") return handle;
+  const islands = lowerer.mayRunInNode();
+  if (!islands && !isJsSourceFile(ts.getSourceFileOfNode(expr))) return handle;
+  const stored = lowerer.declareHiddenLocal("%timer.clear", DYN);
+  const ref = varRef(stored.id, DYN, loc);
+  const zero = numLit(0, loc);
+  if (islands) lowerer.usesNodeIsland = true;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stored.id, init: handle, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "dynTest", test: "number", value: ref, type: BOOL, loc },
+      then: lowerer.coerceInto(expr.arguments.nodes[0]!, ref, F64),
+      else_: islands
+        ? {
+            kind: "seqExpr",
+            stmts: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "nodeIsland.clearTimer",
+                  args: [ref, numLit(which, loc)],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+            ],
+            result: zero,
+            type: F64,
+            loc,
+          }
+        : zero,
+      type: F64,
+      loc,
+    },
+    type: F64,
+    loc,
+  };
+}
+
+/** A JavaScript timer callback that may read `this` runs with `this`
+ * bound to its handle, as Node calls it with the Timeout or Immediate
+ * (scr_timer_this_callback). Arrows, and function expressions and
+ * declarations that never read `this` in the body or in a parameter
+ * initializer, keep the plain callback; an identifier resolves through a
+ * `const` binding to its initializer, so a stored arrow or function is
+ * classified the same way. Any other value (test/common's mustCall
+ * wrapper, which forwards `this`) is bound. TypeScript files keep plain
+ * callbacks: a plain function's `this` is refused there. */
+function withTimerThis(lowerer: Lowerer, node: ts.Expression, cb: IrExpr, loc: SrcLoc): IrExpr {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(node)) || !callbackMayReadThis(lowerer, node))
+    return cb;
+  const fnT: IrType = { kind: "func", params: [], ret: VOID };
+  const callable: IrExpr =
+    cb.type.kind === "func" ? cb : { kind: "dynCheck", value: cb, type: fnT, loc };
+  return { kind: "libCall", fn: "timers.thisCallback", args: [callable], type: fnT, loc };
+}
+
+function callbackMayReadThis(lowerer: Lowerer, node: ts.Expression): boolean {
+  let callback = withoutParentheses(node);
+  const seen = new Set<ts.Node>();
+  for (;;) {
+    if (ts.isArrowFunction(callback)) return false;
+    if (ts.isFunctionExpression(callback)) return ownThisIn(callback);
+    if (!ts.isIdentifier(callback)) return true;
+    const declaration = lowerer.resolveValueSymbol(callback)?.valueDeclaration;
+    if (declaration && ts.isFunctionDeclaration(declaration) && declaration.body)
+      return ownThisIn(declaration);
+    // A `const` binding holds one value, so the callback is its initializer:
+    // an arrow stored that way keeps the module's `this` like any other
+    // arrow, and a function expression is classified by its own body.
+    if (
+      !declaration ||
+      !ts.isVariableDeclaration(declaration) ||
+      !declaration.initializer ||
+      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0 ||
+      seen.has(declaration)
+    )
+      return true;
+    seen.add(declaration);
+    callback = withoutParentheses(declaration.initializer);
+  }
+}
+
+/** Whether a function reads its own `this`: in its body, or in the
+ * initializer of a parameter, which runs at entry with the same receiver
+ * (`function (x = this) {}` called with no arguments). */
+function ownThisIn(fn: ts.FunctionExpression | ts.FunctionDeclaration): boolean {
+  if ((fn.parameters?.nodes ?? []).some((parameter) => readsOwnThis(parameter))) return true;
+  return fn.body !== undefined && readsOwnThis(fn.body);
+}
+
+/** Whether `node` reads the enclosing function's `this`: a `this` outside
+ * nested non-arrow functions and classes, which bind their own. */
+function readsOwnThis(node: ts.Node): boolean {
+  if (node.kind === ts.SyntaxKind.ThisKeyword) return true;
+  if (
+    (ts.isFunctionLike(node) && !ts.isArrowFunction(node)) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node)
+  )
+    return false;
+  return ts.forEachChild(node, (child) => (readsOwnThis(child) ? true : undefined)) === true;
+}
+
+/** `timers.userDelay(ms, kind)`: the delay, after the warning Node's
+ * Timeout constructor emits when it sets the delay to 1. `kind` is 0 for
+ * the global setTimeout, 1 for the global setInterval (mock.timers mocks
+ * both) and 2 for a node:timers import (which it leaves alone), plus 4 for
+ * a delay read from an array element. */
+function userDelay(ms: IrExpr, kind: number, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "timers.userDelay", args: [ms, numLit(kind, loc)], type: F64, loc };
+}
+
+/** An optional delay (lowerOptionalNumber's undefined-or-number ternary):
+ * only the defined arm warns, since Node sets an undefined delay to 1
+ * without a warning. Answers whether the check was placed. */
+function warnOnDefinedDelay(ms: IrExpr, kind: number, loc: SrcLoc): boolean {
+  const choice = ms.kind === "seqExpr" ? ms.result : ms;
+  if (choice.kind !== "ternary") return false;
+  choice.else_ = userDelay(choice.else_, kind, loc);
+  return true;
 }
 
 function hasBoolArm(lowerer: Lowerer, type: IrType): boolean {

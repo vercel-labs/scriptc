@@ -2,15 +2,8 @@ import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { elementMayBeForeign } from "./array-values.js";
 import { classPrototypeView } from "./class-prototypes.js";
-import {
-  dynUndefinedExpr,
-  boolLit,
-  helperLoc,
-  nodeThrowExpr,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { dynUndefinedExpr, boolLit, helperLoc, numLit, strLit, varRef } from "../../ir/build.js";
+import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { builtinClassDynValueOf, builtinClassKindOf } from "./builtins/builtin-class-dyn.js";
 import { InternalCompilerError } from "../../errors.js";
 
@@ -46,10 +39,12 @@ import {
   isClassOwnEnumerableFieldName,
   isDirentShape,
   isDynTypedRefType,
+  isJsonStringifyDynamicType,
+  accessorSlotProp,
   recordTextCodecClass,
-  shapeHasAccessorSlots,
   shapeKeyOrders,
   typeKey,
+  canBoxFuncIntoDyn,
 } from "../../ir/ir.js";
 import { accessorCall, findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./expressions/evaluation-safety.js";
@@ -61,10 +56,20 @@ import {
 import { eventTargetRootOf } from "./lower-event-target.js";
 import { dateRootOf } from "./builtins/date-classes.js";
 import { lowerSystemErrorMap } from "./lower-system-errors.js";
-import { isPerfEntryType, perfEntryJson } from "./builtins/performance.js";
+import {
+  isPerfEntryType,
+  isPerfNodeTimingType,
+  perfEntryJson,
+  perfNodeTimingJson,
+} from "./builtins/performance.js";
 import { recordMayKeepSource, recordSourceTest } from "./record-sources.js";
+import { registerLinkedHelper } from "./record-links.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "./null-prototype.js";
 import { dynArgumentPack } from "./call-arguments.js";
+import { errorConstructionOrder } from "./error-name-order.js";
+import { classFieldWithoutJsonView } from "./builtins/json.js";
+import { builtinConstructorText } from "./held-constructors.js";
+import { programTouchesInspectTables } from "./inspect-tables.js";
 
 /* ── IR construction shorthand ───────────────────────────────────────── */
 function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
@@ -74,6 +79,37 @@ function concatAll(parts: IrExpr[], loc: SrcLoc): IrExpr {
     out = { kind: "strConcat", left: out, right: parts[i]!, type: STRING, loc };
   }
   return out;
+}
+
+/** An object property's entry: marks the value as an object property's
+ * before it renders (compact: true indents it one level further) and
+ * composes Node's formatProperty entry from the rendered key and value. */
+function propertyEntry(key: IrExpr, value: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "insp.propChild",
+          args: [boolLit(true, loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "insp.property",
+      args: [key, value, boolLit(true, loc)],
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
 }
 
 /* ── property-name rendering (compile-time keys) ─────────────────────── */
@@ -193,16 +229,473 @@ function ownErrorFields(info: ClassInfo): { name: string; type: IrType }[] {
   );
 }
 
-/** `info` and its descendants that declare fields, most-derived first (a
- * runtime instance tests against its own class before an ancestor's). */
-function fieldedErrorClasses(info: ClassInfo): ClassInfo[] {
-  const out: ClassInfo[] = [];
-  const visit = (c: ClassInfo): void => {
-    for (const s of c.subclasses) visit(s);
-    if (!c.builtinError && !c.def.runtime && ownErrorFields(c).length > 0) out.push(c);
+/** The own enumerable properties JSON.stringify sees on an instance of a
+ * program error class, in creation order. The declared fields come first
+ * (the base chain's slots are already in their creation position), plus
+ * `message` when a class of the chain declares it as a field: the field
+ * redefines the base constructor's non-enumerable slot as enumerable. A
+ * `name` field or a `this.name = ...` assignment during construction
+ * creates an own enumerable property where the base's name lives on the
+ * prototype, at the position errorNameAfter records. */
+function errorJsonFields(info: ClassInfo): { name: string; type: IrType }[] {
+  const declared = new Set<string>();
+  for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+    for (const f of c.fieldOrder) if (isClassOwnEnumerableFieldName(f.name)) declared.add(f.name);
+  }
+  const builtin = new Set<string>();
+  for (let c = info.base; c; c = c.base) {
+    if (c.builtinError || c.def.runtime) for (const f of c.def.fields) builtin.add(f.name);
+  }
+  const fields = info.def.fields.filter(
+    (f) =>
+      isClassOwnEnumerableFieldName(f.name) &&
+      f.name !== "name" &&
+      (!builtin.has(f.name) || (f.name === "message" && declared.has("message"))),
+  );
+  const after = info.def.errorNameAfter;
+  if (after === undefined) return fields;
+  const nameField = { name: "name", type: STRING };
+  if (after === null) {
+    // The base constructor's message slot precedes everything the subclass
+    // creates; a declared message field makes that slot enumerable.
+    if (fields[0]?.name === "message") return [fields[0], nameField, ...fields.slice(1)];
+    return [nameField, ...fields];
+  }
+  const at = fields.findIndex((f) => f.name === after);
+  if (at === -1) return [...fields, nameField];
+  return [...fields.slice(0, at + 1), nameField, ...fields.slice(at + 1)];
+}
+
+/** Serialize a JSON.stringify result of `expr` the way %j writes it: a
+ * checked-dynamic result crosses into the runtime walker (toJSON hooks and
+ * all, "[Circular]" and a dropped root included), a JSON-safe static type
+ * uses its type-directed writer, and a value that can neither stay static
+ * nor cross the boundary returns null. `skipToJson` is for the value a
+ * toJSON hook returned: JSON.stringify applies a hook only to a value read
+ * from a holder, so the returned value enters the walk at the write step
+ * and only its members take their hooks. */
+function jsonSerializeExpr(
+  lowerer: Lowerer,
+  expr: IrExpr,
+  loc: SrcLoc,
+  skipToJson = false,
+): IrExpr | null {
+  const runtimeStringify = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: skipToJson ? "insp.jsonDynValue" : "insp.jsonDyn",
+    args: [value],
+    type: STRING,
+    loc,
+  });
+  if (expr.type.kind === "dyn") return runtimeStringify(expr);
+  if (lowerer.jsonStringifySafe(expr.type))
+    return { kind: "jsonStringify", value: expr, circular: true, type: STRING, loc };
+  if (lowerer.dynConvertible(expr.type))
+    return runtimeStringify({ kind: "dynFrom", value: expr, liveRef: true, type: DYN, loc });
+  return null;
+}
+
+/** A toJSON member JSON.stringify calls before walking the own properties:
+ * a method with a body and at most the key parameter. A getter or a data
+ * field named toJSON leaves the class to the checked-dynamic walk. */
+function errorToJsonMethod(
+  lowerer: Lowerer,
+  info: ClassInfo,
+): { ret: IrType; params: number } | null {
+  const found = findMethodOn(lowerer, info, "toJSON");
+  if (!found) return null;
+  if (found.sig.abstract === true || found.sig.async === true || found.sig.gen !== undefined)
+    return null;
+  if (found.sig.params.length > 1) return null;
+  return { ret: found.sig.ret, params: found.sig.params.length };
+}
+
+/** A class's own enumerable properties as a record of the same layout, or
+ * null when the static writer cannot serialize one of the field types.
+ *
+ * The key order is part of the shape's declaredOrder, which two classes
+ * with the same field set would share; a hidden field named after the class
+ * keeps each class's shape distinct, so its own order survives the
+ * whole-program key-order pass. Internal '%'-fields never serialize. */
+function jsonErrorFieldsRecord(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: () => IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const className = info.def.name;
+  const fields = errorJsonFields(info);
+  if (fields.length === 0) return strLit("{}", loc);
+  const marker = `%jsonOrder:${className}`;
+  const shapeId = lowerer.shapes.intern(
+    [...fields.map((f) => ({ ...f })), { name: marker, type: F64 }].sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+    ),
+    false,
+    undefined,
+    fields.map((f) => f.name),
+  );
+  const recordType: IrType = { kind: "record", shapeId };
+  if (!lowerer.jsonStringifySafe(recordType)) return null;
+  return {
+    kind: "jsonStringify",
+    value: {
+      kind: "recordLit",
+      fields: [
+        ...fields.map((f) => ({
+          name: f.name,
+          value: {
+            kind: "fieldGet",
+            obj: receiver(),
+            className,
+            field: f.name,
+            type: f.type,
+            loc,
+          } as IrExpr,
+        })),
+        { name: marker, value: numLit(0, loc) },
+      ],
+      type: recordType,
+      loc,
+    },
+    circular: true,
+    type: STRING,
+    loc,
   };
-  visit(info);
-  return out;
+}
+
+/** The runtime flag that records whether one of the error header's
+ * properties (name, message, cause) is an own ENUMERABLE property. Node's
+ * Error constructor gives name and message non-enumerable slots on the
+ * base's prototype and leaves cause to the options form, so a write
+ * through a slot creates the property — enumerable — only when nothing
+ * defined it enumerable before. */
+const ERROR_HEADER_FLAGS = {
+  name: "%nameEnumerable",
+  message: "%messageEnumerable",
+  cause: "%causeEnumerable",
+} as const;
+
+function errorHeaderFlag(
+  receiver: IrExpr,
+  className: string,
+  key: keyof typeof ERROR_HEADER_FLAGS,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "fieldGet",
+    obj: receiver,
+    className,
+    field: ERROR_HEADER_FLAGS[key],
+    type: BOOL,
+    loc,
+  };
+}
+
+/** Whether a class of the chain redeclares Error.cause: its initializer
+ * writes the base's `%cause` slot where the declaration runs, which makes
+ * the property own and enumerable at that position. The slot is not a
+ * layout field, so the record writer has no place for it and the class
+ * renders through the ordered walk below. */
+function errorDeclaresCause(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base)
+    if (c.fieldOrder.some((f) => f.errorCause)) return true;
+  return false;
+}
+
+/** An error class's own enumerable properties in creation order, as a
+ * checked-dynamic object the runtime walker writes: a declared field keeps
+ * its type-directed value, `cause` reads the base's slot, and `name`,
+ * `message` and `cause` print only where the runtime recorded them as own
+ * enumerable. The statements return the text; null when a field cannot
+ * cross into the walk.
+ *
+ * The walk starts from the receiver's fields instead of boxing it: a
+ * checked-dynamic handle of the instance would make the class a property
+ * bag receiver, and every %j of the class would then render through the
+ * handle, whose fixed slot order is not the class's construction order. */
+function errorOrderedBody(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: () => IrExpr,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  const className = info.def.name;
+  const types = new Map(errorJsonFields(info).map((f) => [f.name, f.type] as const));
+  const ordered = errorConstructionOrder(info, new Set(types.keys()));
+  // The base constructor creates the message slot before any class field
+  // runs, so a redeclared message prints first however late its
+  // declaration sits; a `name` or `cause` created after construction takes
+  // the end (Node: a write to a slot that has no own property yet).
+  const messageAt = ordered.findIndex((p) => p.kind === "message");
+  if (messageAt > 0) ordered.unshift(...ordered.splice(messageAt, 1));
+  if (!ordered.some((p) => p.kind === "cause")) ordered.push({ name: "cause", kind: "cause" });
+  if (!ordered.some((p) => p.kind === "name")) ordered.push({ name: "name", kind: "name" });
+  const fields: { key: IrExpr; value: IrExpr }[] = [];
+  for (const property of ordered) {
+    let value: IrExpr;
+    if (property.kind === "cause") {
+      value = { kind: "libCall", fn: "error.cause", args: [receiver()], type: DYN, loc };
+    } else if (property.kind === "name" || property.kind === "message") {
+      // The base error's slot: a class that does not declare the property
+      // still reads the value the base constructor (or a later write)
+      // stored there.
+      value = lowerer.coerceToExpected(
+        { kind: "fieldGet", obj: receiver(), className, field: property.name, type: STRING, loc },
+        DYN,
+      );
+    } else {
+      const type = types.get(property.name);
+      if (!type || !lowerer.dynConvertible(type)) return null;
+      value = lowerer.coerceToExpected(
+        { kind: "fieldGet", obj: receiver(), className, field: property.name, type, loc },
+        DYN,
+      );
+    }
+    // A declared `message` field prints where its declaration sits (Node
+    // redefines the base's slot as enumerable, which the slot's flag does
+    // not record); the other header properties print only where the runtime
+    // recorded them as own enumerable.
+    if (
+      property.kind === "cause" ||
+      property.kind === "name" ||
+      (property.kind === "message" && !types.has("message"))
+    )
+      value = {
+        kind: "ternary",
+        cond: errorHeaderFlag(receiver(), className, property.kind, loc),
+        then: value,
+        else_: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      };
+    fields.push({ key: strLit(property.name, loc), value });
+  }
+  return [
+    {
+      kind: "return",
+      value: {
+        kind: "libCall",
+        fn: "insp.jsonDyn",
+        args: [{ kind: "dynObjLit", fields, type: DYN, loc }],
+        type: STRING,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** The ordered walk of one class as a lifted function of its own. The %j
+ * helper calls it only when the instance's runtime flags disagree with its
+ * construction order, and keeping the walk out of line leaves the common
+ * path to the field record. Null when a field cannot cross into the walk. */
+function errorOrderedHelper(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): string | null {
+  const key = `jsonErrorOwn:${info.def.name}`;
+  const existing = lowerer.inspectHelpers.get(key);
+  if (existing !== undefined) return existing;
+  const type: IrType = { kind: "object", className: info.def.name };
+  const body = errorOrderedBody(lowerer, info, () => varRef("v.0", type, loc), loc);
+  if (body === null) return null;
+  const name = keyedHelperName(lowerer, "%util.format.jsonErrorOwn", info.def.name);
+  lowerer.inspectHelpers.set(key, name);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "v.0", name: "v", type }],
+    returnType: STRING,
+    locals: [{ id: "v.0", name: "v", type, mutable: false }],
+    body,
+    loc,
+  });
+  return name;
+}
+
+/** The ordered walk invoked on a receiver. */
+function errorOrderedJson(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  receiver: () => IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const helper = errorOrderedHelper(lowerer, info, loc);
+  return helper === null
+    ? null
+    : { kind: "call", callee: helper, args: [receiver()], type: STRING, loc };
+}
+
+/** The condition under which a record rendering is no longer the class's
+ * property list: a `name` the construction did not create became own and
+ * enumerable (an assignment after construction), or a `cause` did. Both
+ * live outside the record's shape, and the ordered walk reads them. */
+function errorRecordDeviation(info: ClassInfo, receiver: () => IrExpr, loc: SrcLoc): IrExpr {
+  const className = info.def.name;
+  const hasName = errorJsonFields(info).some((f) => f.name === "name");
+  const name = errorHeaderFlag(receiver(), className, "name", loc);
+  const cause = errorHeaderFlag(receiver(), className, "cause", loc);
+  // A record that lists name prints it while the flag holds; one that does
+  // not must stay off the record the moment the flag turns on.
+  const nameDeviation: IrExpr = hasName
+    ? { kind: "bin", op: "===", left: name, right: boolLit(false, loc), type: BOOL, loc }
+    : name;
+  return {
+    kind: "logical",
+    op: "||",
+    left: nameDeviation,
+    right: cause,
+    type: BOOL,
+    loc,
+  };
+}
+
+/** The lifted %j renderer for an error's static type. An instance reaching
+ * the base's static type can be any class in its subtree, and JSON.stringify
+ * prints the RUNTIME class's own enumerable properties (or its toJSON
+ * hook's result), so the helper tests the instance's class before rendering
+ * that class's shape. A class whose toJSON is a getter or a data field falls
+ * back to the checked-dynamic walk for that arm, as does an instance whose
+ * runtime own-property flags disagree with the shape the class's
+ * construction creates. A builtin error with no program subclass still
+ * builds the walk: `{}` is only right while it has no own enumerable
+ * property. */
+function jsonErrorHelper(
+  lowerer: Lowerer,
+  t: IrType & { kind: "object" },
+  loc: SrcLoc,
+): string | null {
+  const key = `jsonError:${typeKey(t)}`;
+  const existing = lowerer.inspectHelpers.get(key);
+  if (existing !== undefined) return existing;
+  const info = lowerer.classes.get(t.className);
+  if (!info) return null;
+  const classes = userErrorClasses(info);
+  const v = (): IrExpr => varRef("v.0", t, loc);
+  const dynamicRender = (receiver: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "insp.jsonDyn",
+    args: [{ kind: "dynFrom", value: receiver, liveRef: true, type: DYN, loc }],
+    type: STRING,
+    loc,
+  });
+  const body: IrStmt[] = [];
+  const fieldArms: { info: ClassInfo; arm: IrStmt & { kind: "return" }; dyn: () => IrExpr }[] = [];
+  for (const c of classes) {
+    const receiverType: IrType = { kind: "object", className: c.def.name };
+    const recv = (): IrExpr =>
+      c.def.name === t.className ? v() : { kind: "downcast", value: v(), type: receiverType, loc };
+    const toJson = errorToJsonMethod(lowerer, c);
+    let rendered: IrExpr | null;
+    if (toJson) {
+      // JSON.stringify calls toJSON with the property key; the root's key is
+      // the empty string, and the result takes its own serialization — the
+      // hook does not run again over the value it returned.
+      const call = accessorCall(
+        lowerer,
+        c.def.name,
+        "toJSON",
+        recv(),
+        toJson.params > 0 ? [strLit("", loc)] : [],
+        toJson.ret,
+        loc,
+      );
+      rendered = jsonSerializeExpr(lowerer, call, loc, true);
+    } else if (errorDeclaresToJson(c)) {
+      // A getter or data-field toJSON: only the checked-dynamic view sees it.
+      rendered = null;
+    } else if (errorDeclaresCause(c)) {
+      // A declared cause prints where its initializer runs, and the record
+      // writer has no slot for it: the ordered walk carries the class's
+      // properties.
+      rendered = errorOrderedJson(lowerer, c, recv, loc);
+    } else {
+      const record = jsonErrorFieldsRecord(lowerer, c, recv, loc);
+      const ordered = record === null ? null : errorOrderedJson(lowerer, c, recv, loc);
+      // A class whose fields the record writes but the checked walk cannot
+      // carry (a function-valued field) keeps the record alone: the head's
+      // rendering, and the runtime flags of such a class stay unread.
+      rendered =
+        record === null
+          ? null
+          : ordered === null
+            ? record
+            : {
+                kind: "ternary",
+                cond: errorRecordDeviation(c, recv, loc),
+                then: ordered,
+                else_: record,
+                type: STRING,
+                loc,
+              };
+    }
+    const arm: IrStmt & { kind: "return" } = {
+      kind: "return",
+      value: rendered ?? dynamicRender(recv()),
+      loc,
+    };
+    if (rendered !== null) fieldArms.push({ info: c, arm, dyn: () => dynamicRender(recv()) });
+    if (c.def.name === t.className) {
+      body.push({ kind: "block", body: [arm], loc });
+      break;
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "instanceOf", value: v(), className: c.def.name, type: BOOL, loc },
+      then: [arm],
+      else_: null,
+      loc,
+    });
+  }
+  // A builtin error instance of the subtree (an Error-typed `new TypeError()`
+  // reaches here through an Error static type): its extra state rides
+  // non-enumerable slots, so the walk sees no own property — until a write
+  // after construction makes `name` or `cause` own and enumerable, which
+  // the runtime's flags record and the checked-dynamic view renders.
+  if (body.at(-1)?.kind !== "block") {
+    const className = t.className;
+    body.push({
+      kind: "return",
+      value: {
+        kind: "ternary",
+        cond: {
+          kind: "logical",
+          op: "||",
+          left: errorHeaderFlag(v(), className, "name", loc),
+          right: errorHeaderFlag(v(), className, "cause", loc),
+          type: BOOL,
+          loc,
+        },
+        then: {
+          kind: "libCall",
+          fn: "insp.jsonDyn",
+          args: [lowerer.coerceToExpected(v(), DYN)],
+          type: STRING,
+          loc,
+        },
+        else_: strLit("{}", loc),
+        type: STRING,
+        loc,
+      },
+      loc,
+    });
+  }
+  const name = keyedHelperName(lowerer, "%util.format.jsonError", key);
+  lowerer.inspectHelpers.set(key, name);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "v.0", name: "v", type: t }],
+    returnType: STRING,
+    locals: [{ id: "v.0", name: "v", type: t, mutable: false }],
+    body,
+    loc,
+  });
+  // A property created at run time (a write through an untyped reference)
+  // adds a property bag to a class after this helper was built. JSON
+  // enumerates those properties too, and only the checked-dynamic view
+  // reads the bag, so a bagged class's arm switches to that view.
+  lowerer.shapeOrderHelperFinalizers.push(() => {
+    for (const { info: c, arm, dyn } of fieldArms)
+      if (c.def.fields.some((f) => f.name === DYN_CLASS_PROPERTIES)) arm.value = dyn();
+  });
+  return name;
 }
 
 /** Why a fielded error class's own properties have no static rendering,
@@ -222,15 +715,24 @@ function fieldedErrorReason(
   }
   visiting.add(key);
   try {
+    // A JavaScript class's fields exist once its constructor creates them,
+    // which can be conditional; the layout reads every field. A field some
+    // class of the chain creates unconditionally — a declared field, or an
+    // assignment at the constructor's top level — is on every constructed
+    // instance, so only the rest fence.
+    let jsChain = false;
+    const created = new Set<string>();
+    for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
+      if (c.decl && isJsSourceFile(c.decl.getSourceFile())) jsChain = true;
+      for (const f of c.fieldOrder) if (f.deferredCreation !== true) created.add(f.name);
+    }
+    if (jsChain && ownErrorFields(info).some((f) => !created.has(f.name)))
+      return "its fields are JavaScript properties, which its constructor may not create";
     for (let c: ClassInfo | null = info; c && !c.builtinError && !c.def.runtime; c = c.base) {
       // Node prints the own properties in creation order, which puts a
       // declared `cause` among the fields; the cause renders after them.
       if (c.fieldOrder.some((f) => f.errorCause))
         return "its field 'cause' is one Node's error inspector treats specially";
-      // A JavaScript class's fields exist once its constructor creates them,
-      // which can be conditional; the layout reads every field.
-      if (c.decl && isJsSourceFile(c.decl.getSourceFile()) && ownErrorFields(c).length > 0)
-        return "its fields are JavaScript properties, which its constructor may not create";
     }
     for (const f of ownErrorFields(info)) {
       if (ERROR_SPECIAL_KEYS.has(f.name))
@@ -246,13 +748,15 @@ function fieldedErrorReason(
 
 /** True when an instance of `c` can contain itself: its fields reach `c`
  * or one of its bases, whose slots can hold a `c` (`next: Chain` in a
- * subclass of Chain, a field typed as Error). */
+ * subclass of Chain, a field typed as Error), or a checked-dynamic field,
+ * whose box can hold any value. */
 function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
   const holders = new Set<string>();
   for (let a: ClassInfo | null = c; a; a = a.base) holders.add(a.def.name);
   const seen = new Set<string>();
   const walk = (u: IrType): boolean => {
     for (const x of typeConstituents(lowerer, u)) {
+      if (x.kind === "dyn") return true;
       if (x.kind === "object" && holders.has(x.className)) return true;
       const k = typeKey(x);
       if (!seen.has(k)) {
@@ -267,14 +771,15 @@ function errorInstanceReachesItself(lowerer: Lowerer, c: ClassInfo): boolean {
 
 /** An error value whose runtime class may be a program-declared subclass,
  * which may declare fields (`class Bailable extends Error { bail = false }`)
- * or carry a `cause`: Node prints the error base (`[Bailable [Error]: m]`,
- * the stackless form compiled errors use) followed by the own properties,
- * `[Bailable [Error]: m] { bail: true }`, with the usual single-line/
- * multi-line choice counting the base. Each program class (most-derived
- * first) is an instanceof arm; other values keep the runtime's error
- * rendering. Beyond the depth budget an instance with own properties
- * prints `[Name]`, as Node does for any object with keys; one without
- * prints its header. */
+ * or carry a `cause`: Node prints the error base — its stack, headed
+ * `Bailable [Error]: m` by improveStack, or the bracketed
+ * `[Bailable [Error]: m]` when the stack has no frame line — followed by
+ * the own properties, `{ bail: true }` after the last frame, with the
+ * usual single-line/multi-line choice counting the base. Each program
+ * class (most-derived first) is an instanceof arm; other values keep the
+ * runtime's error rendering. Beyond the depth budget an instance with own
+ * properties prints `[Name]`, as Node does for any object with keys; one
+ * without prints its header. */
 function errorInspectHelper(
   lowerer: Lowerer,
   t: IrType & { kind: "object" },
@@ -419,8 +924,11 @@ function errorInspectHelper(
         entry(
           concatAll(
             [
-              strLit(`${inspectKey(f.name)}: `, loc),
-              inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+              propertyEntry(
+                strLit(inspectKey(f.name), loc),
+                inspectExpr(lowerer, f.type, read, rPlus1(), d(), loc),
+                loc,
+              ),
             ],
             loc,
           ),
@@ -472,18 +980,21 @@ function errorInspectHelper(
     const why = fields.length > 0 ? fieldedErrorReason(lowerer, c) : null;
     let arm: IrStmt[];
     if (why !== null) {
-      // An instance of a subclass whose own properties have no rendering
-      // throws a named refusal instead of printing a partial object.
+      // A subclass whose own properties have no static rendering — fields a
+      // JavaScript constructor creates conditionally, a declared `cause` among
+      // them, a field type the static walkers do not carry — renders through
+      // the checked-dynamic view, which lists exactly the own properties the
+      // instance has, in creation order, as Node does.
       arm = [
         {
           kind: "return",
-          value: nodeThrowExpr(
-            0,
-            "SC2020",
-            `inspecting a '${display}' error (${why}) is not supported yet`,
-            STRING,
+          value: {
+            kind: "libCall",
+            fn: "insp.dyn",
+            args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+            type: STRING,
             loc,
-          ),
+          },
           loc,
         },
       ];
@@ -540,9 +1051,10 @@ function errorInspectHelper(
   };
   // Dynamic stores (a JavaScript class's `this.x = ...` outside its
   // declared fields, or a write through an untyped reference) add a
-  // property bag to a class after this helper was built. The rendering
-  // reads only a `cause` from it, so an instance whose bag holds another
-  // property throws a named refusal instead of printing a partial object.
+  // property bag to a class after this helper was built. The static
+  // rendering reads only the declared fields, so an instance whose bag
+  // holds properties renders through the checked-dynamic view, which lists
+  // them where Node does.
   lowerer.shapeOrderHelperFinalizers.push(() => {
     const bagged = [info, ...userErrorClasses(info)].filter(
       (c) =>
@@ -588,13 +1100,13 @@ function errorInspectHelper(
         then: [
           {
             kind: "return",
-            value: nodeThrowExpr(
-              0,
-              "SC2020",
-              `inspecting a '${c.def.jsName ?? c.def.name.replace(/^%/, "")}' error with properties created at run time is not supported yet`,
-              STRING,
+            value: {
+              kind: "libCall",
+              fn: "insp.dyn",
+              args: [lowerer.coerceToExpected(v(), DYN), r(), d()],
+              type: STRING,
               loc,
-            ),
+            },
             loc,
           },
         ],
@@ -621,10 +1133,12 @@ function userErrorClasses(info: ClassInfo): ClassInfo[] {
   return out;
 }
 
-/** Node's improveStack over the stackless base (`[Error: m]`): when the
- * instance's constructor name differs from its `name` and the name ends in
- * "Error", the header names both — `[Bailable [Error]: m]`, or
- * `[FetchError: m]` when the constructor name already contains it. */
+/** Node's improveStack over the rendering's base: when the instance's
+ * constructor name differs from its `name` and the name ends in "Error",
+ * the header names both — `[Bailable [Error]: m]`, or `[FetchError: m]`
+ * when the constructor name already contains it. Two bases reach here: the
+ * bracket form (`[Error: m]`, an error whose stack is empty) and the stack
+ * itself (`Error: m\n    at ...`, whose first line carries the header). */
 function improvedErrorBase(
   lowerer: Lowerer,
   value: IrExpr,
@@ -695,6 +1209,42 @@ function improvedErrorBase(
     type: STRING,
     loc,
   };
+  /** The name's length — where a stack base's header ends. */
+  const nameLength = (): IrExpr => str("length", nameRef(), [], F64);
+  /** The base's character at `name.length`: `:` or `\n` after the name, or
+   * the empty answer when the base is the name alone (Node's
+   * `stack.length === len` arm). */
+  const atNameEnd = (): IrExpr => str("charAt", baseRef(), [nameLength()], STRING);
+  const stackCond = and(
+    and(
+      eq(nameRef(), strLit(display, loc), true),
+      str("endsWith", nameRef(), [strLit("Error", loc)], BOOL),
+    ),
+    and(str("startsWith", baseRef(), [nameRef()], BOOL), {
+      kind: "logical",
+      op: "||",
+      left: {
+        kind: "logical",
+        op: "||",
+        left: eq(atNameEnd(), strLit(":", loc)),
+        right: eq(atNameEnd(), strLit("\n", loc)),
+        type: BOOL,
+        loc,
+      },
+      right: eq(atNameEnd(), strLit("", loc)),
+      type: BOOL,
+      loc,
+    }),
+  );
+  const stackRest = (): IrExpr => str("slice", baseRef(), [nameLength()], STRING);
+  const improvedStack: IrExpr = {
+    kind: "ternary",
+    cond: str("includes", strLit(display, loc), [nameRef()], BOOL),
+    then: concatAll([strLit(display, loc), stackRest()], loc),
+    else_: concatAll([strLit(`${display} [`, loc), nameRef(), strLit("]", loc), stackRest()], loc),
+    type: STRING,
+    loc,
+  };
   return {
     kind: "seqExpr",
     stmts: [
@@ -713,7 +1263,21 @@ function improvedErrorBase(
       },
       { kind: "varDecl", localId: "raw.0", init: base, loc },
     ],
-    result: { kind: "ternary", cond, then: improved, else_: baseRef(), type: STRING, loc },
+    result: {
+      kind: "ternary",
+      cond,
+      then: improved,
+      else_: {
+        kind: "ternary",
+        cond: stackCond,
+        then: improvedStack,
+        else_: baseRef(),
+        type: STRING,
+        loc,
+      },
+      type: STRING,
+      loc,
+    },
     type: STRING,
     loc,
   };
@@ -722,6 +1286,16 @@ function improvedErrorBase(
 function isErrorClass(lowerer: Lowerer, className: string): boolean {
   if (RUNTIME_ERROR_CLASSES.has(className)) return true;
   return lowerer.isSubclassOf(className, "%Error");
+}
+
+/** The class or a base declares a `toJSON` member (method, getter or
+ * field): JSON.stringify calls it before walking the own properties. */
+function errorDeclaresToJson(info: ClassInfo): boolean {
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    if (c.methods.has("toJSON") || c.methods.has("get:toJSON") || c.fields.has("toJSON"))
+      return true;
+  }
+  return false;
 }
 
 /** inspUnsupportedReason: the deepUnsupportedReason twin. Fences name the
@@ -757,14 +1331,9 @@ function inspectSupport(
       visiting.add(t.shapeId);
       const shape = lowerer.shapes.get(t.shapeId);
       if (!shape) return "this record shape has no inspect lowering";
-      const codec = recordTextCodecClass(shape);
-      if (codec !== null) return `${codec} instances have no inspect lowering yet`;
-      // Accessor-carrying shapes: Node prints the accessor names as
-      // `x: [Getter]` / `[Setter]` / `[Getter/Setter]` in insertion order
-      // — a position the static field walk does not track (accessor slots
-      // live outside declaredOrder), so the render fences by name.
-      if (shapeHasAccessorSlots(shape)) {
-        return "shapes carrying get/set accessor properties have no inspect lowering yet (Node prints the accessor names as [Getter]/[Setter] in insertion order — read the properties explicitly)";
+      if (recordTextCodecClass(shape) !== null) {
+        visiting.delete(t.shapeId);
+        return null;
       }
       if (shape.indexValue !== undefined) {
         // PURE index-signature shapes (Record<string, V> — no declared
@@ -782,6 +1351,19 @@ function inspectSupport(
         return null;
       }
       for (const f of shape.fields) {
+        // An accessor's closure slot never renders itself: the property's
+        // entry prints Node's label, or the getter's RESULT under the
+        // getters option (a setter-only property stays a label). A getter
+        // that returns nothing renders `[Getter: undefined]` — the label
+        // path already, so its void result is no fence.
+        const slot = accessorSlotProp(f.name);
+        if (slot && f.type.kind === "func") {
+          if (slot.kind === "set") continue;
+          if (f.type.ret.kind === "void") continue;
+          const why = inspectSupport(lowerer, f.type.ret, visiting, out);
+          if (why !== null) return why;
+          continue;
+        }
         const why = inspectSupport(lowerer, f.type, visiting, out);
         if (why !== null) return why;
       }
@@ -811,7 +1393,16 @@ function inspectSupport(
       return null;
     }
     case "func":
-      return "function values have no inspect lowering (no runtime name exists — Node prints '[Function: name]'; pass the function's declared identifier directly to util.inspect for the baked form)";
+      // A function value prints through its checked-dynamic box, which
+      // names it from the function itself (`[Function: name]`, `[Function
+      // (anonymous)]`) wherever it sits in the printed value.
+      return canBoxFuncIntoDyn(
+        t,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+        ? null
+        : "function values of this signature have no inspect lowering (a parameter or result type has no checked-dynamic form to box the function with; pass the function's declared identifier directly to util.inspect for the baked form)";
     case "object": {
       const info = lowerer.classes.get(t.className);
       if (!info) return `class '${t.className}' has no inspect lowering`;
@@ -826,13 +1417,10 @@ function inspectSupport(
           return "error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet";
         if (errorRenderable(info)) return null;
         // Subclasses with declared fields render the error base followed
-        // by their own properties. The static class's own fields must
-        // render; a subclass whose fields cannot is a runtime refusal on
-        // its own instances only (see errorInspectHelper).
-        const own = fieldedErrorClasses(info).find((c) => c === info);
-        const ownWhy = own ? fieldedErrorReason(lowerer, own, visiting, out) : null;
-        if (ownWhy !== null)
-          return `'${t.className.replace(/^%(m\d+\.)?/, "")}' error values (${ownWhy})`;
+        // by their own properties; a class whose fields have no static
+        // rendering (a JavaScript field created conditionally, a declared
+        // `cause`) renders through its checked-dynamic view (see
+        // errorInspectHelper).
         return null;
       }
       // A class with subclasses, or a JavaScript class, renders through its
@@ -868,6 +1456,26 @@ function inspectSupport(
       }
       visiting.delete(t.className);
       return null;
+    }
+    // A class value prints through its checked-dynamic form: `[class C]`,
+    // `[class D extends C]` for whichever class the slot holds. Static
+    // fields print after the tag in Node, which that form does not hold
+    // (the runtime refuses it there): a class that has them, or a subclass
+    // that does, keeps the refusal here.
+    case "classval": {
+      const info = lowerer.classes.get(t.className);
+      // A runtime-provided class (EventEmitter, a stream class) has no
+      // checked-dynamic value in typed code.
+      if (!info || info.def.runtime || !lowerer.dynConvertible(t))
+        return `'${lowerer.fmt(t)}' values have no inspect lowering`;
+      const family = (current: ClassInfo): ClassInfo[] => [
+        current,
+        ...current.subclasses.flatMap(family),
+      ];
+      const withStatics = family(info).find((member) => member.staticFields.length > 0);
+      return withStatics
+        ? `'${lowerer.fmt(t)}' values have no inspect lowering (class '${withStatics.def.name}' has static fields, which Node prints after the class tag)`
+        : null;
     }
     // Generator objects print through their checked capsule: Node's
     // `Object [Generator] {}`, or the tag of the iterator they implement.
@@ -1031,10 +1639,11 @@ function inspectExprBody(
   ownRendering: boolean,
 ): IrExpr {
   // A Dirent row renders through its dyn view: Node's `Dirent { ... }`
-  // with the Symbol(type) key.
+  // with the Symbol(type) key. So do TextEncoder and TextDecoder, through
+  // their handles' inspectors.
   if (t.kind === "record") {
     const shape = lowerer.shapes.get(t.shapeId);
-    if (shape && isDirentShape(shape)) {
+    if (shape && (isDirentShape(shape) || recordTextCodecClass(shape) !== null)) {
       return {
         kind: "libCall",
         fn: "insp.dyn",
@@ -1088,6 +1697,25 @@ function inspectExprBody(
       };
     case "dyn":
       return { kind: "libCall", fn: "insp.dyn", args: [value, recurse, depth], type: STRING, loc };
+    // A function value held in a typed slot (a union arm, a tuple position,
+    // a record member): its box has no static name, so the runtime names it
+    // from the function it is (inspectSupport admitted the signature).
+    case "func":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [{ kind: "dynFrom", value, type: DYN, loc }, recurse, depth],
+        type: STRING,
+        loc,
+      };
+    case "classval":
+      return {
+        kind: "libCall",
+        fn: "insp.dyn",
+        args: [lowerer.coerceToExpected(value, DYN), recurse, depth],
+        type: STRING,
+        loc,
+      };
     // URLs and URLSearchParams render through their checked-dynamic
     // handles: Node's `URL { href: ..., hash: ... }` and
     // `URLSearchParams { 'a' => '1' }`.
@@ -1199,6 +1827,16 @@ export function typeReachesItself(lowerer: Lowerer, t: IrType): boolean {
   return walk(t);
 }
 
+/** Whether a record shape carries an accessor getter, whose result can be
+ * the walked value itself. */
+function shapeHasGetter(lowerer: Lowerer, shapeId: string): boolean {
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape) return false;
+  return shape.fields.some(
+    (f) => accessorSlotProp(f.name)?.kind === "get" && f.type.kind === "func",
+  );
+}
+
 /** True when a value of `t` can be cyclic: `t` or any type reachable from
  * it reaches itself. */
 export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
@@ -1208,6 +1846,20 @@ export function typeReachesCycle(lowerer: Lowerer, t: IrType): boolean {
     if (seen.has(k)) return false;
     seen.add(k);
     if (typeReachesItself(lowerer, u)) return true;
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+/** True when a value of `t` can hold an untyped value: a type reachable
+ * from it is the checked dynamic. */
+function typeReachesUntyped(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    if (u.kind === "dyn") return true;
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
     return typeConstituents(lowerer, u).some(walk);
   };
   return walk(t);
@@ -1368,6 +2020,23 @@ export function typeReachesCustomInspect(lowerer: Lowerer, t: IrType): boolean {
     if (seen.has(k)) return false;
     seen.add(k);
     if (u.kind === "object" && customInspectMethodOf(lowerer, u.className)) return true;
+    return typeConstituents(lowerer, u).some(walk);
+  };
+  return walk(t);
+}
+
+/** Whether a `t` value can reach a TextEncoder or TextDecoder, whose
+ * handles print through Node's custom inspectors. */
+function typeReachesTextCodec(lowerer: Lowerer, t: IrType): boolean {
+  const seen = new Set<string>();
+  const walk = (u: IrType): boolean => {
+    const k = typeKey(u);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    if (u.kind === "record") {
+      const shape = lowerer.shapes.get(u.shapeId);
+      if (shape && recordTextCodecClass(shape) !== null) return true;
+    }
     return typeConstituents(lowerer, u).some(walk);
   };
   return walk(t);
@@ -1548,10 +2217,6 @@ export function customInspectRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStm
   const stmts: IrStmt[] = [];
   for (const info of lowerer.classes.values()) {
     if (info.def.runtime || info.def.abstract) continue;
-    // Error classes register when their own properties render statically
-    // (fieldedErrorReason): the others keep no method to call.
-    if (isErrorClass(lowerer, info.def.name) && fieldedErrorReason(lowerer, info) !== null)
-      continue;
     if (!lowerer.findMethodOn(info, INSPECT_CUSTOM_MEMBER)) continue;
     // Only constructed classes have instances, and only their methods lower
     // (the constructor edge reaches the method).
@@ -1622,9 +2287,17 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
   // order), seen-push after begin, and refWrap around end's result (end
   // adds the <ref *N> prefix on values the walk found circular). Acyclic types
   // keep the zero-cost path.
+  // An accessor's getter answers any value — the walked value itself
+  // included — which no declared field type shows, so a shape with a
+  // getter keeps Node's circular bookkeeping on.
+  // An untyped value holds any object by reference, the walked value
+  // included, so a container that reaches one keeps the bookkeeping on too.
   const onCycle =
-    (t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
-    typeReachesItself(lowerer, t);
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "object") &&
+      (typeReachesItself(lowerer, t) ||
+        (t.kind === "record" && shapeHasGetter(lowerer, t.shapeId)))) ||
+    ((t.kind === "record" || t.kind === "array" || t.kind === "map" || t.kind === "set") &&
+      typeReachesUntyped(lowerer, t));
   const begin = (): IrStmt[] => [
     exprStmt({ kind: "libCall", fn: "insp.begin", args: [rPlus1()], type: { kind: "void" }, loc }),
     ...(onCycle
@@ -1736,6 +2409,15 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const i = (): IrExpr => varRef("i.0", F64, loc);
       const next = (): IrExpr => varRef("next.0", F64, loc);
       const hasMore = (): IrExpr => lt(i(), n());
+      // The render's maxArrayLength: entries show while the output holds
+      // fewer than the limit, at every nesting level (Node's ctx).
+      const limit = (): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.maxArrayLength",
+        args: [],
+        type: F64,
+        loc,
+      });
       // A foreign element (state 3) holds a value outside the element type.
       const foreignElements = elementMayBeForeign(lowerer, t.elem);
       const foreign = (): IrExpr => ({
@@ -1806,7 +2488,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             kind: "logical",
             op: "&&",
             left: hasMore(),
-            right: lt(shown(), numLit(100, loc)),
+            right: lt(shown(), limit()),
             type: BOOL,
             loc,
           },
@@ -1887,6 +2569,53 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         type,
         loc,
       });
+      if (isPerfNodeTimingType(lowerer, t)) {
+        // PerformanceNodeTiming's custom inspect: the class name and a
+        // nested inspect of toJSON() (which leaves uvMetricsInfo out) one
+        // level shallower, in its own context; `[PerformanceNodeTiming]`
+        // past the depth budget, like the entry classes.
+        const className = strLit("PerformanceNodeTiming", loc);
+        const json = perfNodeTimingJson(lowerer, v(), t, loc);
+        const dLess1: IrExpr = {
+          kind: "bin",
+          op: "-",
+          left: d(),
+          right: numLit(1, loc),
+          type: F64,
+          loc,
+        };
+        locals.push({ id: "in.0", name: "inner", type: STRING, mutable: false });
+        body = [
+          {
+            kind: "if",
+            cond: { kind: "bin", op: ">", left: r(), right: d(), type: BOOL, loc },
+            then: [ret(concatAll([strLit("[", loc), className, strLit("]", loc)], loc))],
+            else_: null,
+            loc,
+          },
+          exprStmt({
+            kind: "libCall",
+            fn: "insp.nestedBegin",
+            args: [],
+            type: { kind: "void" },
+            loc,
+          }),
+          {
+            kind: "varDecl",
+            localId: "in.0",
+            init: inspectExpr(lowerer, json.type, json, numLit(0, loc), dLess1, loc),
+            loc,
+          },
+          ret({
+            kind: "libCall",
+            fn: "insp.nestedEnd",
+            args: [className, varRef("in.0", STRING, loc)],
+            type: STRING,
+            loc,
+          }),
+        ];
+        break;
+      }
       if (isPerfEntryType(lowerer, t)) {
         // PerformanceEntry's custom inspect: `[PerformanceMark]` past the
         // depth budget, otherwise the class name and a nested inspect of
@@ -1902,7 +2631,21 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             loc,
           },
           then: strLit("PerformanceMark", loc),
-          else_: strLit("PerformanceMeasure", loc),
+          else_: {
+            kind: "ternary",
+            cond: {
+              kind: "strEq",
+              negated: false,
+              left: get("entryType", STRING),
+              right: strLit("measure", loc),
+              type: BOOL,
+              loc,
+            },
+            then: strLit("PerformanceMeasure", loc),
+            else_: strLit("PerformanceResourceTiming", loc),
+            type: STRING,
+            loc,
+          },
           type: STRING,
           loc,
         };
@@ -1948,23 +2691,77 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         break;
       }
       if (shape.tuple) {
-        // Tuples ARE arrays to Node: bracket form, array-extras grouping.
-        if (shape.fields.length === 0) {
+        // Tuples ARE arrays to Node: bracket form, array-extras grouping,
+        // and the same maxArrayLength bound on the entries shown.
+        const count = shape.fields.length;
+        if (count === 0) {
           body = [ret(strLit("[]", loc))];
           break;
         }
-        body = [depthGate("[Array]"), ...begin()];
-        for (const f of shape.fields) {
-          body.push(
-            entry(
-              child(f.type, get(f.name, f.type)),
-              isNumberFlag(lowerer, f.type, () => get(f.name, f.type), loc),
-            ),
-          );
+        locals.push({ id: "lim.0", name: "lim", type: F64, mutable: false });
+        const lim = (): IrExpr => varRef("lim.0", F64, loc);
+        const lt = (left: IrExpr, right: IrExpr): IrExpr => ({
+          kind: "bin",
+          op: "<",
+          left,
+          right,
+          type: BOOL,
+          loc,
+        });
+        const bounded = (): IrExpr => lt(lim(), numLit(count, loc));
+        body = [
+          depthGate("[Array]"),
+          {
+            kind: "varDecl",
+            localId: "lim.0",
+            init: { kind: "libCall", fn: "insp.maxArrayLength", args: [], type: F64, loc },
+            loc,
+          },
+          ...begin(),
+        ];
+        for (let i = 0; i < count; i++) {
+          const f = shape.fields[i]!;
+          body.push({
+            kind: "if",
+            cond: lt(numLit(i, loc), lim()),
+            then: [
+              entry(
+                child(f.type, get(f.name, f.type)),
+                isNumberFlag(lowerer, f.type, () => get(f.name, f.type), loc),
+              ),
+            ],
+            else_: null,
+            loc,
+          });
         }
-        body.push(
-          ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, boolLit(false, loc))),
-        );
+        body.push({
+          kind: "if",
+          cond: bounded(),
+          then: [
+            entry(
+              {
+                kind: "libCall",
+                fn: "insp.moreItems",
+                args: [
+                  {
+                    kind: "bin",
+                    op: "-",
+                    left: numLit(count, loc),
+                    right: lim(),
+                    type: F64,
+                    loc,
+                  },
+                ],
+                type: STRING,
+                loc,
+              },
+              boolLit(false, loc),
+            ),
+          ],
+          else_: null,
+          loc,
+        });
+        body.push(ret(end(strLit("", loc), strLit("[", loc), strLit("]", loc), true, bounded())));
         break;
       }
       if (shape.indexValue && shape.fields.length === 0) {
@@ -2095,9 +2892,255 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       // reachability can settle this shape after the helper is first
       // interned, so rebuild the field walk once metadata is final.
       lowerer.keyOrder.observe(t);
+      // Accessor properties: the shape keeps the getter and setter as
+      // `%get:`/`%set:` closure slots and names the property once, in
+      // accessorOrder (see accessorSlotProp). The walk prints the label
+      // Node prints, or — under Node's getters option — runs the getter
+      // and prints what it answered, or the value it threw. The slots
+      // cannot change after interning, so the locals pool here serves
+      // every rebuild.
+      interface AccessorSlots {
+        get?: IrType & { kind: "func" };
+        set?: IrType & { kind: "func" };
+      }
+      const accessors = new Map<string, AccessorSlots>();
+      for (const f of shape.fields) {
+        const slot = accessorSlotProp(f.name);
+        if (!slot || f.type.kind !== "func") continue;
+        const slots = accessors.get(slot.prop) ?? {};
+        if (slot.kind === "get") slots.get = f.type;
+        else slots.set = f.type;
+        accessors.set(slot.prop, slots);
+      }
+      if (accessors.size > 0) {
+        // The getters option, read once per render: the helper is shared
+        // by every call site, so the option is run-time state.
+        locals.push({ id: "gm.0", name: "gm", type: F64, mutable: false });
+        for (let i = 0; i < accessors.size; i++) {
+          locals.push(
+            { id: `a.${i}`, name: "a", type: STRING, mutable: true },
+            { id: `ae.${i}`, name: "ae", type: CAUGHT, mutable: false },
+          );
+        }
+      }
+      const ACCESSOR_PRIMITIVES = new Set([
+        "f64",
+        "string",
+        "bool",
+        "undefinedT",
+        "nullT",
+        "bigint",
+        "symbol",
+      ]);
+      let accessorIndex = 0;
+      const accessorValueLocals = new Set<string>();
+      /** `key: <label>` for an accessor property, invoking its getter when
+       * the getters option names it: the result renders by kind (Node's
+       * formatProperty), a throw as `[Label: <Inspection threw (err)>]`. */
+      const accessorEntry = (name: string, slots: AccessorSlots): IrStmt[] => {
+        const index = accessorIndex++;
+        const strId = `a.${index}`;
+        const caughtId = `ae.${index}`;
+        const label = slots.get ? (slots.set ? "Getter/Setter" : "Getter") : "Setter";
+        const s = (): IrExpr => varRef(strId, STRING, loc);
+        const entryOf = (value: IrExpr): IrStmt =>
+          entry(concatAll([strLit(`${inspectKey(name)}: `, loc), value], loc), boolLit(false, loc));
+        const getType = slots.get;
+        if (getType === undefined) {
+          return [
+            { kind: "varDecl", localId: strId, init: strLit(`[${label}]`, loc), loc },
+            entryOf(s()),
+          ];
+        }
+        const called: IrExpr = {
+          kind: "callValue",
+          callee: {
+            kind: "recordGet",
+            obj: v(),
+            shapeId: t.shapeId,
+            field: `%get:${name}`,
+            type: getType,
+            loc,
+          },
+          args: [],
+          type: getType.ret,
+          loc,
+        };
+        const resultT = getType.ret;
+        // What the getter answered renders by RUNTIME kind (Node's
+        // formatProperty): a null and the primitives `[Label: <primitive>]`,
+        // an object or a function `[Label] <value>`. A checker union
+        // dispatches on the arm that holds; a checked-dynamic answer is
+        // classified by the runtime. A getter that returns nothing runs for
+        // its effects and renders Node's `[Getter: undefined]`.
+        const primitiveText = (armT: IrType, value: IrExpr): IrExpr =>
+          concatAll([strLit(`[${label}: `, loc), child(armT, value), strLit("]", loc)], loc);
+        const rendered = (armT: IrType, value: IrExpr): IrExpr => {
+          if (armT.kind === "dyn")
+            return {
+              kind: "libCall",
+              fn: "insp.accessorValue",
+              args: [value, strLit(label, loc), rPlus1(), d()],
+              type: STRING,
+              loc,
+            };
+          return ACCESSOR_PRIMITIVES.has(armT.kind)
+            ? primitiveText(armT, value)
+            : concatAll([strLit(`[${label}] `, loc), child(armT, value)], loc);
+        };
+        // The getter runs in an inspection context of its own: util.inspect
+        // calls INSIDE it start from Node's fresh defaults and must leave
+        // this walk's options, frames and circular bookkeeping alone. What
+        // it answered renders in THIS context, at the property's level.
+        const valueId = `av.${index}`;
+        const tokenId = `at.${index}`;
+        const hasValue = resultT.kind !== "void";
+        if (hasValue && !accessorValueLocals.has(valueId)) {
+          accessorValueLocals.add(valueId);
+          // Declared by the try's varDecl, so the answer's release is the
+          // try's; nothing reads it outside.
+          locals.push({ id: valueId, name: "av", type: resultT, mutable: false });
+        }
+        if (!accessorValueLocals.has(tokenId)) {
+          accessorValueLocals.add(tokenId);
+          locals.push({ id: tokenId, name: "at", type: F64, mutable: true });
+        }
+        const val = (): IrExpr => varRef(valueId, resultT, loc);
+        const render: IrStmt[] = [];
+        if (resultT.kind === "void") {
+          render.push({
+            kind: "assign",
+            localId: strId,
+            value: strLit(`[${label}: undefined]`, loc),
+            loc,
+          });
+        } else if (resultT.kind === "union") {
+          const def = lowerer.unions.get(resultT.unionId);
+          if (!def) throw new InternalCompilerError(`inspect of unknown union ${resultT.unionId}`);
+          // The result is read once, then the arm holding decides the form.
+          def.arms.forEach((arm, tag) => {
+            const narrowed: IrExpr = {
+              kind: "unionNarrow",
+              unionId: resultT.unionId,
+              tag,
+              value: val(),
+              type: arm,
+              loc,
+            };
+            render.push({
+              kind: "if",
+              cond: {
+                kind: "unionIsTag",
+                unionId: resultT.unionId,
+                tag,
+                negated: false,
+                value: val(),
+                type: BOOL,
+                loc,
+              },
+              then: [{ kind: "assign", localId: strId, value: rendered(arm, narrowed), loc }],
+              else_: null,
+              loc,
+            });
+          });
+        } else {
+          render.push({ kind: "assign", localId: strId, value: rendered(resultT, val()), loc });
+        }
+        const threw = concatAll(
+          [
+            strLit(`[${label}: <Inspection threw (`, loc),
+            child(DYN, {
+              kind: "caughtToDyn",
+              value: varRef(caughtId, CAUGHT, loc),
+              type: DYN,
+              loc,
+            }),
+            strLit(")>]", loc),
+          ],
+          loc,
+        );
+        // Node's condition reads the option's truthiness first: `true`
+        // runs every getter, 'get' the ones without a setter and 'set' the
+        // ones with one.
+        const mode = (n: number): IrExpr => ({
+          kind: "bin",
+          op: "===",
+          left: varRef("gm.0", F64, loc),
+          right: numLit(n, loc),
+          type: BOOL,
+          loc,
+        });
+        const either = (a: IrExpr, b: IrExpr): IrExpr => ({
+          kind: "logical",
+          op: "||",
+          left: a,
+          right: b,
+          type: BOOL,
+          loc,
+        });
+        const libStmt = (
+          fn: "insp.mark" | "insp.unwind" | "insp.customCallEnd",
+          args: IrExpr[] = [],
+        ): IrStmt => ({
+          kind: "exprStmt",
+          expr: { kind: "libCall", fn, args, type: VOID, loc },
+          loc,
+        });
+        const endCall = libStmt("insp.customCallEnd", [varRef(tokenId, F64, loc)]);
+        return [
+          { kind: "varDecl", localId: strId, init: strLit(`[${label}]`, loc), loc },
+          {
+            kind: "if",
+            cond: slots.set ? either(mode(1), mode(3)) : either(mode(1), mode(2)),
+            then: [
+              libStmt("insp.mark"),
+              {
+                kind: "assign",
+                localId: tokenId,
+                value: { kind: "libCall", fn: "insp.customCallBegin", args: [], type: F64, loc },
+                loc,
+              },
+              {
+                // Node's try spans the getter call AND the result's
+                // rendering, so a throw from either answers the threw
+                // label. The call's context ends before the result renders
+                // (it renders in this walk's); the mark puts this walk's
+                // options and frames back when the rendering throws and
+                // left them open.
+                kind: "tryCatch",
+                tryBody: [
+                  // Declared here, so the answer's release is the try's:
+                  // nothing reads it outside.
+                  hasValue
+                    ? { kind: "varDecl", localId: valueId, init: called, loc }
+                    : { kind: "exprStmt", expr: called, loc },
+                  endCall,
+                  ...render,
+                  libStmt("insp.unwind"),
+                ],
+                catchLocalId: caughtId,
+                // A throw from the getter leaves its call open; a throw
+                // from the rendering leaves frames open. The mark returns
+                // this walk to where it was either way.
+                catchBody: [
+                  libStmt("insp.unwind"),
+                  { kind: "assign", localId: strId, value: threw, loc },
+                ],
+                finallyBody: null,
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+          entryOf(s()),
+        ];
+      };
       rebuildShapeOrderBody = (): void => {
         const current = lowerer.shapes.get(t.shapeId) ?? shape;
-        const order = current.declaredOrder ?? current.fields.map((f) => f.name);
+        accessorIndex = 0;
+        const order =
+          current.accessorOrder ?? current.declaredOrder ?? current.fields.map((f) => f.name);
         const byName = new Map(current.fields.map((f) => [f.name, f.type] as const));
         // Optional fields render only while present (an omitted or
         // deleted property is not shown; an explicit undefined is). A
@@ -2123,16 +3166,31 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
           });
         }
         body.push(depthGate("[Object]"), ...begin());
-        // One walk per key order (see perKeyOrder).
-        const orders = shapeKeyOrders(current);
+        if (accessors.size > 0) {
+          body.push({
+            kind: "varDecl",
+            localId: "gm.0",
+            init: { kind: "libCall", fn: "insp.gettersMode", args: [], type: F64, loc },
+            loc,
+          });
+        }
+        // One walk per key order (see perKeyOrder). An accessor-carrying
+        // shape enumerates in accessorOrder, exactly as its
+        // checked-dynamic copy does (dyn.ts).
+        const orders =
+          current.accessorOrder !== undefined ? [current.accessorOrder] : shapeKeyOrders(current);
         const walks = orders.map((): IrStmt[] => []);
         for (const [k, fname] of orders.flatMap((order, k) =>
           order.map((name) => [k, name] as const),
         )) {
           const ft = byName.get(fname);
-          if (!ft) continue;
+          if (!ft) {
+            const slots = accessors.get(fname);
+            if (slots) walks[k]!.push(...accessorEntry(fname, slots));
+            continue;
+          }
           const show = entry(
-            concatAll([strLit(`${inspectKey(fname)}: `, loc), child(ft, get(fname, ft))], loc),
+            propertyEntry(strLit(inspectKey(fname), loc), child(ft, get(fname, ft)), loc),
             boolLit(false, loc),
           );
           const present = lowerer.recordFieldPresent(v(), t.shapeId, fname, loc);
@@ -2183,11 +3241,20 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
       const keyT = isMap
         ? (t as IrType & { kind: "map" }).key
         : (t as IrType & { kind: "set" }).elem;
+      // Node's maxArrayLength bounds the entries shown; the tail counts the
+      // entries past the limit.
+      const limit = (): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.maxArrayLength",
+        args: [],
+        type: F64,
+        loc,
+      });
       const hasMore = (): IrExpr => ({
         kind: "bin",
         op: ">",
         left: n(),
-        right: numLit(100, loc),
+        right: limit(),
         type: BOOL,
         loc,
       });
@@ -2245,7 +3312,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
             },
             {
               kind: "if",
-              cond: { kind: "bin", op: "===", left: c(), right: numLit(100, loc), type: BOOL, loc },
+              cond: { kind: "bin", op: "===", left: c(), right: limit(), type: BOOL, loc },
               then: [{ kind: "break", loc }],
               else_: null,
               loc,
@@ -2268,9 +3335,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
               {
                 kind: "libCall",
                 fn: "insp.moreItems",
-                args: [
-                  { kind: "bin", op: "-", left: n(), right: numLit(100, loc), type: F64, loc },
-                ],
+                args: [{ kind: "bin", op: "-", left: n(), right: limit(), type: F64, loc }],
                 type: STRING,
                 loc,
               },
@@ -2469,7 +3534,7 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
         const key = symNames.has(f.name) ? symbolFieldDisplayName(f.name) : inspectKey(f.name);
         body.push(
           entry(
-            concatAll([strLit(`${key}: `, loc), child(f.type, get(f.name, f.type))], loc),
+            propertyEntry(strLit(key, loc), child(f.type, get(f.name, f.type)), loc),
             boolLit(false, loc),
           ),
         );
@@ -2594,7 +3659,36 @@ function inspectHelper(lowerer: Lowerer, t: IrType, loc: SrcLoc): string {
     });
   }
   lowerer.liftedFns.push(fn);
+  if (t.kind === "record" && recordMayKeepSource(lowerer, t))
+    registerLinkedHelper(lowerer, fn, t.shapeId, "inspect");
   return name;
+}
+
+/** The rendering of `value` at recursion `r` and depth budget `d`: its
+ * type's inspect helper, or the checked-dynamic view's rendering when the
+ * type has no inspect lowering (a record with a function field). */
+export function inspectHelperCall(
+  lowerer: Lowerer,
+  value: IrExpr,
+  r: IrExpr,
+  d: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  if (inspectSupport(lowerer, value.type, new Set(), { recursive: false }) !== null)
+    return {
+      kind: "libCall",
+      fn: "insp.dyn",
+      args: [{ kind: "dynFrom", value, liveRef: true, type: DYN, loc }, r, d],
+      type: STRING,
+      loc,
+    };
+  return {
+    kind: "call",
+    callee: inspectHelper(lowerer, value.type, loc),
+    args: [value, r, d],
+    type: STRING,
+    loc,
+  };
 }
 
 /* ── the console/format top-level value rendering ────────────────────── */
@@ -2734,19 +3828,13 @@ export function lowerConsoleInspectArg(
     return strLit(t.kind === "undefinedT" ? "undefined" : "null", loc);
   }
   if (t.kind === "bytes") {
-    // One runtime representation serves Buffer AND Uint8Array; their
-    // renderings differ, so the argument's checker type picks
-    // (lowerInspectCall's stance).
+    // One runtime representation serves Buffer, Uint8Array and DataView;
+    // their renderings differ, so the view's own flags pick: the checker
+    // type only distinguishes a Buffer from the two u8 views, and
+    // insp.bytes covers all three.
     const tname = lowerer.checker.typeToString(
       lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)),
     );
-    if (isDataViewTypeName(tname)) {
-      lowerer.unsupported(
-        "SC1090",
-        node,
-        `${surface} of '${tname}' values (Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet)`,
-      );
-    }
     if (!isBufferTypeName(tname)) {
       // A u8 value the checker types as a Uint8Array may still hold a
       // Buffer, which Node prints as one: the view's flags pick.
@@ -2798,13 +3886,18 @@ function isDataViewTypeName(tname: string): boolean {
 /* ── the callsite: options, direct function/class names ──────────────── */
 
 /** The parsed options literal: the resolved depth (numeric; Infinity for
- * `null`), breakLength (numeric; default 80) and compact (numeric, -1 for
- * false; default 3), with every other non-default knob fenced by name. */
+ * `null`), breakLength (numeric; default 80), compact (numeric, -1 for
+ * false; default 3), maxArrayLength and maxStringLength (a non-negative
+ * integer; Infinity for `null`; defaults 100 and 10000) and
+ * numericSeparator, with every other non-default knob fenced by name. */
 interface InspectOptions {
   depth: number;
   breakLength: number;
   compact: number;
   sorted: boolean;
+  maxArrayLength: number;
+  numericSeparator: boolean;
+  maxStringLength: number;
   /** Set by the `atRunTime` parse: colors or a computed knob value, which
    * the runtime reads. */
   runtime: boolean;
@@ -2814,6 +3907,14 @@ interface InspectOptions {
   /** customInspect: false skips [util.inspect.custom] methods (console.dir's
    * default). */
   customInspect: boolean;
+  /** console.dir's showHidden: the hidden own entries render through the
+   * checked-dynamic walk (util.inspect routes the same option to the
+   * runtime reader instead). */
+  showHidden: boolean;
+  /** Node's getters option: 0 prints the labels only, 1 (`true`) runs
+   * every accessor's getter, 2 (`'get'`) the ones without a setter and
+   * 3 (`'set'`) the ones with one. */
+  getters: number;
 }
 
 function parseInspectOptions(
@@ -2829,9 +3930,14 @@ function parseInspectOptions(
     breakLength: 80,
     compact: 3,
     sorted: false,
+    maxArrayLength: 100,
+    numericSeparator: false,
+    maxStringLength: 10000,
     runtime: false,
     depthKind: 0,
     customInspect: !dir,
+    showHidden: false,
+    getters: 0,
   };
   if (!node || (ts.isIdentifier(node) && node.text === "undefined")) return options;
   if (!ts.isObjectLiteralExpression(node)) {
@@ -2907,11 +4013,16 @@ function parseInspectOptions(
         );
       }
     } else if (key === "compact") {
-      // Node tries the single-line form and groups arrays only for a
-      // compact of at least 1; false and smaller numbers break every
-      // composite onto its own lines. compact: true is the older layout.
+      // Node tries the single-line form and groups arrays for a compact of
+      // at least 1; false and smaller numbers break every composite onto
+      // its own lines. compact: true is the older single-line/brace layout,
+      // -2 in the runtime.
+      if (value.kind === ts.SyntaxKind.TrueKeyword) {
+        options.compact = -2;
+        continue;
+      }
       const n = value.kind === ts.SyntaxKind.FalseKeyword ? 0 : numeric();
-      if (n === null && atRunTime && value.kind !== ts.SyntaxKind.TrueKeyword) {
+      if (n === null && atRunTime) {
         options.runtime = true;
         continue;
       }
@@ -2919,7 +4030,7 @@ function parseInspectOptions(
         lowerer.noLowering(
           `${surface} with this compact option`,
           value,
-          "compact must be false or a numeric literal (compact: true has no lowering)",
+          "compact must be true, false or a numeric literal",
         );
       }
       // false is -1: the same layout as 0, and custom inspect functions
@@ -2959,12 +4070,116 @@ function parseInspectOptions(
         );
       }
       options.breakLength = n;
+    } else if (key === "maxStringLength") {
+      if (
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(value) && value.text === "Infinity")
+      ) {
+        // Node resolves null to Infinity: every character shows.
+        options.maxStringLength = Infinity;
+      } else {
+        const n = numeric();
+        if (n === null && atRunTime) {
+          options.runtime = true;
+          continue;
+        }
+        if (n === null || !Number.isInteger(n) || n < 0) {
+          lowerer.noLowering(
+            `${surface} with this maxStringLength option`,
+            value,
+            "maxStringLength must be a non-negative integer literal (or null)",
+          );
+        }
+        options.maxStringLength = n;
+      }
+    } else if (key === "maxArrayLength") {
+      if (
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(value) && value.text === "Infinity")
+      ) {
+        // Node resolves null to Infinity: every element shows.
+        options.maxArrayLength = Infinity;
+      } else {
+        const n = numeric();
+        if (n === null && atRunTime) {
+          options.runtime = true;
+          continue;
+        }
+        if (n === null || !Number.isInteger(n) || n < 0) {
+          lowerer.noLowering(
+            `${surface} with this maxArrayLength option`,
+            value,
+            "maxArrayLength must be a non-negative integer literal (or null)",
+          );
+        }
+        options.maxArrayLength = n;
+      }
+    } else if (key === "getters") {
+      // Node reads the option's truthiness first and compares it to true
+      // and to 'get'/'set' after: any other value keeps the labels.
+      const spelled = ts.isStringLiteral(value) ? value.text : null;
+      if (value.kind === ts.SyntaxKind.TrueKeyword) options.getters = 1;
+      else if (value.kind === ts.SyntaxKind.FalseKeyword) options.getters = 0;
+      else if (spelled === "get") options.getters = 2;
+      else if (spelled === "set") options.getters = 3;
+      else if (
+        spelled !== null ||
+        numeric() !== null ||
+        value.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(value) && value.text === "undefined")
+      ) {
+        options.getters = 0;
+      } else if (atRunTime) {
+        options.runtime = true;
+        continue;
+      } else {
+        lowerer.noLowering(
+          `${surface} with this getters option`,
+          value,
+          "getters must be true, false, 'get' or 'set'",
+        );
+      }
+    } else if (key === "numericSeparator") {
+      const literal =
+        value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword;
+      if (!literal && atRunTime) {
+        options.runtime = true;
+        continue;
+      }
+      if (!literal) {
+        lowerer.noLowering(
+          `${surface} with this numericSeparator option`,
+          value,
+          "numericSeparator must be true or false",
+        );
+      }
+      options.numericSeparator = value.kind === ts.SyntaxKind.TrueKeyword;
     } else if (
       !dir &&
       key === "customInspect" &&
       (value.kind === ts.SyntaxKind.TrueKeyword || value.kind === ts.SyntaxKind.FalseKeyword)
     ) {
       options.customInspect = value.kind === ts.SyntaxKind.TrueKeyword;
+    } else if (key === "showHidden") {
+      if (value.kind === ts.SyntaxKind.FalseKeyword) {
+        // util.inspect's and console.dir's default.
+      } else if (dir) {
+        // console.dir's static entries carry no hidden keys; the option
+        // renders the value's checked-dynamic view instead (dirHidden).
+        if (value.kind !== ts.SyntaxKind.TrueKeyword) {
+          lowerer.noLowering(
+            "console.dir with this showHidden option",
+            value,
+            "showHidden must be true or false",
+          );
+        }
+        options.showHidden = true;
+      } else {
+        // The hidden entries (an array's [length], a typed array's extras,
+        // non-enumerable and symbol keys) render in the checked-dynamic
+        // walk, so the option takes the runtime reader.
+        options.runtime = true;
+      }
     } else if (dir && key === "customInspect") {
       // console.dir's own default; only that value is lowered.
       if (value.kind !== ts.SyntaxKind.FalseKeyword) {
@@ -2978,19 +4193,21 @@ function parseInspectOptions(
       lowerer.noLowering(
         `${surface} with the '${key}' option`,
         prop,
-        `the lowered options are depth (numeric literal or null), colors: false, compact (false or a number), breakLength, ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
+        `the lowered options are depth (numeric literal or null), colors: false, showHidden (true or false), compact (false or a number), breakLength, maxArrayLength and maxStringLength (a non-negative integer or null), getters (true, false, 'get' or 'set'), numericSeparator (true or false), ${dir ? "sorted (true or false), and customInspect: false" : "and sorted (true or false)"}`,
       );
     }
   }
   return options;
 }
 
-/** A render under non-default breakLength/compact/sorted: the value is evaluated
- * first, the layout applies to this render only, and the defaults return
- * however the render ends, an inspection refusal included. The render runs
- * in a lifted function, `(v) => { insp.layout(...); try { return render(v); }
- * finally { insp.layout(80, 3, false); } }`, since a seqExpr cannot hold the
- * try; `tag` names the render for the function's key. */
+/** A render under non-default breakLength/compact/sorted/maxArrayLength/
+ * maxStringLength/getters/numericSeparator: the value is evaluated first,
+ * the options apply to this render only, and the defaults return however the
+ * render ends, an
+ * inspection refusal included. The render runs in a lifted function,
+ * `(v) => { set...; try { return render(v); } finally { restore...; } }`,
+ * since a seqExpr cannot hold the try; `tag` names the render for the
+ * function's key. */
 function withInspectLayout(
   lowerer: Lowerer,
   options: InspectOptions,
@@ -2999,36 +4216,124 @@ function withInspectLayout(
   render: (value: IrExpr) => IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  if (options.breakLength === 80 && options.compact === 3 && !options.sorted) return render(value);
-  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.depth}`;
+  if (
+    options.breakLength === 80 &&
+    options.compact === 3 &&
+    !options.sorted &&
+    options.maxArrayLength === 100 &&
+    options.maxStringLength === 10000 &&
+    options.getters === 0 &&
+    !options.numericSeparator
+  )
+    return render(value);
+  const key = `layout:${tag}:${typeKey(value.type)}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${options.depth}`;
   let name = lowerer.inspectHelpers.get(key);
   if (name === undefined) {
     name = keyedHelperName(lowerer, "%util.inspLayout", key);
     lowerer.inspectHelpers.set(key, name);
-    const layout = (breakLength: number, compact: number, sorted: boolean): IrStmt => ({
+    const layout = (
+      breakLength: number,
+      compact: number,
+      sorted: boolean,
+      maxArrayLength: number,
+    ): IrStmt => ({
       kind: "exprStmt",
       expr: {
         kind: "libCall",
         fn: "insp.layout",
-        args: [numLit(breakLength, loc), numLit(compact, loc), boolLit(sorted, loc)],
+        args: [
+          numLit(breakLength, loc),
+          numLit(compact, loc),
+          boolLit(sorted, loc),
+          numLit(maxArrayLength, loc),
+        ],
         type: VOID,
         loc,
       },
       loc,
     });
+    const locals: IrLocal[] = [{ id: "v.0", name: "v", type: value.type, mutable: false }];
+    const apply: IrStmt[] = [
+      layout(options.breakLength, options.compact, options.sorted, options.maxArrayLength),
+    ];
+    const restore: IrStmt[] = [layout(80, 3, false, 100)];
+    if (options.maxStringLength !== 10000) {
+      // insp.maxStringLength answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: F64, mutable: false });
+      const limit = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.maxStringLength",
+        args: [arg],
+        type: F64,
+        loc,
+      });
+      apply.push({
+        kind: "varDecl",
+        localId: previous,
+        init: limit(numLit(options.maxStringLength, loc)),
+        loc,
+      });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: limit(varRef(previous, F64, loc)),
+        loc,
+      });
+    }
+    if (options.getters !== 0) {
+      // insp.getters answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: F64, mutable: false });
+      const getters = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.getters",
+        args: [arg],
+        type: F64,
+        loc,
+      });
+      apply.push({
+        kind: "varDecl",
+        localId: previous,
+        init: getters(numLit(options.getters, loc)),
+        loc,
+      });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: getters(varRef(previous, F64, loc)),
+        loc,
+      });
+    }
+    if (options.numericSeparator) {
+      // insp.numericSeparator answers the previous value.
+      const previous = `previous.${locals.length}`;
+      locals.push({ id: previous, name: "previous", type: BOOL, mutable: false });
+      const separator = (arg: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "insp.numericSeparator",
+        args: [arg],
+        type: BOOL,
+        loc,
+      });
+      apply.push({ kind: "varDecl", localId: previous, init: separator(boolLit(true, loc)), loc });
+      restore.unshift({
+        kind: "exprStmt",
+        expr: separator(varRef(previous, BOOL, loc)),
+        loc,
+      });
+    }
     lowerer.liftedFns.push({
       name,
       params: [{ localId: "v.0", name: "v", type: value.type }],
       returnType: STRING,
-      locals: [{ id: "v.0", name: "v", type: value.type, mutable: false }],
+      locals,
       body: [
-        layout(options.breakLength, options.compact, options.sorted),
+        ...apply,
         {
           kind: "tryCatch",
           tryBody: [{ kind: "return", value: render(varRef("v.0", value.type, loc)), loc }],
           catchBody: null,
           catchLocalId: null,
-          finallyBody: [layout(80, 3, false)],
+          finallyBody: restore,
           loc,
         },
       ],
@@ -3097,7 +4402,15 @@ function lowerInspectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc
       "the supported forms are inspect(value), inspect(value, options) and inspect(value, showHidden, depth, colors)",
     );
   }
-  if (args.length <= 2 && !inspectOptionsAtRunTime(lowerer, args[1]))
+  // A program that reads util.inspect's value can change the tables a
+  // render reads (defaultOptions supplies the options the call does not,
+  // and colors/style pick the colored leaf's codes), so every rendering
+  // runs through the runtime reader.
+  if (
+    args.length <= 2 &&
+    !programTouchesInspectTables(lowerer) &&
+    !inspectOptionsAtRunTime(lowerer, args[1])
+  )
     return lowerInspectValue(lowerer, args[0]!, args[1], loc, false);
   return lowerRuntimeInspect(lowerer, args, loc);
 }
@@ -3165,6 +4478,56 @@ function lowerRuntimeInspect(
   };
 }
 
+/** console.dir(object[, options]) over the checked-dynamic view: the
+ * runtime reader picks the options (user's first, then
+ * inspect.defaultOptions) and turns custom inspection off, as Node's
+ * `inspect(object, { customInspect: false, ...options })` does. Used when
+ * the program can change the inspect tables, which a folded rendering
+ * cannot see. */
+export function lowerRuntimeInspectDir(
+  lowerer: Lowerer,
+  valueNode: ts.Expression,
+  optionsNode: ts.Expression | undefined,
+  argc: number,
+  loc: SrcLoc,
+): IrExpr {
+  const value = lowerer.lowerExpr(valueNode);
+  if (value.type.kind !== "dyn") {
+    const reason = inspectSupport(lowerer, value.type, new Set(), { recursive: false });
+    if (reason !== null)
+      lowerer.noLowering(`console.dir of '${lowerer.fmt(value.type)}' values`, valueNode, reason);
+    if (!lowerer.dynConvertible(value.type))
+      lowerer.noLowering(
+        `console.dir of '${lowerer.fmt(value.type)}' values`,
+        valueNode,
+        "the options are read at run time, where the value renders through its checked-dynamic view",
+      );
+  }
+  const stmts: IrStmt[] = [];
+  const held = (init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal("%consoleDirArg", DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  const valueArg = held(lowerer.coerceToExpected(value, DYN));
+  const optionsArg = optionsNode
+    ? held(lowerer.lowerExprExpecting(optionsNode, DYN))
+    : dynUndefinedExpr(loc);
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn: "insp.inspectDir",
+      args: [valueArg, optionsArg, numLit(argc, loc)],
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 /** `inspect(value, options)` over one value node: the shared body of
  * util.inspect and console.dir. console.dir is Node's `inspect(object,
  * { customInspect: false, ...options })`; the only lowered value with a
@@ -3179,14 +4542,20 @@ export function lowerInspectValue(
   dir: boolean,
 ): IrExpr {
   const surface = dir ? "console.dir" : "util.inspect";
+  // console.dir's showHidden renders the checked-dynamic walk with its
+  // hidden entries, so the baked forms below must not swallow the option.
+  const dirPreview = dir ? parseInspectOptions(lowerer, optionsNode, false, dir) : null;
   // Inline function/class literals and direct declared names render as
   // their baked forms; other function-typed values fence below.
   const direct = directCallableInspect(lowerer, valueNode, loc);
-  if (direct) {
+  if (direct && !dirPreview?.showHidden) {
     parseInspectOptions(lowerer, optionsNode, false, dir);
     return direct;
   }
-  if (ts.isArrowFunction(valueNode) || ts.isFunctionExpression(valueNode)) {
+  if (
+    (ts.isArrowFunction(valueNode) || ts.isFunctionExpression(valueNode)) &&
+    !dirPreview?.showHidden
+  ) {
     parseInspectOptions(lowerer, optionsNode, false, dir);
     return strLit(
       valueNode.kind === ts.SyntaxKind.FunctionExpression &&
@@ -3204,8 +4573,37 @@ export function lowerInspectValue(
     isJsSourceFile(valueNode.getSourceFile()) &&
     lowerer.dynConvertible(value.type)
   ) {
-    const name = jsFuncNameOf(valueNode);
+    const name = jsFuncNameOf(valueNode, lowerer);
     value = { kind: "dynFrom", value, type: DYN, ...(name !== null ? { fnName: name } : {}), loc };
+  }
+  if (dirPreview?.showHidden) {
+    // console.dir's hidden entries (an array's [length], a typed array's
+    // extras, non-enumerable and symbol keys) render in the checked-dynamic
+    // walk with custom inspection off, dir's default; the value needs a
+    // checked view to reach it.
+    if (value.type.kind !== "dyn" && !lowerer.dynConvertible(value.type)) {
+      lowerer.noLowering(
+        `console.dir with showHidden of '${lowerer.fmt(value.type)}' values`,
+        valueNode,
+        "the hidden entries render through the value's checked-dynamic view, which this type has no conversion to",
+      );
+    }
+    const input: IrExpr =
+      value.type.kind === "dyn" ? value : { kind: "dynFrom", value, type: DYN, loc };
+    return withInspectLayout(
+      lowerer,
+      dirPreview,
+      input,
+      "dirHidden",
+      (v) => ({
+        kind: "libCall",
+        fn: "console.dirHidden",
+        args: [v, numLit(dirPreview.depth, loc)],
+        type: STRING,
+        loc,
+      }),
+      loc,
+    );
   }
   if (value.type.kind === "bytes") {
     // One runtime representation serves Buffer AND Uint8Array; their
@@ -3223,17 +4621,10 @@ export function lowerInspectValue(
         "console.dir disables custom inspection, and the typed-array rendering it falls back to has no lowering yet — use console.log",
       );
     }
-    if (isDataViewTypeName(tname)) {
-      lowerer.noLowering(
-        `util.inspect of '${tname}' values`,
-        valueNode,
-        "Buffer and the numeric typed arrays are the lowered byte renderings; DataView has none yet",
-      );
-    }
     const options = parseInspectOptions(lowerer, optionsNode, false, dir);
     if (!isBuffer) {
-      // A numeric typed array: Uint8Array(n) [ ... ] under the depth and
-      // layout options.
+      // A numeric typed array or a DataView: Uint8Array(n) [ ... ] and
+      // DataView { ... } under the depth and layout options.
       return withInspectLayout(
         lowerer,
         options,
@@ -3253,7 +4644,16 @@ export function lowerInspectValue(
       );
     }
     // Buffers render fully at any depth and on one line (custom inspect).
-    return { kind: "libCall", fn: "insp.buffer", args: [value], type: STRING, loc };
+    // Their named properties render as an object's members, so the layout
+    // options -- numericSeparator among them -- apply to those entries.
+    return withInspectLayout(
+      lowerer,
+      options,
+      value,
+      "buffer",
+      (input) => ({ kind: "libCall", fn: "insp.buffer", args: [input], type: STRING, loc }),
+      loc,
+    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);
@@ -3267,41 +4667,65 @@ export function lowerInspectValue(
   // false (console.dir's default), apply around the render when the value
   // can reach a custom method; the previous settings return afterwards.
   const reachesCustom =
-    typeReachesCustomInspect(lowerer, value.type) || typeReachesDyn(lowerer, value.type);
+    typeReachesCustomInspect(lowerer, value.type) ||
+    typeReachesDyn(lowerer, value.type) ||
+    typeReachesTextCodec(lowerer, value.type);
   const depthContext = reachesCustom && depth === Infinity && options.depthKind !== 1;
   const customContext = reachesCustom && !options.customInspect;
   if (depthContext || customContext) {
-    const stmts: IrStmt[] = [];
-    const restore: IrStmt[] = [];
-    const setting = (fn: "insp.customInspect" | "insp.depthKind", arg: IrExpr, type: IrType) => {
-      const previous = lowerer.declareHiddenLocal("%inspectContext", type);
-      const call = (a: IrExpr): IrExpr => ({ kind: "libCall", fn, args: [a], type, loc });
-      stmts.push({ kind: "varDecl", localId: previous.id, init: call(arg), loc });
-      restore.push({ kind: "exprStmt", expr: call(varRef(previous.id, type, loc)), loc });
-    };
-    if (customContext) setting("insp.customInspect", boolLit(false, loc), BOOL);
-    if (depthContext) setting("insp.depthKind", numLit(options.depthKind, loc), F64);
-    const text = lowerer.declareHiddenLocal("%inspectText", STRING);
-    stmts.push({
-      kind: "varDecl",
-      localId: text.id,
-      init: withInspectLayout(
-        lowerer,
-        options,
-        value,
-        "inspect",
-        (input) => inspectExpr(lowerer, value.type, input, numLit(0, loc), numLit(depth, loc), loc),
+    // The settings apply in a lifted function, `(v) => { set; try { return
+    // render(v); } finally { restore; } }`, so the previous ones return on
+    // every exit, an inspection refusal's throw included (a seqExpr cannot
+    // hold the try).
+    const key = `context:${typeKey(value.type)}:${customContext}:${depthContext}:${options.depthKind}:${options.breakLength}:${options.compact}:${options.sorted}:${options.maxArrayLength}:${options.maxStringLength}:${options.getters}:${options.numericSeparator}:${depth}`;
+    let name = lowerer.inspectHelpers.get(key);
+    if (name === undefined) {
+      name = keyedHelperName(lowerer, "%util.inspContext", key);
+      lowerer.inspectHelpers.set(key, name);
+      const locals: IrLocal[] = [{ id: "v.0", name: "v", type: value.type, mutable: false }];
+      const stmts: IrStmt[] = [];
+      const restore: IrStmt[] = [];
+      const setting = (fn: "insp.customInspect" | "insp.depthKind", arg: IrExpr, type: IrType) => {
+        const previous = `previous.${locals.length}`;
+        locals.push({ id: previous, name: "previous", type, mutable: false });
+        const call = (a: IrExpr): IrExpr => ({ kind: "libCall", fn, args: [a], type, loc });
+        stmts.push({ kind: "varDecl", localId: previous, init: call(arg), loc });
+        restore.push({ kind: "exprStmt", expr: call(varRef(previous, type, loc)), loc });
+      };
+      if (customContext) setting("insp.customInspect", boolLit(false, loc), BOOL);
+      if (depthContext) setting("insp.depthKind", numLit(options.depthKind, loc), F64);
+      const input = varRef("v.0", value.type, loc);
+      stmts.push({
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "return",
+            value: withInspectLayout(
+              lowerer,
+              options,
+              input,
+              "inspect",
+              (v) => inspectExpr(lowerer, value.type, v, numLit(0, loc), numLit(depth, loc), loc),
+              loc,
+            ),
+            loc,
+          },
+        ],
+        catchBody: null,
+        catchLocalId: null,
+        finallyBody: restore.reverse(),
         loc,
-      ),
-      loc,
-    });
-    return {
-      kind: "seqExpr",
-      stmts: [...stmts, ...restore.reverse()],
-      result: varRef(text.id, STRING, loc),
-      type: STRING,
-      loc,
-    };
+      });
+      lowerer.liftedFns.push({
+        name,
+        params: [{ localId: "v.0", name: "v", type: value.type }],
+        returnType: STRING,
+        locals,
+        body: stmts,
+        loc,
+      });
+    }
+    return { kind: "call", callee: name, args: [value], type: STRING, loc };
   }
   if (dir && value.type.kind === "dyn") {
     return withInspectLayout(
@@ -3338,6 +4762,59 @@ function formatSArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
   return formatSValue(lowerer, node, lowerer.lowerExpr(node), depth, loc);
 }
 
+/** The kinds whose String() conversion the static path lowers
+ * (ensureString's rule set), for the conversions that parse the text. */
+function stringableType(t: IrType): boolean {
+  switch (t.kind) {
+    case "string":
+    case "url":
+    case "searchParams":
+    case "date":
+    case "regex":
+    case "bigint":
+    case "dyn":
+    case "bytes":
+    case "object":
+    case "union":
+    case "array":
+    case "record":
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** String(arg) for the numeric conversions' parseFloat/parseInt: the
+ * static conversion where the type has one, else the checked-dynamic
+ * ToString (the value's own valueOf/toString) for the runtime handles with
+ * no static rule — String(new Map()) is "[object Map]". Null when neither
+ * applies. */
+function stringForParse(lowerer: Lowerer, value: IrExpr, node: ts.Expression): IrExpr | null {
+  if (stringableType(value.type)) return lowerer.ensureString(value, node);
+  if (!lowerer.dynConvertible(value.type)) return null;
+  return {
+    kind: "libCall",
+    fn: "dyn.toStringCoerce",
+    args: [lowerer.coerceToExpected(value, DYN)],
+    type: STRING,
+    loc: value.loc,
+  };
+}
+
+/** A conversion's constant text for an argument Node reads without
+ * converting it (a symbol in %d/%i/%f prints NaN): the argument still
+ * evaluates for its effects unless the value is a discard-safe read. */
+function discardAs(value: IrExpr, text: string, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(value)) return strLit(text, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: value, loc }],
+    result: strLit(text, loc),
+    type: STRING,
+    loc,
+  };
+}
+
 /** formatSArg over the already-lowered value of `node`. */
 function formatSValue(
   lowerer: Lowerer,
@@ -3348,6 +4825,12 @@ function formatSValue(
 ): IrExpr {
   const t = value.type;
   if (t.kind === "string") return value;
+  // %s of a primitive constructor held as a value is the constructor's text
+  // (programs that hold none skip it).
+  if (lowerer.constructorFunctionTypes && (t.kind === "func" || t.kind === "dyn")) {
+    const text = builtinConstructorText(lowerer, node, value, false);
+    if (text) return text;
+  }
   if (t.kind === "f64")
     return { kind: "libCall", fn: "insp.f64", args: [value], type: STRING, loc };
   if (t.kind === "bool") return { kind: "toString", operand: value, type: STRING, loc };
@@ -3368,40 +4851,133 @@ function formatSValue(
       loc,
     };
   }
+  // %s of a function or a class is String(fn), its source text, which a
+  // compiled program does not carry: such a value, alone or as an arm,
+  // keeps the refusal (inside a record or an array it inspects as a member).
+  const callable = (arm: IrType): boolean => arm.kind === "func" || arm.kind === "classval";
+  if (callable(t) || (t.kind === "union" && lowerer.unions.get(t.unionId)?.arms.some(callable)))
+    lowerer.noLowering(
+      `util.format %s of '${lowerer.fmt(t)}' values`,
+      node,
+      "Node prints a function's or a class's source text for %s (String(fn)); pass util.inspect(value) for the '[Function: name]' form",
+    );
   // A UNION argument dispatches per arm at runtime: a string arm prints
   // VERBATIM (typeof arg === 'string' in Node's formatter — inspect's
   // quoting never applies at the top level), every other arm inspects.
   if (t.kind === "union") {
+    const declaresToString = (arm: IrType): boolean => {
+      if (arm.kind !== "object" || isErrorClass(lowerer, arm.className)) return false;
+      for (let info = lowerer.classes.get(arm.className) ?? null; info; info = info.base)
+        if (info.methods.has("toString") || info.methods.has("sym:toPrimitive")) return true;
+      return false;
+    };
+    if (lowerer.unions.get(t.unionId)?.arms.some(declaresToString)) {
+      lowerer.noLowering(
+        `util.format %s of a union with a class arm that declares toString`,
+        node,
+        "Node calls that arm's override (String(arg)) while the other arms inspect — convert the arm where its class is known",
+      );
+    }
     const walk = { recursive: false };
     const reason = inspectSupport(lowerer, t, new Set(), walk);
     if (reason !== null)
       lowerer.noLowering(`util.format %s of '${lowerer.fmt(t)}' values`, node, reason);
     return formatValueExpr(lowerer, t, value, depth, loc);
   }
+  // hasBuiltInToString walks the prototype chain for the owner of
+  // `toString` (or Symbol.toPrimitive) and answers true only for a
+  // built-in owner's constructor; a class with its OWN toString or
+  // Symbol.toPrimitive takes String(arg) in Node, not inspect, so the
+  // program's conversion is the answer. A program class that declares one
+  // lowers through the same class-to-primitive path as any other String()
+  // conversion.
   if (t.kind === "object" && !isErrorClass(lowerer, t.className)) {
-    // hasBuiltInToString: a class with its OWN toString goes through
-    // String(arg) in Node, not inspect — call it explicitly instead.
     for (
       let info: ClassInfo | null = lowerer.classes.get(t.className) ?? null;
       info;
       info = info.base
     ) {
-      if (info.methods.has("toString")) {
-        lowerer.noLowering(
-          "util.format %s over a class with its own toString",
-          node,
-          "Node calls the override (String(arg)) — call it explicitly",
-        );
-      }
+      if (info.methods.has("toString") || info.methods.has("sym:toPrimitive"))
+        return lowerer.ensureString(value, node);
     }
   }
-  if (t.kind === "bytes") {
-    lowerer.noLowering(
-      `util.format %s of typed-array values`,
-      node,
-      "pass util.inspect(buf) explicitly",
-    );
+  // A record with a `toString` member is a custom conversion too: a
+  // no-argument member returning a string is the conversion's exact shape
+  // (`{ toString() { return "..." } }`), and Node uses its result.
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    const member = shape?.fields.find((f) => f.name === "toString");
+    if (member !== undefined) {
+      if (
+        member.type.kind === "func" &&
+        member.type.params.length === 0 &&
+        member.type.ret.kind === "string"
+      ) {
+        // `this` is the record, and the object is read once. A record
+        // without a checked-dynamic form cannot be that receiver, exactly
+        // as a call through a function-typed field drops it (records keep
+        // no method storage, so the field's closure is unbound).
+        const held = lowerer.declareHiddenLocal("%formatSelf", t);
+        const self = (): IrExpr => varRef(held.id, t, loc);
+        const receiver = lowerer.dynConvertible(t)
+          ? lowerer.coerceToExpected(self(), DYN)
+          : undefined;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: held.id, init: value, loc }],
+          result: {
+            kind: "callValue",
+            callee: {
+              kind: "recordGet",
+              obj: self(),
+              shapeId: t.shapeId,
+              field: "toString",
+              type: member.type,
+              loc,
+            },
+            ...(receiver ? { receiver } : {}),
+            args: [],
+            type: member.type.ret,
+            loc,
+          },
+          type: STRING,
+          loc,
+        };
+      }
+      lowerer.noLowering(
+        `util.format %s of records with a 'toString' member of type '${lowerer.fmt(member.type)}'`,
+        node,
+      );
+    }
+    if (shape?.indexValue !== undefined) {
+      // An index-signature record can hold a `toString` no static member
+      // names; the checked-dynamic conversion reads the live member and
+      // calls it, or inspects the record when it is the built-in one.
+      return {
+        kind: "libCall",
+        fn: "insp.dynFormatS",
+        args: [lowerer.coerceToExpected(value, DYN), numLit(depth, loc)],
+        type: STRING,
+        loc,
+      };
+    }
   }
+  // A typed array is an object with the built-in TypedArray toString:
+  // String() joins its elements (a Buffer decodes its bytes). A DataView
+  // reaches Object.prototype's toString, and DataView is one of the
+  // ECMAScript globals hasBuiltInToString knows, so Node inspects there.
+  if (t.kind === "bytes") {
+    const tname = lowerer.checker.typeToString(
+      lowerer.checker.getBaseTypeOfLiteralType(lowerer.typeOf(node)),
+    );
+    if (isDataViewTypeName(tname)) return formatValueExpr(lowerer, t, value, depth, loc);
+    return lowerer.ensureString(value, node);
+  }
+  // A URL and a URLSearchParams print String(value) at %s: their
+  // prototypes own toString, and Node's hasBuiltInToString recognizes only
+  // the ECMAScript globals, so the href and the serialized list answer
+  // rather than the inspected shape.
+  if (t.kind === "url" || t.kind === "searchParams") return lowerer.ensureString(value, node);
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, t, new Set(), walk);
   if (reason !== null)
@@ -3410,27 +4986,21 @@ function formatSValue(
 }
 
 /** %O (depth 2) / %o (showHidden, depth 4) — inspect with the spec's
- * option deltas. A checked-dynamic argument renders through the runtime's
- * showHidden walk; static %o fences over arrays and nested dynamic values
- * (showHidden adds an array's hidden [length] entry, which the static
- * rendering has no lowering for). */
+ * option deltas. A showHidden argument that the checked-dynamic tree can
+ * hold (arrays — whose hidden [length] entry the static rendering has no
+ * lowering for — records, maps, sets, typed arrays and nested dynamic
+ * values) renders through the runtime's showHidden walk; the static
+ * rendering covers the default %O. */
 function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: SrcLoc): IrExpr {
   const value = lowerer.lowerExpr(node);
-  if (depth === 4 && value.type.kind === "dyn") {
+  if (depth === 4 && (value.type.kind === "dyn" || lowerer.dynConvertible(value.type))) {
     return {
       kind: "libCall",
       fn: "insp.dynHidden",
-      args: [value, numLit(4, loc)],
+      args: [lowerer.coerceToExpected(value, DYN), numLit(4, loc)],
       type: STRING,
       loc,
     };
-  }
-  if (value.type.kind === "bytes") {
-    lowerer.noLowering(
-      `util.format %${depth === 4 ? "o" : "O"} of typed-array values`,
-      node,
-      "pass util.inspect(buf) explicitly",
-    );
   }
   const walk = { recursive: false };
   const reason = inspectSupport(lowerer, value.type, new Set(), walk);
@@ -3448,6 +5018,8 @@ function formatOArg(lowerer: Lowerer, node: ts.Expression, depth: number, loc: S
     );
   }
   if (depth === 4 && typeTreeHasHidden(lowerer, value.type, new Set())) {
+    // The static rendering below has no showHidden entries; the tree is
+    // not one the checked-dynamic walk can hold.
     lowerer.noLowering(
       "util.format %o over arrays",
       node,
@@ -3541,18 +5113,22 @@ export function lowerFormatCall(
   literalPrefix = "",
 ): IrExpr {
   const argNodes = [...(argNodesOverride ?? expr.arguments.nodes)];
+  const optionsNode = withOptions ? argNodes.shift() : undefined;
   if (withOptions) {
-    const opts = argNodes.shift();
     // The empty literal {} is the defaults: exactly util.format.
-    if (!opts || !ts.isObjectLiteralExpression(opts) || opts.properties.nodes.length > 0) {
-      if (opts && ts.isSpreadElement(opts)) {
+    if (
+      !optionsNode ||
+      !ts.isObjectLiteralExpression(optionsNode) ||
+      optionsNode.properties.nodes.length > 0
+    ) {
+      if (optionsNode && ts.isSpreadElement(optionsNode)) {
         lowerer.noLowering(
           "util.formatWithOptions with a spread options argument",
-          opts,
+          optionsNode,
           "pass the options object as the first argument",
         );
       }
-      return lowerRuntimeFormat(lowerer, argNodes, loc, opts ?? null);
+      return lowerRuntimeFormat(lowerer, argNodes, loc, optionsNode ?? null);
     }
   }
   if (argNodes.length === 0) return strLit("", loc);
@@ -3563,10 +5139,19 @@ export function lowerFormatCall(
       throw new InternalCompilerError("a format prefix needs a literal format string");
     return lowerRuntimeFormat(lowerer, argNodes, loc, undefined, literalPrefix);
   }
+  // A program that reads util.inspect's value can change the tables every
+  // conversion reads (defaultOptions for %O/%o/%s of an object, the colors
+  // and styles of a colored render), so the whole substitution renders in
+  // the runtime, which reads them per call.
+  if (programTouchesInspectTables(lowerer))
+    return lowerRuntimeFormat(lowerer, argNodes, loc, optionsNode, literalPrefix);
 
   /** The rest-args tail: ` ` + (strings verbatim, everything else
-   * inspected at the default depth). */
-  const restArg = (node: ts.Expression): IrExpr => formatSArg(lowerer, node, 2, loc);
+   * inspected at the default depth). Node's `%s` conversion is NOT the
+   * rest-args rule: an object there takes `String(arg)` when its toString
+   * is the built-in one, while a rest argument always inspects. */
+  const restArg = (node: ts.Expression): IrExpr =>
+    formatRestValue(lowerer, node, lowerer.lowerExpr(node), loc);
 
   if (!firstIsLiteral) {
     const runtime = argNodes.length > 1 ? runtimeFormatString(lowerer, first) : null;
@@ -3659,12 +5244,31 @@ export function lowerFormatCall(
             loc,
           };
         }
+        // A symbol prints NaN (Node's early %d symbol check).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
         // A checked-dynamic argument (`console.log('... actual %d.',
         // context.actual)` — test/common's exit report): Number(arg).
         if (value.type.kind === "dyn") {
           return formatDynInteger(
             lowerer,
             value,
+            (held) => ({
+              kind: "libCall",
+              fn: "dyn.numberConstructor",
+              args: [held],
+              type: F64,
+              loc,
+            }),
+            loc,
+          );
+        }
+        // Any other object reaches Number() through its checked-dynamic
+        // conversion: ToPrimitive with the valueOf/toString the value
+        // actually carries (a record's members, a typed array's join).
+        if (lowerer.dynConvertible(value.type)) {
+          return formatDynInteger(
+            lowerer,
+            lowerer.coerceToExpected(value, DYN),
             (held) => ({
               kind: "libCall",
               fn: "dyn.numberConstructor",
@@ -3705,6 +5309,8 @@ export function lowerFormatCall(
           };
           return { kind: "libCall", fn: "insp.f64", args: [parsed], type: STRING, loc };
         }
+        // A symbol prints NaN (Node's early %i symbol check, like %d).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
         // parseInt(String(arg)) over a checked-dynamic argument.
         if (value.type.kind === "dyn") {
           return formatDynInteger(
@@ -3723,8 +5329,30 @@ export function lowerFormatCall(
             loc,
           );
         }
+        // parseInt(String(arg)) for every other kind that has a String()
+        // conversion: a typed array joins its elements, a record calls its
+        // own toString, a URL prints its href, a Map prints
+        // "[object Map]".
+        {
+          const text = stringForParse(lowerer, value, node);
+          if (text !== null)
+            return {
+              kind: "libCall",
+              fn: "insp.f64",
+              args: [
+                {
+                  kind: "libCall",
+                  fn: "num.parseInt",
+                  args: [text, numLit(0, loc)],
+                  type: F64,
+                  loc,
+                },
+              ],
+              type: STRING,
+              loc,
+            };
+        }
         lowerer.noLowering(`util.format %i of '${lowerer.fmt(value.type)}' values`, node);
-        break;
       }
       case 106: {
         // %j — JSON.stringify; undefined-valued args print "undefined"
@@ -3744,6 +5372,31 @@ export function lowerFormatCall(
           }
           return strLit("undefined", loc);
         }
+        // JSON.stringify(bigint) throws V8's TypeError ("Do not know how to
+        // serialize a BigInt"), and %j does not catch it: the boxed walk
+        // raises exactly that error at the point the argument is converted.
+        if (value.type.kind === "bigint") {
+          return {
+            kind: "libCall",
+            fn: "insp.jsonDyn",
+            args: [{ kind: "dynFrom", value, type: DYN, loc }],
+            type: STRING,
+            loc,
+          };
+        }
+        // A function or class value serializes to undefined, so %j prints
+        // the "undefined" text; the argument still evaluates for its
+        // effects, as the cursor advances either way.
+        if (value.type.kind === "func" || value.type.kind === "classval") {
+          if (isSafeToDiscard(value)) return strLit("undefined", loc);
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            result: strLit("undefined", loc),
+            type: STRING,
+            loc,
+          };
+        }
         // A checked-dynamic argument (`console.error('headers: %j',
         // headers)` — the suite's http logging idiom): the runtime runs
         // JSON.stringify's walk (toJSON hooks included; a root it drops
@@ -3751,6 +5404,59 @@ export function lowerFormatCall(
         // structure. A typed argument prints "[Circular]" the same way.
         if (value.type.kind === "dyn") {
           return { kind: "libCall", fn: "insp.jsonDyn", args: [value], type: STRING, loc };
+        }
+        // %j of an Error (the middleware logging idiom): JSON.stringify
+        // sees an error's own ENUMERABLE properties, and message, stack and
+        // cause are not enumerable — so a plain error prints "{}", as do
+        // the runtime error classes whose extra state rides non-enumerable
+        // slots (AggregateError's `errors`, DOMException's accessors,
+        // AssertionError's dynamic view). A subclass that declares fields
+        // prints those, and one that declares a toJSON hook prints the
+        // hook's result, so the lifted walk renders the RUNTIME class's
+        // shape; a toJSON member it cannot call statically keeps the
+        // checked dynamic walk for that class.
+        if (value.type.kind === "object" && isErrorClass(lowerer, value.type.className)) {
+          const className = value.type.className;
+          if (className === "%AssertionError") {
+            lowerer.noLowering(
+              `util.format %j of '${lowerer.fmt(value.type)}' values`,
+              node,
+              "AssertionError keeps its own properties in the error's dynamic view",
+            );
+          }
+          // The lifted walk reads the runtime class, so a subclass instance
+          // reaching the base's static type prints its own fields and honors
+          // its own toJSON hook. The receiver evaluates once as the call's
+          // argument, so its calls and throws stay observable.
+          const helper = jsonErrorHelper(lowerer, value.type, loc);
+          if (helper !== null)
+            return { kind: "call", callee: helper, args: [value], type: STRING, loc };
+          // A builtin error with no program subclass has no own enumerable
+          // property: Node prints "{}". The argument expression still runs;
+          // only a discard-safe read folds away.
+          if (isSafeToDiscard(value)) return strLit("{}", loc);
+          return {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: value, loc }],
+            result: strLit("{}", loc),
+            type: STRING,
+            loc,
+          };
+        }
+        // A JSON-shaped container with untyped payloads (a record with an
+        // `unknown` member, an array of such records): the runtime walk
+        // over the value's live view, as JSON.stringify takes for the same
+        // type (builtins/json.ts), with %j's "[Circular]".
+        if (
+          isJsonStringifyDynamicType(
+            value.type,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ) &&
+          classFieldWithoutJsonView(lowerer, value.type, new Set()) === null
+        ) {
+          const boxed: IrExpr = { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
+          return { kind: "libCall", fn: "insp.jsonDyn", args: [boxed], type: STRING, loc };
         }
         if (!lowerer.jsonStringifySafe(value.type)) {
           lowerer.noLowering(
@@ -3786,6 +5492,12 @@ export function lowerFormatCall(
             loc,
           });
         if (value.type.kind === "string") return parse(value);
+        // A symbol prints NaN (Node's early %f symbol check).
+        if (value.type.kind === "symbol") return discardAs(value, "NaN", loc);
+        // parseFloat(10n) is parseFloat("10") — Number's rounding of the
+        // bigint's decimal text (Node reads the primitive, not String()).
+        if (value.type.kind === "bigint")
+          return format({ kind: "libCall", fn: "bigint.toF64", args: [value], type: F64, loc });
         if (value.type.kind === "dyn") {
           return parse({
             kind: "libCall",
@@ -3814,6 +5526,14 @@ export function lowerFormatCall(
             type: STRING,
             loc,
           };
+        }
+        // Every other kind reaches parseFloat through its String()
+        // conversion: a typed array joins its elements, a record calls its
+        // own toString, a URL prints its href, a Map prints
+        // "[object Map]".
+        {
+          const text = stringForParse(lowerer, value, node);
+          if (text !== null) return parse(text);
         }
         lowerer.noLowering(
           `util.format %f of '${lowerer.fmt(value.type)}' values`,
@@ -3979,6 +5699,9 @@ export function lowerRuntimeFormat(
   loc: SrcLoc,
   options?: ts.Expression | null,
   literalPrefix = "",
+  /** The console output member whose diagnostics channel receives the
+   * argument pack before the line is formatted (console.<member>). */
+  channelMember?: number,
 ): IrExpr {
   const stmts: IrStmt[] = [];
   let optionsRef: IrExpr | null = null;
@@ -4004,9 +5727,27 @@ export function lowerRuntimeFormat(
     blame: argNodes[0] ?? options ?? undefined,
   });
   stmts.push(...pack.stmts);
+  if (channelMember !== undefined)
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: "console.publishArgs",
+        args: [numLit(channelMember, loc), pack.pack()],
+        type: VOID,
+        loc,
+      },
+      loc,
+    });
   const result: IrExpr =
     optionsRef === null
-      ? { kind: "libCall", fn: "insp.format", args: [pack.pack()], type: STRING, loc }
+      ? {
+          kind: "libCall",
+          fn: channelMember === undefined ? "insp.format" : "insp.formatSnapshot",
+          args: [pack.pack()],
+          type: STRING,
+          loc,
+        }
       : {
           kind: "libCall",
           fn: "insp.formatWithOptions",
@@ -4134,7 +5875,9 @@ export function heldFormatArgs(
   return { stmts, args, specifies, format, joinable };
 }
 
-/** Arrays anywhere in the tree — the %o (showHidden) gate. */
+/** Arrays, byte views or checked-dynamic values anywhere in the tree — the
+ * static %o (showHidden) gate, for the types the checked-dynamic walk
+ * cannot hold. */
 function typeTreeHasHidden(lowerer: Lowerer, t: IrType, visiting: Set<string>): boolean {
   switch (t.kind) {
     case "array":
@@ -4211,6 +5954,129 @@ export function lowerUtilModuleCall(
         stmts,
         result: { kind: "libCall", fn: `util.${bi.member}`, args, type, loc },
         type,
+        loc,
+      };
+    }
+    case "markPromiseAsHandled": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.markPromiseAsHandled with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.markPromiseAsHandled",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
+        loc,
+      };
+    }
+    case "transferableAbortSignal": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortSignal with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [input],
+          type: DYN,
+          loc,
+        };
+      // Surplus arguments are evaluated and dropped, as in Node.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.transferableAbortSignal",
+          args: [varRef(saved.id, DYN, loc)],
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
+    case "transferableAbortController": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.transferableAbortController with spread arguments", expr);
+      const result: IrExpr = {
+        kind: "libCall",
+        fn: "util.transferableAbortController",
+        args: [],
+        type: DYN,
+        loc,
+      };
+      const stmts: IrStmt[] = expr.arguments.nodes.map((arg) => ({
+        kind: "exprStmt",
+        expr: lowerer.lowerExpr(arg),
+        loc,
+      }));
+      // Node ignores surplus arguments; they are still evaluated.
+      return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
+    }
+    case "setTraceSigInt": {
+      if (expr.arguments.nodes.some(ts.isSpreadElement))
+        lowerer.noLowering("util.setTraceSigInt with spread arguments", expr);
+      const input: IrExpr = expr.arguments.nodes[0]
+        ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
+        : dynUndefinedExpr(loc);
+      if (expr.arguments.nodes.length <= 1)
+        return {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [input],
+          type: VOID,
+          loc,
+        };
+      // Node reads no argument; every one is evaluated and dropped.
+      const saved = lowerer.declareHiddenLocal("%utilInput", DYN);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: saved.id, init: input, loc },
+          ...expr.arguments.nodes
+            .slice(1)
+            .map((arg): IrStmt => ({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc })),
+        ],
+        result: {
+          kind: "libCall",
+          fn: "util.setTraceSigInt",
+          args: [varRef(saved.id, DYN, loc)],
+          type: VOID,
+          loc,
+        },
+        type: VOID,
         loc,
       };
     }
@@ -4483,44 +6349,43 @@ function lowerParseArgsCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcL
   return parsed;
 }
 
-/** util.getCallSites() in a JS source: compiled binaries keep no runtime
- * call stacks, so the honest STATIC answer is a fixed-shape placeholder —
- * a fresh dyn array of three call-site records whose scriptName is the
- * CALL SITE's own file (compile-time-knowable) and whose line/column are
- * 0 (SEMANTICS.md; the fields exist so consumers like test/common's
- * mustNotCall — `callSite.scriptName`:`callSite.lineNumber` in the
- * failure text — read a printable value instead of throwing). Argument
- * forms and TypeScript keep the SC2020 fence: a typed consumer asserting
- * real frames must fail at compile time instead of reading placeholders. */
-function lowerGetCallSitesCall(
-  lowerer: Lowerer,
-  expr: ts.CallExpression,
-  loc: SrcLoc,
-): IrExpr | null {
-  if (expr.arguments.nodes.length !== 0) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
-  const frame = (): IrExpr => {
-    const field = (name: string, value: IrExpr): { key: IrExpr; value: IrExpr } => ({
-      key: { kind: "strLit", value: name, type: STRING, loc },
-      value: { kind: "dynFrom", value, type: DYN, loc },
-    });
-    return {
-      kind: "dynObjLit",
-      fields: [
-        field("functionName", { kind: "strLit", value: "", type: STRING, loc }),
-        field("scriptName", {
-          kind: "strLit",
-          value: ts.getSourceFileOfNode(expr).fileName,
-          type: STRING,
-          loc,
-        }),
-        field("scriptId", { kind: "strLit", value: "0", type: STRING, loc }),
-        field("lineNumber", { kind: "numLit", value: 0, type: F64, loc }),
-        field("column", { kind: "numLit", value: 0, type: F64, loc }),
-      ],
-      type: DYN,
-      loc,
-    };
+/** util.getCallSites([frameCount][, options]): the running source frames,
+ * read from the positions the frames record (frame-positions.ts). The
+ * runtime validates both arguments and answers the array; typed callers get
+ * it through the checked extraction. */
+function lowerGetCallSitesCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
+    lowerer.noLowering("util.getCallSites with spread arguments", expr);
+  if (expr.arguments.nodes.length > 2)
+    lowerer.noLowering(`util.getCallSites with ${expr.arguments.nodes.length} arguments`, expr);
+  // The options bag is an ordinary object literal in the common call
+  // shape: build it as a checked-dynamic object so the runtime can read
+  // `sourceMap` from it like Node validates it.
+  const dynArg = (node: ts.Expression): IrExpr =>
+    ts.isObjectLiteralExpression(node)
+      ? lowerDynObjectLiteral(lowerer, node)
+      : lowerer.lowerExprExpecting(node, DYN);
+  const first = expr.arguments.nodes[0] ? dynArg(expr.arguments.nodes[0]) : dynUndefinedExpr(loc);
+  const second = expr.arguments.nodes[1] ? dynArg(expr.arguments.nodes[1]) : dynUndefinedExpr(loc);
+  const sites: IrExpr = {
+    kind: "libCall",
+    fn: "util.getCallSites",
+    args: [first, second],
+    type: DYN,
+    loc,
   };
-  return { kind: "dynArrLit", elems: [frame(), frame(), frame()], type: DYN, loc };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    result !== null &&
+    result.kind !== "dyn" &&
+    result.kind !== "void" &&
+    canDynCheckTo(
+      result,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { kind: "dynCheck", value: sites, type: result, loc };
+  }
+  return sites;
 }

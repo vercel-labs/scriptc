@@ -1,0 +1,12 @@
+# ThreadSanitizer suppressions for the worker corpus (scripts/tsan-workers.mjs).
+# One `race:<name>` line per known race, under a comment that says why it is
+# tolerated and what removes the line.
+
+# Every context that first uses a message port, the main thread and each
+# worker, installs the port operations by storing the address of one static
+# table in the global scr_message_port_ops (scr_port_ops_install in
+# scr_worker_events.c), and other threads read that global. Every store
+# writes the same pointer, so a reader sees NULL before the first install
+# or that address; it is still an unsynchronized write to shared memory.
+# Storing it once, or atomically, removes this line.
+race:scr_message_port_ops

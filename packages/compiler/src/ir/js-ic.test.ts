@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { BOOL, DYN, STRING, VOID, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
-import { JsIcSites, hasJsIcSite } from "./js-ic.js";
+import { BOOL, DYN, F64, STRING, VOID, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
+import { JsIcSites, dynIndexFastpath, hasJsIcSite } from "./js-ic.js";
 
 const loc = { file: "js-ic.ts", start: 0, end: 0 };
 const ref = (id: string, type = DYN): IrExpr => ({ kind: "varRef", localId: id, type, loc });
@@ -124,6 +124,41 @@ test("property helpers whose class branches only test capsules are cache sites",
   );
   expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "get", key: "x" });
   expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "set", key: "y" });
+});
+
+test("a class table's indexed dispatch reads as the branches it selects", () => {
+  // The lowering replaces a long run of capsule branches with a switch on the
+  // receiver's class key; each case holds the branch it selects, still
+  // guarded by its own key test.
+  const indexed = (branches: IrStmt[], receiver: string): IrStmt => ({
+    kind: "switch",
+    disc: {
+      kind: "libCall",
+      fn: "dyn.classHash",
+      args: [ref(receiver)],
+      type: F64,
+      loc,
+    },
+    cases: branches.map((branch, index) => ({
+      test: { kind: "numLit", value: index, type: F64, loc },
+      body: [branch],
+    })),
+    loc,
+  });
+  const dispatchBag = helper(
+    "%dyn.class.readProperties.indexed",
+    ["v"],
+    [indexed([capsuleBranch("v"), capsuleBranch("v")], "v"), ret(ref("v"))],
+  );
+  const sites = sitesOf(
+    dispatchBag,
+    getHelper("%dyn.class.property.0", "x", [], call(dispatchBag.name, ref("p.0"))),
+    getHelper("%dyn.class.property.1", "x", [
+      indexed([capsuleBranch("p.0"), capsuleBranch("p.0")], "p.0"),
+    ]),
+  );
+  expect(sites.site("%dyn.class.property.0")).toEqual({ kind: "get", key: "x" });
+  expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "get", key: "x" });
 });
 
 test("bags converted between dyn and jsval are still the receiver", () => {
@@ -319,6 +354,59 @@ test("a function holds a site when it calls a classified helper or dispatches a 
   expect(hasJsIcSite({ ...invoker, name: "%init.0", body: [looped] }, sites)).toBe(true);
 });
 
+/** `%dyn.class.named.N(value, key: string, stored)`: a write under a name
+ * known only at run time. */
+function namedSetHelper(name: string, prefix: IrStmt[] = [], key: IrExpr = ref("p.key", STRING)) {
+  const write: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.keySet",
+    args: [call("%dyn.class.properties", ref("p.0")), key, ref("p.1")],
+    type: VOID,
+    loc,
+  };
+  const fn: IrFunction = {
+    ...helper(
+      name,
+      ["p.0", "p.key", "p.1"],
+      [...prefix, { kind: "exprStmt", expr: write, loc }, ret(null)],
+    ),
+    returnType: VOID,
+  };
+  fn.params[1]!.type = STRING;
+  return { fn, write };
+}
+
+test("a write under a run-time name is a site that holds no cache", () => {
+  const plain = namedSetHelper("%dyn.class.named.0");
+  const branched = namedSetHelper("%dyn.class.computed.1", [capsuleBranch("p.0")]);
+  // A constant key is the `set` site's; a key that is not the parameter, a
+  // boxed key parameter and a statement that is no capsule branch keep the
+  // helper call.
+  const constant = namedSetHelper("%dyn.class.named.2", [], str("x"));
+  const guarded = namedSetHelper("%dyn.class.named.3", [
+    { kind: "exprStmt", expr: call("f", ref("p.0")), loc },
+  ]);
+  const boxed = namedSetHelper("%dyn.class.computed.4");
+  boxed.fn.params[1]!.type = DYN;
+  const sites = sitesOf(plain.fn, branched.fn, constant.fn, guarded.fn, boxed.fn);
+  expect(sites.site(plain.fn.name)).toEqual({ kind: "namedSet", write: plain.write });
+  expect(sites.site(branched.fn.name)).toEqual({ kind: "namedSet", write: branched.write });
+  expect(sites.site(constant.fn.name)).toBeNull();
+  expect(sites.site(guarded.fn.name)).toBeNull();
+  expect(sites.site(boxed.fn.name)).toBeNull();
+  // The site calls the runtime's generic write: a function whose only site
+  // is one selects none of the tier's caches.
+  const caller = helper(
+    "f",
+    ["o"],
+    [
+      { kind: "exprStmt", expr: call(plain.fn.name, ref("o"), str("k"), ref("o")), loc },
+      ret(ref("o")),
+    ],
+  );
+  expect(hasJsIcSite(caller, sites)).toBe(false);
+});
+
 test("a function holds a site when an object literal has a constant-key member", () => {
   const sites = sitesOf();
   const literal = (key: IrExpr): IrFunction =>
@@ -449,4 +537,14 @@ test("helpers that answer plain values first with the same operation are cache s
   expect(sites.site("%dyn.class.property.1")).toEqual({ kind: "get", key: "x" });
   expect(sites.site("%dyn.class.property.2")).toBeNull();
   expect(sites.site("%dyn.class.property.3")).toBeNull();
+});
+
+test("the computed-access fast path is the default and has an opt-out", () => {
+  expect(dynIndexFastpath({})).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "" })).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "1" })).toBe(true);
+  expect(dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "0" })).toBe(false);
+  expect(() => dynIndexFastpath({ SCRIPTC_DYN_INDEX_FASTPATH: "2" })).toThrow(
+    "SCRIPTC_DYN_INDEX_FASTPATH must be 0 or 1, got 2",
+  );
 });

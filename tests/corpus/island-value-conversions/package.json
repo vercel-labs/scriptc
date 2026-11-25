@@ -1,0 +1,1 @@
+{ "name": "island-value-conversions", "private": true, "type": "module", "scriptc": { "packages": { "value-pkg": "node" } } }

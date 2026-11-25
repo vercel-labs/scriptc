@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sqlite-facade-reexports/facade.ts",
+  "<repo>/tests/corpus/sqlite-facade-reexports/main.ts"
+ ],
+ "diags": []
+}

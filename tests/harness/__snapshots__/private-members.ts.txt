@@ -42,9 +42,23 @@ private-members.ts:68:12 - error SC1090: reading the private static '#origin' th
      |            ^~~~~~~~~
   69 |   }
 
-private-members.ts:79:12 - error SC1090: '#tag in …' inside a generic class (JS shares one brand across every instantiation; these layouts mint one class per instantiation) is not supported yet (instantiating class 'GenBrand' with <number>)
+private-members.ts:79:12 - error SC1090: reading the private static '#origin' through a class value (JS brands the declaring class object alone — spell the declaring class's name) is not supported yet
 
-  78 |   same(o: GenBrand<number>): boolean {
-  79 |     return #tag in o;
-     |            ^~~~~~~~~
+  78 |   read(k: typeof ViaErasedValue): number {
+  79 |     return (k as any).#origin;
+     |            ^~~~~~~~~~~~~~~~~~
   80 |   }
+
+private-members.ts:94:12 - error SC1090: reading the private name '#origin' through a class value whose class did not declare it (JS resolves a private name in the enclosing class body — spell the declaring class's name) is not supported yet
+
+  93 |   read(k: typeof ForeignBrand): number {
+  94 |     return (k as any).#origin;
+     |            ^~~~~~~~~~~~~~~~~~
+  95 |   }
+
+private-members.ts:104:12 - error SC1090: '#tag in …' inside a generic class (JS shares one brand across every instantiation; these layouts mint one class per instantiation) is not supported yet (instantiating class 'GenBrand' with <number>)
+
+  103 |   same(o: GenBrand<number>): boolean {
+  104 |     return #tag in o;
+      |            ^~~~~~~~~
+  105 |   }

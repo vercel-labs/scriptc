@@ -1,0 +1,55 @@
+variadic-store-longer-call.ts:20:36 - error SC1090: variadic function values stored as '(number) => number' in a program that hands a function of that type to 'map' at variadic-store-longer-call.ts:21:27, which can call it with more than the 1 argument the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  19 | // (1) An array method passes the element, the index and the array.
+  20 | const one: (x: number) => number = counter();
+     |                                    ^~~~~~~~~
+  21 | console.log([3, 1, 2].map(one).join(","));
+
+variadic-store-longer-call.ts:24:26 - error SC1090: variadic function values stored as '() => void' in a program that hands a function of that type to a function type with 1 parameter at variadic-store-longer-call.ts:25:36, which can call it with more than the 0 arguments the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  23 | // (2) A function type that names more parameters.
+  24 | const none: () => void = quiet();
+     |                          ^~~~~~~
+  25 | const wider: (x: number) => void = none;
+
+variadic-store-longer-call.ts:29:37 - error SC1090: variadic function values stored as '(string) => string' in a program that hands a function of that type to a replacer at variadic-store-longer-call.ts:30:31, which can call it with more than the 1 argument the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  28 | // (3) A replacer receives the match, its offset and the subject.
+  29 | const text: (s: string) => string = spell();
+     |                                     ^~~~~~~
+  30 | console.log("a1".replace("1", text));
+
+variadic-store-longer-call.ts:33:37 - error SC1090: variadic function values stored as '(boolean) => void' in a program that hands a function of that type to 'on' at variadic-store-longer-call.ts:35:20, which can call it with more than the 1 argument the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  32 | // (4) An event listener receives the event's arguments.
+  33 | const flag: (on: boolean) => void = quiet();
+     |                                     ^~~~~~~
+  34 | const emitter = new EventEmitter();
+
+variadic-store-longer-call.ts:43:46 - error SC1090: variadic function values stored as '(number, number) => void' in a program that hands a function of that type to 'forEach' at variadic-store-longer-call.ts:44:13, which can call it with more than the 2 arguments the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  42 | };
+  43 | const pair: (a: number, b: number) => void = stored;
+     |                                              ^~~~~~
+  44 | [1].forEach(pair);
+
+variadic-store-longer-call.ts:48:29 - error SC1090: variadic function values stored as '() => number' in a program that hands a function of that type to a function type with 1 parameter at variadic-store-longer-call.ts:51:39, which can call it with more than the 0 arguments the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  47 | // signature that a wider one is then made from.
+  48 | const empty: () => number = function () {
+     |                             ^~~~~~~~~~~~~
+  49 |   return arguments.length;
+
+variadic-store-longer-call.ts:55:39 - error SC1090: variadic function values stored as '(string) => number' in a program that hands a function of that type to 'map' at variadic-store-longer-call.ts:56:23, which can call it with more than the 1 argument the type names (the stored function would not receive them: store a function that names the arguments it uses, or call it from one) are not supported yet
+
+  54 | // (7) A typed rest function packed behind a fixed signature.
+  55 | const packed: (a: string) => number = (...parts: string[]): number => parts.length;
+     |                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  56 | console.log(["a"].map(packed).join(","));
+
+variadic-store-longer-call.ts:61:52 - error SC1090: variadic function values that read 'this', stored as '(boolean, number) => void' in a program that hands a function of that type to a timer at variadic-store-longer-call.ts:67:12 (Node.js calls it there with a receiver the native call does not pass, and the type no longer shows that the function reads it: read that value by name) is not supported yet
+
+  60 | // timer, which Node calls with the timer object as `this`.
+  61 | const hidden: (flag: boolean, n: number) => void = function (
+     |                                                    ^~~~~~~~~~
+  62 |   this: unknown,

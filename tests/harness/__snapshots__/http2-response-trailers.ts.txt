@@ -1,8 +1,0 @@
-http2-response-trailers.ts:4:3 - error SC2020: 'Http2ServerResponse.addTrailers' is part of the standard library types but has no scriptc lowering yet
-
-  3 | createServer((_req, res) => {
-  4 |   res.addTrailers({ "X-Later": "x" });
-    |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  5 |   res.end("ok");
-
-  hint: HTTP/2 response trailers are not supported by the static runtime yet

@@ -66,6 +66,9 @@ ScrBigInt *scr_bigint_from_mag64(uint64_t mag, bool negative);
 ScrBigInt *scr_bigint_wrap_eval(const char *program, ScrBigInt *const *leaves, const double *numbers);
 ScrBigInt *scr_bigint_buffer_read(ScrBytes *bytes, double offset, bool sign, bool le);
 double scr_bigint_buffer_write(ScrBytes *bytes, ScrBigInt *value, double offset, bool sign, bool le);
+/* writeBig(U)Int64's checkInt range test alone: false after throwing Node's
+ * ERR_OUT_OF_RANGE. */
+bool scr_bigint_buffer_check(const ScrBigInt *value, bool sign);
 ScrBigInt *scr_bigint_dataview_get(ScrBytes *bytes, double offset, bool sign, bool le);
 void scr_bigint_dataview_set(ScrBytes *bytes, double offset, ScrBigInt *value, bool le);
 

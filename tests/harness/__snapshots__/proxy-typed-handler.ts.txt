@@ -1,0 +1,8 @@
+proxy-typed-handler.ts:5:35 - error SC1090: Proxy handlers whose traps have typed signatures are not supported yet
+
+  4 | const counts = { hits: 1 };
+  5 | const doubled = new Proxy(counts, {
+    |                                   ^
+  6 |   get(target, key) {
+
+  hint: declare each trap's parameters and result as 'any', for example get(target: any, key: string | symbol): any, so the handler is built as an untyped object

@@ -1,0 +1,51 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/jsdoc-typed-pattern-writes.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "a value lacking a required property of its declared type is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsdoc-typed-pattern-writes.js",
+    "start": 499,
+    "end": 506
+   },
+   "milestone": "later",
+   "hint": "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)"
+  },
+  {
+   "code": "SC1090",
+   "message": "a value lacking a required property of its declared type is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsdoc-typed-pattern-writes.js",
+    "start": 599,
+    "end": 611
+   },
+   "milestone": "later",
+   "hint": "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)"
+  },
+  {
+   "code": "SC1090",
+   "message": "a value lacking a required property of its declared type is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsdoc-typed-pattern-writes.js",
+    "start": 707,
+    "end": 712
+   },
+   "milestone": "later",
+   "hint": "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)"
+  },
+  {
+   "code": "SC1090",
+   "message": "a value lacking a required property of its declared type is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsdoc-typed-pattern-writes.js",
+    "start": 853,
+    "end": 864
+   },
+   "milestone": "later",
+   "hint": "the value is legal JavaScript and Node checks no declared type; the checker names the properties its target type requires. Admitting it needs a differential proof that the lowering is Node-exact — the checker's refusal stands until then (TypeScript reports TS2739 here.)"
+  }
+ ]
+}

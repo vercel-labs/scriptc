@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/error-inspect-stack.ts"
+ ],
+ "diags": []
+}

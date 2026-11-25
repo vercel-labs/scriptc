@@ -22,7 +22,13 @@ export interface NativeLinkFeatures {
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
+  /** A BigInt typed-array constructor is read as a value: its element kinds
+   * live in the JavaScript object model build (t262-da §J), which
+   * jsObjectModelFact ORs this fact into. */
+  bigintBytes: boolean;
   fileHandle: boolean;
+  /** filehandle.readableWebStream: scr_fs_web_stream.c. */
+  fsWebStream?: boolean;
   fetch: boolean;
   eventTarget?: boolean;
   /** The WebAssembly API (scr_wasm.c). Absent when unused, so programs
@@ -31,28 +37,67 @@ export interface NativeLinkFeatures {
   /** The program assigns process.emitWarning: links the
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
-  /** The program asserts a record literal to a wider record type (a partial
-   * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.
-   * Absent for every program without one, so their objects stay identical. */
-  recordViewPartial?: boolean;
-  /** The program uses process.stdin.setEncoding, string 'data' listeners
-   * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
-  stdioExtended?: boolean;
+  /** The program creates a checked-dynamic promise whose executor takes a
+   * reject parameter: links the SCR_PROMISE_REJECT_DYN variant of
+   * scr_async.c. Absent for every other program, so their objects stay
+   * identical. */
+  promiseRejectDyn?: boolean;
+  /** The program uses a runtime feature only a JavaScript source reaches:
+   * links the SCR_JS_OBJECT_MODEL build of every unit those features touch
+   * (t262-da §J). Absent for every other program, so their objects stay
+   * identical. */
+  jsObjectModel?: boolean;
+  /** A JavaScript source resizes, grows or detaches an ArrayBuffer
+   * (frontend/lowering/buffers.ts): compiles scr_js_buffers.c, the views
+   * registry those operations maintain. The fact ORs into jsObjectModel
+   * (jsObjectModelFact), so it selects no build column of its own. Absent
+   * for every other program, so their objects stay identical. */
+  mutableBuffers?: boolean;
   /** writeFile's `flag` disposition or copyFile's mode argument:
    * scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c. */
   fsFlags?: boolean;
+  /** existsSync over a path value that is not statically a string:
+   * scr_fs_exists_dyn.c. */
+  fsExistsValue?: boolean;
+  /** node:module's compile cache family: scr_module_cache.c. */
+  moduleCompileCache?: boolean;
+  /** The program writes, defines or deletes a function's inherited member
+   * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
+   * and scr_dyn_invoke.c. Absent for every other program, so their objects
+   * stay identical. */
+  fnMemberProps?: boolean;
+  /** The BYTE-data spellings of the options write and
+   * fs.promises.writeFile: scr_fs_bytes_write.c. */
+  fsBytesWrites?: boolean;
   /** string_decoder's checked-dynamic chunk forms: scr_bytes_strdec_dyn.c. */
   strdecDyn?: boolean;
   /** process.prependListener, stdin.isRaw or server.off: the
-   * SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and the
+   * SCR_PROCESS_EXTRAS build of scr_async_dyn.c and the
    * SCR_NET_SERVER_OFF build of scr_net.c. */
   processExtras?: boolean;
   /** A write completion callback takes the error argument: links the
    * SCR_STREAM_WRITE_ERRORS build of the stream unit. */
   streamWriteErrors?: boolean;
-  /** The program reaches the process output streams' write slot: links the
-   * SCR_STDIO_WRITE_SLOT build of the events unit. */
-  stdioWriteSlot?: boolean;
+  /** The program holds a process output stream as a value, so it can
+   * replace the stream's write method. With Node islands it links
+   * scr_node_island_stdio.c and the SCR_NODE_ISLAND_STDIO build of
+   * scr_node_island.c, which join the island's process.stdout.write and
+   * process.stderr.write to the program's write slots. */
+  stdioObject?: boolean;
+  /** The program holds a process stream as a value and names getColorDepth
+   * or hasColors: links scr_tty_colors.c and the SCR_TTY_COLORS build of
+   * the events unit, whose stream object has the two methods. */
+  ttyColors?: boolean;
+  /** A Console built with inspectOptions or colorMode: its option-aware
+   * methods read the environment's color depth (scr_tty_colors.c). */
+  consoleOptions?: boolean;
+  /** The program pipes or unpipes a stream: links scr_stream_pipe_events.c,
+   * which installs Node's pipe lifecycle into the stream unit. */
+  streamPipeEvents?: boolean;
+  /** An fs.ReadStream or fs.WriteStream whose options can hold a `signal`:
+   * links the SCR_FS_STREAM_SIGNAL build of the fs stream unit, and the
+   * event-target unit its abort listener comes from. */
+  fsStreamSignal?: boolean;
   /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
    * SCR_NODE_ISLANDS variant of the event loop unit. */
   nodeIsland?: boolean;
@@ -65,9 +110,17 @@ export interface NativeLinkFeatures {
   /** Primitive wrapper objects link scr_js_wrapper.c; absent (false)
    * otherwise. */
   primitiveWrapper?: boolean;
+  /** The Promise statics through Function.prototype.call with a foreign
+   * constructor link scr_js_promise_generic.c; absent (false) otherwise. */
+  promiseGeneric?: boolean;
+  /** %Iterator% and %Iterator.prototype% as values link
+   * scr_js_iterator.c; absent (false) otherwise. */
+  iteratorProto?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;
+  /** node:zlib's zstd forms: scr_zstd.c and the vendored zstd archive. */
+  zstd?: boolean;
   assert: boolean;
   inspect: boolean;
   dynInvoke: boolean;
@@ -85,33 +138,130 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** process.features read as a value links scr_process_features.c (the
+   * stable flags object); absent (false) otherwise. */
+  processFeatures?: boolean;
+  /** A program with both Node islands and child_process links
+   * scr_node_island_child.c (a child process an island made, in a native
+   * ChildProcess slot); absent (false) otherwise. */
+  islandChild?: boolean;
+  /** The spawnSync and exec/execFile-callback `cwd`/`input`/`shell`
+   * entries: selects the SCR_CHILD_CP_OPTIONS build of scr_child.c.
+   * Absent (false) otherwise. */
+  childOptionExt?: boolean;
+  /** node:cluster's module surface links scr_cluster.c; absent (false)
+   * otherwise. */
+  cluster?: boolean;
+  /** A spawnSync capture read as a Buffer links scr_child_capture.c;
+   * absent (false) otherwise. */
+  spawnCaptureBytes?: boolean;
+  /** The spawnSync result's `.error` errnoException fields (errno, syscall,
+   * path, spawnargs) select scr_child.c's SCR_CHILD_ERR_FIELDS build; absent
+   * (false) otherwise. */
+  childErrorFields?: boolean;
+  /** pause(), resume(), isPaused() or readableFlowing on a child's output
+   * stream selects scr_child.c's SCR_CHILD_STREAM_FLOW build; absent (false)
+   * otherwise. */
+  childStreamFlow?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
+  /** The executable carries debug sources (`--optimization dev` without
+   * `--strip`): its checked conversions report their failures
+   * (scr_conversion_trace.c). Absent (false) for every other build. */
+  conversionTrace?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent
    * (false) for programs without it. */
   dynForAwait?: boolean;
+  /** The keyed collections' prototype objects and member values, their
+   * constructors' adder lookup, Map.prototype's dynamic forEach and the
+   * ES2025 Set compositions: scr_dyn_collections.c. Absent (false)
+   * otherwise. */
+  dynCollections?: boolean;
+  /** Object.isExtensible and Object.isSealed of a value typed dynamically:
+   * scr_dyn_integrity.c. Absent (false) for programs without it. */
+  dynIntegrityQueries?: boolean;
+  /** Reflect.getPrototypeOf's primitive-target check compiles
+   * scr_dyn_reflect_proto.c; absent (false) otherwise. */
+  reflectProtoTarget?: boolean;
+  /** The prototype read of a class test's walk (`value instanceof C` of an
+   * untyped value) compiles scr_dyn_class_test.c; absent (false) otherwise. */
+  classTestPrototype?: boolean;
+  /** `delete` of a key a record's type does not declare:
+   * scr_record_source_delete.c. Absent (false) for programs without one. */
+  recordSourceDelete?: boolean;
+  /** A partial record assertion to a type whose values may be frozen
+   * compiles scr_record_view_frozen.c; absent (false) otherwise. */
+  recordViewFrozen?: boolean;
+  /** A generator that binds its parameters at the call: scr_gen_bind.c.
+   * Absent (false) for programs without one. */
+  genBind?: boolean;
+  /** A generator function that reads `this`: scr_gen_receiver.c. Absent
+   * (false) for programs without one. */
+  genReceiver?: boolean;
+  /** A record-to-record conversion reads a field the source type does not
+   * declare through the kept-source table (frontend/lowering/
+   * record-sources.ts): scr_record_source_get.c. Absent (false) for every
+   * program, including one that only casts records, so a cast alone keeps
+   * its runtime objects byte for byte. */
+  recordSourceGet?: boolean;
+  /** A join of an array whose elements the compiler knows are strings:
+   * scr_arr_join_str.c. Absent (false) for every other program, a join of
+   * numbers among them, so they keep their runtime objects byte for byte. */
+  arrJoinStr?: boolean;
   /** events.once with options: scr_events_once_signal.c. Absent (not
    * false) for programs without it. */
   eventsOnceSignal?: boolean;
   /** util.MIMEType and util.MIMEParams: scr_mime.c. */
   mime?: boolean;
+  /** node:sqlite: scr_sqlite.c, plus the vendored SQLite archive. */
+  sqlite?: boolean;
   /** `--large-pages`: scr_text_pages.c, which moves the executable's code
    * onto transparent huge pages at startup. Absent (false) without it. */
   largePages?: boolean;
   /** Web streams in checked-dynamic code: scr_webstreams.c and
    * scr_dyn_handle_class.c. */
   webStreams?: boolean;
+  /** A program that builds a Blob or File: selects scr_fetch.c's
+   * SCR_WEB_BODIES build, which sends the blob's bytes and its type as
+   * Content-Type, as Node does. Absent (false) for programs that build
+   * neither, which keep the default fetch unit byte for byte. */
+  webBodies?: boolean;
   /** AbortController and AbortSignal: scr_abort.c, unless the program
    * links the fetch unit, which has them. */
   abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
+  /** util.markPromiseAsHandled: scr_util_mark_handled.c. */
+  utilMarkPromiseAsHandled?: boolean;
+  /** util.setTraceSigInt: scr_util_trace_sigint.c. */
+  utilTraceSigInt?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link
    * scr_bytes_dyn.c; absent (false) for programs without them. */
   dynBuffer?: boolean;
+  /** An untyped path of a synchronous fs function in a JavaScript source
+   * (dyn.validateFsPath) links scr_fs_path_value.c; absent (false) otherwise. */
+  fsPathValue?: boolean;
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** A standard library prototype object read as a value in a JavaScript
+   * source (`Date.prototype`) links scr_dyn_stdlib_prototype.c; absent
+   * (false) otherwise, so other programs keep their exact link line. */
+  stdlibPrototypeValue?: boolean;
+  /** DataView.prototype read as a value in a JavaScript source
+   * (`DataView.prototype`) links scr_data_view_proto.c; absent (false)
+   * otherwise, so other programs keep their exact link line. */
+  dataViewPrototypeValue?: boolean;
+  /** A computed read of the global object, or `… in globalThis`, links
+   * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
+   * scr_node_builtin.c; absent (false) otherwise. */
+  hostAbsentGlobals?: boolean;
+  /** A runtimeFence that stands for a deferred diagnostic links
+   * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
+  deferredFence?: boolean;
+  /** `fn.constructor = value` on a function value links scr_dyn_fn_own.c;
+   * absent (false) otherwise. */
+  functionOwnWrite?: boolean;
   /** createRequire's computed require and require.resolve link
    * scr_require.c; absent (false) otherwise. */
   computedRequire?: boolean;
@@ -128,6 +278,13 @@ export interface NativeLinkFeatures {
   utilPromisify: boolean;
   dynBuiltinClass: boolean;
   dynBuiltinStream: boolean;
+  /** An Array.prototype method runs over an array-like receiver:
+   * scr_dyn_array_like.c. Absent (false) otherwise, so programs that never
+   * call one over an array-like keep their exact link line. */
+  arrayLikeDispatch?: boolean;
+  /** A String.prototype trim method read as a value:
+   * scr_dyn_builtin_methods.c. Absent (false) otherwise. */
+  builtinMethodValue?: boolean;
   parseArgs: boolean;
   stream: boolean;
   net: boolean;
@@ -136,6 +293,9 @@ export interface NativeLinkFeatures {
   dgram: boolean;
   /** node:dns/promises: scr_dns_promises.c. */
   dnsPromises: boolean;
+  /** The stub resolver's queries, dns.Resolver and dns/promises'
+   * Resolver: scr_dns_resolve.c. */
+  dnsResolve: boolean;
   /** dgram sockets as untyped values: scr_dgram_dyn.c. */
   dgramDyn: boolean;
   /** TextEncoder and TextDecoder records as untyped values:
@@ -144,6 +304,8 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** fsPromises.watch: scr_watch_async.c (with scr_watch.c). */
+  watchEvents: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -157,6 +319,11 @@ export interface NativeLinkFeatures {
   /** crypto.createDiffieHellman, getDiffieHellman and
    * createDiffieHellmanGroup: scr_dh.c plus the mbedTLS archive. */
   dh: boolean;
+  /** crypto.argon2 and crypto.argon2Sync: scr_argon2.c. */
+  argon2: boolean;
+  /** crypto.encapsulate/decapsulate and the WebCrypto ML-KEM algorithms:
+   * scr_mlkem.c plus the vendored mlkem-native archive. */
+  mlkem: boolean;
   /** Asymmetric KeyObjects, crypto.sign/verify and Sign/Verify: scr_pki.c
    * plus the mbedTLS archive. */
   pki: boolean;
@@ -176,6 +343,198 @@ export interface NativeLinkFeatures {
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey values:
    * scr_webcrypto.c. */
   webcrypto: boolean;
+  /** The link is a static executable (`--static`): selects the runtime
+   * pack's /etc/passwd build of the os unit, which needs no NSS and so
+   * passes targets.ts's staticLinkRefusal. A property of the link, set by
+   * the link plan, never a fact the program analysis answers; absent for
+   * every dynamically linked build, whose objects stay unchanged. */
+  staticLink?: boolean;
+}
+
+/** The keys a NativeLinkFeatures value always spells, on or off: the ones
+ * declared without `?`. An optional key is absent when its feature is off,
+ * so a program without the feature keeps its link identity, and no list
+ * below names it. */
+export type RequiredLinkFeatureName = {
+  [Name in keyof NativeLinkFeatures]-?: undefined extends NativeLinkFeatures[Name] ? never : Name;
+}[keyof NativeLinkFeatures];
+
+/** A compile error that names this type means NO_LINK_FEATURES and
+ * NativeLinkFeatures disagree about the required keys: a key declared
+ * without `?` is not listed there (add `<key>: false,` at the key's place in
+ * the interface's order), or a listed name is not such a key (delete it). */
+type EveryRequiredLinkFeatureOff = { readonly [Name in RequiredLinkFeatureName]: false };
+
+/** Every required key, off, in the interface's order. This is the one list
+ * of those keys: the cache validators and the warm-cache profiles read it,
+ * so a required key is added by declaring it in the interface and adding
+ * its line here, and removed by deleting both. An optional key has no line
+ * anywhere but the interface. */
+const NO_LINK_FEATURES: EveryRequiredLinkFeatureOff = {
+  regex: false,
+  copying: false,
+  textDecoderLegacy: false,
+  bigintBytes: false,
+  fileHandle: false,
+  fetch: false,
+  zlib: false,
+  assert: false,
+  inspect: false,
+  dynInvoke: false,
+  dc: false,
+  dynAsync: false,
+  events: false,
+  emitter: false,
+  symbol: false,
+  bigint: false,
+  searchParams: false,
+  qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
+  parseArgs: false,
+  stream: false,
+  net: false,
+  http: false,
+  http2: false,
+  dgram: false,
+  dnsPromises: false,
+  dnsResolve: false,
+  dgramDyn: false,
+  textCodecDyn: false,
+  watch: false,
+  watchFile: false,
+  watchEvents: false,
+  foreignFfi: false,
+  nodeTest: false,
+  tls: false,
+  cipher: false,
+  ecdh: false,
+  dh: false,
+  argon2: false,
+  mlkem: false,
+  pki: false,
+  ed25519: false,
+  x509: false,
+  perfLoop: false,
+  tlsCa: false,
+  webcrypto: false,
+};
+
+const requiredLinkFeatures: RequiredLinkFeatureName[] = [];
+for (const name in NO_LINK_FEATURES) requiredLinkFeatures.push(name as RequiredLinkFeatureName);
+
+/** The required keys, in the interface's order. */
+export const REQUIRED_LINK_FEATURES: readonly RequiredLinkFeatureName[] = requiredLinkFeatures;
+
+/** The link features of a program that links none of the optional runtime:
+ * every required key present and false, no optional key. A caller turns on
+ * what it links: `{ ...noLinkFeatures(), fetch: true }`. */
+export function noLinkFeatures(): NativeLinkFeatures {
+  return { ...NO_LINK_FEATURES };
+}
+
+/** A link feature whose runtime units call into another feature's units,
+ * with the features that own those units. */
+interface LinkFeatureRequirement {
+  /** The feature that cannot link alone. Optional features may be named
+   * here too: an absent optional key is off, so the check reads the same,
+   * and a requirement only turns on the `requires` features. */
+  feature: keyof NativeLinkFeatures;
+  requires: readonly RequiredLinkFeatureName[];
+}
+
+/** The link features that cannot link alone: each one's runtime units call
+ * functions of the units its `requires` features select, on a path the
+ * program reaches as soon as the feature is on. executableLinkFeatures turns
+ * the required features on, so the one list says what a feature needs
+ * whichever fact of the program selected it.
+ *
+ * `http2`: scr_http2.c releases a stream's compatibility request and
+ * response through scr_http.c and runs its sockets through scr_net.c. A
+ * program that only holds a session or stream type (`ClientHttp2Session` in
+ * a signature, with no node:http2 call left) selects the http2 units for the
+ * type's reference counting, and reaches those calls.
+ *
+ * A reference that only a call selecting the other unit reaches needs no
+ * line: the link's section collection drops it otherwise. The reference
+ * check in tests/harness/runtime-unit-references.test.ts lists those, and
+ * fails on a reference that is in neither list. Section collection is not
+ * the whole story on Windows, whose pack link keeps a selected object's
+ * functions together: scr_event_target.c and scr_events_once_signal.c call
+ * into the emitter unit from functions a target-only program reaches, so
+ * every feature that selects them requires `emitter`. The same holds for
+ * the symbol unit: scr_event_target.c's `events.on` iterator builds symbol
+ * keys and reads Symbol.asyncIterator and the watermark symbol through
+ * scr_symbol.c, and its object keeps those functions when Windows links
+ * it. */
+export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
+  { feature: "http2", requires: ["http", "net"] },
+  // scr_dgram.c reads the options' net.BlockList members through scr_net.c's
+  // matcher (createSocket's checks and the send/connect filters), so the
+  // block-list unit comes with the dgram unit.
+  { feature: "dgram", requires: ["net"] },
+  // scr_dns_resolve.c encodes query names with scr_idna.c's ToASCII (the
+  // unit that rides the regex engine), and its queries ride the dgram
+  // unit's poller.
+  { feature: "dnsResolve", requires: ["dgram", "regex"] },
+  // scr_event_target.c holds the events-module helpers over an EventTarget
+  // or a NodeEventTarget and the `events.on`/`events.once` target paths;
+  // they answer NodeEventTarget receivers through the emitter unit's
+  // registry and the iterator's symbol reads through the symbol unit. The
+  // unit is selected by eventTarget (a compiled EventTarget subclass,
+  // util.debounce/throttle, an abort.* call), by abortSignal and by
+  // nativeFetch, so each of those requires the emitter and the symbol with
+  // it.
+  { feature: "eventTarget", requires: ["emitter", "symbol"] },
+  { feature: "abortSignal", requires: ["emitter", "symbol"] },
+  { feature: "fetch", requires: ["emitter", "symbol"] },
+  // events.once with options registers the await through the emitter unit.
+  { feature: "eventsOnceSignal", requires: ["emitter"] },
+  // scr_perf.c resolves performance.measure's Node timing milestone names
+  // ("loopStart", "loopExit") through scr_perf_loop.c's getters.
+  { feature: "dynAsync", requires: ["perfLoop"] },
+  // scr_watch_async.c reports its bounded queue's dropped events through
+  // scr_emit_warning (scr_async_dyn.c, Node's process warning report and
+  // listeners), so the iterator unit brings the checked-dynamic async unit
+  // with it.
+  { feature: "watchEvents", requires: ["watch", "dynAsync"] },
+  // scr_mlkem.c installs the vendored core's hook table that the pki unit
+  // reads for ML-KEM keys, and the table's storage lives in the pki unit:
+  // the two units select each other. The pki unit takes the algorithm and
+  // the encoded key at run time (generateKeyPairSync's type,
+  // createPrivateKey's DER), so a program that never spells a parameter set
+  // still needs the hook when it can reach one.
+  { feature: "pki", requires: ["mlkem"] },
+  { feature: "mlkem", requires: ["pki"] },
+  // scr_fs_web_stream.c reads through the FileHandle unit; the web stream
+  // unit comes with it through executable-features' webStreams OR.
+  { feature: "fsWebStream", requires: ["fileHandle"] },
+  // scr_stream_dyn.c tests values and calls JavaScript stream members through
+  // the dyn-invoke unit (the checked-dynamic stream slots).
+  { feature: "streamDyn", requires: ["dynInvoke"] },
+  // A Console built with inspectOptions or colorMode formats through the
+  // inspect unit's console entries, and colorMode 'auto' reads the
+  // environment's color depth (scr_tty_colors.c).
+  { feature: "consoleOptions", requires: ["inspect"] },
+];
+
+/** Turns on, in `features`, every feature that one of its features
+ * requires, directly or through another requirement, and returns it. The
+ * value keeps its keys and their order. */
+export function withRequiredLinkFeatures(features: NativeLinkFeatures): NativeLinkFeatures {
+  for (;;) {
+    let changed = false;
+    for (const { feature, requires } of LINK_FEATURE_REQUIREMENTS) {
+      if (!features[feature]) continue;
+      for (const name of requires) {
+        if (features[name]) continue;
+        features[name] = true;
+        changed = true;
+      }
+    }
+    if (!changed) return features;
+  }
 }
 
 export interface NativeLinkInfo {

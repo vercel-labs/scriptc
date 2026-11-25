@@ -1,0 +1,17 @@
+proxy-typed-target.ts:6:25 - error SC1090: a Proxy over a class instance or an array is not supported yet
+
+  5 | }
+  6 | const boxed = new Proxy(new Box(), {});
+    |                         ^~~~~~~~~
+  7 | const listed = new Proxy([1, 2, 3], {});
+
+  hint: proxy a plain object: an object literal, or a value typed 'any'
+
+proxy-typed-target.ts:7:26 - error SC1090: a Proxy over a class instance or an array is not supported yet
+
+  6 | const boxed = new Proxy(new Box(), {});
+  7 | const listed = new Proxy([1, 2, 3], {});
+    |                          ^~~~~~~~~
+  8 | console.log(boxed.size, listed.length);
+
+  hint: proxy a plain object: an object literal, or a value typed 'any'

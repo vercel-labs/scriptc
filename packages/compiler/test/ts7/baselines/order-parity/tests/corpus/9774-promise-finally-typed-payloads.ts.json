@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/9774-promise-finally-typed-payloads.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-dns-resolve-records.cjs"
+ ],
+ "diags": []
+}

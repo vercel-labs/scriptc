@@ -6,6 +6,7 @@
 #include <string.h>
 #include <errno.h>
 #if !defined(_WIN32) && !defined(__wasi__)
+#include <pthread.h>
 #include <signal.h>
 #endif
 #ifdef _WIN32
@@ -32,6 +33,15 @@
 #define SCR_STDIO_DIRECT 0
 #endif
 
+/* Build-time stdout policy (`--stdout-buffering`). The program object defines
+ * scr_stdout_buffering = 1, overriding this weak default; the runtime then
+ * keeps JavaScript-visible stdout bytes in its own buffer when fd 1 is not a
+ * terminal, and settles them where the runtime settles output (see
+ * scr_stdout_settle). Off, every chunk is submitted before the call
+ * returns. */
+__attribute__((weak)) const unsigned char scr_stdout_buffering = 0;
+static bool scr_stdout_buffered = false;
+
 /* Set by scr_async.c at loop exhaustion; lives here (unconditionally) so
  * binaries that link the console without the async runtime still link, and
  * plain builds satisfy scr_async's reference. */
@@ -50,7 +60,7 @@ bool scr_exit_frees(void) {
   }
   static int forced = -1; /* the main thread reads it, once */
   if (forced < 0) {
-    const char *value = getenv("SCRIPTC_EXIT_FREE");
+    const char *value = scr_getenv("SCRIPTC_EXIT_FREE");
     forced = value != NULL && value[0] == '1';
   }
   return forced != 0;
@@ -72,6 +82,11 @@ extern long scr_bytes_live_count(void);   /* scr_bytes.c */
 
 static void scr_rc_audit_at_exit(void) {
   scr_buffer_pool_reset(); /* the pool's own slab reference */
+  /* atexit runs this before scr_flush_at_exit, and every audit message goes
+   * to stderr: settle stdout first so a --stdout-buffering build keeps the
+   * program's lines ahead of the audit's on a shared fd. */
+  scr_stdout_settle();
+  fflush(stdout);
   /* Fibers suspended forever at loop exhaustion (awaits nobody resolves —
    * Node exits 0 there too) still hold their stacks and owned values by
    * design; a strict audit would only report that deliberate abandonment. */
@@ -100,6 +115,7 @@ static void scr_rc_audit_at_exit(void) {
   long bytes = scr_bytes_live_count();
   if (strings != 0 || arrays != 0 || maps != 0 || boxes != 0 || closures != 0 ||
       objects != 0 || unions != 0 || dyns != 0 || bytes != 0) {
+    scr_stdout_settle();
     fflush(stdout);
     fprintf(stderr,
             "scriptc RC AUDIT FAILED: %ld heap string(s), %ld array(s), "
@@ -112,7 +128,12 @@ static void scr_rc_audit_at_exit(void) {
 }
 #endif
 
-static void scr_flush_at_exit(void) { fflush(stdout); }
+static void scr_flush_at_exit(void) {
+  /* --stdout-buffering bytes live in the runtime's buffer, not the C
+   * stream's: settle them before the stream's own exit flush. */
+  scr_stdout_settle();
+  fflush(stdout);
+}
 
 static void scr_collect_cycles_at_exit(void) {
   if (scr_exit_frees()) scr_collect_cycles();
@@ -151,7 +172,7 @@ static void scr_enable_utf8_console_output(void) {
 }
 #endif
 
-void scr_runtime_abi_v48(void) {}
+void scr_runtime_abi_v52(void) {}
 
 void scr_init(void) {
 #ifdef SCR_WORKERS
@@ -182,23 +203,68 @@ void scr_init(void) {
    * stream immediately. */
   static char outbuf[1 << 16];
   setvbuf(stdout, outbuf, _IOFBF, sizeof outbuf);
+#if SCR_STDIO_DIRECT
+  /* --stdout-buffering: a destination that is not a terminal keeps its bytes
+   * in the buffer above until it fills or the runtime settles them. A
+   * terminal keeps one submission per call, as Node writes synchronously
+   * there. */
+  if (scr_stdout_buffering && !isatty(1)) scr_stdout_buffered = true;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__)
-  /* Node ignores SIGPIPE and SIGXFSZ: a write to a closed pipe or past
-   * RLIMIT_FSIZE fails with EPIPE or EFBIG, on any thread, instead of
-   * ending the process. A process.on listener replaces the disposition
-   * while it is registered (scr_events.c), and spawned children start with
-   * both at their default actions (scr_spawn_command). */
-  signal(SIGPIPE, SIG_IGN);
-  signal(SIGXFSZ, SIG_IGN);
+  /* Node resets the signal dispositions it inherits before any program code
+   * runs (src/node.cc, ResetSignalHandlers): an ignored signal goes back to
+   * its default action, while a handler an embedder or an LD_PRELOAD
+   * installed is kept. Without this a program launched by a shell or a CI
+   * runner that ignores SIGTSTP can never suspend on Ctrl+Z — readline's
+   * kill(getpid(), SIGTSTP) is discarded — and an inherited ignored SIGPIPE
+   * or SIGXFSZ leaves the write failing instead of ending the process the
+   * way Node does. Node's bound is kMaxSignal (32: NSIG is not reliable
+   * across platforms). SIGPIPE and SIGXFSZ are then ignored again: a write
+   * to a closed pipe or past RLIMIT_FSIZE fails with EPIPE or EFBIG, on any
+   * thread, instead of ending the process. A process.on listener replaces
+   * the disposition while it is registered (scr_events.c), and spawned
+   * children start with both at their default actions (scr_spawn_command).
+   *
+   * The mask the launcher left behind goes first, as in Node: a blocked set
+   * survives exec and follows the thread that called fork, so a program
+   * started by a parent that blocked SIGTSTP never suspends on Ctrl+Z —
+   * kill(getpid(), SIGTSTP) leaves the stop pending and the process keeps
+   * running, which looks like a hung program to whoever waits for the stop.
+   * Node replaces the set with an empty one and then blocks SIGUSR1, the
+   * signal its inspector thread waits on (src/node.cc, PlatformInit, built
+   * with the inspector); scriptc has no such thread, so the inherited set is
+   * cleared and a program that wants a mask sets one itself. */
+  sigset_t inherited_mask;
+  sigemptyset(&inherited_mask);
+  (void)pthread_sigmask(SIG_SETMASK, &inherited_mask, NULL);
+  for (unsigned nr = 1; nr < 32; nr++) {
+    if (nr == SIGKILL || nr == SIGSTOP) continue;
+    struct sigaction act;
+    memset(&act, 0, sizeof act);
+    act.sa_handler = nr == SIGPIPE || nr == SIGXFSZ ? SIG_IGN : SIG_DFL;
+    if (act.sa_handler == SIG_DFL) {
+      /* Only an inherited SIG_IGN is replaced; a real handler stays. */
+      struct sigaction old;
+      if (sigaction((int)nr, NULL, &old) != 0) continue;
+      if ((old.sa_flags & SA_SIGINFO) != 0 || old.sa_handler != SIG_IGN) continue;
+    }
+    (void)sigaction((int)nr, &act, NULL);
+  }
 #endif
 #ifdef SCR_WORKERS
   }
 #endif
   /* atexit is LIFO; registration order makes exit run: library cleanup
-   * (registered later, in scr_lib_init) → cycle collection → RC audit →
-   * flush → Windows console-code-page restore. The final collection frees
-   * cycles the program dropped, so the audit (and ASan's leak check) see
-   * them as freed, not leaked. */
+   * (registered later, in scr_lib_init) → 'exit' listeners and their cleanup
+   * (registered by scr_events_install) → cycle collection → RC audit → flush
+   * → the stdin terminal-mode restore → Windows console-code-page restore.
+   * The final collection frees cycles the program dropped, so the audit (and
+   * ASan's leak check) see them as freed, not leaked. The mode restore runs
+   * after the 'exit' listeners and the flush, matching Node, where
+   * atexit(ResetStdio) runs at libc exit after the listeners, so output a
+   * listener writes still goes to the terminal in the mode the program left
+   * it in. */
+  scr_atexit(scr_process_stdin_restore_mode);
   scr_atexit(scr_flush_at_exit);
 #ifdef SCR_RC_AUDIT
   scr_atexit(scr_rc_audit_at_exit);
@@ -272,10 +338,21 @@ void scr_stdin_fed_clear(void) {
   scr_stdin_fed_waiting = NULL;
 }
 
-/* Lines up to this size render on the C stack (fiber stacks are 256 KiB). */
+/* Lines up to this size render on the C stack (the smallest fiber stack is
+ * 512 KiB, on WASI and 32-bit targets). */
 #define SCR_CONSOLE_STACK_LINE 2048
 
 #if SCR_STDIO_DIRECT
+/* --stdout-buffering keeps JavaScript-visible bytes here rather than in the C
+ * stream's buffer. fflush(3) treats everything it asked the descriptor to take
+ * as written, so a write interrupted by a handled signal — the runtime
+ * installs its handlers without SA_RESTART — or a short write to a pipe
+ * discards the remainder. The flush below submits through scr_fd_writev_all,
+ * which retries EINTR and continues a short write, so a settle point publishes
+ * the bytes it was given. */
+static char scr_stdout_buffer[1 << 16];
+static size_t scr_stdout_used = 0;
+
 /* True when the C stdout buffer holds bytes: runtime-internal output that
  * went through stdio without flushing. A direct write must submit them
  * first so stdout keeps source order and merged (2>&1) redirections keep
@@ -336,6 +413,61 @@ static inline void scr_fd_stream_unlock(FILE *stream) {
   (void)stream;
 #endif
 }
+
+/* Submit the runtime's buffered stdout bytes. The buffer is emptied before
+ * the submission, so a failure drops the remainder exactly as the direct
+ * path's submission of a chunk does. The caller holds the stdout stream
+ * lock. */
+static int scr_stdout_flush_locked(void) {
+  size_t len = scr_stdout_used;
+  if (len == 0) return 0;
+  scr_stdout_used = 0;
+  struct iovec iov = {scr_stdout_buffer, len};
+  return scr_fd_writev_all(1, &iov, 1);
+}
+
+/* Append to the runtime's stdout buffer, submitting it when it fills. The
+ * caller holds the stdout stream lock. */
+static int scr_stdout_append_locked(const void *data, size_t len) {
+  const char *bytes = data;
+  while (len > 0) {
+    if (scr_stdout_used == sizeof scr_stdout_buffer) {
+      int error = scr_stdout_flush_locked();
+      if (error) return error;
+    }
+    size_t room = sizeof scr_stdout_buffer - scr_stdout_used;
+    size_t take = len < room ? len : room;
+    memcpy(scr_stdout_buffer + scr_stdout_used, bytes, take);
+    scr_stdout_used += take;
+    bytes += take;
+    len -= take;
+  }
+  return 0;
+}
+
+/* Publish everything stdout still holds — the runtime's buffer, then any
+ * bytes the C stream kept — so the next chunk, on either stream, keeps
+ * source order. A caller holding the stderr stream lock takes the stdout
+ * lock inside, the order fflush(stdout) took before. */
+static void scr_stdout_pending_flush(void) {
+  if (scr_stdout_buffered) {
+    FILE *out = scr_fd_stream_lock(1);
+    (void)scr_stdout_flush_locked();
+    scr_fd_stream_unlock(out);
+  }
+  if (scr_stdout_pending()) fflush(stdout);
+}
+
+/* Settle buffered JavaScript-visible stdout before an observable boundary:
+ * a terminal keeps the per-call policy, and builds without the option never
+ * buffer. The async, process, fs and trap units call this unconditionally,
+ * so a configuration that cannot buffer defines a no-op. */
+void scr_stdout_settle(void) {
+  if (!scr_stdout_buffered) return;
+  scr_stdout_pending_flush();
+}
+#else
+void scr_stdout_settle(void) {}
 #endif
 
 /* Render args into line (capacity from scr_console_capacity): space-joined
@@ -414,7 +546,7 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
     char *owned;
     const char *bytes = scr_str_utf8(args[0].v.s, &owned);
     FILE *locked = scr_fd_stream_lock(fd);
-    if (scr_stdout_pending()) fflush(stdout);
+    scr_stdout_pending_flush();
     struct iovec iov[2] = {{(void *)bytes, args[0].v.s->len}, {(void *)"\n", 1}};
     (void)scr_fd_writev_all(fd, iov, 2);
     scr_fd_stream_unlock(locked);
@@ -449,6 +581,37 @@ void scr_console_log(size_t n, const ScrLogArg *args) {
   scr_console_write(1, n, args, true, true);
 }
 
+/* The diagnostics_channel unit installs its publisher the first time it
+ * creates a channel. A program that never imports diagnostics_channel cannot
+ * have console-channel subscribers, so the pointer stays NULL there. */
+static SCR_TL void (*scr_console_channel_publisher)(double member, ScrDyn *args) = NULL;
+static SCR_TL bool (*scr_console_channel_probe)(double member) = NULL;
+
+void scr_console_set_channel_publisher(void (*publisher)(double member, ScrDyn *args)) {
+  scr_console_channel_publisher = publisher;
+}
+
+void scr_console_set_channel_active(bool (*active)(double member)) {
+  scr_console_channel_probe = active;
+}
+
+bool scr_console_channel_active(double member) {
+  return scr_console_channel_probe != NULL && scr_console_channel_probe(member);
+}
+
+ScrDyn *scr_console_snapshot_pack(ScrDyn *pack) {
+  ScrDyn *copy = scr_dyn_new_arr();
+  if (pack != NULL && pack->kind == SCR_DYN_ARR) {
+    for (size_t i = 0; i < pack->v.arr.len; i++)
+      scr_dyn_arr_push(copy, scr_dyn_retain(pack->v.arr.items[i]));
+  }
+  return copy;
+}
+
+void scr_console_publish_args(double member, ScrDyn *args) {
+  if (scr_console_channel_publisher != NULL) scr_console_channel_publisher(member, args);
+}
+
 /* console.error and console.warn. Runtime-internal stdout output that is
  * still buffered goes out first so it cannot cross this stderr line under a
  * merged redirection (2>&1); JavaScript-visible stdout writes have already
@@ -465,6 +628,66 @@ void scr_console_error_parts(size_t n, const ScrLogArg *args) {
   scr_console_write(2, n, args, true, true);
 }
 
+/* Whether the rendered arguments are empty. Render adds the line's final
+ * newline, so an empty message renders as that one byte. */
+static bool scr_console_message_empty(size_t n, const ScrLogArg *args) {
+  if (n == 0) return true;
+  char stack[SCR_CONSOLE_STACK_LINE];
+  size_t capacity = scr_console_capacity(n, args);
+  char *line = capacity <= sizeof stack ? stack : malloc(capacity);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  bool wide = false;
+  size_t used = scr_console_render(line, n, args, &wide);
+  if (line != stack) free(line);
+  return used <= 1;
+}
+
+/* console.trace: "Trace" with ": " and the formatted arguments on stderr,
+ * then the frames the call captured, in ONE write (Node writes the
+ * formatted Error's whole stack as one chunk). An empty message prints
+ * "Trace" alone: Node's trace is an Error whose name it prints, and an
+ * Error with an empty message renders as its name. The line goes through
+ * the public writer, so group indentation applies as it does to
+ * console.error. The frames are scriptc's own function and file text
+ * (SEMANTICS.md divergence 11) — the same text a caught Error's stack
+ * carries — so the line before them is Node's exactly and the frame block
+ * is not. The capture happens before the write, as Node captures the
+ * stack when console.trace runs: a patched write that changes
+ * Error.stackTraceLimit cannot change this call's frames. Writes swallow
+ * what a patched stream throws, as every console method does. Borrows the
+ * arguments. */
+void scr_console_trace(size_t n, const ScrLogArg *args) {
+  ScrStr *frames = scr_stack_capture();
+  bool empty = scr_console_message_empty(n, args);
+  ScrLogArg *line = malloc((n + 2) * sizeof *line);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  ScrStr *head = empty ? scr_str_new("Trace", 5) : scr_str_new("Trace: ", 7);
+  line[0] = (ScrLogArg){.tag = SCR_ARG_STR, .v.s = head};
+  for (size_t i = 0; i < n; i++) {
+    line[i + 1] = args[i];
+    /* No separator between the header and the first argument: "Trace: "
+     * ends in one, and the empty message that prints "Trace" alone must
+     * not leave a trailing space. */
+    if (i == 0) line[i + 1].tag |= SCR_ARG_GLUE;
+  }
+  size_t total = n + 1;
+  if (frames) {
+    /* The frames' text opens with the newline that separates them from an
+     * Error's header. */
+    line[total++] = (ScrLogArg){.tag = SCR_ARG_STR | SCR_ARG_GLUE, .v.s = frames};
+  }
+  scr_console_write(2, total, line, true, true);
+  scr_str_release(head);
+  scr_str_release(frames);
+  free(line);
+}
+
+/* The string-concatenation twin: the tags the caller passed carry the
+ * GLUE and SCR_ARG_NUM bits the renderer already honors. */
+void scr_console_trace_parts(size_t n, const ScrLogArg *args) {
+  scr_console_trace(n, args);
+}
+
 /* A Console instance's line on process stdout (fd 1) or stderr (fd 2):
  * the global console's group indentation does not apply. */
 void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors) {
@@ -476,14 +699,26 @@ void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_e
  * retain stdout until a later stderr write, a 64 KiB threshold, or process
  * exit. The runtime remains synchronous internally, so its backpressure
  * surface is still constantly true, but the bytes are observable promptly.
+ * A build with `--stdout-buffering` opts out of that promptness on a
+ * non-terminal destination (see scr_stdout_settle).
  *
  * Buffered runtime-internal stdout bytes go out first (for both streams) to
  * preserve stdout order and the merged-fd ordering convention. */
 int scr_stdio_write_raw(int fd, const void *data, size_t len) {
   if (__builtin_expect(scr_stdio_capture != NULL, 0) && scr_stdio_capture(fd == 2 ? 2 : 1, data, len)) return 0;
 #if SCR_STDIO_DIRECT
+  if (scr_stdout_buffered && fd != 2) {
+    /* Append to the runtime's buffer; it submits the bytes when it fills,
+     * and scr_stdout_settle submits the rest at an observable boundary. The
+     * stream lock keeps a worker's append from interleaving with another
+     * thread's settle. */
+    FILE *locked = scr_fd_stream_lock(1);
+    int error = scr_stdout_append_locked(data, len);
+    scr_fd_stream_unlock(locked);
+    return error;
+  }
   FILE *locked = scr_fd_stream_lock(fd == 2 ? 2 : 1);
-  if (scr_stdout_pending()) fflush(stdout);
+  scr_stdout_pending_flush();
   struct iovec iov = {(void *)data, len};
   int result = len == 0 ? 0 : scr_fd_writev_all(fd == 2 ? 2 : 1, &iov, 1);
   scr_fd_stream_unlock(locked);

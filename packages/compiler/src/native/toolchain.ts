@@ -9,6 +9,7 @@ import {
 import {
   checkerBackend,
   tscTsExecutable,
+  writeCheckerOnce,
   tscTsPlatformPackage,
 } from "../frontend/ts7/checker-backend.js";
 
@@ -21,6 +22,9 @@ export interface NativeToolchain {
   helperPackageRoot: string;
   runtimePackRoot: string;
   runtimeSourceRoot?: string;
+  /** The directory the installation's own packages are found from: the
+   * manifest's. */
+  installRoot?: string;
   linker: string;
   linkerArgs: string[];
   dsymutil: string;
@@ -28,6 +32,7 @@ export interface NativeToolchain {
   archiverArgs?: string[];
   relocatableLinker?: string;
   declarationsRoot?: string;
+  /** The compile-time evaluator, beside the helper in its package. */
   comptimeExecutable?: string;
   wasiNodeRunner?: string;
   /** The prebuilt lib diagnostics the distribution ships, present while the
@@ -59,7 +64,6 @@ export interface NativeToolchainManifest {
   archiver?: string;
   archiver_args?: string[];
   relocatable_linker?: string;
-  comptime?: string;
   wasi_node_runner?: string;
   /** Answers for the supplied declaration files, computed with `tsc_ts`. */
   lib_diagnostics?: string;
@@ -108,6 +112,13 @@ function installedPackage(start: string, packageName: string): string | undefine
   }
 }
 
+/** The directory of package `name` installed with this compiler (found as
+ * its other packages are, from the manifest's directory upward), or null. */
+export function compilerInstalledPackage(toolchain: NativeToolchain, name: string): string | null {
+  if (toolchain.installRoot === undefined) return null;
+  return installedPackage(toolchain.installRoot, name) ?? null;
+}
+
 export function loadNativeToolchain(
   path: string,
   env: NodeJS.ProcessEnv = {},
@@ -143,7 +154,6 @@ export function loadNativeToolchain(
     "declarations",
     "archiver",
     "relocatable_linker",
-    "comptime",
     "wasi_node_runner",
     "lib_diagnostics",
   ]) {
@@ -224,7 +234,7 @@ export function loadNativeToolchain(
       checkerBackend(env) === "tsgo"
         ? pathFrom(root, manifest.ts7)
         : manifest.tsc_ts !== undefined
-          ? pathFrom(root, manifest.tsc_ts)
+          ? distributionTscTs(pathFrom(root, manifest.tsc_ts), host.platform)
           : tscTsExecutable(
               [root, cwd],
               tscTsPlatformPackage(host.platform, host.architecture, host.name.endsWith("-musl")),
@@ -241,6 +251,7 @@ export function loadNativeToolchain(
         host.platform === "win32" ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen",
       ),
     runtimePackRoot: pathFrom(root, env["SCRIPTC_RUNTIME_PACK"] ?? runtimePath!),
+    installRoot: root,
     ...(manifest.runtime_sources === undefined
       ? {}
       : { runtimeSourceRoot: pathFrom(root, manifest.runtime_sources) }),
@@ -255,9 +266,11 @@ export function loadNativeToolchain(
     ...(manifest.relocatable_linker === undefined
       ? {}
       : { relocatableLinker: commandFrom(root, manifest.relocatable_linker) }),
-    ...(manifest.comptime === undefined
-      ? {}
-      : { comptimeExecutable: pathFrom(root, manifest.comptime) }),
+    comptimeExecutable: join(
+      helperPackageRoot,
+      "bin",
+      host.platform === "win32" ? "scriptc-comptime.exe" : "scriptc-comptime",
+    ),
     ...(manifest.wasi_node_runner === undefined
       ? {}
       : { wasiNodeRunner: pathFrom(root, manifest.wasi_node_runner) }),
@@ -268,4 +281,11 @@ export function loadNativeToolchain(
       ? {}
       : { prebuiltLibDiagnostics: pathFrom(root, manifest.lib_diagnostics) }),
   };
+}
+
+/** The distribution's tsc-ts executable at `path`, written once with one
+ * write on Linux (writeCheckerOnce). */
+function distributionTscTs(path: string, platform: string): string {
+  if (platform === "linux") writeCheckerOnce(path);
+  return path;
 }

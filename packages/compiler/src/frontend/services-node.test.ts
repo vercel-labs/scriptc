@@ -3,6 +3,11 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
+import {
+  beginCompileServices,
+  compileFrontendServices,
+  endCompileServices,
+} from "./services-node.js";
 
 test("Node frontend services retain host resolver conditions, symlink settings, and hooks", () => {
   const directory = mkdtempSync(
@@ -91,4 +96,57 @@ test("Node frontend services retain host resolver conditions, symlink settings, 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+// A build loads the program more than once (executable/prepare.ts reloads it
+// for the island decision and again for each retry round). The frontends of
+// one build share the services their predecessors leave idle, so every load
+// after the first rebinds a warm checker instead of spawning a cold one; the
+// last scope to end closes them.
+test("no compile in progress has no shared services", () => {
+  expect(compileFrontendServices()).toBeNull();
+});
+
+test("the frontends of one compile share one services object", () => {
+  const services = beginCompileServices();
+  try {
+    expect(compileFrontendServices()).toBe(services);
+    // The island reload and the retry rounds ask again: the same object.
+    expect(compileFrontendServices()).toBe(services);
+  } finally {
+    endCompileServices(services);
+  }
+  expect(compileFrontendServices()).toBeNull();
+});
+
+test("the last scope to end closes the shared services", () => {
+  const outer = beginCompileServices();
+  const inner = beginCompileServices();
+  expect(inner).toBe(outer);
+  endCompileServices(inner);
+  // One scope still holds them: they answer the next load.
+  expect(compileFrontendServices()).toBe(outer);
+  expect(outer.rewriteCjs("exports.value = 1;", "index.js")).toBeNull();
+  endCompileServices(outer);
+  expect(compileFrontendServices()).toBeNull();
+  expect(() => outer.createProgramHost()).toThrow("closed");
+});
+
+test("a later compile opens its own services", () => {
+  const first = beginCompileServices();
+  endCompileServices(first);
+  const second = beginCompileServices();
+  try {
+    expect(second).not.toBe(first);
+  } finally {
+    endCompileServices(second);
+  }
+});
+
+test("ending more scopes than were opened does not revive a closed scope", () => {
+  const services = beginCompileServices();
+  endCompileServices(services);
+  endCompileServices(services);
+  expect(compileFrontendServices()).toBeNull();
+  expect(() => services.parse("a.ts", "export const a = 1;", "ts")).toThrow("closed");
 });

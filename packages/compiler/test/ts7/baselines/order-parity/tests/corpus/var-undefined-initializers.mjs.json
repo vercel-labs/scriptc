@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/var-undefined-initializers.mjs"
+ ],
+ "diags": []
+}

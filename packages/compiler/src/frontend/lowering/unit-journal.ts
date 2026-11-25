@@ -27,6 +27,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { decodeFunctionBinary, encodeFunctionStrings, functionDigest } from "../../ir/codec.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { deserializeFunction, encodeFunction } from "../../ir/serialize.js";
+import { invalidateTrackedPath } from "../input-tracker.js";
 
 /** A function as table entries hold it, or null when it does not encode.
  * Every function an entry holds goes through this pair. */
@@ -145,6 +146,14 @@ export interface JournalTable {
   /** The content of the entries the table holds now, for tables whose
    * values are objects a unit could change in place. */
   readonly contents?: () => HeldContents;
+  /** Why the entries from position `from` on cannot be applied, when the
+   * entries cannot be applied at all (a note on a node of no function the
+   * record names), or null when they can. */
+  readonly blocked?: (from: number) => string | null;
+  /** Attaches the entries apply added to the functions this build keeps, for
+   * a table whose entries name nodes of them. Called once the unit's
+   * function is kept. */
+  readonly attach?: () => void;
 }
 
 /** The content of a table's entries at one point (JournalTable.contents). */
@@ -171,15 +180,25 @@ export function contentDigest(text: string): string {
   return `${text.length}:${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
+/** The id spelling of an interned union (`u`) or record shape (`r`): the
+ * prefix and 12 hex digits (stable-names.ts keyHash). */
+function isInternedId(text: string, prefix: number): boolean {
+  if (text.charCodeAt(0) !== prefix || text.length !== 13) return false;
+  for (let at = 1; at < text.length; at++) {
+    const char = text.charCodeAt(at);
+    if (!((char >= 48 && char <= 57) || (char >= 97 && char <= 102))) return false;
+  }
+  return true;
+}
+
 /** Adds to `out` the names among `strings`: the strings that start with `%`
- * (helper, lifted and IR data names) and union ids (`u` and 12 hex digits),
- * which the tables a unit reads and changes are keyed by. */
+ * (helper, lifted and IR data names) and union and shape ids (`u`/`r` and 12
+ * hex digits), which the tables a unit reads and changes are keyed by. */
 export function namedStrings(strings: Iterable<string>, out: Set<string>): void {
   for (const text of strings) {
     const first = text.charCodeAt(0);
     if (first === 37 /* % */) out.add(text);
-    else if (first === 117 /* u */ && text.length === 13 && /^u[0-9a-f]{12}$/.test(text))
-      out.add(text);
+    else if (isInternedId(text, 117 /* u */) || isInternedId(text, 114 /* r */)) out.add(text);
   }
 }
 
@@ -187,7 +206,6 @@ export function namedStrings(strings: Iterable<string>, out: Set<string>): void 
  * as their delimiting quotes. */
 export function quotedStrings(texts: readonly string[]): Set<string> {
   const out = new Set<string>();
-  const hex = (char: number): boolean => (char >= 48 && char <= 57) || (char >= 97 && char <= 102);
   for (const text of texts) {
     let start = -1;
     for (let index = 0; index < text.length; index++) {
@@ -196,13 +214,13 @@ export function quotedStrings(texts: readonly string[]): Set<string> {
       else if (char === 34 /* " */) {
         if (start < 0) start = index + 1;
         else {
-          const first = text.charCodeAt(start);
-          let name = first === 37; /* % */
-          if (!name && first === 117 /* u */ && index - start === 13) {
-            name = true;
-            for (let at = start + 1; at < index && name; at++) name = hex(text.charCodeAt(at));
-          }
-          if (name) out.add(text.slice(start, index));
+          const name = text.slice(start, index);
+          if (
+            name.charCodeAt(0) === 37 /* % */ ||
+            isInternedId(name, 117) ||
+            isInternedId(name, 114)
+          )
+            out.add(name);
           start = -1;
         }
       }
@@ -257,6 +275,12 @@ export function flagScalar(name: string, get: () => boolean, set: () => void): J
 /** The events of the unit being recorded (Lowerer.unitEvents). */
 export class UnitEvents {
   readonly events: JournalEvent[] = [];
+  /** Entries the unit changes in place, which its IR cannot show: a table
+   * only grows by addition, so a write to an entry another unit added is not
+   * in the unit's function. recordUnit merges these into the names it reads
+   * from the unit's IR, so the unit is counted as changing what it wrote and
+   * the held content follows (HeldTables). */
+  readonly touched = new Set<string>();
   /** Calls into reachability nest (an edge can fire virtual edges). Only
    * the outermost call is recorded, because making it again makes the
    * nested ones. */
@@ -264,6 +288,11 @@ export class UnitEvents {
 
   record(kind: JournalEvent["kind"], name: string, detail: string | null = null, index = 0): void {
     if (this.depth === 0) this.events.push({ kind, name, detail, index });
+  }
+
+  /** Notes that the unit writes `name`, an entry it did not add. */
+  touch(name: string): void {
+    this.touched.add(name);
   }
 }
 
@@ -306,7 +335,9 @@ export function journalDump(): string | null {
 export function writeRecords(dir: string, lines: readonly string[]): void {
   if (lines.length === 0) return;
   mkdirSync(dir, { recursive: true });
-  appendFileSync(join(dir, "records.jsonl"), `${lines.join("\n")}\n`);
+  const path = join(dir, "records.jsonl");
+  appendFileSync(path, `${lines.join("\n")}\n`);
+  invalidateTrackedPath(path);
 }
 
 /** What a build's recorded waves did (SCRIPTC_TIMING). */
@@ -428,7 +459,9 @@ export function recordUnit(
   const grown: number[] = [];
   tables.forEach((table, index) => {
     if (table.size() === before[index]) return;
-    if (table.entries === undefined) reasons.push(table.name);
+    const blocked = table.blocked?.(before[index]!) ?? null;
+    if (blocked !== null) reasons.push(`${table.name}:${blocked}`);
+    else if (table.entries === undefined) reasons.push(table.name);
     else grown.push(index);
   });
   const events = [...recorder.events];
@@ -467,8 +500,11 @@ export function recordUnit(
     const entries = added[table.name] ?? table.entries!(before[index]!);
     if (entries !== null) for (const entry of entries) texts.push(entry);
   }
+  // A unit names every entry it writes: the ones its function shows, and the
+  // ones it changed in place (UnitEvents.touch), which a function cannot.
   const names = quotedStrings(texts);
   if (encoded?.strings != null) namedStrings(encoded.strings, names);
+  for (const touched of recorder.touched) names.add(touched);
   if (own !== null) {
     if (reasons.length === 0)
       tables.forEach((table, index) => {
@@ -592,6 +628,9 @@ export function lowerWaveRecorded(
       stats.replaceMs += performance.now() - replacing;
     }
     host.store(name, fn);
+    // The record's function replaced what lowering made; a table whose
+    // entries name its nodes attaches them to it (JournalTable.attach).
+    for (const table of tables) table.attach?.();
     if (stored !== null && reuse!.verify) reuse!.check(name, stored, pending, unit);
     reuse?.note(name, record, false, unit.files);
   }
@@ -675,6 +714,9 @@ export function applyRecord(
         ? null
         : decodeRecordFunction(record.fn);
   host.keep(record.name, fn, record.events);
+  // A table whose entries name nodes of the functions this build keeps
+  // attaches them once they are kept (JournalTable.attach).
+  for (const table of host.tables) table.attach?.();
   return [];
 }
 

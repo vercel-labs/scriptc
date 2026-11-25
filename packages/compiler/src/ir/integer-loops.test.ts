@@ -228,6 +228,55 @@ test("an index through a constant body temp is integer work", () => {
   expect(matchIntegerCountedForLoop(selfReading, withBytes)).toBeNull();
 });
 
+test("a chain of body temps that share a predecessor is walked once per temp", () => {
+  const withBytes = new Map(locals);
+  withBytes.set("data", {
+    id: "data",
+    name: "data",
+    type: { kind: "bytes", elem: "f64" },
+    mutable: false,
+  });
+  // t0 = 1; each later temp squares its predecessor and reads it twice, so
+  // unfolding the loop's index through the chain without memoizing the
+  // results visits 2^40 nodes. None of them reads the counter.
+  const s = counted(number(4));
+  const body: IrStmt[] = [];
+  for (let k = 0; k < 40; k++) {
+    const id = `t${k}`;
+    withBytes.set(id, { id, name: id, type: F64, mutable: false });
+    body.push({
+      kind: "varDecl",
+      localId: id,
+      init:
+        k === 0
+          ? number(1)
+          : {
+              kind: "bin",
+              op: "*",
+              left: ref(`t${k - 1}`),
+              right: ref(`t${k - 1}`),
+              type: F64,
+              loc,
+            },
+      loc,
+    });
+  }
+  body.push({
+    kind: "exprStmt",
+    expr: {
+      kind: "bytesIntrinsic",
+      method: "get",
+      receiver: { kind: "varRef", localId: "data", type: { kind: "bytes", elem: "f64" }, loc },
+      args: [ref("t39")],
+      type: F64,
+      loc,
+    },
+    loc,
+  });
+  s.body = body;
+  expect(matchIntegerCountedForLoop(s, withBytes)).toBeNull();
+});
+
 test("a limit that multiplies loop-invariant values is a stable bound", () => {
   const withRows = new Map(locals);
   withRows.set("rows", { id: "rows", name: "rows", type: F64, mutable: false });

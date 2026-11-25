@@ -440,17 +440,24 @@ export function matchIntegerCountedForLoop(
     }
   }
   // `seen` is the chain of body temps being unfolded from the current one, so
-  // a temp whose initializer reads itself, directly or through another temp,
-  // ends the chain rather than recursing forever. The set is shared down the
-  // chain and unwound after each temp, which allocates nothing per step.
+  // a temp whose initializer reads itself ends the chain rather than
+  // recursing forever. Its result is memoized: a body temp's initializer can
+  // only read an earlier declaration, so the chain is acyclic, and a temp
+  // shared by both operands of a parent would otherwise be walked twice per
+  // level, doubling the work at every step of a long chain.
+  const counterMemo = new Map<string, boolean>();
   const counterIn = (e: IrExpr, seen: Set<string>): boolean => {
     if (e.kind === "varRef") {
       if (e.localId === local.id || followers.some((f) => f.localId === e.localId)) return true;
       const init = bodyTemps.get(e.localId);
-      if (init === undefined || seen.has(e.localId)) return false;
+      if (init === undefined) return false;
+      const known = counterMemo.get(e.localId);
+      if (known !== undefined) return known;
+      if (seen.has(e.localId)) return false;
       seen.add(e.localId);
       const at = counterIn(init, seen);
       seen.delete(e.localId);
+      counterMemo.set(e.localId, at);
       return at;
     }
     return (

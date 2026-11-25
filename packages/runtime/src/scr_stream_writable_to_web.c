@@ -613,6 +613,10 @@ static bool stw3d_truthy(const ScrDyn *d) {
  * read does. */
 static ScrDyn *stw3d_member(const ScrDyn *target, const char *name, size_t length) {
   if (!target) return NULL;
+  /* A member a getter answers can emit 'close', which retires the adapter
+   * and drops its reference to an otherwise-unreferenced target: hold one
+   * across the whole lookup so the read finishes on a live object. */
+  ScrDyn *held = scr_dyn_retain((ScrDyn *)target);
   const ScrDyn *receiver = target;
   ScrDyn *view = NULL;
   if (target && target->kind == SCR_DYN_TYPED_REF) {
@@ -621,6 +625,7 @@ static ScrDyn *stw3d_member(const ScrDyn *target, const char *name, size_t lengt
   }
   ScrDyn *value = scr_dyn_obj_read(receiver, name, length);
   if (view) scr_dyn_release(view);
+  scr_dyn_release(held);
   if (scr_exc_pending()) scr_exc_clear();
   return value;
 }
@@ -628,7 +633,13 @@ static ScrDyn *stw3d_member(const ScrDyn *target, const char *name, size_t lengt
 /* target.name(args...), +1 or NULL with the exception pending. */
 static ScrDyn *stw3d_call(ScrDyn *target, const char *method, ScrDyn *const *args, size_t argc) {
   if (!target) return NULL;
-  return scr_dyn_invoke(target, method, args, argc, method);
+  /* The member lookup (and a getter) can retire the adapter and drop its
+   * reference to an otherwise-unreferenced target: hold one across the
+   * whole lookup and invoke, and release it after. */
+  ScrDyn *held = scr_dyn_retain(target);
+  ScrDyn *result = scr_dyn_invoke(held, method, args, argc, method);
+  scr_dyn_release(held);
+  return result;
 }
 
 static void stw3d_settle_reject(ScrPromise *p, ScrDyn *reason) {

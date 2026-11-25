@@ -66,6 +66,21 @@ const SRC = "packages/compiler/src";
 
 export const PROGRAM_FACTS: readonly ProgramFact[] = [
   {
+    name: "held-constructor-values",
+    file: `${SRC}/frontend/lowering/held-constructors.ts`,
+    symbol: "programHoldsConstructorValue",
+    source: "symbols",
+    scope: "program",
+    setBy:
+      "an identifier that resolves to the global String, Number, Boolean or BigInt constructor in a value position (not the callee of a call or the target of `new`)",
+    gates:
+      "whether a diagnostic is marked heldConstructor, and so whether the untyped-constructors comparison pass runs at all",
+    narrower:
+      "the value's type flow: a constructor written only into a checked-dynamic slot does not arm the comparison, and the array-callback sites H-2 lowers natively stop writing the value",
+    tracked: "RELEASE-PLAN H-1",
+    lowererFields: [],
+  },
+  {
     name: "member-call-receivers",
     file: `${SRC}/frontend/lowering/member-call-receivers.ts`,
     symbol: "memberCallReceivers",
@@ -733,6 +748,13 @@ const decides = (site: string, count: number, fact: string): ProgramScan =>
   scan(site, count, "fact", "", fact);
 
 export const PROGRAM_SCANS: readonly ProgramScan[] = [
+  scan(
+    "frontend/lowering/held-constructors.ts#programHoldsConstructorValue",
+    1,
+    "fact",
+    "",
+    "held-constructor-values",
+  ),
   scan(
     "frontend/fork-target.ts#namesChildProcess",
     4,

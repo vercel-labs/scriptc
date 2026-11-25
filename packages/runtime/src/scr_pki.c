@@ -767,8 +767,10 @@ static int sp_asn1_skip_element(const unsigned char **p, const unsigned char *en
 }
 
 static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
-  const unsigned char *end = der + len;
-  const unsigned char *p = der;
+  const unsigned char *const end = der + len;
+  /* mbedTLS's parsers advance the cursor through unsigned char **; the
+   * input itself is only read. */
+  unsigned char *p = (unsigned char *)der;
   size_t seq_len;
   if (mbedtls_asn1_get_tag(&p, end, &seq_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
       p + seq_len != end)
@@ -833,9 +835,9 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     {
       mbedtls_asn1_bitstring bits;
       if (mbedtls_asn1_get_bitstring(&p, end, &bits) != 0) goto done;
-      const unsigned char *bp = bits.p;
-      const unsigned char *bend = bp + bits.len;
-      if (mbedtls_asn1_get_mpi((unsigned char **)&bp, bend, &Y) != 0) goto done;
+      unsigned char *bp = bits.p;
+      const unsigned char *bend = bits.p + bits.len;
+      if (mbedtls_asn1_get_mpi(&bp, bend, &Y) != 0) goto done;
       if (bp != bend) goto done;
     }
   }

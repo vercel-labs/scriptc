@@ -5,7 +5,7 @@ date-formatters.ts:6:25 - error SC2020: 'Date.prototype.toLocaleDateString at lo
     |                         ^~~~~~~
   7 | date.toLocaleString(["en-US"]);
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
 
 date-formatters.ts:7:21 - error SC2020: 'Date.prototype.toLocaleString with a non-literal locale' is part of the standard library types but has no scriptc lowering yet
 

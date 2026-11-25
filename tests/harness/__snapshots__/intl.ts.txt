@@ -5,7 +5,7 @@ intl.ts:12:43 - error SC2020: 'Intl.NumberFormat at locale "de-DE"' is part of t
      |                                           ^~~~~~~
   13 | const negotiated = new Intl.NumberFormat(tag).format(1234.5);
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
 
 intl.ts:13:42 - error SC2020: 'Intl.NumberFormat with a non-literal locale' is part of the standard library types but has no scriptc lowering yet
 
@@ -32,7 +32,7 @@ intl.ts:15:40 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"
      |                                        ^~~~~~~
   16 | const french = new Intl.DateTimeFormat("fr-FR").format();
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
 
 intl.ts:16:40 - error SC2020: 'Intl.DateTimeFormat at locale "fr-FR"' is part of the standard library types but has no scriptc lowering yet
 
@@ -41,7 +41,7 @@ intl.ts:16:40 - error SC2020: 'Intl.DateTimeFormat at locale "fr-FR"' is part of
      |                                        ^~~~~~~
   17 | const dated = new Date(0).toLocaleDateString("ja-JP", { year: "numeric" });
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
 
 intl.ts:17:46 - error SC2020: 'Date.prototype.toLocaleDateString at locale "ja-JP"' is part of the standard library types but has no scriptc lowering yet
 
@@ -50,7 +50,7 @@ intl.ts:17:46 - error SC2020: 'Date.prototype.toLocaleDateString at locale "ja-J
      |                                              ^~~~~~~
   18 | 
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile
+  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
 
 intl.ts:20:7 - error SC2009: values of type 'NumberFormatPart[]' cannot be compiled: the array shape is supported, but its element type 'NumberFormatPart' does not compile
 
@@ -68,7 +68,7 @@ intl.ts:20:15 - error SC2020: 'Intl.NumberFormat.prototype.formatToParts' is par
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   21 | const big = new Intl.NumberFormat("en-US", {}).format(12n);
 
-  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US" or "en"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
+  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US", "en" or "en-GB"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
 
 intl.ts:21:55 - error SC2020: 'Intl.NumberFormat.prototype.format over a '12n'' is part of the standard library types but has no scriptc lowering yet
 
@@ -86,7 +86,7 @@ intl.ts:22:15 - error SC2020: 'Intl.DateTimeFormat.prototype.formatRange' is par
      |               ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   23 | const buddhist = new Intl.DateTimeFormat("en-US", { calendar: "buddhist" }).format(0);
 
-  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US" or "en"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
+  hint: what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US", "en" or "en-GB"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported
 
 intl.ts:23:53 - error SC2020: 'the Intl.DateTimeFormat option 'calendar'' is part of the standard library types but has no scriptc lowering yet
 

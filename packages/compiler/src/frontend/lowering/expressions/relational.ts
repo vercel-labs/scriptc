@@ -10,6 +10,7 @@ import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
 import { lowerWebStreamInstanceof } from "../builtins/web-streams-dyn.js";
+import { COMPRESSION_STREAM_CLASSES, WEB_STREAM_CLASSES } from "../../../ir/webstream-classes.js";
 import * as ts from "../../ts7/adapter.js";
 import { builtinClassInstanceOfAny, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
@@ -467,8 +468,18 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // runtime's generic walk stops at the object that terminates the value's
   // prototype chain, so that one answer is folded here too. The operand
   // still runs, as Node evaluates it before the test.
-  if (hostGlobalNameOfRead(lowerer, expr.right) !== null)
-    return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
+  {
+    // The web compression streams' class values stand for native handles
+    // that DO have instances, so the brand test below answers them; every
+    // other listed host global is a constructor whose instances native code
+    // never makes, and folds false.
+    const hostGlobal = hostGlobalNameOfRead(lowerer, expr.right);
+    if (
+      hostGlobal !== null &&
+      !((WEB_STREAM_CLASSES as readonly string[]).indexOf(hostGlobal) >= COMPRESSION_STREAM_CLASSES)
+    )
+      return hostGlobalInstanceOfAnswer(lowerer, expr, false, loc);
+  }
   if (lowerer.isStdlibGlobal(expr.right, "Function")) {
     // A function a Node island made is a Function instance, as it is in
     // Node, where the package and the program share one realm.

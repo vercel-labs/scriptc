@@ -56302,6 +56302,8 @@
           "tests/corpus/compat-web-globals.ts",
           "tests/corpus/compat-web-stream-members.mjs",
           "tests/corpus/compat-web-stream-members.ts",
+          "tests/corpus/compression-streams-identity.mjs",
+          "tests/corpus/compression-streams-roundtrip.mjs",
           "tests/corpus/fetch-headers-copy-cache.ts",
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/globals-navigator.ts",
@@ -56763,10 +56765,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.CompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/compression-streams-roundtrip.mjs",
+          "tests/corpus/compression-streams-identity.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -56901,10 +56904,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:globals.DecompressionStream",
         "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
+          "tests/corpus/compression-streams-roundtrip.mjs",
+          "tests/corpus/compression-streams-identity.mjs"
         ]
       },
       "anchorSource": "exact"

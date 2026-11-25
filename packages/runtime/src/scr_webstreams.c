@@ -3911,6 +3911,13 @@ struct WsTController {
   ScrDyn *flush_fn;
   ScrDyn *cancel_fn;
   ScrPromise *finish_promise; /* +1 */
+  /* A native transformer's resume hook (scr_webstream_native_transform):
+   * the readable's pull calls it while the transformer has output it
+   * produces only as the reader asks for it. `native_box` owns one
+   * reference of the hook's state so the collector traces the edge. */
+  bool (*native_resume)(void *);
+  void *native_resume_state;
+  ScrBox *native_box; /* +1, the state's reference for the collector */
 };
 
 static void ws_transform_trace(void *obj, ScrTraceVisit visit, void *ctx) {
@@ -3943,6 +3950,7 @@ static void ws_tcontroller_trace(void *obj, ScrTraceVisit visit, void *ctx) {
   ws_visit(c->flush_fn, visit, ctx);
   ws_visit(c->cancel_fn, visit, ctx);
   ws_visit(c->finish_promise, visit, ctx);
+  ws_visit(c->native_box, visit, ctx);
 }
 
 static void ws_tcontroller_drop(void *obj, bool gc) {
@@ -3953,6 +3961,8 @@ static void ws_tcontroller_drop(void *obj, bool gc) {
   ws_drop_dyn(c->flush_fn, gc);
   ws_drop_dyn(c->cancel_fn, gc);
   ws_drop_promise(c->finish_promise, gc);
+  if (c->native_box && !gc) scr_box_release(c->native_box);
+  c->native_box = NULL;
 }
 
 static const WsObjType ws_tcontroller_type = {ws_tcontroller_trace, ws_tcontroller_drop, "TransformStreamDefaultController", ws_tcontroller_accessors};
@@ -4267,6 +4277,23 @@ static ScrDyn *ws_transform_source_pull(void *ctx, WsRController *rc) {
   WsTransform *t = ctx;
   ws_transform_set_backpressure(t, false);
   t->pull_pending = true;
+  /* A native transformer produces its output as the reader asks for it:
+   * the pull is the moment it may enqueue the next chunk. The hook says
+   * whether the pull must stay parked: only a request it could not satisfy
+   * waits, and the next write or pull settles that pull. */
+  WsTController *c = t->controller;
+  if (c && c->native_resume) {
+    bool wait = c->native_resume(c->native_resume_state);
+    if (!wait) {
+      /* Answered: the machinery settles this pull the way it settles any
+       * synchronously answered algorithm result. An enqueue during the
+       * resume may already have settled it (backpressure crossed the
+       * high-water mark); then stay parked. */
+      if (!t->pull_pending) return WS_PARKED;
+      t->pull_pending = false;
+      return ws_undef();
+    }
+  }
   return WS_PARKED;
 }
 
@@ -5930,11 +5957,117 @@ static ScrDyn *ws_text_decoder_flush(ScrClosure *closure, ScrDyn *const *args, s
   return result;
 }
 
-static ScrDyn *ws_text_callback(WsTextStream *t, ScrDynThunk thunk, uint32_t arity, const char *name) {
+/* One native transformer callback: a closure whose capture box owns one
+ * reference of `state` through the given entry points. */
+static ScrDyn *ws_native_callback(ScrDynThunk thunk, uint32_t arity, const char *name, void *state,
+                                  void *(*retain)(void *), void (*release)(void *),
+                                  void (*trace)(void *, ScrTraceVisit, void *)) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->caps[0] = scr_box_new_obj(ws_retain, ws_release, ws_obj_trace);
-  scr_box_set_ref(closure->caps[0], ws_retain(t));
+  closure->caps[0] = scr_box_new_obj(retain, release, trace);
+  scr_box_set_ref(closure->caps[0], retain(state));
   return scr_dyn_new_func(closure, thunk, arity, "", name);
+}
+
+static ScrDyn *ws_text_callback(WsTextStream *t, ScrDynThunk thunk, uint32_t arity, const char *name) {
+  return ws_native_callback(thunk, arity, name, t, ws_retain, ws_release, ws_obj_trace);
+}
+
+/* ── native-transform entry points (scr_generator.h) ──────────────────
+ * The web compression streams (scr_webstream_compress.c) build their
+ * transforms here: its callbacks are C functions, so the zlib work stays in
+ * that unit while the transform machinery stays in this one. */
+
+ScrDyn *scr_webstream_native_transform(ScrDynThunk transform, ScrDynThunk flush, ScrDynThunk cancel,
+                                       void *state, void *(*retain)(void *), void (*release)(void *),
+                                       void (*trace)(void *, ScrTraceVisit, void *),
+                                       bool (*resume)(void *)) {
+  ws_install();
+  ScrDyn *transformer = scr_dyn_new_obj();
+  scr_dyn_obj_set(transformer, "transform", 9,
+                  ws_native_callback(transform, 2, "transform", state, retain, release, trace));
+  scr_dyn_obj_set(transformer, "flush", 5,
+                  ws_native_callback(flush, 1, "flush", state, retain, release, trace));
+  if (cancel)
+    scr_dyn_obj_set(transformer, "cancel", 6,
+                    ws_native_callback(cancel, 1, "cancel", state, retain, release, trace));
+  /* A readable high-water mark of one: the transformer enqueues a chunk
+   * only to satisfy a pending read and pauses while its queue is full, so
+   * a write never depends on the readable side and the queue stays small
+   * (a native transformer's output is produced on pull). */
+  ScrDyn *rstrategy = scr_dyn_new_obj();
+  ScrDyn *hwm = scr_dyn_new_num(1);
+  scr_dyn_obj_set(rstrategy, "highWaterMark", 13, hwm);
+  scr_dyn_release(hwm);
+  ScrDyn *args[3] = {transformer, scr_dyn_undefined(), rstrategy};
+  ScrDyn *box = ws_transform_construct(args, 3);
+  scr_dyn_release(rstrategy);
+  scr_dyn_release(transformer);
+  if (box && resume) {
+    WsTController *c = ((WsTransform *)box->v.handle.ptr)->controller;
+    c->native_resume = resume;
+    c->native_resume_state = state;
+    c->native_box = scr_box_new_obj(retain, release, trace);
+    scr_box_set_ref(c->native_box, retain(state));
+  }
+  return box;
+}
+
+ScrDyn *scr_webstream_transform_readable(ScrDyn *transform) {
+  return ws_transform_readable_box(transform->v.handle.ptr);
+}
+
+ScrDyn *scr_webstream_transform_writable(ScrDyn *transform) {
+  return ws_transform_writable_box(transform->v.handle.ptr);
+}
+
+bool scr_webstream_controller_enqueue(ScrDyn *controller, ScrDyn *chunk) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return false;
+  return ws_tcontroller_enqueue(controller->v.handle.ptr, chunk);
+}
+
+/* A native transformer's chunk went straight to a waiting reader, so the
+ * pull that asked for it is complete even though the readable queue never
+ * crossed its high-water mark (which is what normally settles the parked
+ * pull). Without this the first fulfilled pull stays parked and a second
+ * read never reaches the transformer. */
+void scr_webstream_controller_pull_done(ScrDyn *controller) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return;
+  WsTController *c = controller->v.handle.ptr;
+  WsTransform *t = c->stream;
+  if (!t->pull_pending) return;
+  t->pull_pending = false;
+  ws_queue_microtask(ws_pull_fulfilled, ws_retain(t->readable->controller));
+}
+
+/* Whether the stream has an outstanding read request, which a native
+ * transformer's next output chunk can satisfy. */
+bool scr_webstream_controller_has_request(ScrDyn *controller) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return false;
+  WsTController *c = controller->v.handle.ptr;
+  WsReadable *s = c->stream->readable;
+  WsRController *rc = s->controller;
+  return (s->reader && s->reader->requests) || rc->into_head;
+}
+
+/* The readable queue's size in the strategy's units: the queued chunk
+ * count for a strategy without a size function. */
+double scr_webstream_controller_queue_size(ScrDyn *controller) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return 0;
+  WsTController *c = controller->v.handle.ptr;
+  return c->stream->readable->controller->queue_total_size;
+}
+
+/* A native transformer's asynchronous failure: errors the stream the way a
+ * rejecting transform callback does (the readable rejects with `error` and
+ * the writable errors). */
+void scr_webstream_controller_fail(ScrDyn *controller, ScrDyn *error) {
+  if (controller->kind != SCR_DYN_HANDLE || controller->v.handle.tag != SCR_DYNH_WS_TCONTROLLER)
+    return;
+  ws_transform_error(((WsTController *)controller->v.handle.ptr)->stream, error);
 }
 
 /* The transform with the stream's native transformer: false with the

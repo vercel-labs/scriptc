@@ -1663,6 +1663,25 @@ declare var TransformStream: {
   ): TransformStream<I, O>;
   readonly prototype: TransformStream<unknown, unknown>;
 };
+/* The web compression streams: a TransformStream's readable and writable
+ * over one of Node's zlib formats (scr_webstream_compress.c). */
+type CompressionFormat = "deflate" | "deflate-raw" | "gzip" | "brotli";
+interface CompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+}
+declare var CompressionStream: {
+  new (format: CompressionFormat): CompressionStream;
+  readonly prototype: CompressionStream;
+};
+interface DecompressionStream {
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<Uint8Array>;
+}
+declare var DecompressionStream: {
+  new (format: CompressionFormat): DecompressionStream;
+  readonly prototype: DecompressionStream;
+};
 /* The other web stream interfaces. JavaScript sources construct and read
  * them as checked-dynamic values (scr_webstreams.c); TypeScript sources
  * have no static lowering for them. */

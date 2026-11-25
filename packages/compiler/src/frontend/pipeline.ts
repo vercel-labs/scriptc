@@ -293,8 +293,7 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
       if (arg === undefined || !isStringLiteralLike(arg)) continue;
       if (call.expression.kind === SyntaxKind.ImportKeyword)
         specs.push({ spec: arg.text, kind: "import" });
-      else if (isRequireCallee(call.expression))
-        specs.push({ spec: arg.text, kind: "require" });
+      else if (isRequireCallee(call.expression)) specs.push({ spec: arg.text, kind: "require" });
     }
     for (const { spec, kind } of specs) {
       if (canonicalBuiltinModule(spec) !== null) continue;
@@ -394,11 +393,7 @@ function detectAutoPackages(
       const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
       for (const call of moduleSourceCandidates(load.program, sf).calls) {
         const arg = call.arguments.nodes[0];
-        if (
-          arg === undefined ||
-          !isStringLiteralLike(arg) ||
-          !isRequireCallee(call.expression)
-        )
+        if (arg === undefined || !isStringLiteralLike(arg) || !isRequireCallee(call.expression))
           continue;
         const loc = locOf(call);
         if (topLevel.has(`${arg.text}@${loc.start}`)) continue;
@@ -413,8 +408,7 @@ function detectAutoPackages(
         if (
           arg !== undefined &&
           isStringLiteralLike(arg) &&
-          (call.expression.kind === SyntaxKind.ImportKeyword ||
-            isRequireCallee(call.expression))
+          (call.expression.kind === SyntaxKind.ImportKeyword || isRequireCallee(call.expression))
         )
           edges.push({ spec: arg.text, loc: locOf(call) });
       }

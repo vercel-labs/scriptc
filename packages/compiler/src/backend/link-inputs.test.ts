@@ -176,6 +176,43 @@ test.skipIf(!THIN_ARCHIVE)("a thin archive names members whose names are not ASC
   expect(await namedLinkInputDependencies([archive], { cwd: root })).toEqual([short, long].sort());
 });
 
+test("a thin member of another archive records the containing archive", async () => {
+  const root = scratch();
+  const plain = file(root, "libplain.a", "!<arch>\n");
+  // A thin archive header whose member is `libplain.a(m.o)`: the member's
+  // content is in the containing archive, not in the thin archive.
+  const header = Buffer.alloc(60, 0x20);
+  header.write("libplain.a(m.o)", 0, "latin1");
+  header.write("0", 16, "latin1");
+  header.write("0", 28, "latin1");
+  header.write("0", 34, "latin1");
+  header.write("644", 40, "latin1");
+  header.write("1", 48, "latin1");
+  header.write("`\n", 58, "latin1");
+  const archive = join(root, "libthin.a");
+  writeFileSync(archive, Buffer.concat([Buffer.from("!<thin>\n"), header]));
+
+  expect(await namedLinkInputDependencies([archive], { cwd: root })).toEqual([plain]);
+});
+
+test.skipIf(!THIN_ARCHIVE)(
+  "a thin archive built from a regular archive names the archive",
+  async () => {
+    const root = scratch();
+    file(root, "member.o", "member\n");
+    const plain = join(root, "libplain.a");
+    execFileSync("ar", ["crs", plain, "member.o"], { cwd: root, stdio: "ignore" });
+    const archive = join(root, "libthin.a");
+    try {
+      execFileSync("ar", ["crsT", archive, "libplain.a"], { cwd: root, stdio: "ignore" });
+    } catch {
+      return; // this ar refuses a regular archive as a thin member
+    }
+
+    expect(await namedLinkInputDependencies([archive], { cwd: root })).toContain(plain);
+  },
+);
+
 test("a regular archive and an object file name nothing", async () => {
   const root = scratch();
   const member = file(root, "member.o", "member\n");

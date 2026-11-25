@@ -221,10 +221,18 @@ function thinArchiveMembers(bytes: Buffer, archiveDir: string, cwd: string): str
     }
     for (const raw of names) {
       const name = raw.replace(/\/+$/, "");
-      // GNU ar records a relative member path relative to the archive's
-      // directory; a link can also run from elsewhere. Check both.
-      for (const directory of [archiveDir, cwd])
-        for (const candidate of existingCandidates(name, [directory])) members.push(candidate);
+      // A thin archive built from a regular archive records the member as
+      // `archive(member)`: the member's content lives in the containing
+      // archive, which the linker reads as a whole. The containing archive is
+      // the file the proof must cover; the literal spelling is tried too in
+      // case a file system holds one.
+      const container = /^(.*)\([^()]*\)$/.exec(name)?.[1];
+      for (const entry of container === undefined ? [name] : [name, container]) {
+        // GNU ar records a relative member path relative to the archive's
+        // directory; a link can also run from elsewhere. Check both.
+        for (const directory of [archiveDir, cwd])
+          for (const candidate of existingCandidates(entry, [directory])) members.push(candidate);
+      }
     }
     // A thin member's content is elsewhere, so the next header follows the
     // header immediately.

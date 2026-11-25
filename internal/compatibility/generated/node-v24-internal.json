@@ -64040,6 +64040,8 @@
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-perform-handshake-connect.ts",
+          "tests/corpus/http2-perform-handshake-options-throw.ts",
           "tests/corpus/http2-perform-handshake-paused.ts",
           "tests/corpus/http2-perform-handshake-upgrade-repeat.ts",
           "tests/corpus/http2-perform-handshake-upgrade.ts",
@@ -67274,6 +67276,8 @@
         "status": "supported",
         "evidence": "compiler-feature:http2.http2.performServerHandshake",
         "tests": [
+          "tests/corpus/http2-perform-handshake-connect.ts",
+          "tests/corpus/http2-perform-handshake-options-throw.ts",
           "tests/corpus/http2-perform-handshake-paused.ts",
           "tests/corpus/http2-perform-handshake-upgrade-repeat.ts",
           "tests/corpus/http2-perform-handshake-upgrade.ts",

@@ -94,6 +94,12 @@ export const http2Signatures = defineLibFnSignatures({
    * closure (if any) is the 'connect' once-listener. */
   "http2.connect": { argTypes: [STRING, BOOL, null], result: HTTP2SESSION_T },
   "http2.performServerHandshake": { argTypes: [NETSOCKET_T], result: HTTP2SESSION_T },
+  /** performServerHandshake(socket, options): the options literal still
+   * evaluates (its calls and spreads run); the value is inert here. */
+  "http2.performServerHandshakeOpts": {
+    argTypes: [NETSOCKET_T, DYN],
+    result: HTTP2SESSION_T,
+  },
   "http2.connectCb": { argTypes: [STRING, BOOL, null, null], result: HTTP2SESSION_T },
   /** session.request(pairs?, endStream) — endStream is a tri-state f64:
    * -1 the method's payload-meaningless default, 0/1 explicit. */

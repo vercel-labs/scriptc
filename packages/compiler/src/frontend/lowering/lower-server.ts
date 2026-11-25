@@ -8331,6 +8331,21 @@ function lowerHttp2ModuleCall(
         "pass the options as an object literal ({ settings: ... })",
       );
     }
+    if (args.length === 2) {
+      // The options are inert here, but the literal is still EVALUATED: calls
+      // and spreads inside it run (an authorization helper must not be
+      // erased), then the value is handed to the runtime and ignored.
+      const optsV = lowerer.lowerExpr(args[1]!);
+      const dynOpts: IrExpr =
+        optsV.type.kind === "dyn" ? optsV : { kind: "dynFrom", value: optsV, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.performServerHandshakeOpts",
+        args: [sock, dynOpts],
+        type: HTTP2SESSION_T,
+        loc,
+      };
+    }
     return {
       kind: "libCall",
       fn: "http2.performServerHandshake",

@@ -69,6 +69,9 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
 /* http2.performServerHandshake(socket): a server session over an existing
  * connected socket (the peer's prior-knowledge preface is expected), +1. */
 ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/); /* may throw */
+/* performServerHandshake(socket, options): the literal evaluated, ignored. */
+ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
+                                                       const ScrDyn *opts /*borrowed*/);
 /* client — h2c prior knowledge for http authorities, the TLS transport
  * with ALPN ["h2"] for https ones (ca len 0 = the system anchors;
  * reject_unauthorized false disables the verify gate — the local-CA

@@ -4408,7 +4408,22 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
   /* Node resumes the socket it takes over: a paused one would never read the
    * preface */
   scr_net_sock_release(scr_net_sock_resume(sock));
+  /* The socket is already connected: Node fires the session's 'connect'
+   * (session, socket) after this call returns, so listeners attached next
+   * observe it (the deferred emit runs after the current work). */
+  if (!sess->connect_queued && !sess->destroyed) {
+    sess->connect_queued = true;
+    scr_h2_emit_push(SCR_H2_EMIT_SESSION_CONNECT, scr_http2_session_retain(sess));
+  }
   return scr_http2_session_retain(sess); /* the socket's ctx holds its own */
+}
+
+ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
+                                                       const ScrDyn *opts /*borrowed*/) {
+  /* the options are inert in this unit, but the caller's literal has already
+   * evaluated (its calls and spreads run); the value itself is ignored */
+  (void)opts;
+  return scr_http2_perform_server_handshake(sock);
 }
 
 /* http2.connect(authority[, listener]): an http authority dials h2c

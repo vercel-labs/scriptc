@@ -7136,6 +7136,10 @@ export function builtinGlobalValue(canonical: string, loc: SrcLoc, js = false): 
   if (js && GLOBAL_FUNCTION_VALUES.has(canonical)) return builtinFunctionValue(canonical, loc);
   if (js && canonical === "Buffer")
     return { kind: "libCall", fn: "buffer.constructor", args: [], type: DYN, loc };
+  // The global FormData answers the runtime's class object (scr_formdata.c),
+  // whose methods Node's global names too.
+  if (canonical === "FormData")
+    return { kind: "libCall", fn: "formdata.class", args: [], type: DYN, loc };
   if (GLOBAL_CONSTRUCTOR_VALUES.has(canonical)) {
     return {
       kind: "libCall",

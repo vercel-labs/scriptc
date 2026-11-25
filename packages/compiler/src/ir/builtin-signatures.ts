@@ -37,6 +37,7 @@ import { fetchSignatures } from "./builtin-signatures/fetch.js";
 import { ffiSignatures } from "./builtin-signatures/ffi.js";
 import { fileHandleSignatures } from "./builtin-signatures/fileHandle.js";
 import { finalizationRegistrySignatures } from "./builtin-signatures/finalizationRegistry.js";
+import { formdataSignatures } from "./builtin-signatures/formdata.js";
 import { fsSignatures } from "./builtin-signatures/fs.js";
 import { fspSignatures } from "./builtin-signatures/fsp.js";
 import { globalSignatures } from "./builtin-signatures/global.js";
@@ -158,6 +159,7 @@ function buildLibFnSignatures() {
     ...ffiSignatures,
     ...fileHandleSignatures,
     ...finalizationRegistrySignatures,
+    ...formdataSignatures,
     ...fsSignatures,
     ...fspSignatures,
     ...globalSignatures,

@@ -256,6 +256,9 @@ export interface NativeLinkFeatures {
    * scr_global_host_absent.c and the SCR_GLOBAL_HOST_ABSENT build of
    * scr_node_builtin.c; absent (false) otherwise. */
   hostAbsentGlobals?: boolean;
+  /** The global FormData (scr_formdata.c, with scr_blob.c's File entries and
+   * the inspect unit's value rendering). */
+  formData?: boolean;
   /** A runtimeFence that stands for a deferred diagnostic links
    * scr_deferred_fence.c, its stderr reporter; absent (false) otherwise. */
   deferredFence?: boolean;
@@ -517,6 +520,9 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // inspect unit's console entries, and colorMode 'auto' reads the
   // environment's color depth (scr_tty_colors.c).
   { feature: "consoleOptions", requires: ["inspect"] },
+  // scr_formdata.c builds its File entries through scr_blob.c and renders a
+  // refused value through the inspect unit.
+  { feature: "formData", requires: ["inspect", "dynAsync", "dynInvoke"] },
 ];
 
 /** Turns on, in `features`, every feature that one of its features

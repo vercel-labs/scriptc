@@ -176,7 +176,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // %Iterator% and %Iterator.prototype% as values.
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
-  ["scr_blob.c", "dynAsync"],
+  // FormData builds its File entries here as well.
+  ["scr_blob.c", any("dynAsync", "formData")],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],
@@ -204,10 +205,13 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // `scriptc build --large-pages`: executable code on transparent huge pages (Linux).
   ["scr_text_pages.c", "largePages"],
   ["scr_webstreams.c", "webStreams"],
+  // The global FormData; its File entries are scr_blob.c's and a refused
+  // value renders through the inspect unit.
+  ["scr_formdata.c", all("formData", "inspect")],
   ["scr_fs_web_stream.c", "fsWebStream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
-  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
+  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve", "formData")],
   ["scr_util_timing.c", "utilTiming"],
   // util.markPromiseAsHandled boxes and describes its argument through the
   // checked-dynamic units.

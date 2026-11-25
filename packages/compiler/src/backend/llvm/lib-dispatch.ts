@@ -1878,6 +1878,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     // %Iterator% and %Iterator.prototype% (scr_js_iterator.c).
     case "iterator":
       return host.emitGenericLibCall(e);
+    case "formdata":
+      return host.emitGenericLibCall(e);
     case "webstream":
       // A stream's start, pull and cancel steps run as promise jobs, so
       // a program with the classes runs its event loop.

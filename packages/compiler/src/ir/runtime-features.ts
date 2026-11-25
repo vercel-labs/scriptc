@@ -2326,7 +2326,12 @@ const RUNTIME_FEATURE_RULES = {
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
    * type as Node does. Every other program keeps the default fetch unit,
    * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+  /* FormData's entries are Blob/File values and its request bodies ride the
+   * web-bodies fetch variant, so the class selects that build too. */
+  webBodies: rule({
+    prefixes: ["blob."],
+    fns: ["formdata.new", "formdata.class", "formdata.is"],
+  }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same
@@ -2377,6 +2382,9 @@ const RUNTIME_FEATURE_RULES = {
   eventsOnceSignal: rule({ fns: ["events.onceSignal", "events.onceAny"] }),
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
+  /** The global FormData (scr_formdata.c): its constructor, the class value
+   * a computed global read answers, and its brand test. */
+  formData: rule({ fns: ["formdata.new", "formdata.class", "formdata.is"] }),
   /** filehandle.readableWebStream (scr_fs_web_stream.c): the handle's
    * content as a byte-oriented web stream, its own gated unit. */
   fsWebStream: rule({ fns: ["fileHandle.readableWebStream"] }),
@@ -2442,6 +2450,8 @@ const RUNTIME_FEATURE_RULES = {
       "bigint.inspect",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      // The FormData class value a computed global read answers.
+      "formdata.class",
       "webstream.from",
       // Readable.toWeb links the web stream unit, which renders a
       // non-iterable source (and a thrown member) through inspect.
@@ -3006,6 +3016,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     legacyTextDecoder: false,
     mime: false,
     sqlite: false,
+    formData: false,
     webBodies: false,
     webStreams: false,
     abortSignal: false,

@@ -184,6 +184,12 @@ double scr_http2_stream_buffer_size(ScrH2Stream *st);
 ScrStr *scr_http2_req_authority(ScrHttpReq *r);
 ScrStr *scr_http2_req_scheme(ScrHttpReq *r);
 bool scr_http2_stream_headers_sent(ScrH2Stream *st);
+/* sentHeaders/sentInfoHeaders/sentTrailers as the dyn records the stream
+ * holds (undefined before a block was sent), and the state snapshot. */
+ScrDyn *scr_http2_stream_sent_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_info_headers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_sent_trailers(ScrH2Stream *st);
+ScrDyn *scr_http2_stream_state(ScrH2Stream *st);
 bool scr_http2_req_complete(ScrHttpReq *r);
 /* Every value `name` has in a received pairs array, in order (the array a
  * headers object holds for set-cookie). */
@@ -209,6 +215,12 @@ void scr_net_sock_set_native_established(ScrNetSocket *s, ScrNetNativeEventFn fn
 
 /* Registers the h2 session/stream dyn handle ops (the emitted main()
  * calls it when the unit is linked — the scr_net_dyn_install story). */
+/* Http2ServerResponse.statusMessage: always "" and a write warns once
+ * (RFC 7540 has no reason phrase). `value` was already evaluated. */
+void scr_http2_status_message_unsupported(ScrHttpRes *res /*borrowed*/,
+                                           const struct ScrDyn *value /*borrowed, nullable*/);
+void scr_http2_status_message_read(ScrHttpRes *res /*borrowed*/);
+
 void scr_http2_dyn_install(void);
 
 #ifdef SCR_RC_AUDIT

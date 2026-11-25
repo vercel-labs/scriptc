@@ -153,6 +153,11 @@ test.each([
     { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
   ],
   [
+    "a script the queue's plan runs",
+    ["scripts/ci/queue-tests.mjs"],
+    { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
+  ],
+  [
     "the lockfile",
     ["pnpm-lock.yaml"],
     { linux: true, macos: true, effects: true, bootstrap: true, profile: true, islands: true },
@@ -286,19 +291,22 @@ function runLanes(event: string, tier = "full", onlyLane = "") {
   }
 }
 
-test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job; the nightly sweep every lane but macos, and manual runs every lane", () => {
-  for (const event of ["push", "merge_group"])
-    expect(runLanes(event), event).toBe(
-      "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\n",
-    );
+test("pushes to main and merge queue groups run every lane except macos, and the macOS smoke job, and say which tier they run; the nightly sweep runs every lane but macos, and manual runs every lane", () => {
+  // A push to main runs the global lanes the merge queue leaves out; a merge queue group runs the fast gate.
+  expect(runLanes("push")).toBe(
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\nqueue=false\npost=true\n",
+  );
+  expect(runLanes("merge_group")).toBe(
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=true\nqueue=true\npost=false\n",
+  );
   // The workflow starts on a merge queue group, which is what would become main.
   expect("merge_group" in workflow.on).toBe(true);
   // The complete macOS suite runs in the post-merge lanes (postmerge.yml), not in the nightly sweep.
   expect(runLanes("schedule")).toBe(
-    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
+    "linux=true\nmacos=false\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\nqueue=false\npost=false\n",
   );
   expect(runLanes("workflow_dispatch")).toBe(
-    "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\n",
+    "linux=true\nmacos=true\neffects=true\nbootstrap=true\nprofile=true\nislands=true\nmacos_smoke=false\nqueue=false\npost=false\n",
   );
   expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
     description: "The test suite to run on macOS",
@@ -310,7 +318,7 @@ test("pushes to main and merge queue groups run every lane except macos, and the
 
 test("a pull request's fast tier turns every lane off and runs the fast tests", () => {
   expect(runLanes("pull_request", "fast")).toBe(
-    "linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\n",
+    "linux=false\nmacos=false\neffects=false\nbootstrap=false\nprofile=false\nislands=false\nmacos_smoke=false\nfast=true\nqueue=false\npost=false\n",
   );
   // Its expensive tier is a dispatch on the pull request's branch, which selects lanes as the pull request would.
   const step = workflow.jobs["lanes"]!.steps.find((candidate) => candidate.id === "lanes")!;

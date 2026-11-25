@@ -12,6 +12,7 @@ import {
   type FrontendInputSnapshot,
 } from "../frontend/input-tracker.js";
 import { rebaseSourceLocations, semanticallyEqualSource } from "./semantic-source.js";
+import { tokenPositionEquivalentSource } from "../frontend/token-equivalence.js";
 import { compilerImplementationIdentity } from "./compiler-self-identity.js";
 import {
   cacheKey as sharedCacheKey,
@@ -349,6 +350,10 @@ export async function readSemanticLibraryCache(
   root: string | null,
   options: EarlyLibraryCacheOptions,
   sidecarConfiguredPath: string | null | undefined,
+  /** The build carries debug sources, so the cached translation unit's
+   * debugger locations are part of the answer: an edit that moves a source
+   * position the frontend read rules the cached text out. */
+  carriesPositions = false,
 ): Promise<SemanticLibraryCacheHit | null> {
   if (root === null) return null;
   const path = stampPath(root, options);
@@ -398,7 +403,7 @@ export async function readSemanticLibraryCache(
     const semantic = frontendInputsSemanticallyMatch(
       stamp.frontend,
       previousSources,
-      semanticallyEqualSource,
+      carriesPositions ? tokenPositionEquivalentSource : semanticallyEqualSource,
       frontendOutputExclusions(
         options,
         stamp.native.backend,
@@ -406,6 +411,8 @@ export async function readSemanticLibraryCache(
           ? undefined
           : sidecarOutputPath(options, sidecarConfiguredPath ?? null),
       ),
+      undefined,
+      carriesPositions,
     );
     if (semantic === null || semantic.changed.length === 0) return null;
     // The locations of the cached IR are moved to the edited text below. A

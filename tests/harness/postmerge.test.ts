@@ -598,7 +598,7 @@ test("each post-merge call grants every permission the called workflow's jobs as
         LEVEL[level]!,
       );
   }
-  // The post-merge call reports no ci/full status: it tests another commit, and one lane of it.
-  const report = ci.jobs.test!.steps!.find((step) => step.name === "Report ci/full")!;
-  expect(report.if).toContain("inputs.only_lane == ''");
+  // The post-merge call reports no ci/full status: it tests another commit, and one lane of it. CI's required
+  // check writes no status of its own, so the call has none to report.
+  expect(ci.jobs.test!.steps!.some((step) => step.name === "Report ci/full")).toBe(false);
 });

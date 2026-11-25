@@ -92,7 +92,7 @@ static ScrParPool *scr_par_pool;
 
 static int scr_par_read_threads(void) {
 #ifdef SCR_PAR_THREADS
-  const char *env = getenv("SCRIPTC_THREADS");
+  const char *env = scr_getenv("SCRIPTC_THREADS");
   long n = 0;
   if (env != NULL && *env != '\0') {
     char *end = NULL;

@@ -502,7 +502,10 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.unboxDynStage",
   // The stream/consumers promise settles through the chunk list and
   // scr_blob.c's Blob constructor (blob()), so each consumer links the
-  // checked-dynamic async unit that carries the blob unit with it.
+  // checked-dynamic async unit that carries the blob unit with it. The
+  // source of a consumer over an untyped value reads a web ReadableStream
+  // through Readable.from's iterator.
+  "sc.source",
   "sc.text",
   "sc.json",
   "sc.buffer",
@@ -977,6 +980,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stdin.onReadable",
   "stdin.pause",
   "stdin.resume",
+  "stdin.ref",
+  "stdin.unref",
   "stdin.isPaused",
   "stdin.readableLength",
   "stdin.read",

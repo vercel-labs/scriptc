@@ -63,6 +63,10 @@ export const readableSignatures = defineLibFnSignatures({
   "readable.read": { argTypes: [null, F64], result: VOID },
   "readable.pause": { argTypes: [null], result: VOID },
   "readable.setEncoding": { argTypes: [null, STRING], result: VOID },
+  /** Readable.from's encoding option reached at run time: falsy leaves the
+   * readable undecoded, a truthy value validates like the state constructor
+   * (ERR_UNKNOWN_ENCODING thrown) and installs the decoder. */
+  "readable.setEncodingOption": { argTypes: [null, DYN], result: VOID },
   /** push(chunk, enc) with a literal non-utf8 encoding, and the
    * defaultEncoding option's push side (how push(string) decodes —
    * Buffer.from(chunk, enc)); both carry the CANONICAL literal. */

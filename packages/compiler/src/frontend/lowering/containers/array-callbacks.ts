@@ -4202,6 +4202,11 @@ export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | 
   if (!replaced) return null;
   // The copy owns its parameter and local records: the jsval promotion
   // retypes a function's locals in place.
+  // The copy is cached by its name and shared by every species call that asks
+  // for it, so it settles to one location like the helper it copies. Without
+  // this its locations depend on which pass first asked for it, and a replayed
+  // record asks at a different time than ordinary lowering.
+  lowerer.shareHelper(bounded);
   lowerer.liftedFns.push({
     ...fn,
     name: bounded,

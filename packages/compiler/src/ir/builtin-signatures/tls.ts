@@ -91,6 +91,9 @@ export const tlsSignatures = defineLibFnSignatures({
   "tls.sockDisableRenegotiation": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getTLSTicket(): the received session ticket as a dyn Buffer, or
+   * undefined (a server socket, or a client without one yet). */
+  "tls.sockGetTlsTicket": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
    * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()

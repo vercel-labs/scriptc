@@ -27,7 +27,10 @@ const nextConfig = {
       ...legacySlugs.map((slug) => ({ source: `/${slug}`, destination: `/docs/${slug}`, permanent: true })),
     ];
   },
-  outputFileTracingIncludes: { "/og/[...slug]": ["./public/*.ttf"], "/og": ["./public/*.ttf"] },
+  outputFileTracingIncludes: {
+    "/og/[...slug]": ["./src/app/og/*.ttf", "./src/app/og/labs-logo.svg"],
+    "/og": ["./src/app/og/*.ttf", "./src/app/og/labs-logo.svg"],
+  },
 };
 
 export default withGeistdocs(nextConfig);

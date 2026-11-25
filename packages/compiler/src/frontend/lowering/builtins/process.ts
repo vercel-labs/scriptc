@@ -1963,7 +1963,7 @@ export function lowerProcessMethodCall(
     const loc = locOf(call);
     const member = access.name.text;
     const args = call.arguments.nodes;
-    if (member === "pause" || member === "resume") {
+    if (member === "pause" || member === "resume" || member === "ref" || member === "unref") {
       if (args.length !== 0) {
         lowerer.noLowering(`stdin.${member} with ${args.length} arguments`, call);
       }
@@ -1976,7 +1976,14 @@ export function lowerProcessMethodCall(
       }
       return {
         kind: "libCall",
-        fn: member === "pause" ? "stdin.pause" : "stdin.resume",
+        fn:
+          member === "pause"
+            ? "stdin.pause"
+            : member === "resume"
+              ? "stdin.resume"
+              : member === "ref"
+                ? "stdin.ref"
+                : "stdin.unref",
         args: [],
         type: VOID,
         loc,

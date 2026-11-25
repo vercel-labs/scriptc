@@ -145,6 +145,10 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* The readable a stream/consumers call reads (+1): a native stream, or a
+ * web ReadableStream as Readable.from builds one (Node's consumers iterate
+ * their argument); NULL with `message` thrown for every other value. */
+ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *message);
 /* Whether pipeline() keeps a checked-dynamic first stage as an iterable
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
@@ -248,9 +252,17 @@ ScrStream *scr_stream_writable_from_web_opts(struct ScrDyn *web, double flags, d
  * over the pair's web readable and writable, +1, or NULL with
  * ERR_INVALID_ARG_TYPE pending. */
 ScrStream *scr_stream_duplex_from_web(struct ScrDyn *pair, double flags);
+/* The web stream unit's pair adaptation (set by its install): a value with
+ * web ReadableStream and WritableStream members answers a Duplex over the
+ * pair (+1) — a web { readable, writable } pair, or a TransformStream whose
+ * members are the same — in the mode `flags` names (scr_stream_duplex_from_web's
+ * flags), and any other value answers NULL with nothing pending. */
+extern ScrStream *(*scr_stream_web_pair_hook)(struct ScrDyn *value, double flags);
 /* The same with the options: flags bit 1 allowHalfOpen, bit 2 objectMode,
- * bit 4 decodeStrings: false; hwm < 0 takes the default; encoding is NULL
- * when absent; signal may be NULL. */
+ * bit 4 decodeStrings: false. Bit 8 marks a pipeline stage's adaptation,
+ * whose chunks are web values (null passes through, where Duplex.fromWeb
+ * ends its readable on one and rejects a null write). hwm < 0 takes the
+ * default; encoding is NULL when absent; signal may be NULL. */
 ScrStream *scr_stream_duplex_from_web_opts(struct ScrDyn *pair, double flags, double hwm,
                                            struct ScrDyn *signal, struct ScrStr *encoding);
 
@@ -371,6 +383,11 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0
  * payload slots; see scr_stream_emit_data), lengths count JS string
  * units. Borrows the canonical encoding name; receiver +1. */
 ScrStream *scr_stream_set_encoding(ScrStream *s, ScrStr *enc);
+/* Readable.from's `encoding` option value at run time: an explicitly falsy
+ * value leaves the readable undecoded; a truthy one validates like the state
+ * constructor (ERR_UNKNOWN_ENCODING thrown) and installs the decoder with
+ * its spelling. Borrows v; answers the stream (+1). */
+ScrStream *scr_stream_set_encoding_option(ScrStream *s, const struct ScrDyn *v);
 /* readableEncoding: NULL (null) without a decoder, else the `encoding`
  * option as the program spelled it, or the decoder's canonical name after
  * setEncoding(). +1. scr_stream_set_encoding_name records an option's
@@ -814,6 +831,10 @@ ScrStream *scr_stream_duplex_from_promise(struct ScrPromise *p, ScrClosure *box)
  * setDefaultEncoding (validated; answers the stream +1). The chaining
  * forms answer the stream (+1). */
 void scr_stream_set_decode_strings(ScrStream *s, bool decode);
+/* The web pair adapter's chunks pass through as web values: in object mode
+ * a null chunk is one entry or one write, not EOF and not the null-values
+ * error. */
+void scr_stream_set_web_chunks(ScrStream *s, bool on);
 ScrStream *scr_stream_decode_strings(ScrStream *s, bool decode);
 /* Runtime decodeStrings/defaultEncoding option values: checked before
  * construction (ERR_UNKNOWN_ENCODING thrown), then applied to the fresh

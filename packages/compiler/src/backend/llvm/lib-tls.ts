@@ -113,6 +113,8 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
       return finishRuntimeCall(host, e, "scr_tls_sock_get_protocol", a);
     case "tls.sockGetCipher":
       return finishRuntimeCall(host, e, "scr_tls_sock_get_cipher", a);
+    case "tls.sockGetTlsTicket":
+      return finishRuntimeCall(host, e, "scr_tls_sock_get_tls_ticket", a);
     case "tls.sockAlpnProtocol":
       return finishRuntimeCall(host, e, "scr_tls_sock_alpn_protocol", a);
     case "tls.serverAddContext":
@@ -190,7 +192,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_keylog", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }
@@ -205,7 +207,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_server_on_keylog", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }
@@ -220,7 +222,7 @@ export function emitTlsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValu
             : "scr_net_data_thunk_bytes";
       return finishRuntimeCall(host, e, "scr_tls_sock_on_session", [
         a[0]!,
-        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr", "ptr"]),
+        ...callbackAdapter(host, cb, adapter, ["ptr", "ptr"]),
         a[2]!,
       ]);
     }

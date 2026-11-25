@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/node-island-reflect-construct-new-target/main.ts"
+ ],
+ "diags": []
+}

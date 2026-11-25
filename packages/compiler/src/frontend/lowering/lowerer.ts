@@ -1,5 +1,6 @@
 import { memberCallReceivers, type MemberCallReceivers } from "./member-call-receivers.js";
 import { writeFileSync } from "node:fs";
+import { unshareAcrossFunctions } from "../../ir/unshare.js";
 import { programCreatesWrappers, routeWrapperConsumers } from "./primitive-wrappers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { markInferredFactChecks, shapeOverlayFileNames } from "../shape-inference/index.js";
@@ -21,6 +22,7 @@ import { claimKey, collectTypeClaims, declaredUntypedIn } from "./type-claims.js
 import { isDeclBoundaryTypeNode } from "../decl-projection.js";
 import type { TypeClaimSite } from "../../diagnostics/type-claims.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import { timingProcessMetrics } from "../../timing.js";
 import { LiteralTexts } from "./literal-texts.js";
 import {
   checkedTable,
@@ -1876,6 +1878,7 @@ function lowerToIrWithIslands(
       phase,
       phase_ms: Math.round((now - phaseLast) * 10) / 10,
       total_ms: Math.round((now - phaseStarted) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -2296,6 +2299,7 @@ function lowerToIrWithIslands(
     process.stderr.write(
       `scriptc lowering ${JSON.stringify({
         phase: "async-protocol-flows",
+        ...timingProcessMetrics(),
         scan_ms: asyncProtocols.elapsedMs,
         sites: asyncProtocols.sites,
         marked: asyncProtocols.markedCount,
@@ -5480,6 +5484,12 @@ export class Lowerer {
    * property exports — different object, same declaration — so globalOf
    * falls back through the shared node (collectGlobals registers both). */
   readonly globalsByDeclNode = new Map<ts.Node, IrGlobal>();
+  /** Whether collectProgram has finished registering this pass's globals.
+   * Until it has, aliasStorageSymbolOf asks afresh. */
+  globalsCollected = false;
+  /** aliasStorageSymbolOf's answer per alias symbol for the post-collection
+   * phase; see that method for why collection-time answers are not kept. */
+  readonly aliasStorageBySymbol = new Map<ts.Symbol, ts.Symbol | null>();
   readonly globalsList: IrGlobal[] = [];
 
   readonly npmInitActions = new Map<ts.SourceFile, Map<ts.Statement, IrStmt[]>>();
@@ -6163,6 +6173,10 @@ export class Lowerer {
    * lowered in. A helper used only by other shared helpers takes their
    * location; one with no use takes the entry file's start. */
   private settleSharedHelperLocations(functions: readonly IrFunction[]): void {
+    // A node one function shares with another would carry this rewrite into the
+    // other; give each function its own nodes first, so a record-decoded copy
+    // (whose nodes are already its own) settles the same way.
+    unshareAcrossFunctions(functions);
     const interned = new Set<string>([...this.sharedHelperNames, ...this.classMethodValueHelpers]);
     for (const table of [
       this.equalityHelpers,
@@ -6184,7 +6198,12 @@ export class Lowerer {
       this.coercions.widthNarrows,
     ])
       for (const name of table.values()) interned.add(name);
-    for (const fn of [...this.liftedFns, ...this.implicitFns])
+    // A unit's own function can be a shared helper too: a class method value
+    // is interned by name and held in loweredUnits, and a record-decoded copy
+    // is a different object from the one shareHelper saw. Add the objects the
+    // caller keeps, not only the lifted ones, so the location rewrite lands on
+    // the functions this build emits.
+    for (const fn of [...functions, ...this.liftedFns, ...this.implicitFns])
       if (interned.has(fn.name)) this.sharedHelpers.add(fn);
     if (this.sharedHelpers.size === 0) return;
     const shared = new Map([...this.sharedHelpers].map((fn) => [fn.name, fn]));
@@ -6857,6 +6876,13 @@ export class Lowerer {
     // program's declarations and of the two collections above, emptied
     // whenever either grows.
     "islandAliasBindings",
+    // Whether collectProgram has finished registering this pass's globals:
+    // a phase setting fixed before the first body unit lowers.
+    "globalsCollected",
+    // aliasStorageSymbolOf's answer per alias symbol for the post-collection
+    // phase. A replayed unit skips body lowering, its only caller, and a new
+    // collection or a late global registration clears the memo.
+    "aliasStorageBySymbol",
     // Which module-level constants and statements the island evaluates:
     // decided from the program's syntax, types and the facts collection
     // settled (island bindings, initialization flags), so every pass decides
@@ -8871,6 +8897,7 @@ export class Lowerer {
       const global = rebound === undefined ? undefined : this.globalsByDeclNode.get(rebound);
       if (global !== undefined) {
         this.globalsBySymbol.set(symbol, global);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
     }
@@ -8893,6 +8920,7 @@ export class Lowerer {
       const conditionalSlot = this.cjsConditionalWholeExportAliasSlotOf(symbol);
       if (conditionalSlot !== null) {
         this.globalsBySymbol.set(symbol, conditionalSlot);
+        this.aliasStorageBySymbol.clear();
         return symbol;
       }
       // DEFAULT-SNAPSHOT storage lives on the EXPORTER'S default alias
@@ -9167,23 +9195,36 @@ export class Lowerer {
    * member global), or null. Alias chains through CommonJS re-exports keep
    * the exporter's stored value at every hop; see resolveValueSymbol. */
   aliasStorageSymbolOf(symbol: ts.Symbol): ts.Symbol | null {
+    // Once collection has run, an alias chain's storage hop is an answer
+    // about the immutable program, and the lowering asks about the same
+    // import alias once per reference to it. Collection itself registers
+    // globals as it goes, so answers taken there are not kept.
+    const memoize = this.globalsCollected && !this.collecting;
+    if (memoize) {
+      const cached = this.aliasStorageBySymbol.get(symbol);
+      if (cached !== undefined) return cached;
+    }
+    let result: ts.Symbol | null = null;
     let hop = symbol;
     const seen = new Set<ts.Symbol>();
     for (let depth = 0; depth < 32; depth++) {
-      if (seen.has(hop)) return null;
+      if (seen.has(hop)) break;
       seen.add(hop);
       // The checker's immediate-target query is an alias-only operation.
-      if ((hop.flags & ts.SymbolFlags.Alias) === 0) return null;
+      if ((hop.flags & ts.SymbolFlags.Alias) === 0) break;
       const next = this.checker.getImmediateAliasedSymbol(hop);
-      if (!next || seen.has(next)) return null;
+      if (!next || seen.has(next)) break;
       if (
         this.globalsBySymbol.has(next) ||
         next.declarations.some((decl) => this.globalsByDeclNode.has(decl))
-      )
-        return next;
+      ) {
+        result = next;
+        break;
+      }
       hop = next;
     }
-    return null;
+    if (memoize) this.aliasStorageBySymbol.set(symbol, result);
+    return result;
   }
 
   /** Whether this exact direct call belongs to a manifest-validated native
@@ -15416,6 +15457,7 @@ export class Lowerer {
     const event: Record<string, unknown> = {
       phase,
       phase_ms: Math.round((performance.now() - started) * 10) / 10,
+      ...timingProcessMetrics(),
     };
     for (const key of Object.keys(detail)) event[key] = detail[key];
     process.stderr.write(`scriptc lowering ${JSON.stringify(event)}\n`);
@@ -15483,7 +15525,9 @@ export class Lowerer {
       shareBuiltinValueIdentities(this, functions),
     );
     this.timedPass("finalizeFunctionNames", () => finalizeFunctionNames(this, functions));
-    this.timedPass("finalizeFunctionSourceText", () => finalizeFunctionSourceText(this, functions));
+    this.timedPass("finalizeFunctionSourceText", () =>
+      finalizeFunctionSourceText(this, functions, census),
+    );
     if (this.diags.length === 0)
       this.timedPass("fuseArrayPipelines", () => fuseArrayPipelines(this, functions));
     this.timedPass("finalizeClassMethodValues", () => finalizeClassMethodValues(this, functions));
@@ -15492,20 +15536,23 @@ export class Lowerer {
     this.timedPass("trackClassFieldCreation", () =>
       trackClassFieldCreation(this, functions, census),
     );
-    this.timedPass("boxClassInstancesExactly", () => boxClassInstancesExactly(this, functions));
+    this.timedPass("boxClassInstancesExactly", () =>
+      boxClassInstancesExactly(this, functions, census),
+    );
     this.timedPass("addUntypedIntegrityWords", () => addUntypedIntegrityWords(this));
     this.timedPass("guardClassAttributeWrites", () =>
       guardClassAttributeWrites(this, functions, census),
     );
     this.timedPass("guardPartialReads", () => guardPartialReads(this, functions));
     this.timedPass("guardFrozenWrites", () => guardFrozenWrites(this, functions, census));
-    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions));
-    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions));
-    this.timedPass("shareIslandProcessState", () => shareIslandProcessState(this, functions));
-    // applyHandleProperties, adoptIslandThenables and shareIslandProcessState
-    // rewrite nodes inside unchanged statement lists, so the census of every
-    // function they touched no longer describes its body.
-    census.clear();
+    this.timedPass("applyHandleProperties", () => applyHandleProperties(this, functions, census));
+    this.timedPass("adoptIslandThenables", () => adoptIslandThenables(this, functions, census));
+    this.timedPass("shareIslandProcessState", () =>
+      shareIslandProcessState(this, functions, census),
+    );
+    // Those three rewrite nodes inside unchanged statement lists. Each
+    // forgets the census of every function it changed in place, so the passes
+    // below rescan those functions only instead of the whole module.
     this.timedPass("installBufferValue", () => installBufferValue(functions, census));
     // A mutable-buffers program arms the views registry before any buffer
     // exists, so every buffer in it is detachable from the start.
@@ -15674,7 +15721,11 @@ export class Lowerer {
       // A hidden local that a later expression of another statement reads
       // again (a branch reading what its condition saved) is owned by the
       // statement list around both, not by the expression that declared it.
-      for (const fn of module.functions) ownEscapingLocals(fn);
+      for (const fn of module.functions) {
+        // A hidden local is declared inside an expression sequence.
+        if (!census.hasExpr(fn, "seqExpr")) continue;
+        ownEscapingLocals(fn);
+      }
     }
     if (module) sanitizeUnregisteredClassTypes(module, (name) => this.classes.has(name));
     // Before the origin table is compacted: the claims index the lowering's.
@@ -15693,7 +15744,7 @@ export class Lowerer {
         fmt: (type) => this.fmt(type),
       });
     }
-    if (module?.declOrigins !== undefined) compactDeclOrigins(module);
+    if (module?.declOrigins !== undefined) compactDeclOrigins(module, census);
     if (module)
       this.timedPass("checkCycleBindingAccesses", () => checkCycleBindingAccesses(this, module));
     if (module) bindCompletionCallbacks(module);
@@ -16749,12 +16800,12 @@ export class Lowerer {
       reuse.finish();
       if (process.env["SCRIPTC_TIMING"] === "1")
         process.stderr.write(
-          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...reuse.stats })}\n`,
+          `scriptc lowering ${JSON.stringify({ phase: "unit-reuse", ...timingProcessMetrics(), ...reuse.stats })}\n`,
         );
     }
     if (recorded !== null && process.env["SCRIPTC_TIMING"] === "1")
       process.stderr.write(
-        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...recorded })}\n`,
+        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...timingProcessMetrics(), ...recorded })}\n`,
       );
     const orderedUnits = unitsInOrder();
     this.settleGenericDemandPriorities();
@@ -17225,12 +17276,13 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts). Until the program writes its first
-    // constructor value, values are not looked at, so a diagnostic made
-    // that early is marked too: lowering order is not evaluation order, and
-    // the mark counts only if the program turns out to hold a constructor.
-    if (!this.constructorFunctionTypes || this.constructorTouches > this.constructorTouchMark)
-      d.heldConstructor = true;
+    // (held-constructors.ts): the type mapper raises constructorTouches for
+    // every mapping that reaches a constructor's function type, and
+    // lowerExpr for every value that holds one, in any pass. A diagnostic
+    // made before the program's first constructor value is not marked for
+    // that reason alone: ordering changes which unit lowers first, not
+    // whether the refusal involves a constructor.
+    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in

@@ -1179,7 +1179,11 @@ function moduleRequireProgramRoots7(program: ts.Program): string[] {
       if (!ts.isStringLiteralLike(arg)) continue;
       // Only the module object's own method: the bare `require` identifier
       // is TypeScript's own reference and already a root.
-      if (ts.isIdentifier(node.expression) || !isRequireCallee(node.expression)) continue;
+      if (
+        ts.isIdentifier(node.expression) ||
+        !isRequireCallee(node.expression, program.getTypeChecker())
+      )
+        continue;
       const spec = arg.text;
       if (canonicalBuiltinModule(spec) !== null) continue;
       let target = resolveProjectModule(sf.fileName, spec);
@@ -2933,7 +2937,7 @@ function jsOpinionOf7(
  * and statement lowering share — anything require-shaped it does NOT match
  * (computed specifiers, extra arguments) is not a module edge and fences at
  * its use site. */
-function requireSpecOf7(node: ts.Node): string | null {
+function requireSpecOf7(node: ts.Node, checker?: ts.TypeChecker): string | null {
   let value = node;
   while (
     ts.isParenthesizedExpression(value) ||
@@ -2945,7 +2949,7 @@ function requireSpecOf7(node: ts.Node): string | null {
     value = value.expression;
   }
   if (!ts.isCallExpression(value)) return null;
-  if (!isRequireCallee(value.expression)) return null;
+  if (!isRequireCallee(value.expression, checker)) return null;
   if (value.arguments.nodes.length !== 1) return null;
   const arg = value.arguments.nodes[0]!;
   return ts.isStringLiteral(arg) ? arg.text : null;
@@ -2956,13 +2960,15 @@ function requireSpecOf7(node: ts.Node): string | null {
  * (every declarator a require), and the bare side-effect `require("s");`.
  * These lower to NOTHING — the bindings are alias plumbing (tsc models
  * them as import aliases) and the module edge lives in the order walk. */
-function isRequireStatement7(stmt: ts.Statement): boolean {
-  if (ts.isExpressionStatement(stmt)) return requireSpecOf7(stmt.expression) !== null;
+function isRequireStatement7(stmt: ts.Statement, checker?: ts.TypeChecker): boolean {
+  if (ts.isExpressionStatement(stmt)) return requireSpecOf7(stmt.expression, checker) !== null;
   if (!ts.isVariableStatement(stmt)) return false;
   const decls = stmt.declarationList.declarations.nodes;
   return (
     decls.length > 0 &&
-    decls.every((d) => d.initializer !== undefined && requireSpecOf7(d.initializer) !== null)
+    decls.every(
+      (d) => d.initializer !== undefined && requireSpecOf7(d.initializer, checker) !== null,
+    )
   );
 }
 
@@ -2980,19 +2986,21 @@ interface RequireOccurrence7 {
  * forms, the bare side-effect call, and the assignment of a split require
  * binding. Empty for everything else. */
 function requiresOf7(stmt: ts.Statement, program: ts.Program): RequireOccurrence7[] {
+  const checker = program.getTypeChecker();
+  const requireSpecOf7_ = (node: ts.Node) => requireSpecOf7(node, checker);
   if (ts.isExpressionStatement(stmt)) {
     const split = splitRequireOfStatement7(program, stmt);
     if (split !== null)
       return [
-        { spec: requireSpecOf7(split.call)!, node: split.call, decl: split.decl, split: true },
+        { spec: requireSpecOf7_(split.call)!, node: split.call, decl: split.decl, split: true },
       ];
-    const spec = requireSpecOf7(stmt.expression);
+    const spec = requireSpecOf7_(stmt.expression);
     return spec !== null ? [{ spec, node: stmt.expression, decl: null }] : [];
   }
   if (!ts.isVariableStatement(stmt)) return [];
   const out: RequireOccurrence7[] = [];
   for (const decl of stmt.declarationList.declarations.nodes) {
-    const spec = decl.initializer !== undefined ? requireSpecOf7(decl.initializer) : null;
+    const spec = decl.initializer !== undefined ? requireSpecOf7_(decl.initializer) : null;
     if (spec !== null) out.push({ spec, node: decl, decl });
   }
   return out;
@@ -3085,7 +3093,7 @@ function splitRequireTarget7(
   sf: ts.SourceFile,
   call: ts.CallExpression,
 ): boolean {
-  const spec = requireSpecOf7(call);
+  const spec = requireSpecOf7(call, program.getTypeChecker());
   if (spec === null || canonicalBuiltinModule(spec) !== null) return false;
   if (requireCallBindingKind7(program, call) !== "ambient") return false;
   const dep =
@@ -3282,11 +3290,11 @@ function sourceBinding7(program: ts.Program, ident: ts.Identifier): boolean {
   );
 }
 
-function purePrefixDecl7(decl: ts.VariableDeclaration): boolean {
+function purePrefixDecl7(decl: ts.VariableDeclaration, checker?: ts.TypeChecker): boolean {
   const init = decl.initializer;
   return (
     init === undefined ||
-    requireSpecOf7(init) !== null ||
+    requireSpecOf7(init, checker) !== null ||
     ts.isStringLiteralLike(init) ||
     ts.isNumericLiteral(init) ||
     init.kind === ts.SyntaxKind.TrueKeyword ||
@@ -3303,7 +3311,8 @@ function purePrefixDecl7(decl: ts.VariableDeclaration): boolean {
 function purePrefixStmt7(program: ts.Program, s: ts.Statement): boolean {
   if (ts.isEmptyStatement(s) || ts.isFunctionDeclaration(s)) return true;
   if (ts.isExpressionStatement(s) && ts.isStringLiteral(s.expression)) return true; // directive
-  if (isRequireStatement7(s) || splitRequireOfStatement7(program, s) !== null) return true;
+  const checker = program.getTypeChecker();
+  if (isRequireStatement7(s, checker) || splitRequireOfStatement7(program, s) !== null) return true;
   if (isCjsJsFile7(ts.getSourceFileOfNode(s), program)) {
     if (ts.isExpressionStatement(s) && isEsModuleStamp(s.expression)) {
       const call = s.expression as ts.CallExpression;
@@ -3320,7 +3329,7 @@ function purePrefixStmt7(program: ts.Program, s: ts.Statement): boolean {
     if (pureCjsExport7(program, s)) return true;
   }
   if (ts.isVariableStatement(s)) {
-    return s.declarationList.declarations.nodes.every(purePrefixDecl7);
+    return s.declarationList.declarations.nodes.every((d) => purePrefixDecl7(d, checker));
   }
   return false;
 }
@@ -3452,7 +3461,8 @@ function requireEarlyReference7(
       program.analysis.requireFirstRunnable.set(sf, firstRunnable);
     }
     const prefixCanRun =
-      (firstRunnable >= 0 && firstRunnable < k) || precedingDecls.some((d) => !purePrefixDecl7(d));
+      (firstRunnable >= 0 && firstRunnable < k) ||
+      precedingDecls.some((d) => !purePrefixDecl7(d, program.getTypeChecker()));
     if (prefixCanRun) found = requireBindingEarlyUse7(program, sf, k, decl, precedingDecls);
   }
   memo.set(decl, found);
@@ -3686,7 +3696,7 @@ export function requireBindingEarlyUse7(
       }
       // A self-require answers this module's partially built exports.
       if (cjs && ts.isCallExpression(n)) {
-        const spec = requireSpecOf7(n);
+        const spec = requireSpecOf7(n, program.getTypeChecker());
         if (spec !== null && resolveImport7(program, sf, spec, "require") === sf) reachKey(null);
       }
       if (cjs && n.kind === ts.SyntaxKind.ThisKeyword && isModuleThis(n)) {
@@ -3941,7 +3951,7 @@ export function requireBindingEarlyUse7(
 /** Bare `require("...")` EXPRESSION STATEMENTS anywhere below the top
  * level of a file — inside top-level ifs/blocks/loops and inside function
  * bodies (the lazy-require idiom). No bindings, pure side-effect loads. */
-function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
+function nestedBareRequiresOf7(sf: ts.SourceFile, program: ts.Program): ts.CallExpression[] {
   const out: ts.CallExpression[] = [];
   // Iterative walk (walkPreorder): this sweep sees every JS file whole,
   // including pathologically deep expression chains that must live to be
@@ -3951,7 +3961,7 @@ function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
       ts.isExpressionStatement(n) &&
       !ts.isSourceFile(n.parent) &&
       ts.isCallExpression(n.expression) &&
-      requireSpecOf7(n.expression) !== null
+      requireSpecOf7(n.expression, program.getTypeChecker()) !== null
     ) {
       out.push(n.expression);
     }
@@ -3966,10 +3976,10 @@ function nestedBareRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
  * statements and bare require statements are collected by their own
  * scans; a require that initializes a nested declaration keeps its
  * lowering fence and is not an edge. */
-function inlineRequiresOf7(sf: ts.SourceFile): ts.CallExpression[] {
+function inlineRequiresOf7(sf: ts.SourceFile, program: ts.Program): ts.CallExpression[] {
   const out: ts.CallExpression[] = [];
   ts.walkPreorder(sf, (n) => {
-    if (!ts.isCallExpression(n) || requireSpecOf7(n) === null) return;
+    if (!ts.isCallExpression(n) || requireSpecOf7(n, program.getTypeChecker()) === null) return;
     let outer: ts.Node = n;
     while (
       outer.parent !== undefined &&
@@ -5477,7 +5487,7 @@ function cjsCycleAdmission7(
     if (ts.isVoidExpression(e)) return literal(e.expression);
     if (ts.isCallExpression(e) || ts.isNewExpression(e)) {
       return (
-        requireSpecOf7(e) === null &&
+        requireSpecOf7(e, program.getTypeChecker()) === null &&
         builtinRoot(e.expression) &&
         (e.arguments?.nodes ?? []).every(literal)
       );
@@ -8201,7 +8211,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           if (dep) deps.push({ dep });
         }
       }
-      const nestedBareRequires = nestedBareRequiresOf7(sf);
+      const nestedBareRequires = nestedBareRequiresOf7(sf, program);
       program
         .getTypeChecker()
         .prefetchSymbolNodesExact(
@@ -8210,7 +8220,7 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
           ),
         );
       for (const call of nestedBareRequires) {
-        const spec = requireSpecOf7(call)!;
+        const spec = requireSpecOf7(call, program.getTypeChecker())!;
         const loc = { file: sf.fileName, start: ts.tokenStartOfNode(call), end: call.end };
         const bindingKind = requireCallBindingKind7(program, call);
         if (!jsRequireFile && bindingKind !== "createRequire") continue;
@@ -8266,10 +8276,10 @@ function preflightStructure7(load: LoadResult): PreflightStructure {
         // A split require binding's assignment is a statement-level require
         // edge (requiresOf7 above), parenthesized or not.
         const splitCalls = new Set(splitRequireBindings7(program, sf).values());
-        for (const call of inlineRequiresOf7(sf)) {
+        for (const call of inlineRequiresOf7(sf, program)) {
           if (requireCallBindingKind7(program, call) !== "ambient") continue;
           if (splitCalls.has(call)) continue;
-          const spec = requireSpecOf7(call)!;
+          const spec = requireSpecOf7(call, program.getTypeChecker())!;
           if (load.externalTypes.has(spec) || canonicalBuiltinModule(spec) !== null) continue;
           const lazy = inDeferredPosition7(call);
           const edgeTo = (dep: ts.SourceFile): CycleEdge =>

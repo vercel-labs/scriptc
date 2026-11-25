@@ -3,6 +3,7 @@ import {
   cjsExportStatementObjectWrites,
   lowerCjsExportsObjectWrite,
 } from "./cjs-exports-object-value.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import { requireLiveBytes } from "./buffers.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
@@ -3321,6 +3322,7 @@ function lowerVarDeclarator(
   if (
     decl.initializer !== undefined &&
     requireSpecOf(decl.initializer) !== null &&
+    isCjsRequireCallee(lowerer, (decl.initializer as ts.CallExpression).expression) &&
     !isNativeFfiRequire(lowerer, decl.initializer) &&
     !isJsonRequireDecl(lowerer, decl) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl))

@@ -11,6 +11,7 @@
  * copies its properties at the require, exactly like Node. ES-module JSON
  * imports keep their own record (Node's ESM loader caches separately). */
 import { keyedHelperName } from "./stable-names.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { PoisonError } from "./lowerer.js";
@@ -69,6 +70,7 @@ export function jsonRequireTarget(
   call: ts.Expression | undefined,
 ): ts.SourceFile | null {
   if (call === undefined || !ts.isCallExpression(call)) return null;
+  if (!isCjsRequireCallee(lowerer, call.expression)) return null;
   const spec = requireSpecOf(call);
   if (spec === null) return null;
   const sf = ts.getSourceFileOfNode(call);

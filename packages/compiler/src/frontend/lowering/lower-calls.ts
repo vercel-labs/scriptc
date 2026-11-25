@@ -1,4 +1,5 @@
 import { lowerHistogramStatsMethodCall } from "./builtins/histogram-stats.js";
+import { isCjsRequireCallee } from "./require-callee-lowering.js";
 import { isCheckerPanic } from "../../diagnostics/diagnostic.js";
 import { reboundRequireBindingOf } from "./rebindable-requires.js";
 import { voidTruthinessNeedsRuntimeValue } from "../tsc-codes.js";
@@ -145,7 +146,6 @@ import {
   isJsSourceFile,
   isNodeEsmFile,
   locOf,
-  isRequireCallee,
   requireSpecOf,
 } from "../program.js";
 import { isPackageShimFile, isShimIntrinsicName } from "../package-shims.js";
@@ -376,7 +376,6 @@ import {
 import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
-  isCjsRequireGlobal,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -915,9 +914,7 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // module has no `require`, so there the call reads the binding and throws
   // Node's ReferenceError (lowerIdentifierExpr).
   if (
-    isRequireCallee(expr.expression) &&
-    (ts.isPropertyAccessExpression(expr.expression) ||
-      isCjsRequireGlobal(lowerer, expr.expression)) &&
+    isCjsRequireCallee(lowerer, expr.expression) &&
     !isNodeEsmFile(ts.getSourceFileOfNode(expr), lowerer.program)
   ) {
     const module = lowerer.builtinNamespaceModuleOf(expr);

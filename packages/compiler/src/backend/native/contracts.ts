@@ -606,6 +606,12 @@ export interface LibArchiveOptions {
    * exported function that defines one of its own call/apply/bind members
    * runs the write the way the executable lane does. */
   fnMemberProps?: boolean;
+  /** See CcOptions.declAdopt: a checked cast of a dynamic value adopts the
+   * object instead of copying it, and the archive carries scr_decl_adopt.c. */
+  declAdopt?: boolean;
+  /** See CcOptions.classTestPrototype: an instanceof on an untyped value
+   * reads its prototype, and the archive carries scr_dyn_class_test.c. */
+  classTestPrototype?: boolean;
 }
 
 export interface NativeArtifactDependency {

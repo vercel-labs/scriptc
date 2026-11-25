@@ -45,6 +45,8 @@ describe("library archive runtime gates", () => {
       "dynBuffer",
       "dynTier",
       "mutableBuffers",
+      "declAdopt",
+      "classTestPrototype",
     ] as const;
     for (const gate of gates) {
       expect(libraryArchiveFeatures({ ...base, [gate]: true }), gate).toEqual({

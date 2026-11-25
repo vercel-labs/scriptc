@@ -35,6 +35,13 @@ export function libraryArchiveFeatures(options: LibArchiveOptions): NativeLinkFe
     ...(options.dynTier === true ? { dynTier: true } : {}),
     ...(options.recordSourceGet === true ? { recordSourceGet: true } : {}),
     ...(options.arrJoinStr === true ? { arrJoinStr: true } : {}),
+    // A checked cast of a dynamic value adopts the object through
+    // scr_decl_adopt.c, and an instanceof on one walks the prototype through
+    // scr_dyn_class_test.c. Leaving either off drops the unit from the
+    // archive and the embedder's link fails on the entry point the program
+    // calls.
+    ...(options.declAdopt === true ? { declAdopt: true } : {}),
+    ...(options.classTestPrototype === true ? { classTestPrototype: true } : {}),
     // A program that resizes, grows or detaches a buffer names the views
     // registry's arming entry point, so the archive must carry the unit and
     // the JavaScript object model build it belongs to.

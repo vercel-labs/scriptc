@@ -188,6 +188,7 @@ void scr_process_events_to_node(void);
 void scr_ni_process_listen(int mode, const char *event, ScrDyn *listener);
 int scr_ni_uncaught(bool from_promise);          /* scr_uncaught_exception_hook */
 void scr_ni_promise_unhandled(ScrPromise *p);    /* scr_urj_node_fn */
+void scr_ni_emit_rejection_handled(ScrPromise *p);
 void scr_ni_promise_handled(ScrPromise *p);      /* scr_rjh_notify_fn */
 bool scr_ni_warning(ScrDyn *warning, ScrDyn *code, ScrDyn *detail, bool no_deprecation,
                     bool trace_warnings, bool trace_deprecation);

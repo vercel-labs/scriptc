@@ -680,8 +680,11 @@ function restPackingAdapter(
  * are filled first). function-views.ts builds it when a caller that passes
  * more arguments than a stored slot's type names reaches a variadic
  * store, so the stored function receives every argument the JavaScript
- * call passes. Null when a parameter cannot become an untyped value or a
- * result does not convert. */
+ * call passes. A function that reads `arguments` (argumentsAll) sees the
+ * whole list there, its own named parameters included, as it does in a
+ * JavaScript call; a checked-dynamic rest holds the arguments the named
+ * parameters do not cover. Null when a parameter cannot become an untyped
+ * value or a result does not convert. */
 export function dynRestPackingAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
@@ -695,7 +698,10 @@ export function dynRestPackingAdapter(
   for (let i = 0; i < fixed; i++) {
     if (!lowerer.coercibleValue(toT.params[i]!, fromT.params[i]!)) return null;
   }
-  for (let i = fixed; i < toT.params.length; i++) {
+  // The hidden array repeats an all-arguments function's named parameters,
+  // so those must become untyped values too.
+  const packedFrom = fromT.argumentsAll === true ? 0 : fixed;
+  for (let i = packedFrom; i < toT.params.length; i++) {
     const param = toT.params[i]!;
     if (param.kind !== "dyn" && !lowerer.coercibleValue(param, DYN)) return null;
   }
@@ -720,7 +726,7 @@ export function dynRestPackingAdapter(
   const fixedArgs: IrExpr[] = [];
   for (let i = 0; i < fixed; i++) fixedArgs.push(arg(i, fromT.params[i]!));
   const restElems: IrExpr[] = [];
-  for (let i = fixed; i < toT.params.length; i++) {
+  for (let i = packedFrom; i < toT.params.length; i++) {
     const boxed = arg(i, DYN);
     if (boxed.type.kind !== "dyn") return null;
     restElems.push(boxed);

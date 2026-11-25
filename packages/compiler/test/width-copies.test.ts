@@ -64,67 +64,18 @@ test("an aliasable copy the program only reads is not a warning", () => {
   expect(seen.warnings).toEqual([]);
 });
 
-test("a copy passed to a function that only reads it is not a warning", () => {
-  // The callee never writes the parameter, compares it by identity or lets
-  // it out, so it cannot tell the copy from the object. A write to the same
-  // layout elsewhere in the program does not reach this call.
+test("a copy passed to a function that only reads it still warns", () => {
+  // Aliasing cannot be ruled out cheaply: a callee can mutate the original
+  // through a global, a callback, an await or a promise executor. A copy
+  // handed to a call is therefore reported even when the callee only reads
+  // the parameter.
   const seen = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N): number { return n.a; }\nconsole.log(read(w));\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
+    `${TYPES}const w: W = { a: 1, b: "x" }; function read(n: N): number { return n.a; } console.log(read(w)); const other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
   );
-  expect(seen.facts).toEqual([{ kind: "width", depth: "value", aliasable: true, observed: null }]);
-  expect(seen.warnings).toEqual([]);
-});
-
-test("a copy passed to a function that returns it or keeps it is a warning", () => {
-  // The callee lets the copy out: the caller can compare or write it, so
-  // the copy is as observable as any other.
-  const returned = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction id(n: N): N { return n; }\nconst r = id(w); r.a = 2; console.log(w.a);`,
-  );
-  expect(returned.facts).toEqual([
+  expect(seen.facts).toEqual([
     { kind: "width", depth: "value", aliasable: true, observed: "write" },
   ]);
-  expect(returned.warnings).toHaveLength(1);
-
-  const kept = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nconst kept: N[] = [];\nfunction keep(n: N): void { kept.push(n); }\nkeep(w); kept[0]!.a = 2; console.log(w.a);`,
-  );
-  expect(kept.facts).toEqual([
-    { kind: "width", depth: "value", aliasable: true, observed: "write" },
-  ]);
-  expect(kept.warnings).toHaveLength(1);
-});
-
-test("a callee that can run other code keeps the copy warning", () => {
-  // A callback can mutate the original between the copy and the reads.
-  const callback = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N, cb: () => void): number { cb(); return n.a; }\nconsole.log(read(w, () => { w.a = 9; }));`,
-  );
-  expect(callback.facts.map((f) => f.observed)).toEqual(["write"]);
-
-  // A later argument runs after the copy and can mutate the original.
-  const later = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N, extra: number): number { return n.a + extra; }\nconsole.log(read(w, (w.a = 9)));`,
-  );
-  expect(later.facts.map((f) => f.observed)).toEqual(["write"]);
-
-  // An await lets the caller run while the callee holds its copy.
-  const suspended = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nasync function read(n: N): Promise<number> { await null; return n.a; }\nread(w);\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
-  );
-  expect(suspended.facts.map((f) => f.observed)).toEqual(["write"]);
-
-  // A write through another name of the copied layout can reach the original.
-  const globalAlias = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N): number { w.a = 9; return n.a; }\nconsole.log(read(w));`,
-  );
-  expect(globalAlias.facts.map((f) => f.observed)).toEqual(["write"]);
-
-  // A generator's body runs at next(), after the caller can run again.
-  const deferred = facts(
-    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction* read(n: N): Generator<number> { return n.a; }\nread(w);\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
-  );
-  expect(deferred.facts.map((f) => f.observed)).toEqual(["write"]);
+  expect(seen.warnings).toHaveLength(1);
 });
 
 test("a write to either layout makes the copy a warning, wherever the copy went", () => {
@@ -230,11 +181,9 @@ test("a derived class's construction is not a write after the copy", () => {
   expect(error.facts).toEqual(quiet);
   expect(error.warnings).toEqual([]);
   // A constructor that hands the object to the program's own code lets it
-  // out before its fields are stored: those stores are writes. The
-  // conversion is passed to a function that keeps it, so the callee does
-  // not read the copy only.
+  // out before its fields are stored: those stores are writes.
   const leaked = facts(
-    `${DIAL}const seen: Chassis[] = [];\nclass Chassis { serial = 7; constructor() { seen.push(this); } }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\nconst kept: { dial: Dial }[] = [];\nfunction hold(source: { dial: Dial }): void { kept.push(source); }\nconst radio = new Radio(); radio.dial.turns += 5; hold(radio); kept[0]!.dial.turns += 1;`,
+    `${DIAL}const seen: Chassis[] = [];\nclass Chassis { serial = 7; constructor() { seen.push(this); } }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
   );
   expect(leaked.facts).toEqual([
     { kind: "objWidth", depth: "value", aliasable: true, observed: "write" },

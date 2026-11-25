@@ -5,7 +5,6 @@ Empty record layouts are also snapshots because they have no property storage.
 The report is made when the program writes a field or element of either type, compares values of the converted type by identity (including `includes`, `indexOf`, and Set or Map keys), or passes either type to code scriptc cannot follow.
 It is made from the compiled program, so a program that builds without it does not lose such a write or comparison.
 It judges types rather than the path one value takes, so it can name a conversion whose copy the program never tells from the original.
-A copy passed as a function's last argument, to a function that only reads that parameter, writes no object, compares it by identity or lets it out, is not reported: no code can run between the copy and the reads, and the callee can neither call out, suspend nor reach the original through a write, so it cannot see a mutation of the original.
 A conversion of a new value, such as an object literal, a spread, or the result of a function that returns one, is not reported, because nothing else can reach that value.
 The same holds for an array converted to an array of another element type and for a tuple converted to an array.
 A record that something else can still reach is refused with `SC1090` where it is converted to a class instance and the program writes either type, because the conversion constructs a new instance where Node.js has the one plain object.

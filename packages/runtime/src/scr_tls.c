@@ -453,14 +453,13 @@ static bool scr_tls_conf_versions(mbedtls_ssl_config *conf, int min, int max) {
   return true;
 }
 
-/* Node's SecureContext checks, in its order: secureProtocol conflicts with
+/* Node's SecureContext checks over the three version options as ordinary
+ * property reads answered them, in its order: secureProtocol conflicts with
  * an explicit minVersion or maxVersion, then each version. The range lands
  * in *min / *max (Node's defaults TLSv1.2 and TLSv1.3). False with the
  * exception pending. */
-static bool scr_tls_versions_record(const ScrDyn *opts, int *min, int *max, const char *api) {
-  const ScrDyn *vmin = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "minVersion", 10) : NULL;
-  const ScrDyn *vmax = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "maxVersion", 10) : NULL;
-  const ScrDyn *proto = opts != NULL && opts->kind == SCR_DYN_OBJ ? scr_dyn_obj_get(opts, "secureProtocol", 14) : NULL;
+static bool scr_tls_versions_values(const ScrDyn *vmin, const ScrDyn *vmax, const ScrDyn *proto,
+                                    int *min, int *max, const char *api) {
   if (proto != NULL && scr_tls_dyn_truthy(proto)) {
     const ScrDyn *version = vmin != NULL && vmin->kind != SCR_DYN_UNDEF && vmin->kind != SCR_DYN_NULL ? vmin
                             : vmax != NULL && vmax->kind != SCR_DYN_UNDEF && vmax->kind != SCR_DYN_NULL ? vmax
@@ -548,6 +547,33 @@ static bool scr_tls_versions_record(const ScrDyn *opts, int *min, int *max, cons
     }
   }
   return scr_tls_version_dyn(vmin, "minimum", 12, min) && scr_tls_version_dyn(vmax, "maximum", 13, max);
+}
+
+/* The version options of one options record, read as Node's ordinary
+ * property access reads them: a getter runs and may throw, and a
+ * secureProtocol it answers takes part in the checks. A plain read of the
+ * data property alone would accept an accessor without ever seeing its
+ * method. Owned reads are released here. */
+static bool scr_tls_versions_record(const ScrDyn *opts, int *min, int *max, const char *api) {
+  ScrDyn *vmin = NULL, *vmax = NULL, *proto = NULL;
+  bool ok = true;
+  if (opts != NULL && opts->kind == SCR_DYN_OBJ) {
+    vmin = scr_dyn_obj_read(opts, "minVersion", 10);
+    if (vmin == NULL) ok = false;
+    if (ok) {
+      vmax = scr_dyn_obj_read(opts, "maxVersion", 10);
+      if (vmax == NULL) ok = false;
+    }
+    if (ok) {
+      proto = scr_dyn_obj_read(opts, "secureProtocol", 14);
+      if (proto == NULL) ok = false;
+    }
+  }
+  if (ok) ok = scr_tls_versions_values(vmin, vmax, proto, min, max, api);
+  scr_dyn_release(vmin);
+  scr_dyn_release(vmax);
+  scr_dyn_release(proto);
+  return ok;
 }
 
 /* A typed reference (a record kept as its capsule, or a class instance)

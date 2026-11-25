@@ -19,3 +19,5 @@ try {
 }
 island.detach(typed);
 console.log("detached", Error.isError(typed), typed instanceof Error, typed instanceof TypeError);
+const prototypeOnly: any = Object.create(Error.prototype);
+console.log("tag", prototypeOnly instanceof Error, Object.prototype.toString.call(prototypeOnly));

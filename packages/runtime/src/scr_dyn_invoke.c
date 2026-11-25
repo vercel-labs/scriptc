@@ -2819,12 +2819,14 @@ __attribute__((constructor)) static void dyn_global_constructor_hook_install(voi
   scr_dyn_global_constructor_hook = scr_dyn_global_constructor;
 }
 
-/* Object.prototype.toString's tag: errors answer "[object Error]" (the
- * shared tag walk in scr_json.c answers "[object Object]" for them). */
+/* Object.prototype.toString asks for the brand: an ordinary object can
+ * inherit Error.prototype without becoming a native Error or DOMException. */
 ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_OBJ && scr_dyn_err_instanceof(d, 0)) {
-    if (scr_dyn_err_instanceof(d, SCR_ERR_DOMEX))
-      return scr_str_new(dyn_s_domex_tag, sizeof dyn_s_domex_tag - 1);
+  ScrError *error = d->kind == SCR_DYN_OBJ ? scr_dyn_error_value(d) : NULL;
+  if (error) {
+    bool dom = error->vt == &scr_error_vts[SCR_ERR_DOMEX];
+    scr_error_release(error);
+    if (dom) return scr_str_new(dyn_s_domex_tag, sizeof dyn_s_domex_tag - 1);
     return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
   }
   return scr_dyn_object_tag(d);

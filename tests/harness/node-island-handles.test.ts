@@ -96,7 +96,7 @@ describe.skipIf(skip)("Node island handles", () => {
 
   test("checked, caught and callback island Errors keep the original value", async () => {
     expect(await runFixture("error-identity", "error-identity.mts")).toBe(
-      "cast true true true\ncatch true true\ncallback true 0\nreject true\ndetached true false false\n",
+      "cast true true true\ncatch true true\ncallback true 0\nreject true\ndetached true false false\ntag true [object Object]\n",
     );
   }, 300_000);
 

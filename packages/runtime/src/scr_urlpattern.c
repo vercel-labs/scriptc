@@ -677,7 +677,10 @@ static bool ws_compile(WsComponent *c, ScrStr *text, const char *delimiter, cons
   bool has_regexp = false;
   if (ok) ok = ws_generate_regex(&parser, &source, &names, &names_len, &has_regexp);
   if (ok) {
-    ScrStr *flags = scr_str_new(ignore_case ? "i" : "", ignore_case ? 1 : 0);
+    /* The standard compiles every component with the `v` flag (Unicode sets):
+     * custom character classes get property escapes and set operations, as
+     * Node's URLPattern does. */
+    ScrStr *flags = scr_str_new(ignore_case ? "iv" : "v", ignore_case ? 2 : 1);
     ScrRegex *regex = scr_regex_new(source, flags);
     scr_str_release(flags);
     if (regex == NULL) {
@@ -1437,9 +1440,54 @@ static ScrStr *ws_canonicalize(int field, ScrStr *value, ScrStr *protocol, ScrUr
   return NULL;
 }
 
-/* A base URL's components fill the init's missing ones; a relative
- * pathname resolves against the base's directory. A base with credentials
- * is the standard's TypeError. */
+/* The standard's "escape a pattern string": an inherited base component is
+ * literal text, so the characters that would otherwise read as pattern
+ * syntax are escaped. */
+static ScrStr *ws_escape_pattern(ScrStr *value) {
+  WsBuf b = {0};
+  for (size_t i = 0; i < value->len; i++) {
+    char c = value->data[i];
+    if (strchr("+*?:{}()\\", c) != NULL) ws_buf_add(&b, "\\", 1);
+    ws_buf_add(&b, &c, 1);
+  }
+  return ws_buf_finish(&b);
+}
+
+/* A pathname value resolved against the base: an absolute value only loses
+ * its dot segments; a relative one (the empty value reads as ".") starts
+ * from the base's directory. Pattern syntax the URL path serializer would
+ * percent-encode keeps the plain directory join. */
+static ScrStr *ws_resolve_base_pathname(ScrStr *value, ScrUrl *base) {
+  bool plain = memchr(value->data, '?', value->len) == NULL &&
+               memchr(value->data, '{', value->len) == NULL &&
+               memchr(value->data, '}', value->len) == NULL;
+  if (plain) {
+    if (value->len == 0) {
+      ScrStr *dot = scr_str_new(".", 1);
+      ScrStr *resolved = ws_path_canonicalize(dot, base);
+      scr_str_release(dot);
+      return resolved;
+    }
+    return ws_path_canonicalize(value, base);
+  }
+  if (value->len > 0 && value->data[0] == '/') return scr_str_retain(value);
+  ScrStr *base_path = scr_url_pathname(base);
+  size_t cut = base_path->len;
+  while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
+  ScrStr *dir = ws_slice(base_path, 0, cut);
+  ScrStr *joined = scr_str_concat(dir, value);
+  scr_str_release(dir);
+  scr_str_release(base_path);
+  return joined;
+}
+
+/* A base URL's components fill the init's missing ones by the standard's
+ * specificity rules: a component the init sets stops every later component
+ * from inheriting, so a record with an explicit protocol never takes the
+ * base's host or port, one with an explicit host never takes its port,
+ * path, search or hash, and so on. Inherited components are escaped as
+ * pattern literals; the pathname resolves against the base. A base with
+ * credentials is the standard's TypeError. */
 static bool ws_apply_base(WsInit *init, ScrStr *base_text) {
   ScrUrl *base = scr_url_new(base_text);
   if (base == NULL) return false;
@@ -1453,23 +1501,45 @@ static bool ws_apply_base(WsInit *init, ScrStr *base_text) {
     ws_type_error("Failed to construct URLPattern");
     return false;
   }
-  if (init->protocol == NULL) {
+  bool has_protocol = init->protocol != NULL;
+  bool has_hostname = init->hostname != NULL;
+  bool has_port = init->port != NULL;
+  bool has_pathname = init->pathname != NULL;
+  bool has_search = init->search != NULL;
+  bool has_hash = init->hash != NULL;
+  if (!has_protocol) {
     ScrStr *protocol = scr_url_protocol(base);
     init->protocol = ws_strip_protocol(protocol);
     scr_str_release(protocol);
   }
-  if (init->hostname == NULL) init->hostname = scr_url_hostname(base);
-  if (init->port == NULL) init->port = scr_url_port(base);
-  if (init->pathname != NULL && init->pathname->len > 0 && init->pathname->data[0] != '/') {
-    ScrStr *base_path = scr_url_pathname(base);
-    size_t cut = base_path->len;
-    while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
-    ScrStr *dir = ws_slice(base_path, 0, cut);
-    ScrStr *joined = scr_str_concat(dir, init->pathname);
-    scr_str_release(dir);
-    scr_str_release(base_path);
+  if (!has_hostname && !has_protocol) {
+    ScrStr *hostname = scr_url_hostname(base);
+    init->hostname = ws_escape_pattern(hostname);
+    scr_str_release(hostname);
+  }
+  if (!has_port && !has_protocol && !has_hostname) init->port = scr_url_port(base);
+  if (!has_pathname && !has_protocol && !has_hostname && !has_port) {
+    ScrStr *pathname = scr_url_pathname(base);
+    init->pathname = ws_escape_pattern(pathname);
+    scr_str_release(pathname);
+  } else if (has_pathname) {
+    ScrStr *resolved = ws_resolve_base_pathname(init->pathname, base);
     scr_str_release(init->pathname);
-    init->pathname = joined;
+    init->pathname = resolved;
+  }
+  if (!has_search && !has_protocol && !has_hostname && !has_port && !has_pathname) {
+    ScrStr *search = scr_url_search(base);
+    ScrStr *stripped = ws_strip_marker(search, '?');
+    init->search = ws_escape_pattern(stripped);
+    scr_str_release(stripped);
+    scr_str_release(search);
+  }
+  if (!has_hash && !has_protocol && !has_hostname && !has_port && !has_pathname && !has_search) {
+    ScrStr *hash = scr_url_hash(base);
+    ScrStr *stripped = ws_strip_marker(hash, '#');
+    init->hash = ws_escape_pattern(stripped);
+    scr_str_release(stripped);
+    scr_str_release(hash);
   }
   scr_url_release(base);
   return !scr_exc_pending();
@@ -1518,6 +1588,12 @@ static bool ws_init_from_dyn(ScrDyn *input, ScrStr *base_text, bool *from_string
   if (input->kind == SCR_DYN_STR) {
     *from_string = true;
     if (!ws_parse_ctor(input->v.str, out)) return false;
+    if (base_text != NULL && input->v.str->len == 0) {
+      /* The empty constructor string against a base resolves as ".": the
+       * base's own directory, with search and hash unset. */
+      scr_str_release(out->pathname);
+      out->pathname = scr_str_new(".", 1);
+    }
     if (out->hostname != NULL && out->hostname->len > 0 && out->hostname->data[0] == '[') {
       ws_type_error("Failed to construct URLPattern");
       return false;
@@ -2064,6 +2140,12 @@ ScrDyn *scr_urlpattern_new(ScrDyn *input, ScrDyn *base_url, ScrDyn *options) {
   return out;
 }
 
-__attribute__((constructor)) static void ws_ops_install(void) {
+/* The handle ops belong to the thread that runs the program: the emitted
+ * entry point calls this for each execution context, so a worker thread's
+ * first URLPattern finds them installed (the constructor covers programs
+ * and libraries that never emit the call). */
+void scr_urlpattern_install(void) {
   scr_dyn_handle_install(SCR_DYNH_URL_PATTERN, &ws_ops);
 }
+
+__attribute__((constructor)) static void ws_ops_install(void) { scr_urlpattern_install(); }

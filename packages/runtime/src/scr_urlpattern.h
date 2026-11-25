@@ -15,4 +15,10 @@ ScrDyn *scr_urlpattern_new(ScrDyn *input, ScrDyn *base_url, ScrDyn *options);
 /* `value instanceof URLPattern`: true for the runtime's pattern handles. */
 bool scr_urlpattern_is(const ScrDyn *value);
 
+/* Installs the URLPattern handle ops for the calling thread's dynamic
+ * registry: the emitted entry point calls it for every execution context
+ * (the main thread and each worker), where a process constructor alone
+ * leaves a worker without them. */
+void scr_urlpattern_install(void);
+
 #endif /* SCR_URLPATTERN_H */

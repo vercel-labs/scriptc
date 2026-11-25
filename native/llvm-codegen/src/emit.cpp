@@ -8,6 +8,7 @@
 #include "runtime-import.h"
 #include "target.h"
 
+#include "llvm/ADT/Any.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -679,6 +680,18 @@ struct Pipeline {
     PB.registerFunctionAnalyses(FAM);
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+    // The module pipeline below runs through this PassBuilder's callbacks, and
+    // a PassBuilder built around explicit callbacks never registers the
+    // standard "skip an optional pass on an optnone function" predicate.
+    // Without it the `optnone` simplifyDispatchHelpers adds would not stop the
+    // O2 function pipeline from running over the large dispatch helpers the
+    // light level exists to keep it off.
+    Callbacks.registerShouldRunOptionalPassCallback([](StringRef, Any IR) {
+      const Function *F = nullptr;
+      if (const auto **Stored = any_cast<const Function *>(&IR)) F = *Stored;
+      else if (auto **Mutable = any_cast<Function *>(&IR)) F = *Mutable;
+      return F == nullptr || !F->hasOptNone();
+    });
   }
 
   // Runs afterProfileAnnotation as soon as the profile annotation has run.

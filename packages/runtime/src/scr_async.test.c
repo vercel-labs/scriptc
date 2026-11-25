@@ -195,7 +195,8 @@ static void timer_armed_by_io_callback_waits_for_next_timers_phase(void) {
  * before that turn's immediates ("nci"). Capturing the cutoff before the
  * checkpoint would push it behind them ("nic") — Node runs the timer in the
  * timers phase that follows the startup checkpoint. */
-static void tick_arms_immediate_and_due_timer(void) {
+static void tick_arms_immediate_and_due_timer(ScrClosure *self) {
+  (void)self;
   turn_note('n');
   (void)scr_set_immediate(scr_closure_new((void *)immediate_queued_by_timer, 0));
   push_due_timer(timer_created_third, scr_now_ms() - 1);

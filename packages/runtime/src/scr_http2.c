@@ -947,21 +947,24 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
   scr_net_ls_drop(&ctx->check_continue_ls);
-  for (size_t i = 0; i < ctx->nsessions; i++) scr_http2_session_release(ctx->sessions[i]);
+  /* the session list is BORROWED: each session removes its own entry when it
+   * frees (and a session holding this ctx keeps it alive meanwhile), so the
+   * list is empty by the time the ctx goes */
   free(ctx->sessions);
   free(ctx);
 }
 
-/* Track a server session (`s` moves a +1 in) and drop it again when its
- * socket closes: the list ref is what keeps the server's sessions alive
- * until then, and removing it breaks the ctx<->session cycle. */
+/* Track a server session while it is live. The list is BORROWED: the
+ * session itself removes its entry as it frees (its socket owns it until
+ * then), so an exit-time cleanup that releases the sockets cannot leave a
+ * list ref keeping the session and its socket alive. */
 static void scr_h2_srv_track_session(ScrH2SrvCtx *srv, ScrH2Session *s) {
   if (srv->nsessions == srv->sessions_cap) {
     srv->sessions_cap = srv->sessions_cap ? srv->sessions_cap * 2 : 4;
     srv->sessions = realloc(srv->sessions, srv->sessions_cap * sizeof *srv->sessions);
     if (!srv->sessions) scr_h2_oom();
   }
-  srv->sessions[srv->nsessions++] = scr_http2_session_retain(s);
+  srv->sessions[srv->nsessions++] = s;
 }
 
 static void scr_h2_srv_untrack_session(ScrH2SrvCtx *srv, ScrH2Session *s) {
@@ -970,7 +973,6 @@ static void scr_h2_srv_untrack_session(ScrH2SrvCtx *srv, ScrH2Session *s) {
       memmove(srv->sessions + i, srv->sessions + i + 1,
               (srv->nsessions - i - 1) * sizeof *srv->sessions);
       srv->nsessions--;
-      scr_http2_session_release(s);
       return;
     }
   }

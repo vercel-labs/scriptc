@@ -204,6 +204,8 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamBufferSize": { argTypes: [HTTP2STREAM_T], result: F64 },
   "http2.reqAuthority": { argTypes: [HTTPREQ_T], result: STRING },
   "http2.reqScheme": { argTypes: [HTTPREQ_T], result: STRING },
+  /** The h2 server's Expect: 100-continue listeners (req, res). */
+  "http2.serverOnCheckContinue": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.streamSentHeaders": { argTypes: [HTTP2STREAM_T], result: DYN },
   "http2.streamSentInfoHeaders": { argTypes: [HTTP2STREAM_T], result: DYN },
   "http2.streamSentTrailers": { argTypes: [HTTP2STREAM_T], result: DYN },

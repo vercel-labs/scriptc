@@ -1598,6 +1598,7 @@ const MAY_THROW_LIB_FNS_PART_5: readonly IrLibFn[] = [
   "net.listenOptsReusePort",
   "http.serverOnRequest",
   "http.serverOnCheck",
+  "http2.serverOnCheckContinue",
   "http.serverOnConnect",
   "http.serverOnUpgrade",
   "http.serverOnClientError",

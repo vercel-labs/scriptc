@@ -2823,6 +2823,21 @@ function lowerNetServerMethodCall(
       // Expect handling: these listeners take the request instead of
       // 'request' (checkContinue answers with res.writeContinue()).
       const cb = lowerRequestHandlerArg(lowerer, args[1]!);
+      const serverType = ts.symbolNameOf(lowerer.typeOf(access.expression).getSymbol());
+      if (
+        event === "checkContinue" &&
+        (serverType === "Http2Server" || serverType === "Http2SecureServer")
+      ) {
+        // An h2 server routes Expect: 100-continue to these listeners; its
+        // runtime answers 100 itself when there are none.
+        return {
+          kind: "libCall",
+          fn: "http2.serverOnCheckContinue",
+          args: [receiver, cb, once],
+          type: VOID,
+          loc,
+        };
+      }
       return {
         kind: "libCall",
         fn: "http.serverOnCheck",

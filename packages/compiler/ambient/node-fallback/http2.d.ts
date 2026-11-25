@@ -62,6 +62,8 @@ declare module "http2" {
      * response IS this parser's response handle. */
     statusCode: number;
     statusMessage: string;
+    /* false suppresses the implicit Date header (Node's auto date). */
+    sendDate: boolean;
     setHeader(name: string, value: number | string | readonly string[]): void;
     /* Node answers the value as set (a number, string or string[]), and the
      * ":status" a writeHead stores is a number. */
@@ -107,6 +109,8 @@ declare module "http2" {
     listen(port: number, callback?: () => void): void;
     listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
+    /* Node's promisify(server.close): resolves when the server closed. */
+    [Symbol.asyncDispose](): Promise<void>;
     /* The bound AddressInfo (Node answers null before listen — this
      * surface answers the record with port 0 there, the serverPort
      * stance). */
@@ -115,6 +119,10 @@ declare module "http2" {
     on(event: "connection", listener: (socket: Socket) => void): void;
     on(
       event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    on(
+      event: "checkContinue",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
@@ -137,6 +145,10 @@ declare module "http2" {
       event: "request",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
+    once(
+      event: "checkContinue",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close", listener: () => void): void;
     once(event: "sessionError", listener: (err: Error, session: ServerHttp2Session) => void): void;
@@ -149,6 +161,10 @@ declare module "http2" {
     addListener(event: "connection", listener: (socket: Socket) => void): void;
     addListener(
       event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(
+      event: "checkContinue",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;
@@ -770,6 +786,8 @@ declare module "http2" {
     listen(port?: number, callback?: () => void): void;
     listen(port: number, host: string, callback?: () => void): void;
     close(callback?: () => void): void;
+    /* Node's promisify(server.close): resolves when the server closed. */
+    [Symbol.asyncDispose](): Promise<void>;
     address(): import("node:dgram").AddressInfo;
     setTimeout(msecs?: number, callback?: () => void): void;
     ref(): void;
@@ -781,6 +799,10 @@ declare module "http2" {
     on(event: "session", listener: (session: ServerHttp2Session) => void): void;
     on(
       event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    on(
+      event: "checkContinue",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     on(event: "error", listener: (err: Error) => void): void;
@@ -801,6 +823,10 @@ declare module "http2" {
       event: "request",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
+    once(
+      event: "checkContinue",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
     once(event: "error", listener: (err: Error) => void): void;
     once(event: "close" | "listening" | "timeout", listener: () => void): void;
     once(event: "connection", listener: (socket: import("net").Socket) => void): void;
@@ -813,6 +839,10 @@ declare module "http2" {
     addListener(event: "session", listener: (session: ServerHttp2Session) => void): void;
     addListener(
       event: "request",
+      listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
+    ): void;
+    addListener(
+      event: "checkContinue",
       listener: (req: Http2ServerRequest, res: Http2ServerResponse) => void,
     ): void;
     addListener(event: "error", listener: (err: Error) => void): void;

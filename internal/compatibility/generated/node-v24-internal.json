@@ -64017,10 +64017,13 @@
           "tests/corpus/compat-http2-ping-settings.mjs",
           "tests/corpus/compat-http2-settings.mjs",
           "tests/corpus/compat-http2-state.mjs",
+          "tests/corpus/http2-check-continue.ts",
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-session-error.ts",
+          "tests/corpus/http2-session-properties.ts",
           "tests/corpus/http2-stream-readbacks.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
@@ -64620,8 +64623,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.alpnProtocol",
+        "tests": [
+          "tests/corpus/http2-session-properties.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -64721,8 +64727,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.encrypted",
+        "tests": [
+          "tests/corpus/http2-session-properties.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -66485,8 +66494,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.server",
+        "tests": [
+          "tests/corpus/http2-session-properties.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66577,8 +66589,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'checkContinue'",
+        "tests": [
+          "tests/corpus/http2-check-continue.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66678,8 +66693,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'sessionError'",
+        "tests": [
+          "tests/corpus/http2-session-error.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66868,8 +66886,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'checkContinue'",
+        "tests": [
+          "tests/corpus/http2-check-continue.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -66969,8 +66990,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.'sessionError'",
+        "tests": [
+          "tests/corpus/http2-session-error.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -68462,8 +68486,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.sendDate",
+        "tests": [
+          "tests/corpus/http2-session-properties.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

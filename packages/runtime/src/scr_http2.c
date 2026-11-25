@@ -772,6 +772,7 @@ typedef struct ScrH2SrvCtx {
                          * eager handler and server.on("request", ...) */
   ScrNetLs connect_ls; /* traditional/RFC 8441 CONNECT (req, res) listeners */
   ScrNetLs session_error_ls; /* server 'sessionError' (err, session) */
+  ScrNetLs check_continue_ls; /* server 'checkContinue' (req, res) */
   void *http1_ctx;     /* borrowed: owned by the TLS wrapper's inner hook */
   bool enable_connect_protocol;
   /* Node's compat dispatch is itself a 'stream' listener, added when the
@@ -936,6 +937,7 @@ static void scr_h2_srv_ctx_release(ScrH2SrvCtx *ctx) {
   scr_net_ls_drop(&ctx->request_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
+  scr_net_ls_drop(&ctx->check_continue_ls);
   free(ctx);
 }
 
@@ -1634,10 +1636,20 @@ static void scr_h2_session_abort_streams(ScrH2Session *s, uint32_t code) {
   }
 }
 
-static void scr_h2_session_fail(ScrH2Session *s, const char *text) {
+static void scr_h2_session_fail(ScrH2Session *s, const char *text, bool protocol_error) {
   if (s->error_emitted) return;
   s->error_emitted = true;
   ScrStr *msg = scr_str_new(text, strlen(text));
+  /* A protocol failure is Node's ERR_HTTP2_ERROR carrying the text; a
+   * transport failure keeps the code its message names (ECONNREFUSED and
+   * friends). The listeners on both lists see that same error. */
+  ScrError *payload = NULL;
+  if (protocol_error) {
+    payload = scr_error_new(SCR_ERR_ERROR, msg);
+    scr_error_set_code(payload, "ERR_HTTP2_ERROR");
+  }
+  ScrError *saved = scr_event_error_payload;
+  if (payload != NULL) scr_event_error_payload = payload;
   if (s->srv != NULL && s->srv->session_error_ls.n > 0) {
     ScrNetL *snap;
     size_t n = scr_net_ls_snapshot(&s->srv->session_error_ls, &snap);
@@ -1656,6 +1668,8 @@ static void scr_h2_session_fail(ScrH2Session *s, const char *text) {
   if (!scr_exc_pending() && s->err_ls.n > 0) {
     scr_net_fire_err_this(&s->err_ls, msg, s, SCR_DYNH_H2_SESSION);
   }
+  scr_event_error_payload = saved;
+  if (payload != NULL) scr_error_release(payload);
   scr_str_release(msg);
 }
 
@@ -1682,7 +1696,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
 static void scr_h2_stream_flush(ScrH2Stream *st);
 
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
-                                    bool end_stream, ScrNetLs *listeners);
+                                    bool end_stream, ScrNetLs *listeners, bool auto_continue);
 
 /* The settings record the API observes, in Node's key order (maxHeaderSize
  * aliases maxHeaderListSize and comes after it in a session's record, before
@@ -2049,7 +2063,7 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
   return true;
 proto_err:
   scr_h2_send_goaway(s, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-  scr_h2_session_fail(s, "Protocol error");
+  scr_h2_session_fail(s, "Protocol error", true);
   scr_http2_session_destroy(s);
   return false;
 }
@@ -2079,12 +2093,16 @@ static void scr_h2_on_data_in(void *ctx, const char *buf, size_t n) {
   size_t off = 0;
   scr_http2_session_retain(s); /* callbacks may drop every other ref */
   if (!s->client && !s->preface_done) {
-    if (s->rlen - off < 24) goto done;
-    if (memcmp(s->rbuf + off, SCR_H2_PREFACE, 24) != 0) {
-      scr_h2_session_fail(s, "Protocol error");
+    /* A wrong byte anywhere in what arrived refuses the connection at
+     * once (Node's bad client magic), not only after all 24 preface
+     * bytes came in. */
+    size_t have = s->rlen - off < 24 ? s->rlen - off : 24;
+    if (memcmp(s->rbuf + off, SCR_H2_PREFACE, have) != 0) {
+      scr_h2_session_fail(s, "Received bad client magic byte string", true);
       scr_http2_session_destroy(s);
       goto done;
     }
+    if (s->rlen - off < 24) goto done;
     s->preface_done = true;
     off += 24;
   }
@@ -2165,7 +2183,7 @@ static bool scr_h2_on_err_in(void *ctx, ScrStr *msg) {
    * re-emits as 'sessionError'), so its socket error is never unhandled; a
    * client session without an 'error' listener leaves it to the socket. */
   if (s->srv == NULL && s->err_ls.n == 0) return false;
-  scr_h2_session_fail(s, (const char *)msg->data);
+  scr_h2_session_fail(s, (const char *)msg->data, false);
   return true;
 }
 
@@ -3604,6 +3622,18 @@ static void scr_h2_fire_headers_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pair
   free(snap);
 }
 
+/* Node's test for the Expect header: "100-continue", ASCII-insensitive. */
+static bool scr_h2_expects_continue(const ScrStr *v) {
+  static const char want[] = "100-continue";
+  if (v->len != sizeof want - 1) return false;
+  for (size_t i = 0; i < v->len; i++) {
+    char c = v->data[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    if (c != want[i]) return false;
+  }
+  return true;
+}
+
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
                                      ScrH2Headers *h) {
   bool end_stream = (flags & SCR_H2_FLAG_END_STREAM) != 0;
@@ -3697,6 +3727,23 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
        * path. */
       ScrH2SrvCtx *srv = scr_h2_srv_ctx_retain(s->srv);
       ScrNetLs *listeners = connect_request ? &srv->connect_ls : &srv->request_ls;
+      /* Expect: 100-continue goes to a 'checkContinue' listener instead of
+       * 'request'; with none the server answers 100 itself. */
+      bool auto_continue = false;
+      if (!connect_request && srv->compat_placed) {
+        ScrStr *expect = NULL;
+        for (size_t i = 0; i < h->n; i++) {
+          ScrStr *name = h->names[i];
+          if (name->len == 6 && memcmp(name->data, "expect", 6) == 0) {
+            expect = h->values[i];
+            break;
+          }
+        }
+        if (expect != NULL && scr_h2_expects_continue(expect)) {
+          if (srv->check_continue_ls.n > 0) listeners = &srv->check_continue_ls;
+          else auto_continue = true;
+        }
+      }
       size_t split = srv->compat_placed && srv->compat_pos < srv->stream_ls.n
           ? srv->compat_pos
           : srv->stream_ls.n;
@@ -3712,7 +3759,7 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
         if (i == split) {
           scr_dyn_this_pop();
           if (!scr_exc_pending() && !st->destroyed && scr_net_ls_has_live(listeners)) {
-            scr_h2_compat_dispatch(s, st, h, end_stream, listeners);
+            scr_h2_compat_dispatch(s, st, h, end_stream, listeners, auto_continue);
           }
           scr_dyn_this_push(server, SCR_DYNH_NET_SERVER);
         }
@@ -3979,7 +4026,7 @@ static void scr_h2_upgrade_hook(void *ctx, ScrClosure *cb /*moves*/, void *fn, b
 /* Build the (req, res) pair over a fresh server stream and fire the
  * 'request' listeners (this = the net server, the http/1 shape). */
 static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2Headers *h,
-                                    bool end_stream, ScrNetLs *listeners) {
+                                    bool end_stream, ScrNetLs *listeners, bool auto_continue) {
   /* The compat pair's own events follow the stream's context. */
   ScrAlsCtx *prev = scr_als_dispatch_enter(st->als);
   ScrHttpReq *req = scr_http_h2_req_new(s->sock, st);
@@ -4000,6 +4047,15 @@ static void scr_h2_compat_dispatch(ScrH2Session *s, ScrH2Stream *st, const ScrH2
   scr_http_res_set_req(res, req); /* res.req — the compat pair's backref */
   st->compat_req = scr_http_req_retain(req);
   st->compat_res = scr_http_res_retain(res);
+  /* No 'checkContinue' listener: the server answers Expect: 100-continue
+   * itself, before the 'request' listeners run (Node's compat layer). */
+  if (auto_continue && !st->destroyed && !st->respond_sent &&
+      !scr_h2_stream_local_closed(st)) {
+    ScrH2Buf block = {0};
+    scr_h2_hpack_encode(&block, ":status", 7, "100", 3);
+    scr_h2_send_headers(s, st->id, &block, false);
+    free(block.data);
+  }
   /* the req owns the READ side: the stream's own 'end' bookkeeping is
    * already satisfied (settle conditions see a delivered read side) */
   if (end_stream) st->end_emitted = true;
@@ -4033,6 +4089,7 @@ static void scr_h2_srv_ctx_settle(void *p) {
   scr_net_ls_drop(&ctx->request_ls);
   scr_net_ls_drop(&ctx->connect_ls);
   scr_net_ls_drop(&ctx->session_error_ls);
+  scr_net_ls_drop(&ctx->check_continue_ls);
   if (ctx->http1_ctx != NULL) scr_http1_ctx_settle(ctx->http1_ctx);
 }
 
@@ -4468,6 +4525,27 @@ void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrCh
   scr_net_ls_add(&s->err_ls, cb, (void *)fn, once);
 }
 
+/* server.on("checkContinue"): the Expect: 100-continue listeners. The
+ * first listener places the compatibility dispatch among the 'stream'
+ * listeners, as a 'request' listener does. */
+void scr_http2_server_on_check_continue(ScrNetServer *s, ScrClosure *cb /*moves*/,
+                                         ScrHttpReqFn fn, bool once) {
+  ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
+  if (ctx == NULL || scr_net_server_settled(s)) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* Node's compatibility dispatch attaches from a 'request' listener
+   * alone; a checkContinue-only server never dispatches (the request
+   * waits), so this registration does not place it. */
+  scr_net_server_notify_new_listener(s, "checkContinue");
+  if (scr_exc_pending()) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&ctx->check_continue_ls, cb, (void *)fn, once);
+}
+
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
                                         ScrH2SessionErrorFn fn, bool once) {
   ScrH2SrvCtx *ctx = scr_h2_server_ctx(s);
@@ -4489,14 +4567,21 @@ void scr_http2_session_error_thunk0(ScrClosure *cb, ScrStr *msg, ScrH2Session *s
   ((void (*)(ScrClosure *))cb->fn)(cb);
 }
 
+/* The error a session-failure listener sees: the coded payload the failure
+ * set (Node's ERR_HTTP2_ERROR), else the bare message. +1. */
+static ScrError *scr_h2_session_error_new(ScrStr *msg) {
+  if (scr_event_error_payload != NULL) return scr_error_retain(scr_event_error_payload);
+  return scr_error_new(0, msg);
+}
+
 void scr_http2_session_error_thunk1(ScrClosure *cb, ScrStr *msg, ScrH2Session *session) {
   scr_http2_session_release(session);
-  ScrError *err = scr_error_new(0, msg);
+  ScrError *err = scr_h2_session_error_new(msg);
   ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, err);
 }
 
 void scr_http2_session_error_thunk2(ScrClosure *cb, ScrStr *msg, ScrH2Session *session) {
-  ScrError *err = scr_error_new(0, msg);
+  ScrError *err = scr_h2_session_error_new(msg);
   ((void (*)(ScrClosure *, ScrError *, ScrH2Session *))cb->fn)(cb, err, session);
 }
 

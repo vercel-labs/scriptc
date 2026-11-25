@@ -14,7 +14,8 @@ const tsxLoader = join(dirname(require.resolve("tsx/package.json")), "dist/loade
 const fixtures = join(repoRoot, "tests/coverage-fixtures/dynamic-tier");
 
 const HEADER =
-  "warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code:";
+  "warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code.";
+const HINT = "  hint: add types to compile these statically; see scriptc coverage --explain-dynamic";
 const CLOSING =
   "The program compiled. Adding types to these functions lets scriptc compile them to faster code.";
 
@@ -50,17 +51,11 @@ test("a build names its likely-hot untyped functions, also when it comes from th
     const first = await build();
     expect(first.code).toBe(0);
     expect(first.stderr).toContain("scriptc lowering");
-    expect(first.stderr).toContain(
-      [
-        HEADER,
-        "  centroid (hot.js:7): untyped JavaScript file, in a loop",
-        "  spread (hot.js:23): untyped JavaScript file, in a loop",
-        "  distance (hot.js:17): untyped JavaScript file, called in a loop",
-        "  hint: add types to compile these statically; see scriptc coverage --explain-dynamic",
-        "",
-        CLOSING,
-      ].join("\n"),
-    );
+    // One line by default: the function list stays in the diagnostic that
+    // --print=diagnostics writes, and --explain-dynamic names them.
+    expect(first.stderr).toContain([HEADER, HINT, "", CLOSING].join("\n"));
+    expect(first.stderr).not.toContain("centroid (hot.js");
+    expect(first.stderr).not.toContain("spread (hot.js");
 
     // The cache hit skips lowering and repeats the warning.
     const cached = await build();

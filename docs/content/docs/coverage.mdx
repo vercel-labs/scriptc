@@ -95,18 +95,17 @@ When functions of the program's own files use untyped values and likely run ofte
 
 ```console
 $ scriptc build nbody.js -o nbody
-warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code:
-  advance (nbody.js:22): untyped JavaScript file, in a loop
-  energy (nbody.js:40): untyped JavaScript file, in a loop
-  offsetMomentum (nbody.js:12): untyped JavaScript file, in a loop
+warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code.
   hint: add types to compile these statically; see scriptc coverage --explain-dynamic
 
 The program compiled. Adding types to these functions lets scriptc compile them to faster code.
 ```
 
+The warning is one line by default. `scriptc coverage --explain-dynamic` names each function, its source location, the untyped value that makes it dynamic and why it likely runs often. `--print=diagnostics` carries the same list in the diagnostic's message.
+
 Without a profile, a dynamic-tier function counts as likely to run often when a dynamic operation runs on every iteration of one of its loops (a `for` loop's initializer and a `for...of` loop's iterable run once), when a loop calls it, or when it calls itself. A function is named only when its source says why its values are untyped: a value typed `any` (for a `for...of` variable, the value it iterates), an untyped `JSON.parse` result, or an untyped JavaScript file. Dynamic code that runs once, such as setup code that reads an `any` configuration, is not reported, and neither are functions that are dynamic for an operation with no static lowering, which more types would not change.
 
-The warning names at most five functions, most likely to run often first, and gives the total. A function expression is named by its own name, else by the variable, property or class field it is assigned to, else as `anonymous function`. Dynamic-tier code in npm packages is summarized on one line with each package's function count. A build that comes from the cache repeats the warning. `--no-dynamic-tier-warning` leaves it out, and `--fail-on=dynamic` fails a coverage run on it.
+The detailed list in `--print=diagnostics` names at most five functions, most likely to run often first, and gives the total. A function expression is named by its own name, else by the variable, property or class field it is assigned to, else as `anonymous function`. Dynamic-tier code in npm packages is summarized with each package's function count. A build that comes from the cache repeats the warning. `--no-dynamic-tier-warning` leaves it out, and `--fail-on=dynamic` fails a coverage run on it.
 
 ## Dynamic slots
 

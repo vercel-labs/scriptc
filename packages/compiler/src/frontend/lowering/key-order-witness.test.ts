@@ -371,6 +371,29 @@ test("a spread contributes its source's order, and an override keeps its positio
   expect(f.order(out)).toEqual(["b", "a", "c"]);
 });
 
+test("a literal that only spreads its own value adds no order of its own", () => {
+  // `{ ...v }` of the literal's own shape has exactly the value's keys in
+  // the value's order. Optional keys do not make that uncertain: nothing
+  // follows the spread to add a key the value lacks.
+  const f = fixture();
+  const ab = f.record(
+    [
+      ["a", F64],
+      ["b", OPT],
+    ],
+    ["a", "b"],
+  );
+  const self: KeyOrderSegment = { kind: "spread", shapeId: ab.shapeId, maybeAbsent: false };
+  f.run([
+    decl("v", f.literal(ab, ["a"])),
+    observe(ref("v", ab)),
+    decl("copy", f.literal(ab, ["a"], [self])),
+    observe(ref("copy", ab)),
+  ]);
+  expect(f.order(ab)).toEqual(["a", "b"]);
+  expect(f.notes.warnings).toEqual([]);
+});
+
 test("a spread of a checked-conversion source cannot be ordered statically", () => {
   const f = fixture();
   const src = f.record(

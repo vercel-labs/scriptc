@@ -64,6 +64,35 @@ test("an aliasable copy the program only reads is not a warning", () => {
   expect(seen.warnings).toEqual([]);
 });
 
+test("a copy passed to a function that only reads it is not a warning", () => {
+  // The callee never writes the parameter, compares it by identity or lets
+  // it out, so it cannot tell the copy from the object. A write to the same
+  // layout elsewhere in the program does not reach this call.
+  const seen = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction read(n: N): number { return n.a; }\nconsole.log(read(w));\nconst other: N = { a: 2 }; other.a = 3; console.log(other.a);`,
+  );
+  expect(seen.facts).toEqual([{ kind: "width", depth: "value", aliasable: true, observed: null }]);
+  expect(seen.warnings).toEqual([]);
+});
+
+test("a copy passed to a function that returns it or keeps it is a warning", () => {
+  // The callee lets the copy out: the caller can compare or write it, so
+  // the copy is as observable as any other.
+  const returned = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nfunction id(n: N): N { return n; }\nconst r = id(w); r.a = 2; console.log(w.a);`,
+  );
+  expect(returned.facts).toEqual([
+    { kind: "width", depth: "value", aliasable: true, observed: "write" },
+  ]);
+  expect(returned.warnings).toHaveLength(1);
+
+  const kept = facts(
+    `${TYPES}const w: W = { a: 1, b: "x" };\nconst kept: N[] = [];\nfunction keep(n: N): void { kept.push(n); }\nkeep(w); kept[0]!.a = 2; console.log(w.a);`,
+  );
+  expect(kept.facts).toEqual([{ kind: "width", depth: "value", aliasable: true, observed: "write" }]);
+  expect(kept.warnings).toHaveLength(1);
+});
+
 test("a write to either layout makes the copy a warning, wherever the copy went", () => {
   const through = facts(
     `${TYPES}const w: W = { a: 1, b: "x" }; const m = new Map<string, N>(); m.set("k", w); m.get("k")!.a = 3; console.log(w.a);`,
@@ -167,9 +196,11 @@ test("a derived class's construction is not a write after the copy", () => {
   expect(error.facts).toEqual(quiet);
   expect(error.warnings).toEqual([]);
   // A constructor that hands the object to the program's own code lets it
-  // out before its fields are stored: those stores are writes.
+  // out before its fields are stored: those stores are writes. The
+  // conversion is passed to a function that keeps it, so the callee does
+  // not read the copy only.
   const leaked = facts(
-    `${DIAL}const seen: Chassis[] = [];\nclass Chassis { serial = 7; constructor() { seen.push(this); } }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\n${USE}`,
+    `${DIAL}const seen: Chassis[] = [];\nclass Chassis { serial = 7; constructor() { seen.push(this); } }\nclass Radio extends Chassis { dial: Dial = new Dial(); band = "fm" }\nconst kept: { dial: Dial }[] = [];\nfunction hold(source: { dial: Dial }): void { kept.push(source); }\nconst radio = new Radio(); radio.dial.turns += 5; hold(radio); kept[0]!.dial.turns += 1;`,
   );
   expect(leaked.facts).toEqual([
     { kind: "objWidth", depth: "value", aliasable: true, observed: "write" },

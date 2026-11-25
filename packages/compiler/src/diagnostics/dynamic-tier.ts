@@ -100,11 +100,24 @@ export function isPerformanceCode(code: string): boolean {
   return /^SC61\d{2}$/.test(code);
 }
 
+/** The one-line form a build and the coverage report print for a
+ * performance warning: the count and what it means, without the list of
+ * functions. The list stays in the diagnostic's message, which
+ * `--print=diagnostics` writes and `coverage --explain-dynamic` reports.
+ * A performance hint names work that runs slower, not a difference in
+ * behavior, so it earns one line beside the program's real warnings. */
+export function performanceSummary(diag: ScrDiagnostic): string {
+  if (diag.code !== DYNAMIC_TIER_CODE) return diag.message;
+  const [head = diag.message] = diag.message.split("\n");
+  return head.endsWith(":") ? `${head.slice(0, -1)}.` : head;
+}
+
 /** The warning as a build prints it: no source excerpt (it names several
  * functions), then its closing line. */
 export function renderPerformanceWarnings(diags: readonly ScrDiagnostic[]): string {
   const blocks = diags.map(
-    (d) => `warning ${d.code}: ${d.message}${d.hint === undefined ? "" : `\n  hint: ${d.hint}`}`,
+    (d) =>
+      `warning ${d.code}: ${performanceSummary(d)}${d.hint === undefined ? "" : `\n  hint: ${d.hint}`}`,
   );
   const closing = diags.every((d) => d.code === "SC6104")
     ? "The program compiled. Declared types that compile keep these slots static."

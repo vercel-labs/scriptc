@@ -18,7 +18,12 @@
  *   it writes a field or element of either, compares values of the copy's
  *   type by identity, or lets either reach code this scan cannot follow.
  *   The observation is a fact about the whole program, not about one
- *   binding, so no flow of the copy can escape it.
+ *   binding, so no flow of the copy can escape it. One flow needs no such
+ *   fact: a copy passed directly as an argument of a call, where the
+ *   callee only reads that parameter and never writes it, compares it by
+ *   identity, or lets it out, has no other name and no observer, so the
+ *   callee cannot tell it from the object it copied (see
+ *   Observations.readsOnly).
  *
  * A program with an aliasable copy and no observation of its layouts
  * behaves as it does under Node; every other aliasable copy is reported
@@ -141,7 +146,11 @@ interface CopyEffect {
 }
 
 /** A conversion site before the program's observations are asked. */
-type CopySite = Omit<WidthCopyFact, "observed">;
+interface CopySite extends Omit<WidthCopyFact, "observed"> {
+  /** The call that receives the conversion as one of its arguments, when
+   * it is a direct argument: the callee and the argument's position. */
+  via?: { callee: string; arg: number };
+}
 
 function copyKindOf(name: string): WidthCopyKind | null {
   if (name.charCodeAt(0) !== 37 /* % */) return null;
@@ -272,12 +281,24 @@ function collectCopies(
     const key = `${site.loc.file}\0${site.loc.start}\0${site.kind}\0${site.depth}\0${site.routed ? 1 : 0}\0${typeKey(site.from)}\0${typeKey(site.to)}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    // The call a conversion is an argument of is scouting information, not
+    // part of the fact.
+    const plain: Omit<WidthCopyFact, "observed"> = {
+      kind: site.kind,
+      from: site.from,
+      to: site.to,
+      loc: site.loc,
+      depth: site.depth,
+      aliasable: site.aliasable,
+      slot: site.slot,
+      routed: site.routed,
+    };
     if (!site.aliasable) {
-      facts.push({ ...site, observed: null });
+      facts.push({ ...plain, observed: null });
       continue;
     }
     observations ??= new Observations(lowerer, functions);
-    facts.push({ ...site, observed: observations.of(site) });
+    facts.push({ ...plain, observed: observations.of(site) });
   }
   return facts;
 }
@@ -289,6 +310,8 @@ class CopyScan {
   private readonly freshReturns = new Map<string, boolean>();
   private readonly byName = new Map<string, IrFunction>();
   private readonly out: CopySite[] = [];
+  /** The call each direct argument expression is passed to. */
+  private readonly argOwner = new Map<IrExpr, { callee: string; arg: number }>();
 
   constructor(
     private readonly helpers: ReadonlyMap<string, IrFunction>,
@@ -323,6 +346,7 @@ class CopyScan {
   private site(call: IrExpr & { kind: "call" }, slot: string): void {
     const arg = call.args[0];
     if (arg === undefined) return;
+    const via = this.argOwner.get(call);
     for (const effect of this.effectsOf(call.callee)) {
       // A copy that only has one of its members read is gone before
       // anything can tell it from its object.
@@ -330,7 +354,13 @@ class CopyScan {
         effect.depth === "value"
           ? this.fresh(arg) || PROJECTING_SLOTS.has(slot)
           : this.deepFresh(arg);
-      this.out.push({ ...effect, loc: call.loc, aliasable: !unseen, slot });
+      this.out.push({
+        ...effect,
+        loc: call.loc,
+        aliasable: !unseen,
+        slot,
+        ...(via === undefined ? {} : { via }),
+      });
     }
   }
 
@@ -415,6 +445,13 @@ class CopyScan {
       if (e.kind === "call" && this.helpers.has(e.callee)) visit(e, slot);
       else if (e.kind === "closure" && this.helpers.has(e.fnName)) this.valued(e);
       else if (e.kind === "dynCheck" && checked !== undefined) checked(e, slot);
+      // A conversion that is a direct argument of this call lands in the
+      // callee's parameter at the same position.
+      if (e.kind === "call" && !this.helpers.has(e.callee))
+        for (let i = 0; i < e.args.length; i++) {
+          const arg = e.args[i];
+          if (arg !== undefined) this.argOwner.set(arg, { callee: e.callee, arg: i });
+        }
       const outer = slot;
       slot = slotOf(e);
       const all = everyExprChild(e, expr, stmt);
@@ -633,6 +670,86 @@ function readOnlyRuntimeCall(fn: string): boolean {
   return false;
 }
 
+/** The operand a read node reads: a field or element read, whose result is
+ * still a value the program can use. Identity-searching array methods are
+ * not reads. */
+function readReceiver(e: IrExpr): IrExpr | undefined {
+  switch (e.kind) {
+    case "recordGet":
+    case "recordKeyGet":
+    case "recordHas":
+    case "fieldGet":
+      return e.obj;
+    case "arrayGet":
+    case "arrayHas":
+    case "arrayState":
+      return e.arr;
+    case "arrIntrinsic":
+      return ARRAY_READS.has(e.method) && !ARRAY_SEARCHES.has(e.method) ? e.receiver : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** The child an expression hands onward unchanged (a typing wrapper). */
+function forwardedChild(e: IrExpr): IrExpr | undefined {
+  switch (e.kind) {
+    case "seqExpr":
+      return e.result;
+    case "upcast":
+    case "unionNarrow":
+      return e.value;
+    default:
+      return undefined;
+  }
+}
+
+/** The immediate expression children of `e`. */
+function childExprs(e: IrExpr): IrExpr[] {
+  const out: IrExpr[] = [];
+  everyExprChild(
+    e,
+    (child) => {
+      out.push(child);
+      return true;
+    },
+    () => true,
+  );
+  return out;
+}
+
+/** Whether the statement stores or hands on a value this scan marked. */
+function storesTainted(s: IrStmt, tainted: ReadonlySet<IrExpr>): boolean {
+  const holds = (e: IrExpr | null): boolean => e !== null && tainted.has(e);
+  switch (s.kind) {
+    case "varDecl":
+      return holds(s.init);
+    case "assign":
+      return holds(s.value);
+    case "return":
+      return holds(s.value);
+    case "throw":
+      return holds(s.value);
+    case "recordSet":
+      return holds(s.obj) || holds(s.value);
+    case "recordKeySet":
+      return holds(s.obj) || holds(s.key) || holds(s.value);
+    case "recordKeyDelete":
+      return holds(s.obj);
+    case "arraySet":
+    case "bytesSet":
+      return holds(s.arr) || holds(s.value);
+    case "arraySetLength":
+    case "arraySetUndefined":
+    case "arrayDelete":
+      return holds(s.arr);
+    case "fieldSet":
+      return holds(s.obj) || holds(s.value);
+    default:
+      return false;
+  }
+}
+
 /** The runtime calls a constructor makes for the runtime-provided class its
  * class is rooted in (superCall in lower-classes.ts). The runtime
  * initializes the members that class holds on the object being built and
@@ -671,6 +788,8 @@ class Observations {
   /** Constructors by function name, and whether each lets `this` out. */
   private readonly constructors = new Map<string, IrFunction>();
   private readonly leaky = new Map<string, boolean>();
+  /** Every function by name, for the parameter a copy is passed to. */
+  private readonly functions = new Map<string, IrFunction>();
 
   constructor(
     private readonly lowerer: Lowerer,
@@ -684,8 +803,10 @@ class Observations {
       new Map(lowerer.shapes.shapes.map((shape) => [shape.id, shape])),
       new Map(lowerer.unions.unions.map((union) => [union.id, union])),
     );
-    for (const fn of functions)
+    for (const fn of functions) {
+      if (!this.functions.has(fn.name)) this.functions.set(fn.name, fn);
       if (fn.name.endsWith(".constructor")) this.constructors.set(fn.name, fn);
+    }
     for (const fn of functions) {
       // A copy helper writes only the object it builds.
       if (isConversionHelper(fn.name) || fn.name.startsWith("%rec.compose.")) continue;
@@ -694,7 +815,19 @@ class Observations {
     if (this.stores.all) this.untypedIdentity = true;
   }
 
-  of(fact: Omit<WidthCopyFact, "observed">): CopyObservation | null {
+  of(fact: CopySite): CopyObservation | null {
+    // A record copy handed directly to a function that only reads it has no
+    // other name: the callee cannot tell it from the object it copied,
+    // whatever the rest of the program does to the layout. Other layouts
+    // keep their report: a class instance's accessors and an array's holes
+    // are not the copy's to answer.
+    if (
+      fact.from.kind === "record" &&
+      fact.to.kind === "record" &&
+      fact.via !== undefined &&
+      this.argumentReadOnly(fact.via)
+    )
+      return null;
     // A union on either side stands for its arms (a predicate's conversion
     // takes a union of records and may answer one).
     const targets = this.arms(fact.to);
@@ -714,6 +847,76 @@ class Observations {
         if (source !== null) return { ...source, side: "source" };
       }
     return null;
+  }
+
+  /** Whether the call `via` only reads the parameter a copy lands in. */
+  private argumentReadOnly(via: { callee: string; arg: number }): boolean {
+    const fn = this.functions.get(via.callee);
+    const param = fn?.params[via.arg];
+    if (fn === undefined || param === undefined) return false;
+    return this.readsOnly(fn, param.localId, param.type);
+  }
+
+  /** Whether `fn` only reads the object its parameter `id` holds: it never
+   * writes through it, compares it by identity, or lets it (or an object
+   * read out of it) reach another name. A copy passed to such a function
+   * cannot be told from the object it copied. Conservative: a use this
+   * scan does not recognize as a read counts as letting the value out. */
+  private readsOnly(fn: IrFunction, id: string, type: IrType): boolean {
+    if (isValueType(type)) return true;
+    /** Expressions that hold the parameter's object (or a member of it). */
+    const tainted = new Set<IrExpr>();
+    let escapes = false;
+    const expr = (e: IrExpr): boolean => {
+      if (escapes) return false;
+      if (e.kind === "varRef" && e.localId === id) {
+        if (!isValueType(e.type)) tainted.add(e);
+        return true;
+      }
+      if (e.kind === "closure" && (e.captures ?? []).includes(id)) {
+        escapes = true;
+        return false;
+      }
+      everyExprChild(e, expr, stmt);
+      if (escapes) return false;
+      const receiver = readReceiver(e);
+      if (receiver !== undefined) {
+        for (const child of childExprs(e))
+          if (child !== receiver && tainted.has(child)) {
+            escapes = true;
+            return false;
+          }
+        // The read's result still holds the object: an object-valued field
+        // or element is as observable through the copy as the copy itself.
+        if (tainted.has(receiver) && !isValueType(e.type)) tainted.add(e);
+        return true;
+      }
+      const forwarded = forwardedChild(e);
+      if (forwarded !== undefined) {
+        if (tainted.has(forwarded) && !isValueType(e.type)) tainted.add(e);
+        return true;
+      }
+      // Any other use of the object (a call argument, a comparison, a store
+      // into a new object, a dynamic conversion) lets another name reach it.
+      for (const child of childExprs(e))
+        if (tainted.has(child)) {
+          escapes = true;
+          return false;
+        }
+      return true;
+    };
+    const stmt = (s: IrStmt): boolean => {
+      if (escapes) return false;
+      if (s.kind === "assign" && s.localId === id) {
+        escapes = true;
+        return false;
+      }
+      everyStmtChild(s, expr, stmt);
+      if (!escapes && storesTainted(s, tainted)) escapes = true;
+      return !escapes;
+    };
+    for (const s of fn.body) stmt(s);
+    return !escapes;
   }
 
   /** `type`, or the arms of a union (and of the unions among them). */

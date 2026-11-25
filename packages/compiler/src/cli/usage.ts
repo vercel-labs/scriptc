@@ -529,8 +529,8 @@ export const CLI_OPTION_DOCS: Readonly<Record<string, CliOptionDoc>> = {
       {
         term: "--no-dynamic-tier-warning",
         help: [
-          "build and coverage: leave out SC6101, the warning that",
-          "names likely-hot functions that use untyped values",
+          "build and coverage: leave out SC6101, the warning about",
+          "likely-hot functions that use untyped values",
         ],
       },
     ],

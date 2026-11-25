@@ -100,11 +100,17 @@ describe("the pack packages", () => {
           JSON.parse(readFileSync(join(repo, "packages", name, "package.json"), "utf8")).name,
       )
       .sort();
-    const targets = ["linux-x64-gnu", "linux-arm64-gnu", "macos-arm64", "macos-x64"];
+    const targets = [
+      "linux-x64-gnu",
+      "linux-arm64-gnu",
+      "macos-arm64",
+      "macos-x64",
+      "windows-x64-msvc",
+    ];
     expect(targets.map((target) => libnodePackPackage(target)).sort()).toEqual(packages);
     expect(libnodePackPackage("linux-x64-musl")).toBeNull();
-    expect(libnodePackPackage("windows-x64-msvc")).toBeNull();
     expect(libnodePackPackage("wasm32-wasi")).toBeNull();
+    expect(libnodePackPackage("ios-arm64")).toBeNull();
   });
 
   test("host targets map to native target names", () => {
@@ -112,6 +118,10 @@ describe("the pack packages", () => {
     expect(hostLibnodeTarget("linux", "arm64")).toBe("linux-arm64-gnu");
     expect(hostLibnodeTarget("darwin", "arm64")).toBe("macos-arm64");
     expect(hostLibnodeTarget("darwin", "x64")).toBe("macos-x64");
+    expect(hostLibnodeTarget("win32", "x64")).toBe("windows-x64-msvc");
+    expect(libnodePackPackage(hostLibnodeTarget("win32", "x64"))).toBe(
+      "@scriptc/libnode-win32-x64",
+    );
   });
 });
 

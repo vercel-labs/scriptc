@@ -246,8 +246,13 @@ describe("SC8005's hint", () => {
     expect(hint).toContain("Node.js >=24.13.1");
   });
 
+  test("names the Windows pack too", () => {
+    const hint = nodeIslandPackHint(use, { SCRIPTC_TARGET: "x86_64-windows-gnu" });
+    expect(hint).toContain("npm i @scriptc/libnode-win32-x64@");
+  });
+
   test("keeps the self-build route where no pack is published", () => {
-    for (const target of ["x86_64-windows-gnu", "wasm32-wasi"]) {
+    for (const target of ["x86_64-linux-musl", "wasm32-wasi"]) {
       const hint = nodeIslandPackHint(use, { SCRIPTC_TARGET: target });
       expect(hint).not.toContain("npm i @scriptc/libnode-");
       expect(hint).toContain("packages/libnode-common/build-pack.mjs");

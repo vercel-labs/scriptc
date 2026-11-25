@@ -64030,6 +64030,7 @@
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-perform-handshake.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-properties.ts",
@@ -67257,8 +67258,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.http2.performServerHandshake",
+        "tests": [
+          "tests/corpus/http2-perform-handshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },

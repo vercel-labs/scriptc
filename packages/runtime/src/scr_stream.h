@@ -381,7 +381,7 @@ bool scr_stream_unshift_str(ScrStream *s, ScrStr *str);
 bool scr_stream_unshift_dyn(ScrStream *s, const ScrDyn *d);
 ScrBytes *scr_stream_read(ScrStream *s, double size);
 ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, bool prepend);
-ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; size < 0 = all/first; throws once encoded (the static type is Buffer|null) */
+ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size); /* +1 or NULL; a NaN size = all/first; throws once encoded (the static type is Buffer|null) */
 /* setEncoding(enc): string-chunk mode — pushes decode through the
  * StringDecoder, 'data' delivers strings (the emit ABI carries both
  * payload slots; see scr_stream_emit_data), lengths count JS string

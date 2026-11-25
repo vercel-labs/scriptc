@@ -1819,12 +1819,6 @@
  },
  {
   "file": "scr_stream.c",
-  "function": "scr_stream_dyn_stage_returned_stream",
-  "message": "a pipeline source function that returns a stream is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_stream.c",
   "function": "scr_su_foreign_refuse",
   "message": "%s over a child process or process stdio stream is not supported yet",
   "code": "SC2020"

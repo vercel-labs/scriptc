@@ -153,6 +153,11 @@ ScrStream *scr_stream_consumer_source(const struct ScrDyn *value, const ScrStr *
  * to pump rather than as a stream (false with an exception pending when
  * reading the value's members throws). */
 bool scr_stream_dyn_iterable_source(const struct ScrDyn *value);
+/* Whether a checked-dynamic source's value reaches the next function
+ * stage as itself: Node's makeAsyncIterable answers an iterable, and a
+ * native readable stream answers its iterator; a JS stream-like object
+ * goes as the generator over it. */
+bool scr_stream_dyn_hands_value(const struct ScrDyn *value);
 /* A checked-dynamic pipeline() stage the pipeline takes as a stream: a
  * native stream (+1), or Duplex.from of a value that is not stream-like
  * or a function, which the pipeline uses without piping into it; NULL

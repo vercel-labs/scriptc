@@ -4856,9 +4856,10 @@ typedef ScrGen *(*ScrPipeIterFn)(ScrClosure *, ScrDyn *);
 static bool scr_stream_dyn_has_method(const ScrDyn *value, const char *key);
 static bool scr_stream_dyn_transform_like(const ScrDyn *value);
 static void scr_stream_throw_web_stage(void);
-static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value);
 static void scr_stream_throw_invalid_return(const char *expected, const char *name,
                                            const ScrDyn *got);
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls);
 
 /* What pipelineImpl does with an untyped destination function's result:
  * a promise settles the pipeline's value (the `then` branch), and an
@@ -4886,11 +4887,13 @@ static int scr_pipe_dest_dyn_kind(const ScrPipeStages *fs, ScrDyn *r, void **out
   ScrStream *native = scr_stream_of_handle(r);
   if (!native) native = scr_stream_boxed(r);
   if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
     bool readable = native->st->has_r;
     scr_stream_release(native);
     if (!readable) {
       if (!scr_exc_pending())
-        scr_stream_throw_invalid_return("AsyncIterable or Promise", "destination", r);
+        scr_stream_throw_invalid_return_class("AsyncIterable or Promise", "destination", cls);
       return -1;
     }
     ScrGen *g = ((ScrPipeIterFn)fs->box->fn)(fs->box, scr_dyn_retain((ScrDyn *)r));
@@ -10077,22 +10080,25 @@ bool scr_stream_dyn_iterable_source(const ScrDyn *value) {
   return scr_dyn_iterable_kind(value) > 0;
 }
 
+/* Whether the value a source stage pumped reaches the next function stage
+ * as itself: makeAsyncIterable answers an iterable, and a native readable
+ * stream answers its iterator (so Node passes the stream on); a stream-like
+ * JavaScript object, which is not iterable, goes as the generator over it. */
+bool scr_stream_dyn_hands_value(const ScrDyn *value) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) {
+    bool readable = stream->st->has_r;
+    scr_stream_release(stream);
+    return readable;
+  }
+  return scr_stream_dyn_iterable_source(value);
+}
+
 /* Untyped web streams as pipeline stages have no lowering. */
 static void scr_stream_throw_web_stage(void) {
   static const char msg[] = "pipeline stages that are untyped web streams are not supported yet";
   scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-}
-
-/* A native stream returned by an untyped pipeline source function, which
- * Node pumps as the source: throws the not-supported Error. */
-static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value) {
-  ScrStream *stream = scr_stream_of_handle(value);
-  if (!stream) stream = scr_stream_boxed(value);
-  if (!stream) return false;
-  scr_stream_release(stream);
-  static const char msg[] = "a pipeline source function that returns a stream is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
-  return true;
 }
 
 /* Node's ERR_INVALID_RETURN_VALUE TypeError: "Expected <expected> to be
@@ -10109,6 +10115,21 @@ static void scr_stream_throw_invalid_return(const char *expected, const char *na
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
 }
 
+/* The same error with a ready-made tail: a native stream renders as its
+ * Node class ("an instance of Writable"), which the checked-dynamic value
+ * the stage answered does not carry. */
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls) {
+  char detail[160];
+  snprintf(detail, sizeof detail, "an instance of %s", cls);
+  char msg[384];
+  int n = snprintf(msg, sizeof msg, "Expected %s to be returned from the \"%s\" function but got %s.",
+                   expected, name, detail);
+  if (n < 0) n = 0;
+  if ((size_t)n >= sizeof msg) n = (int)sizeof msg - 1;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
+}
+
 /* An untyped pipeline function stage's result before the last stage
  * (pipelineImpl's `isIterable(ret, true)` check): an async iterable or a
  * native readable stream answers itself (+1); other values throw
@@ -10120,10 +10141,13 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
   ScrStream *native = scr_stream_of_handle(value);
   if (!native) native = scr_stream_boxed(value);
   if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
     bool readable = native->st->has_r;
     scr_stream_release(native);
     if (!readable) {
-      if (!scr_exc_pending()) scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("AsyncIterable", label->data, cls);
       return NULL;
     }
     return scr_dyn_retain((ScrDyn *)value);
@@ -10151,7 +10175,23 @@ ScrDyn *scr_stream_dyn_source_value(const ScrDyn *value, bool returned) {
     if (scr_exc_pending()) return NULL;
     return scr_dyn_retain((ScrDyn *)value);
   }
-  if (scr_stream_dyn_stage_returned_stream(value)) return NULL;
+  /* Node's source check is `isIterable(ret)` over a native readable stream
+   * too (a Readable answers its iterator): the source generator reads it.
+   * A Writable-only stream is not iterable. */
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or Stream", "source", cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
   int kind = scr_dyn_iterable_kind(value);
   if (kind < 0) return NULL;
   if (kind == 0) {

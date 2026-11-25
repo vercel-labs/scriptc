@@ -292,6 +292,38 @@ try {
   console.log("promise", err.code, err.message);
 }
 
+// a Writable-only stream result names the stream's class
+try {
+  await pipelineP(
+    letters(),
+    () =>
+      new Writable({
+        objectMode: true,
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      }),
+    sink([]),
+  );
+} catch (err) {
+  console.log("transform writable", err.code, err.message);
+}
+try {
+  pipeline(
+    letters(),
+    () =>
+      new Writable({
+        objectMode: true,
+        write(_chunk, _enc, cb) {
+          cb();
+        },
+      }),
+    () => console.log("never"),
+  );
+} catch (err) {
+  console.log("destination writable", err.code, err.message);
+}
+
 // a destination's result is classified at run time too
 try {
   pipeline(letters(), () => 7, () => console.log("destination error callback"));

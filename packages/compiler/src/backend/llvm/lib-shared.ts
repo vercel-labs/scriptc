@@ -1221,6 +1221,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
   "stream.dynIterableSource": "scr_stream_dyn_iterable_source",
+  "stream.dynHandsValue": "scr_stream_dyn_hands_value",
   "stream.dynSourceValue": "scr_stream_dyn_source_value",
   "stream.unboxDynStage": "scr_stream_unbox_dyn_stage",
   "stream.dynTransformResult": "scr_stream_dyn_transform_result",

@@ -4670,6 +4670,10 @@ export type IrExpr =
        * path (`$[0]`), where a standalone check names only the root
        * (`$`). */
       pathIndex?: number;
+      /** The member a dynamic read validated: a failure names that member
+       * in its path (`$.projectId`), where a standalone check names only
+       * the root (`$`). */
+      pathKey?: string;
       type: IrType;
       loc: SrcLoc;
     };

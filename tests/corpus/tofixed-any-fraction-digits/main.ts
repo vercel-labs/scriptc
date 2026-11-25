@@ -37,8 +37,17 @@ function effectfulUndefined(): undefined {
 console.log(receiveNumber().toFixed(effectfulUndefined()));
 console.log(order.join(","));
 
-// A written undefined argument means toFixed(0) with the exact decimal
-// integer, not the shortest round-trip text of the omitted-digits fast path.
+// A written undefined argument is the zero-digit form, the exact decimal
+// integer of the binary value; the omitted argument is the same form.
 console.log((2 ** 60).toFixed(undefined));
 console.log((123456789012345680000).toFixed(undefined));
 console.log((1e21).toFixed(undefined));
+
+// The omitted form on an untyped receiver is that zero-digit form too: the
+// dynamic number branch answers the exact integer, not the shortest
+// round-trip text of a large value below 1e21.
+const huge: any = 123456789012345680000;
+console.log(huge.toFixed());
+console.log(huge.toFixed(0));
+console.log((999999999999999900000).toFixed());
+console.log((-123456789012345680000).toFixed());

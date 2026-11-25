@@ -17288,22 +17288,12 @@ ScrStr *scr_num_to_exponential(double x) {
  * |x| ≥ 1e21 (NaN and ±Infinity ride that arm's texts via ToString too,
  * matching the spec's early answers). */
 ScrStr *scr_num_to_fixed0(double x) {
-  if (isnan(x)) return scr_str_new("NaN", 3);
-  if (fabs(x) >= 1e21) return scr_f64_to_scrstr(x);
-  double a = fabs(x);
-  double fl = floor(a);
-  double n = (a - fl >= 0.5) ? fl + 1 : fl; /* exact: a < 2^70, and below
-                                             * 2^52 the fraction is exact;
-                                             * at/above it a - fl == 0 */
-  ScrStr *digits = scr_f64_to_scrstr(n); /* n < 1e21 → never exponent form */
-  if (!(x < 0)) return digits;
-  size_t len = digits->len;
-  char buf[64];
-  buf[0] = '-';
-  memcpy(buf + 1, digits->data, len);
-  ScrStr *r = scr_str_new(buf, len + 1);
-  scr_str_release(digits);
-  return r;
+  /* fractionDigits 0 is the same conversion as the written 0: the exact
+   * decimal integer of the binary value. Formatting the rounded double as
+   * shortest round-trip text instead (scr_f64_to_scrstr) answers the wrong
+   * digits for large integers below 1e21, e.g. 999999999999999900000,
+   * whose exact integer is 999999999999999868928. */
+  return scr_num_to_fixed(x, 0);
 }
 
 /* Number.prototype.toFixed(fractionDigits), with the argument already

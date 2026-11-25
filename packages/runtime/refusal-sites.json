@@ -1524,6 +1524,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_module_class.c",
+  "function": "scr_module_class_refuse",
+  "message": "' is part of the standard library types but has no scriptc lowering yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_net.c",
   "function": "scr_net_dynh_unsupported",
   "message": "'Socket.prototype.%s' on a dynamic value is not supported yet%s%s",

@@ -2880,6 +2880,7 @@ const RUNTIME_FEATURE_RULES = {
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
+  moduleClass: rule({ fns: ["module.ctor", "module.ctorPrototype"] }),
   /** The BYTE-data and checked-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2988,6 +2989,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsFlags: false,
     fsExistsValue: false,
     moduleCompileCache: false,
+    moduleClass: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

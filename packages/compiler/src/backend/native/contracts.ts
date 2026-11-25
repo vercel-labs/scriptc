@@ -337,6 +337,8 @@ export interface CcOptions {
   /** A module namespace boxed for typed code: compiles
    * scr_module_namespace_dyn.c. */
   moduleNamespaceDyn?: boolean;
+  /** node:module's Module class object: compiles scr_module_class.c. */
+  moduleClass?: boolean;
   /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
   primitiveWrapper?: boolean;
   /** %Iterator% and %Iterator.prototype%: compiles scr_js_iterator.c. */

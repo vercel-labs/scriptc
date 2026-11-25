@@ -647,6 +647,11 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
   scr_dyn_release(kids);
 }
 
+/* Node's Module.prototype, from the module-class unit: a program that never
+ * names `Module` links none of it, and its module views keep the plain
+ * object prototype. */
+extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,
@@ -655,6 +660,14 @@ ScrDyn *scr_module_dyn_object(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (m->dyn_self) return scr_dyn_retain(m->dyn_self);
   ScrDyn *o = scr_dyn_new_obj();
+  if (scr_module_class_prototype != NULL) {
+    ScrDyn *prototype = scr_module_class_prototype();
+    if (prototype != NULL) {
+      ScrDyn *linked = scr_dyn_set_prototype(o, prototype);
+      if (linked) scr_dyn_release(linked);
+      scr_dyn_release(prototype);
+    }
+  }
   /* Cache before filling: a require cycle reaches the parent through its
    * children, and the record must already answer its own object then. */
   m->dyn_self = scr_dyn_retain(o);

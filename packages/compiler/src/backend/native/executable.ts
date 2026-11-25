@@ -300,6 +300,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
+  unit((u) => u.opts.moduleClass === true, "scr_module_class.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).

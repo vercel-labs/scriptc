@@ -25822,6 +25822,11 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    // node:module's Module: the runtime class object whose prototype every
+    // module view inherits (scr_module_class.c), so instanceof and
+    // Object.getPrototypeOf(module) answer as Node's do.
+    if (bi.module === "module" && bi.member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (bi.module === "module" && bi.member === "isBuiltin")
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
@@ -26071,6 +26076,8 @@ export class Lowerer {
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
+    if (module === "module" && member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

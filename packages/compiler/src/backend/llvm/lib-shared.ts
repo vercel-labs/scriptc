@@ -1213,6 +1213,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "child.offClose": "scr_child_off_close",
   "child.offError": "scr_child_off_error",
   "child.kill": "scr_child_kill",
+  "child.killDyn": "scr_child_kill_dyn",
   "child.killNum": "scr_child_kill_num",
   "child.dispose": "scr_child_dispose",
   "child.unref": "scr_child_unref",

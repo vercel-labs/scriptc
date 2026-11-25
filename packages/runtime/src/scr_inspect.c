@@ -5447,6 +5447,17 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
 /* util.format's %s over a dyn value: strings pass VERBATIM (Node's
  * `typeof arg === 'string' ? arg : inspect(arg)` — the %s depth is 0,
  * the rest-args depth 2); everything else inspects at the given depth. */
+/* The compiler calls this for programs that call child.killDyn — the rule
+ * that links this unit — so the child unit's checked-dynamic kill can show
+ * an invalid signal with Node's inspect text without holding a reference to
+ * this unit itself. No constructor: a program that only inspects other
+ * values must not keep this renderer (and the dynamic tier it reaches)
+ * alive. Library builds never emit the call; their users fall back to the
+ * shared lite text. */
+void scr_insp_install_hook(void) {
+  scr_insp_dyn_s_hook = &scr_insp_dyn_s;
+}
+
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth) {
   if (d->kind == SCR_DYN_STR) return scr_str_retain(d->v.str);
   return scr_insp_dyn(d, 0, depth);

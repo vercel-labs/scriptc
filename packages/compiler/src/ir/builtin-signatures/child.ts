@@ -103,6 +103,10 @@ export const childSignatures = defineLibFnSignatures({
   "child.spawnargs": { argTypes: [CHILD_T], result: arrayOf(STRING) },
   "child.kill": { argTypes: [CHILD_T, STRING], result: BOOL },
   "child.killNum": { argTypes: [CHILD_T, F64], result: BOOL },
+  /** child.kill's checked-dynamic signal: Node's sanitizeKillSignal at the
+   * call (undefined is SIGTERM; a name or an integer is the signal; anything
+   * else throws ERR_UNKNOWN_SIGNAL). */
+  "child.killDyn": { argTypes: [CHILD_T, DYN], result: BOOL },
   /** ChildProcess[Symbol.dispose](): Node's dispose sends SIGTERM only
    * while `killed` is false. */
   "child.dispose": { argTypes: [CHILD_T], result: VOID },

@@ -942,6 +942,9 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "dyn.hasKey",
   "dyn.in",
   "child.kill",
+  // child.kill(number): a non-integer number is ERR_UNKNOWN_SIGNAL.
+  "child.killNum",
+  "child.killDyn",
   // child.dispose sends SIGTERM through the same kill path; a Node-island
   // child's kill may emit the synchronous 'error' that path can raise.
   "child.dispose",

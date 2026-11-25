@@ -426,6 +426,13 @@ bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args) {
   return collapse;
 }
 
+/* The inspect renderer for units that cannot link the inspect unit: the
+ * compiler's install call fills it for programs that need it. Per context
+ * (main thread, each worker), as scr_child.c reads it on whichever thread
+ * runs the kill. Defined in every flavor: a library artifact compiles this
+ * unit with SCR_LIB and still links the inspect unit that fills it. */
+SCR_TL ScrStr *(*scr_insp_dyn_s_hook)(ScrDyn *d, double depth) = NULL;
+
 #ifndef SCR_LIB
 /* Executable lane only: a library artifact has no argv and registers no
  * atexit handlers (the emitted library init never calls this; keeping it out

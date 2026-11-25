@@ -62,6 +62,19 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
 ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
+/* The same renderer through an always-linked slot (scr_lib.c), installed by
+ * scr_insp_install_hook: a unit that only formats an error message when
+ * inspect is linked reads the hook instead of holding an undefined
+ * reference to this unit (the child dynamic kill does). NULL without
+ * inspect, and in library builds where nobody emits the install call.
+ * Thread-local like the runtime's other install hooks: every context (the
+ * main thread, each worker) installs its own before it runs program code,
+ * so concurrent context startup never writes one slot from two threads. */
+extern SCR_TL ScrStr *(*scr_insp_dyn_s_hook)(ScrDyn *d, double depth);
+/* Fills scr_insp_dyn_s_hook with this unit's renderer. The compiler emits the
+ * call for programs that call child.killDyn, the rule that links this unit
+ * (emit-module.ts), so the hook exists before any kill runs. */
+void scr_insp_install_hook(void);
 /* util.format over checked-dynamic arguments (formatWithOptionsInternal):
  * the options an inspect of each argument takes, and the API name the
  * SC2020 refusals name. These entries call program code, so they answer

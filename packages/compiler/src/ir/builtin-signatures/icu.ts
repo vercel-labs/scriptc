@@ -24,6 +24,12 @@ export const icuSignatures = defineLibFnSignatures({
    * Node's reads, conversions and errors. The result is a NumberFormat
    * handle (+1). */
   "icu.numberFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** The same constructor with a locale the program decides at run time (a
+   * string, or undefined for the default locale): the runtime validates the
+   * tag (Node's RangeError), canonicalizes it and negotiates it against
+   * ICU's locales before it reads the options, exactly as
+   * `new Intl.NumberFormat(locales, options)` does. */
+  "icu.numberFormatNewDynLocale": { argTypes: [DYN, DYN], result: DYN },
   /** `nf.format(x)` over a number: the formatter's text (+1); a TypeError
    * when the value is not a NumberFormat. */
   "icu.numberFormatFormat": { argTypes: [DYN, F64], result: STRING },
@@ -33,9 +39,15 @@ export const icuSignatures = defineLibFnSignatures({
   /** `x.toLocaleString(locales, options)`: the same formatter built for
    * one call, with the method's name in the null-options TypeError. */
   "icu.numToLocaleString": { argTypes: [F64, STRING, DYN], result: STRING },
+  /** `x.toLocaleString(locales, options)` with a run-time locale: as
+   * icu.numToLocaleString, over the locale value the program decides. */
+  "icu.numToLocaleStringDynLocale": { argTypes: [F64, DYN, DYN], result: STRING },
   /** `new Intl.DateTimeFormat(locales, options)` (and the call without
    * `new`): as icu.numberFormatNew; a DateTimeFormat handle (+1). */
   "icu.dateTimeFormatNew": { argTypes: [STRING, DYN], result: DYN },
+  /** `new Intl.DateTimeFormat` with a run-time locale: as
+   * icu.numberFormatNewDynLocale. */
+  "icu.dateTimeFormatNewDynLocale": { argTypes: [DYN, DYN], result: DYN },
   /** `dtf.format(date)` over a time value: the text (+1); a RangeError
    * outside the time value range. */
   "icu.dateTimeFormatFormat": { argTypes: [DYN, F64], result: STRING },
@@ -48,6 +60,9 @@ export const icuSignatures = defineLibFnSignatures({
    * for one call. "Invalid Date" for an invalid date, before any option
    * is read. */
   "icu.dateToLocale": { argTypes: [F64, F64, STRING, DYN], result: STRING },
+  /** The same three Date formatters with a locale the program decides at
+   * run time (a string, or undefined for the default locale). */
+  "icu.dateToLocaleDynLocale": { argTypes: [F64, F64, DYN, DYN], result: STRING },
   /** `new Intl.Segmenter(locale?, { granularity: "word" })`: ICU's UAX
    * #29 word iterator (scr_intl.c over ICU), which the
    * table-driven grapheme segmenter above cannot express. The argument is

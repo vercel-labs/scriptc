@@ -6,14 +6,18 @@
  * ECMA-402's own steps (each property once, in the specification's order,
  * with Node's conversions and errors), so an options object that is a
  * variable, or that holds a value computed at run time, needs nothing from
- * the compiler. The locale is decided here: the default locale (no
- * argument, or undefined) and the tags below. Locale negotiation over
- * other tags, lists of locales, and every formatter member but `format`
- * stay refused by name. */
+ * the compiler. The locale is a string decided at run time when the program
+ * does not spell it: the runtime validates it (Node's RangeError for a
+ * malformed tag), canonicalizes it and negotiates it against ICU's locales
+ * exactly as Node's best-fit matcher does, with the default locale as the
+ * fallback. A literal tag the program spells is passed as it reads; only the
+ * empty string takes the runtime path, because Node rejects it where the
+ * empty tag is this compiler's spelling of the default locale. Lists of
+ * locales, and every formatter member but `format`, stay refused by name. */
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { varRef } from "../../../ir/build.js";
+import { strLit, varRef } from "../../../ir/build.js";
 import {
   DYN,
   F64,
@@ -27,14 +31,13 @@ import {
 
 export type IntlFormatter = "NumberFormat" | "DateTimeFormat";
 
-/** The locale tags a formatter is built at. ICU carries data for many
- * more; which of them Node would pick for a requested tag is locale
- * negotiation, which is not modelled, so only tags that resolve to
- * themselves are taken. */
-const LOCALE_TAGS = new Set(["en-US", "en"]);
+/** The tag the string-locale entry points read as the default locale. Node
+ * rejects an empty locale string, so a program that spells `""` goes through
+ * the runtime locale path instead, where the runtime raises that RangeError. */
+const DEFAULT_LOCALE_TAG = "";
 
 export const INTL_FORMATTER_HINT =
-  'what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined), "en-US" or "en"; other locales, lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported';
+  "what compiles: new Intl.NumberFormat(locale, options) and new Intl.DateTimeFormat(locale, options) with their format() method, and the toLocaleString(), toLocaleDateString() and toLocaleTimeString() forms with a locale and options, at the default locale (no locale argument, or undefined) or at any single string locale tag; lists of locales, formatToParts, formatRange and resolvedOptions remain unsupported";
 
 /** The formatter interface of the standard library that `type` names, or
  * null. */
@@ -53,21 +56,25 @@ function isUndefinedArgument(lowerer: Lowerer, arg: ts.Expression): boolean {
   return flags === ts.TypeFlags.Undefined || flags === ts.TypeFlags.Void;
 }
 
-/** The locales argument of `what`: the tag the runtime builds the
- * formatter at (the empty string for the default locale), and the
- * statement that evaluates an explicit undefined, which may be any
- * expression. Any other locale is refused by name. */
+/** The locales argument of `what`: the locale value the runtime builds the
+ * formatter at (the empty string for the default locale), the statement that
+ * evaluates an explicit undefined, which may be any expression, and whether
+ * the value is decided at run time — then the runtime validates and
+ * negotiates it, and the formatter call takes the dyn-locale entry point.
+ * A list of locales is refused by name. */
 function intlLocale(
   lowerer: Lowerer,
   arg: ts.Expression | undefined,
   what: string,
-): { tag: string; effects: IrStmt[] } {
-  if (arg === undefined) return { tag: "", effects: [] };
+  loc: SrcLoc,
+): { locale: IrExpr; effects: IrStmt[]; dynamic: boolean } {
+  if (arg === undefined)
+    return { locale: strLit(DEFAULT_LOCALE_TAG, loc), effects: [], dynamic: false };
   if (ts.isSpreadElement(arg)) lowerer.noLowering(`${what} with a spread argument`, arg);
   if (isUndefinedArgument(lowerer, arg)) {
     const value = lowerer.lowerExpr(arg);
     return {
-      tag: "",
+      locale: strLit(DEFAULT_LOCALE_TAG, loc),
       effects: [
         {
           kind: "exprStmt",
@@ -75,20 +82,47 @@ function intlLocale(
           loc: locOf(arg),
         },
       ],
+      dynamic: false,
     };
   }
   if (ts.isStringLiteralLike(arg)) {
-    if (LOCALE_TAGS.has(arg.text)) return { tag: arg.text, effects: [] };
-    lowerer.noLowering(
-      `${what} at locale "${arg.text}"`,
-      arg,
-      'which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US" and "en" compile',
-    );
+    // The empty string is Node's RangeError, not this compiler's default: it
+    // takes the dyn-locale entry point as a boxed string, where the runtime
+    // validates it like any other tag.
+    const literal = strLit(arg.text, loc);
+    const dynamic = arg.text === DEFAULT_LOCALE_TAG;
+    return {
+      locale: dynamic ? { kind: "dynFrom", value: literal, type: DYN, loc } : literal,
+      effects: [],
+      dynamic,
+    };
   }
+  const type = lowerer.mapTypeOf(lowerer.typeOf(arg));
+  const arms = type?.kind === "union" ? (lowerer.unions.get(type.unionId)?.arms ?? []) : [];
+  const stringOrUndefined =
+    type?.kind === "string" ||
+    (type?.kind === "union" &&
+      arms.length === 2 &&
+      arms.some((arm) => arm.kind === "string") &&
+      arms.some((arm) => arm.kind === "undefinedT"));
+  if (stringOrUndefined) {
+    const value = lowerer.lowerExpr(arg);
+    return {
+      locale: value.type.kind === "dyn" ? value : lowerer.coerceInto(arg, value, DYN),
+      effects: [],
+      dynamic: true,
+    };
+  }
+  if (type?.kind === "array")
+    lowerer.noLowering(
+      `${what} with a list of locales`,
+      arg,
+      "one locale string compiles; locale lists (negotiation over several tags) remain unsupported",
+    );
   lowerer.noLowering(
-    `${what} with a non-literal locale`,
+    `${what} with a locale that is not a string`,
     arg,
-    'the locale is decided at compile time: omit it or pass undefined for the default locale, or write "en-US" or "en"',
+    "the locale is a string, or omitted for the default locale",
   );
 }
 
@@ -158,14 +192,21 @@ export function lowerIntlFormatterNew(
   const args = node.arguments?.nodes ?? [];
   const what = `Intl.${which}`;
   if (args.length > 2) lowerer.noLowering(`${what} with ${args.length} arguments`, node);
-  const locale = intlLocale(lowerer, args[0], what);
+  const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, which);
   return withEffects(
     locale.effects,
     {
       kind: "libCall",
-      fn: which === "NumberFormat" ? "icu.numberFormatNew" : "icu.dateTimeFormatNew",
-      args: [{ kind: "strLit", value: locale.tag, type: STRING, loc }, options],
+      fn:
+        which === "NumberFormat"
+          ? locale.dynamic
+            ? "icu.numberFormatNewDynLocale"
+            : "icu.numberFormatNew"
+          : locale.dynamic
+            ? "icu.dateTimeFormatNewDynLocale"
+            : "icu.dateTimeFormatNew",
+      args: [locale.locale, options],
       type: DYN,
       loc,
     },
@@ -383,19 +424,15 @@ export function lowerNumberToLocaleString(
   const what = "Number.prototype.toLocaleString";
   if (args.length > 2) lowerer.noLowering(`${what} with ${args.length} arguments`, call);
   const receiver = lowerer.declareHiddenLocal("%localeReceiver", F64);
-  const locale = intlLocale(lowerer, args[0], what);
+  const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, "NumberFormat");
   return {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: receiver.id, init: operand, loc }, ...locale.effects],
     result: {
       kind: "libCall",
-      fn: "icu.numToLocaleString",
-      args: [
-        varRef(receiver.id, F64, loc),
-        { kind: "strLit", value: locale.tag, type: STRING, loc },
-        options,
-      ],
+      fn: locale.dynamic ? "icu.numToLocaleStringDynLocale" : "icu.numToLocaleString",
+      args: [varRef(receiver.id, F64, loc), locale.locale, options],
       type: STRING,
       loc,
     },
@@ -434,9 +471,9 @@ export function lowerDateToLocale(
   // Date changes what is formatted.
   const receiver = lowerer.declareHiddenLocal("%localeDate", date.type);
   const held = lowerer.declareHiddenLocal("%localeOptions", DYN);
-  const locale = intlLocale(lowerer, args[0], what);
+  const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, "DateTimeFormat");
-  const fn: IrLibFn = "icu.dateToLocale";
+  const fn: IrLibFn = locale.dynamic ? "icu.dateToLocaleDynLocale" : "icu.dateToLocale";
   return {
     kind: "seqExpr",
     stmts: [
@@ -456,7 +493,7 @@ export function lowerDateToLocale(
           loc,
         },
         { kind: "numLit", value: DATE_LOCALE_KINDS[name]!, type: F64, loc },
-        { kind: "strLit", value: locale.tag, type: STRING, loc },
+        locale.locale,
         varRef(held.id, DYN, loc),
       ],
       type: STRING,

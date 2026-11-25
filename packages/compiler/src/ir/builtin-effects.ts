@@ -352,6 +352,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatNew",
   "icu.dateTimeFormatFormat",
   "icu.dateToLocale",
+  // The run-time locale paths validate and negotiate a tag (Node's
+  // RangeError for a malformed one) before the options are read.
+  "icu.numberFormatNewDynLocale",
+  "icu.dateTimeFormatNewDynLocale",
+  "icu.numToLocaleStringDynLocale",
+  "icu.dateToLocaleDynLocale",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",

@@ -736,6 +736,7 @@ const MAY_THROW_LIB_FNS_PART_3: readonly IrLibFn[] = [
   "stream.setDefaultHwm",
   "webstream.toWebReadableOpts",
   "webstream.toWebReadableDyn",
+  "webstream.writableToWebDyn",
   "webstream.toWebReadableDynOpts",
   "webstream.toWebDuplexDyn",
   // The option walk behind duplexPair throws the not-supported Error for an

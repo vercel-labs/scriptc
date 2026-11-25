@@ -4769,6 +4769,18 @@ function validateFunction(
       return true;
     }
 
+    if (e.fn === "webstream.writableToWebDyn") {
+      // Writable.toWeb over a checked-dynamic value: (value, flags) → a web
+      // WritableStream.
+      if (
+        e.args.length !== 2 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "f64" ||
+        e.type.kind !== "dyn"
+      )
+        err(`libCall ${e.fn} must take (value, flags) and return a web stream`, e.loc);
+      return true;
+    }
     if (e.fn === "webstream.writableToWeb") {
       // Writable.toWeb: (writable, flags) → a web WritableStream.
       if (

@@ -405,12 +405,61 @@ export function matchIntegerCountedForLoop(
     limitGuarded || startGuarded || followers.some((f) => f.startGuarded || f.tripGuarded);
   let useful = false;
   let cost = 0;
-  const counter = (e: IrExpr): boolean =>
-    (e.kind === "varRef" &&
-      (e.localId === local.id || followers.some((f) => f.localId === e.localId))) ||
-    (e.kind === "bin" &&
+  // A constant the body declares once (`const at = b * STRIDE`, then
+  // `data[at]`): an access through it is an access at the counter. Only an
+  // immutable local declared once by its own declaration and never assigned
+  // stands for its initializer.
+  const bodyTemps = new Map<string, IrExpr>();
+  {
+    const declared = new Map<string, number>();
+    const assigned = new Set<string>();
+    everyStmtList(stmt.body, {
+      expr: (e) => {
+        if (e.kind === "assignExpr" || e.kind === "incDec") assigned.add(e.localId);
+        return true;
+      },
+      stmt: (s) => {
+        if (s.kind === "varDecl") {
+          declared.set(s.localId, (declared.get(s.localId) ?? 0) + 1);
+          if (s.init) bodyTemps.set(s.localId, s.init);
+        } else if (s.kind === "assign") assigned.add(s.localId);
+        return true;
+      },
+    });
+    for (const id of [...bodyTemps.keys()]) {
+      const bodyLocal = locals.get(id);
+      if (
+        declared.get(id) !== 1 ||
+        assigned.has(id) ||
+        !bodyLocal ||
+        bodyLocal.mutable ||
+        bodyLocal.boxed ||
+        bodyLocal.tdz
+      )
+        bodyTemps.delete(id);
+    }
+  }
+  // `seen` is the chain of body temps being unfolded from the current one, so
+  // a temp whose initializer reads itself, directly or through another temp,
+  // ends the chain rather than recursing forever. The set is shared down the
+  // chain and unwound after each temp, which allocates nothing per step.
+  const counterIn = (e: IrExpr, seen: Set<string>): boolean => {
+    if (e.kind === "varRef") {
+      if (e.localId === local.id || followers.some((f) => f.localId === e.localId)) return true;
+      const init = bodyTemps.get(e.localId);
+      if (init === undefined || seen.has(e.localId)) return false;
+      seen.add(e.localId);
+      const at = counterIn(init, seen);
+      seen.delete(e.localId);
+      return at;
+    }
+    return (
+      e.kind === "bin" &&
       (e.op === "+" || e.op === "-" || e.op === "*") &&
-      (counter(e.left) || counter(e.right)));
+      (counterIn(e.left, seen) || counterIn(e.right, seen))
+    );
+  };
+  const counter = (e: IrExpr): boolean => counterIn(e, new Set<string>());
   const expr = (e: IrExpr): boolean => {
     if (
       e.kind === "bin" &&
@@ -432,7 +481,7 @@ export function matchIntegerCountedForLoop(
     if (
       e.kind === "libCall" &&
       (e.fn === "math.imul" || e.fn === "math.clz32") &&
-      e.args.some(counter)
+      e.args.some((arg) => counter(arg))
     )
       useful = true;
     // A string read at the counter indexes with the integer directly.

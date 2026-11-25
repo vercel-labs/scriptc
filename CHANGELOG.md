@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- EventEmitter uses the error listeners left by an `errorMonitor` callback. The callback can add a listener to handle the current error or remove the last listener so the error is thrown.
+
 <!-- release:start -->
 
 ## 0.4.16

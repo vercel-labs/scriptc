@@ -1,7 +1,11 @@
 // Readable.from(stream) wraps a readable node stream as a fresh object-mode
-// stream (highWaterMark 1) that yields the stream's chunks; the source keeps
-// its own life-cycle (destroying the wrapper does not destroy it), and a
-// source error reaches the wrapper.
+// stream (highWaterMark 1) that yields the stream's chunks; from.js opens the
+// source's async iterator with destroyOnReturn true, so destroying the
+// wrapper destroys a source whose iteration started, and a source error
+// reaches the wrapper.
+import { createReadStream, writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Duplex, PassThrough, Readable } from "node:stream";
 
 const drain = async (stream) => {
@@ -88,4 +92,25 @@ const drain = async (stream) => {
   wrapped.destroy();
   await new Promise((resolve) => setTimeout(resolve, 10));
   console.log("destroyed", inner.destroyed, wrapped.destroyed);
+}
+
+{
+  // A started source that never reached EOF: destroying the wrapper
+  // destroys the file stream, whose descriptor is closed, as in Node. An
+  // iterator that left it alive would leak the descriptor.
+  const path = join(tmpdir(), `scriptc-readable-from-${process.pid}.txt`);
+  writeFileSync(path, "0123456789".repeat(1000));
+  const file = createReadStream(path, { highWaterMark: 1 });
+  const wrapped = Readable.from(file);
+  // Start the source's iteration, then destroy the wrapper before the
+  // file reaches EOF.
+  wrapped.read(1);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const closed = new Promise((resolve) => wrapped.once("close", resolve));
+  wrapped.destroy();
+  await closed;
+  console.log("file-destroyed", file.destroyed);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  console.log("file-closed", file.closed);
+  unlinkSync(path);
 }

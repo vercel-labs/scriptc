@@ -2969,17 +2969,31 @@ function lowerFromSource(
       ? lowerer.findMethodOn(lowerer.classes.get(srcT.className)!, "sym:asyncIterator")
       : null;
   // The built-in streams answer their iterator natively (no class-table
-  // method); a subclass declaring one overrides it.
+  // method); a subclass declaring one overrides it. The static class alone
+  // is not enough: a value passed through a base-typed slot keeps its own
+  // class, so a source that is not a fresh construction of its static class
+  // may be a descendant whose iterator must run (an access check or a
+  // redaction this fast path would skip). Such a source is refused below
+  // when the program declares such a descendant.
+  const overridesBelow =
+    streamInfo !== undefined && lowerer.overrideBelow(streamInfo, "sym:asyncIterator");
+  const exactSource = srcNode !== undefined && constructsStaticClass(lowerer, srcNode, srcT);
   const builtinIterator =
-    iteratorOverride === null || iteratorOverride.declarer.builtinStream != null;
+    (iteratorOverride === null || iteratorOverride.declarer.builtinStream != null) &&
+    !(overridesBelow && !exactSource);
   if (srcNode && (streamSides === "r" || streamSides === "rw") && builtinIterator && opts) {
     const sourceValue = lowerer.lowerExpr(srcNode);
     return withEncoding(
       orderedFrom(sourceValue, (ref, hwm) => {
+        // from.js opens the source's iterator with the default
+        // destroyOnReturn: true, so destroying the wrapper (or its
+        // iterator's return()) destroys the source stream. A file stream
+        // the wrapper never read to EOF is closed with its descriptor
+        // instead of staying open.
         const iter: IrExpr = {
           kind: "libCall",
           fn: "readable.iterator",
-          args: [ref, boolLit(false, loc)],
+          args: [ref, boolLit(true, loc)],
           type: DYN,
           loc,
         };
@@ -2994,6 +3008,26 @@ function lowerFromSource(
           loc,
         };
       }),
+    );
+  }
+  // The static class is the stream base, but a descendant in this program
+  // overrides Symbol.asyncIterator and the source is not a fresh instance of
+  // the static class: it may be that descendant, whose guard or redaction
+  // must run, and the class-iterable lowering needs the value's own class,
+  // which the static type does not name. Refuse instead of driving the
+  // built-in state past the override.
+  if (
+    srcNode &&
+    opts &&
+    (streamSides === "r" || streamSides === "rw") &&
+    streamInfo !== undefined &&
+    !builtinIterator &&
+    (iteratorOverride === null || iteratorOverride.declarer.builtinStream != null)
+  ) {
+    lowerer.noLowering(
+      `${what} over a stream whose subclasses override Symbol.asyncIterator`,
+      srcNode,
+      "the iterator is chosen by the value's class at run time; give the source a type that declares its own Symbol.asyncIterator, or iterate the stream directly",
     );
   }
   // The source as an instance of `t`, the class the checker gives it. The
@@ -3577,6 +3611,46 @@ function encodingLiteralOf(
       return encodingLiteralOf(lowerer, declaration.initializer);
   }
   return null;
+}
+
+/** Whether `node` is a fresh instance of exactly its static class: a `new`
+ * of that class (possibly behind parentheses or an assertion that keeps the
+ * type), or a `const` bound to one. Any other expression — a parameter, a
+ * field, a call's result — may hold an instance of a subclass. */
+function constructsStaticClass(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  staticType: IrType | null,
+): boolean {
+  let e = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(e) ||
+      ts.isAsExpression(e) ||
+      ts.isTypeAssertion(e) ||
+      ts.isSatisfiesExpression(e) ||
+      ts.isNonNullExpression(e)
+    ) {
+      e = e.expression;
+      continue;
+    }
+    if (ts.isIdentifier(e)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(e);
+      const declaration = symbol?.valueDeclaration;
+      if (
+        declaration &&
+        ts.isVariableDeclaration(declaration) &&
+        declaration.initializer &&
+        (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) !== 0
+      ) {
+        e = declaration.initializer;
+        continue;
+      }
+    }
+    break;
+  }
+  if (!ts.isNewExpression(e) || staticType === null) return false;
+  return typeEquals(lowerer.mapTypeOf(lowerer.typeOf(e)), staticType);
 }
 
 /** The compile-time value of a `highWaterMark` initializer that is

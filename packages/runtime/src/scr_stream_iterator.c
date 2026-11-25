@@ -74,14 +74,22 @@ static ScrDyn *sdi_next(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
 }
 
 /* return(): completes the iteration; the readable is destroyed unless
- * destroyOnReturn is false. */
+ * destroyOnReturn is false, or the source is a half-open duplex whose
+ * writable side is still open. Node's async iterator finally keeps that one
+ * alive (preserveHalfOpenDuplex in internal/streams/readable.js), so
+ * destroying a Readable.from wrapper leaves the duplex it reads alive
+ * while destroying the file or socket stream it reads closes it. */
 static ScrDyn *sdi_return(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SdiCtx *c = sdi_of(cl);
   bool first = !c->finished;
   c->finished = true;
-  if (first && c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0) {
+  bool half_open_preserved = c->s && scr_stream_prop(c->s, "allowHalfOpen") != 0 &&
+                             scr_stream_prop(c->s, "writable") != 0 &&
+                             scr_stream_prop(c->s, "writableEnded") == 0;
+  if (first && c->s && c->destroy_on_return && !half_open_preserved &&
+      scr_stream_prop(c->s, "destroyed") == 0) {
     scr_stream_release(scr_stream_destroy(c->s, NULL));
     if (scr_exc_pending()) scr_exc_clear();
   }

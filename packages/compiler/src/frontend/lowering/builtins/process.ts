@@ -1341,6 +1341,29 @@ export function processFunctionMemberValue(
   // process.cwd as a value: the process module's member (surfaces.ts).
   if (member === "cwd")
     return lowerer.lowerBuiltinCallableValue({ module: "process", member }, loc);
+  // The POSIX credential readers as values (`process.getuid ? process.getuid()
+  // : 501`): a function value that calls the same runtime reader through the
+  // same native callable-value wrapper every module function value uses. Node
+  // has no such member on Windows, so a Windows target reads undefined — and
+  // WASI has no uid/gid process model either, so its readers are absent there
+  // too (their runtime entry points throw the missing-member TypeError, and a
+  // truthy value would make a feature-detected call throw instead of taking
+  // the fallback).
+  if (PROCESS_CREDENTIAL_FNS.has(member)) {
+    if (lowerer.targetPlatform === "win32" || lowerer.targetPlatform === "wasi")
+      return dynUndefinedExpr(loc);
+    const fn = PROCESS_CREDENTIAL_FNS.get(member)!;
+    return lowerer.lowerNativeCallableValue(
+      {
+        fn,
+        params: [],
+        result: member === "getgroups" ? arrayOf(F64) : F64,
+        valueParams: [],
+      },
+      `process.${member}`,
+      loc,
+    );
+  }
   return null;
 }
 
@@ -1779,7 +1802,7 @@ export function lowerProcessProperty(
       "process.env as a value of this type (read one variable: process.env.NAME or process.env[name])",
     );
   }
-  if (member === "exit" || member === "cwd" || member === "getuid" || member === "kill") {
+  if (member === "exit" || member === "cwd" || member === "kill") {
     lowerer.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);
   }
   // process.stdout / process.stderr as first-class VALUES (flowing into

@@ -1107,6 +1107,64 @@ export function nsUndefRead(
   };
 }
 
+/** The symbol of a NAME whose declarations are all AMBIENT value forms
+ * TypeScript erases and nothing implements — `declare class`,
+ * `declare namespace` (including a `declare global { … }` augmentation),
+ * `declare enum`, or an initializer-less `declare let/var/const` /
+ * body-less `declare function` in a declaration file. Node has no binding
+ * for such a name, so `typeof <name>` answers "undefined" (typeof an
+ * unresolvable reference never throws, ECMA-262), even though the checker
+ * types the name. Null for the standard library and Node's own types,
+ * imports and aliases, island bindings, and any declaration that carries
+ * a runtime value or implementation. */
+export function ambientErasedValueSymbolOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): ts.Symbol | null {
+  if (lowerer.isStdlibSymbol(lowerer.checker.getSymbolAtLocation(ident))) return null;
+  if (NODE_GLOBALS_WITHOUT_NATIVE.has(ident.text)) return null;
+  if (isIslandImportBinding(lowerer, ident)) return null;
+  const checkerSym = lowerer.checker.getSymbolAtLocation(ident);
+  if (checkerSym === undefined || (checkerSym.flags & ts.SymbolFlags.Alias) !== 0) return null;
+  const sym = lowerer.resolveValueSymbol(ident);
+  if (!sym) return null;
+  // The variable and function forms keep their own narrower predicates
+  // (they exclude package-shim intrinsics and define the exact message).
+  if (ambientUndefinedVarSymbolOf(lowerer, ident) || ambientUndefinedFnSymbolOf(lowerer, ident))
+    return sym;
+  let sawErased = false;
+  for (const d of sym.declarations) {
+    // Type-world partners of a value declaration declare no value.
+    if (ts.isInterfaceDeclaration(d) || ts.isTypeAliasDeclaration(d)) continue;
+    if (!ambientDeclarationNode(d)) return null;
+    if (ts.isModuleDeclaration(d) || ts.isClassDeclaration(d) || ts.isEnumDeclaration(d)) {
+      sawErased = true;
+      continue;
+    }
+    if (ts.isVariableDeclaration(d) && d.initializer === undefined) {
+      sawErased = true;
+      continue;
+    }
+    if (ts.isFunctionDeclaration(d) && d.body === undefined) {
+      sawErased = true;
+      continue;
+    }
+    return null;
+  }
+  return sawErased ? sym : null;
+}
+
+/** Whether a declaration is AMBIENT in TypeScript's sense: it carries the
+ * `declare` modifier itself or an ancestor does (`declare global { … }`
+ * passes it down), or it lives in a declaration file. */
+function ambientDeclarationNode(declaration: ts.Node): boolean {
+  for (let node: ts.Node | undefined = declaration; node !== undefined; node = node.parent) {
+    if ((ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Ambient) !== 0) return true;
+    if (ts.isSourceFile(node)) return node.isDeclarationFile;
+  }
+  return false;
+}
+
 /** True when `node` executes during module INIT (top-level statement
  * position — namespace bodies included — not inside any function-like
  * body). Class static blocks and field initializers count as init-time:

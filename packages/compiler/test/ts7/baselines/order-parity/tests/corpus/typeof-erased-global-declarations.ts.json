@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/typeof-erased-global-declarations.ts"],
+  "diags": []
+}

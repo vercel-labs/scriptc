@@ -6,6 +6,9 @@ export const httpNeverThrow: readonly IrLibFn[] = [
   // counts (the corked buffer's length, the held head's, the socket's
   // pending bytes) and a boolean flag; registering a 'drain' listener
   // appends to a list. None of them runs program code.
+  // Appends a name and a string per element to the pair array; no program
+  // code runs.
+  "http.pairsAddList",
   "http.resWritableLength",
   "http.resWritableNeedDrain",
   "http.clientWritableLength",

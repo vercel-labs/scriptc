@@ -440,6 +440,12 @@ export const httpSignatures = defineLibFnSignatures({
     result: HTTPCLIENTREQ_T,
   },
   "http.clientWrite": { argTypes: [HTTPCLIENTREQ_T, STRING], result: BOOL },
+  /* A request-header pair per element of a string list (the options
+   * headers record's array values): appends to the pair array in order. */
+  "http.pairsAddList": {
+    argTypes: [arrayOf(STRING), STRING, arrayOf(STRING)],
+    result: arrayOf(STRING),
+  },
   "http.clientSetHeader": { argTypes: [HTTPCLIENTREQ_T, STRING, STRING], result: VOID },
   /** setHeader / appendHeader with a string, number, null or array value;
    * the stored value keeps its type for getHeader/getHeaders. MAY THROW. */

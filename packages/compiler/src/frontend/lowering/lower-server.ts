@@ -4578,6 +4578,104 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "goaway") {
+    // goaway([code][, lastStreamID][, opaqueData]): code defaults to 0 and
+    // lastStreamID to the session's last processed stream (-1 here), Node's
+    // defaults. The opaque data is a Buffer/Uint8Array appended to the frame.
+    requireStatementPosition(lowerer, call, "session.goaway(...)");
+    if (args.length > 3) {
+      lowerer.noLowering(
+        `session.goaway with ${args.length} arguments`,
+        call,
+        "use goaway() / goaway(code) / goaway(code, lastStreamID) / goaway(code, lastStreamID, opaqueData)",
+      );
+    }
+    const code: IrExpr =
+      args.length >= 1
+        ? lowerer.lowerExprExpecting(args[0]!, F64)
+        : { kind: "numLit", value: 0, type: F64, loc };
+    const last: IrExpr =
+      args.length >= 2
+        ? lowerer.lowerExprExpecting(args[1]!, F64)
+        : { kind: "numLit", value: -1, type: F64, loc };
+    if (args.length === 3) {
+      const opaque = lowerer.lowerExpr(args[2]!);
+      if (opaque.type.kind !== "bytes") {
+        lowerer.noLowering(
+          `session.goaway with a '${lowerer.fmt(opaque.type)}' opaqueData`,
+          args[2]!,
+          "the opaque data is a Buffer or Uint8Array",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http2.sessionGoawayData",
+        args: [receiver(), code, last, opaque],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionGoaway",
+      args: [receiver(), code, last],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "setTimeout") {
+    // setTimeout(msecs[, callback]): the session's socket idle timer; the
+    // callback is registered as a once listener on 'timeout' (Node).
+    requireStatementPosition(lowerer, call, "session.setTimeout(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `session.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(msecs) or setTimeout(msecs, callback)",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionSetTimeoutCb",
+        args: [receiver(), ms, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.sessionSetTimeout",
+      args: [receiver(), ms],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "ref" || name === "unref") {
+    // ref()/unref() on the session's underlying socket (Node answers
+    // undefined, the internal stream calls' shape).
+    requireStatementPosition(lowerer, call, `session.${name}(...)`);
+    if (args.length !== 0) {
+      lowerer.noLowering(`session.${name} with ${args.length} arguments`, call, `use ${name}()`);
+    }
+    return {
+      kind: "libCall",
+      fn: name === "ref" ? "http2.sessionRef" : "http2.sessionUnref",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "ping") {
     // session.ping([payload, ]callback): the (err, duration, payload)
     // callback crosses the checked-dynamic boundary. Node answers a
@@ -4715,6 +4813,24 @@ function lowerH2SessionMethodCall(
         loc,
       };
     }
+    if (event === "timeout") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.sessionOnTimeout",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "error") {
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -4770,20 +4886,29 @@ function lowerH2SessionMethodCall(
     }
     if (event === "goaway") {
       const cb = lowerer.lowerExpr(args[1]!);
-      // The runtime hands a listener (errorCode, lastStreamID): a third
-      // parameter would read an argument nobody passed.
-      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 2) {
+      // (errorCode, lastStreamID[, opaqueData]): the frame's opaque data is
+      // a Buffer when present and undefined otherwise, Node's shape.
+      const opaqueOk = (p: IrType): boolean => {
+        if (p.kind === "bytes" && p.elem === "u8") return true;
+        if (p.kind !== "union") return false;
+        const arms = lowerer.unions.get(p.unionId)?.arms ?? [];
+        return (
+          arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
+          arms.some((a) => a.kind === "undefinedT")
+        );
+      };
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 3) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners with more than two parameters (the opaque data is not passed) or returning a value",
+          "goaway listeners with more than three parameters or returning a value",
         );
       }
-      if (cb.type.params.some((p) => p.kind !== "f64")) {
+      if (cb.type.params.some((p, i) => (i < 2 ? p.kind !== "f64" : !opaqueOk(p)))) {
         lowerer.unsupported(
           "SC1090",
           args[1]!,
-          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number)",
+          "goaway listeners whose parameters are not (errorCode: number, lastStreamID: number, opaqueData?: Buffer)",
         );
       }
       return {
@@ -4815,7 +4940,7 @@ function lowerH2SessionMethodCall(
     lowerer.noLowering(
       `session.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"close", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
+      '"close", "timeout", "error", "connect", "stream", "goaway", "ping", "localSettings", and "remoteSettings" are the supported session events',
     );
   }
   lowerer.noLowering(

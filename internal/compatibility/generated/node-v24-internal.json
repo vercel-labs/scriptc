@@ -64041,6 +64041,7 @@
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
+          "tests/corpus/http2-session-controls.ts",
           "tests/corpus/http2-session-error.ts",
           "tests/corpus/http2-session-properties.ts",
           "tests/corpus/http2-stream-readbacks.ts",
@@ -64466,10 +64467,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.goaway",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64564,10 +64565,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64616,10 +64617,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2session.unref",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65182,10 +65183,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'timeout'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-session-controls.ts"
         ]
       },
       "anchorSource": "exact"

@@ -854,6 +854,9 @@ struct ScrH2Session {
   size_t nstreams, streams_cap;
   int32_t next_stream_id;      /* client request ids: 1, 3, 5, ... */
   int32_t last_recv_stream_id; /* the GOAWAY last-stream answer */
+  /* The highest stream id the session created (either direction): the
+   * default lastStreamID of session.goaway(), Node's last processed id. */
+  int32_t last_proc_stream_id;
   /* The highest peer-initiated stream this side created: a HEADERS block
    * on a lower id is a closed stream's late frame, dropped rather than
    * opening a stream again. */
@@ -872,7 +875,7 @@ struct ScrH2Session {
   bool connected;    /* client: the transport is established */
   bool error_emitted;
   ScrNetLs stream_ls, close_ls, err_ls, connect_ls, goaway_ls,
-      remote_settings_ls, local_settings_ls, ping_ls;
+      remote_settings_ls, local_settings_ls, ping_ls, timeout_ls;
   /* The stream the last lookup by id found (borrowed from `streams`):
    * the frames of one stream arrive together, and a frame's context
    * lookup and its handling ask for the same stream. */
@@ -993,6 +996,7 @@ static void scr_h2_session_drop_lists(ScrH2Session *s) {
   scr_net_ls_drop(&s->remote_settings_ls);
   scr_net_ls_drop(&s->local_settings_ls);
   scr_net_ls_drop(&s->ping_ls);
+  scr_net_ls_drop(&s->timeout_ls);
 }
 
 static void scr_h2_session_free(ScrH2Session *s) {
@@ -1197,6 +1201,7 @@ static ScrH2Stream *scr_h2_stream_new(ScrH2Session *sess, int32_t id) {
   st->id = id;
   st->file_fd = -1;
   st->sess = scr_http2_session_retain(sess);
+  if (id > sess->last_proc_stream_id) sess->last_proc_stream_id = id;
   if (sess->client) st->als = scr_als_capture();
   st->send_window = sess->peer_init_window ? (int64_t)sess->peer_init_window : SCR_H2_DEFAULT_WINDOW;
   st->recv_window = sess->local_settings.initial_window_size
@@ -2171,6 +2176,7 @@ static void scr_h2_on_closed_in(void *ctx) {
 }
 
 static bool scr_h2_on_err_in(void *ctx, ScrStr *msg);
+static void scr_h2_on_timeout(void *ctx);
 
 static bool scr_h2_on_err(void *ctx, ScrStr *msg) {
   ScrAlsCtx *prev = scr_als_dispatch_enter(((ScrH2Session *)ctx)->als);
@@ -4172,7 +4178,7 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   sess->local_settings.enable_connect_protocol = srv->enable_connect_protocol;
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   sess, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_h2_send_settings(sess);
   /* 'session' fires in the connection callback, before the connection's
    * first frame. Node's server listens to its own 'connection' (cleartext)
@@ -4458,7 +4464,7 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   if (cb) scr_net_ls_add(&s->connect_ls, cb, (void *)fn, true);
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   s, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_net_sock_set_native_established(sock, &scr_h2_on_established);
   scr_net_sock_write_native(sock, SCR_H2_PREFACE, 24);
   scr_h2_send_settings(s);
@@ -4567,6 +4573,73 @@ void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool 
     return;
   }
   scr_net_ls_add(&s->close_ls, cb, NULL, once);
+}
+
+/* The session's 'timeout': the underlying socket's idle timer fired (Node
+ * forwards the socket's event; the listeners run with this === session). */
+void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, once);
+}
+
+/* session.setTimeout(msecs[, callback]): the session socket's idle timer;
+ * the callback is registered as a once 'timeout' listener, as Node does. */
+void scr_http2_session_set_timeout(ScrH2Session *s, double msecs) {
+  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+}
+
+void scr_http2_session_set_timeout_cb(ScrH2Session *s, double msecs, ScrClosure *cb /*moves*/) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->timeout_ls, cb, NULL, true);
+  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+}
+
+/* session.ref()/unref(): the underlying socket's loop reference. */
+void scr_http2_session_set_ref(ScrH2Session *s, bool ref) {
+  if (s->sock != NULL) scr_net_sock_set_ref(s->sock, ref);
+}
+
+void scr_http2_session_ref(ScrH2Session *s) { scr_http2_session_set_ref(s, true); }
+
+void scr_http2_session_unref(ScrH2Session *s) { scr_http2_session_set_ref(s, false); }
+
+/* session.goaway([code][, lastStreamID][, opaqueData]): an explicit GOAWAY
+ * frame. lastStreamID < 0 is Node's default — the last processed stream id;
+ * opaqueData appends to the frame. The session refuses peer streams from
+ * here on (the session's goaway_sent gate). */
+void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
+                              ScrBytes *opaque /*borrowed, nullable*/) {
+  if (s == NULL || s->destroyed || !scr_h2_sock_alive(s)) return;
+  int32_t last = (int32_t)last_stream_id;
+  if (last < 0) last = s->last_proc_stream_id;
+  uint32_t l32 = (uint32_t)last & 0x7fffffffu;
+  uint32_t code32 = (uint32_t)(int64_t)code;
+  size_t olen = opaque != NULL ? (size_t)opaque->len : 0;
+  ScrH2Buf p = {0};
+  uint8_t hdr[8] = { (uint8_t)(l32 >> 24), (uint8_t)(l32 >> 16), (uint8_t)(l32 >> 8),
+                     (uint8_t)l32,          (uint8_t)(code32 >> 24), (uint8_t)(code32 >> 16),
+                     (uint8_t)(code32 >> 8), (uint8_t)code32 };
+  scr_h2_buf_put(&p, hdr, sizeof hdr);
+  if (olen > 0) scr_h2_buf_put(&p, opaque->data, olen);
+  scr_h2_send_frame(s, SCR_H2_F_GOAWAY, 0, 0, p.data, p.len);
+  free(p.data);
+  s->goaway_sent = true;
+  s->goaway_code = code32;
+}
+
+/* The socket's idle timer fired: forward to the session's listeners. */
+static void scr_h2_on_timeout(void *ctx) {
+  ScrH2Session *s = (ScrH2Session *)ctx;
+  if (s == NULL || s->destroyed || s->close_emitted) return;
+  scr_http2_session_retain(s);
+  scr_net_fire0_this(&s->timeout_ls, s, SCR_DYNH_H2_SESSION);
+  scr_http2_session_release(s);
 }
 
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -5090,6 +5163,11 @@ void scr_http2_connect_thunk0(ScrClosure *cb, ScrH2Session *sess, ScrNetSocket *
   if (sock) scr_net_sock_release(sock);
   scr_http2_session_release(sess);
   ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_http2_goaway_thunk3(ScrClosure *cb, double code, double last, ScrBytes *opaque) {
+  ((void (*)(ScrClosure *, double, double, ScrBytes *))cb->fn)(
+      cb, code, last, opaque != NULL ? scr_bytes_retain(opaque) : NULL);
 }
 
 void scr_http2_goaway_thunk2(ScrClosure *cb, double code, double last, ScrBytes *opaque) {

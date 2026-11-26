@@ -2394,6 +2394,13 @@ static void scr_h2_stream_flush(ScrH2Stream *st) {
   if (off > 0) {
     memmove(st->wbuf.data, st->wbuf.data + off, st->wbuf.len - off);
     st->wbuf.len -= off;
+    /* Bytes left the buffer: the transfer is progressing, so the stream is
+     * not idle. A window update calls back into this flush with no matching
+     * write() call, and that send is the only activity an upload-free
+     * response has — without this refresh a long, actively drained body
+     * times out mid-transfer. A flush that sends nothing (window or socket
+     * blocked) stays idle, as Node's does. */
+    scr_h2_stream_touch_timeout(st);
   }
   if (st->wbuf.len == 0 && st->want_end && !scr_h2_stream_local_closed(st)) {
     if (trailers_expected) {

@@ -19914,6 +19914,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
@@ -20057,6 +20058,7 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-table-options.ts"
         ]
@@ -56345,6 +56347,7 @@
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/cjs-exports-binding/main.cjs",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
@@ -57032,11 +57035,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:globals.EventSource",
-        "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.EventSource"
       },
       "anchorSource": "exact"
     },
@@ -57661,8 +57661,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.Storage"
       },
       "anchorSource": "exact"
     },
@@ -58562,8 +58562,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.exports",
+        "tests": [
+          "tests/corpus/cjs-exports-binding/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58683,8 +58686,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.localStorage"
       },
       "anchorSource": "exact"
     },
@@ -58975,8 +58978,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.sessionStorage"
       },
       "anchorSource": "exact"
     },

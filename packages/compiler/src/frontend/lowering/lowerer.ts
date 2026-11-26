@@ -1321,6 +1321,10 @@ export interface LowerOptions {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles: the files whose tsconfig
+   * sets `experimentalDecorators`, which take the legacy decorator order,
+   * calling convention and descriptor rules. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Coverage: additionally lower the unreached remainder (bodies nothing
    * on the entry path reaches) in a throwaway pass and report its
    * diagnostics and stats under `unreached` — the whole-program analysis
@@ -1530,6 +1534,8 @@ export interface LowererMode {
   dependencyJs?: ((file: string) => boolean) | undefined;
   /** LoadResult.parameterPropertiesFirst. */
   parameterPropertiesFirst?: ReadonlySet<string> | undefined;
+  /** LoadResult.typeWorld.legacyDecoratorFiles. */
+  legacyDecoratorFiles?: ReadonlySet<string> | undefined;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
   /** Coverage remainder: lower ONLY bodies outside `reachable`, skip the
@@ -2000,6 +2006,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2037,6 +2044,7 @@ function lowerToIrWithIslands(
             projectCheckJs: options.projectCheckJs ?? false,
             dependencyJs: options.dependencyJs,
             parameterPropertiesFirst: options.parameterPropertiesFirst,
+            legacyDecoratorFiles: options.legacyDecoratorFiles,
             targetPlatform,
             define: options.define,
             startupCrash,
@@ -2170,6 +2178,7 @@ function lowerToIrWithIslands(
         projectCheckJs: options.projectCheckJs ?? false,
         dependencyJs: options.dependencyJs,
         parameterPropertiesFirst: options.parameterPropertiesFirst,
+        legacyDecoratorFiles: options.legacyDecoratorFiles,
         ...(general
           ? {
               generalNodeStreams: true,
@@ -2266,6 +2275,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       targetPlatform,
       define: options.define,
       startupCrash,
@@ -2360,6 +2370,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(generalNodeStreams ? { generalNodeStreams: true } : {}),
       ...(dynNodeStreams ? { dynNodeStreams: true } : {}),
       reachable,
@@ -2612,6 +2623,7 @@ function lowerToIrWithIslands(
       projectCheckJs: options.projectCheckJs ?? false,
       dependencyJs: options.dependencyJs,
       parameterPropertiesFirst: options.parameterPropertiesFirst,
+      legacyDecoratorFiles: options.legacyDecoratorFiles,
       ...(general ? { generalNodeStreams: true } : {}),
       ...(general && dyn ? { dynNodeStreams: true } : {}),
       reachable,
@@ -6802,6 +6814,7 @@ export class Lowerer {
     // fixed for the program, like projectCheckJs.
     "dependencyJs",
     "parameterPropertiesFirst",
+    "legacyDecoratorFiles",
     "libraryCallbacks",
     "ffiBindingSymbols",
     "priorRetriedSymbols",
@@ -7333,6 +7346,9 @@ export class Lowerer {
   /** The files whose classes assign parameter properties before their
    * field initializers run (LoadResult.parameterPropertiesFirst). */
   readonly parameterPropertiesFirst: ReadonlySet<string> | null;
+  /** The files whose tsconfig sets `experimentalDecorators`
+   * (LoadResult.typeWorld.legacyDecoratorFiles). */
+  readonly legacyDecoratorFiles: ReadonlySet<string> | null;
   private readonly checkedJsFiles = new Map<ts.SourceFile, boolean>();
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
@@ -7999,6 +8015,7 @@ export class Lowerer {
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.dependencyJs = mode.dependencyJs ?? null;
     this.parameterPropertiesFirst = mode.parameterPropertiesFirst ?? null;
+    this.legacyDecoratorFiles = mode.legacyDecoratorFiles ?? null;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
     this.coverageReached = mode.coverageReached ?? false;

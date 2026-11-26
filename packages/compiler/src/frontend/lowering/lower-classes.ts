@@ -17,6 +17,7 @@ import {
   lowerDateSuperMethodCall,
 } from "./builtins/date-classes.js";
 import { predeclareForwardClass } from "./lower-stmts.js";
+import { classInitFlagStore } from "./cycle-initialization.js";
 import {
   arrayClassBase,
   arrayClassFieldsFn,
@@ -1184,6 +1185,12 @@ export interface ClassInfo {
    * pass (a decorator's return type may name a subclass declared BELOW the
    * class, so analysis cannot run while shapes are still collecting). */
   classDecorators?: ClassDecorationInfo;
+  /** LEGACY (`experimentalDecorators`) decorated INSTANCE METHODS, in
+   * declaration order — tsc's emit order for the instance group, which
+   * precedes the static group this change still fences — lowered at the
+   * class statement after the static initializers and blocks
+   * (lowerLegacyMemberDecorations). */
+  legacyMemberDecorations?: LegacyMethodDecoration[];
   /** The class's decoration PROVABLY throws before anything else in its
    * definition evaluates (the first effectful item in TC39 evaluation
    * order — class decorators, then heritage, then member decorators and
@@ -1198,10 +1205,26 @@ export interface ClassInfo {
   decorationThrows?: { name: string };
 }
 
+/** One legacy (`experimentalDecorators`) decorated method: its decorator
+ * expressions, applied at the class statement after the static initializers,
+ * with the member's prototype descriptor. `name` is the declared string key;
+ * the observed prototype slot whose value the descriptor starts from is
+ * `ClassInfo.prototypeOriginals`. */
+export interface LegacyMethodDecoration {
+  member: ts.MethodDeclaration;
+  decorators: ts.Decorator[];
+  name: string;
+}
+
 /** A decorated class's decoration state (see ClassInfo.classDecorators). */
 export interface ClassDecorationInfo {
   /** The class-level decorator nodes, source order. */
   nodes: ts.Decorator[];
+  /** `experimentalDecorators` semantics: decorator expressions evaluate and
+   * apply AFTER the class definition's heritage and static initializers
+   * (tsc's legacy emit order), and every decorator is called with the legacy
+   * argument list. Absent: TC39 standard semantics. */
+  legacy?: true;
   /** Per-decorator analysis (parallel to `nodes`). `call`: the decorator
    * expression's completed function type — the type its VALUE lowers to
    * and the ABI the application call dispatches — and whether it can
@@ -2009,6 +2032,14 @@ export function decoratorNodesOf(n: ts.Node): ts.Decorator[] {
   ).filter((m): m is ts.Decorator => m.kind === ts.SyntaxKind.Decorator);
 }
 
+/** Whether the file declaring `node` compiles under `experimentalDecorators`
+ * (LoadResult.typeWorld.legacyDecoratorFiles): its decorators take the legacy
+ * calling convention, evaluation order and descriptor rules. */
+export function isLegacyDecoratorSite(lowerer: Lowerer, node: ts.Node): boolean {
+  if (lowerer.legacyDecoratorFiles === null) return false;
+  return lowerer.legacyDecoratorFiles.has(ts.getSourceFileOfNode(node).fileName);
+}
+
 /** The AMBIENT name a decorator expression's evaluation throws on, or
  * null. Node erases ambient declarations (`declare let dec: any`,
  * `declare const instance: T`, `declare function dec<T>(t: T): T`), so
@@ -2398,6 +2429,8 @@ export function collectClassShapeInner(
     // decorators are not valid ES decorators — the checker rejects
     // them first.
     const classDecoratorNodes: ts.Decorator[] = [];
+    const legacyMembers: LegacyMethodDecoration[] = [];
+    const legacyDecorators = isLegacyDecoratorSite(lowerer, decl);
     {
       classDecoratorNodes.push(...decoratorNodesOf(decl));
       const decoratedMembers = decl.members.nodes.filter((m) => decoratorNodesOf(m).length > 0);
@@ -2419,6 +2452,7 @@ export function collectClassShapeInner(
         if (
           inst === undefined &&
           mixin === undefined &&
+          !legacyDecorators &&
           ts.isClassDeclaration(decl) &&
           decl.typeParameters === undefined
         ) {
@@ -2459,8 +2493,51 @@ export function collectClassShapeInner(
             return;
           }
         }
+        const parameterDecoratorOn = (member: ts.Node): ts.Decorator | null => {
+          const parameters =
+            (member as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters?.nodes ??
+            [];
+          for (const parameter of parameters) {
+            const decorators = (
+              (parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+            ).filter((m): m is ts.Decorator => m.kind === ts.SyntaxKind.Decorator);
+            if (decorators.length > 0) return decorators[0]!;
+          }
+          return null;
+        };
+        if (legacyDecorators) {
+          // Parameter decorators ride a member's descriptor call
+          // (`__param(i, d)` entries); they land with the parameter packet.
+          for (const member of decl.members.nodes) {
+            const dec = parameterDecoratorOn(member);
+            if (dec === null) continue;
+            if (ts.isConstructorDeclaration(member))
+              lowerer.unsupported(
+                "SC1090",
+                dec,
+                'constructor parameter decorators under "experimentalDecorators" (parameter decorators land with the property/parameter packet)',
+              );
+            else if (decoratorNodesOf(member).length === 0)
+              lowerer.unsupported(
+                "SC1090",
+                dec,
+                'method parameter decorators under "experimentalDecorators" (parameter decorators land with the property/parameter packet)',
+              );
+          }
+        }
+        if (
+          legacyDecorators &&
+          decoratedMembers.length > 0 &&
+          (!ts.isClassDeclaration(decl) || decl.typeParameters !== undefined)
+        )
+          lowerer.unsupported(
+            "SC1090",
+            decoratorNodesOf(decoratedMembers[0]!)[0]!,
+            'member decorators under "experimentalDecorators" on a class expression or a generic class (only a top-level class declaration has one decoration event)',
+          );
         for (const member of decoratedMembers) {
-          const dec = decoratorNodesOf(member)[0]!;
+          const decorators = decoratorNodesOf(member);
+          const dec = decorators[0]!;
           const kind = ts.isMethodDeclaration(member)
             ? "method decorators"
             : ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)
@@ -2470,6 +2547,40 @@ export function collectClassShapeInner(
                   ? "auto-accessor decorators"
                   : "field decorators"
                 : "member decorators";
+          if (legacyDecorators) {
+            // A legacy METHOD decorator lowers: its application gets the
+            // prototype descriptor at the class statement, and the census
+            // made its name an observed prototype slot. The other kinds
+            // (and static members, whose class-value property table is the
+            // follow-up's work) are named fences for now.
+            const staticMember =
+              ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
+            const literalName =
+              ts.isIdentifier((member as ts.MethodDeclaration).name) ||
+              ts.isStringLiteral((member as ts.MethodDeclaration).name) ||
+              ts.isNumericLiteral((member as ts.MethodDeclaration).name);
+            if (
+              ts.isMethodDeclaration(member) &&
+              !staticMember &&
+              literalName &&
+              parameterDecoratorOn(member) === null
+            ) {
+              legacyMembers.push({
+                member,
+                decorators,
+                name: (member.name as ts.Identifier | ts.StringLiteral | ts.NumericLiteral).text,
+              });
+              continue;
+            }
+            lowerer.unsupported(
+              "SC1090",
+              dec,
+              staticMember
+                ? `${kind} on a static member under "experimentalDecorators" (static member decoration lands with the property/parameter packet)`
+                : `${kind} under "experimentalDecorators" (an instance method with a literal name lowers in this change; the other member kinds land next)`,
+            );
+            continue;
+          }
           lowerer.unsupported(
             "SC1090",
             dec,
@@ -5752,8 +5863,14 @@ export function collectClassShapeInner(
       ...(symbolFields.size > 0 ? { symbolFields } : {}),
       ...(symbolMethods.size > 0 ? { symbolMethods } : {}),
       ...(classDecoratorNodes.length > 0
-        ? { classDecorators: { nodes: classDecoratorNodes } }
+        ? {
+            classDecorators: {
+              nodes: classDecoratorNodes,
+              ...(legacyDecorators ? { legacy: true as const } : {}),
+            },
+          }
         : {}),
+      ...(legacyMembers.length > 0 ? { legacyMemberDecorations: legacyMembers } : {}),
       ...(deferredInitFields.size > 0 ? { deferredInitFields } : {}),
       ...(escape.escapes ? { constructionEscapes: true as const } : {}),
     };
@@ -6262,11 +6379,16 @@ export function lowerStaticFieldInits(lowerer: Lowerer, info: ClassInfo): IrStmt
 }
 
 function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
-  // Decoration first: TC39 evaluates decorator expressions, creates the
-  // class, applies the decorators, and only THEN runs static field
-  // initializers and static blocks (verified against Node — the
-  // decorated result is what `this`/the class name mean inside them).
-  const out: IrStmt[] = [...lowerClassDecoration(lowerer, info)];
+  // Standard semantics decorates first: TC39 evaluates decorator
+  // expressions, creates the class, applies the decorators, and only THEN
+  // runs static field initializers and static blocks (verified against
+  // Node — the decorated result is what `this`/the class name mean inside
+  // them). Legacy (`experimentalDecorators`) emits the opposite order: the
+  // class definition, its heritage and every static initializer and block
+  // run before the first decorator expression evaluates, so those calls
+  // are appended after the items below.
+  const legacy = info.decl !== null && isLegacyDecoratorSite(lowerer, info.decl);
+  const out: IrStmt[] = legacy ? [] : [...lowerClassDecoration(lowerer, info)];
   const computedBase = info.decl
     ? lowerer.computedClassBases.get(lowerer.classNamer(info.decl))
     : undefined;
@@ -6494,7 +6616,171 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       }
     }
   }
+  // Legacy decorators evaluate and apply once the whole class definition,
+  // static initializers and static blocks have run: member decorators first
+  // (instance members in declaration order), then class decorators. The
+  // class binding is initialized before the first decorator body runs, so a
+  // cycle class's initialization flag is set here too (withClassInitFlag
+  // also sets it after the statement; the second store is inert).
+  if (legacy && info.decl !== null) {
+    const flagStore = classInitFlagStore(lowerer, info.def.name, locOf(info.decl));
+    if (flagStore !== null) out.push(flagStore);
+    out.push(...lowerLegacyMemberDecorations(lowerer, info));
+    out.push(...lowerClassDecoration(lowerer, info));
+  }
   return out;
+}
+
+/** Legacy (`experimentalDecorators`) METHOD decoration statements, emitted at
+ * the class statement after the static initializers and blocks. For each
+ * decorated method in tsc's emit order (instance members in declaration
+ * order), the decorator expressions evaluate in source order, then apply in
+ * REVERSE order with `(prototype, key, descriptor)`, where the descriptor
+ * starts as the descriptor of the member's observed prototype slot. A truthy
+ * return replaces the descriptor (`r = d(...) || r`), and the final
+ * descriptor is defined on the prototype — tsc's `__decorate` for a member
+ * with a descriptor. The census made every decorated method name an observed
+ * prototype slot, so calls and reads see a replaced value. */
+function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
+  const members = info.legacyMemberDecorations;
+  if (members === undefined || members.length === 0 || info.decl === null) return [];
+  const loc = locOf(info.decl);
+  const stmts: IrStmt[] = [];
+  try {
+    const prototype = classPrototypeData(lowerer, info, loc);
+    if (prototype === null) {
+      lowerer.unsupported(
+        "SC1090",
+        members[0]!.decorators[0]!,
+        'method decorators under "experimentalDecorators" (this class has no static prototype object to decorate)',
+      );
+    }
+    const prototypeLocal = lowerer.declareHiddenLocal("legacyproto", DYN);
+    stmts.push({
+      kind: "varDecl",
+      localId: prototypeLocal.id,
+      init: lowerer.coerceToExpected(prototype, DYN),
+      loc,
+    });
+    const dynField = (key: string, value: IrExpr, at: SrcLoc): { key: IrExpr; value: IrExpr } => ({
+      key: { kind: "strLit", value: key, type: STRING, loc: at },
+      value,
+    });
+    for (const entry of members) {
+      const at = locOf(entry.member);
+      const original = info.prototypeOriginals?.get(entry.name);
+      if (original === undefined) {
+        lowerer.unsupported(
+          "SC1090",
+          entry.decorators[0]!,
+          `method decorators under "experimentalDecorators" on '${entry.name}' (its prototype slot has no static lowering)`,
+        );
+      }
+      const keyLocal = lowerer.declareHiddenLocal("legacykey", DYN);
+      stmts.push({
+        kind: "varDecl",
+        localId: keyLocal.id,
+        init: lowerer.coerceToExpected(
+          { kind: "strLit", value: entry.name, type: STRING, loc: at },
+          DYN,
+        ),
+        loc: at,
+      });
+      // The descriptor JS's Object.getOwnPropertyDescriptor would answer for
+      // the prototype method: same value object, writable and configurable,
+      // non-enumerable.
+      const descriptor: IrExpr = {
+        kind: "dynObjLit",
+        fields: [
+          dynField("value", { kind: "varRef", localId: original, type: DYN, loc: at }, at),
+          dynField(
+            "writable",
+            lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc: at }, DYN),
+            at,
+          ),
+          dynField(
+            "enumerable",
+            lowerer.coerceToExpected({ kind: "boolLit", value: false, type: BOOL, loc: at }, DYN),
+            at,
+          ),
+          dynField(
+            "configurable",
+            lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc: at }, DYN),
+            at,
+          ),
+        ],
+        type: DYN,
+        loc: at,
+      };
+      // Every decorator expression evaluates in SOURCE order before the
+      // first application runs (a later factory's side effects must not
+      // precede an earlier one's).
+      const callees: { localId: string; decorator: ts.Decorator }[] = [];
+      for (const d of entry.decorators) {
+        const callee = lowerer.declareHiddenLocal("legacydec", DYN);
+        stmts.push({
+          kind: "varDecl",
+          localId: callee.id,
+          init: lowerer.lowerExprExpecting(d.expression, DYN),
+          loc: locOf(d),
+        });
+        callees.push({ localId: callee.id, decorator: d });
+      }
+      let descriptorId = lowerer.declareHiddenLocal("legacydesc", DYN).id;
+      stmts.push({ kind: "varDecl", localId: descriptorId, init: descriptor, loc: at });
+      for (let i = callees.length - 1; i >= 0; i--) {
+        const d = callees[i]!.decorator;
+        const dLoc = locOf(d);
+        const result = lowerer.declareHiddenLocal("legacyres", DYN);
+        stmts.push({
+          kind: "varDecl",
+          localId: result.id,
+          init: {
+            kind: "logical",
+            op: "||",
+            left: {
+              kind: "dynCall",
+              callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
+              calleeName: "decorator",
+              args: [
+                { kind: "varRef", localId: prototypeLocal.id, type: DYN, loc: dLoc },
+                { kind: "varRef", localId: keyLocal.id, type: DYN, loc: dLoc },
+                { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
+              ],
+              type: DYN,
+              loc: dLoc,
+            },
+            right: { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
+            type: DYN,
+            loc: dLoc,
+          },
+          loc: dLoc,
+        });
+        descriptorId = result.id;
+      }
+      stmts.push({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.defineProperty",
+          args: [
+            { kind: "varRef", localId: prototypeLocal.id, type: DYN, loc: at },
+            { kind: "varRef", localId: keyLocal.id, type: DYN, loc: at },
+            { kind: "varRef", localId: descriptorId, type: DYN, loc: at },
+          ],
+          type: DYN,
+          loc: at,
+        },
+        loc: at,
+      });
+    }
+    return stmts;
+  } catch (e) {
+    if (!(e instanceof PoisonError)) throw e;
+    lowerer.stats.statementsFailed++;
+    lowerer.bumpFileStat(loc.file, "failed");
+    return [];
+  }
 }
 
 /** Post-collection analysis of a decorated class (all shapes registered —
@@ -6702,10 +6988,13 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
       temps.push({ localId: local.id, funcType: shape.funcType, replaces: shape.replaces });
     }
-    // 1b. The heritage is read after every decorator factory evaluated and
-    // before the class exists: a cycle class read there throws its
-    // ReferenceError at this point, exactly where Node throws it.
-    stmts.push(...lowerer.heritageChecksFor(info.decl, loc));
+    // 1b. STANDARD semantics: the heritage is read after every decorator
+    // factory evaluated and before the class exists, so a cycle class read
+    // there throws its ReferenceError at this point, exactly where Node
+    // throws it. LEGACY semantics evaluates heritage at the head of the class
+    // statement (withClassInitFlag emits those checks there) — decorators come
+    // after the class body, so nothing here may re-read it.
+    if (cd.legacy !== true) stmts.push(...lowerer.heritageChecksFor(info.decl, loc));
     // 2. Applications, reverse order, over the accumulating class value.
     let current: IrExpr = classValueRef(lowerer, info, info.decl);
     for (let i = temps.length - 1; i >= 0; i--) {

@@ -718,9 +718,10 @@ export interface TypeWorldDifferences {
    * (normalized paths), or null when the project has no tsconfig. A
    * JavaScript file outside this set is a dependency's shipped code. */
   projectSources: ReadonlySet<string> | null;
-  /** The files with decorators the project compiles under
-   * `experimentalDecorators`: refused by name (SC0016), which stands in for
-   * the checker's errors about those decorators' signatures. */
+  /** Every file whose tsconfig sets `experimentalDecorators`: its classes
+   * and their decorators take the legacy calling convention, evaluation
+   * order and descriptor rules (lowering reads the set through LowerOptions).
+   * A file compiled with `emitDecoratorMetadata` is still refused (SC0016). */
   legacyDecoratorFiles: ReadonlySet<string>;
   /** The project's `module` setting, or null. */
   projectModule: string | null;
@@ -2211,48 +2212,47 @@ function loadProgram7(
     }
     // The other two things a file's tsconfig decides: the order of class
     // field initializers and parameter properties, which the lowering
-    // follows, and legacy decorators, which it refuses by name.
+    // follows, and legacy decorators, which the lowering lowers with the
+    // legacy calling convention and evaluation order. `emitDecoratorMetadata`
+    // is still refused by name: the design-type metadata serializer lands
+    // with its own support.
     const parameterPropertiesFirst = new Set<string>();
     const legacyDecoratorFiles = new Set<string>();
-    let legacyDecorators = 0;
-    let firstLegacyDecorator: ts.Node | null = null;
+    let metadataDecorators = 0;
+    let firstMetadataDecorator: ts.Node | null = null;
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || !/\.(?:[mc]?ts|tsx)$/.test(sf.fileName)) continue;
       const dialect = dialectOf(sf.fileName);
       if (dialect === null) continue;
       if (dialect.parameterPropertiesFirst) parameterPropertiesFirst.add(sf.fileName);
-      const legacy = dialect.legacyDecorators;
-      if (legacy === null) continue;
+      if (dialect.legacyDecorators === null) continue;
+      // Every file compiled under the setting is marked, decorators or not:
+      // the lowering's class-statement order and calling convention follow
+      // the file's dialect, and only files with the setting have one.
+      legacyDecoratorFiles.add(sf.fileName);
+      if (dialect.legacyDecorators !== "all") continue;
       ts.walkPreorder(
         sf,
         (node) => {
-          const decorated = node.parent;
-          if (
-            legacy === "members" &&
-            decorated !== undefined &&
-            (ts.isClassDeclaration(decorated) || ts.isClassExpression(decorated))
-          )
-            return;
-          legacyDecorators++;
-          legacyDecoratorFiles.add(sf.fileName);
-          firstLegacyDecorator ??= node;
+          metadataDecorators++;
+          firstMetadataDecorator ??= node;
         },
         DECORATORS,
       );
     }
-    if (firstLegacyDecorator !== null) {
-      const at: ts.Node = firstLegacyDecorator;
+    if (firstMetadataDecorator !== null) {
+      const at: ts.Node = firstMetadataDecorator;
       config.diags.push(
         unfollowedSettingDiag(
-          '"experimentalDecorators"',
-          "a decorator here has the legacy semantics (it is called with the target, the member name and a descriptor, in another order), and scriptc compiles standard decorators only",
+          '"emitDecoratorMetadata"',
+          'this project sets "emitDecoratorMetadata", and scriptc does not emit the design-type metadata it asks for yet',
           {
             file: ts.getSourceFileOfNode(at).fileName,
             start: ts.tokenStartOfNode(at),
             end: at.end,
           },
-          legacyDecorators,
-          "remove the decorators from the compiled program, or write them as standard decorators and drop the setting",
+          metadataDecorators,
+          'remove "emitDecoratorMetadata" from the tsconfig until metadata support lands, or drop the decorators it covers',
         ),
       );
     }
@@ -9018,18 +9018,9 @@ function preflightGate7(load: LoadResult): PreflightGate {
           : (tscWorld.projectWorld ?? tscWorld.program);
     // The errors a tsconfig setting scriptc does not follow produces, one
     // by one: a single SC0016 names the setting instead.
-    const legacyDecoratorFiles = load.typeWorld?.legacyDecoratorFiles;
     const projectModule = load.typeWorld?.projectModule ?? null;
     const moduleFormat: ScrDiagnostic[] = [];
     for (const d of errorsOf(world)) {
-      // The legacy decorators themselves are refused where the first one
-      // stands (loadProgram7).
-      if (
-        LEGACY_DECORATOR_ERRORS.has(d.code) &&
-        d.fileName !== undefined &&
-        legacyDecoratorFiles?.has(d.fileName) === true
-      )
-        continue;
       const diag = toPassthrough(d);
       if (projectModule !== null && (d.code === 1202 || d.code === 1203)) {
         moduleFormat.push(diag);
@@ -10840,12 +10831,6 @@ const DOM_GLOBALS = new Set([
 ]);
 /** Root identifiers whose members the bundled Node fallback declares. */
 const NODE_GLOBAL_ROOTS = new Set(["process", "Buffer", "console", "globalThis"]);
-
-/** TypeScript's errors about a decorator's signature when it is checked as
- * a standard decorator: TS1238 to TS1241 (unable to resolve the signature of
- * a class, parameter, property or method decorator), TS1270 and TS1271 (its
- * return type). */
-const LEGACY_DECORATOR_ERRORS: ReadonlySet<number> = new Set([1238, 1239, 1240, 1241, 1270, 1271]);
 
 /** TS2729 ("Property 'x' is used before its initialization") for a field
  * initializer that reads a parameter property, in a file whose tsconfig

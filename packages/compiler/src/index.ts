@@ -128,7 +128,11 @@ import {
   readProfileFunctionNames,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativeBuildPartitions, nativePartitionPaths } from "./backend/native-codegen-core.js";
+import {
+  generatedDispatchOptFor,
+  nativeBuildPartitions,
+  nativePartitionPaths,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -1025,6 +1029,7 @@ async function emitNativeProgramObject(
       outputKind: "obj",
       sourcePath: entryPath,
       optimization: opts.optimization === "dev" ? "0" : "2",
+      dispatchOpt: generatedDispatchOptFor(opts.optimization),
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
@@ -1388,6 +1393,7 @@ async function prepareExecutableInput(
           outputKind,
           sourcePath: entryPath,
           optimization: opts.optimization === "dev" ? "0" : "2",
+          dispatchOpt: generatedDispatchOptFor(opts.optimization),
           ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
         });
       } catch (err) {

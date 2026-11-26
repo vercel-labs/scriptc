@@ -57,6 +57,7 @@ import {
   validateNativeCodegenVersion as validateHelperVersion,
   type NativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeDispatchOpt,
   type NativeHelperFailure,
 } from "./native-codegen-core.js";
 export {
@@ -133,6 +134,10 @@ export interface NativeCodegenOptions {
   partitions?: number;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** Level for the emitter's generated dynamic-dispatch helpers, chosen from
+   * the build's posture by generatedDispatchOptFor and sent only when the
+   * helper advertises `dispatch-opt`. */
+  dispatchOpt?: NativeDispatchOpt | undefined;
 }
 
 /** Writes LLVM text in large batches; see `writeTextParts`. */
@@ -367,6 +372,8 @@ function cacheKey(
       .update("\0")
       .update(options.sanitize === true ? "sanitize" : "plain")
       .update("\0")
+      .update(options.dispatchOpt ?? "")
+      .update("\0")
       .update(options.outputKind)
       // The module source file name is part of the output (the source name
       // and the local-function profile identities), so it keys the artifact.
@@ -378,6 +385,19 @@ function cacheKey(
       .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
       .digest("hex")
   );
+}
+
+/** The dispatch-helper level the caller chose, when this helper understands
+ * `--dispatch-opt`. The level is the build posture's decision
+ * (generatedDispatchOptFor), not the LLVM opt-level: a speed and a release
+ * build both pass `--opt-level 2` but differ in how much of the pipeline the
+ * large helpers get. */
+function dispatchOptFor(
+  options: NativeCodegenOptions,
+  helper: HelperIdentity,
+): NativeDispatchOpt | undefined {
+  if (helper.version.features?.includes("dispatch-opt") !== true) return undefined;
+  return options.dispatchOpt;
 }
 
 function artifactMode(): number {
@@ -473,6 +493,7 @@ export async function emitNativeArtifact(
     );
   }
   const helper = await resolveHelper(target, options.resolvePackageJson, options.helperHost);
+  const dispatchOpt = dispatchOptFor(options, helper.identity);
   // A build that records block counts runs the helper on every partition.
   const root = await prepareBuildCacheRoot(
     options.profile?.recordBlocks !== undefined
@@ -559,6 +580,7 @@ export async function emitNativeArtifact(
             ),
           ]),
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
+      ...(dispatchOpt === undefined ? [] : ["--dispatch-opt", dispatchOpt]),
       ...nativeProfileHelperArgs(options.profile),
     ]);
     for (const stage of stages) {

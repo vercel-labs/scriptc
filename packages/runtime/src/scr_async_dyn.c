@@ -3551,6 +3551,7 @@ static ScrDyn *scr_crypto_subtle_method_fence(ScrClosure *closure, ScrDyn *const
                    "crypto.subtle.%.*s as a value (call it on the SubtleCrypto object) [SC1090]",
                    (int)(text ? text->len : 6), text ? (const char *)text->data : "method");
   if (text) scr_str_release(text);
+  scr_dyn_release(name);
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC1090");
   return NULL;
 }

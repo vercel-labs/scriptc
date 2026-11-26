@@ -30,6 +30,7 @@ for (const [name, crl] of [
   ["crl-future", readFileSync(`${D}/crl-future.pem`)],
   ["crl-badsig", readFileSync(`${D}/crl-badsig.pem`)],
   ["crl-untrusted", readFileSync(`${D}/crl-untrusted.pem`)],
+  ["crl-root-revoked", readFileSync(`${D}/crl-root-revoked.pem`)],
   ["crl-array-single", [revokedCrl]],
   ["crl-array-first", [cleanCrl, revokedCrl]],
   ["crl-array-last", [revokedCrl, cleanCrl]],

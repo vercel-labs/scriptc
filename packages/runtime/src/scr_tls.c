@@ -1016,6 +1016,12 @@ typedef struct ScrTlsSock {
   /* the topmost certificate the verification walked — the callback runs
    * depth-descending, the leaf last, so the leaf's turn closes the walk */
   mbedtls_x509_crt *vrfy_top;
+  /* the chain mbedTLS actually built, by depth (leaf at 0), recorded by the
+   * callback: the CRL check walks the verified chain, never the presented
+   * list, so a peer cannot shadow the issuer it selected with an extra
+   * certificate */
+  mbedtls_x509_crt *vrfy_chain[16];
+  size_t vrfy_chain_len;
   /* SNI pre-parse state (server side with an SNI callback only) */
   int sni_state;
   bool in_handshake;   /* a synchronous cb answer must not re-pump */
@@ -1280,12 +1286,17 @@ static bool scr_tls_crl_lists(const mbedtls_x509_crl *crl, const mbedtls_x509_cr
   return false;
 }
 
-/* The built chain for CRL checking: the presented certificates, completed
- * through the trust list to the self-issued root. */
-static size_t scr_tls_crl_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf,
-                                const mbedtls_x509_crt *chain[16]) {
+/* The built chain for CRL checking: the certificates mbedTLS verified,
+ * completed through the trust list to the self-issued root. */
+static size_t scr_tls_crl_chain(ScrTlsSock *t, const mbedtls_x509_crt *chain[16]) {
   size_t n = 0;
-  for (const mbedtls_x509_crt *c = leaf; c != NULL && n < 16; c = c->next) chain[n++] = c;
+  /* The chain mbedTLS verified, leaf first. Its entries are the certificates
+   * that signed each other, not the peer's presented list: an extra
+   * certificate the peer sends (a self-issued decoy carrying an issuer's
+   * public key, say) is never verified into the chain, so it cannot stand in
+   * for an issuer whose CRL would revoke it. */
+  for (size_t depth = 0; depth < t->vrfy_chain_len && n < 16; depth++)
+    chain[n++] = t->vrfy_chain[depth];
   while (n > 0 && n < 16) {
     const mbedtls_x509_crt *top = chain[n - 1];
     bool self = top->issuer_raw.len == top->subject_raw.len &&
@@ -1322,15 +1333,26 @@ static size_t scr_tls_crl_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf,
  * Every certificate with an issuer needs a CRL from that issuer; the first
  * valid CRL per issuer decides. A revocation outranks a missing CRL, as
  * Node reports it. */
-static void scr_tls_crl_check_chain(ScrTlsSock *t, mbedtls_x509_crt *leaf) {
+static void scr_tls_crl_check_chain(ScrTlsSock *t) {
   const mbedtls_x509_crl *crls = scr_tls_client_crls(t);
   if (crls == NULL) return;
   const mbedtls_x509_crt *chain[16];
-  size_t n = scr_tls_crl_chain(t, leaf, chain);
+  size_t n = scr_tls_crl_chain(t, chain);
   bool revoked = false, missing = n == 0, sig_fail = false, expired = false, future = false;
-  for (size_t i = 0; i + 1 < n; i++) {
+  for (size_t i = 0; i < n; i++) {
     const mbedtls_x509_crt *cert = chain[i];
-    const mbedtls_x509_crt *issuer = chain[i + 1];
+    const mbedtls_x509_crt *issuer;
+    if (i + 1 < n) {
+      issuer = chain[i + 1];
+    } else {
+      /* The top of the chain has no issuer of its own unless it is the
+       * self-issued root, and OpenSSL still checks a root's CRL: a CRL the
+       * root issued may revoke the root itself. */
+      bool self = cert->issuer_raw.len == cert->subject_raw.len &&
+                  memcmp(cert->issuer_raw.p, cert->subject_raw.p, cert->subject_raw.len) == 0;
+      if (!self) break;
+      issuer = cert;
+    }
     const mbedtls_x509_crl *match = NULL;
     for (const mbedtls_x509_crl *crl = crls; crl != NULL && crl->raw.len > 0; crl = crl->next) {
       if (crl->issuer_raw.len == cert->issuer_raw.len &&
@@ -1512,6 +1534,12 @@ static bool scr_tls_pathlen_exceeded(ScrTlsSock *t, mbedtls_x509_crt *crt, int d
 static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t *flags) {
   ScrTlsSock *t = (ScrTlsSock *)ctx;
   t->vrfy_seen = true;
+  /* Keep the chain mbedTLS built: the CRL check walks these certificates,
+   * not the peer's presented list, whose extra entries it never verified. */
+  if (depth >= 0 && (size_t)depth < 16) {
+    t->vrfy_chain[depth] = crt;
+    if ((size_t)depth + 1 > t->vrfy_chain_len) t->vrfy_chain_len = (size_t)depth + 1;
+  }
   if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
@@ -1549,7 +1577,7 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
    * the handshake like another verification error; rejectUnauthorized:
    * false still records it for authorizationError. */
   if (depth == 0 && !t->vrfy_blocked && scr_tls_client_crls(t) != NULL) {
-    scr_tls_crl_check_chain(t, crt);
+    scr_tls_crl_check_chain(t);
     if (t->vrfy_crl_revoked || t->vrfy_crl_missing || t->vrfy_crl_sig_fail ||
         t->vrfy_crl_expired || t->vrfy_crl_future)
       *flags |= MBEDTLS_X509_BADCERT_OTHER;

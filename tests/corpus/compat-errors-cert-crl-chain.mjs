@@ -43,3 +43,33 @@ for (const [label, trust, crl] of [
   });
   server.close();
 }
+
+// A peer may append extra certificates the verification never uses. The CRL
+// check walks the verified chain, so a self-issued decoy naming an issuer
+// (here: the intermediate's subject and public key, but its own serial)
+// cannot stand in for that issuer and hide the root-issued revocation.
+const decoy = readFileSync(`${D}/decoy-int.pem`);
+const decoyCert = Buffer.concat([readFileSync(`${D}/int-leaf.pem`), readFileSync(`${D}/int-ca.pem`), decoy]);
+for (const [label, crl] of [
+  ["decoy-revoked-intermediate", [leafCrl, intRevoked]],
+  ["decoy-clean", [leafCrl, intClean]],
+]) {
+  const server = tls.createServer({ cert: decoyCert, key }, (socket) => socket.end("ok"));
+  server.on("tlsClientError", () => {});
+  const port = await new Promise((resolve) =>
+    server.listen(0, "127.0.0.1", () => resolve(server.address().port)),
+  );
+  await new Promise((done) => {
+    const client = tls.connect({ port, host: "127.0.0.1", servername: "localhost", ca, crl });
+    client.on("secureConnect", () => {
+      console.log(label, "secure", client.authorized);
+      client.end();
+      done(undefined);
+    });
+    client.on("error", (error) => {
+      console.log(label, error.code, JSON.stringify(error.message));
+      done(undefined);
+    });
+  });
+  server.close();
+}

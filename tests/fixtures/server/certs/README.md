@@ -61,6 +61,15 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
 `int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs. `ca.srl` is untouched (the databases live in copies).
 
+`crl-root-revoked.pem` is the root CA's CRL with `ca.pem` itself revoked, for the case OpenSSL also checks: the whole chain includes the trusted root, so a CRL the root issued can revoke the root. It comes from the root CA directory above, whose database holds one entry for `ca.pem`:
+
+    openssl ca -batch -config root-db/ca.cnf -revoke ca.pem
+    openssl ca -batch -config root-db/ca.cnf -gencrl -crl_lastupdate 20200101000000Z -crl_nextupdate 20300101000000Z -out crl-root-revoked.pem
+
+`decoy-int.pem` is a self-issued certificate with the intermediate's subject and public key but its own serial, to append to a peer's presented chain: verification never uses it, so a CRL check that walked the presented list instead of the verified chain would let it stand in for the intermediate and hide the root-issued revocation. It is minted from the committed (throwaway) intermediate key, which is what a peer with the intermediate's public key can construct:
+
+    openssl req -new -x509 -key int-ca-key.pem -subj "/CN=scriptc test intermediate CA" -days 3650 -out decoy-int.pem
+
 `expired.pem`/`expired-key.pem` is a self-signed localhost certificate whose validity window ended on 2021-01-01, for the CERT_HAS_EXPIRED shape: a client that trusts it through `ca` still fails verification because it has expired.
 
     openssl ecparam -genkey -name prime256v1 -noout -out expired-key.pem

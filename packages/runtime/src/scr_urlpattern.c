@@ -1465,8 +1465,14 @@ static ScrStr *ws_encode_pattern_segment(const ScrStr *seg) {
     char c = seg->data[i];
     if (c == '\\' && i + 1 < seg->len) {
       char next = seg->data[i + 1];
-      if (strchr("*+?:{}()\\", next) != NULL) {
-        /* an escaped pattern character is literal pattern text */
+      /* An escape before a name character delimits the parameter name from
+       * the literal suffix that follows it (`/:id\_suffix` requires the
+       * suffix); before pattern syntax it is the literal spelling of the
+       * character. Both must survive canonicalization: dropping the escape
+       * would let the suffix join the name and widen the matcher. */
+      bool ends_name = (next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') ||
+                       (next >= '0' && next <= '9') || next == '_' || next == '$';
+      if (ends_name || strchr("*+?:{}()\\", next) != NULL) {
         ws_buf_add(&b, seg->data + i, 2);
       } else {
         /* a redundant escape is dropped; the character is a literal */
@@ -1624,26 +1630,41 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
     scr_str_release(base_path);
   }
   ScrStr **out = calloc(n + base_n + 1, sizeof *out);
-  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  bool *out_literal = calloc(n + base_n + 1, sizeof *out_literal);
+  if (out == NULL || out_literal == NULL) scr_trap("scriptc: out of memory\n");
   size_t out_n = 0;
-  for (size_t b = 0; b < base_n; b++) out[out_n++] = base_segs[b];
+  for (size_t b = 0; b < base_n; b++) {
+    out[out_n] = base_segs[b];
+    out_literal[out_n++] = true;
+  }
   for (size_t i = 0; i < n; i++) {
     ScrStr *seg = mine[i];
     bool literal = ws_pattern_segment_literal(seg);
     bool last = i == n - 1;
     if (literal && ws_single_dot(seg->data, seg->len)) {
       /* a "." ends the path with its empty directory segment */
-      if (last) out[out_n++] = scr_str_new("", 0);
+      if (last) {
+        out[out_n] = scr_str_new("", 0);
+        out_literal[out_n++] = true;
+      }
       scr_str_release(seg);
       continue;
     }
     if (literal && ws_double_dot(seg->data, seg->len)) {
-      if (out_n > 0) scr_str_release(out[--out_n]);
-      if (last) out[out_n++] = scr_str_new("", 0);
+      /* ".." ascends over a literal segment only: a segment that carries
+       * pattern syntax is not a directory the path can leave, so the ".."
+       * itself is dropped and the pattern stays (removing it would change
+       * which URLs the pattern matches). */
+      if (out_n > 0 && out_literal[out_n - 1]) scr_str_release(out[--out_n]);
+      if (last) {
+        out[out_n] = scr_str_new("", 0);
+        out_literal[out_n++] = true;
+      }
       scr_str_release(seg);
       continue;
     }
-    out[out_n++] = ws_encode_pattern_segment(seg);
+    out[out_n] = ws_encode_pattern_segment(seg);
+    out_literal[out_n++] = literal;
     scr_str_release(seg);
   }
   WsBuf b = {0};
@@ -1653,6 +1674,7 @@ static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
     scr_str_release(out[i]);
   }
   if (out_n == 0) ws_buf_add(&b, "/", 1);
+  free(out_literal);
   free(out);
   free(mine);
   free(base_segs);
@@ -2264,6 +2286,46 @@ static const ScrDynHandleOps ws_ops = {
 
 /* ── construction ──────────────────────────────────────────────────── */
 
+/* Whether `options` is a value a Web IDL dictionary converts: any object,
+ * array, function, proxy, native handle or compiled record capsule. */
+static bool ws_options_object(const ScrDyn *options) {
+  switch (options->kind) {
+  case SCR_DYN_OBJ:
+  case SCR_DYN_ARR:
+  case SCR_DYN_TYPED_REF:
+  case SCR_DYN_HANDLE:
+  case SCR_DYN_PROXY:
+  case SCR_DYN_FUNC:
+    return true;
+  default:
+    return false;
+  }
+}
+
+/* `options.ignoreCase` as a JavaScript property read: an accessor runs, an
+ * inherited member counts, and a compiled record or proxy answers through
+ * its own path (+1, or NULL with the getter's exception pending). */
+static ScrDyn *ws_option_flag(const ScrDyn *options, const char *key, size_t key_len) {
+  ScrStr *name = scr_str_new(key, key_len);
+  ScrDyn *value;
+  if (options->kind == SCR_DYN_TYPED_REF) {
+    value = scr_dyn_typed_ref_key_get(options, name);
+    if (value == NULL && !scr_exc_pending()) {
+      ScrDyn *view = scr_dyn_typed_ref_materialize(options);
+      if (view != NULL) {
+        value = scr_dyn_obj_read(view, key, key_len);
+        scr_dyn_release(view);
+      }
+    }
+  } else if (options->kind == SCR_DYN_PROXY) {
+    value = scr_dyn_proxy_get(options, name);
+  } else {
+    value = scr_dyn_obj_read(options, key, key_len);
+  }
+  scr_str_release(name);
+  return value;
+}
+
 ScrDyn *scr_urlpattern_new(ScrDyn *input, ScrDyn *base_url, ScrDyn *options) {
   ScrStr *base_text = NULL;
   ScrDyn *options_value = options;
@@ -2276,12 +2338,17 @@ ScrDyn *scr_urlpattern_new(ScrDyn *input, ScrDyn *base_url, ScrDyn *options) {
   bool ignore_case = false;
   if (options_value != NULL && options_value->kind != SCR_DYN_UNDEF &&
       options_value->kind != SCR_DYN_NULL) {
-    if (options_value->kind != SCR_DYN_OBJ) {
+    if (!ws_options_object(options_value)) {
       ws_type_error("Failed to construct URLPattern");
       return NULL;
     }
-    ScrDyn *flag = scr_dyn_obj_get(options_value, "ignoreCase", 10);
-    ignore_case = flag != NULL && scr_dyn_truthy(flag);
+    ScrDyn *flag = ws_option_flag(options_value, "ignoreCase", 10);
+    if (flag == NULL) {
+      if (scr_exc_pending()) return NULL; /* the getter threw */
+    } else {
+      ignore_case = scr_dyn_truthy(flag);
+      scr_dyn_release(flag);
+    }
   }
   ScrDyn *actual_input = input != NULL ? input : scr_dyn_undefined();
   bool from_string = false;

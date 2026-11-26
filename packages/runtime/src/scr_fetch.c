@@ -302,6 +302,38 @@ static bool sf_blob_body(const ScrDyn *body, ScrBytes **bytes, ScrStr **type) {
     return false;
   return scr_blob_body_info(body, bytes, type);
 }
+
+/* The automatic Content-Type a Blob body contributes, as Node's Headers
+ * applies it: leading and trailing HTTP whitespace is dropped, and a value
+ * holding NUL, CR or LF is not a header value at all — Node throws
+ * `Headers.append: "<value>" is an invalid header value.` and the request
+ * never starts, instead of serializing a split header. false with the
+ * TypeError pending; otherwise *out is the trimmed value (+1, possibly
+ * empty). */
+static bool sf_auto_content_type(ScrStr *type, ScrStr **out) {
+  size_t begin = 0, end = type->len;
+  while (begin < end && (type->data[begin] == ' ' || type->data[begin] == '\t')) begin++;
+  while (end > begin && (type->data[end - 1] == ' ' || type->data[end - 1] == '\t')) end--;
+  for (size_t i = begin; i < end; i++) {
+    unsigned char c = (unsigned char)type->data[i];
+    if (c == 0x00 || c == 0x0a || c == 0x0d) {
+      static const char prefix[] = "Headers.append: \"";
+      static const char suffix[] = "\" is an invalid header value.";
+      ScrStr *p = scr_str_new(prefix, sizeof prefix - 1);
+      ScrStr *joined = scr_str_concat(p, type);
+      ScrStr *s = scr_str_new(suffix, sizeof suffix - 1);
+      ScrStr *whole = scr_str_concat(joined, s);
+      scr_str_release(p);
+      scr_str_release(joined);
+      scr_str_release(s);
+      scr_throw_error_msg(SCR_ERR_TYPE, whole->data, whole->len);
+      scr_str_release(whole);
+      return false;
+    }
+  }
+  *out = scr_str_new(type->data + begin, end - begin);
+  return true;
+}
 #endif
 
 static void sf_not_function(const char *what) {
@@ -663,16 +695,73 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
   scr_dyn_release(reason);
 }
 
-ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
-  if (!signals || signals->kind != SCR_DYN_ARR) {
-    static const char message[] =
-        "signals cannot be converted to sequence.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
-                             "ERR_INVALID_ARG_TYPE");
+/* AbortSignal.any's `signals` sequence: an array (or a materialized
+ * typed-ref array) is taken as it is; a typed array and the native
+ * collections (Set, Map) drain in iteration order; a user iterable keeps
+ * the SC2020 refusal new Blob's sources do; primitives (strings included),
+ * null, undefined, a DataView, the ArrayBuffer objects and other
+ * non-iterables throw Node's sequence TypeError. +1 array, or NULL with
+ * the exception pending. */
+static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
+  if (signals != NULL && signals->kind == SCR_DYN_ARR)
+    return scr_dyn_retain((ScrDyn *)signals);
+  if (signals != NULL && signals->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(signals)) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(signals);
+    if (view && view->kind == SCR_DYN_ARR) return view;
+    scr_dyn_release(view);
+    if (scr_exc_pending()) return NULL;
+  }
+  if (signals != NULL && signals->kind == SCR_DYN_BYTES) {
+    /* A typed array (Buffer included) is iterable; a DataView and the
+     * ArrayBuffer objects, shared included, are not — Node throws the
+     * sequence TypeError before any element is read. */
+    if (signals->v.bytes->is_data_view || scr_array_buffer_is(signals) ||
+        scr_shared_array_buffer_is(signals))
+      goto not_a_sequence;
+    return scr_dyn_iter_pack(signals, NULL);
+  }
+  if (signals != NULL && signals->kind == SCR_DYN_HANDLE &&
+      scr_dyn_handle_ops_of(signals)->iter_pack)
+    return scr_dyn_iter_pack(signals, NULL);
+  bool primitive = signals == NULL || signals->kind == SCR_DYN_UNDEF ||
+                   signals->kind == SCR_DYN_NULL || signals->kind == SCR_DYN_BOOL ||
+                   signals->kind == SCR_DYN_NUM || signals->kind == SCR_DYN_STR ||
+                   signals->kind == SCR_DYN_BIGINT || signals->kind == SCR_DYN_SYMBOL;
+  if (!primitive) {
+    ScrDyn *iterator = scr_dyn_iterator_optional(signals);
+    if (iterator) {
+      scr_dyn_release(iterator);
+      static const char message[] =
+          "AbortSignal.any over this iterable has no lowering; pass an array";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
+not_a_sequence:
+  static const char message[] = "signals cannot be converted to sequence.";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
+/* The sequence's element conversion (WebIDL): anything but an AbortSignal
+ * throws Node's "signals[<i>] is not of type AbortSignal." */
+static SfSignal *sf_any_source_of(const ScrDyn *value, size_t index) {
+  if (value == NULL || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    char message[64];
+    int n = snprintf(message, sizeof message, "signals[%zu] is not of type AbortSignal.", index);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return NULL;
   }
+  return (SfSignal *)value->v.handle.ptr;
+}
+
+ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
+  ScrDyn *list = sf_any_signal_list(signals);
+  if (!list) return NULL;
   SfSignal *out = sf_signal_new();
-  out->source_count = signals->v.arr.len;
+  out->source_count = list->v.arr.len;
   if (out->source_count) {
     out->sources = calloc(out->source_count, sizeof *out->sources);
     out->source_watches =
@@ -680,11 +769,12 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
     if (!out->sources || !out->source_watches) sf_oom();
   }
   for (size_t i = 0; i < out->source_count; i++) {
-    SfSignal *source =
-        sf_signal_of(signals->v.arr.items[i],
-                     "AbortSignal.any requires an array of AbortSignals");
+    const ScrDyn *item =
+        scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+    SfSignal *source = sf_any_source_of(item, i);
     if (!source) {
       sf_signal_release(out);
+      scr_dyn_release(list);
       return NULL;
     }
     out->sources[i] = sf_signal_retain(source);
@@ -697,6 +787,7 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
           sf_signal_watch(source, out, &sf_any_source_abort);
     }
   }
+  scr_dyn_release(list);
   ScrDyn *boxed = scr_dyn_new_handle(out, SCR_DYNH_ABORT_SIGNAL);
   sf_signal_release(out);
   return boxed;
@@ -7280,13 +7371,53 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
     bool half = text && sf_name(text->data, text->len, "half"); scr_str_release(text);
     if (!half) { scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("RequestInit: duplex option is required when sending a body."); return NULL; }
   }
+#ifdef SCR_WEB_BODIES
+  /* The Blob body's type becomes Content-Type only when the init headers
+   * do not set one; it is checked below, against the payload's header. */
+  ScrStr *body_type = supplied && body != NULL && body->kind == SCR_DYN_HANDLE &&
+                              (body->v.handle.tag == SCR_DYNH_BLOB ||
+                               body->v.handle.tag == SCR_DYNH_FILE)
+                          ? scr_blob_handle_type(body)
+                          : NULL;
+#endif
   ScrDyn *headers = sf_response_init_get(init, "headers", 7);
   if ((!headers || headers->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(headers); headers = scr_dyn_new_handle(source->payload->headers, SCR_DYNH_FETCH_HEADERS); }
   ScrDyn *payload_init = scr_dyn_new_obj();
   if (headers) scr_dyn_obj_set(payload_init, "headers", 7, headers);
   ScrDyn *payload = scr_fetch_response_new(body, payload_init);
   scr_dyn_release(payload_init); scr_dyn_release(body);
-  if (!payload) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
+  if (!payload) {
+#ifdef SCR_WEB_BODIES
+    scr_str_release(body_type);
+#endif
+    scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL;
+  }
+#ifdef SCR_WEB_BODIES
+  if (body_type != NULL) {
+    /* An explicit Content-Type header is itself validated by the header
+     * conversion, and Node then ignores the blob's type; only the value the
+     * body contributed is checked here. */
+    ScrStr *name = scr_str_new("content-type", 12);
+    ScrStr *stored = sf_headers_get_value(((SfResponse *)payload->v.handle.ptr)->headers, name);
+    scr_str_release(name);
+    bool auto_inserted =
+        stored != NULL && stored->len == body_type->len &&
+        memcmp(stored->data, body_type->data, body_type->len) == 0;
+    if (stored != NULL) scr_str_release(stored);
+    if (auto_inserted) {
+      ScrStr *checked = NULL;
+      bool ok = sf_auto_content_type(body_type, &checked);
+      if (checked != NULL) scr_str_release(checked);
+      if (!ok) {
+        scr_str_release(body_type);
+        scr_dyn_release(payload);
+        scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text);
+        return NULL;
+      }
+    }
+    scr_str_release(body_type);
+  }
+#endif
   ScrDyn *signal = sf_response_init_get(init, "signal", 6);
   if ((!signal || signal->kind == SCR_DYN_UNDEF) && source) { scr_dyn_release(signal); signal = scr_dyn_new_handle(source->signal, SCR_DYNH_ABORT_SIGNAL); }
   SfSignal *following = NULL;
@@ -7655,8 +7786,19 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
   }
 #ifdef SCR_WEB_BODIES
   if (web_type) {
-    if (web_type->len > 0 && !sf_pairs_have(headers, "content-type"))
-      sf_push_header_text(headers, "content-type", web_type->data, web_type->len);
+    if (web_type->len > 0 && !sf_pairs_have(headers, "content-type")) {
+      ScrStr *checked = NULL;
+      bool ok = sf_auto_content_type(web_type, &checked);
+      if (!ok) {
+        scr_str_release(web_type);
+        scr_dyn_release(coerced_body);
+        scr_arr_release(headers);
+        return sf_reject_now(promise, "fetch failed");
+      }
+      if (checked->len > 0)
+        sf_push_header_text(headers, "content-type", checked->data, checked->len);
+      scr_str_release(checked);
+    }
     scr_str_release(web_type);
     web_type = NULL;
   }
@@ -7987,6 +8129,27 @@ static const ScrDynHandleOps sf_signal_ops = {
 static const ScrDynHandleOps sf_abort_controller_ops = {
     "AbortController", &sf_signal_retain_v, &sf_signal_release_v,
     &sf_abort_controller_invoke, &sf_abort_controller_get, &sf_no_set, NULL};
+/* The fetch streams' accessor names, for the generic member read with an
+ * explicit receiver (the handle-class unit may not be linked). */
+static const ScrDynHandleName sf_stream_attributes[] = {SCR_DYN_HANDLE_NAME("locked"),
+                                                        {NULL, 0}};
+/* Accessors that answer a rejected promise for an incompatible receiver. */
+static const ScrDynHandleName sf_reader_rejects[] = {SCR_DYN_HANDLE_NAME("closed"), {NULL, 0}};
+static const ScrDynHandleName sf_writer_rejects[] = {SCR_DYN_HANDLE_NAME("closed"),
+                                                     SCR_DYN_HANDLE_NAME("ready"), {NULL, 0}};
+static const ScrDynHandleName sf_reader_attributes[] = {SCR_DYN_HANDLE_NAME("closed"),
+                                                        {NULL, 0}};
+static const ScrDynHandleName sf_controller_attributes[] = {SCR_DYN_HANDLE_NAME("desiredSize"),
+                                                            {NULL, 0}};
+static const ScrDynHandleName sf_transform_attributes[] = {SCR_DYN_HANDLE_NAME("readable"),
+                                                           SCR_DYN_HANDLE_NAME("writable"),
+                                                           {NULL, 0}};
+static const ScrDynHandleName sf_writable_attributes[] = {SCR_DYN_HANDLE_NAME("locked"),
+                                                          {NULL, 0}};
+static const ScrDynHandleName sf_writer_attributes[] = {SCR_DYN_HANDLE_NAME("closed"),
+                                                        SCR_DYN_HANDLE_NAME("desiredSize"),
+                                                        SCR_DYN_HANDLE_NAME("ready"), {NULL, 0}};
+
 static const ScrDynHandleOps sf_stream_ops = {
     "ReadableStream", &sf_stream_retain_v, &sf_stream_release_v,
     &sf_stream_invoke, &sf_stream_get, &sf_no_set, NULL,
@@ -7994,6 +8157,7 @@ static const ScrDynHandleOps sf_stream_ops = {
     .symbol_get = &sf_stream_symbol_get,
 #endif
     .methods = sf_stream_methods,
+    .attributes = sf_stream_attributes,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = &sf_rejected,
     .stream_predicate = sf_stream_predicate};
@@ -8001,6 +8165,8 @@ static const ScrDynHandleOps sf_reader_ops = {
     "ReadableStreamDefaultReader", &sf_reader_handle_retain_v,
     &sf_reader_handle_release_v, &sf_reader_invoke, &sf_reader_get,
     &sf_no_set, NULL, .methods = sf_reader_methods,
+    .attributes = sf_reader_attributes,
+    .rejecting_names = sf_reader_rejects,
     .invalid_this =
         "Value of \"this\" must be of type ReadableStreamDefaultReader",
     .rejected = &sf_rejected,
@@ -8008,7 +8174,8 @@ static const ScrDynHandleOps sf_reader_ops = {
 static const ScrDynHandleOps sf_controller_ops = {
     "ReadableStreamDefaultController", &sf_stream_retain_v,
     &sf_stream_release_v, &sf_controller_invoke, &sf_controller_get,
-    &sf_no_set, NULL, .stream_predicate = sf_stream_predicate};
+    &sf_no_set, NULL, .attributes = sf_controller_attributes,
+    .stream_predicate = sf_stream_predicate};
 /* undici's constructors are `_Request` and `_Response`, which V8's property
  * TypeErrors print as `#<_Request>`. */
 static const ScrDynHandleOps sf_request_ops = {
@@ -8032,10 +8199,12 @@ static const ScrDynHandleOps sf_headers_ops = {
 static const ScrDynHandleOps sf_transform_ops = {
     "TransformStream", &sf_transform_retain_v, &sf_transform_release_v,
     &sf_transform_invoke, &sf_transform_get, &sf_no_set, NULL,
+    .attributes = sf_transform_attributes,
     .stream_predicate = sf_stream_predicate};
 static const ScrDynHandleOps sf_writable_ops = {
     "WritableStream", &sf_transform_retain_v, &sf_transform_release_v,
     &sf_writable_invoke, &sf_writable_get, &sf_no_set, NULL,
+    .attributes = sf_writable_attributes,
     .methods = sf_writable_methods,
     .invalid_this = "Value of \"this\" must be of type WritableStream",
     .rejected = &sf_rejected,
@@ -8044,6 +8213,8 @@ static const ScrDynHandleOps sf_writer_ops = {
     "WritableStreamDefaultWriter", &sf_writer_handle_retain_v,
     &sf_writer_handle_release_v, &sf_writer_invoke, &sf_writer_get,
     &sf_no_set, NULL, .methods = sf_writer_methods,
+    .attributes = sf_writer_attributes,
+    .rejecting_names = sf_writer_rejects,
     .invalid_this =
         "Value of \"this\" must be of type WritableStreamDefaultWriter",
     .rejected = &sf_rejected,

@@ -1,16 +1,21 @@
 // The Intl surface. What compiles: Intl.NumberFormat and Intl.DateTimeFormat
 // objects with their options and format(), the toLocaleString(),
 // toLocaleDateString() and toLocaleTimeString() forms that construct them,
-// and Intl.Segmenter (corpus 9381 to 9390), at the default locale or at one
-// locale string decided at run time. Everything else fences by NAME: a list
-// of locales (negotiation over several tags), the formatter members other
-// than format, BigInt inputs, another calendar, and the rest of the Intl
-// namespace (DurationFormat, PluralRules, getCanonicalLocales).
+// and Intl.Segmenter (corpus 9381 to 9390), at the default locale or any
+// locale string the program holds (ICU canonicalizes it). Everything else
+// fences by NAME: lists of locales (locale negotiation), the formatter
+// members other than format, BigInt inputs, another calendar, and the rest
+// of the Intl namespace (DurationFormat, PluralRules,
+// getCanonicalLocales).
 
-// Locale forms the compiler does not take.
-const literalList = new Intl.NumberFormat(["en-US", "de-DE"]).format(1234.5);
-declare const localeList: string[];
-const variableList = new Intl.DateTimeFormat(localeList).format();
+// Locales as values, and the list form the compiler does not take.
+declare const tag: string;
+const otherLocale = new Intl.NumberFormat("de-DE").format(1234.5);
+const negotiated = new Intl.NumberFormat(tag).format(1234.5);
+const listed = new Intl.NumberFormat(["en-US", "de-DE"]).format(1234.5);
+const german = (1234.5).toLocaleString(["de-DE"]);
+const french = new Intl.DateTimeFormat("fr-FR").format();
+const dated = new Date(0).toLocaleDateString("ja-JP", { year: "numeric" });
 
 // Members and inputs the formatters do not have.
 const parts = new Intl.NumberFormat("en-US").formatToParts(1234.5);

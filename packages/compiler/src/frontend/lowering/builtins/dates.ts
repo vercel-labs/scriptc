@@ -145,7 +145,13 @@ export function lowerDateCall(
       : raw;
   if (receiver.type.kind !== "date")
     lowerer.badType(access.expression, lowerer.typeOf(access.expression));
-  if (localeForm) return lowerDateToLocale(lowerer, call, name, receiver);
+  if (localeForm)
+    return lowerDateToLocale(
+      lowerer,
+      call,
+      name,
+      raw.type.kind === "dyn" ? { dynSource: raw } : receiver,
+    );
   const result = dateValueMethod(name, receiver, loc);
   if (result) return result;
   lowerer.noLowering(

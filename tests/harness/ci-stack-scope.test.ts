@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
+import { CANARY_SUITES } from "../../scripts/ci/canary-suite.mjs";
 
 type Job = {
   needs?: string | string[];
@@ -494,8 +495,10 @@ test("a canary post-merge passes on the fast jobs and the canary tests, not the 
     (step) => step.name === "Canary source-rule and snapshot tests",
   )!;
   expect(canaryStep.if).toBe("needs.validation_scope.outputs.tier == 'canary'");
-  expect(canaryStep.run).toContain("tests/harness/diagnostics.test.ts");
-  expect(canaryStep.run).toContain("tests/harness/surface-manifest.test.ts");
+  // The workflow runs the suite script, and the script names the source-rule and snapshot tests.
+  expect(canaryStep.run?.trim()).toBe("node scripts/ci/canary-suite.mjs");
+  expect(CANARY_SUITES).toContain("tests/harness/diagnostics.test.ts");
+  expect(CANARY_SUITES).toContain("tests/harness/surface-manifest.test.ts");
 });
 
 test("the required test check passes only after full validation", () => {

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/variadic-js-arguments-callback/util.js",
+  "<repo>/tests/corpus/variadic-js-arguments-callback/main.ts"
+ ],
+ "diags": []
+}

@@ -8,6 +8,6 @@ scriptc coverage tests/coverage-fixtures/tier-demotions.ts
       ×1  SC1090  class prototype reflection and accessor replacement (named prototype data and methods compile)
           at tests/coverage-fixtures/tier-demotions.ts:10:23
           hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
-      ×1  SC2020  'Number.prototype.toLocaleString with a list of locales' is part of the standard library types but has no scriptc lowering yet
+      ×1  SC2020  'Number.prototype.toLocaleString with a locale list' is part of the standard library types but has no scriptc lowering yet
           at tests/coverage-fixtures/tier-demotions.ts:24:27
-          hint: one locale string compiles; locale lists (negotiation over several tags) remain unsupported
+          hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string

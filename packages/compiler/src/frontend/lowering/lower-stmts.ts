@@ -434,6 +434,7 @@ import { npmStaticAccessorExport, npmStaticPackageOfPath } from "../npm-static.j
 import { constructorStaticValue } from "./builtin-statics.js";
 import { packageBuiltWithoutMember } from "./package-built-values.js";
 import { fenceNodeModuleMutation, isNodeModuleHandle } from "./lower-node-module.js";
+import { builtinConstantsModuleOf } from "./builtins/constants.js";
 import { fencePerfEntryKeyWalk } from "./builtins/performance.js";
 import { fenceX509KeyWalk } from "./builtins/x509.js";
 import { classGeneratorIterable } from "./class-iterables.js";
@@ -12521,6 +12522,16 @@ export function lowerExprStatement(
             const value = lowerer.lowerExprExpecting(expr.right, callableWrite.fieldType);
             return lowerer.fieldSetStmt(callableWrite, value, locOf(expr), expr.left);
           }
+        }
+        // A member of a baked constants object is read-only in Node
+        // (`perf_hooks.constants.NODE_PERFORMANCE_GC_MAJOR = 1` throws its
+        // TypeError), and the table's names bake where a source spells
+        // them rather than living on the value: the write is refused like
+        // any other non-variable. zlib.constants and crypto.constants reach
+        // the same refusal below (their readonly fields give no field
+        // target).
+        if (builtinConstantsModuleOf(lowerer, expr.left.expression) !== null) {
+          lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
         }
         const target = lowerer.fieldTarget(expr.left);
         if (target) {

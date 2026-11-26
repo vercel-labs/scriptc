@@ -1,5 +1,5 @@
 // Native checked values and loose equality share this program with
-// native compilation refusals (a list of locales for toLocaleString, SC2020).
+// native compilation refusals (a locale list, SC2020).
 const v: any = 21;
 const doubled = v * 2;
 const root = Math.cbrt(81);

@@ -1,9 +1,6 @@
 // Uses of a held primitive constructor that have no lowering, each refused
-// by name: its prototype, a collection keyed by a union of several
-// constructor types, and a store
-// under a function type with no parameter in a program that hands a
-// function of that type to a caller that passes arguments (the constructor
-// would be answered as a call with none).
+// by name: its prototype, and a collection keyed by a union of several
+// constructor types.
 type Ctor = typeof String | typeof Number;
 
 const table = { text: String, amount: Number };
@@ -16,5 +13,4 @@ function build(type: Ctor): unknown {
 
 const labels = new Map<Ctor, string>();
 labels.set(String, "text");
-const none: () => unknown = table.text;
-console.log(wrapped, proto, build(Number), labels.size, none(), ["a", "b"].map(none));
+console.log(wrapped, proto, build(Number), labels.size);

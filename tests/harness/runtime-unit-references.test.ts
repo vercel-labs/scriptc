@@ -23,7 +23,8 @@
  * a line in the list with the reason the reference is unreachable without
  * the other unit. */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
@@ -299,5 +300,51 @@ test.runIf(available)(
         );
     }
     expect(problems).toEqual([]);
+  },
+);
+
+/* A program that never imports node:stream links the web-streams unit
+ * without the stream unit, and that object's references to the stream unit's
+ * pair hook are weak. ELF reads an unresolved weak reference as 0; Mach-O
+ * refuses the executable link, which a macOS build of such a program hit.
+ * Compiling the unit for Mach-O is the cheapest way to see the symbols that
+ * link reads: both must be defined in the object (as weak definitions the
+ * stream unit's strong ones replace). */
+const zigAvailable = (() => {
+  try {
+    execFileSync("zig", ["version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+test.runIf(zigAvailable)(
+  "a unit a web-streams-only program links defines its stream references for Mach-O",
+  () => {
+    const object = join(mkdtempSync(join(tmpdir(), "scr-macho-")), "scr_webstreams.o");
+    execFileSync(
+      "zig",
+      [
+        "cc",
+        "-target",
+        "aarch64-macos",
+        "-c",
+        "-I",
+        join(root, "packages/runtime/src"),
+        "-o",
+        object,
+        join(root, "packages/runtime/src/scr_webstreams.c"),
+      ],
+      { stdio: "ignore" },
+    );
+    const symbols = symbolsOf(object); /* Mach-O names carry a leading underscore */
+    for (const name of ["scr_stream_web_pair_hook", "scr_stream_duplex_from_web"]) {
+      expect(
+        symbols.undefined.has(`_${name}`),
+        `${name} is an undefined reference in the Mach-O object a web-streams-only program links`,
+      ).toBe(false);
+      expect(symbols.defined.has(`_${name}`), `${name} must be defined there`).toBe(true);
+    }
   },
 );

@@ -553,7 +553,20 @@ static ScrBlob *scr_blob_construct(const ScrDyn *sources, const ScrDyn *options)
   scr_blob_build_free(&bb);
   chain->segs = segs;
   chain->nsegs = nsegs;
-  for (size_t i = 0; i < nsegs; i++) chain->len += segs[i].len;
+  size_t total = 0;
+  for (size_t i = 0; i < nsegs; i++) {
+    if (segs[i].len > SIZE_MAX - total) {
+      /* Parts whose total passes the address space cannot answer a read:
+       * refuse the Blob rather than build one whose size wrapped. */
+      static const char message[] = "Blob size is too large";
+      scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+      scr_str_release(type);
+      scr_blob_chain_release(chain);
+      return NULL;
+    }
+    total += segs[i].len;
+  }
+  chain->len = total;
   ScrBlobSource *source = malloc(sizeof *source);
   if (!source) scr_trap("scriptc: out of memory\n");
   source->rc = 1;
@@ -718,9 +731,13 @@ static void scr_blob_not_readable(void) {
 }
 
 /* The blob's bytes (+1), or NULL with NotReadableError pending when a
- * file-backed source no longer answers its range. */
+ * file-backed source no longer answers its range, or with the byte
+ * allocator's RangeError when the logical length is beyond what a typed
+ * array can hold (a chain of file-backed parts can exceed it without
+ * holding the bytes). */
 static ScrBytes *scr_blob_copy_bytes(const ScrBlob *b) {
   ScrBytes *bytes = scr_bytes_new(SCR_BYTES_U8, (double)b->len);
+  if (bytes == NULL) return NULL; /* RangeError pending: the read rejects */
   if (b->source) {
     /* The source is asked even for an empty Blob: its check is what turns
      * a changed or removed file into NotReadableError. */

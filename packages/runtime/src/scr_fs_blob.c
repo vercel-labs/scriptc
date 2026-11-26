@@ -12,6 +12,10 @@
 
 #include <stdio.h>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#endif
+
 typedef struct ScrFsBlob {
   /* First: the Blob unit shares this struct as the Blob's source (rc, the
    * hooks and this pointer are what it reads), and frees the allocation. */
@@ -19,6 +23,7 @@ typedef struct ScrFsBlob {
   ScrStr *path;
   size_t size;
   uint64_t mtime_ns;
+  uint64_t ctime_ns;
   /* The file the Blob reads is the one its first read opened: the
    * descriptor is held, and every read checks that the path still names
    * that file (its device and inode), so a path swapped under a Blob
@@ -120,6 +125,31 @@ static uint64_t scr_fs_blob_mtime_ns(ScrStats *st) {
   return value;
 }
 
+/* The change time in nanoseconds. A file's owner can restore the
+ * modification time it changed, but writing the contents and restoring the
+ * mtime both move ctime forward and userspace cannot set it back, so the
+ * pair detects a same-length rewrite of a file whose mtime was restored. */
+static uint64_t scr_fs_blob_ctime_ns(ScrStats *st) {
+  ScrBigInt *ns = scr_stats_big_ctime_ns(st);
+  uint64_t value = scr_bigint_to_u64(ns);
+  scr_bigint_release(ns);
+  return value;
+}
+
+/* Keep the Blob's descriptor out of spawned children: a POSIX launch
+ * inherits every descriptor without close-on-exec, and the Blob's bytes may
+ * lie outside a slice or in a file no longer reachable by pathname. */
+static void scr_fs_blob_close_on_exec(ScrFileHandle *h) {
+#ifndef _WIN32
+  int fd = (int)scr_file_handle_fd(h);
+  if (fd < 0) return;
+  int flags = fcntl(fd, F_GETFD);
+  if (flags >= 0) (void)fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
+#else
+  (void)h;
+#endif
+}
+
 /* ScrBlobSource.read: the file's [off, off + len) bytes. The first read
  * opens the path and holds the descriptor; every read then takes the
  * held file's stat (it must still have the size and modification time the
@@ -137,6 +167,7 @@ static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
       return false;
     }
     b->handle = opened;
+    scr_fs_blob_close_on_exec(b->handle);
     ScrStats *held = scr_stats_of_fd((int)scr_file_handle_fd(b->handle), &error);
     if (held == NULL) {
       scr_exc_clear();
@@ -151,7 +182,9 @@ static bool scr_fs_blob_read(void *ctx, size_t off, size_t len, uint8_t *dst) {
   if (st == NULL) {
     ok = false;
   } else {
-    if ((size_t)scr_stats_size(st) != b->size || scr_fs_blob_mtime_ns(st) != b->mtime_ns) ok = false;
+    if ((size_t)scr_stats_size(st) != b->size || scr_fs_blob_mtime_ns(st) != b->mtime_ns ||
+        scr_fs_blob_ctime_ns(st) != b->ctime_ns)
+      ok = false;
     scr_stats_release(st);
   }
   if (ok) {
@@ -225,6 +258,7 @@ ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options) {
   ScrStr *flags = scr_str_new("r", 1);
   ScrFileHandle *h = scr_file_handle_open(resolved, flags, 0);
   scr_str_release(flags);
+  if (h != NULL) scr_fs_blob_close_on_exec(h);
   if (h == NULL) {
     scr_str_release(type);
     scr_str_release(resolved);
@@ -249,6 +283,7 @@ ScrDyn *scr_fs_open_as_blob(ScrDyn *path, ScrDyn *options) {
   file->path = resolved; /* moves the reference */
   file->size = (size_t)scr_stats_size(st);
   file->mtime_ns = scr_fs_blob_mtime_ns(st);
+  file->ctime_ns = scr_fs_blob_ctime_ns(st);
   scr_stats_release(st);
   scr_file_handle_close(h);
   scr_file_handle_release(h);

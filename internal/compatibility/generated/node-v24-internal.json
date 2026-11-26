@@ -123022,6 +123022,7 @@
           "tests/corpus/stream-consumers.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
+          "tests/corpus/web-stream-class-reflection.mjs",
           "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/web-stream-tee.mjs",
           "tests/corpus/web-stream-transform-pipes-untyped.mjs",
@@ -123033,6 +123034,10 @@
           "tests/corpus/webstream-byte-stream-js.mjs",
           "tests/corpus/webstream-byte-stream.ts",
           "tests/corpus/webstream-byte-streams.ts",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
           "tests/diagnostics/compat-absent-web-globals.ts",
           "tests/fixtures/fetch/static-stream-values/main.mts",
           "tests/harness/fetch-conformance.test.ts"
@@ -125017,10 +125022,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.ByteLengthQueuingStrategy",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -125043,10 +125051,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.highWaterMark",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125069,10 +125080,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.size",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125095,10 +125109,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.CountQueuingStrategy",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -125121,10 +125138,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.highWaterMark",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125147,10 +125167,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.size",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-queuing-strategies-js.mjs",
+          "tests/corpus/webstream-queuing-strategies.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125173,10 +125196,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.TextEncoderStream",
         "tests": [
-          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -125199,10 +125225,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.encoding",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125225,10 +125254,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125251,10 +125283,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.writable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125277,10 +125312,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.TextDecoderStream",
         "tests": [
-          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -125303,10 +125341,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.encoding",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125329,10 +125370,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.fatal",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125355,10 +125399,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.ignoreBOM",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125381,10 +125428,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.readable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -125407,10 +125457,13 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:webstreams.writable",
         "tests": [
-          "tests/corpus/compat-web-stream-members.mjs"
+          "tests/corpus/compat-web-stream-members.mjs",
+          "tests/corpus/webstream-text-codecs-js.mjs",
+          "tests/corpus/webstream-text-codecs.ts",
+          "tests/corpus/web-stream-class-reflection.mjs"
         ]
       },
       "anchorSource": "ancestor"

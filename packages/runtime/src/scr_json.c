@@ -38,6 +38,16 @@ SCR_TL const ScrDynHandlePropsHooks *scr_dyn_handle_props_hooks = NULL;
 #endif
 
 
+/* The expando a declared class's handle keeps (see ScrDynHandleClassOps
+ * .own_properties), borrowed; NULL when there is none. */
+static ScrDyn *scr_dyn_handle_added_props(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_HANDLE || scr_dyn_handle_class_ops == NULL ||
+      scr_dyn_handle_class_ops->own_properties == NULL)
+    return NULL;
+  return scr_dyn_handle_class_ops->own_properties(value);
+}
+
+
 static SCR_TL ScrDyn *scr_builtin_object_prototype;
 
 const ScrDateClassHooks *scr_date_class_hooks = NULL;
@@ -5213,6 +5223,12 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length);
 
 static ScrDyn *scr_dyn_proxy_own_descriptor_held(const ScrDyn *value, const ScrStr *key);
 
+/* The properties a program added to a handle whose class declares that its
+ * instances own no properties (a web stream's expando object): borrowed,
+ * NULL when the handle has none. Own-property reflection reads their names
+ * beside the class's prototype members. */
+static ScrDyn *scr_dyn_handle_added_props(const ScrDyn *value);
+
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
   if (scr_dyn_class_reflection_fence(value)) return NULL;
   if (value->kind == SCR_DYN_TYPED_REF) {
@@ -5341,6 +5357,10 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(entry->enumerable));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(entry->configurable));
     return out;
+  }
+  if (value->kind == SCR_DYN_HANDLE) {
+    ScrDyn *props = scr_dyn_handle_added_props(value);
+    if (props != NULL) return scr_dyn_own_descriptor(props, key);
   }
   if (value->kind != SCR_DYN_PROXY) {
     scr_dyn_proxy_unsupported("property descriptors for this receiver kind");
@@ -13450,6 +13470,19 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;
   }
+  if (target->kind == SCR_DYN_HANDLE) {
+    /* A property the program added is the instance's own: its descriptor is
+     * the expando's. A class that does not declare its own properties keeps
+     * the refusal below. */
+    ScrDyn *props = scr_dyn_handle_added_props(target);
+    if (props != NULL) {
+      ScrStr *name = scr_dyn_property_key(key);
+      if (!name) return NULL;
+      ScrDyn *out = scr_dyn_own_descriptor(props, name);
+      scr_str_release(name);
+      return out;
+    }
+  }
   if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF && target->kind != SCR_DYN_BYTES) {
     static const char msg[] = "Object.getOwnPropertyDescriptor on this value is not supported yet";
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
@@ -16186,6 +16219,23 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
       idx = idx * 10 + (size_t)(c - '0');
     }
     return scr_dyn_arr_has_index(v, idx);
+  }
+  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops) {
+    /* A property the program added is the instance's own. */
+    ScrDyn *props = scr_dyn_handle_added_props(v);
+    if (props != NULL && scr_dyn_has_key(props, key)) return true;
+    /* A class instance answers a key its class's prototype holds: the
+     * presence a for-in's per-visit recheck asks for. */
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(v);
+    if (proto != NULL) {
+      bool has = scr_dyn_has_key(proto, key);
+      scr_dyn_release(proto);
+      return has;
+    }
+    if (scr_exc_pending()) {
+      scr_exc_clear();
+      return false;
+    }
   }
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
@@ -21801,6 +21851,19 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL)
     return scr_dyn_new_arr();
+  /* A class instance whose class declares it owns no properties of its
+   * own (a web stream): the class's members live on its prototype, and a
+   * property a program added is answered by the handle table above. Any
+   * other class's instances may own properties this runtime does not
+   * model (node:dns Resolver's enumerable `_handle`), so its reflection
+   * keeps the refusal below rather than answer an incomplete list. */
+  if (value->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops &&
+      scr_dyn_handle_class_ops->owns_nothing != NULL && scr_dyn_handle_class_ops->owns_nothing(value)) {
+    /* The class declares no own properties, but the instance keeps the
+     * ones a program added: they are its own names. */
+    ScrDyn *props = scr_dyn_handle_added_props(value);
+    return props != NULL ? scr_dyn_get_own_property_names(props) : scr_dyn_new_arr();
+  }
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
@@ -22094,6 +22157,12 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     if (scr_dyn_handle_props_hooks->objwalk(v, (int)mode, &out)) return out;
   }
 #endif
+  if (v->kind == SCR_DYN_HANDLE) {
+    /* A declared class's instance owns only the expando properties a
+     * program added; the class's members are on its prototype. */
+    ScrDyn *props = scr_dyn_handle_added_props(v);
+    if (props != NULL) return scr_dyn_objwalk(props, mode);
+  }
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_objwalk(v, mode);
   if (v->kind == SCR_DYN_TYPED_REF) {
     const ScrDynTypedRecordOps *record = scr_typed_ref_record_ops(v);
@@ -22329,6 +22398,52 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     scr_dyn_release(view);
     return keys;
   }
+  if (v->kind == SCR_DYN_HANDLE && scr_dyn_handle_class_ops &&
+      scr_dyn_handle_class_ops->owns_nothing != NULL && scr_dyn_handle_class_ops->owns_nothing(v)) {
+    /* The instance's own enumerable expando properties come first, then the
+     * class prototype's enumerable members; any own key (enumerable or not)
+     * shadows a prototype member of the same name, as for-in's own-first
+     * walk does. A class whose instances own properties keeps the refusal
+     * below. */
+    ScrDyn *keys = scr_dyn_new_arr();
+    ScrDyn *props = scr_dyn_handle_added_props(v);
+    ScrDyn *own_all = props != NULL ? scr_dyn_get_own_property_names(props) : NULL;
+    ScrDyn *own_enum = props != NULL ? scr_dyn_for_in_keys(props) : NULL;
+    if (own_enum != NULL)
+      for (size_t i = 0; i < own_enum->v.arr.len; i++)
+        scr_dyn_arr_push(keys, scr_dyn_retain(own_enum->v.arr.items[i]));
+    ScrDyn *proto = scr_dyn_handle_class_ops->prototype_of(v);
+    if (proto != NULL) {
+      ScrDyn *inherited = scr_dyn_for_in_keys(proto);
+      if (inherited == NULL) {
+        scr_dyn_release(own_enum);
+        scr_dyn_release(own_all);
+        scr_dyn_release(proto);
+        scr_dyn_release(keys);
+        return NULL;
+      }
+      for (size_t i = 0; i < inherited->v.arr.len; i++) {
+        ScrDyn *key = inherited->v.arr.items[i];
+        bool shadowed = false;
+        for (size_t j = 0; own_all != NULL && j < own_all->v.arr.len && !shadowed; j++) {
+          const ScrDyn *own = own_all->v.arr.items[j];
+          shadowed = own->kind == SCR_DYN_STR && key->kind == SCR_DYN_STR &&
+                     own->v.str->len == key->v.str->len &&
+                     memcmp(own->v.str->data, key->v.str->data, own->v.str->len) == 0;
+        }
+        if (!shadowed) scr_dyn_arr_push(keys, scr_dyn_retain(key));
+      }
+      scr_dyn_release(inherited);
+      scr_dyn_release(proto);
+    }
+    scr_dyn_release(own_enum);
+    scr_dyn_release(own_all);
+    if (scr_exc_pending()) {
+      scr_dyn_release(keys);
+      return NULL;
+    }
+    return keys;
+  }
   switch (v->kind) {
   case SCR_DYN_OBJ: {
     ScrDyn *keys = scr_dyn_new_arr();
@@ -22460,8 +22575,10 @@ static ScrArr *scr_dyn_key_strs_from(ScrDyn *keys) {
  * Every other value takes the dyn walk and converts its result. */
 ScrArr *scr_dyn_for_in_key_strs(const ScrDyn *v) {
   if (scr_dyn_class_reflection_fence(v)) return NULL;
-  /* A plain object's prototype adds keys unless it is Object.prototype. */
-  if (v->kind != SCR_DYN_OBJ || v->prototype == NULL ||
+  /* A plain object's prototype adds keys unless it is Object.prototype;
+   * a handle's class prototype adds the class's enumerable members, so its
+   * own (empty) keys are not the answer. */
+  if ((v->kind != SCR_DYN_OBJ && v->kind != SCR_DYN_HANDLE) || v->prototype == NULL ||
       v->prototype == scr_builtin_object_prototype) {
     ScrArr *own = scr_dyn_own_key_strs(v, true);
     if (own) return own;
@@ -23432,6 +23549,8 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     return has;
   }
   if (v->kind == SCR_DYN_HANDLE) {
+    ScrDyn *props = scr_dyn_handle_added_props(v);
+    if (props != NULL) return scr_dyn_has_own(props, key);
 #ifdef SCR_JS_OBJECT_MODEL
     bool out;
     if (SCR_HP(v) && scr_dyn_handle_props_hooks->has_own(v, key, false, &out)) return out;

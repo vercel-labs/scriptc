@@ -47,7 +47,8 @@ test("the effect tasks hash the branch and pull request they sample for", () => 
   const effects = Object.entries(turbo.tasks).filter(([name]) =>
     name.startsWith("//#ci:lane:effects:"),
   );
-  expect(effects.map(([name]) => name)).toHaveLength(98);
+  // 48 plain + 128 sanitized shards and the two sample lanes.
+  expect(effects.map(([name]) => name)).toHaveLength(178);
   for (const [name, task] of effects)
     expect(task.env, name).toEqual(
       expect.arrayContaining([
@@ -100,11 +101,16 @@ test("the toolchain provides the static zlib and zstd the helper links", () => {
 });
 
 test("the Vercel lanes are resharded to keep each task under the runner deadline", () => {
+  // The sanitized tiers are sized from the measured cost tables: the sanitized corpus is 106,633 s
+  // and its side queue 18,423 s, so 230 shards carry 543 s each; the Effect tables hold one weight
+  // per fixture for both lanes and the harness gives the sanitized lane twice the plain limits
+  // (effect-runner.ts), so 128 shards carry 2 x 34,380 / 128 = 537 s. Both leave room for the
+  // toolchain install and the sanitized runtime compile inside the 900 s deadline.
   const names = Object.keys(turbo.tasks);
   const count = (pattern: RegExp) => names.filter((name) => pattern.test(name)).length;
   expect(count(/^\/\/#ci:lane:test:plain:\d+$/)).toBe(60);
-  expect(count(/^\/\/#ci:lane:test:san:\d+$/)).toBe(90);
-  expect(count(/^\/\/#ci:lane:effects:(plain|san):\d+$/)).toBe(96);
+  expect(count(/^\/\/#ci:lane:test:san:\d+$/)).toBe(230);
+  expect(count(/^\/\/#ci:lane:effects:(plain|san):\d+$/)).toBe(176);
   expect(count(/^\/\/#ci:lane:islands:\d+$/)).toBe(8);
   expect(count(/^\/\/#ci:lane:llvm-artifacts:/)).toBe(9);
   // The monolithic builds stay in the task graph for local runs but are no longer selected by Vercel CI.

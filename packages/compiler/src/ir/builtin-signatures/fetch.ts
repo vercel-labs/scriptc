@@ -11,6 +11,8 @@ export const fetchSignatures = defineLibFnSignatures({
   "fetch.responseNew": { argTypes: [DYN, DYN], result: DYN },
   "fetch.responseJsonStatic": { argTypes: [DYN, DYN], result: DYN },
   "fetch.responseLight": { argTypes: [DYN], result: arrayOf(STRING) },
+  "fetch.responseError": { argTypes: [], result: DYN },
+  "fetch.responseRedirect": { argTypes: [DYN, DYN], result: DYN },
   "fetch.input": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fetch.function": { argTypes: [], result: DYN },
   "fetch.requestNew": { argTypes: [DYN, DYN], result: DYN },

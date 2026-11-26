@@ -275,6 +275,8 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "fetch.requestNew",
   "fetch.headersNew",
   "fetch.responseNew",
+  "fetch.responseError",
+  "fetch.responseRedirect",
   "fetch.responseJsonStatic",
   "abort.timeout",
   "abort.any",

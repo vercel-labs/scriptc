@@ -2110,3 +2110,16 @@ ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *
   scr_intl_date_time_format_release(format);
   return text;
 }
+
+/* Date.prototype.toLocale* with a computed locales argument: ECMA-402 checks
+ * the time value before canonicalizing the locales argument, so an invalid
+ * Date answers "Invalid Date" without reading the value (or the options),
+ * as Node does. */
+ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrDyn *options) {
+  if (!isfinite(ms)) return scr_str_new("Invalid Date", 12);
+  ScrStr *tag = scr_intl_locale_value(locale);
+  if (tag == NULL) return NULL;
+  ScrStr *text = scr_intl_date_to_locale(ms, kind, tag, options);
+  scr_str_release(tag);
+  return text;
+}

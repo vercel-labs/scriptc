@@ -68,7 +68,7 @@ function intlLocale(
   arg: ts.Expression | undefined,
   what: string,
   loc: SrcLoc,
-): { locale: IrExpr; effects: IrStmt[] } {
+): { locale: IrExpr; effects: IrStmt[]; dynamicValue?: IrExpr } {
   const defaultLocale: IrExpr = {
     kind: "strLit",
     value: INTL_DEFAULT_LOCALE,
@@ -126,6 +126,10 @@ function intlLocale(
         loc: locOf(arg),
       },
       effects: [{ kind: "varDecl", localId: held.id, init: value, loc: locOf(arg) }],
+      // A caller that must resolve the locale after its own checks (a Date
+      // method answers "Invalid Date" before reading the locales argument)
+      // takes the value itself; see lowerDateToLocale.
+      dynamicValue: heldRef,
     };
   }
   if (value.type.kind === "union") {
@@ -551,7 +555,11 @@ export function lowerDateToLocale(
   const held = lowerer.declareHiddenLocal("%localeOptions", DYN);
   const locale = intlLocale(lowerer, args[0], what, loc);
   const options = intlOptions(lowerer, args[1], loc, "DateTimeFormat");
-  const fn: IrLibFn = "icu.dateToLocale";
+  // ECMA-402 returns "Invalid Date" for an invalid time value before it
+  // canonicalizes the locales argument, so a computed locale is resolved
+  // inside the runtime after that check: a dynamic null locale on an invalid
+  // Date answers "Invalid Date" rather than throwing.
+  const fn: IrLibFn = locale.dynamicValue ? "icu.dateToLocaleDyn" : "icu.dateToLocale";
   return {
     kind: "seqExpr",
     stmts: [
@@ -572,7 +580,7 @@ export function lowerDateToLocale(
           loc,
         },
         { kind: "numLit", value: DATE_LOCALE_KINDS[name]!, type: F64, loc },
-        locale.locale,
+        locale.dynamicValue ?? locale.locale,
         varRef(held.id, DYN, loc),
       ],
       type: STRING,

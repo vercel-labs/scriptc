@@ -74,5 +74,8 @@ ScrDyn *scr_intl_date_time_format_new(ScrStr *locale, ScrDyn *options);
 ScrStr *scr_intl_date_time_format_format(ScrDyn *format, double ms);
 ScrStr *scr_intl_date_time_format_format_dyn(ScrDyn *format, ScrDyn *value);
 ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *options);
+/* The same with a computed locales value: the invalid-time check comes
+ * first, so an invalid Date answers "Invalid Date" without resolving it. */
+ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrDyn *options);
 
 #endif /* SCR_INTL_H */

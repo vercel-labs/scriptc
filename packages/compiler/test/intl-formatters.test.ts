@@ -184,6 +184,19 @@ test("an undefined or dynamic locale selects the default locale", async () => {
   ).toContain("icu.numberFormatNew");
 });
 
+test("a computed locale on a Date method is resolved after the invalid-date check", async () => {
+  // ECMA-402 answers "Invalid Date" before canonicalizing the locales
+  // argument, so the Date methods hand the computed value to the runtime
+  // instead of resolving it as an argument expression.
+  const calls = await intlCalls(`
+    const date = new Date(0);
+    console.log(date.toLocaleDateString(JSON.parse('"en-US"')));
+    export {};
+  `);
+  expect(calls).toContain("icu.dateToLocaleDyn");
+  expect(calls).not.toContain("icu.localeValue");
+});
+
 test("a computed locale is resolved by ECMA-402's locale-list rules in the runtime", async () => {
   // Not ToString: a value without a locale list length, such as
   // JSON.parse("42") or JSON.parse("{}"), names the empty list and selects

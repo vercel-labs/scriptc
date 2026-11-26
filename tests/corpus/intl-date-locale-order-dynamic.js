@@ -23,3 +23,21 @@ try {
   console.log("empty", error.name, evaluated);
 }
 console.log("invalid-date", new Date(NaN).toLocaleDateString(""));
+
+// A computed locale is canonicalized only after the time-value check: an
+// invalid Date answers "Invalid Date" without reading it (or the options),
+// while a valid Date takes the same errors a literal locale would.
+const invalid = new Date(NaN);
+console.log("invalid-null-locale", invalid.toLocaleDateString(JSON.parse("null")));
+const throwingOptions = {
+  get timeZone() {
+    throw new Error("options read");
+  }
+};
+console.log("invalid-options", invalid.toLocaleString("en-US", throwingOptions));
+try {
+  new Date(0).toLocaleDateString(JSON.parse("null"));
+  console.log("valid-null-locale", "no throw");
+} catch (error) {
+  console.log("valid-null-locale", error.name, error.message);
+}

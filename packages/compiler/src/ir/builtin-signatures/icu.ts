@@ -48,6 +48,11 @@ export const icuSignatures = defineLibFnSignatures({
    * for one call. "Invalid Date" for an invalid date, before any option
    * is read. */
   "icu.dateToLocale": { argTypes: [F64, F64, STRING, DYN], result: STRING },
+  /** The same with a computed locales argument: the runtime checks the time
+   * value first, so an invalid Date answers "Invalid Date" without
+   * canonicalizing the locale (or reading the options), as Node does.
+   * Result +1. */
+  "icu.dateToLocaleDyn": { argTypes: [F64, F64, DYN, DYN], result: STRING },
   /** A locales argument the program computed (a checked-dynamic value): the
    * tag the formatter builds at, by ECMA-402's CanonicalizeLocaleList as
    * far as the runtime models it. Undefined and a value without a locale

@@ -431,6 +431,7 @@ import type {
   SrcLoc,
 } from "../../ir/ir.js";
 import {
+  adoptsAtTypedSlot,
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
@@ -795,6 +796,7 @@ import {
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
   cryptoConstantsValue,
+  perfHooksConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -864,6 +866,7 @@ import {
   fewerRefusals,
   namedConstructorBox,
   otherErrors,
+  programHoldsConstructorValue,
   untypedConstructorAsFunction,
 } from "./held-constructors.js";
 import { lowerSystemErrorMapValue } from "./lower-system-errors.js";
@@ -6414,6 +6417,10 @@ export class Lowerer {
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
       mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
+      // A variadic store's adapter records the source signature it stands
+      // for; a unit that reuses the journaled adapter without rebuilding it
+      // needs the entry to look through the store (function-views.ts).
+      irDataTable("coercions.variadicAdapterSources", this.coercions.variadicAdapterSources),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
@@ -7046,6 +7053,11 @@ export class Lowerer {
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",
+    // The function-view pass's served-caller state: computed after every
+    // unit has lowered (the store's adapter is journaled by then), so a
+    // replay recomputes it from the restored adapters and helpers.
+    "coercions.variadicWideServed",
+    "coercions.variadicServedAdapters",
     "assertInstances",
     "unionLiteralOwners",
     "strippedUndefinedArms",
@@ -7380,9 +7392,11 @@ export class Lowerer {
    * arguments (requireExactShape), with their ancestors: the classes a
    * comparison pass holds as checked-dynamic values. */
   readonly dynamicClassValueRequests = new Set<ts.Node>();
-  /** The program holds a primitive constructor as a value: one was written
-   * as a value expression (lower-exprs.ts, primitiveCtorValue). Until then
-   * nothing of held-constructors.ts is asked of the values it lowers. */
+  /** The program writes a primitive constructor as a value, decided before
+   * any body lowers (programHoldsConstructorValue). A diagnostic is marked
+   * heldConstructor only where lowering meets such a value's function type;
+   * the comparison pass in held-constructors.ts runs only for a program that
+   * holds one. */
   constructorFunctionTypes = false;
   /** How often lowering met a value or a type that holds a constructor's
    * function type (lowerExpr, the type mapper). */
@@ -15282,6 +15296,11 @@ export class Lowerer {
 
   run(): LowerResult {
     const parts = this.splitFiles();
+    // The held-constructor fact is decided from the program's syntax and
+    // symbols before any body lowers, so the marks below are exact: a
+    // diagnostic is marked only where lowering actually meets a constructor
+    // value's function type (held-constructors.ts).
+    this.constructorFunctionTypes = programHoldsConstructorValue(this);
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
     this.programSourceFiles = parts.map((fp) => fp.sf);
     this.classHierarchyCache = null;
@@ -16074,6 +16093,13 @@ export class Lowerer {
     this.narrowing.setFiles(parts.map((fp) => fp.sf));
     this.programSourceFiles = parts.map((fp) => fp.sf);
     this.classHierarchyCache = null;
+    // Normal compilation lowers through this pass, not through run(): the
+    // held-constructor fact is decided from the program's syntax and symbols
+    // before any body lowers, so a diagnostic is marked only where lowering
+    // actually meets a constructor value's function type
+    // (held-constructors.ts). Without it every diagnostic would count as one
+    // and the comparison pass would run for every program.
+    this.constructorFunctionTypes = programHoldsConstructorValue(this);
     // Direct lowering callers do not necessarily run program preflight.
     // Establish the same managed header/top-level batch here before
     // collection, while the production path simply finds warm memos.
@@ -17365,10 +17391,12 @@ export class Lowerer {
     // value it lowers that holds one, and the type mapper for every mapping
     // that reaches a constructor's function type, in any pass. Both count
     // from the first statement lowered, since lowering order is not
-    // evaluation order, so a diagnostic made before the program writes its
-    // first constructor value is marked only when its own statement met one;
-    // the mark counts only if the program turns out to hold a constructor.
-    if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
+    // evaluation order. The program's held-constructor fact is decided before
+    // lowering (programHoldsConstructorValue), so a diagnostic made earlier in
+    // lowering order is not marked for that reason alone: ordering changes
+    // which unit lowers first, not whether the refusal involves a constructor.
+    if (this.constructorFunctionTypes && this.constructorTouches > this.constructorTouchMark)
+      d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
     // (a reference flushes them; unreferenced declarations report nothing in
@@ -21161,6 +21189,38 @@ export class Lowerer {
         ),
       );
     if (!preservesIdentity || value.kind === "dynCheck") {
+      // A dynamic value can take the key's type as a live capsule when the
+      // target has one: the record is the very object the other name
+      // holds, so the collection's key identity survives (the popup store's
+      // untyped layer array feeding a Set of layer records). Any other
+      // conversion copies, which would change the key.
+      // Only a target the checked conversion can represent adopts a key:
+      // a record with an accessor slot has no checked extraction, and
+      // adopting it would reach the IR validator's internal error instead
+      // of the refusal below.
+      if (
+        value.kind !== "dynCheck" &&
+        value.type.kind === "dyn" &&
+        canDynCheckTo(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        ) &&
+        adoptsAtTypedSlot(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        const conversion = sharedDynConversion(this, value, expected, locOf(node));
+        // A collection key must keep one identity with the value the program
+        // holds. The conversion's adoption is strict here: a value it cannot
+        // adopt is refused at run time instead of stored as a copy the
+        // program's other name does not share.
+        return conversion.kind === "dynCheck" && conversion.shared === true
+          ? { ...conversion, keyIdentity: true }
+          : conversion;
+      }
       this.noLowering(
         `collection key conversion from '${this.fmt(value.type)}' to '${this.fmt(expected)}' requiring a structural copy or dynamic conversion`,
         node,
@@ -25829,6 +25889,10 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
     if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
+    // `perf_hooks.constants` as a value: the enumerable GC numbers (the
+    // entry-type and milestone names are non-enumerable in Node).
+    if (bi.member === "constants" && bi.module === "perf_hooks")
+      return perfHooksConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -25908,6 +25972,11 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    // node:module's Module: the runtime class object whose prototype every
+    // module view inherits (scr_module_class.c), so instanceof and
+    // Object.getPrototypeOf(module) answer as Node's do.
+    if (bi.module === "module" && bi.member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (bi.module === "module" && bi.member === "isBuiltin")
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
@@ -26157,6 +26226,8 @@ export class Lowerer {
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
+    if (module === "module" && member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")
@@ -26181,6 +26252,8 @@ export class Lowerer {
       return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
+    if (module === "perf_hooks" && member === "constants")
+      return perfHooksConstantsValue(this, loc);
     return null;
   }
 

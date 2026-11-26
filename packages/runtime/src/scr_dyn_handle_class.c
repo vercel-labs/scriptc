@@ -199,6 +199,8 @@ ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *sel
 
 static void hc_define_method(ScrDyn *prototype, ScrDynHandleTag tag, const char *name) {
   ScrDyn *fn = scr_dyn_handle_class_method(tag, name);
+  /* Enumerable, as Node's web stream classes define their methods (its
+   * for-in lists them); the class's own HTML-style classes may differ. */
   if (fn) hc_define(prototype, name, fn, true, true, true);
 }
 
@@ -290,11 +292,30 @@ static const ScrDynHandleAccessor *hc_accessors(const ScrDyn *handle) {
   return klass && klass->accessors && klass->accessors->name ? klass->accessors : NULL;
 }
 
+static ScrDyn *hc_own_properties(const ScrDyn *handle) {
+  ScrDynHandleTag tag = handle->v.handle.tag;
+  if (tag == SCR_DYNH_CAPACITY || hc_classes[tag] == NULL) return NULL;
+  /* An alias tag (a fetch unit stream, reader or identity transform that is
+   * an instance of one of these classes) keeps its state in the owning
+   * unit's shape, not this class's: the class's expando accessor would read
+   * that state as its own record. Such a handle keeps no expando here. */
+  if (scr_dyn_handle_class_tag_of(handle) != tag) return NULL;
+  const ScrDynHandleOps *ops = hc_ops(tag);
+  return ops->own_props ? ops->own_props(handle->v.handle.ptr, tag) : NULL;
+}
+
+static bool hc_owns_nothing(const ScrDyn *handle) {
+  ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
+  return tag != SCR_DYNH_CAPACITY && hc_classes[tag] && hc_classes[tag]->no_own_properties;
+}
+
 static const ScrDynHandleClassOps hc_class_ops = {
     .prototype_of = scr_dyn_handle_class_prototype_of,
     .receiver = scr_dyn_handle_class_receiver,
     .method_call = scr_dyn_handle_class_method_call,
     .accessors = hc_accessors,
+    .owns_nothing = hc_owns_nothing,
+    .own_properties = hc_own_properties,
 };
 
 __attribute__((constructor)) static void hc_install(void) { scr_dyn_handle_class_ops = &hc_class_ops; }

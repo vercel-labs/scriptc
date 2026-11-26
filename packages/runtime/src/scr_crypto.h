@@ -402,6 +402,15 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem);
  * borrowed; results +1, or NULL with the error pending. */
 ScrDyn *scr_crypto_create_private_key(ScrDyn *key);
 ScrDyn *scr_crypto_create_public_key(ScrDyn *key);
+/* crypto.parsePKCS12(bundle, options): the parsed bundle as a three-part
+ * handle the frontend composes Node's result record from. The accessors
+ * answer the private key handle (or null), a certificate's DER (-1 the
+ * matching one, 0.. the additional ones; empty bytes for none), and the
+ * additional certificates' count. */
+ScrDyn *scr_crypto_parse_pkcs12(ScrDyn *bundle, ScrDyn *options);
+ScrDyn *scr_crypto_pkcs12_key(ScrDyn *parts);
+double scr_crypto_pkcs12_count(ScrDyn *parts);
+ScrBytes *scr_crypto_pkcs12_der(ScrDyn *parts, double which);
 ScrDyn *scr_crypto_generate_key_pair_sync(ScrDyn *type, ScrDyn *options);
 void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *callback);
 ScrDyn *scr_crypto_sign_oneshot(ScrDyn *algorithm, ScrDyn *data, ScrDyn *key);

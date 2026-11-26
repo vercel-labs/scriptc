@@ -68,11 +68,11 @@ stdlib-fence.ts:39:31 - error SC1090: '.split()' on a 'RegExp | string' separato
      |                               ^~~~~~~~~~~~~~~~~~~~~~~~~
   40 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
 
-stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
+stdlib-fence.ts:41:43 - error SC2020: 'Number.prototype.toLocaleString with a locale list' is part of the standard library types but has no scriptc lowering yet
 
   40 | const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
-  41 | const localized = (1234.5).toLocaleString("de-DE");
-     |                                           ^~~~~~~
+  41 | const localized = (1234.5).toLocaleString(["de-DE"]);
+     |                                           ^~~~~~~~~
   42 | // Unlowered call FORMS of lowered members. (push is fully variadic now —
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
+  hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string

@@ -206,6 +206,8 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
+ScrDyn *scr_fetch_response_error(void); /* Response.error(); +1 Response handle */
+ScrDyn *scr_fetch_response_redirect(ScrDyn *url, ScrDyn *status); /* Response.redirect(url, status?); borrowed args; +1 Response handle or NULL pending */
 ScrArr *scr_fetch_response_light(ScrDyn *response); /* @hono/node-server shim: borrowed; +1 string[] */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */

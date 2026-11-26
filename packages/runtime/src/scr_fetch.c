@@ -210,6 +210,10 @@ struct SfResponse {
   int status;
   bool redirected;
   bool null_body;
+  /* Response.type: 0 "default" (constructed, Response.json,
+   * Response.redirect), 1 "basic" (a fetch result), 2 "error"
+   * (Response.error). */
+  int8_t response_type;
   /* @hono/node-server's lightweight-response state (scr_fetch_response_light):
    * whether a constructed Response is still one the package would write
    * from its constructor arguments, and in which header form. 0: not (it
@@ -4514,6 +4518,7 @@ static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
   c->status_text = scr_str_retain(r->status_text);
   c->status = r->status;
   c->redirected = r->redirected;
+  c->response_type = r->response_type;
   c->null_body = r->null_body;
   c->light_length = r->light_length;
   return c;
@@ -4552,6 +4557,13 @@ static ScrDyn *sf_response_invoke(void *ptr, ScrDyn *self,
 
 static ScrDyn *sf_response_get(void *ptr, const char *key, size_t len) {
   SfResponse *r = ptr;
+  if (sf_name(key, len, "type")) {
+    const char *type = r->response_type == 2 ? "error" : r->response_type == 1 ? "basic" : "default";
+    ScrStr *text = scr_str_new(type, strlen(type));
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return out;
+  }
   if (sf_name(key, len, "status")) return scr_dyn_new_num((double)r->status);
   if (sf_name(key, len, "ok")) {
     return scr_dyn_new_bool(r->status >= 200 && r->status <= 299);
@@ -5639,7 +5651,15 @@ static bool sf_method_validate(ScrStr **method_out) {
             strchr("!#$%&'*+-.^_`|~", c) != NULL;
   }
   if (!valid) {
-    sf_type_error("fetch failed");
+    /* Node's undici: TypeError "<value> is not a valid HTTP method." */
+    size_t message_len = method->len + 32;
+    char *message = malloc(message_len);
+    if (!message) sf_oom();
+    int len = snprintf(message, message_len, "'%.*s' is not a valid HTTP method.",
+                       (int)method->len, method->data);
+    if (len < 0 || (size_t)len >= message_len) sf_oom();
+    sf_type_error(message);
+    free(message);
     return false;
   }
   if (sf_eq_ci(method, "connect") || sf_eq_ci(method, "trace") ||
@@ -6078,6 +6098,7 @@ static void sf_on_response(ScrClosure *cb, ScrHttpReq *res) {
   scr_str_release(raw_status_text);
   response->status = status;
   response->redirected = t->redirected;
+  response->response_type = 1;
   response->null_body = null_body;
   ScrDyn *boxed = scr_dyn_new_handle(response, SCR_DYNH_FETCH_RESPONSE);
   sf_response_release(response);
@@ -6953,6 +6974,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   response->status_text = status_text;
   response->status = status;
   response->redirected = false;
+  response->response_type = 0;
   response->null_body = null_body;
   response->light = light_form;
   response->auto_ct = auto_ct;
@@ -7020,6 +7042,83 @@ ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init) {
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init) {
   return sf_response_construct(NULL, init, data ? data : scr_dyn_undefined(),
                                &sf_response_json_serialize);
+}
+
+/* The empty, immutable headers table Response.error() carries (Node's
+ * guard makes every response-header mutation throw "immutable"). */
+static SfHeaders *sf_headers_empty(void) {
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
+  if (!pairs) sf_oom();
+  return sf_headers_new(pairs, true);
+}
+
+ScrDyn *scr_fetch_response_error(void) {
+  SfResponse *r = scr_cyc_alloc(sizeof *r, &sf_response_cyc_type);
+  if (!r) sf_oom();
+  r->rc = 1;
+  r->body = sf_stream_new_native();
+  sf_stream_close(r->body);
+  r->headers = sf_headers_empty();
+  r->url = scr_str_new("", 0);
+  r->status_text = scr_str_new("", 0);
+  r->status = 0;
+  r->redirected = false;
+  r->null_body = true;
+  r->response_type = 2;
+  ScrDyn *out = scr_dyn_new_handle(r, SCR_DYNH_FETCH_RESPONSE);
+  sf_response_release(r);
+  return out;
+}
+
+ScrDyn *scr_fetch_response_redirect(ScrDyn *url_value, ScrDyn *status_value) {
+  ScrStr *text = url_value != NULL ? scr_dyn_string_coerce_js(url_value)
+                                   : scr_str_new("undefined", 9);
+  if (!text) return NULL;
+  ScrUrl *parsed = sf_url_parse_quiet(text);
+  if (!parsed) {
+    sf_throw_url_parse_failure(text);
+    scr_str_release(text);
+    return NULL;
+  }
+  scr_str_release(text);
+  double converted = 302.0;
+  if (status_value != NULL && status_value->kind != SCR_DYN_UNDEF) {
+    if (!scr_dyn_number_coerce_js(status_value, &converted)) {
+      scr_url_release(parsed);
+      return NULL;
+    }
+    converted = trunc(converted);
+    if (!isfinite(converted)) converted = 0.0;
+  }
+  if (converted < 300.0 || converted > 399.0) {
+    char message[48];
+    int n = snprintf(message, sizeof message, "Invalid status code %d", (int)converted);
+    scr_url_release(parsed);
+    scr_throw_error_msg(SCR_ERR_RANGE, message, (size_t)n);
+    return NULL;
+  }
+  ScrStr *href = scr_url_href(parsed);
+  scr_url_release(parsed);
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 2);
+  if (!pairs) sf_oom();
+  scr_arr_push_ref(pairs, scr_str_new("location", 8));
+  scr_arr_push_ref(pairs, href);
+  SfResponse *r = scr_cyc_alloc(sizeof *r, &sf_response_cyc_type);
+  if (!r) sf_oom();
+  r->rc = 1;
+  r->body = sf_stream_new_native();
+  sf_stream_close(r->body);
+  r->headers = sf_headers_new(pairs, true);
+  r->headers->canonical = sf_header_values_trimmed(pairs);
+  r->url = scr_str_new("", 0);
+  r->status_text = scr_str_new("", 0);
+  r->status = (int)converted;
+  r->redirected = false;
+  r->null_body = true;
+  r->response_type = 0;
+  ScrDyn *out = scr_dyn_new_handle(r, SCR_DYNH_FETCH_RESPONSE);
+  sf_response_release(r);
+  return out;
 }
 
 /* Request uses the same body stream and Headers ownership as Response. */
@@ -7414,6 +7513,8 @@ static ScrDyn *sf_data_response(ScrStr *url) {
     SfResponse *response = result->v.handle.ptr;
     scr_str_release(response->url); response->url = scr_str_new(url->data, end);
     response->headers->immutable = true;
+    /* A fetch() result, as over http: type "basic". */
+    response->response_type = 1;
   }
   return result;
 }
@@ -7451,6 +7552,8 @@ static ScrDyn *sf_object_url_response(ScrStr *url) {
     SfResponse *response = result->v.handle.ptr;
     scr_str_release(response->url); response->url = scr_str_new(url->data, url->len);
     response->headers->immutable = true;
+    /* A fetch() result, as over http: type "basic". */
+    response->response_type = 1;
   }
   return result;
 }

@@ -1073,7 +1073,7 @@ export function fenceStaticResponseMember(
   lowerer.noLowering(
     `Response.${member} in a static build`,
     access,
-    "the native static Response surface is status/ok/statusText/url/redirected/headers/body/bodyUsed plus json(), text(), bytes(), and arrayBuffer(); other forms are unsupported",
+    "the native static Response surface is status/ok/statusText/type/url/redirected/headers/body/bodyUsed plus json(), text(), bytes(), and arrayBuffer(), and the static error() and redirect(); other forms are unsupported",
     sym,
   );
 }
@@ -2163,6 +2163,69 @@ export function lowerResponseStaticJson(lowerer: Lowerer, call: ts.CallExpressio
   if (call.arguments.nodes.some(ts.isSpreadElement) || call.arguments.nodes.length === 0)
     return null;
   return lowerResponseConstruction(lowerer, call.arguments.nodes, locOf(call), true);
+}
+
+/** Static `Response.error()`: the error response Node's undici answers —
+ * type "error", status 0, an empty status text, a null body and no
+ * headers. Its arguments evaluate for their effects, as a call's do in
+ * Node, and the call ignores them. */
+export function lowerResponseStaticError(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const access = call.expression;
+  if (access.questionDotToken || access.name.text !== "error") return null;
+  if (!lowerer.isStdlibGlobal(access.expression, "Response")) return null;
+  const loc = locOf(call);
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const stmts: IrStmt[] = [];
+  for (const argument of call.arguments.nodes) {
+    const value = lowerer.lowerExpr(argument);
+    if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+  }
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "fetch.responseError",
+    args: [],
+    type: DYN,
+    loc,
+  };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: DYN, loc };
+}
+
+/** Static `Response.redirect(url, status?)`: the URL must parse as an
+ * absolute one (Node's "Failed to parse URL from <input>" TypeError), the
+ * status must land in 300..399 (Node's RangeError, the number truncated as
+ * WebIDL converts it), and the response answers the parsed URL as its
+ * Location header with a null body. Extra arguments evaluate for their
+ * effects; the call reads the first two. */
+export function lowerResponseStaticRedirect(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
+  const access = call.expression;
+  if (access.questionDotToken || access.name.text !== "redirect") return null;
+  if (!lowerer.isStdlibGlobal(access.expression, "Response")) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement) || call.arguments.nodes.length === 0)
+    return null;
+  const loc = locOf(call);
+  const args = call.arguments.nodes;
+  const url = lowerer.lowerExprExpecting(args[0]!, DYN);
+  const status =
+    args[1] !== undefined ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc);
+  const stmts: IrStmt[] = [];
+  for (const argument of args.slice(2)) {
+    const discarded = lowerer.lowerExpr(argument);
+    if (discarded.kind !== "unitLit")
+      stmts.push({ kind: "exprStmt", expr: discarded, loc: discarded.loc });
+  }
+  const result: IrExpr = {
+    kind: "libCall",
+    fn: "fetch.responseRedirect",
+    args: [url, status],
+    type: DYN,
+    loc,
+  };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: DYN, loc };
 }
 
 function lowerResponseConstruction(

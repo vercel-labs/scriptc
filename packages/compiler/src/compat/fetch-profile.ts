@@ -150,7 +150,6 @@ const outOfScopeEntry = (
   reason,
 });
 
-const widerMemberFence = "the member is outside the native static handle projection";
 const typedInterfaceUnsupported = "typed source has no compiler bridge for this interface";
 const metadataExclusion =
   "WebIDL brand metadata is observable reflection, not an executable compatibility operation";
@@ -255,6 +254,7 @@ function buildFetchCompatProfile() {
       responseReads: [
         "ok",
         "status",
+        "type",
         "statusText",
         "url",
         "redirected",
@@ -576,7 +576,17 @@ function buildFetchCompatProfile() {
         facets: ["liveness", "mutation", "state-machine"],
         evidence: [fixture("static-headers-iteration")],
       },
-      ...["ok", "status", "statusText", "url", "redirected", "headers", "body", "bodyUsed"].map(
+      ...[
+        "ok",
+        "status",
+        "statusText",
+        "type",
+        "url",
+        "redirected",
+        "headers",
+        "body",
+        "bodyUsed",
+      ].map(
         (member): FetchCompatOperation => ({
           id: `stdlib.response.${member}`,
           name: `Response.${member}`,
@@ -593,6 +603,23 @@ function buildFetchCompatProfile() {
         scope:
           "data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor",
         evidence: [fixture("static-response-json")],
+      },
+      {
+        id: "stdlib.response.static.error",
+        name: "Response.error",
+        kind: "static-method",
+        facets: ["identity", "state-machine"],
+        scope: "the error response: type error, status 0, null body, immutable empty headers",
+        evidence: [fixture("static")],
+      },
+      {
+        id: "stdlib.response.static.redirect",
+        name: "Response.redirect",
+        kind: "static-method",
+        facets: ["webidl-conversion", "error-shape", "state-machine"],
+        scope:
+          "an absolute URL as the Location header and a status in 300..399 (WebIDL truncation, Node's RangeError), immutable headers",
+        evidence: [fixture("static")],
       },
       ...["json", "text", "bytes", "arrayBuffer"].map((member): FetchCompatOperation => ({
         id: `stdlib.response.${member}`,
@@ -759,15 +786,9 @@ function buildFetchCompatProfile() {
         staticEntry("stdlib.response.constructor", "Response", "constructor", "constructor"),
         staticEntry("stdlib.response.static.json", "Response", "json", "static"),
         ...["error", "redirect"].map((member) =>
-          unsupportedEntry(
-            `stdlib.response.static.${member}`,
-            "Response",
-            member,
-            "static",
-            "Response static constructor-object operations have no compiler lowering",
-          ),
+          staticEntry(`stdlib.response.static.${member}`, "Response", member, "static"),
         ),
-        unsupportedEntry("stdlib.response.type", "Response", "type", "prototype", widerMemberFence),
+        staticEntry("stdlib.response.type", "Response", "type", "prototype"),
         ...["url", "redirected", "status", "ok", "statusText", "headers", "body", "bodyUsed"].map(
           (member) => staticEntry(`stdlib.response.${member}`, "Response", member, "prototype"),
         ),

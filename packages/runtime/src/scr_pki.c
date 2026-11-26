@@ -766,6 +766,56 @@ static int sp_asn1_skip_element(const unsigned char **p, const unsigned char *en
   return 0;
 }
 
+/* A DER INTEGER read for the DH parameters: leading zero padding is
+ * trimmed before the MPI is sized, so a padded encoding cannot inflate the
+ * allocation or the arithmetic that follows. */
+static int sp_dh_read_param(unsigned char **p, const unsigned char *end, mbedtls_mpi *X) {
+  size_t len;
+  if (mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_INTEGER) != 0) return -1;
+  const unsigned char *body = *p;
+  if (len == 0 || (body[0] & 0x80)) return -1;
+  size_t skip = 0;
+  while (skip + 1 < len && body[skip] == 0) skip++;
+  *p += len;
+  return mbedtls_mpi_read_binary(X, body + skip, len - skip);
+}
+
+/* A DER INTEGER read strictly, as the private exponent and public value:
+ * only the canonical encoding — one optional zero byte before a value whose
+ * top bit is set — is accepted, as OpenSSL's decoder accepts it. */
+static int sp_dh_read_strict(unsigned char **p, const unsigned char *end, mbedtls_mpi *X) {
+  size_t len;
+  if (mbedtls_asn1_get_tag(p, end, &len, MBEDTLS_ASN1_INTEGER) != 0) return -1;
+  const unsigned char *body = *p;
+  if (len == 0 || (body[0] & 0x80)) return -1;
+  if (len > 1 && body[0] == 0 && !(body[1] & 0x80)) return -1;
+  size_t skip = len > 1 && body[0] == 0 ? 1 : 0;
+  *p += len;
+  return mbedtls_mpi_read_binary(X, body + skip, len - skip);
+}
+
+/* The public value of a private DH key: y = g^x mod p, as bytes (+1). */
+static bool sp_dh_public_from_private(const SpKey *k, unsigned char **y, size_t *y_len) {
+  mbedtls_mpi P, G, X, Y;
+  mbedtls_mpi_init(&P);
+  mbedtls_mpi_init(&G);
+  mbedtls_mpi_init(&X);
+  mbedtls_mpi_init(&Y);
+  bool ok = mbedtls_mpi_read_binary(&P, k->dh_p, k->dh_p_len) == 0 &&
+            mbedtls_mpi_read_binary(&G, k->dh_g, k->dh_g_len) == 0 &&
+            mbedtls_mpi_read_binary(&X, k->dh_x, k->dh_x_len) == 0;
+  ok = ok && mbedtls_mpi_cmp_int(&P, 0) > 0 && mbedtls_mpi_cmp_int(&G, 0) > 0 &&
+       mbedtls_mpi_exp_mod(&Y, &G, &X, &P, NULL) == 0;
+  *y = ok ? sp_mpi_bytes(&Y, y_len) : NULL;
+  ok = ok && *y != NULL;
+  if (X.MBEDTLS_PRIVATE(p)) mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
+  mbedtls_mpi_free(&P);
+  mbedtls_mpi_free(&G);
+  mbedtls_mpi_free(&X);
+  mbedtls_mpi_free(&Y);
+  return ok;
+}
+
 static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
   const unsigned char *const end = der + len;
   /* mbedTLS's parsers advance the cursor through unsigned char **; the
@@ -799,8 +849,8 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     if (mbedtls_asn1_get_tag(&p, alg_end, &params_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
       goto done;
     params_end = p + params_len;
-    if (mbedtls_asn1_get_mpi(&p, params_end, &P) != 0) goto done;
-    if (mbedtls_asn1_get_mpi(&p, params_end, &G) != 0) goto done;
+    if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
+    if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
     /* Optional q, j and validation fields follow; skip them. */
     while (p < params_end)
       if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
@@ -810,12 +860,12 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
       const unsigned char *oct_end;
       if (mbedtls_asn1_get_tag(&p, end, &oct_len, MBEDTLS_ASN1_OCTET_STRING) != 0) goto done;
       oct_end = p + oct_len;
-      if (mbedtls_asn1_get_mpi(&p, oct_end, &X) != 0) goto done;
+      if (sp_dh_read_strict(&p, oct_end, &X) != 0) goto done;
       if (p != oct_end) goto done;
     }
-    /* The public value is not stored: y = g^x mod p. */
+    /* The public value is derived lazily, when createPublicKey or an
+     * export needs it: importing a private key does no exponentiation. */
     if (mbedtls_mpi_cmp_int(&P, 0) <= 0 || mbedtls_mpi_cmp_int(&G, 0) <= 0) goto done;
-    if (mbedtls_mpi_exp_mod(&Y, &G, &X, &P, NULL) != 0) goto done;
   } else {
     if (mbedtls_asn1_get_tag(&p, end, &alg_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
       goto done;
@@ -827,8 +877,8 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     if (mbedtls_asn1_get_tag(&p, alg_end, &params_len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
       goto done;
     params_end = p + params_len;
-    if (mbedtls_asn1_get_mpi(&p, params_end, &P) != 0) goto done;
-    if (mbedtls_asn1_get_mpi(&p, params_end, &G) != 0) goto done;
+    if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
+    if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
     while (p < params_end)
       if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
     if (p != alg_end) goto done;
@@ -837,7 +887,7 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
       if (mbedtls_asn1_get_bitstring(&p, end, &bits) != 0) goto done;
       unsigned char *bp = bits.p;
       const unsigned char *bend = bits.p + bits.len;
-      if (mbedtls_asn1_get_mpi(&bp, bend, &Y) != 0) goto done;
+      if (sp_dh_read_strict(&bp, bend, &Y) != 0) goto done;
       if (bp != bend) goto done;
     }
   }
@@ -846,16 +896,19 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
   k->dh = true;
   k->dh_p = sp_mpi_bytes(&P, &k->dh_p_len);
   k->dh_g = sp_mpi_bytes(&G, &k->dh_g_len);
-  k->dh_y = sp_mpi_bytes(&Y, &k->dh_y_len);
-  if (private_key) k->dh_x = sp_mpi_bytes(&X, &k->dh_x_len);
+  if (private_key)
+    k->dh_x = sp_mpi_bytes(&X, &k->dh_x_len);
+  else
+    k->dh_y = sp_mpi_bytes(&Y, &k->dh_y_len);
   k->dh_priv_len = mbedtls_mpi_size(&X) ? mbedtls_mpi_size(&X) : mbedtls_mpi_size(&P);
-  if (!k->dh_p || !k->dh_g || !k->dh_y || (private_key && !k->dh_x)) {
+  if (!k->dh_p || !k->dh_g || (private_key ? !k->dh_x : !k->dh_y)) {
     sp_key_release(k);
     k = NULL;
   } else {
     ok = true;
   }
 done:
+  if (X.MBEDTLS_PRIVATE(p)) mbedtls_platform_zeroize(X.MBEDTLS_PRIVATE(p), X.MBEDTLS_PRIVATE(n) * sizeof(mbedtls_mpi_uint));
   mbedtls_mpi_free(&P);
   mbedtls_mpi_free(&G);
   mbedtls_mpi_free(&X);
@@ -2352,14 +2405,26 @@ static SpKey *sp_public_of(SpKey *k) {
     pub->dh = true;
     pub->dh_p = malloc(k->dh_p_len);
     pub->dh_g = malloc(k->dh_g_len);
-    pub->dh_y = malloc(k->dh_y_len);
-    if (!pub->dh_p || !pub->dh_g || !pub->dh_y) scr_trap("scriptc: out of memory\n");
+    if (!pub->dh_p || !pub->dh_g) scr_trap("scriptc: out of memory\n");
     memcpy(pub->dh_p, k->dh_p, k->dh_p_len);
     memcpy(pub->dh_g, k->dh_g, k->dh_g_len);
-    memcpy(pub->dh_y, k->dh_y, k->dh_y_len);
+    if (k->private_key && k->dh_x) {
+      unsigned char *y = NULL;
+      size_t y_len = 0;
+      if (!sp_dh_public_from_private(k, &y, &y_len)) {
+        sp_key_release(pub);
+        return NULL;
+      }
+      pub->dh_y = y;
+      pub->dh_y_len = y_len;
+    } else {
+      pub->dh_y = malloc(k->dh_y_len);
+      if (!pub->dh_y) scr_trap("scriptc: out of memory\n");
+      memcpy(pub->dh_y, k->dh_y, k->dh_y_len);
+      pub->dh_y_len = k->dh_y_len;
+    }
     pub->dh_p_len = k->dh_p_len;
     pub->dh_g_len = k->dh_g_len;
-    pub->dh_y_len = k->dh_y_len;
     pub->dh_priv_len = k->dh_priv_len;
     return pub;
   }
@@ -2903,6 +2968,23 @@ static void sp_unsupported_key_input(const unsigned char *data, size_t len) {
   sp_throw_key_decrypt(unsupported, "DECODER routines", "unsupported", "ERR_OSSL_UNSUPPORTED", stack, n);
 }
 
+/* Whether `der` is a DH SubjectPublicKeyInfo, whatever its key material:
+ * the shape Node's decoder recognizes before it rejects the value. */
+static bool sp_dh_spki_shape(const unsigned char *der, size_t len) {
+  const unsigned char *end = der + len;
+  unsigned char *p = (unsigned char *)der;
+  size_t seq, alg, oid_len;
+  const unsigned char *alg_end;
+  if (mbedtls_asn1_get_tag(&p, end, &seq, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+      p + seq != end)
+    return false;
+  if (mbedtls_asn1_get_tag(&p, end, &alg, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return false;
+  alg_end = p + alg;
+  if (mbedtls_asn1_get_tag(&p, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return false;
+  return oid_len == sizeof sp_dh_oid && memcmp(p, sp_dh_oid, oid_len) == 0;
+}
+
 /* sp_parse with a passphrase for an encrypted private key (NULL: none). */
 static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_key, const ScrBytes *pass) {
   {
@@ -2951,13 +3033,14 @@ static SpKey *sp_parse_with(const unsigned char *data, size_t len, bool private_
        * coefficient outside the field, say) answers Node's errors for the
        * input form. */
       bool mlkem_unreadable = !ed && !failed && !private_key && sp_mlkem_spki_shape(der, der_len);
+      bool dh_unreadable = !ed && !failed && !private_key && sp_dh_spki_shape(der, der_len);
       bool from_pem = decoded != NULL;
       if (decoded) {
         mbedtls_platform_zeroize(decoded, der_len);
         free(decoded);
       }
       if (ed || failed) return ed;
-      if (mlkem_unreadable) {
+      if (mlkem_unreadable || dh_unreadable) {
         if (from_pem) sp_evp_decode_error();
         else sp_unreadable_key();
         return NULL;

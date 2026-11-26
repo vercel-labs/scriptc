@@ -78449,7 +78449,7 @@
       "anchor": "socketenddata-encoding-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:net.socket.end",
         "tests": [
           "tests/corpus/net-socket-chaining.ts",
@@ -78585,7 +78585,7 @@
       "anchor": "socketsetencodingencoding",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:net.socket.setEncoding",
         "tests": [
           "tests/corpus/net-socket-chaining.ts",
@@ -78705,7 +78705,7 @@
       "anchor": "socketsettimeouttimeout-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:net.socket.setTimeout",
         "tests": [
           "tests/corpus/net-socket-chaining.ts",
@@ -78805,7 +78805,7 @@
       "anchor": "socketwritedata-encoding-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:net.socket.write",
         "tests": [
           "tests/corpus/net-socket-chaining.ts",
@@ -79152,7 +79152,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "evidence": "compiler-feature:net.timeout",
         "tests": [
           "tests/corpus/net-socket-chaining.ts",

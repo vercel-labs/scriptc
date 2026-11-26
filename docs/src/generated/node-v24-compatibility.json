@@ -46467,7 +46467,7 @@
       "anchor": "socketenddata-encoding-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -46557,7 +46557,7 @@
       "anchor": "socketsetencodingencoding",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -46647,7 +46647,7 @@
       "anchor": "socketsettimeouttimeout-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -46719,7 +46719,7 @@
       "anchor": "socketwritedata-encoding-callback",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
@@ -46994,7 +46994,7 @@
       "anchor": "class-netsocket",
       "nodeStability": null,
       "static": {
-        "status": "supported",
+        "status": "partial",
         "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }

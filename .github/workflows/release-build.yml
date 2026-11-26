@@ -15,7 +15,7 @@ name: Release build
 #
 # Only the native CLIs use the compiler profile. The helpers and runtime packs
 # (packs), the mobile packs, and the caller's libnode packs build while
-# cli-profile collects it, and each platform's CLI job (cli) starts from its
+# cli-layout and cli-profile collect it, and each platform's CLI job (cli) starts from its
 # packs once the profile is ready, so the profile's hour and a half is no
 # longer added to every platform's build.
 
@@ -24,7 +24,7 @@ on:
     inputs:
       collect-profile:
         description: >-
-          Collect the native compiler profile and layout on this commit (cli-profile, about 90 minutes) and build the
+          Collect the native compiler profile and layout on this commit (two jobs, about 45 and 100 minutes) and build the
           native CLIs with them. Without it they build with the committed profile and layout, which is also what a
           release build falls back to when the collection fails.
         type: boolean
@@ -53,17 +53,20 @@ jobs:
       - id: platforms
         run: echo "platforms=$(jq -c . .github/release-platforms.json)" >> "$GITHUB_OUTPUT"
 
-  # Collects the native compiler's function layout and profile on this commit
-  # (scripts/refresh-cli-layout.mjs, scripts/refresh-cli-profile.mjs), so every
-  # platform's CLI build optimizes and lays out the code it compiles. The
-  # committed ones fall behind main within a day or two. If this job fails,
-  # the CLI builds use the committed profile and layout.
-  cli-profile:
-    name: Collect the native compiler profile
+  # Collects the native compiler's function layout on this commit
+  # (scripts/refresh-cli-layout.mjs), then its profile with that layout
+  # (scripts/refresh-cli-profile.mjs), so every platform's CLI build optimizes
+  # and lays out the code it compiles. The committed ones fall behind main
+  # within a day or two. Three instrumented compiler builds and their training
+  # do not fit one job's 120-minute limit, so the layout is collected here and
+  # the profile in the job below, which takes the layout through an artifact.
+  # If either job fails, the CLI builds use the committed profile and layout.
+  cli-layout:
+    name: Collect the native compiler layout
     if: inputs.collect-profile
     runs-on: ubuntu-24.04
-    # The layout and the profile's two phases each build an instrumented compiler.
-    timeout-minutes: 120
+    # One instrumented build and its training: about 45 minutes.
+    timeout-minutes: 60
     continue-on-error: true
     permissions:
       contents: read
@@ -90,14 +93,62 @@ jobs:
           git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
           echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
           npm ci --prefix "$RUNNER_TEMP/tsc-ts"
-      # The layout comes first: the profile matches the functions of builds
-      # with the layout its instrumented compiler was built with, so the
-      # profile is collected with a second instrumented compiler built with
-      # this layout.
       - name: Collect the function layout
         run: >-
           node scripts/refresh-cli-layout.mjs --jobs 4
-          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz" --work "$RUNNER_TEMP/cli-layout-work"
+          --output "$RUNNER_TEMP/cli-layout/cli.layout.gz" --work "$RUNNER_TEMP/cli-layout-work"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cli-layout
+          path: ${{ runner.temp }}/cli-layout/cli.layout.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  # The profile matches the functions of builds with the layout its
+  # instrumented compiler was built with, so it is collected with a second
+  # instrumented compiler built with the layout the job above collects.
+  cli-profile:
+    name: Collect the native compiler profile
+    needs: cli-layout
+    if: ${{ inputs.collect-profile && !cancelled() }}
+    runs-on: ubuntu-24.04
+    # The instrumented build, the first phase's training, the context-sensitive
+    # instrumented build and its training: about 100 minutes.
+    timeout-minutes: 150
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm --filter @scriptc/compiler --filter scriptc build
+      - name: Check out tsc-ts
+        run: |
+          git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
+          echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
+          npm ci --prefix "$RUNNER_TEMP/tsc-ts"
+      # A layout that could not be collected leaves this step empty and the
+      # profile step fails, which the job's continue-on-error tolerates.
+      - name: Take the function layout
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cli-layout
+          path: ${{ runner.temp }}/cli-profile
       - name: Collect the profile
         env:
           SCRIPTC_NATIVE_LAYOUT: ${{ runner.temp }}/cli-profile/cli.layout.gz

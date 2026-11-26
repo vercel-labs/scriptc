@@ -43,6 +43,20 @@ const show = (value) => (value === null ? "null" : String(value));
   const readable = fresh();
   console.log("1GiB ->", show(readable.read(2 ** 30)), "hwm", readable.readableHighWaterMark);
 }
+// a stream configured above 1GiB reads a larger size as it is: the bound
+// is computeNewHighWaterMark's, and the watermark already exceeds it
+{
+  const readable = new Readable({ highWaterMark: 2 ** 31, read() {} });
+  readable.push("ab");
+  console.log(
+    "big hwm",
+    readable.readableHighWaterMark,
+    show(readable.read(2 ** 30 + 5)),
+    "len",
+    readable.readableLength,
+  );
+}
+
 for (const size of [2 ** 30 + 1, 2 ** 32]) {
   const readable = fresh();
   try {

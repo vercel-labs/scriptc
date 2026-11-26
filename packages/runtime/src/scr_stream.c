@@ -1284,21 +1284,23 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
     } else {
       /* a non-integer size goes through parseInt (toward zero) */
       double whole = trunc(size);
-      if (whole > 1073741824.0) {
-        /* computeNewHighWaterMark's MAX_HWM (1GiB) */
-        char num[32];
-        size_t len = scr_f64_to_str(whole, num);
-        char msg[192];
-        int wrote = snprintf(msg, sizeof msg,
-                             "The value of \"size\" is out of range. It must be <= 1GiB. Received %.*s",
-                             (int)len, num);
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, wrote < 0 ? 0 : (size_t)wrote,
-                                 "ERR_OUT_OF_RANGE");
-        return NULL;
-      }
       zero = whole == 0;
       n = whole > 0 ? (size_t)whole : 0;
       if (n > st->r.hwm) {
+        /* computeNewHighWaterMark's MAX_HWM (1GiB): only a size that grows
+         * the watermark is bounded, so a stream configured above it reads a
+         * larger size as it is. */
+        if (whole > 1073741824.0) {
+          char num[32];
+          size_t len = scr_f64_to_str(whole, num);
+          char msg[192];
+          int wrote = snprintf(msg, sizeof msg,
+                               "The value of \"size\" is out of range. It must be <= 1GiB. Received %.*s",
+                               (int)len, num);
+          scr_throw_error_msg_code(SCR_ERR_RANGE, msg, wrote < 0 ? 0 : (size_t)wrote,
+                                   "ERR_OUT_OF_RANGE");
+          return NULL;
+        }
         /* Node grows hwm to the next power of two above n */
         size_t h = st->r.hwm;
         while (h < n) h *= 2;

@@ -1817,7 +1817,12 @@ static void scr_async_gen_resume_ready(ScrGen *g);
  * deadline and seq, so ties against later timers stay FIFO like Node's. */
 typedef struct {
   double deadline_ms;
-  unsigned long seq;
+  /* The tiebreak and the turn's eligibility snapshot compare this counter
+   * with `<`, so it must outlive any program's timer arming: a 32-bit
+   * counter (unsigned long on Windows) would wrap, and a timer armed before
+   * the wrap would read as armed by the current turn forever, blocking the
+   * heap's root. Same width as the net unit's registration sequence. */
+  unsigned long long seq;
   ScrClosure *cb; /* owned */
   double repeat_ms;
   unsigned long id;
@@ -1828,7 +1833,7 @@ typedef struct {
 
 static SCR_TL ScrTimer *scr_timers = NULL;
 static SCR_TL size_t scr_ntimers = 0, scr_timers_cap = 0;
-static SCR_TL unsigned long scr_timer_seq = 0;
+static SCR_TL unsigned long long scr_timer_seq = 0;
 /* REF'd armed timers — the loop's timer-liveness count (an unref'd timer
  * sits in the heap and still FIRES if the loop runs for other reasons, but
  * does not by itself keep the loop alive). Kept in sync by push/pop/remove
@@ -7286,7 +7291,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * callbacks already armed timers; the flag resets when the turn completes.
    * One scr_loop_run_pass call runs many turns, so it cannot be captured once
    * per call — that would strand every timer armed in an earlier turn. */
-  unsigned long timer_seq_at_turn_start = scr_timer_seq;
+  unsigned long long timer_seq_at_turn_start = scr_timer_seq;
   bool timer_snapshot_taken = false;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;

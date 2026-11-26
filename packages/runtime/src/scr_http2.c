@@ -1405,9 +1405,14 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   int n = name != NULL
       ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
       : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
-  ScrStr *m = scr_str_new(msg, (size_t)n);
-  scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
-  scr_str_release(m);
+  /* A stream error reaches the stream's listeners only: Node's session keeps
+   * an internal listener, so an unlistened RST (a peer can send one at will)
+   * is not an unhandled 'error' and must never end the process. */
+  if (st->err_ls.n > 0) {
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    scr_str_release(m);
+  }
 }
 
 /* The stream's own 'close' listeners, after its 'error' and after the
@@ -1992,6 +1997,15 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
       st->rst_code = code;
       st->destroyed = true;
       scr_h2_stream_begin_close(st);
+      /* Node completes a compatibility request the peer reset: its 'end'
+       * runs with no trailers (after 'aborted'), so a handler never hangs
+       * and the request settles instead of staying retained. A raw stream
+       * gets no 'end' here, as in Node. */
+      if (st->compat_req != NULL && !st->end_recv) {
+        st->end_recv = true;
+        st->end_emitted = true;
+        scr_http_h2_req_end(st->compat_req);
+      }
       scr_h2_stream_settle(st);
       scr_http2_stream_release(st);
       if (scr_exc_pending()) return false;
@@ -3764,9 +3778,11 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
     ScrStr *m = scr_str_new(msg, (size_t)n);
     scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
     scr_str_release(m);
-    /* reported above: the settle below must not raise it a second time */
-    st->suppress_rst_error = true;
   }
+  /* Reported to the listeners above (or to none — Node's session keeps an
+   * internal listener, so a compat-only server must not die here). Either
+   * way the settle below must not raise it again. */
+  st->suppress_rst_error = true;
   /* Then it completes the request: the compat request's 'end' runs with no
    * trailers (nghttp2 closes the stream under it), so a handler never hangs
    * waiting for a body that cannot arrive. */

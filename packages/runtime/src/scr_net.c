@@ -3570,6 +3570,23 @@ void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*
     scr_closure_release(cb);
     return;
   }
+  /* Node's string-port form keeps a string second argument (or the middle
+   * argument of a three-argument call) as the destination host; a
+   * non-string value is ignored, and no host means the local default. The
+   * host validates BEFORE the connect listener is registered: a rejection
+   * must not leave a closure in the socket's list. Node validates the host
+   * like the port form's — an embedded NUL is ERR_INVALID_ARG_VALUE before
+   * anything dials (resolution would stop at the NUL while length-aware
+   * checks see the whole string). */
+  ScrStr *host = NULL;
+  if (!pipe) {
+    if (extra1 != NULL && extra1->kind == SCR_DYN_STR) host = extra1->v.str;
+    else if (slot != NULL && slot->kind == SCR_DYN_STR) host = slot->v.str;
+    if (!scr_net_host_chk(host)) {
+      scr_closure_release(cb);
+      return;
+    }
+  }
   if (cb == NULL && slot != NULL && slot->kind == SCR_DYN_FUNC) {
     cb = scr_dyn_listener_closure0(slot);
   }
@@ -3578,19 +3595,6 @@ void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*
     s->unix_path = scr_str_retain(target->v.str);
     s->dial_hook = &scr_net_sock_dial_unix;
   } else {
-    /* Node's string-port form keeps a string second argument (or the
-     * middle argument of a three-argument call) as the destination host;
-     * a non-string value is ignored, and no host means the local default. */
-    ScrStr *host = NULL;
-    if (extra1 != NULL && extra1->kind == SCR_DYN_STR) host = extra1->v.str;
-    else if (slot != NULL && slot->kind == SCR_DYN_STR) host = slot->v.str;
-    /* Node validates the host like the port form's: an embedded NUL is
-     * ERR_INVALID_ARG_VALUE before anything dials (resolution would stop at
-     * the NUL while length-aware checks see the whole string). */
-    if (!scr_net_host_chk(host)) {
-      scr_closure_release(cb);
-      return;
-    }
     s->peer_port = (int)port;
     scr_net_sock_set_peer(s, host);
   }

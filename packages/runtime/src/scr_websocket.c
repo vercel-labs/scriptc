@@ -1264,6 +1264,9 @@ typedef struct ScrWsDial {
   ScrStr *target;  /* +1 */
   ScrStr *method;  /* +1 */
   ScrArr *headers; /* +1 */
+  /* +1: the stores active when the connection was queued, so the request
+   * and its events keep the caller's context across the lookup. */
+  ScrAlsCtx *als;
   double port;
   int secure;
 } ScrWsDial;
@@ -1274,6 +1277,7 @@ static void scr_ws_dial_free(ScrWsDial *dial) {
   scr_str_release(dial->target);
   scr_str_release(dial->method);
   scr_arr_release(dial->headers);
+  scr_als_ctx_release(dial->als);
   free(dial);
 }
 
@@ -1321,6 +1325,10 @@ static void scr_ws_resolved(void *ctx, ScrStr **ips, size_t n) {
   ScrWsDial *dial = ctx;
   ScrWs *ws = dial->ws;
   if (!ws->discard && ws->ready_state == SCR_WS_CONNECTING) {
+    /* The request captures the stores active when it is built, so build it
+     * in the context the connection was queued from: Node's dial keeps the
+     * caller's context across the lookup too. */
+    ScrAlsCtx *prev = scr_als_dispatch_enter(dial->als);
     ScrNetSocket *sock = scr_net_connect_resolved(dial->port, dial->host, ips, n);
     if (sock == NULL) {
       scr_ws_fail(ws);
@@ -1328,6 +1336,7 @@ static void scr_ws_resolved(void *ctx, ScrStr **ips, size_t n) {
       scr_ws_request(ws, dial->host, dial->port, dial->target, dial->method, dial->headers,
                      dial->secure, sock);
     }
+    scr_als_dispatch_leave(prev);
   }
   scr_ws_dial_free(dial);
 }
@@ -1355,7 +1364,10 @@ static void scr_ws_connect(ScrClosure *cb) {
   }
   /* Only a name needs the resolver, and only a request the proxy policy
    * leaves direct dials that name: a configured proxy's host comes from the
-   * environment, and an address literal needs no lookup. */
+   * environment, and an address literal needs no lookup. This decision is
+   * the one the request keeps — the resolved dial is not re-decided after
+   * the lookup, so a proxy enabled meanwhile cannot receive this peer or
+   * send its credentials to the origin. */
   if (scr_net_host_needs_lookup(host) && !scr_http_proxy_applies(host, port, secure != 0) &&
       !scr_exc_pending()) {
     ScrWsDial *dial = calloc(1, sizeof *dial);
@@ -1365,6 +1377,7 @@ static void scr_ws_connect(ScrClosure *cb) {
     dial->target = target;
     dial->method = method;
     dial->headers = headers;
+    dial->als = scr_als_capture(); /* the queued task runs in that context */
     dial->port = port;
     dial->secure = secure;
     scr_net_resolve_async(host, &scr_ws_resolved, &scr_ws_resolve_cancelled, dial);

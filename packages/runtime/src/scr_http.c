@@ -9148,9 +9148,11 @@ bool scr_http_proxy_applies(ScrStr *host /*borrowed*/, double port, bool tls) {
 }
 
 /* The same request over a transport the caller already established (the
- * WebSocket dial's resolved connection): `sock` moves. The proxy policy
- * still applies, so the caller passes a socket only for a request the
- * policy leaves direct. */
+ * WebSocket dial's resolved connection): `sock` moves. The caller decided
+ * the transport before any asynchronous step, so the module's proxy policy
+ * is NOT re-evaluated here: a policy that changed while the caller was
+ * waiting must not route this request through a proxy, and must never let a
+ * proxy's credentials reach the origin it dialed. */
 ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double port,
                                               ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                               double timeout_ms, ScrArr *header_pairs /*borrowed*/,
@@ -9160,7 +9162,7 @@ ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double p
                                               ScrNetSocket *sock /*moves, nullable*/) {
   return scr_http_client_constructed(
       scr_http_request_impl(host, port, path, method, timeout_ms, header_pairs, cb, fn,
-                            default_port, wrap, wrap_ctx, true, sock),
+                            default_port, wrap, wrap_ctx, false, sock),
       auto_end);
 }
 

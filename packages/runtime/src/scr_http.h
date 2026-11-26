@@ -490,8 +490,10 @@ ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double p
  * origin's). A malformed proxy value leaves the exception pending. */
 bool scr_http_proxy_applies(ScrStr *host /*borrowed*/, double port, bool tls);
 /* The same request over a transport the caller already established (the
- * WebSocket dial's resolved connection): `sock` moves, and the proxy policy
- * still applies — pass a socket only for a request it leaves direct. */
+ * WebSocket dial's resolved connection): `sock` moves. The caller chose the
+ * transport before any asynchronous step, so the module's proxy policy is
+ * not re-evaluated for it — a policy change while the caller waited must not
+ * route the request through a proxy or leak a proxy's credentials. */
 ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double port,
                                               ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                               double timeout_ms, ScrArr *header_pairs /*borrowed*/,

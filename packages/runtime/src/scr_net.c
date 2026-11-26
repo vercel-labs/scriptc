@@ -3472,6 +3472,13 @@ static void scr_net_resolve_destroy(void *payload) {
 
 void scr_net_resolve_async(ScrStr *host, ScrNetResolveFn answered, ScrNetResolveCancelFn cancel,
                            void *ctx) {
+  /* The resolver runs on a pool thread, so the platform's socket layer must
+   * already be up — WSAStartup is the poller's, and it belongs to the loop
+   * thread (the dial's own blocking lookup initializes it the same way). */
+  if (!scr_net_poller_init()) {
+    answered(ctx, NULL, 0);
+    return;
+  }
   ScrNetResolve *job = calloc(1, sizeof *job);
   if (!job) scr_net_oom();
   job->host = scr_str_retain(host);

@@ -5042,8 +5042,11 @@ function lowerH2SessionMethodCall(
       const cb = lowerer.lowerExpr(args[1]!);
       // (errorCode, lastStreamID[, opaqueData]): the frame's opaque data is
       // a Buffer when present and undefined otherwise, Node's shape.
+      // Node passes the frame's opaque data as a Buffer when the GOAWAY
+      // carries any and undefined otherwise, so a three-parameter listener's
+      // third parameter is Buffer | undefined — a plain Buffer would be
+      // handed the absent case's undefined.
       const opaqueOk = (p: IrType): boolean => {
-        if (p.kind === "bytes" && p.elem === "u8") return true;
         if (p.kind !== "union") return false;
         const arms = lowerer.unions.get(p.unionId)?.arms ?? [];
         return (

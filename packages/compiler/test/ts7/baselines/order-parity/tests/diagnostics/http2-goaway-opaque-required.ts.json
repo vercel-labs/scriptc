@@ -1,0 +1,16 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/http2-goaway-opaque-required.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "No overload matches this call.\n  The last overload gave the following error.\n    Argument of type '\"goaway\"' is not assignable to parameter of type '\"localSettings\" | \"remoteSettings\"'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/http2-goaway-opaque-required.ts",
+    "start": 363,
+    "end": 371
+   }
+  }
+ ]
+}

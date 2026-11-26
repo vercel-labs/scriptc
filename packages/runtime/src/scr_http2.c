@@ -4762,7 +4762,10 @@ ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/
    * CONNECT handover: take it over and release that context */
   scr_net_sock_adopt_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                     sess, &scr_h2_session_ctx_free);
-  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  /* the session's setTimeout rides the socket's idle timer: the handshake
+   * path forwards its fire exactly as the accepted-connection and client
+   * paths do */
+  scr_net_sock_set_native_events(sock, &scr_h2_on_timeout, &scr_h2_on_err);
   scr_net_sock_set_h2_bound(sock);
   scr_h2_send_settings(sess);
   /* Node resumes the socket it takes over: a paused one would never read the
@@ -5058,6 +5061,9 @@ void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_i
   free(p.data);
   s->goaway_sent = true;
   s->goaway_code = code32;
+  /* RFC 9113 6.8: a later GOAWAY must not increase the boundary, and the
+   * graceful close's shutdown notice repeats it — record what went out. */
+  s->goaway_last_stream_id = l32;
 }
 
 /* The socket's idle timer fired: forward to the session's listeners. */
@@ -6066,9 +6072,10 @@ static ScrDyn *scr_h2_dynh_session_invoke(void *h, ScrDyn *self, const char *met
       scr_http2_session_on_settings(s, scr_dyn_listener_closure_fn(args[1], (void *)&scr_h2_dyn_fire_settings), (ScrH2SettingsFn)&scr_h2_dyn_fire_settings, once, ev[0] == 'l');
     } else if (strcmp(ev, "ping") == 0) {
       scr_http2_session_on_ping(s, scr_dyn_listener_closure_data(args[1]), (ScrNetDataFn)&scr_dyn_listener_fire_data, once);
-    } else if (strcmp(ev, "frameError") == 0 || strcmp(ev, "timeout") == 0) {
-      /* never raised here (no frame fails to send, and setTimeout is
-       * refused): accept the registration */
+    } else if (strcmp(ev, "timeout") == 0) {
+      scr_http2_session_on_timeout(s, scr_dyn_listener_closure0(args[1]), once);
+    } else if (strcmp(ev, "frameError") == 0) {
+      /* never raised here: no frame this runtime sends fails to send */
     } else {
       char msg[128];
       int n = snprintf(msg, sizeof msg, "listening for '%s' on an Http2Session is not supported yet", ev);

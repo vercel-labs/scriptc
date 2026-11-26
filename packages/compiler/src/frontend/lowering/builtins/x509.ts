@@ -152,46 +152,55 @@ export function x509ToString(record: IrExpr, loc: SrcLoc): IrExpr {
  * `Object.hasOwn`/`hasOwnProperty` answer false. The receiver (and the key
  * of the keyed forms) is still evaluated, in argument order. NULL when the
  * member is not one this answers. */
+/** The answer for a present certificate, or null when `member` is not one
+ * of the walks this answers. */
+export function x509OwnKeyWalkAnswer(
+  lowerer: Lowerer,
+  member: string,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const resultT = lowerer.irTypeOf(call);
+  if (
+    member === "keys" ||
+    member === "values" ||
+    member === "entries" ||
+    member === "getOwnPropertyNames"
+  ) {
+    if (resultT?.kind !== "array") return null;
+    return { kind: "arrayLit", elems: [], type: resultT, loc };
+  }
+  if (member === "getOwnPropertyDescriptor") {
+    if (resultT === null || resultT === undefined) return null;
+    const nothing: IrExpr = {
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: DYN,
+      loc,
+    };
+    return lowerer.coerceInto(call, nothing, resultT);
+  }
+  if (member === "hasOwn" || member === "hasOwnProperty" || member === "propertyIsEnumerable")
+    return { kind: "boolLit", value: false, type: BOOL, loc };
+  return null;
+}
+
+/** The own-key walk over a certificate whose receiver and arguments the
+ * caller has not evaluated yet: the helper lowers the (already lowered)
+ * receiver it is given and then every argument, in order. NULL when the
+ * member is not one this answers or the receiver can be absent (that case
+ * keeps the caller's refusal). */
 export function lowerX509OwnKeyWalk(
   lowerer: Lowerer,
-  receiverNode: ts.Expression,
+  receiver: IrExpr,
   member: string,
   argNodes: readonly ts.Expression[],
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr | null {
-  const resultT = lowerer.irTypeOf(call);
-  /** The answer for a present certificate. */
-  const present = (): IrExpr | null => {
-    if (
-      member === "keys" ||
-      member === "values" ||
-      member === "entries" ||
-      member === "getOwnPropertyNames"
-    ) {
-      if (resultT?.kind !== "array") return null;
-      return { kind: "arrayLit", elems: [], type: resultT, loc };
-    }
-    if (member === "getOwnPropertyDescriptor") {
-      if (resultT === null || resultT === undefined) return null;
-      const nothing: IrExpr = {
-        kind: "dynFrom",
-        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-        type: DYN,
-        loc,
-      };
-      return lowerer.coerceInto(call, nothing, resultT);
-    }
-    if (member === "hasOwn" || member === "hasOwnProperty" || member === "propertyIsEnumerable")
-      return { kind: "boolLit", value: false, type: BOOL, loc };
-    return null;
-  };
-  const answer = present();
+  const answer = x509OwnKeyWalkAnswer(lowerer, member, call, loc);
   if (answer === null) return null;
-  const receiver = lowerer.lowerExpr(receiverNode);
-  const stmts: IrStmt[] = [{ kind: "exprStmt", expr: receiver, loc }];
-  /* Every argument evaluates, in order, as Node's call does: the walk uses
-   * only the first, and the others' side effects still happen. */
+  const stmts: IrStmt[] = [];
   for (const arg of argNodes) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
   const finish = (result: IrExpr): IrExpr => ({
     kind: "seqExpr",

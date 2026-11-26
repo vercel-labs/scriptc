@@ -36,4 +36,14 @@ seen.length = 0;
 // @ts-expect-error — the walk takes one argument; Node evaluates the rest.
 console.log("propertyIsEnumerable", cert.propertyIsEnumerable(effect("c"), effect("d")), seen.join(","));
 seen.length = 0;
+// The receiver is evaluated once, whether the probe is a plain call or the
+// borrowed Object.prototype form.
+let lookups = 0;
+const getCert = (): crypto.X509Certificate => {
+  lookups++;
+  return cert;
+};
+console.log("borrowed", Object.prototype.hasOwnProperty.call(getCert(), "subject"), lookups);
+lookups = 0;
+console.log("own method", getCert().hasOwnProperty("subject"), lookups);
 console.log("toString", String(cert).split("\n")[0]);

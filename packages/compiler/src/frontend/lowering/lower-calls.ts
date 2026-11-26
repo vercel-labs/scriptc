@@ -251,7 +251,12 @@ import {
   perfEntryTag,
 } from "./builtins/performance.js";
 import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
-import { fenceX509KeyWalk, isX509Type, lowerX509OwnKeyWalk } from "./builtins/x509.js";
+import {
+  fenceX509KeyWalk,
+  isX509Type,
+  lowerX509OwnKeyWalk,
+  x509OwnKeyWalkAnswer,
+} from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -4204,17 +4209,13 @@ function lowerObjectOwnCall(
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
-    if (isX509Type(lowerer, type) && receiverNode !== undefined) {
-      const x509 = lowerX509OwnKeyWalk(
-        lowerer,
-        receiverNode,
-        method,
-        call.arguments.nodes,
-        call,
-        locOf(call),
-      );
-      if (x509) return x509;
-      fenceX509KeyWalk(lowerer, type, receiverNode, `Object.prototype.${method}`);
+    if (isX509Type(lowerer, type)) {
+      /* The receiver and the arguments were lowered above; only the answer
+       * is left, so nothing here evaluates them a second time. */
+      const answer = x509OwnKeyWalkAnswer(lowerer, method, call, loc);
+      if (answer) return { kind: "seqExpr", stmts, result: answer, type: answer.type, loc };
+      if (receiverNode !== undefined)
+        fenceX509KeyWalk(lowerer, type, receiverNode, `Object.prototype.${method}`);
     }
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
@@ -11453,7 +11454,7 @@ function lowerObjectStaticCall(
     if (isX509Type(lowerer, recordT)) {
       const x509 = lowerX509OwnKeyWalk(
         lowerer,
-        node,
+        lowerer.lowerExpr(node),
         "getOwnPropertyNames",
         call.arguments.nodes.slice(1),
         call,
@@ -11818,7 +11819,7 @@ function lowerObjectStaticCall(
   if (isX509Type(lowerer, argIr)) {
     const x509 = lowerX509OwnKeyWalk(
       lowerer,
-      argNode,
+      lowerer.lowerExpr(argNode),
       member,
       call.arguments.nodes.slice(1),
       call,

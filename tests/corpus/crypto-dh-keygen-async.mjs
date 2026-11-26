@@ -45,6 +45,18 @@ console.log(
 console.log("deferred", pair.synchronous === false);
 console.log("timers", ticks > 0);
 
+// A null encoding asks for the KeyObject itself, as an absent option does;
+// a named group's key makes the same request without a prime to generate.
+const nulls = await new Promise((resolve, reject) => {
+  crypto.generateKeyPair(
+    "dh",
+    { group: "modp5", publicKeyEncoding: null, privateKeyEncoding: null },
+    (error, publicKey, privateKey) =>
+      error ? reject(error) : resolve(publicKey.asymmetricKeyType + privateKey.asymmetricKeyType),
+  );
+});
+console.log("null encodings", nulls);
+
 const failure = (options) =>
   new Promise((resolve) => {
     crypto.generateKeyPair("dh", options, (error) => resolve(describe(error)));

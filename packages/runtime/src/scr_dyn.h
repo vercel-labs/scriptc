@@ -201,6 +201,7 @@ typedef enum {
   X(MESSAGE_PORT, 36) \
   X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
   X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
+  X(MODULE_CLASS, 63) /* node:module's Module class object (scr_module_class.c) */ \
   X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NAVIGATOR, 83) /* Node's navigator global (scr_node_builtin.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
@@ -291,7 +292,6 @@ typedef enum {
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
 #define SCR_DYNH_UNASSIGNED(Z) \
-  Z(63) /* skipped: claimed by a branch that took another number */
 
 /* One member per pinned tag, sized value + 1, so its size is the largest
  * pinned value + 1: the new tags are numbered from there. Never instantiated. */
@@ -516,6 +516,13 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
 /* The same for a conversion without an assertion: all of `source` becomes
  * one object with the value built from it, or nothing changes. */
 void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
+/* The collection key's adoption (dynCheck.keyIdentity): the same whole
+ * walk, refusing (SC2020) a source it cannot make one object with the built
+ * key instead of leaving the copy. */
+void scr_dyn_adopt_key(ScrDyn *source, ScrDyn *capsule);
+/* A key conversion of a source the adopting walk did not take: the built key
+ * must be the source's own object (or a view of it), or the refusal. */
+void scr_dyn_key_check(const ScrDyn *source, const void *key);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending
@@ -624,10 +631,19 @@ struct ScrDyn {
       /* Layout mode (`layout` non-NULL): slots[i] holds the value of the
        * property layout->keys[i] names, a writable, enumerable,
        * configurable data property. Dictionary mode (`layout` NULL):
-       * entries hold keys, values and attributes. See ScrLayout. */
+       * entries hold keys, values and attributes. See ScrLayout.
+       *
+       * A layout slot is one jsval word as scr_js.h defines it, not a
+       * scr_dyn pointer: a number, boolean, null or undefined is its
+       * immediate, and every other value is its cell tag over an owned
+       * scr_dyn node (so a number property costs no box and the compiler's
+       * inline caches read and write the 8-byte word directly). Dictionary
+       * mode keeps plain scr_dyn pointers. Declared void ** because this
+       * header is included from scr_js.h itself; the slot helpers below
+       * convert to and from scr_dyn values at the boundary. */
       union {
         ScrDynEntry *entries;
-        struct ScrDyn **slots;
+        void **slots;
       };
       /* Optional identity of the typed record that produced this ordinary
        * snapshot. Empty records and callback interfaces can retain their
@@ -771,13 +787,13 @@ _Static_assert(sizeof(void *) != 4 || offsetof(ScrDyn, v.arr.length) == 44, "v.a
  * An ordinary object (SCR_DYN_OBJ) is in one of two modes.
  *
  * Layout mode: v.obj.layout names the object's key sequence, a node of the
- * thread's interned transition tree, and v.obj.slots holds one value per
- * key (8 bytes per property). Every property of a layout-mode object is a
- * writable, enumerable, configurable data property; objects of one key
- * sequence share one layout, so a layout pointer proves which key sits at
- * each slot and which keys the object lacks (the dynamic tier's inline
- * caches key on it). New objects start in layout mode at the thread's
- * empty layout.
+ * thread's interned transition tree, and v.obj.slots holds one jsval word
+ * per key (8 bytes per property; scr_json.c's slot conversions). Every
+ * property of a layout-mode object is a writable, enumerable, configurable
+ * data property; objects of one key sequence share one layout, so a layout
+ * pointer proves which key sits at each slot and which keys the object
+ * lacks (the dynamic tier's inline caches key on it). New objects start in
+ * layout mode at the thread's empty layout.
  *
  * Dictionary mode: v.obj.layout is NULL and v.obj.entries holds keys,
  * values and attributes (ScrDynEntry). An object moves there, once and for
@@ -868,16 +884,34 @@ static inline __attribute__((always_inline)) const char *scr_dyn_obj_key_at(cons
   return o->v.obj.entries[i].key;
 }
 
+/* Layout-slot conversion (scr_json.c). A layout slot is a jsval word (see
+ * the obj payload's comment): these read one as a scr_dyn value and write
+ * one from a scr_dyn value, so code that works on scr_dyn values is
+ * blind to the narrower representation. */
+/* The slot's value, owned (+1). */
+ScrDyn *scr_dyn_slot_take(void *word);
+/* `value` (moved, +1) as the word a slot holds. */
+void *scr_dyn_slot_from_value(ScrDyn *value);
+/* Releases a slot word the caller no longer stores. */
+void scr_dyn_slot_release(void *word);
+/* The slot's value, borrowed. An immediate is boxed into the object once,
+ * so the borrowed value stays valid as long as the object lives. */
+ScrDyn *scr_dyn_slot_borrow(ScrDyn *o, size_t i);
+/* Stores `value` (moved, +1) in the slot and returns the previous value
+ * (owned +1). */
+ScrDyn *scr_dyn_slot_exchange(ScrDyn *o, size_t i, ScrDyn *value);
+
 /* The value of data property i (borrowed); the undefined value for an
  * accessor property, whose functions scr_dyn_obj_prop_at answers. */
 static inline __attribute__((always_inline)) ScrDyn *scr_dyn_obj_value_at(const ScrDyn *o, size_t i) {
-  return o->v.obj.layout ? o->v.obj.slots[i] : o->v.obj.entries[i].value;
+  return o->v.obj.layout ? scr_dyn_slot_borrow((ScrDyn *)o, i) : o->v.obj.entries[i].value;
 }
 
 static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(const ScrDyn *o, size_t i) {
   const ScrLayout *layout = o->v.obj.layout;
   if (layout)
-    return (ScrDynProp){layout->keys[i].key, layout->keys[i].len, o->v.obj.slots[i], NULL, NULL,
+    return (ScrDynProp){layout->keys[i].key, layout->keys[i].len,
+                        scr_dyn_slot_borrow((ScrDyn *)o, i), NULL, NULL,
                         false, true, true, true};
   const ScrDynEntry *e = &o->v.obj.entries[i];
   return (ScrDynProp){e->key, e->key_len, e->value, e->getter, e->setter,
@@ -889,9 +923,9 @@ static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(cons
  * the layout pointer, so exit-time teardown can use it after the layouts
  * are freed. */
 static inline ScrDyn *scr_dyn_obj_exchange_value_at(ScrDyn *o, size_t i, ScrDyn *value) {
-  ScrDyn **slot = o->v.obj.layout ? &o->v.obj.slots[i] : &o->v.obj.entries[i].value;
-  ScrDyn *previous = *slot;
-  *slot = value;
+  if (o->v.obj.layout) return scr_dyn_slot_exchange(o, i, value);
+  ScrDyn *previous = o->v.obj.entries[i].value;
+  o->v.obj.entries[i].value = value;
   return previous;
 }
 
@@ -1870,6 +1904,29 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
  * over the same primitive, or NULL when `value` is not a wrapper. Installed
  * by the wrapper unit, so a program without one keeps the refusal. */
 extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
+/* The wrapper unit's primitive prototype of a kind (0 String, 1 Number,
+ * 2 Boolean), +1: the object X.prototype reads, so Object.getPrototypeOf(prim)
+ * answers it. NULL when the program links no wrapper unit. */
+extern ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind);
+/* The collection unit's class prototype of a Map, Set, WeakMap or WeakSet
+ * value (+1), NULL for any other value. Installed by scr_dyn_collections.c. */
+extern ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value);
+/* Function.prototype as a value (+1), installed by the untyped-invoke unit
+ * (scr_dyn_invoke.c), which owns it; NULL when the program links no unit
+ * that can hold a function prototype. */
+extern ScrDyn *(*scr_dyn_function_proto_hook)(void);
+/* Date.prototype as a value (+1), installed by scr_dyn_stdlib_prototype.c,
+ * which owns it; NULL when the program links no standard-library prototype
+ * unit (it cannot name Date.prototype then). */
+extern ScrDyn *(*scr_dyn_date_proto_hook)(void);
+/* ArrayBuffer.prototype as a value (+1), installed by
+ * scr_dyn_stdlib_prototype.c, which owns it; NULL when the program links no
+ * standard-library prototype unit (it cannot name ArrayBuffer.prototype
+ * then). */
+extern ScrDyn *(*scr_dyn_array_buffer_proto_hook)(void);
+/* Object.getPrototypeOf's answer for a primitive: its wrapper prototype
+ * where the program has one, else the per-kind cached ordinary object. +1. */
+ScrDyn *scr_dyn_primitive_prototype(double kind);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
@@ -1995,6 +2052,10 @@ bool scr_dyn_array_prototype_owns(const ScrStr *key);
  * NULL when the chain reaches Array.prototype without it. +1. */
 ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+/* An own data property on a function value: the closure's property table,
+ * created on first use (the compiler's function values share it). Moves
+ * `value`. */
+void scr_dyn_fn_set_prop(ScrDyn *function, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 /* The same, where the descriptor may be any object (scr_dyn_descriptor_snapshot). */
@@ -2404,6 +2465,14 @@ ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *m
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* The invoke unit installs itself here when it links: units that may call a
+ * dynamic method only for a value form (the wrapper prototype's generic
+ * string methods called through their function value) reach it through this
+ * pointer, so they do not make the whole invoke unit a link dependency of
+ * every program that boxes a primitive. NULL means the program links no
+ * untyped-call support, and the caller raises its own refusal. */
+extern ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                    size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with
  * *handled false for a name it does not implement. */
@@ -2748,6 +2817,15 @@ typedef struct ScrDynHandleOps {
    * (a definition still shadows it), and it is the set the fetch classes
    * answer from their interfaces. NULL = the class declares no accessors. */
   const ScrDynHandleName *attributes;
+  /* Reflect.get on a class accessor with an explicit receiver that is not
+   * an instance of the class raises this TypeError (`key` is the accessor's
+   * name). NULL = V8's text: "Illegal invocation", or "Cannot convert
+   * undefined or null to object" for a nullish receiver. */
+  void (*accessor_brand_error)(const char *key, size_t key_len, const ScrDyn *receiver);
+  /* The accessors that answer a rejected promise, not a throw, when a
+   * Reflect.get receiver is not an instance of the class (a WebIDL `rejects`
+   * attribute such as a reader's closed). NULL = none. */
+  const ScrDynHandleName *rejecting_names;
   /* The class name V8's property TypeErrors print when it differs from
    * cls: undici's constructors are `_Request` and `_Response`, which V8
    * shows as `#<_Request>`. NULL = cls. */
@@ -2772,6 +2850,13 @@ typedef struct ScrDynHandleOps {
    * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
    * table. See ScrDynHandlePropsHooks.table. */
   void (*adopt_props)(void *h, ScrDyn *props);
+  /* The properties a program set on the handle as a checked object
+   * (Node's expando), borrowed; NULL when it has none. The WebIDL stream
+   * classes keep their expando here; own-property reflection reads its
+   * names after the class's declared ones. NULL hook = the unit keeps no
+   * such object; `tag` is the handle's installed class tag, so a unit whose
+   * states have several shapes can tell which ones keep an expando. */
+  ScrDyn *(*own_props)(void *h, ScrDynHandleTag tag);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2788,6 +2873,12 @@ typedef struct ScrDynHandlePropsHooks {
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
   const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The class's own member read for a handle of `tag`, skipping the
+   * handle's own-property table: Reflect.get invokes an inherited getter on
+   * an explicit receiver, and the receiver's own properties do not take
+   * part. NULL result without a pending exception = the class has no such
+   * member. */
+  ScrDyn *(*class_get)(const ScrDyn *handle, const char *key, size_t key_len);
   /* The table a write of `key` lands in (borrowed, made on first use), or
    * NULL when the write is not a table write (a modeled property, or a
    * member key the slice refuses). */
@@ -2855,6 +2946,13 @@ typedef struct ScrDynHandleClass {
    * replace. NULL = ScrDynHandleOps.invoke. */
   ScrDyn *(*method_invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                            const char *what);
+  /* Whether Node's instances of this class own no properties (the WebIDL
+   * stream classes): getOwnPropertyNames answers an empty list and for-in
+   * visits the class prototype's members alone. False leaves the class's
+   * own-property reflection unmodelled, which keeps the named refusal: a
+   * class whose instances do own properties (node:dns Resolver's
+   * enumerable `_handle`) must model them here before reflection answers. */
+  bool no_own_properties;
 } ScrDynHandleClass;
 
 /* Installs a tag's ops with the class its handles belong to; both outlive
@@ -2909,6 +3007,15 @@ typedef struct ScrDynHandleClassOps {
    * handle whose class declares none; an alias tag answers its class's
    * table. */
   const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
+  /* Whether the handle's class declares that its instances own no
+   * properties (ScrDynHandleClass.no_own_properties): the one answer
+   * own-property reflection takes from the class. False for a class whose
+   * instances own properties it does not model, so the reflection keeps
+   * its refusal instead of answering an incomplete list. */
+  bool (*owns_nothing)(const ScrDyn *handle);
+  /* The properties a program added to the handle (borrowed), or NULL: the
+   * expando a declared class's instances keep beside their prototype. */
+  ScrDyn *(*own_properties)(const ScrDyn *handle);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

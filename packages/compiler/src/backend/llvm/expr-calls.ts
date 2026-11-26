@@ -74,6 +74,22 @@ import type { Writes } from "./reference-writes.js";
 import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 import { registerContentReplay } from "./emit-journal.js";
+import { exactInteger } from "./integer-values.js";
+import { libHostStateDecl } from "./lib-host-state.js";
+
+/** The i32 whose bits are a number's ToInt32 (and so its ToUint32) result,
+ * for a number proven to be an exact integer: JS reduces such a value to
+ * its low 32 bits, so the language conversion is a truncation, not the
+ * runtime's bit-clearing helper. Null when the value may be fractional,
+ * NaN, an infinity or -0, where only scr_bit_or/scr_bit_ushr is exact. */
+function provenInt32Bits(host: LlvmEmitterContext, value: LlValue, expr: IrExpr): string | null {
+  const integer = exactInteger(host, value, expr);
+  if (integer === null) return null;
+  if (integer.type === "i32") return integer.name;
+  const bits = host.B.tmp();
+  host.B.line(`${bits} = trunc i64 ${integer.name} to i32`);
+  return bits;
+}
 
 export function emitCallExpr(
   host: LlvmEmitterContext,
@@ -346,6 +362,7 @@ export function emitCallExpr(
         const natArgs: string[] = [];
         libCb.params.forEach((cls, i) => {
           const arg = cbArgs[i]!;
+          const argExpr = e.args[i]!;
           switch (cls) {
             case "f64":
               natTypes.push("double");
@@ -360,6 +377,20 @@ export function emitCallExpr(
             }
             case "u8":
             case "u32": {
+              const bits = provenInt32Bits(host, arg, argExpr);
+              if (bits !== null) {
+                // A proven whole number: ToUint32 is its low 32 bits.
+                if (cls === "u8") {
+                  const asU8 = B.tmp();
+                  B.line(`${asU8} = trunc i32 ${bits} to i8`);
+                  natTypes.push("i8");
+                  natArgs.push(`i8 ${asU8}`);
+                } else {
+                  natTypes.push("i32");
+                  natArgs.push(`i32 ${bits}`);
+                }
+                break;
+              }
               host.declare(`declare double @scr_bit_ushr(double, double)`);
               const asDouble = B.tmp();
               const asU32 = B.tmp();
@@ -379,6 +410,13 @@ export function emitCallExpr(
               break;
             }
             case "i32": {
+              const bits = provenInt32Bits(host, arg, argExpr);
+              if (bits !== null) {
+                // A proven whole number: ToInt32 is its low 32 bits.
+                natTypes.push("i32");
+                natArgs.push(`i32 ${bits}`);
+                break;
+              }
               host.declare(`declare double @scr_bit_or(double, double)`);
               const asDouble = B.tmp();
               const asI32 = B.tmp();
@@ -432,37 +470,76 @@ export function emitCallExpr(
             }
           }
         });
-        host.declare(`declare void @scr_library_callback_begin()`);
-        host.declare(`declare void @scr_library_callback_end()`);
         const retTy = ffiNativeTypeLl(libCb.returns);
         let fn: string;
+        let depthPtr: string | null = null;
         if (host.wasi) {
           fn = `@sc_wasm_import_${libCb.slot}`;
           host.declare(
             `declare ${retTy} ${fn}(${natTypes.join(", ")}) "wasm-import-module"="scriptc" "wasm-import-name"="${libCb.name}"`,
           );
+          host.declare(`declare void @scr_library_callback_begin()`);
+          host.declare(`declare void @scr_library_callback_end()`);
         } else {
-          host.declare(`declare ptr @scr_library_cb_require(${host.sizeType}, ptr)`);
-          host.declare(`declare ptr @scr_library_cb_ctx(${host.sizeType})`);
-          fn = B.tmp();
+          // One address for the channel pair and the depth bracket: load the
+          // registered fn, trap with the call site's SC4025 constant when it
+          // is still NULL (scr_library_cb_require's contract), load the ctx,
+          // and bracket the typed indirect call.
+          host.declare(libHostStateDecl(host.mod.lib?.threadInstances === true));
+          host.declare(`declare void @scr_trap(ptr)`);
+          const fnSlot = B.tmp();
           B.line(
-            `${fn} = call ptr @scr_library_cb_require(${host.sizeType} ${libCb.slot}, ptr @sc_lib_cb_trap_${libCb.slot})`,
+            `${fnSlot} = getelementptr inbounds %ScrLibHostState, ptr @scr_library_host_state, i64 0, i32 0, i64 ${libCb.slot}`,
+          );
+          fn = B.tmp();
+          B.line(`${fn} = load ptr, ptr ${fnSlot}`);
+          const missing = B.tmp();
+          B.line(`${missing} = icmp eq ptr ${fn}, null`);
+          const miss = B.newLabel("lib.cb.missing");
+          const live = B.newLabel("lib.cb.live");
+          B.condBr(missing, miss, live);
+          B.startBlock(miss);
+          B.line(`call void @scr_trap(ptr @sc_lib_cb_trap_${libCb.slot})`);
+          B.terminate(`unreachable`);
+          B.startBlock(live);
+          const ctxSlot = B.tmp();
+          B.line(
+            `${ctxSlot} = getelementptr inbounds %ScrLibHostState, ptr @scr_library_host_state, i64 0, i32 1, i64 ${libCb.slot}`,
           );
           const ctx = B.tmp();
-          B.line(`${ctx} = call ptr @scr_library_cb_ctx(${host.sizeType} ${libCb.slot})`);
+          B.line(`${ctx} = load ptr, ptr ${ctxSlot}`);
           natArgs.unshift(`ptr ${ctx}`);
+          depthPtr = B.tmp();
+          B.line(
+            `${depthPtr} = getelementptr inbounds %ScrLibHostState, ptr @scr_library_host_state, i64 0, i32 2`,
+          );
         }
+        // The bracket the accessors encoded: the depth counts the active
+        // host callback, so an ABI entry attempted from inside one traps
+        // SC4026. The decrement needs no zero test here: every path that
+        // could clear the counter mid-callback traps without returning.
+        const depthStep = (delta: 1 | -1): void => {
+          if (depthPtr === null) {
+            B.line(`call void @scr_library_callback_${delta === 1 ? "begin" : "end"}()`);
+            return;
+          }
+          const value = B.tmp();
+          const next = B.tmp();
+          B.line(`${value} = load ${host.sizeType}, ptr ${depthPtr}`);
+          B.line(`${next} = ${delta === 1 ? "add" : "sub"} ${host.sizeType} ${value}, 1`);
+          B.line(`store ${host.sizeType} ${next}, ptr ${depthPtr}`);
+        };
         const call = `call ${retTy} ${fn}(${natArgs.join(", ")})`;
         if (libCb.returns === "void") {
-          B.line(`call void @scr_library_callback_begin()`);
+          depthStep(1);
           B.line(call);
-          B.line(`call void @scr_library_callback_end()`);
+          depthStep(-1);
           return { name: "", type: e.type };
         }
         const raw = B.tmp();
-        B.line(`call void @scr_library_callback_begin()`);
+        depthStep(1);
         B.line(`${raw} = ${call}`);
-        B.line(`call void @scr_library_callback_end()`);
+        depthStep(-1);
         if (libCb.returns === "f64") return { name: raw, type: e.type };
         if (libCb.returns === "bool") {
           const value = B.tmp();

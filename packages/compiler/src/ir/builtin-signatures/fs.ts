@@ -17,6 +17,7 @@ import { defineLibFnSignatures } from "./shared.js";
 
 /** The fs builtin call slots. */
 export const fsSignatures = defineLibFnSignatures({
+  "fs.openAsBlob": { argTypes: [DYN, DYN], result: { kind: "promise", inner: DYN } },
   "fs.readFileSync": { argTypes: [STRING, STRING], result: STRING },
   "fs.readFileEncoded": { argTypes: [STRING, STRING], result: STRING },
   "fs.readFdEncoded": { argTypes: [F64, STRING], result: STRING },

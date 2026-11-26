@@ -2853,6 +2853,9 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
 static bool insp_tag_names_class(const char *tag, const char *cls) {
   if (!tag) return false;
   size_t tag_len = strlen(tag), cls_len = strlen(cls);
+  /* A tag that IS the class name (a web stream's, the spec's
+   * Symbol.toStringTag) is not repeated in brackets. */
+  if (tag_len == cls_len && memcmp(tag, cls, cls_len) == 0) return true;
   return tag_len > cls_len + 1 && tag[tag_len - cls_len - 1] == '.' &&
          memcmp(tag + tag_len - cls_len, cls, cls_len) == 0;
 }

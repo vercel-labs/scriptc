@@ -117,6 +117,11 @@ void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/);
  * is Node's argument TypeError. May throw. */
 void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/);
 bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
+/* The socket carries an HTTP/2 session already (a handshake, an accepted h2
+ * connection, or a client session): a second handshake over it is Node's
+ * ERR_HTTP2_SOCKET_BOUND. */
+void scr_net_sock_set_h2_bound(ScrNetSocket *s);
+bool scr_net_sock_h2_bound(ScrNetSocket *s);
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);

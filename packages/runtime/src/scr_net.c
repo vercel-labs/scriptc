@@ -640,6 +640,10 @@ struct ScrNetSocket {
   double hwm;
   size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
+  /* The socket already carries an HTTP/2 session (a handshake, an h2
+   * server's accepted connection, or a client session): a second
+   * performServerHandshake over it is Node's ERR_HTTP2_SOCKET_BOUND. */
+  bool h2_bound;
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool fin_seen;  /* peer FIN seen: 'end' fired (Node's writeAfterFIN state) */
@@ -8974,6 +8978,12 @@ bool scr_net_sock_destroyed(ScrNetSocket *s) {
    * destroyed, as Node's stream flag says */
   return s->fd < 0 && (s->emit_close || s->close_emitted);
 }
+
+void scr_net_sock_set_h2_bound(ScrNetSocket *s) {
+  if (s != NULL) s->h2_bound = true;
+}
+
+bool scr_net_sock_h2_bound(ScrNetSocket *s) { return s != NULL && s->h2_bound; }
 
 /* socket.writable — Node's stream flag: the write half is open (no end()
  * yet, no FIN sent, fd alive). Connecting sockets answer true — writes

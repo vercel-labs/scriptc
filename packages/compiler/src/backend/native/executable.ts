@@ -193,6 +193,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     (u) => u.opts.workers,
     "scr_worker.c",
     "scr_worker_events.c",
+    // The Web Locks manager (`worker_threads.locks`).
+    "scr_worker_locks.c",
     "scr_mailbox.c",
     "scr_message.c",
   ),

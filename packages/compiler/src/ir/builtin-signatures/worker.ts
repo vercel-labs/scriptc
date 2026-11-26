@@ -37,4 +37,9 @@ export const workerSignatures = defineLibFnSignatures({
   /** new BroadcastChannel(...args) (scr_worker_events.c; may throw), after
    * event.broadcastInstall, which installs its EventTarget side. */
   "worker.broadcastChannel": { argTypes: [DYN], result: DYN },
+  /** Web Locks: locks.request(name[, options], callback) and locks.query()
+   * (scr_worker_locks.c). Both answer promises and may throw (the
+   * callback is program code). */
+  "worker.locksRequest": { argTypes: [STRING, DYN, DYN], result: { kind: "promise", inner: DYN } },
+  "worker.locksQuery": { argTypes: [], result: { kind: "promise", inner: DYN } },
 });

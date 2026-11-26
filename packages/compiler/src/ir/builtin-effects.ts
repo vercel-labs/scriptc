@@ -131,6 +131,10 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "worker.setEnvironmentData",
   "worker.getEnvironmentData",
   "worker.broadcastChannel",
+  // Web Locks requests validate their arguments and run the program's
+  // callback while the lock is held.
+  "worker.locksRequest",
+  "worker.locksQuery",
   "process.exit",
   // process.exit(expr) and the exitCode writes convert the value with
   // Node's setter rules: the non-numeric-string TypeError, the Symbol and

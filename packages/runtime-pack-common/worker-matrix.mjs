@@ -3,7 +3,13 @@
  * Ordinary and library executables retain their existing object variants. */
 export function withWorkerRuntimeVariants(matrix) {
   if (matrix.target.object_format === "wasm") return matrix;
-  const sources = ["scr_worker.c", "scr_worker_events.c", "scr_mailbox.c", "scr_message.c"];
+  const sources = [
+    "scr_worker.c",
+    "scr_worker_events.c",
+    "scr_worker_locks.c",
+    "scr_mailbox.c",
+    "scr_message.c",
+  ];
   return {
     ...matrix,
     runtime_units: [

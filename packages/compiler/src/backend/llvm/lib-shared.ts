@@ -1763,6 +1763,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.markUncloneable": "scr_mark_uncloneable",
   "stream.workerStdio": "scr_stream_worker_stdio",
   "worker.broadcastChannel": "scr_worker_broadcast_channel",
+  "worker.locksRequest": "scr_worker_locks_request",
+  "worker.locksQuery": "scr_worker_locks_query",
   "event.broadcastInstall": "scr_et_broadcast_install",
   "process.stdinDestroy": "scr_process_stdin_destroy",
   "process.stdinSetRawMode": "scr_process_stdin_set_raw_mode",

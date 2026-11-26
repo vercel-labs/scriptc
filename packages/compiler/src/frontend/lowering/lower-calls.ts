@@ -210,6 +210,7 @@ import {
   lowerExtraStringMethodCall,
 } from "./containers/string-and-regexp.js";
 import { createRequireSpecOf } from "./builtins/module-bindings.js";
+import { lowerLocksMethodCall } from "./builtins/worker-locks.js";
 import {
   lowerChildStreamMethodCall,
   lowerChildWriterMethodCall,
@@ -2545,6 +2546,10 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     {
       const presentCall = lowerPresentArmReceiverMethodCall(lowerer, expr, expr.expression);
       if (presentCall) return presentCall;
+    }
+    {
+      const locksCall = lowerLocksMethodCall(lowerer, expr, expr.expression);
+      if (locksCall) return locksCall;
     }
     lowerer.unsupported("SC1090", expr, `method calls like '${ts.getTextOfNode(expr.expression)}'`);
   }
@@ -5868,6 +5873,8 @@ function lowerDynReceiverMethodCall(
       ? lowerProtocolMethodCall(lowerer, call, access, recv)
       : null;
   if (protocolCall) return protocolCall;
+  const locksCall = callbackProperty ? null : lowerLocksMethodCall(lowerer, call, access);
+  if (locksCall) return locksCall;
   const dispatched = callbackProperty
     ? null
     : lowerDynDispatchMethodCall(lowerer, call, access, recv, arrayReceiver);

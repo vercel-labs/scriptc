@@ -1,0 +1,6 @@
+`worker_threads.locks` runs the process's Web Locks manager natively.
+`locks.request(name, callback)` and `locks.request(name, options, callback)` run the callback while the lock is held, hand it a `Lock` with `name` and `mode`, and answer the callback's own result once it returns; `options.mode` is `"exclusive"` (the default) or `"shared"`, and shared requests granted together hold the name side by side while a queued exclusive request blocks later shared ones.
+The trigger rules are Node's: a name starting with `-`, an unknown mode, `ifAvailable` with `steal`, `steal` with a shared mode, and `signal` with either of those are refused with the same `NotSupportedError` texts, an unknown mode is `ERR_INVALID_ARG_VALUE`, and a signal that is already aborted rejects with its reason or an `AbortError`.
+`locks.query()` answers `{ held, pending }` for the calling thread's own view, which is what Node reports, with `clientId` spelled `node-<pid>-<threadId>`.
+A request made on a worker thread is refused with `ERR_SCRIPTC_LOCKS_THREAD`: a grant granted there would have to wake that thread's loop, which this build does not do yet, so the lock manager is a main-thread facility for now.
+A callback that returns a promise settles before that promise settles in this build; the lock is no longer held when the promise resolves.

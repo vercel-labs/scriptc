@@ -8329,6 +8329,49 @@ function checkSniCallbackValue(lowerer: Lowerer, v: IrExpr, blame: ts.Node, what
   return v;
 }
 
+/** settings.enableConnectProtocol from an h2 settings literal: the one
+ * session knob the lowering applies (RFC 8441's advertisement — it gates
+ * whether a client may send an extended CONNECT). Absent: false. */
+function enableConnectProtocolSetting(lowerer: Lowerer, settings: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(settings)) return false;
+  let enable = false;
+  for (const setting of settings.properties.nodes) {
+    if (
+      ts.isPropertyAssignment(setting) &&
+      ts.isIdentifier(setting.name) &&
+      setting.name.text === "enableConnectProtocol"
+    ) {
+      if (
+        setting.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
+        setting.initializer.kind !== ts.SyntaxKind.FalseKeyword
+      ) {
+        lowerer.noLowering(
+          "settings.enableConnectProtocol with a non-boolean literal",
+          setting,
+          "spell enableConnectProtocol as true or false",
+        );
+      }
+      enable = setting.initializer.kind === ts.SyntaxKind.TrueKeyword;
+    }
+  }
+  return enable;
+}
+
+/** The options record's settings.enableConnectProtocol (false when absent). */
+function enableConnectProtocolOption(lowerer: Lowerer, options: ts.Expression): boolean {
+  if (!ts.isObjectLiteralExpression(options)) return false;
+  for (const prop of options.properties.nodes) {
+    if (
+      ts.isPropertyAssignment(prop) &&
+      ts.isIdentifier(prop.name) &&
+      prop.name.text === "settings"
+    ) {
+      return enableConnectProtocolSetting(lowerer, prop.initializer);
+    }
+  }
+  return false;
+}
+
 /** Module-function calls on http2 import bindings. createServer lowers h2c;
  * createSecureServer lowers h2 over TLS, with allowHTTP1 selecting one
  * dual-ALPN server whose request/connect listeners mirror across parsers. */
@@ -8345,8 +8388,14 @@ function lowerHttp2ModuleCall(
     // stance) — a NON-literal options argument or an eager (req, res)
     // handler is NOT the lowered shape (register via server.on("stream")).
     let handlerNode: ts.Expression | null = null;
+    let enableConnectProtocol = false;
     for (const a of args) {
-      if (ts.isObjectLiteralExpression(a)) continue; // tuning options: ignored
+      if (ts.isObjectLiteralExpression(a)) {
+        // tuning options are ignored, except the one knob the lowering
+        // applies: settings.enableConnectProtocol (RFC 8441)
+        enableConnectProtocol = enableConnectProtocolOption(lowerer, a);
+        continue;
+      }
       if (ts.isFunctionExpression(a) || ts.isArrowFunction(a)) {
         handlerNode = a;
         continue;
@@ -8365,14 +8414,30 @@ function lowerHttp2ModuleCall(
       }
     }
     if (handlerNode === null) {
-      return { kind: "libCall", fn: "http2.createServer", args: [], type: NETSERVER_T, loc };
+      return enableConnectProtocol
+        ? {
+            kind: "libCall",
+            fn: "http2.createServerOpts",
+            args: [boolLit(true, loc)],
+            type: NETSERVER_T,
+            loc,
+          }
+        : { kind: "libCall", fn: "http2.createServer", args: [], type: NETSERVER_T, loc };
     }
     // An eager (req, res) handler is the COMPAT surface: the handler
     // becomes the first 'request' listener (Node's exact route), and the
     // pair it receives ARE the http req/res handles — Http2ServerRequest/
     // Http2ServerResponse over h2 streams (scr_http2.c's compat layer).
     const cb = lowerRequestHandlerArg(lowerer, handlerNode);
-    return { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
+    return enableConnectProtocol
+      ? {
+          kind: "libCall",
+          fn: "http2.createServerReqOpts",
+          args: [cb, boolLit(true, loc)],
+          type: NETSERVER_T,
+          loc,
+        }
+      : { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
   }
   if (bi.member === "connect") {
     // http2.connect(authority[, listener]) — the h2c client. The
@@ -8737,25 +8802,7 @@ function lowerHttp2ModuleCall(
               isScalarLiteral(p.initializer),
           );
         if (k === "settings" && initializer !== null && ts.isObjectLiteralExpression(initializer)) {
-          for (const setting of initializer.properties.nodes) {
-            if (
-              ts.isPropertyAssignment(setting) &&
-              ts.isIdentifier(setting.name) &&
-              setting.name.text === "enableConnectProtocol"
-            ) {
-              if (
-                setting.initializer.kind !== ts.SyntaxKind.TrueKeyword &&
-                setting.initializer.kind !== ts.SyntaxKind.FalseKeyword
-              ) {
-                lowerer.noLowering(
-                  "settings.enableConnectProtocol with a non-boolean literal",
-                  setting,
-                  "spell enableConnectProtocol as true or false",
-                );
-              }
-              enableConnectProtocol = setting.initializer.kind === ts.SyntaxKind.TrueKeyword;
-            }
-          }
+          enableConnectProtocol = enableConnectProtocolSetting(lowerer, initializer);
         }
         if (
           initializer !== null &&

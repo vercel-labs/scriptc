@@ -85,6 +85,10 @@ export const http2Signatures = defineLibFnSignatures({
    * :status rides separately as a number). */
   "http2.createServer": { argTypes: [], result: NETSERVER_T },
   "http2.createServerReq": { argTypes: [null], result: NETSERVER_T },
+  /** createServer(options...): only settings.enableConnectProtocol is
+   * honored (the RFC 8441 advertisement); the rest stay at defaults. */
+  "http2.createServerOpts": { argTypes: [BOOL], result: NETSERVER_T },
+  "http2.createServerReqOpts": { argTypes: [null, BOOL], result: NETSERVER_T },
   "http2.serverOnStream": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.serverOnSession": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   // connect(authority, reject, ca[, cb]): the TLS client knobs an https

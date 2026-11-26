@@ -113,6 +113,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
   host.usesTimers = true;
   const direct: Record<string, string> = {
     "http2.createServer": "scr_http2_create_server",
+    "http2.createServerOpts": "scr_http2_create_server_opts",
     "http2.sessionRequest": "scr_http2_session_request",
     "http2.sessionDestroy": "scr_http2_session_destroy",
     "http2.sessionSettingsDynCb": "scr_http2_session_settings_dyncb",
@@ -184,6 +185,11 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         "scr_http2_create_server_req",
         requestHandler(host, args[0]!),
       );
+    case "http2.createServerReqOpts":
+      return finishRuntimeCall(host, e, "scr_http2_create_server_req_opts", [
+        ...requestHandler(host, args[0]!),
+        a[1]!,
+      ]);
     case "http2.createSecureServerDyn":
     case "http2.createSecureServerDynCb":
       return finishRuntimeCall(host, e, "scr_http2_create_secure_server_dyn", [

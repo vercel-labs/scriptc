@@ -3698,7 +3698,10 @@ static bool scr_h2_request_block_valid(const ScrH2Session *s, const ScrH2Headers
     if (protocol != NULL) {
       /* extended CONNECT: only when the client enabled the setting, and
        * with a non-empty :protocol, :scheme and :path */
-      if (!s->remote_settings.enable_connect_protocol) return false;
+      /* RFC 8441: the client may use :protocol only when the SERVER
+       * advertised enableConnectProtocol (our local setting) — the
+       * client's own SETTINGS says nothing about what it may send. */
+      if (!s->local_settings.enable_connect_protocol) return false;
       if (protocol->len == 0) return false;
       if (scheme == NULL || scheme->len == 0) return false;
       if (path == NULL || path->len == 0) return false;
@@ -3738,6 +3741,45 @@ static void scr_h2_reject_protocol_error(ScrH2Session *s, ScrH2Stream *st, int32
   scr_h2_stream_settle(st);
 }
 
+/* A rejected block on a stream the program already holds (a trailer): Node's
+ * nghttp2 reports the protocol error to the raw stream before it closes, so
+ * a listener sees ERR_HTTP2_STREAM_ERROR. A stream nobody listens on stays
+ * silent (Node's session keeps an internal listener; ours must not treat
+ * the rejection as an unhandled 'error'). */
+static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id,
+                                       bool end_stream) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->destroyed = true;
+  if (st->err_ls.n > 0) {
+    /* Node's ERR_HTTP2_STREAM_ERROR message for the reset code. */
+    const char *name = scr_h2_code_name(1);
+    char msg[80];
+    int n = snprintf(msg, sizeof msg, "Stream closed with error code %s",
+                     name != NULL ? name : "NGHTTP2_PROTOCOL_ERROR");
+    ScrStr *m = scr_str_new(msg, (size_t)n);
+    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    scr_str_release(m);
+    /* reported above: the settle below must not raise it a second time */
+    st->suppress_rst_error = true;
+  }
+  /* Node completes the request when it rejects the block — its compat
+   * request's 'end' runs with no trailers (nghttp2 closes the stream under
+   * it), so the handler never hangs waiting for a body that can't arrive. */
+  (void)end_stream;
+  if (!st->end_recv) {
+    st->end_recv = true;
+    st->end_emitted = true;
+    if (st->compat_req != NULL) {
+      scr_http_h2_req_end(st->compat_req);
+    } else {
+      scr_h2_stream_maybe_emit_end(st);
+    }
+  }
+  scr_h2_stream_begin_close(st);
+  scr_h2_stream_settle(st);
+}
+
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
                                      ScrH2Headers *h) {
   bool end_stream = (flags & SCR_H2_FLAG_END_STREAM) != 0;
@@ -3758,14 +3800,14 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
          * peer from appending header fields to one request without bound:
          * every accepted block would land in the request's trailer
          * storage, and nothing else limits how many arrive. */
-        scr_h2_reject_protocol_error(s, st, stream_id);
+        scr_h2_reject_stream_error(s, st, stream_id, end_stream);
         return;
       }
       if (st->got_trailers || st->end_recv) {
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
-        scr_h2_reject_protocol_error(s, st, stream_id);
+        scr_h2_reject_stream_error(s, st, stream_id, end_stream);
         return;
       }
       st->got_trailers = true;
@@ -4317,11 +4359,39 @@ ScrNetServer *scr_http2_create_server(void) {
   return s;
 }
 
+/* http2.createServer(options[, handler]) when the options carry
+ * settings.enableConnectProtocol: the server advertises RFC 8441 support
+ * (the secure server's option takes the same path), so a default client may
+ * send an extended CONNECT. Every other tuning knob stays at its default. */
+ScrNetServer *scr_http2_create_server_opts(bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    ctx->enable_connect_protocol = enable_connect_protocol;
+  }
+  return s;
+}
+
 /* http2.createServer(handler): the eager (req, res) handler is the first
  * compat 'request' listener — Node's exact route (server.on("request")
  * appends through the scr_http.c hook). */
 ScrNetServer *scr_http2_create_server_req(ScrClosure *handler /*moves*/, ScrHttpReqFn fn) {
   ScrNetServer *s = scr_http2_create_server();
+  ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
+  if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
+    scr_h2_place_compat(ctx);
+    scr_net_ls_add(&ctx->request_ls, handler, (void *)fn, false);
+  } else {
+    scr_closure_release(handler);
+  }
+  return s;
+}
+
+/* createServer(options, handler): the eager compat handler over the h2c
+ * server that advertises the connect protocol. */
+ScrNetServer *scr_http2_create_server_req_opts(ScrClosure *handler /*moves*/,
+                                                ScrHttpReqFn fn, bool enable_connect_protocol) {
+  ScrNetServer *s = scr_http2_create_server_opts(enable_connect_protocol);
   ScrH2SrvCtx *ctx = (ScrH2SrvCtx *)scr_net_server_get_http_ctx(s);
   if (ctx != NULL && ctx->proto == SCR_NET_PROTO_H2) {
     scr_h2_place_compat(ctx);

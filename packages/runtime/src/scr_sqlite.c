@@ -1173,6 +1173,11 @@ static const ScrDynHandleMethod scr_sqlite_stmt_methods[] = {
     {NULL, 0, false, NULL, NULL},
 };
 
+/* The statement's class accessors: a Reflect.get receiver must be a
+ * statement, and these names read the receiver's state. */
+static const ScrDynHandleName scr_sqlite_stmt_attributes[] = {
+    SCR_DYN_HANDLE_NAME("sourceSQL"), SCR_DYN_HANDLE_NAME("expandedSQL"), {NULL, 0}};
+
 static const ScrDynHandleOps scr_sqlite_stmt_ops = {
     .cls = "StatementSync",
     .retain = scr_sqlite_stmt_retain,
@@ -1184,6 +1189,7 @@ static const ScrDynHandleOps scr_sqlite_stmt_ops = {
     .symbol_get = scr_sqlite_stmt_symbol_get,
     .json_empty_object = true,
     .methods = scr_sqlite_stmt_methods,
+    .attributes = scr_sqlite_stmt_attributes,
 };
 
 /* ── SQLTagStore ────────────────────────────────────────────────────── */
@@ -1430,6 +1436,10 @@ static const ScrDynHandleMethod scr_sqlite_tag_methods[] = {
     {NULL, 0, false, NULL, NULL},
 };
 
+static const ScrDynHandleName scr_sqlite_tag_attributes[] = {
+    SCR_DYN_HANDLE_NAME("capacity"), SCR_DYN_HANDLE_NAME("db"), SCR_DYN_HANDLE_NAME("size"),
+    {NULL, 0}};
+
 static const ScrDynHandleOps scr_sqlite_tag_ops = {
     .cls = "SQLTagStore",
     .retain = scr_sqlite_tag_retain,
@@ -1439,6 +1449,7 @@ static const ScrDynHandleOps scr_sqlite_tag_ops = {
     .inspect_view = scr_sqlite_tag_inspect_view,
     .json_empty_object = true,
     .methods = scr_sqlite_tag_methods,
+    .attributes = scr_sqlite_tag_attributes,
 };
 
 /* DatabaseSync::CreateTagStore. +1 or NULL with the exception pending. */
@@ -3344,6 +3355,10 @@ static const ScrDynHandleMethod scr_sqlite_db_methods[] = {
     {NULL, 0, false, NULL, NULL},
 };
 
+static const ScrDynHandleName scr_sqlite_db_attributes[] = {
+    SCR_DYN_HANDLE_NAME("isOpen"), SCR_DYN_HANDLE_NAME("isTransaction"),
+    SCR_DYN_HANDLE_NAME("limits"), {NULL, 0}};
+
 static const ScrDynHandleOps scr_sqlite_db_ops = {
     .cls = "DatabaseSync",
     .retain = scr_sqlite_db_retain,
@@ -3355,6 +3370,7 @@ static const ScrDynHandleOps scr_sqlite_db_ops = {
     .symbol_get = scr_sqlite_db_symbol_get,
     .json_empty_object = true,
     .methods = scr_sqlite_db_methods,
+    .attributes = scr_sqlite_db_attributes,
 };
 
 /* A handle box around a live database (the SQLTagStore#db getter). */

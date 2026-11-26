@@ -1176,14 +1176,27 @@ export function lowerNetModuleCall(
       return { kind: "libCall", fn: "net.createServer", args: [], type: NETSERVER_T, loc };
     }
     if (args.length === 1) {
-      // A provably-non-object, non-function argument (the invalid-input
-      // probes: createServer('path'), createServer(0)): Node throws
-      // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
-      // result — the checked-dynamic lane's concise arrows box it, and
-      // the throw means it never materializes.
-      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-        const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-        if (t !== null && (t.kind === "string" || t.kind === "f64" || t.kind === "bool")) {
+      // createServer(options): any non-function argument is Node's options
+      // argument — an object literal (including the empty `{}`), a record,
+      // an annotated ServerOpts value (checked-dynamic), or null/undefined —
+      // and crosses as a checked-dynamic value the runtime reads
+      // allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+      // keepAliveInitialDelay, highWaterMark and blockList from. A value
+      // that is a function at run time is the connection listener
+      // (Node's `typeof options === 'function'` rule).
+      const optionsType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+      if (optionsType === null || optionsType.kind !== "func") {
+        // A provably-primitive argument (the invalid-input probes:
+        // createServer('path'), createServer(0)) throws Node's
+        // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
+        // result — the checked-dynamic lane's concise arrows box it, and
+        // the throw means it never materializes.
+        const primitive =
+          optionsType !== null &&
+          (optionsType.kind === "string" ||
+            optionsType.kind === "f64" ||
+            optionsType.kind === "bool");
+        if (primitive && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
           const raw = lowerer.lowerExpr(args[0]!);
           return {
             kind: "libCall",
@@ -1197,6 +1210,14 @@ export function lowerNetModuleCall(
             loc,
           };
         }
+        const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+        return {
+          kind: "libCall",
+          fn: "net.createServerOpts",
+          args: [options],
+          type: NETSERVER_T,
+          loc,
+        };
       }
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -1209,10 +1230,31 @@ export function lowerNetModuleCall(
       );
       return { kind: "libCall", fn: "net.createServerCb", args: [cb], type: NETSERVER_T, loc };
     }
+    if (args.length === 2) {
+      // createServer(options, listener): the ServerOpts record plus the
+      // connection handler (the two-argument form Node documents).
+      const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "connection handlers",
+        1,
+        (p) => p.kind === "netSocket",
+        "use (socket) or ()",
+        [NETSOCKET_T],
+      );
+      return {
+        kind: "libCall",
+        fn: "net.createServerOptsCb",
+        args: [options, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `createServer with ${args.length} arguments`,
       expr,
-      "the supported forms are createServer() and createServer(socket => ...)",
+      "the supported forms are createServer([options][, socket => ...])",
     );
   }
   if (bi.member === "connect" || bi.member === "createConnection") {
@@ -4669,6 +4711,27 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "setLocalWindowSize") {
+    // Node validates the window size and applies no observable change in
+    // Node 24 (the local settings record and the peer's view stay as they
+    // were); the lowering keeps that shape.
+    requireStatementPosition(lowerer, call, "session.setLocalWindowSize(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `session.setLocalWindowSize with ${args.length} arguments`,
+        call,
+        "use setLocalWindowSize(windowSize)",
+      );
+    }
+    const windowSize = lowerer.lowerExprExpecting(args[0]!, F64);
+    return {
+      kind: "libCall",
+      fn: "http2.sessionSetLocalWindowSize",
+      args: [receiver(), windowSize],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "ping") {
     // session.ping([payload, ]callback): the (err, duration, payload)
     // callback crosses the checked-dynamic boundary. Node answers a
@@ -5246,6 +5309,75 @@ function lowerH2StreamMethodCall(
       loc,
     };
   }
+  if (name === "setTimeout") {
+    // setTimeout(msecs[, callback]): the stream's own idle timer (not the
+    // session socket's), callback a once 'timeout' listener — Node's shape.
+    requireStatementPosition(lowerer, call, "stream.setTimeout(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `stream.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(msecs) or setTimeout(msecs, callback)",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.streamSetTimeoutCb",
+        args: [receiver(), ms, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamSetTimeout",
+      args: [receiver(), ms],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "priority") {
+    // RFC 9113 removed priority signalling; Node accepts any options and
+    // warns DEP0194 once per process, ignoring them.
+    requireStatementPosition(lowerer, call, "stream.priority(...)");
+    if (args.length > 1) {
+      lowerer.noLowering(
+        `stream.priority with ${args.length} arguments`,
+        call,
+        "use priority() or priority(options)",
+      );
+    }
+    if (args.length === 1) {
+      const v = lowerer.lowerExpr(args[0]!);
+      const dynOpts: IrExpr =
+        v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.streamPriority",
+        args: [receiver(), dynOpts],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamPriority0",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `stream.${name}(...)`);
     const once = boolLit(name === "once", loc);
@@ -5352,16 +5484,34 @@ function lowerH2StreamMethodCall(
         loc,
       };
     }
+    if (event === "ready" || event === "timeout") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: event === "ready" ? "http2.streamOnReady" : "http2.streamOnTimeout",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", "continue", "ready", and "timeout" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
+    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause/setTimeout/priority and on(...) are the lowered stream members",
   );
 }
 
@@ -8424,6 +8574,55 @@ function lowerHttp2ModuleCall(
     // Http2ServerResponse over h2 streams (scr_http2.c's compat layer).
     const cb = lowerRequestHandlerArg(lowerer, handlerNode);
     return { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
+  }
+  if (bi.member === "performServerHandshake") {
+    // http2.performServerHandshake(socket[, options]): a server session
+    // over an existing connected socket. The tuning options are accepted
+    // as an object literal and inert in this unit.
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `http2.performServerHandshake with ${args.length} arguments`,
+        expr,
+        "use performServerHandshake(socket[, options])",
+      );
+    }
+    const sock = lowerer.lowerExpr(args[0]!);
+    if (sock.type.kind !== "netSocket") {
+      lowerer.noLowering(
+        `http2.performServerHandshake with a '${lowerer.fmt(sock.type)}' socket`,
+        args[0]!,
+        "pass a net.Socket (the socket a net server's 'connection' listener receives)",
+      );
+    }
+    if (args.length === 2 && !ts.isObjectLiteralExpression(args[1]!)) {
+      lowerer.noLowering(
+        "http2.performServerHandshake options",
+        args[1]!,
+        "pass the options as an object literal ({ settings: ... })",
+      );
+    }
+    if (args.length === 2) {
+      // The options are inert here, but the literal is still EVALUATED: calls
+      // and spreads inside it run (an authorization helper must not be
+      // erased), then the value is handed to the runtime and ignored.
+      const optsV = lowerer.lowerExpr(args[1]!);
+      const dynOpts: IrExpr =
+        optsV.type.kind === "dyn" ? optsV : { kind: "dynFrom", value: optsV, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.performServerHandshakeOpts",
+        args: [sock, dynOpts],
+        type: HTTP2SESSION_T,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.performServerHandshake",
+      args: [sock],
+      type: HTTP2SESSION_T,
+      loc,
+    };
   }
   if (bi.member === "connect") {
     // http2.connect(authority[, listener]) — the h2c client. The

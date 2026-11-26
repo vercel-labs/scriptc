@@ -3,10 +3,15 @@
  * repository directory.
  *
  * Vercel CI gives every task a copy of the repository directory, so a tool a
- * task uses has to live inside that directory. The ci:setup:toolchain task
- * runs this script and declares .ci/toolchain as its output, so the toolchain
- * is restored from Vercel Remote Cache on later runs instead of downloaded
- * again; its inputs are the pins below and scripts/toolchain.sha256.
+ * task uses has to live inside that directory. The installed tree is several
+ * gigabytes (the LLVM archive alone unpacks to 12 GiB), which is over the
+ * Remote Cache artifact limit: an upload returns 413 Request Entity Too Large
+ * and every dependent task then rebuilt the toolchain inside its own 900 s
+ * deadline. The ci:setup:toolchain task therefore declares no outputs, and
+ * each task installs the toolchain once from these pinned archives. The
+ * archive downloads run in parallel through their mirrors, and a source that
+ * stalls is abandoned at its deadline, so the install is bounded by the
+ * slowest archive rather than by a slow host's patience.
  *
  *   llvm-22.1.8   the pinned LLVM development distribution (LLVM_DIR, clang)
  *   zig           the pinned Zig (runtime pack C/C++ compiler and archiver)
@@ -18,9 +23,7 @@
  * Every archive is checked against its pinned SHA-256 before it is unpacked.
  * A checkout may carry files under .ci/ (git does not refuse a forced add of
  * an ignored path), so no file found there is trusted: every execution starts
- * from an empty tree and installs only from the pinned archives. Vercel Remote
- * Cache is the only way a run reuses a toolchain, and it restores one that an
- * execution built this way.
+ * from an empty tree and installs only from the pinned archives.
  */
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -68,6 +71,7 @@ const sources = [
     // LLVM publishes this archive on GitHub only; a partial response is retried rather than mirrored.
     urls: [`https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/${llvmArchive}`],
     sha256: llvmPin(llvmArchive),
+    deadlineMs: 150_000,
   },
   {
     name: "zig-x86_64-linux-0.16.0.tar.xz",
@@ -77,6 +81,7 @@ const sources = [
       "https://zig.linus.dev/zig/zig-x86_64-linux-0.16.0.tar.xz",
     ],
     sha256: "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00",
+    deadlineMs: 90_000,
   },
   {
     name: "cmake-3.31.6-linux-x86_64.tar.gz",
@@ -85,6 +90,7 @@ const sources = [
       "https://github.com/Kitware/CMake/releases/download/v3.31.6/cmake-3.31.6-linux-x86_64.tar.gz",
     ],
     sha256: "5a1133ff103c71eb5120e2cc3de922733e7d8a26a98ae716397e8676adb367bf",
+    deadlineMs: 90_000,
   },
   {
     // The wheel carries the statically addressable Ninja binary; the archive
@@ -94,6 +100,7 @@ const sources = [
       "https://files.pythonhosted.org/packages/6e/53/ebfed7b689c338dd8ebeec9c0730c8d56821292f14e2536e5f3ef1a05744/ninja-1.13.2-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl",
     ],
     sha256: "65a24341b5ac09fcadcc37082660be40a94174e51a937fabf6e2cae26225fa2c",
+    deadlineMs: 90_000,
   },
   {
     // Ubuntu 24.04's development packages: their static archives and headers are copied into the sysroot. The
@@ -104,6 +111,7 @@ const sources = [
       "http://archive.ubuntu.com/ubuntu/pool/main/z/zlib/zlib1g-dev_1.3.dfsg-3.1ubuntu2.3_amd64.deb",
     ],
     sha256: "419902a649e1078f24596cdf31ced9c839519828790f59888056fcdcd58e8a28",
+    deadlineMs: 45_000,
   },
   {
     name: "libzstd-dev_1.5.5+dfsg2-2build1_amd64.deb",
@@ -112,6 +120,7 @@ const sources = [
       "http://archive.ubuntu.com/ubuntu/pool/main/libz/libzstd/libzstd-dev_1.5.5+dfsg2-2build1_amd64.deb",
     ],
     sha256: "2692254b78b0beeb284cda9bd34883ba470881475bc7c0eefbef479404bcfd23",
+    deadlineMs: 45_000,
   },
 ];
 
@@ -119,7 +128,11 @@ function sha256(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
 }
 
-async function download({ name, urls, sha256: expected }) {
+// One attempt per mirror: the mirrors are the retry, and a source that stalls
+// is abandoned at its deadline instead of spending the lane's budget on it.
+const attemptsPerUrl = 1;
+
+async function download({ name, urls, sha256: expected, deadlineMs = 90_000 }) {
   const target = join(downloads, name);
   if (existsSync(target) && sha256(target) === expected) {
     console.log(`[toolchain] ${name}: already present (${statSync(target).size} bytes)`);
@@ -128,16 +141,18 @@ async function download({ name, urls, sha256: expected }) {
   rmSync(target, { force: true });
   const failures = [];
   for (const url of urls) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    for (let attempt = 1; attempt <= attemptsPerUrl; attempt++) {
       const started = Date.now();
-      console.log(`[toolchain] ${name}: download ${attempt}/3 from ${url}`);
+      console.log(`[toolchain] ${name}: downloading from ${url}`);
       const controller = new AbortController();
       let lastData = Date.now();
       let abortReason = null;
       const watchdog = setInterval(() => {
         const idle = Date.now() - lastData;
-        if (idle > 60_000) abortReason = `no data for ${Math.round(idle / 1000)}s`;
-        else if (Date.now() - started > 360_000) abortReason = "not finished within 360s";
+        if (idle > Math.min(60_000, deadlineMs))
+          abortReason = `no data for ${Math.round(idle / 1000)}s`;
+        else if (Date.now() - started > deadlineMs)
+          abortReason = `not finished within ${Math.round(deadlineMs / 1000)}s`;
         if (abortReason !== null) controller.abort(new Error(abortReason));
       }, 1_000);
       try {
@@ -174,8 +189,7 @@ async function download({ name, urls, sha256: expected }) {
       } catch (error) {
         failures.push(`${url} (attempt ${attempt}): ${abortReason ?? error.message}`);
         rmSync(target, { force: true });
-        console.log(`[toolchain] ${name}: ${abortReason ?? error.message}; retrying`);
-        await new Promise((resolve) => setTimeout(resolve, 5_000 * attempt));
+        console.log(`[toolchain] ${name}: ${abortReason ?? error.message}; trying the next source`);
       } finally {
         clearInterval(watchdog);
       }
@@ -300,8 +314,9 @@ async function main() {
   rmSync(downloads, { recursive: true, force: true });
   mkdirSync(downloads, { recursive: true });
   let at = Date.now();
-  const archives = new Map();
-  for (const source of sources) archives.set(source.name, await download(source));
+  const archives = new Map(
+    await Promise.all(sources.map(async (source) => [source.name, await download(source)])),
+  );
   step("downloads complete", at);
 
   const staging = join(ci, "toolchain-unpacked");

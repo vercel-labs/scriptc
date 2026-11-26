@@ -209,6 +209,32 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(`${t} = call ptr @scr_net_create_server(ptr ${cb}, ptr ${adapter})`);
     return host.own({ name: t, type: e.type });
   }
+  if (e.fn === "net.createServerOpts" || e.fn === "net.createServerOptsCb") {
+    // net.createServer(options[, listener]): the ServerOpts record plus
+    // the optional connection handler. The runtime validates the record
+    // (the option ladders can throw) and applies it to accepted sockets.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    let adapter = "null";
+    if (e.fn === "net.createServerOptsCb") {
+      const cbT = e.args[1]!.type;
+      if (cbT.kind !== "func")
+        throw new InternalCompilerError(
+          "llvm emitter bug: net.createServerOptsCb handler not a func",
+        );
+      host.toHeap(args[1]!);
+      cb = args[1]!.name;
+      adapter = cbT.params.length === 0 ? "@scr_net_conn_thunk0" : "@scr_net_conn_thunk_sock";
+      host.declare(`declare void ${adapter}(ptr, ptr)`);
+    }
+    host.declare(`declare ptr @scr_net_create_server_opts(ptr, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_create_server_opts(ptr ${args[0]!.name}, ptr ${cb}, ptr ${adapter})`,
+    );
+    host.emitPendingCheck();
+    return host.own({ name: t, type: e.type });
+  }
   if (e.fn === "net.listen" || e.fn === "net.listenCb") {
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";

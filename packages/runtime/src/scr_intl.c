@@ -790,6 +790,13 @@ static bool scr_intl_is_unicode_type(const ScrStr *text) {
 
 /** A feature of the service this runtime does not implement: the coded
  * refusal, never a formatter that answers something else. */
+/* Node's RangeError for a locales argument that is not a structurally
+ * valid language tag ("Incorrect locale information provided"). */
+static void scr_intl_bad_locale(void) {
+  static const char message[] = "Incorrect locale information provided";
+  scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+}
+
 static void scr_intl_refuse(const char *what) {
   ScrJsonBuf message;
   scr_jb_init(&message);
@@ -804,29 +811,99 @@ static void scr_intl_refuse(const char *what) {
  * tag (an absent or undefined locales argument), else the tag's. The
  * compiler passes only tags it accepts. False with the missing-data Error
  * pending. */
+/* The tag the frontend passes for the default locale: an absent or
+ * undefined locales argument. Any tag the program supplies is validated,
+ * so an empty string is the RangeError like any other invalid tag. */
+#define SCR_INTL_DEFAULT_TAG "\x01scriptc-default-locale"
+static bool scr_intl_is_default_tag(const ScrStr *tag) {
+  size_t len = strlen(SCR_INTL_DEFAULT_TAG);
+  return tag->len == len && memcmp(tag->data, SCR_INTL_DEFAULT_TAG, len) == 0;
+}
+
 static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
   if (!scr_intl_data()) {
     scr_intl_no_data();
     return false;
   }
-  if (tag == NULL || tag->len == 0) {
+  if (tag == NULL || scr_intl_is_default_tag(tag)) {
     snprintf(out, size, "%s", scr_intl_locale);
     return true;
   }
   char text[ULOC_FULLNAME_CAPACITY];
   if (tag->len >= sizeof text) {
-    scr_intl_refuse("this Intl locale");
+    scr_intl_bad_locale();
     return false;
   }
   memcpy(text, tag->data, tag->len);
   text[tag->len] = '\0';
+  /* ECMA-402's IsStructurallyValidLanguageTag: alphanumeric subtags
+   * separated by single hyphens, each non-empty. Node refuses anything
+   * else with the RangeError below, before any negotiation. */
+  size_t subtag = 0;
+  for (size_t i = 0; i < tag->len; i++) {
+    char c = text[i];
+    if (c == '-') {
+      if (subtag == 0) {
+        scr_intl_bad_locale();
+        return false;
+      }
+      subtag = 0;
+      continue;
+    }
+    bool alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+    if (!alnum) {
+      scr_intl_bad_locale();
+      return false;
+    }
+    subtag++;
+  }
+  if (subtag == 0) {
+    scr_intl_bad_locale();
+    return false;
+  }
   UErrorCode status = U_ZERO_ERROR;
-  uloc_forLanguageTag(text, out, (int32_t)size, NULL, &status);
-  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING) {
-    scr_intl_refuse("this Intl locale");
+  int32_t parsed = 0;
+  uloc_forLanguageTag(text, out, (int32_t)size, &parsed, &status);
+  if (U_FAILURE(status) || status == U_STRING_NOT_TERMINATED_WARNING || parsed != (int32_t)tag->len) {
+    scr_intl_bad_locale();
     return false;
   }
   return true;
+}
+
+/* The tag a locales argument the program computed stands for: ECMA-402's
+ * CanonicalizeLocaleList, as far as this runtime models it. Undefined and
+ * a value whose locale-list length is absent or zero (a number, a boolean,
+ * a plain object, an empty array) name the empty list, which selects the
+ * default locale, as Node does; a string is its own tag, validated by the
+ * formatter's own locale step; null is not an object, which Node refuses
+ * with the TypeError below; a non-empty list is locale negotiation, which
+ * is not modelled and is refused by name rather than answered with another
+ * locale. +1 string; NULL with the exception pending. */
+ScrStr *scr_intl_locale_value(ScrDyn *value) {
+  if (value != NULL && value->kind == SCR_DYN_NULL) {
+    static const char message[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (value != NULL && value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
+  double length = 0;
+  if (value != NULL && value->kind == SCR_DYN_ARR) {
+    length = scr_dyn_arr_len(value);
+  } else if (value != NULL && (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_PROXY)) {
+    /* ToObject(locales).length is an ordinary property read: a getter or a
+     * proxy trap runs (its side effects happen there), and its exception
+     * propagates. The raw slot read would bypass both. */
+    ScrDyn *entry = scr_dyn_obj_read(value, "length", sizeof "length" - 1);
+    if (entry == NULL) return NULL;
+    if (entry->kind == SCR_DYN_NUM) length = entry->v.num;
+    scr_dyn_release(entry);
+  }
+  if (length > 0) {
+    scr_intl_refuse("a locales list computed at run time");
+    return NULL;
+  }
+  return scr_str_new(SCR_INTL_DEFAULT_TAG, strlen(SCR_INTL_DEFAULT_TAG));
 }
 
 /* ── Intl.NumberFormat ────────────────────────────────────────────────
@@ -2038,5 +2115,18 @@ ScrStr *scr_intl_date_to_locale(double ms, double kind, ScrStr *locale, ScrDyn *
   if (format == NULL) return NULL;
   ScrStr *text = scr_intl_date_time_format_run(format, ms);
   scr_intl_date_time_format_release(format);
+  return text;
+}
+
+/* Date.prototype.toLocale* with a computed locales argument: ECMA-402 checks
+ * the time value before canonicalizing the locales argument, so an invalid
+ * Date answers "Invalid Date" without reading the value (or the options),
+ * as Node does. */
+ScrStr *scr_intl_date_to_locale_dyn(double ms, double kind, ScrDyn *locale, ScrDyn *options) {
+  if (!isfinite(ms)) return scr_str_new("Invalid Date", 12);
+  ScrStr *tag = scr_intl_locale_value(locale);
+  if (tag == NULL) return NULL;
+  ScrStr *text = scr_intl_date_to_locale(ms, kind, tag, options);
+  scr_str_release(tag);
   return text;
 }

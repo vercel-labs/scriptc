@@ -45,6 +45,7 @@
  * req 'data'/'end' listeners fire from the socket read path (macrotasks,
  * snapshot semantics, once-before-run), and errors/teardown follow the
  * socket's own story. */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 
 #include <ctype.h>
@@ -4775,6 +4776,13 @@ static void scr_http_conn_missing_host(ScrHttpConn *conn) {
 
 /* Delivers a body slice to a request's data listeners (the parser's
  * feed, and the h2 compat DATA-frame feed). */
+/* An h2 compat request consumed n body bytes (delivered to its readers or
+ * discarded with no consumer): the stream gives the peer that credit back. */
+static void scr_http_req_h2_consume(ScrHttpReq *r, size_t n) {
+  if (r->h2_stream == NULL || scr_http_h2_ops == NULL || scr_http_h2_ops->consumed == NULL) return;
+  scr_http_h2_ops->consumed(r->h2_stream, n);
+}
+
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   if (!r || n == 0 || r->ended) return;
   r->body_seen = true;
@@ -4794,7 +4802,12 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     return;
   }
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
-  if (r->data_ls.n == 0 && !piped) return;
+  if (r->data_ls.n == 0 && !piped) {
+    /* nobody reads this body: the bytes are discarded, so their receive
+     * credit returns now rather than stalling the peer's window */
+    scr_http_req_h2_consume(r, n);
+    return;
+  }
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
   chunk->is_buffer = true; /* Node delivers a Buffer */
   memcpy(chunk->data, data, n);
@@ -4817,6 +4830,7 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
     if (r->pipe_sock) scr_net_sock_write_bytes(r->pipe_sock, chunk);
   }
   scr_bytes_release(chunk);
+  scr_http_req_h2_consume(r, n);
 }
 
 static void scr_http_conn_body_data(ScrHttpConn *conn, const char *data, size_t n) {
@@ -11634,10 +11648,11 @@ static ScrDyn *scr_http_agent_hook_value(ScrHttpAgent *a, bool keep) {
 
 /* agent.createConnection(options[, callback]): Node's default dialer is
  * net.createConnection, so the net unit's dynamic entry does the work — its
- * argument ladder, validation and dial. The `signal` option rides the signal
- * unit's abort-listener entry when the program links it. */
-extern ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener)
-    __attribute__((weak));
+ * argument ladder, validation and dial. The `signal` option rides the
+ * event-target unit's abort-listener entry when the program links it; that
+ * unit installs the entry in its table (scr_optional.h), so a program that
+ * never makes an AbortSignal does not link it and no object format has to
+ * resolve a reference to a unit that is not there. */
 
 static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *args,
                                                  size_t argc) {
@@ -11656,7 +11671,8 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
   ScrNetSocket *sock = scr_net_connect_dyn(
       argc > 0 ? args[0] : scr_dyn_undefined(), argc > 1 ? args[1] : NULL,
       argc > 2 ? args[2] : NULL, NULL,
-      scr_http_events_available() ? scr_events_add_abort_listener : NULL, fence);
+      scr_optional_event_target != NULL ? scr_optional_event_target->add_abort_listener : NULL,
+      fence);
   scr_str_release(fence);
   if (sock == NULL) return NULL; /* an exception is pending */
   ScrDyn *out = scr_dyn_new_handle(sock, SCR_DYNH_NET_SOCKET);

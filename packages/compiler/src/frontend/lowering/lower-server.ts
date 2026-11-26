@@ -3775,7 +3775,15 @@ function lowerNetSocketMethodCall(
     if (args.length === 2) {
       const encNodeT = lowerer.typeOf(args[1]!);
       const encT = lowerer.mapTypeOf(encNodeT);
-      const literalEnc = encNodeT.isStringLiteralType() ? encNodeT.value : null;
+      /* The compile-time fast paths below skip evaluating the encoding
+       * expression, so only a SYNTACTIC literal may take them: a value whose
+       * type happens to be a string-literal type (a call to a helper with a
+       * literal return type, a const) must still be evaluated for its side
+       * effects and errors, exactly as Node evaluates the argument. */
+      const literalEnc =
+        ts.isStringLiteral(args[1]!) || ts.isNoSubstitutionTemplateLiteral(args[1]!)
+          ? args[1]!.text
+          : null;
       const chunkT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
       if (encT !== null && encT.kind === "string" && chunkT !== null) {
         const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);

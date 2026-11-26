@@ -122,7 +122,7 @@ typedef enum {
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. */
-#define SCR_DYNH_CAPACITY 128
+#define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static

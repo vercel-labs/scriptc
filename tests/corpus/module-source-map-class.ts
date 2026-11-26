@@ -64,3 +64,28 @@ console.log("origin", origin.fileName, origin.lineNumber, origin.columnNumber, o
 const deep = map.findOrigin(9, 9) as SourceOrigin;
 console.log("deep", deep.fileName, deep.lineNumber, deep.columnNumber, deep.name);
 console.log("instance", map instanceof SourceMap, new SourceMap(payload) instanceof SourceMap);
+
+// A VLQ field may carry more continuation digits than a 32-bit value has
+// bits: Node's decoder shifts by the digit index modulo 32 and keeps the low
+// 32 bits, so the same segment decodes to a wrapped, defined value instead of
+// reading a shift past the width. The mappings text is outside input.
+const longVlq = new SourceMap({
+  version: 3,
+  file: "out.js",
+  sourceRoot: "",
+  sources: ["a.ts"],
+  sourcesContent: ["let a = 1;"],
+  names: [],
+  mappings: "h".repeat(13) + "C",
+});
+const longEntry = longVlq.findEntry(0, 0) as SourceMapping;
+console.log(
+  "long vlq",
+  longEntry.generatedLine,
+  longEntry.generatedColumn,
+  longEntry.originalSource,
+  longEntry.originalLine,
+  longEntry.originalColumn,
+);
+const longOrigin = longVlq.findOrigin(0, 0) as Partial<SourceOrigin>;
+console.log("long origin", JSON.stringify(longOrigin));

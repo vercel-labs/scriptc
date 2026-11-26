@@ -138,18 +138,26 @@ static int scr_source_map_digit(const ScrStr *mappings, size_t *pos) {
   return 0;
 }
 
+/* Node's decoder is JavaScript arithmetic: `<<` shifts a signed 32-bit value
+ * by the digit index modulo 32, `+=` accumulates in a double, and `>>> 1`
+ * reads the sum's low 32 bits. A segment carrying enough continuation digits
+ * therefore wraps instead of shifting past the width, and the mappings text is
+ * outside input, so decode the same defined way here rather than shifting a
+ * 64-bit value by 65 or more. */
 static int64_t scr_source_map_decode_vlq(const ScrStr *mappings, size_t *pos) {
-  uint64_t result = 0;
+  uint64_t sum = 0;
   unsigned shift = 0;
   int digit;
   do {
     digit = scr_source_map_digit(mappings, pos);
-    result += (uint64_t)(digit & 31) << shift;
+    sum += (uint64_t)(int64_t)(int32_t)((uint32_t)(digit & 31) << (shift & 31));
     shift += 5;
   } while (digit & 32);
+  uint32_t result = (uint32_t)sum;
   bool negative = (result & 1) != 0;
   result >>= 1;
-  return negative ? -(int64_t)result : (int64_t)result;
+  if (!negative) return (int64_t)result;
+  return (int64_t)(int32_t)((uint32_t)(0u - result) | 0x80000000u);
 }
 
 static void scr_source_map_push(ScrSourceMap *map, ScrSourceMapRange range) {

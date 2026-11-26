@@ -250,6 +250,17 @@ static void scr_ee_once_mark_fired(ScrEeEntry *e) {
   if (e->once_wrapper != NULL) scr_box_set_bool(e->once_wrapper->caps[SCR_EE_ONCE_CAP_FIRED], true);
 }
 
+/* Whether a once entry already ran. An emit holds a snapshot of the entry
+ * after an earlier listener removes the live registration and calls the
+ * saved wrapper: that call marks the wrapper's own flag, not the detached
+ * entry's, and Node's snapshot holds the wrapper, whose state is what makes
+ * the later call a no-op. Both flags answer the same question. */
+static bool scr_ee_entry_consumed(const ScrEeEntry *e) {
+  return e->fired ||
+         (e->once_wrapper != NULL &&
+          scr_box_get_bool(e->once_wrapper->caps[SCR_EE_ONCE_CAP_FIRED]));
+}
+
 static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
   if (!em->reg) {
     em->reg = calloc(1, sizeof *em->reg);
@@ -1573,7 +1584,7 @@ static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
       continue;
     }
     if (e->once) {
-      if (e->fired) {
+      if (scr_ee_entry_consumed(e)) {
         scr_ee_entry_unref(e);
         continue;
       }
@@ -1678,7 +1689,7 @@ static ScrDyn *scr_ee_once_wrap_thunk(ScrClosure *clo, ScrDyn *const *args, size
       break;
     }
   }
-  if (at != SIZE_MAX && b->ls[at]->fired) {
+  if (at != SIZE_MAX && scr_ee_entry_consumed(b->ls[at])) {
     /* An emit already took the once; the wrapper reports that. */
     scr_box_set_bool(fired, true);
     scr_dyn_release(listener);

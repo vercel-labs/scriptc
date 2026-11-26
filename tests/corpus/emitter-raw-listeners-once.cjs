@@ -98,6 +98,54 @@ const firstRead = e7.rawListeners("same")[0];
 const secondRead = e7.rawListeners("same")[0];
 console.log("wrapper-identity", firstRead === secondRead);
 
+// An emit's snapshot holds the once entry. When an earlier listener removes
+// that registration and calls the saved wrapper, the wrapper's own fired
+// state makes the snapshot's later call a no-op (Node never runs it twice).
+let snapshotRuns = 0;
+const e8 = new EventEmitter();
+const snapshotFn = () => {
+  snapshotRuns += 1;
+};
+let snapshotWrapper;
+e8.on("snap", () => {
+  e8.off("snap", snapshotFn);
+  snapshotWrapper();
+});
+e8.once("snap", snapshotFn);
+snapshotWrapper = e8.rawListeners("snap")[1];
+e8.emit("snap");
+console.log("snapshot-off-original", snapshotRuns, e8.listenerCount("snap"));
+
+let wipedRuns = 0;
+const e9 = new EventEmitter();
+const wipedOnce = () => {
+  wipedRuns += 1;
+};
+let snapshotWipeWrapper;
+e9.on("snap", () => {
+  e9.removeAllListeners("snap");
+  snapshotWipeWrapper();
+});
+e9.once("snap", wipedOnce);
+snapshotWipeWrapper = e9.rawListeners("snap")[1];
+e9.emit("snap");
+console.log("snapshot-remove-all", wipedRuns, e9.listenerCount("snap"));
+
+let wrapperRemovedRuns = 0;
+const e10 = new EventEmitter();
+const wrapperRemovedFn = () => {
+  wrapperRemovedRuns += 1;
+};
+let snapshotRemoved;
+e10.on("snap", () => {
+  e10.removeListener("snap", snapshotRemoved);
+  snapshotRemoved();
+});
+e10.once("snap", wrapperRemovedFn);
+snapshotRemoved = e10.rawListeners("snap")[1];
+e10.emit("snap");
+console.log("snapshot-off-wrapper", wrapperRemovedRuns, e10.listenerCount("snap"));
+
 // An abandoned emitter whose rawListeners wrapper was built is collectable:
 // the sanitized lane's runtime RC audit fails on a cycle that survives.
 (function () {

@@ -904,3 +904,44 @@ test("a config-less project retires the bundled fallback when a dependency pulls
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("undici-types pulled by a dependency does not retire the bundled fallback", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-undici-only-"));
+  const write = (name: string, text: string): void => {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  };
+  // No tsconfig.json and no @types/node: the fallback declarations carry the
+  // Node globals. A dependency's reference to undici-types alone must not
+  // make them stand down.
+  write("package.json", '{"type":"module","dependencies":{"dep":"1.0.0"}}');
+  write(
+    "node_modules/undici-types/package.json",
+    '{"name":"undici-types","version":"7.0.0","types":"index.d.ts"}',
+  );
+  write(
+    "node_modules/undici-types/index.d.ts",
+    "declare var __undiciTypesProbe: number;\nexport {};\n",
+  );
+  write(
+    "node_modules/dep/package.json",
+    '{"name":"dep","version":"1.0.0","type":"module","main":"./index.js","types":"./index.d.ts"}',
+  );
+  write(
+    "node_modules/dep/index.d.ts",
+    '/// <reference types="undici-types" />\nexport declare function env(): string;\n',
+  );
+  write("node_modules/dep/index.js", 'export function env() {\n  return "value";\n}\n');
+  write("main.ts", 'import { env } from "dep";\nconsole.log(env());\n');
+  const load = loadProgram(join(dir, "main.ts"));
+  try {
+    const files = load.program.getSourceFiles().map((file) => file.fileName);
+    expect(files.some((file) => file.includes("undici-types"))).toBe(true);
+    expect(files.some((file) => isFallbackDtsPath(file))).toBe(true);
+    expect(load.typeWorld?.nodeFallback).toBe(true);
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

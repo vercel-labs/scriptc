@@ -11704,16 +11704,24 @@ static ScrDyn *scr_http_agent_create_connection(ScrHttpAgent *a, ScrDyn *const *
 
 /* The typed rewrite's receiver check: the net dialer it lowers to builds a
  * plaintext socket, so an Agent value whose class is secure (an https.Agent,
- * however it is typed at the call site) must refuse instead of dialing. */
+ * however it is typed at the call site) must refuse instead of dialing.
+ * The check is fail-closed: only an agent this runtime built and knows to be
+ * plaintext may dial. A Node-island (or otherwise foreign) value could be an
+ * https.Agent whose TLS dialer this lowering bypasses, which would silently
+ * downgrade the connection to plaintext, so it refuses too. */
 void scr_http_agent_create_connection_check(const ScrDyn *agent /*borrowed*/) {
-  if (agent == NULL || agent->kind != SCR_DYN_HANDLE ||
-      agent->v.handle.tag != SCR_DYNH_HTTP_AGENT)
+  if (agent == NULL) return;
+  if (agent->kind == SCR_DYN_HANDLE && agent->v.handle.tag == SCR_DYNH_HTTP_AGENT) {
+    ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
+    if (a == NULL || !a->secure) return;
+    static const char secure_text[] =
+        "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
     return;
-  ScrHttpAgent *a = (ScrHttpAgent *)agent->v.handle.ptr;
-  if (a == NULL || !a->secure) return;
-  static const char secure_text[] =
-      "https.Agent createConnection (a TLS dial from an options record) is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, secure_text, sizeof secure_text - 1, "SC2020");
+  }
+  static const char foreign_text[] =
+      "createConnection on an Agent this compiled program did not create is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, foreign_text, sizeof foreign_text - 1, "SC2020");
 }
 
 /* The dialer as a value, held like the other hooks. */

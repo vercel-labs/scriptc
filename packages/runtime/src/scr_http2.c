@@ -63,6 +63,7 @@
 #include <string.h>
 #include <time.h>
 #ifndef _WIN32
+#include <poll.h>
 #include <unistd.h>
 #else
 #include <io.h>
@@ -746,6 +747,10 @@ struct ScrH2Stream {
    * Node's file-stream shape. */
   bool file_eof_mode;
   bool file_got_data;
+  /* FIFO sources only: whether a writer has been connected (poll tells a
+   * writer-less FIFO from one whose writer closed without writing). */
+  bool file_is_fifo;
+  bool file_saw_writer;
   scr_h2_file_off file_off;
   scr_h2_file_off file_remaining;
   double file_retry_handle; /* a pending backpressure retry timer (0 none) */
@@ -3091,7 +3096,29 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
       }
       if (got == 0) {
         free(buf);
-        if (!st->file_got_data) {
+        /* With no writer a FIFO reads as ended, and one whose writer closed
+         * without writing reads the same; Node's blocking open/read only
+         * reaches the second. poll tells them apart: a connected writer
+         * clears POLLHUP, and a closed one sets it again. Any other
+         * lengthless source (/dev/null, a device) ends at its first zero
+         * read, as Node's stream does. */
+        bool ends = true;
+        if (st->file_is_fifo) {
+#ifndef _WIN32
+          struct pollfd pfd;
+          pfd.fd = st->file_fd;
+          pfd.events = POLLIN;
+          pfd.revents = 0;
+          int pr = poll(&pfd, 1, 0);
+          if (pr > 0 && (pfd.revents & POLLHUP) == 0) {
+            st->file_saw_writer = true; /* a writer is connected */
+            ends = false;
+          } else {
+            ends = st->file_saw_writer; /* no writer yet, or it closed */
+          }
+#endif
+        }
+        if (!ends) {
           scr_h2_file_schedule_retry(st);
           return false;
         }
@@ -3441,6 +3468,12 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     st->file_done = false;
     st->file_eof_mode = !is_file;
     st->file_got_data = false;
+#ifndef _WIN32
+    st->file_is_fifo = S_ISFIFO(info.st_mode);
+#else
+    st->file_is_fifo = false;
+#endif
+    st->file_saw_writer = false;
     st->file_off = start;
     st->file_remaining = !is_file ? (scr_h2_file_off)INT64_MAX : want;
     scr_h2_stream_flush(st);

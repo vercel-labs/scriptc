@@ -1251,6 +1251,12 @@ export interface ClassDecorationInfo {
   shapes?: (
     | { kind: "call"; funcType: Extract<IrType, { kind: "func" }>; replaces: boolean }
     | { kind: "ambientThrow"; name: string }
+    /** A legacy decorator whose signature has no concrete nominal call ABI
+     * (the standard library's generic `ClassDecorator`, `Function`-typed
+     * parameters, union returns): called through the checked-dynamic path
+     * with the class value; a result other than the class itself is a
+     * runtime refusal. */
+    | { kind: "dynamic" }
   )[];
   /** Analysis fenced — diagnostics already reported; emission skips. */
   poisoned?: true;
@@ -7212,6 +7218,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
       }
       const mapped = lowerer.mapTypeOf(t);
       if (!mapped || mapped.kind !== "func" || mapped.rest === true || mapped.params.length > 1) {
+        if (cd.legacy === true) {
+          shapes.push({ kind: "dynamic" });
+          continue;
+        }
         lowerer.unsupported(
           "SC1090",
           d,
@@ -7232,6 +7242,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
                 return sup !== undefined && !sup.generic && ctorAbiEquals(lowerer, info, sup);
               })()));
         if (!paramOk) {
+          if (cd.legacy === true) {
+            shapes.push({ kind: "dynamic" });
+            continue;
+          }
           lowerer.unsupported(
             "SC1090",
             d,
@@ -7262,6 +7276,10 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
           );
         }
       } else if (ret.kind !== "void") {
+        if (cd.legacy === true) {
+          shapes.push({ kind: "dynamic" });
+          continue;
+        }
         lowerer.unsupported(
           "SC1090",
           d,
@@ -7270,21 +7288,23 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
       }
       shapes.push({ kind: "call", funcType: mapped, replaces });
     }
-    if (shapes.some((s) => s.kind === "call" && s.replaces)) {
+    const typedReplace = shapes.some((s) => s.kind === "call" && s.replaces);
+    if (typedReplace || shapes.some((s) => s.kind === "dynamic")) {
       // The name can rebind at runtime: every reference must route
-      // through the decoration result. Two shapes cannot: a compiled
-      // subclass (its base pointer, vtable prefix, and interval are
-      // fixed at build time, but JS would extend the decoration result)
-      // and namespace-nested declarations (the qualified-access paths
-      // resolve the class directly, not through the rebound binding).
-      if (info.subclasses.length > 0) {
+      // through the decoration result. A TYPED replacing decorator cannot
+      // keep a compiled subclass (its base pointer, vtable prefix, and
+      // interval are fixed at build time, but JS would extend the
+      // decoration result) or a namespace-nested declaration exact; the
+      // dynamic path checks the result against the class at run time, so
+      // those shapes stay available there.
+      if (typedReplace && info.subclasses.length > 0) {
         lowerer.unsupported(
           "SC1090",
           cd.nodes[0]!,
           `class decorators that can replace a class with subclasses ('${info.subclasses[0]!.def.jsName ?? info.subclasses[0]!.def.name}' extends '${display}', but the runtime base would be the decoration result — return void, or decorate the leaf classes)`,
         );
       }
-      if (info.decl && !ts.isSourceFile(info.decl.parent)) {
+      if (typedReplace && info.decl && !ts.isSourceFile(info.decl.parent)) {
         lowerer.unsupported(
           "SC1090",
           cd.nodes[0]!,
@@ -7329,11 +7349,15 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
     // ReferenceError HERE: earlier expressions still evaluate, nothing
     // after — expression, application, or the class's own static
     // initializers — ever runs (the %init unwinds).
-    const temps: {
-      localId: string;
-      funcType: Extract<IrType, { kind: "func" }>;
-      replaces: boolean;
-    }[] = [];
+    const temps: (
+      | {
+          kind: "call";
+          localId: string;
+          funcType: Extract<IrType, { kind: "func" }>;
+          replaces: boolean;
+        }
+      | { kind: "dynamic"; localId: string }
+    )[] = [];
     for (let i = 0; i < cd.nodes.length; i++) {
       const d = cd.nodes[i]!;
       const shape = cd.shapes[i]!;
@@ -7345,10 +7369,22 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
         });
         return stmts;
       }
+      if (shape.kind === "dynamic") {
+        const value = lowerer.lowerExprExpecting(d.expression, DYN);
+        const local = lowerer.declareHiddenLocal("dec", DYN);
+        stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
+        temps.push({ kind: "dynamic", localId: local.id });
+        continue;
+      }
       const value = lowerer.lowerExprExpecting(d.expression, shape.funcType);
       const local = lowerer.declareHiddenLocal("dec", shape.funcType);
       stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: locOf(d) });
-      temps.push({ localId: local.id, funcType: shape.funcType, replaces: shape.replaces });
+      temps.push({
+        kind: "call",
+        localId: local.id,
+        funcType: shape.funcType,
+        replaces: shape.replaces,
+      });
     }
     // 1b. LEGACY constructor parameter decorators evaluate after the class
     // decorator expressions and apply before them (tsc's `__param` entries
@@ -7375,6 +7411,37 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
     for (let i = temps.length - 1; i >= 0; i--) {
       const t = temps[i]!;
       const dLoc = locOf(cd.nodes[i]!);
+      if (t.kind === "dynamic") {
+        const target: IrType = { kind: "classval", className: info.def.name };
+        const call: IrExpr = {
+          kind: "dynCall",
+          callee: { kind: "varRef", localId: t.localId, type: DYN, loc: dLoc },
+          calleeName: "decorator",
+          args: [lowerer.coerceToExpected(current, DYN)],
+          type: DYN,
+          loc: dLoc,
+        };
+        // `result || current`, then the checked cast back to the class value:
+        // a decorator that returns a different constructor is refused at run
+        // time rather than silently ignored.
+        const chained: IrExpr = {
+          kind: "logical",
+          op: "||",
+          left: call,
+          right: lowerer.coerceToExpected(current, DYN),
+          type: DYN,
+          loc: dLoc,
+        };
+        const res = lowerer.declareHiddenLocal("decres", target);
+        stmts.push({
+          kind: "varDecl",
+          localId: res.id,
+          init: lowerer.coerceToExpected(chained, target),
+          loc: dLoc,
+        });
+        current = { kind: "varRef", localId: res.id, type: target, loc: dLoc };
+        continue;
+      }
       const callee: IrExpr = { kind: "varRef", localId: t.localId, type: t.funcType, loc: dLoc };
       const args: IrExpr[] = [];
       if (t.funcType.params.length === 1) {

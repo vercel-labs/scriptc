@@ -690,6 +690,10 @@ static void scr_ws_on_eof_impl(void *ctx) {
   if (ws->discard || ws->close_dispatched) return;
   ws->discard = true;
   scr_ws_destroy_socket(ws);
+  /* A peer that goes away without a close frame is an unclean closure:
+   * Node reports 'error' before the 1006 'close', whether the client was
+   * open or already closing. */
+  scr_ws_emit_type(ws, "error");
   ScrStr *empty = scr_str_new("", 0);
   scr_ws_emit_close(ws, 1006, empty, false);
   scr_str_release(empty);
@@ -1249,6 +1253,57 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
   return true;
 }
 
+/* The handshake starts on the loop's next turn: construction never resolves
+ * the peer's name (Node's WebSocket starts connecting from a queued task,
+ * not the constructor), and the request is built exactly as it was when the
+ * constructor dialed directly. */
+static void scr_ws_connect(ScrClosure *cb) {
+  /* Every ref box answers +1; the releases below give those back before the
+   * callback returns, so the deferred connect leaves nothing alive. */
+  ScrWs *ws = scr_box_get_ref(cb->caps[0]);
+  if (ws == NULL) return;
+  if (ws->discard || ws->ready_state != SCR_WS_CONNECTING) {
+    scr_ws_release_v(ws);
+    return;
+  }
+  ScrStr *host = scr_box_get_ref(cb->caps[1]);
+  ScrStr *target = scr_box_get_ref(cb->caps[2]);
+  ScrStr *method = scr_box_get_ref(cb->caps[3]);
+  ScrArr *headers = scr_box_get_ref(cb->caps[4]);
+  double port = scr_box_get_f64(cb->caps[5]);
+  int secure = (int)scr_box_get_f64(cb->caps[6]);
+  ScrStr *sni = secure ? scr_str_retain(host) : NULL;
+  void *wrap_ctx = secure ? scr_tls_fetch_client_ctx(sni, true) : NULL;
+  ws->client = scr_http_request_ex(host, port, target, method, 0, headers, false, NULL, NULL,
+                                   secure ? 443 : 80, secure ? scr_tls_fetch_client_wrap : NULL,
+                                   wrap_ctx);
+  scr_str_release(sni);
+  scr_str_release(host);
+  scr_str_release(target);
+  scr_str_release(method);
+  scr_arr_release(headers);
+  if (ws->client == NULL) {
+    /* A request the constructor used to throw for (a malformed proxy
+     * environment, say): the connection fails through the events. */
+    if (scr_exc_pending()) scr_exc_clear();
+    scr_ws_fail(ws);
+    scr_ws_release_v(ws);
+    return;
+  }
+  scr_http_client_on_upgrade(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_upgrade),
+                             &scr_ws_on_upgrade, true);
+  scr_http_client_on_response(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_response),
+                              &scr_ws_on_response, true);
+  scr_http_client_on_error(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_error),
+                           &scr_ws_on_error, false);
+  /* A transport that ends without an error before the handshake (the
+   * refused-connect shape on some platforms) still fails the socket. */
+  scr_http_client_on_close(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_client_close), false);
+  scr_http_client_frame_any_method(ws->client);
+  scr_http_client_flush_headers(ws->client);
+  scr_ws_release_v(ws);
+}
+
 ScrDyn *scr_websocket_new(ScrDyn *url, ScrDyn *protocols) {
   /* The emitted main installs the net unit's loop hooks only for a program
    * whose IR uses node:net; a lone WebSocket client must do it itself (the
@@ -1367,31 +1422,38 @@ ScrDyn *scr_websocket_new(ScrDyn *url, ScrDyn *protocols) {
     scr_arr_push_ref(headers, scr_str_retain(ws->offered));
   }
   ScrStr *method = scr_str_new("GET", 3);
-  ScrStr *sni = secure ? scr_str_retain(host) : NULL;
-  void *wrap_ctx = secure ? scr_tls_fetch_client_ctx(sni, true) : NULL;
-  ws->client =
-      scr_http_request_ex(host, port, target, method, 0, headers, false, NULL, NULL,
-                          secure ? 443 : 80, secure ? scr_tls_fetch_client_wrap : NULL, wrap_ctx);
+  /* The connection's inputs move into a one-shot timer: the dial runs after
+   * the constructor returns, so no name resolution happens in it. */
+  ScrClosure *starter = scr_closure_new((void *)scr_ws_connect, 7);
+  ScrBox *ws_box = scr_box_new_obj(scr_ws_retain_v, scr_ws_release_v, NULL);
+  scr_box_set_ref(ws_box, scr_ws_retain_v(ws));
+  ScrBox *host_box = scr_box_new_obj(scr_str_retain_v, scr_str_release_v, NULL);
+  scr_box_set_ref(host_box, scr_str_retain(host));
+  ScrBox *target_box = scr_box_new_obj(scr_str_retain_v, scr_str_release_v, NULL);
+  scr_box_set_ref(target_box, scr_str_retain(target));
+  ScrBox *method_box = scr_box_new_obj(scr_str_retain_v, scr_str_release_v, NULL);
+  scr_box_set_ref(method_box, scr_str_retain(method));
+  ScrBox *headers_box = scr_box_new_obj(scr_arr_retain_v, scr_arr_release_v, NULL);
+  scr_box_set_ref(headers_box, scr_arr_retain(headers));
+  ScrBox *port_box = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(port_box, port);
+  ScrBox *secure_box = scr_box_new(SCR_BOX_F64);
+  scr_box_set_f64(secure_box, secure ? 1 : 0);
+  starter->caps[0] = ws_box;
+  starter->caps[1] = host_box;
+  starter->caps[2] = target_box;
+  starter->caps[3] = method_box;
+  starter->caps[4] = headers_box;
+  starter->caps[5] = port_box;
+  starter->caps[6] = secure_box;
+  /* The dial runs with the stores that were active at construction, like
+   * every other deferred callback the runtime schedules (scr_next_tick);
+   * with no store active the scheduler hands the closure straight back. */
+  scr_set_timeout_als(starter, 0);
   scr_str_release(method);
   scr_arr_release(headers);
   scr_str_release(target);
-  scr_str_release(sni);
   scr_str_release(host);
-  if (ws->client == NULL) {
-    scr_ws_release_v(ws);
-    return NULL;
-  }
-  scr_http_client_on_upgrade(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_upgrade),
-                             &scr_ws_on_upgrade, true);
-  scr_http_client_on_response(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_response),
-                              &scr_ws_on_response, true);
-  scr_http_client_on_error(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_error),
-                           &scr_ws_on_error, false);
-  /* A transport that ends without an error before the handshake (the
-   * refused-connect shape on some platforms) still fails the socket. */
-  scr_http_client_on_close(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_client_close), false);
-  scr_http_client_frame_any_method(ws->client);
-  scr_http_client_flush_headers(ws->client);
   ScrDyn *out = scr_dyn_new_handle(ws, SCR_DYNH_WEBSOCKET);
   scr_ws_release_v(ws);
   return out;

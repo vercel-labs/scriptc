@@ -20611,7 +20611,8 @@ static ScrDyn *scr_dyn_obj_read_receiver(const ScrDyn *d, const char *key, size_
           } else {
             value = scr_dyn_retain(scr_dyn_undefined());
           }
-          scr_dyn_release(getter);
+          /* `getter` is borrowed from the descriptor (scr_dyn_obj_get),
+           * which is the one reference this path owns. */
           scr_dyn_release(descriptor);
           return value;
         }

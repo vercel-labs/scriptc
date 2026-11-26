@@ -72,6 +72,26 @@ console.log("own-target-receiver", Reflect.get(requestTarget as unknown as objec
 const plainRequest = new Request("http://example.com/p");
 console.log("receiver-shadow-ignored", Reflect.get(plainRequest as unknown as object, "url", requestReceiver as unknown as object));
 
+// An own ACCESSOR shadowing a native getter: the getter is borrowed from the
+// descriptor the read owns, so repeated explicit-receiver reads must not
+// release it more than once.
+const accessorTarget = new Request("http://example.com/a");
+let accessorCalls = 0;
+Object.defineProperty(accessorTarget, "url", {
+  get() {
+    accessorCalls += 1;
+    return "own-accessor";
+  },
+  configurable: true,
+});
+for (let i = 0; i < 3; i++) {
+  console.log(
+    "own-accessor",
+    Reflect.get(accessorTarget as unknown as object, "url", {}),
+    accessorCalls
+  );
+}
+
 // A Response body is a ReadableStream instance for the stream getters.
 const responseForBody = new Response("x");
 console.log("body-receiver", Reflect.get(new ReadableStream() as unknown as object, "locked", responseForBody.body as unknown as object));

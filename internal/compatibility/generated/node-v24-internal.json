@@ -20721,6 +20721,7 @@
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/crypto-fips-deprecated.cjs",
@@ -21508,6 +21509,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21563,6 +21565,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21829,6 +21832,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21861,6 +21865,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"

@@ -2428,7 +2428,10 @@ ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
     goto fail;
   }
   s = scr_net_server_new();
-  if (o->kind == SCR_DYN_OBJ) {
+  {
+    /* Node reads the option properties off any object it accepts, an array
+     * included: a blockList set on an array-backed options value must still
+     * drop blocked connections (keys are not skipped by shape). */
     ScrDyn *m = scr_net_server_opt_read(o, "allowHalfOpen", 13);
     s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
     scr_dyn_release(m);

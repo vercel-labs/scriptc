@@ -31,6 +31,9 @@ double scr_fs_open_mask(ScrStr *path, double flags, double mode);
  * portable constant mask. Argument validation happens before this seam. */
 double scr_fs_open_native(ScrStr *path, double flags, double mode);
 ScrFileHandle *scr_file_handle_open(ScrStr *path, ScrStr *flags, double mode);
+/* A read-only open that answers a FIFO without waiting for a writer: the
+ * caller stats and closes the descriptor instead of reading it. */
+ScrFileHandle *scr_file_handle_open_read_only_nonblocking(ScrStr *path);
 ScrFileHandle *scr_file_handle_retain(ScrFileHandle *h);
 void scr_file_handle_release(ScrFileHandle *h);
 void *scr_file_handle_retain_v(void *p);

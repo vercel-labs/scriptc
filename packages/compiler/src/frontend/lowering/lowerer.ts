@@ -6329,6 +6329,10 @@ export class Lowerer {
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
       mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
+      // A variadic store's adapter records the source signature it stands
+      // for; a unit that reuses the journaled adapter without rebuilding it
+      // needs the entry to look through the store (function-views.ts).
+      irDataTable("coercions.variadicAdapterSources", this.coercions.variadicAdapterSources),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
@@ -6961,11 +6965,9 @@ export class Lowerer {
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",
-    // The variadic store's look-through state: recorded while the adapter
-    // and the array-method helper of a unit are built, and read by the
-    // function-view pass of that same lowering, so a replayed unit records
-    // its own again.
-    "coercions.variadicAdapterSources",
+    // The function-view pass's served-caller state: computed after every
+    // unit has lowered (the store's adapter is journaled by then), so a
+    // replay recomputes it from the restored adapters and helpers.
     "coercions.variadicWideServed",
     "coercions.variadicServedAdapters",
     "assertInstances",

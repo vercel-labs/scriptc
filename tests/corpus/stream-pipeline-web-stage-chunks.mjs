@@ -80,4 +80,17 @@ function sinkFor(into, tag) {
   log.push(`pipeline separate ticks in[${seen.join(" | ")}] out[${out.join(" | ")}]`);
 }
 
+{
+  // an encoded source's strings stay strings at the web stage
+  const seen = [];
+  const out = [];
+  const source = new PassThrough();
+  source.setEncoding("utf8");
+  const done = pipeline(source, record(seen), sinkFor(out, "encoded"));
+  source.write("ab");
+  source.end();
+  await done;
+  log.push(`pipeline encoded in[${seen.join(" | ")}] out[${out.join(" | ")}]`);
+}
+
 console.log(log.join("\n"));

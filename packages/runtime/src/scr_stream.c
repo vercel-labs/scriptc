@@ -5125,13 +5125,22 @@ static ScrStream *scr_stream_pipeline_ex(size_t n, ScrStream **streams, ScrClosu
        * pipe() would hand them over one at a time. A Duplex.from readable
        * side reads like that iterator, so the web stage is fed through one. */
       ScrStream *feed = ret;
-      if (s->st->web_pair_body) {
+      /* An encoded source answers strings, which the wrapper's byte-mode
+       * readable side would turn back into Buffers; it keeps the plain pipe. */
+      if (s->st->web_pair_body && !ret->st->r.encoded) {
         feed = scr_stream_duplexify(ret, NULL); /* +1 */
         if (!feed) {
           scr_stream_pipectx_drop(ctx);
           scr_stream_pipectx_release_v(ctx);
           return NULL;
         }
+        /* The wrapper reads the stage's values: its object-mode entries and
+         * web chunks come through, so a null the stage enqueued stays a value
+         * instead of a push that ends the wrapper, and the destination keeps
+         * the web chunks it writes. */
+        if (ret->st->r.object_entries) scr_stream_set_object_mode(feed, true, false);
+        if (ret->st->web_chunks) scr_stream_set_web_chunks(feed, true);
+        scr_stream_set_web_chunks(s, true);
       }
       /* pipe(feed, s, finish, finishOnlyHandleError, { end }) */
       ctx->finish_count += 2;

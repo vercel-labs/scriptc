@@ -277,68 +277,12 @@ static int scr_tls_parse_crl(mbedtls_x509_crl *crl, const char *pem, size_t len)
   int r = mbedtls_x509_crl_parse(crl, buf, len + 1);
   free(buf);
   if (r != 0) return r;
-  /* OpenSSL uses the FIRST CRL for an issuer that is inside its validity
-   * window and ignores later ones for that issuer; an expired or
-   * not-yet-valid CRL is skipped when a current one follows, while a CRL
-   * with a bad signature still blocks when it is the selected one (the
-   * signature is checked later, against the issuer key). mbedTLS checks
-   * every chained CRL, so reduce each issuer to its selected CRL. The
-   * caller-owned head struct cannot be removed, so when its issuer's
-   * selection is a later node their contents are swapped and the tail is
-   * dropped. */
-  size_t count = 0;
-  for (mbedtls_x509_crl *n = crl; n != NULL; n = n->next) count++;
-  mbedtls_x509_crl **nodes = malloc(count * sizeof *nodes);
-  if (nodes == NULL) scr_tls_oom();
-  size_t at = 0;
-  for (mbedtls_x509_crl *n = crl; n != NULL;) {
-    mbedtls_x509_crl *next = n->next;
-    nodes[at++] = n;
-    n->next = NULL; /* rebuilt below */
-    n = next;
-  }
-  bool *done = calloc(count, sizeof *done);
-  bool *keep = calloc(count, sizeof *keep);
-  if (done == NULL || keep == NULL) {
-    free(done);
-    free(keep);
-    free(nodes);
-    scr_tls_oom();
-  }
-  for (size_t i = 0; i < count; i++) {
-    if (done[i]) continue;
-    size_t chosen = SIZE_MAX;
-    for (size_t j = i; j < count; j++) {
-      if (done[j] || !scr_tls_crl_same_issuer(nodes[j], nodes[i])) continue;
-      done[j] = true;
-      if (chosen == SIZE_MAX && !mbedtls_x509_time_is_past(&nodes[j]->next_update) &&
-          !mbedtls_x509_time_is_future(&nodes[j]->this_update))
-        chosen = j;
-    }
-    if (chosen == SIZE_MAX) chosen = i; /* none current: the first reports why */
-    if (i == 0 && chosen != 0) {
-      mbedtls_x509_crl tmp = *nodes[0];
-      *nodes[0] = *nodes[chosen];
-      *nodes[chosen] = tmp;
-      chosen = 0;
-    }
-    for (size_t j = i; j < count; j++)
-      if (scr_tls_crl_same_issuer(nodes[j], nodes[i])) keep[j] = (j == chosen);
-  }
-  mbedtls_x509_crl *tail = NULL;
-  for (size_t i = 0; i < count; i++) {
-    if (!keep[i]) {
-      mbedtls_x509_crl_free(nodes[i]);
-      free(nodes[i]);
-      continue;
-    }
-    nodes[i]->next = NULL;
-    if (tail != NULL) tail->next = nodes[i];
-    tail = nodes[i];
-  }
-  free(done);
-  free(keep);
-  free(nodes);
+  /* Every CRL in the bundle is kept. OpenSSL's store can hold several CRLs
+   * with one issuer name (a key-rollover CA and its predecessor share a DN
+   * but not a key), and it selects the one whose signature verifies under
+   * the issuer it is checking; reducing a name to one CRL here would drop
+   * the root's CRL when a self-issued intermediate's CRL came first. The
+   * selection lives in scr_tls_crl_check_chain. */
   return 0;
 }
 
@@ -1115,8 +1059,13 @@ static ScrTlsCli *scr_tls_cli_new2(ScrStr *host, bool reject_unauthorized, const
   } else {
     mbedtls_ssl_conf_authmode(&c->conf, reject_unauthorized ? MBEDTLS_SSL_VERIFY_REQUIRED
                                                             : MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(),
-                              c->has_crl ? &c->crl : NULL);
+    /* The crl option's CRLs are checked by scr_tls_crl_check_chain, not by
+     * mbedTLS: a bundle may hold several CRLs with one issuer name (a
+     * key-rollover CA and its predecessor share a DN but not a key), and
+     * mbedTLS's check would take a signature mismatch on the inapplicable
+     * one for a failure. The custom check selects the CRL that verifies
+     * under the issuer it is checking, as OpenSSL's store does. */
+    mbedtls_ssl_conf_ca_chain(&c->conf, c->has_ca ? &c->ca : scr_tls_system_ca(), NULL);
   }
   /* The host is the verified name; it is also the SNI name unless it is
    * an IP literal. */
@@ -1515,8 +1464,20 @@ static bool scr_tls_crl_lists(const mbedtls_x509_crl *crl, const mbedtls_x509_cr
   return false;
 }
 
+
+
+/* Whether the certificate signed itself: the chain's true root. A
+ * key-rollover CA can carry the same issuer and subject DN as the root it
+ * replaced while another key signed it, so equal names alone do not make a
+ * certificate the chain's end. */
+static bool scr_tls_cert_self_signed(const mbedtls_x509_crt *cert) {
+  return cert->issuer_raw.len == cert->subject_raw.len &&
+         memcmp(cert->issuer_raw.p, cert->subject_raw.p, cert->issuer_raw.len) == 0 &&
+         scr_tls_cert_signed_by(cert, (mbedtls_x509_crt *)cert);
+}
+
 /* The built chain for CRL checking: the certificates mbedTLS verified,
- * completed through the trust list to the self-issued root. */
+ * completed through the trust list to the self-signed root. */
 static size_t scr_tls_crl_chain(ScrTlsSock *t, const mbedtls_x509_crt *chain[16]) {
   size_t n = 0;
   /* The chain mbedTLS verified, leaf first. Its entries are the certificates
@@ -1528,16 +1489,30 @@ static size_t scr_tls_crl_chain(ScrTlsSock *t, const mbedtls_x509_crt *chain[16]
     chain[n++] = t->vrfy_chain[depth];
   while (n > 0 && n < 16) {
     const mbedtls_x509_crt *top = chain[n - 1];
-    bool self = top->issuer_raw.len == top->subject_raw.len &&
-                memcmp(top->issuer_raw.p, top->subject_raw.p, top->issuer_raw.len) == 0;
-    if (self) break;
+    if (scr_tls_cert_self_signed(top)) break;
     const mbedtls_x509_crt *issuer = NULL;
     if (t->vrfy_trust != NULL && top->issuer_raw.len > 0) {
+      /* Prefer the trust entry whose key verifies the child: a key-rollover
+       * CA and its predecessor can share a subject DN while differing in
+       * key, and the predecessor's key is the one that signed the rollover
+       * certificate (and the one that issued its CRL). */
       for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
         if (ca->subject_raw.len == top->issuer_raw.len &&
-            memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0) {
+            memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0 &&
+            scr_tls_cert_signed_by(top, ca)) {
           issuer = ca;
           break;
+        }
+      }
+      if (issuer == NULL) {
+        /* No candidate verifies (an unsupported signature algorithm stops
+         * the check above): keep the name match, as before. */
+        for (mbedtls_x509_crt *ca = t->vrfy_trust; ca != NULL && ca->raw.len > 0; ca = ca->next) {
+          if (ca->subject_raw.len == top->issuer_raw.len &&
+              memcmp(ca->subject_raw.p, top->issuer_raw.p, top->issuer_raw.len) == 0) {
+            issuer = ca;
+            break;
+          }
         }
       }
     }
@@ -1547,12 +1522,7 @@ static size_t scr_tls_crl_chain(ScrTlsSock *t, const mbedtls_x509_crt *chain[16]
   /* A chain beyond the fixed array cannot be checked completely; report it
    * as uncovered rather than accepting a revocation that was not looked
    * at. */
-  if (n == 16) {
-    const mbedtls_x509_crt *top = chain[n - 1];
-    bool self = top->issuer_raw.len == top->subject_raw.len &&
-                memcmp(top->issuer_raw.p, top->subject_raw.p, top->issuer_raw.len) == 0;
-    if (!self) return 0;
-  }
+  if (n == 16 && !scr_tls_cert_self_signed(chain[n - 1])) return 0;
   return n;
 }
 
@@ -1575,25 +1545,34 @@ static void scr_tls_crl_check_chain(ScrTlsSock *t) {
       issuer = chain[i + 1];
     } else {
       /* The top of the chain has no issuer of its own unless it is the
-       * self-issued root, and OpenSSL still checks a root's CRL: a CRL the
+       * self-signed root, and OpenSSL still checks a root's CRL: a CRL the
        * root issued may revoke the root itself. */
-      bool self = cert->issuer_raw.len == cert->subject_raw.len &&
-                  memcmp(cert->issuer_raw.p, cert->subject_raw.p, cert->subject_raw.len) == 0;
-      if (!self) break;
+      if (!scr_tls_cert_self_signed(cert)) break;
       issuer = cert;
     }
+    /* OpenSSL's store keeps the first CRL for an issuer name that is
+     * inside its validity window and ignores later ones for that issuer; an
+     * expired or not-yet-valid CRL is skipped when a current one follows,
+     * while a CRL with a bad signature still blocks when it is the selected
+     * one. A key-rollover CA's CRL and the root's can share the issuer DN
+     * while only one verifies under the issuer being checked, so the
+     * selected CRL's signature is checked here, not at parse time. */
     const mbedtls_x509_crl *match = NULL;
+    const mbedtls_x509_crl *first = NULL;
     for (const mbedtls_x509_crl *crl = crls; crl != NULL && crl->raw.len > 0; crl = crl->next) {
-      if (crl->issuer_raw.len == cert->issuer_raw.len &&
-          memcmp(crl->issuer_raw.p, cert->issuer_raw.p, crl->issuer_raw.len) == 0) {
+      if (crl->issuer_raw.len != cert->issuer_raw.len ||
+          memcmp(crl->issuer_raw.p, cert->issuer_raw.p, crl->issuer_raw.len) != 0)
+        continue;
+      if (first == NULL) first = crl;
+      if (match == NULL && !mbedtls_x509_time_is_past(&crl->next_update) &&
+          !mbedtls_x509_time_is_future(&crl->this_update))
         match = crl;
-        break;
-      }
     }
-    if (match == NULL) {
+    if (first == NULL) {
       missing = true;
       continue;
     }
+    if (match == NULL) match = first; /* none current: the first reports why */
     if (!scr_tls_crl_signed_by(match, issuer)) {
       sig_fail = true;
       continue;

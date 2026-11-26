@@ -59,7 +59,17 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
     # intermediate CA directory (copies int-ca.pem/int-ca-key.pem); no revocations:
     openssl ca -config int-db/ca.cnf -gencrl -out int-leaf-crl-clean.pem
 
-`int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs. `ca.srl` is untouched (the databases live in copies).
+`int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs.
+
+`rollover-ca.pem`/`rollover-ca-key.pem` is a key-rollover CA: it carries the root's subject (`CN=tsnative test CA`) but a new key, and the root signed it, so its issuer and subject names are equal while its key differs from the root's. `rollover-leaf.pem`/`rollover-leaf-key.pem` is a localhost leaf signed by that key. `crl-rollover-clean.pem` is the rollover CA's own empty CRL and `crl-rollover-revoked.pem` is the root's CRL revoking the rollover CA, so the two CRLs share an issuer name but not a key. They are minted in throwaway CA directories copying `ca.pem`/`ca-key.pem` and the rollover key:
+
+    openssl ecparam -genkey -name prime256v1 -noout -out rollover-ca-key.pem
+    openssl req -new -key rollover-ca-key.pem -subj "/CN=tsnative test CA" -out roll.csr
+    openssl ca -config root-db/ca.cnf -in roll.csr -out rollover-ca.pem -extensions ca_ext -notext
+    # issue rollover-leaf.pem from rollover-ca.pem with the usual localhost SANs
+    openssl ca -config roll-db/ca.cnf -gencrl -out crl-rollover-clean.pem
+    openssl ca -config root-db/ca.cnf -revoke rollover-ca.pem -gencrl -out crl-rollover-revoked.pem
+ `ca.srl` is untouched (the databases live in copies).
 
 `crl-root-revoked.pem` is the root CA's CRL with `ca.pem` itself revoked, for the case OpenSSL also checks: the whole chain includes the trusted root, so a CRL the root issued can revoke the root. It comes from the root CA directory above, whose database holds one entry for `ca.pem`:
 

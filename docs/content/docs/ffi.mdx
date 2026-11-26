@@ -455,7 +455,7 @@ On Darwin targets, a format 7 manifest may name system frameworks in `frameworks
   <dd>Format 7. Optional array of callback signatures for <code>node:ffi</code> <code>registerCallback</code>, each with <code>library</code>, <code>params</code>, <code>returns</code>, and an optional <code>capacity</code> from 1 to 256 (default 16).</dd>
 </dl>
 
-Unknown fields, invalid ABI classes, duplicate names, and signature mismatches fail the build with an `SC5xxx` diagnostic. An entry the program does not declare is not a failure: the build warns with `SC5005` and links the rest, so one manifest can list the bindings of several entry points and a program pays nothing for the ones it does not use.
+Unknown fields, invalid ABI classes, duplicate names, and signature mismatches fail the build with an `SC5xxx` diagnostic. An entry the program neither declares nor implements is not a failure: the build warns with `SC5005` and links the rest, so one manifest can list the bindings of several entry points and a program pays nothing for the ones it does not use. A name the program implements itself is different: the build refuses it (`SC5002`) rather than let a manifest claim calls the program's own function serves.
 
 ## Boundary rules and current limits
 

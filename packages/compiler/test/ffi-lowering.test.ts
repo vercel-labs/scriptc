@@ -161,3 +161,45 @@ test("a shared manifest's binding the program does not declare is a warning, not
   expect(used.ok).toBe(true);
   if (used.ok) expect(used.warnings ?? []).toEqual([]);
 });
+
+test("a manifest binding the program implements is a collision, not unused capacity", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-ffi-collision-"));
+  dirs.push(dir);
+  const entry = join(dir, "guard.ts");
+  const outDir = join(dir, ".scriptc");
+  const profilePath = join(dir, "ffi.json");
+  // The manifest names a function the program implements itself. The call
+  // must keep that implementation: warning and poisoning the call would
+  // silently erase a validation guard, so the build fails as SC5002 did
+  // before shared manifests were allowed.
+  await writeFile(
+    entry,
+    [
+      "function nativeScale(value: number): number {",
+      "  return value * 2;",
+      "}",
+      "console.log(nativeScale(21));",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
+    profilePath,
+    JSON.stringify({
+      ffi_format: 1,
+      functions: [{ name: "nativeScale", symbol: "native_scale", params: ["f64"], returns: "f64" }],
+      libraries: [],
+    }),
+  );
+
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "guard.ir.json"),
+    outputKind: "ir",
+    ffiProfilePath: profilePath,
+  });
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(["SC5002"]);
+    expect(result.diagnostics[0]?.message).toContain("signature-only");
+  }
+});

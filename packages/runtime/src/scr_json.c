@@ -4101,8 +4101,12 @@ bool scr_dyn_is_plain_object(ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC) {
     if (!scr_closure_identity(value->v.fn.clo)->props) return false;
     ScrDyn *table = scr_dyn_fn_properties(value);
-    bool plain = table->kind == SCR_DYN_OBJ && !table->null_proto &&
-                 table->prototype == scr_builtin_object_prototype;
+    /* A function's table holds no prototype until Object.setPrototypeOf
+     * gives it one, and that absent override is a NULL pointer: it must not
+     * read as "plain" against an uninitialized Object.prototype, so the
+     * global itself has to exist before the pointers can match. */
+    bool plain = scr_builtin_object_prototype != NULL && table->kind == SCR_DYN_OBJ &&
+                 !table->null_proto && table->prototype == scr_builtin_object_prototype;
     scr_dyn_release(table);
     return plain;
   }

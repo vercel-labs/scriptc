@@ -37,6 +37,11 @@ Object.setPrototypeOf(givenObjectPrototype, Object.prototype);
 const givenPrototypeFunction = function named() {};
 Object.setPrototypeOf(givenPrototypeFunction, Object.prototype);
 console.log("function-given-object-prototype", isPlain(givenPrototypeFunction));
+// A function owning properties still keeps Function.prototype: its property
+// table exists but carries no replaced prototype.
+const owningFunction = function () {};
+owningFunction.own = 1;
+console.log("function-with-own-properties", isPlain(owningFunction), notPlain(owningFunction));
 const givenNull = {};
 Object.setPrototypeOf(givenNull, null);
 const givenCustom = {};

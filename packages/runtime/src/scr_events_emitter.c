@@ -561,11 +561,12 @@ static ScrDyn *scr_ee_entry_dyn(const ScrEeEntry *e) {
     return scr_dyn_new_func(scr_closure_retain(e->flex_cb), e->flex_invoke, e->flex_arity,
                             e->flex_sig, e->flex_name);
   /* A typed registration answers the same function through its checked-
-   * dynamic call adapter: the listener's parameters convert from the
-   * arguments as given (the adapter exists for every registration). */
+   * dynamic call adapter (the listener's parameters convert from the
+   * arguments as given), so a bucket of mixed registrations can be read
+   * through the untyped lane Node's JavaScript sees. */
   if (e->fallback_invoke)
-    return scr_dyn_new_func(scr_closure_retain(scr_ee_entry_fn(e)), e->fallback_invoke, 0, NULL,
-                            NULL);
+    return scr_dyn_new_func(scr_closure_retain(scr_ee_entry_fn(e)), e->fallback_invoke, 0, "()",
+                            "");
   return NULL;
 }
 

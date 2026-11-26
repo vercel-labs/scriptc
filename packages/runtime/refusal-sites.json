@@ -360,6 +360,12 @@
   "code": "SC2020"
  },
  {
+  "file": "scr_decl_adopt.c",
+  "function": "scr_dyn_adopt_key",
+  "message": "a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
+  "code": "SC2020"
+ },
+ {
   "file": "scr_dgram_dyn.c",
   "function": "scr_dgram_dynh_unsupported",
   "message": "'dgram.Socket.prototype.%s' on a dynamic value is not supported yet%s%s",
@@ -1089,6 +1095,12 @@
   "file": "scr_json.c",
   "function": "scr_bytes_protocol_fence",
   "message": " on a typed array, Buffer or DataView is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
+  "function": "scr_dyn_key_check",
+  "message": "a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
   "code": "SC2020"
  },
  {

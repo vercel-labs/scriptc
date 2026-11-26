@@ -1156,6 +1156,10 @@ function dynListenerArray(
   // wrappers, called through the untyped lane, so no tuple applies.
   if (raw) return array;
   if (isJsSourceFile(ts.getSourceFileOfNode(call)) || !table.has(name)) return array;
+  // A dyn-flavored registration means the bucket holds functions of more
+  // than one shape: checking the array to the event's tuple would call a
+  // listener with arguments its parameters do not declare.
+  if (table.get(name)?.dynListener === true || computedListenerMayHold(lowerer, name)) return array;
   const tuple = tupleOf(lowerer, table, name, call);
   return {
     kind: "dynCheck",
@@ -2403,13 +2407,17 @@ export function lowerEmitterMethodCall(
       return dynListenerArray(lowerer, table, lowerReceiver(), name, call, loc, false);
     }
     if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
-      // A dyn-adapted registration means the runtime bucket can hold
-      // originals of MIXED signatures — no one honest element type.
-      lowerer.noLowering(
-        `${member} of the event '${name}'`,
-        call,
-        "a listener of this event uses checked-dynamic dispatch, so the listener array has no one static element type — listenerCount(name) counts",
-      );
+      // A dyn-adapted registration (or one under an unrestricted name) means
+      // the runtime bucket holds functions of mixed shapes: the array is the
+      // checked-dynamic one Node's untyped program sees, and its elements
+      // are read and called through that lane.
+      return {
+        kind: "libCall",
+        fn: "emitter.listenersDyn",
+        args: [lowerReceiver(), eventNameExpr(name, loc)],
+        type: DYN,
+        loc,
+      };
     }
     const tuple = tupleOf(lowerer, table, name, call);
     const receiver = lowerReceiver();
@@ -3855,11 +3863,13 @@ export function lowerEventsEmitterHelper(
       return dynListenerArray(lowerer, table, receiver, name, call, loc, false);
     }
     if (sig?.dynListener || computedListenerMayHold(lowerer, name)) {
-      lowerer.noLowering(
-        `events.getEventListeners of the event '${name}'`,
-        call,
-        "a listener of this event uses checked-dynamic dispatch, so the listener array has no one static element type — listenerCount(emitter, name) counts",
-      );
+      return {
+        kind: "libCall",
+        fn: "emitter.listenersDyn",
+        args: [receiver, eventNameExpr(name, loc)],
+        type: DYN,
+        loc,
+      };
     }
     const tuple = tupleOf(lowerer, table, name, call);
     return {

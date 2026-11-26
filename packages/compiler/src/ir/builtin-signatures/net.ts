@@ -318,8 +318,8 @@ export const netSignatures = defineLibFnSignatures({
    * the call (MAY THROW); socket.connect(path[, connectListener]) dials a
    * Unix socket from the idle socket. */
   "net.sockConnectMissing": { argTypes: [NETSOCKET_T], result: VOID },
-  "net.sockConnectPath": { argTypes: [NETSOCKET_T, STRING, DYN, DYN], result: VOID },
-  "net.sockConnectPathCb": { argTypes: [NETSOCKET_T, STRING, DYN, DYN, null], result: VOID },
+  "net.sockConnectPath": { argTypes: [NETSOCKET_T, DYN, DYN, DYN], result: VOID },
+  "net.sockConnectPathCb": { argTypes: [NETSOCKET_T, DYN, DYN, DYN, null], result: VOID },
   "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
   "net.sockConnectCb": {
     argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],

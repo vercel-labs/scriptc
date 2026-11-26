@@ -3548,15 +3548,15 @@ function lowerNetSocketMethodCall(
     }
     const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
     if (firstT !== null && firstT.kind === "string") {
-      // socket.connect(path[, connectListener]): the idle socket dials a
-      // Unix socket path; answers the socket, Node's chaining. Node
-      // evaluates EVERY argument, and the callback slot is the last
-      // argument when three are given and the second otherwise; a slot
-      // that is not a function is evaluated and ignored (no listener is
-      // registered). The lowering therefore evaluates every argument: the
-      // value that is not the callback crosses as a dyn argument the
-      // runtime ignores, so a wrapper's third-argument expression still
-      // runs natively instead of being dropped.
+      // socket.connect(string[, ...]): the string is Node's port-or-path
+      // argument — a numeric string (and the empty/out-of-range ladders)
+      // is the TCP port, everything else a Unix socket path — so the
+      // runtime classifies it with Node's own rule and throws the same
+      // ERR_SOCKET_BAD_PORT synchronously. Node evaluates EVERY argument,
+      // and the callback slot is the last argument when three are given and
+      // the second otherwise; a slot that is not statically a function is
+      // evaluated here and handed to the runtime, which registers it when
+      // its run-time value is a function.
       const dynValue = (node: ts.Expression): IrExpr => {
         const v = lowerer.lowerExpr(node);
         return v.type.kind === "dyn"
@@ -3565,7 +3565,7 @@ function lowerNetSocketMethodCall(
       };
       const absent = dynUndefinedExpr(loc);
       const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
-      const path = lowerer.lowerExprExpecting(args[0]!, STRING);
+      const target = dynValue(args[0]!);
       const slot = args.length >= 2 ? args[args.length - 1]! : undefined;
       const slotT = slot !== undefined ? lowerer.mapTypeOf(lowerer.typeOf(slot)) : null;
       const slotIsListener = slotT !== null && slotT.kind === "func";
@@ -3575,7 +3575,7 @@ function lowerNetSocketMethodCall(
         return receiverReturningCall(
           lowerer,
           "net.sockConnectPath",
-          [receiver, path, middle, last],
+          [receiver, target, middle, last],
           NETSOCKET_T,
           loc,
         );
@@ -3592,7 +3592,7 @@ function lowerNetSocketMethodCall(
       return receiverReturningCall(
         lowerer,
         "net.sockConnectPathCb",
-        [receiver, path, middle, last, cb],
+        [receiver, target, middle, last, cb],
         NETSOCKET_T,
         loc,
       );

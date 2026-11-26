@@ -627,8 +627,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
-  // socket.connect() with no arguments throws Node's ERR_MISSING_ARGS.
+  // socket.connect() with no arguments throws Node's ERR_MISSING_ARGS;
+  // socket.connect(string) runs validatePort's ladder (ERR_SOCKET_BAD_PORT
+  // for the empty, whitespace and out-of-range strings), and registers a
+  // run-time function callback.
   "net.sockConnectMissing",
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on

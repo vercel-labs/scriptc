@@ -1,37 +1,127 @@
-// socket.connect(path, ...): Node evaluates every argument expression; with
-// three arguments the LAST is the callback slot (the middle is evaluated
-// and ignored), and with two a non-function second argument is evaluated
-// and ignored — the dial still proceeds. The program pins both shapes, so
-// an argument expression is never silently dropped.
+// socket.connect(string, ...): Node classifies the string — a non-empty
+// numeric string in range is the TCP port (with validatePort's synchronous
+// ERR_SOCKET_BAD_PORT for the empty and out-of-range forms), anything else is
+// a Unix socket path. Every argument expression is evaluated, the last
+// argument (with three) or the second (with two) is the callback slot, and a
+// slot whose static type is not a function still becomes the listener when
+// its run-time value is one.
 const net = require("node:net");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const sockPath = path.join(os.tmpdir(), `scr-connect-args-${process.pid}.sock`);
-const server = net.createServer((socket) => socket.on("data", () => {}));
-server.listen(sockPath, () => {
-  const sideEffect = () => {
-    console.log("middle-ran");
-    return () => console.log("third-callback-ran");
-  };
-  const first = new net.Socket();
-  first.on("error", (err) => console.log("first-error", err.code));
-  first.connect(sockPath, () => console.log("second-ran"), sideEffect());
+const out = [];
+const say = (...parts) => out.push(parts.map((part) => String(part)).join(" "));
+const codeOf = (err) => String(err && err.code);
 
+const sockPath = path.join(os.tmpdir(), `scr-connect-args-${process.pid}.sock`);
+const unixServer = net.createServer((socket) => socket.on("data", () => {}));
+const tcpServer = net.createServer((socket) => socket.on("data", () => {}));
+
+const steps = [];
+let printed = false;
+const run = () => {
+  const step = steps.shift();
+  if (step === undefined) {
+    if (!printed) {
+      printed = true;
+      console.log(out.join("\n"));
+    }
+    return;
+  }
+  step();
+};
+
+steps.push(() => {
+  const sideEffect = () => {
+    say("middle-ran");
+    return () => say("third-listener-ran");
+  };
+  const client = new net.Socket();
+  client.on("error", (err) => say("three-args-error", codeOf(err)));
+  client.connect(sockPath, () => say("second-listener-ran"), sideEffect());
   setTimeout(() => {
-    first.destroy();
-    const second = new net.Socket();
-    second.on("error", (err) => console.log("second-error", err.code));
-    second.connect(sockPath, "not a listener");
-    setTimeout(() => {
-      second.destroy();
-      server.close(() => {
-        try {
-          fs.unlinkSync(sockPath);
-        } catch {}
-        console.log("closed");
-      });
-    }, 200);
+    client.destroy();
+    run();
   }, 200);
+});
+
+steps.push(() => {
+  const client = new net.Socket();
+  client.on("error", (err) => say("non-function-second-error", codeOf(err)));
+  client.connect(sockPath, "not a listener");
+  setTimeout(() => {
+    client.destroy();
+    run();
+  }, 200);
+});
+
+steps.push(() => {
+  const dynamicListener = /** @type {any} */ (() => say("dynamic-listener-ran"));
+  const client = new net.Socket();
+  client.on("error", (err) => say("dynamic-listener-error", codeOf(err)));
+  client.connect(sockPath, dynamicListener);
+  setTimeout(() => {
+    client.destroy();
+    run();
+  }, 200);
+});
+
+steps.push(() => {
+  const tcpPort = tcpServer.address().port;
+  const client = new net.Socket();
+  let connected = false;
+  client.on("connect", () => {
+    connected = true;
+    say("numeric-string", "connected", client.remotePort === tcpPort);
+  });
+  client.on("error", (err) => say("numeric-string-error", codeOf(err)));
+  client.connect(String(tcpPort));
+  setTimeout(() => {
+    if (!connected) say("numeric-string", "not-connected");
+    client.destroy();
+    tcpServer.close(() => run());
+  }, 200);
+});
+
+steps.push(() => {
+  for (const bad of ["", "   ", "70000"]) {
+    try {
+      const client = new net.Socket();
+      client.connect(bad);
+      say("bad-port-string", JSON.stringify(bad), "accepted");
+      client.destroy();
+    } catch (err) {
+      say("bad-port-string", JSON.stringify(bad), codeOf(err), JSON.stringify(err.message));
+    }
+  }
+  run();
+});
+
+steps.push(() => {
+  const client = new net.Socket();
+  client.on("error", (err) => {
+    say("missing-path", codeOf(err));
+    client.destroy();
+    run();
+  });
+  client.connect(`${sockPath}.missing`);
+  setTimeout(() => {
+    client.destroy();
+    run();
+  }, 500);
+});
+
+steps.push(() => {
+  unixServer.close(() => {
+    try {
+      fs.unlinkSync(sockPath);
+    } catch {}
+    say("closed");
+    run();
+  });
+});
+
+unixServer.listen(sockPath, () => {
+  tcpServer.listen(0, "127.0.0.1", () => run());
 });

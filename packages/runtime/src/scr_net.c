@@ -3535,6 +3535,8 @@ ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
  * is not modelled). */
 static void scr_net_sock_dial_unix(ScrNetSocket *s);
 static void scr_net_missing_args(void);
+static bool scr_net_dyn_is_pipe_name(const ScrDyn *v);
+static bool scr_net_validate_port_dyn(const ScrDyn *v, const char *name, double *out);
 
 /* socket.connect(): Node's ERR_MISSING_ARGS at the call site (the
  * receiver evaluates first, as Node's method call does). */
@@ -3543,31 +3545,51 @@ void scr_net_sock_connect_missing(ScrNetSocket *s) {
   scr_net_missing_args();
 }
 
-/* socket.connect(path[, connectListener]): an idle socket dials the Unix
- * socket at `path` — Node's Socket.prototype.connect path form (the port
- * form's sibling). A socket that is already dialing, connected or closed
- * ignores the call, as the port form does. */
-void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/,
+/* socket.connect(string, ...): Node's port-or-path argument. A string that
+ * reads as a port (a non-empty numeric string in range) is the TCP port,
+ * with validatePort's synchronous ERR_SOCKET_BAD_PORT for the empty,
+ * whitespace and out-of-range forms; anything else is a Unix socket path,
+ * exactly isPipeName's rule. `extra1` is the evaluated-and-ignored middle
+ * argument of a three-argument call; `slot` is the callback-slot value when
+ * its static type is not a function — registered as the connect listener
+ * when its run-time value IS a function, as Node reads the slot at run
+ * time. A socket that is already dialing, connected or closed ignores the
+ * call, as the port form does. */
+void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*/,
                                const ScrDyn *extra1 /*borrowed, ignored*/,
-                               const ScrDyn *extra2 /*borrowed, ignored*/,
+                               const ScrDyn *slot /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/) {
-  /* Node evaluates every argument expression and drops the values the
-   * callback slot does not use; the lowering hands them over here so the
-   * evaluation happens even though the dial uses only path and cb. */
   (void)extra1;
-  (void)extra2;
+  const bool pipe = scr_net_dyn_is_pipe_name(target);
+  double port = 0;
+  if (!pipe && !scr_net_validate_port_dyn(target, "Port", &port)) {
+    scr_closure_release(cb);
+    return;
+  }
   if (s->fd >= 0 || s->connecting || s->wr_done || s->close_emitted) {
     scr_closure_release(cb);
     return;
   }
+  if (cb == NULL && slot != NULL && slot->kind == SCR_DYN_FUNC) {
+    cb = scr_dyn_listener_closure0(slot);
+  }
   if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
-  s->unix_path = scr_str_retain(path);
-  s->dial_hook = &scr_net_sock_dial_unix;
+  if (pipe) {
+    s->unix_path = scr_str_retain(target->v.str);
+    s->dial_hook = &scr_net_sock_dial_unix;
+  } else {
+    s->peer_port = (int)port;
+    scr_net_sock_set_peer(s, NULL);
+  }
   if (!scr_net_poller_init()) {
     fputs("scriptc: event poller init failed\n", stderr);
     abort();
   }
-  scr_net_sock_dial_unix(s);
+  if (pipe) {
+    scr_net_sock_dial_unix(s);
+  } else {
+    scr_net_sock_dial_peer(s);
+  }
   scr_net_sock_register(s);
 }
 

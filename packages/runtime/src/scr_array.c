@@ -2142,16 +2142,53 @@ static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) 
   scr_arr_set_len(a, (double)len);
 }
 
+/* Whether the species constructor Node resolves is this class. Get(recv,
+ * "constructor") walks the instance's prototype chain, so a prototype the
+ * program replaced (in the class's constructor, say) can answer another
+ * constructor; Node's ArraySpeciesCreate then builds a plain array, and that
+ * result must not carry the replaced prototype. */
+static bool scr_arr_species_is_class(ScrArr *recv, const ScrArrClass *cls) {
+  ScrArrExt *x = scr_arr_ext_of(recv);
+  if (x == NULL || x->prototype == NULL) return true;
+  if (cls == NULL || cls->name == NULL) return false;
+  ScrDyn *cur = scr_dyn_retain(x->prototype);
+  bool same = false;
+  for (int hop = 0; cur != NULL && hop < 16; hop++) {
+    if (cur->kind != SCR_DYN_OBJ && cur->kind != SCR_DYN_FUNC && cur->kind != SCR_DYN_ARR &&
+        cur->kind != SCR_DYN_HANDLE)
+      break;
+    ScrDyn *ctor = scr_dyn_obj_get(cur, "constructor", 11); /* borrowed */
+    if (ctor != NULL) {
+      const char *name = scr_dyn_class_name(ctor);
+      same = name != NULL && strcmp(name, cls->name) == 0;
+      break;
+    }
+    ScrDyn *next = scr_dyn_get_prototype(cur);
+    scr_dyn_release(cur);
+    cur = next;
+  }
+  if (cur != NULL) scr_dyn_release(cur);
+  /* A replaced prototype whose chain does not name this class as its
+   * constructor makes Node's species the Array constructor; the result must
+   * not inherit the replaced prototype. */
+  return same;
+}
+
 ScrArr *scr_arr_species_adopt(ScrArr *recv, ScrArr *result, double ctor_length, bool set_length) {
   const ScrArrClass *cls = scr_arr_class_of(recv);
-  if (cls == NULL) return result;
+  if (cls == NULL || !scr_arr_species_is_class(recv, cls)) return result;
   if (ctor_length < 0) ctor_length = (double)result->len;
   return scr_arr_species_fill(cls, result, ctor_length, true, set_length);
 }
 
 ScrArr *scr_arr_species_create(ScrArr *recv, double ctor_length) {
   const ScrArrClass *cls = scr_arr_class_of(recv);
-  if (cls == NULL) return scr_arr_retain(recv);
+  if (cls == NULL || !scr_arr_species_is_class(recv, cls)) {
+    /* Node's Array species: a plain array of the receiver's length. */
+    ScrArr *plain = scr_arr_new((ScrElemKind)recv->elem, 0);
+    if (ctor_length > 0) scr_arr_set_len(plain, ctor_length);
+    return plain;
+  }
   if (cls->species == NULL) {
     static const char msg[] =
         "this Array subclass's constructor cannot construct a species result (Symbol.species)";

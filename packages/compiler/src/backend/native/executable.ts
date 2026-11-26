@@ -118,7 +118,7 @@ import { localizeLibraryObjects } from "./object-merge.js";
 /** What the runtime-unit table reads: the build options, the target driver,
  * the units other options imply, and the vendor inputs resolved for this
  * build. */
-interface RuntimeUnitContext {
+export interface RuntimeUnitContext {
   opts: CcOptions;
   driver: ReturnType<typeof resolveCc>;
   rt: (path: string) => string;
@@ -300,6 +300,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
+  unit((u) => u.opts.moduleClass === true, "scr_module_class.c"),
   // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
   unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   // %Iterator% and %Iterator.prototype% as values (ES2025 iterator helpers).
@@ -392,8 +393,13 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // its own gate (it links the FileHandle and web stream units with it).
   unit((u) => u.opts.fsWebStream === true, "scr_fs_web_stream.c"),
   // scr_dyn_handle_class.c also carries the class installs dns.Resolver and
-  // dns/promises' Resolver need (scr_dns_resolve.c's own class row).
-  unit((u) => u.opts.webStreams === true || u.opts.dnsResolve === true, "scr_dyn_handle_class.c"),
+  // dns/promises' Resolver need (scr_dns_resolve.c's own class row) and the
+  // one node:module's Module class value needs (scr_module_class.c), so a
+  // program with any of them links the unit.
+  unit(
+    (u) => u.opts.webStreams === true || u.opts.dnsResolve === true || u.opts.moduleClass === true,
+    "scr_dyn_handle_class.c",
+  ),
   unit((u) => u.opts.abortSignal === true && !u.nativeFetch, "scr_abort.c"),
   unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
   unit((u) => u.opts.utilMarkPromiseAsHandled === true, "scr_util_mark_handled.c"),
@@ -506,6 +512,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
+  unit((u) => u.opts.fsOpenAsBlob === true, "scr_fs_blob.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
   // epoll on Linux, WSAPoll on Windows — each TU is empty off its
   // platform, so all three link whenever a poller-using unit does and
@@ -635,8 +642,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.functionOwnWrite === true, "scr_dyn_fn_own.c"),
 ];
 
-/** The arguments of the optional runtime inputs, in link order. */
-function runtimeUnitArgs(u: RuntimeUnitContext): string[] {
+/** The arguments of the optional runtime inputs, in link order. Exported
+ * for the unit-selection test that pins the sources a feature's code calls. */
+export function runtimeUnitArgs(u: RuntimeUnitContext): string[] {
   return RUNTIME_UNITS.flatMap((entry) =>
     entry.args
       ? [...entry.args(u)]

@@ -251,7 +251,8 @@ switch (lane) {
 
   // ts7_parity: the TypeScript 7 full parity sweep.
   case "ts7-parity": {
-    pnpm(["test:ts7"]);
+    const shard = args[0];
+    pnpm(["test:ts7", ...(shard === undefined ? [] : ["--shard", shard])]);
     break;
   }
 

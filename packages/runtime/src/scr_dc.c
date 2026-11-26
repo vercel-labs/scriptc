@@ -21,6 +21,7 @@
  *   audit runs (atexit is LIFO; scr_init registered the audit first), so
  *   registry-held values never count as leaks.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 
 #include <math.h>
@@ -1124,4 +1125,11 @@ void scr_dc_console_emit_args(double member, ScrDyn *args) {
   scr_dyn_release(key);
   if (handle != handle) return; /* an exception is pending; the line still writes */
   scr_dc_publish(handle, args);
+}
+
+/* The tracing entries node:test reaches through scr_optional.h. */
+static const ScrDcOps scr_dc_ops = {scr_dc_channel, scr_dc_publish, scr_dc_chan_has_subscribers};
+
+__attribute__((constructor)) static void scr_dc_install(void) {
+  scr_optional_dc = &scr_dc_ops;
 }

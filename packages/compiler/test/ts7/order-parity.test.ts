@@ -53,6 +53,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, describe, expect, test } from "vitest";
 import { checkPreflightTs7 } from "../../src/frontend/program-node.js";
+import { parseShard, shardItems } from "../../../../scripts/ts7-shard.mjs";
 import { Ts7Host } from "../../src/frontend/ts7/program-adapter.js";
 import type { ScrDiagnostic } from "../../src/diagnostics/diagnostic.js";
 import {
@@ -147,7 +148,8 @@ function pickEntries(): string[] {
   return [...risky, ...plain, ...rest];
 }
 
-const entries = pickEntries();
+const shard = parseShard(process.env["SCRIPTC_TS7_SHARD"]);
+const entries = shardItems(pickEntries(), shard);
 const host = new Ts7Host();
 afterAll(() => host.close());
 
@@ -216,10 +218,13 @@ test("a malformed tsconfig fails preflight (JSON.parse wording — the pinned 5.
   ]);
 });
 
-test("harness sanity: the subset always covers the order-sensitive shapes", () => {
-  expect(entries.some((f) => f.endsWith(".cjs"))).toBe(true);
-  expect(entries.some((f) => f.endsWith(".mjs"))).toBe(true);
-  expect(entries.some((f) => f.endsWith(".js"))).toBe(true);
-  expect(entries.some((f) => f.includes("/main."))).toBe(true);
-  expect(entries.some((f) => readFileSync(f, "utf8").includes("require("))).toBe(true);
-});
+test.skipIf(shard !== null)(
+  "harness sanity: the subset always covers the order-sensitive shapes",
+  () => {
+    expect(entries.some((f) => f.endsWith(".cjs"))).toBe(true);
+    expect(entries.some((f) => f.endsWith(".mjs"))).toBe(true);
+    expect(entries.some((f) => f.endsWith(".js"))).toBe(true);
+    expect(entries.some((f) => f.includes("/main."))).toBe(true);
+    expect(entries.some((f) => readFileSync(f, "utf8").includes("require("))).toBe(true);
+  },
+);

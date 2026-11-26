@@ -218,8 +218,56 @@ static void absent_reads(void) {
   scr_str_release(own);
 }
 
+/* A layout-mode object's slots hold jsval words (scr_dyn.h): a stored
+ * number is its immediate, a borrowed read boxes a number that has no
+ * shared box and leaves the box in the object, and the store entries keep
+ * the slot's reference right. */
+static void layout_slots_hold_jsvals(void) {
+  ScrStr *name = scr_str_new("cost", 4);
+  ScrDyn *object = scr_dyn_new_obj();
+  scr_dyn_obj_set(object, name->data, name->len, scr_dyn_new_num(7));
+  assert(scr_js_is_double(object->v.obj.slots[0]));
+  assert(scr_js_double(object->v.obj.slots[0]) == 7);
+  memset(&load_ic, 0, sizeof load_ic);
+  ScrDyn *read = scr_js_load_probe(object, name, &load_ic);
+  assert(read != NULL && read->kind == SCR_DYN_NUM && read->v.num == 7);
+  scr_dyn_release(read);
+
+  /* 1e9 has no shared box: the borrowed read boxes it once and the object
+   * keeps the box, so repeated reads answer the same cell. */
+  scr_dyn_obj_set(object, name->data, name->len, scr_dyn_new_num(1e9 + 0.5));
+  const ScrDyn *borrowed = scr_dyn_obj_value_at(object, 0);
+  assert(borrowed->kind == SCR_DYN_NUM && borrowed->v.num == 1e9 + 0.5);
+  assert(scr_js_is_cell(object->v.obj.slots[0]));
+  assert(scr_dyn_obj_value_at(object, 0) == borrowed);
+
+  /* The compiled inline store's runtime entry: a heap value keeps its own
+   * reference in the slot, and an immediate replaces it and releases the
+   * cell it replaced. */
+  ScrStr *text = scr_str_new("q", 1);
+  ScrDyn *string = scr_dyn_new_str(text);
+  scr_js_slot_put(&object->v.obj.slots[0], scr_js_of_cell(string));
+  assert(scr_dyn_obj_value_at(object, 0)->kind == SCR_DYN_STR);
+  scr_js_slot_put(&object->v.obj.slots[0], scr_js_from_double(42));
+  assert(scr_js_is_double(object->v.obj.slots[0]));
+  assert(scr_js_double(object->v.obj.slots[0]) == 42);
+  scr_dyn_release(string);
+  scr_str_release(text);
+
+  /* The dynamic-value entry takes its own reference too. */
+  ScrDyn *other = scr_dyn_new_num(3);
+  scr_js_slot_put_dyn(&object->v.obj.slots[0], other);
+  assert(scr_dyn_obj_value_at(object, 0)->kind == SCR_DYN_NUM);
+  assert(scr_dyn_obj_value_at(object, 0)->v.num == 3);
+  scr_dyn_release(other);
+
+  scr_dyn_release(object);
+  scr_str_release(name);
+}
+
 int main(int argc, char **argv) {
   scr_init();
+  layout_slots_hold_jsvals();
   /* Shapes count against the budget, so these checks run on their own. */
   if (argc > 1 && strcmp(argv[1], "absent") == 0) {
     absent_reads();

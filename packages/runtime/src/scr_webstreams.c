@@ -6585,14 +6585,22 @@ WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws
        "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs, NULL, ws_strategy_inspect_view);
 static SCR_TL bool ws_installed;
 
-/* Defined by the stream unit; weak so a web-streams-only link stays valid. */
+/* Both are the stream unit's, and a program using web streams without it
+ * (no node:stream) links this object alone. ELF reads the weak references as
+ * 0 there; Mach-O refuses an undefined weak reference in an executable, so
+ * the Apple branch gives them weak definitions instead, and the stream unit's
+ * strong definitions replace them when it is linked. */
+#if defined(__APPLE__)
+__attribute__((weak)) ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) = NULL;
+__attribute__((weak)) ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) {
+  (void)pair;
+  (void)flags;
+  return NULL;
+}
+#else
 extern ScrStream *(*scr_stream_web_pair_hook)(ScrDyn *value, double flags) __attribute__((weak));
-
-/* The pair adaptation the hook answers with lives in the stream unit too
- * (a program that reaches it links streams, web streams and the dyn tier),
- * so the reference is weak: the hook is only called from the stream unit,
- * which links this one with it. */
 extern ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) __attribute__((weak));
+#endif
 
 static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
   if (value == NULL) return NULL;

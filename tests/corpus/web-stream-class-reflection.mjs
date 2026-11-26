@@ -97,3 +97,19 @@ console.log(
     forIn(legacy),
   );
 }
+
+// The encoding transform streams keep the properties a program adds too.
+{
+  const encoder = new TextEncoderStream();
+  encoder.tag = "enc";
+  const decoder = new TextDecoderStream();
+  decoder.tag = "dec";
+  console.log(
+    "text-streams",
+    Object.getOwnPropertyNames(encoder).join(","),
+    forIn(encoder),
+    "tag" in encoder,
+    Object.hasOwn(encoder, "tag"),
+    Object.getOwnPropertyDescriptor(decoder, "tag").value,
+  );
+}

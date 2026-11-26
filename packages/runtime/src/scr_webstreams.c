@@ -6289,6 +6289,7 @@ static const ScrDynHandleOps ws_text_encoder_ops = {
     .invalid_this = "Value of \"this\" must be of type TextEncoderStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
 static const ScrDynHandleOps ws_text_decoder_ops = {
     .cls = "TextDecoderStream",
@@ -6301,6 +6302,7 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .invalid_this = "Value of \"this\" must be of type TextDecoderStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
 WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy");
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,

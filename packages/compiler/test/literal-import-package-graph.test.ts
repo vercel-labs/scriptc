@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { compile } from "../src/index.js";
@@ -21,6 +21,17 @@ interface IrFunction {
 interface IrModule {
   functions: IrFunction[];
 }
+
+/* The fixture packages are committed test data, not installs: the fixtures'
+ * `node_modules` directories must be unignored in .gitignore, or a clean
+ * checkout leaves `main.ts` importing a package that is not there. */
+test("the fixture packages are committed", () => {
+  for (const name of ["esm", "cjs"] as const) {
+    const packageDir = join(fixtures, name, "node_modules/lazypkg");
+    expect(existsSync(join(packageDir, "index.js")), `${packageDir} is test data`).toBe(true);
+    expect(existsSync(join(packageDir, "index.d.ts")), `${packageDir} is test data`).toBe(true);
+  }
+});
 
 function compileIr(name: "esm" | "cjs") {
   const root = join(fixtures, name);

@@ -68,6 +68,12 @@ export class Client extends DispatcherBase {
   __sockNoRef: boolean;
   __sockReset: boolean;
   __sockBlocking: boolean;
+  /** How many streamed request bodies are still being written. Kept apart
+   * from __sockBlocking, which the response headers clear: the next
+   * request must not be written into an unfinished body. A count, not a
+   * flag, because a pump on a socket that is being replaced may finish
+   * after a new one starts. */
+  __bodyUploads: number;
   __sockCounter: number;
   /** Resolvers waiting for the socket's next 'drain' (streamed request
    * bodies). The 'drain' listener in __onConnected flushes them. */
@@ -183,6 +189,7 @@ export class Client extends DispatcherBase {
     this.__sockNoRef = false;
     this.__sockReset = false;
     this.__sockBlocking = false;
+    this.__bodyUploads = 0;
     this.__sockCounter = 0;
     this.__drainWaiters = [];
     this.__parser = null;
@@ -215,7 +222,8 @@ export class Client extends DispatcherBase {
 
   __busy(): boolean {
     return (
-      (this.__socket !== null && (this.__sockReset || this.__sockBlocking)) ||
+      (this.__socket !== null &&
+        (this.__sockReset || this.__sockBlocking || this.__bodyUploads > 0)) ||
       this.__sizeCount() >= (this.__pipelining || 1) ||
       this.__pendingCount() > 0
     );
@@ -607,7 +615,8 @@ export class Client extends DispatcherBase {
         this.__connect();
         continue;
       }
-      if (socket.destroyed || this.__sockReset || this.__sockBlocking) return;
+      if (socket.destroyed || this.__sockReset || this.__sockBlocking || this.__bodyUploads > 0)
+        return;
       if (this.__runningCount() > 0 && !request.idempotent) return;
 
       if (!request.aborted && this.__write(request, socket)) {
@@ -681,7 +690,7 @@ export class Client extends DispatcherBase {
       // A streamed body: the socket stays blocked to other requests while
       // its chunks are written; chunked framing unless the request
       // declared a content-length.
-      this.__sockBlocking = true;
+      this.__bodyUploads += 1;
       if (request.contentLength !== null) {
         socket.write(`${header}content-length: ${request.contentLength}\r\n\r\n`);
       } else {
@@ -764,7 +773,7 @@ export class Client extends DispatcherBase {
         this.__errorRequest(request, err as Error);
         this.__destroySocket(socket, new InformationalError("aborted"));
       } finally {
-        this.__sockBlocking = false;
+        this.__bodyUploads -= 1;
         if (!this.destroyed && !failed) this.__resume(false);
       }
     };
@@ -857,6 +866,14 @@ export class Client extends DispatcherBase {
       this.__errorRequest(request, err as Error);
     }
     this.__queue[this.__runningIdx++] = null;
+    if (this.__bodyUploads > 0) {
+      // The response completed before the streamed upload did. The peer
+      // cannot take the rest, and the next request must never be written
+      // into the unfinished body: destroy the connection, as undici does
+      // when a response completes while the socket is still writing.
+      this.__destroySocket(socket, new InformationalError("reset"));
+      return false;
+    }
     if (!shouldKeepAlive) {
       this.__destroySocket(socket, new InformationalError("reset"));
       return false;

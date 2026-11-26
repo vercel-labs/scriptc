@@ -27,6 +27,15 @@ beforeAll(async () => {
       const body = Buffer.concat(chunks).toString("utf8");
       const length = req.headers["content-length"];
       const encoding = req.headers["transfer-encoding"];
+      if (req.url === "/early") {
+        // Answer before the upload finishes, and keep draining the body so
+        // the connection stays usable from the server's side: a client that
+        // reused it would write the next request into the unfinished body.
+        req.resume();
+        res.writeHead(413, { "content-type": "text/plain" });
+        res.end("too big");
+        return;
+      }
       if (req.url === "/chunks") {
         res.writeHead(200, { "content-type": "text/plain" });
         res.write("one,");
@@ -205,4 +214,25 @@ test("EnvHttpProxyAgent forwards ProxyAgent TLS options to its child agents", ()
   expect(httpAgent.__proxyTls?.rejectUnauthorized).toBe(false);
   expect(httpsAgent.__requestTls?.servername).toBe("origin.example");
   expect(httpsAgent.__proxyTls?.rejectUnauthorized).toBe(false);
+});
+
+test("an early response destroys the connection instead of reusing it mid-upload", async () => {
+  const client = new Client(origin);
+  const before = requests;
+  async function* slow(): AsyncGenerator<Uint8Array> {
+    for (let i = 0; i < 50; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      yield new Uint8Array(1024);
+    }
+  }
+  // The upload is still writing when the 413 arrives; the next request must
+  // go over a fresh connection, not into that body.
+  const upload = client
+    .request({ path: "/early", method: "POST", body: Readable.from(slow()) })
+    .catch(() => null);
+  const second = await client.request({ path: "/echo", method: "GET" });
+  expect(await second.body.text()).toBe("GET - - ");
+  await upload;
+  expect(requests - before).toBe(2);
+  await client.close();
 });

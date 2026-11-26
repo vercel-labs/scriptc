@@ -645,6 +645,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // synchronously (the stream-operations stance below), so the data/
   // write paths that can fire inline join too.
   "http2.connect",
+  "http2.performServerHandshake",
+  "http2.performServerHandshakeOpts",
   "http2.connectCb",
   "http2.sessionRequest",
   "http2.streamSetEncoding",

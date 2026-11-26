@@ -640,6 +640,10 @@ struct ScrNetSocket {
   double hwm;
   size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
+  /* The socket already carries an HTTP/2 session (a handshake, an h2
+   * server's accepted connection, or a client session): a second
+   * performServerHandshake over it is Node's ERR_HTTP2_SOCKET_BOUND. */
+  bool h2_bound;
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool fin_seen;  /* peer FIN seen: 'end' fired (Node's writeAfterFIN state) */
@@ -848,6 +852,14 @@ struct ScrNetSocket {
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* Contexts of readers a protocol takeover replaced (http2.performServerHandshake
+   * over an upgrade/CONNECT socket): the stepped-aside reader may still be
+   * running when the takeover happens, so they are released with the socket. */
+  struct ScrNetRetiredCtx {
+    void *ctx;
+    void (*free_fn)(void *);
+  } *retired;
+  size_t nretired, retired_cap;
   /* transport layer (scr_tls.c): reads/writes redirect through the ops
    * once set; writes buffer and readiness drives the handshake until
    * t_est. Sits BELOW the protocol layer — an https socket carries both
@@ -986,6 +998,8 @@ void scr_net_sock_release(ScrNetSocket *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
     if (s->native_ctx_free) s->native_ctx_free(s->native_ctx);
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
     if (s->tops && s->tops->free) s->tops->free(s->tctx);
     scr_net_ls_drop(&s->data_ls);
     scr_net_ls_drop(&s->end_ls);
@@ -8916,6 +8930,28 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
   scr_net_sock_update_read(s);
 }
 
+/* A protocol takeover: the stepped-aside reader's context (the HTTP parser
+ * behind an upgrade/CONNECT handover keeps its connection until socket
+ * death) is retired to the socket rather than released here — the takeover
+ * happens inside that reader's own read callback, so freeing it now would be
+ * a use-after-free. The socket releases retired contexts when it dies (and
+ * at exit). */
+void scr_net_sock_adopt_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
+                                      void *ctx, void (*ctx_free)(void *)) {
+  if (s->native_ctx_free != NULL && s->native_ctx != NULL) {
+    if (s->nretired == s->retired_cap) {
+      s->retired_cap = s->retired_cap ? s->retired_cap * 2 : 2;
+      s->retired = realloc(s->retired, s->retired_cap * sizeof *s->retired);
+      if (!s->retired) scr_net_oom();
+    }
+    s->retired[s->nretired].ctx = s->native_ctx;
+    s->retired[s->nretired].free_fn = s->native_ctx_free;
+    s->nretired++;
+  }
+  scr_net_sock_set_native_reader(s, data, eof, closed, ctx, ctx_free);
+}
+
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *)) {
   s->native_idle = fn;
   s->http_server_conn = true; /* stays set after an upgrade, as Node's setEncoding override does */
@@ -8942,6 +8978,12 @@ bool scr_net_sock_destroyed(ScrNetSocket *s) {
    * destroyed, as Node's stream flag says */
   return s->fd < 0 && (s->emit_close || s->close_emitted);
 }
+
+void scr_net_sock_set_h2_bound(ScrNetSocket *s) {
+  if (s != NULL) s->h2_bound = true;
+}
+
+bool scr_net_sock_h2_bound(ScrNetSocket *s) { return s != NULL && s->h2_bound; }
 
 /* socket.writable — Node's stream flag: the write half is open (no end()
  * yet, no FIN sent, fd alive). Connecting sockets answer true — writes
@@ -9823,6 +9865,10 @@ static void scr_net_cleanup_atexit(void) {
       s->native_err = NULL;
       ctx_free(ctx);
     }
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
+    s->retired = NULL;
+    s->nretired = s->retired_cap = 0;
     if (s->pipe_dst) {
       scr_net_sock_release(s->pipe_dst);
       s->pipe_dst = NULL;

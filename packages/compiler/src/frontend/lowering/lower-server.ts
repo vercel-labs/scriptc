@@ -8521,6 +8521,55 @@ function lowerHttp2ModuleCall(
     const cb = lowerRequestHandlerArg(lowerer, handlerNode);
     return { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
   }
+  if (bi.member === "performServerHandshake") {
+    // http2.performServerHandshake(socket[, options]): a server session
+    // over an existing connected socket. The tuning options are accepted
+    // as an object literal and inert in this unit.
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `http2.performServerHandshake with ${args.length} arguments`,
+        expr,
+        "use performServerHandshake(socket[, options])",
+      );
+    }
+    const sock = lowerer.lowerExpr(args[0]!);
+    if (sock.type.kind !== "netSocket") {
+      lowerer.noLowering(
+        `http2.performServerHandshake with a '${lowerer.fmt(sock.type)}' socket`,
+        args[0]!,
+        "pass a net.Socket (the socket a net server's 'connection' listener receives)",
+      );
+    }
+    if (args.length === 2 && !ts.isObjectLiteralExpression(args[1]!)) {
+      lowerer.noLowering(
+        "http2.performServerHandshake options",
+        args[1]!,
+        "pass the options as an object literal ({ settings: ... })",
+      );
+    }
+    if (args.length === 2) {
+      // The options are inert here, but the literal is still EVALUATED: calls
+      // and spreads inside it run (an authorization helper must not be
+      // erased), then the value is handed to the runtime and ignored.
+      const optsV = lowerer.lowerExpr(args[1]!);
+      const dynOpts: IrExpr =
+        optsV.type.kind === "dyn" ? optsV : { kind: "dynFrom", value: optsV, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.performServerHandshakeOpts",
+        args: [sock, dynOpts],
+        type: HTTP2SESSION_T,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.performServerHandshake",
+      args: [sock],
+      type: HTTP2SESSION_T,
+      loc,
+    };
+  }
   if (bi.member === "connect") {
     // http2.connect(authority[, listener]) — the h2c client. The
     // authority is a string (URL objects and an options record fence).

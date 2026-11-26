@@ -19914,6 +19914,7 @@
           "tests/corpus/5098-console-time-warnings.ts",
           "tests/corpus/5099-console-methods-dynamic.cjs",
           "tests/corpus/console-dir-show-hidden.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
@@ -20057,6 +20058,7 @@
           "tests/corpus/console-instance-members.ts",
           "tests/corpus/console-instance-options.ts",
           "tests/corpus/console-instance-state.ts",
+          "tests/corpus/console-instance-bound-methods.cjs",
           "tests/corpus/console-instance-inspect-options.ts",
           "tests/corpus/console-instance-table-options.ts"
         ]
@@ -35061,6 +35063,8 @@
           "tests/corpus/compat-errors-buffer-encoding.mjs",
           "tests/corpus/compat-errors-cert-altname.mjs",
           "tests/corpus/compat-errors-cert-badsig.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs",
+          "tests/corpus/compat-errors-cert-crl.mjs",
           "tests/corpus/compat-errors-cert-expired.mjs",
           "tests/corpus/compat-errors-cert-future.mjs",
           "tests/corpus/compat-errors-cert-pathlen.mjs",
@@ -44444,8 +44448,12 @@
       "anchor": "crl_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44462,8 +44470,12 @@
       "anchor": "crl_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44480,8 +44492,12 @@
       "anchor": "cert_revoked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CERT_REVOKED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CERT_REVOKED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44615,8 +44631,12 @@
       "anchor": "unable_to_get_crl",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44864,8 +44884,12 @@
       "anchor": "crl_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -56323,6 +56347,7 @@
           "tests/corpus/9993-resource-timing-buffered.ts",
           "tests/corpus/9996-resource-timing.ts",
           "tests/corpus/buffer-atob-btoa.js",
+          "tests/corpus/cjs-exports-binding/main.cjs",
           "tests/corpus/compat-cjs-module-globals/main.cjs",
           "tests/corpus/compat-core-members.mjs",
           "tests/corpus/compat-core-members.ts",
@@ -57010,11 +57035,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:globals.EventSource",
-        "tests": [
-          "tests/diagnostics/compat-absent-web-globals.ts"
-        ]
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.EventSource"
       },
       "anchorSource": "exact"
     },
@@ -57639,8 +57661,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.Storage"
       },
       "anchorSource": "exact"
     },
@@ -58540,8 +58562,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "supported",
+        "evidence": "compiler-feature:globals.exports",
+        "tests": [
+          "tests/corpus/cjs-exports-binding/main.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -58661,8 +58686,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.localStorage"
       },
       "anchorSource": "exact"
     },
@@ -58953,8 +58978,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:globals"
+        "status": "not-applicable",
+        "evidence": "compiler-feature:globals.sessionStorage"
       },
       "anchorSource": "exact"
     },
@@ -74880,7 +74905,6 @@
           "tests/corpus/module-compile-cache-values.mjs",
           "tests/corpus/module-find-package-json/main.ts",
           "tests/corpus/module-function-values/main.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/harness/module-compile-cache.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
@@ -74998,11 +75022,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75024,8 +75045,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75631,8 +75652,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75654,8 +75675,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75677,8 +75698,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75700,8 +75721,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75838,11 +75859,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75864,8 +75882,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75887,8 +75905,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -76117,8 +76135,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -77182,9 +77200,12 @@
           "tests/corpus/net-attempt-events.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
           "tests/corpus/net-connect-missing-args.mjs",
+          "tests/corpus/net-connect-options-audit.ts",
           "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-port-validation.cjs",
           "tests/corpus/net-create-server-block-list.ts",
           "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
@@ -77203,6 +77224,7 @@
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/corpus/net-typed-option-records.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -79654,19 +79676,14 @@
       "anchor": "netconnectoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79759,19 +79776,14 @@
       "anchor": "netcreateconnectionoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92493,22 +92505,27 @@
         "inherited": false
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/sqlite-authorizer.ts",
           "tests/corpus/sqlite-backup.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
           "tests/corpus/sqlite-constants.ts",
           "tests/corpus/sqlite-database-basics.ts",
+          "tests/corpus/sqlite-define-properties.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
           "tests/corpus/sqlite-iterate.ts",
+          "tests/corpus/sqlite-limits-object.ts",
           "tests/corpus/sqlite-limits.ts",
           "tests/corpus/sqlite-named-parameters.ts",
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-row-values.ts",
           "tests/corpus/sqlite-serialize.ts",
           "tests/corpus/sqlite-sessions.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
           "tests/corpus/sqlite-statement-results.ts",
           "tests/corpus/sqlite-tag-store.ts",
           "tests/corpus/sqlite-user-functions.ts"
@@ -92562,7 +92579,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92616,7 +92637,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92696,7 +92721,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92724,7 +92753,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92752,7 +92785,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92832,7 +92869,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92912,7 +92953,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -92938,7 +92983,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:database.createTagStore",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93018,7 +93066,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93046,7 +93098,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93074,7 +93130,11 @@
         "tests": [
           "tests/corpus/sqlite-database-basics.ts",
           "tests/corpus/sqlite-errors.ts",
-          "tests/corpus/sqlite-file-database.ts"
+          "tests/corpus/sqlite-file-database.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93097,10 +93157,12 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-dedicated:limits",
         "tests": [
-          "tests/corpus/sqlite-limits.ts"
+          "tests/corpus/sqlite-limits.ts",
+          "tests/corpus/sqlite-limits-object.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93262,7 +93324,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93317,7 +93383,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93349,7 +93419,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93381,7 +93455,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93413,7 +93491,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93445,7 +93527,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93477,7 +93563,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93509,7 +93599,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93541,7 +93635,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93573,7 +93671,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93605,7 +93707,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93637,7 +93743,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93669,7 +93779,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93701,7 +93815,11 @@
           "tests/corpus/sqlite-return-arrays.ts",
           "tests/corpus/sqlite-errors.ts",
           "tests/corpus/sqlite-statement-results.ts",
-          "tests/corpus/sqlite-row-values.ts"
+          "tests/corpus/sqlite-row-values.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-sloppy-assignment.cjs",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93727,7 +93845,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:SQLTagStore",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93753,7 +93874,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.all",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93779,7 +93903,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.get",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93805,7 +93932,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.iterate",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93831,7 +93961,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.run",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93857,7 +93990,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:sqlTagStore.clear",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "exact"
@@ -93883,7 +94019,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:size",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93909,7 +94048,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:capacity",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -93935,7 +94077,10 @@
         "status": "supported",
         "evidence": "compiler-dedicated:db",
         "tests": [
-          "tests/corpus/sqlite-tag-store.ts"
+          "tests/corpus/sqlite-tag-store.ts",
+          "tests/corpus/sqlite-class-reflection.ts",
+          "tests/corpus/sqlite-inspect-shapes.ts",
+          "tests/corpus/sqlite-define-properties.ts"
         ]
       },
       "anchorSource": "ancestor"

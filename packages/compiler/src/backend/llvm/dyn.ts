@@ -60,6 +60,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
+import { classValueSlot, classValueSlotBits } from "../../ir/class-key-index.js";
 import { mangleClassHeldTest, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import {
@@ -3535,10 +3536,56 @@ export class LlDyn {
       // construction through the slot can call its thunk with the base
       // constructor's arguments; any other subclass fails the check.
       const subclasses = host.classValueSubtypes(t.className);
-      if (subclasses.length > 0) {
+      const subKeyOf = (className: string) => host.cstr(typeKey({ kind: "classval", className }));
+      if (subclasses.length >= 8) {
+        // An indexed table rather than one exact key test per subclass: the
+        // class value's key selects a slot with the same fold the generated
+        // class tables use, and the slot's classes keep their exact key
+        // tests, so a slot shared by two keys, and a value that is no
+        // compiled class, reach the base check exactly as the chain did.
+        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
+        host.declare(`declare i32 @scr_dyn_class_value_slot(ptr, i32)`);
+        const keys = subclasses.map(subKeyOf);
+        const slotBits = classValueSlotBits(subclasses.length + 1);
+        const bySlot = new Map<number, number[]>();
+        for (let i = 0; i < subclasses.length; i++) {
+          const slot = classValueSlot(
+            typeKey({ kind: "classval", className: subclasses[i]! }),
+            slotBits,
+          );
+          const ofSlot = bySlot.get(slot);
+          if (ofSlot === undefined) bySlot.set(slot, [i]);
+          else ofSlot.push(i);
+        }
+        const hashed = B.tmp();
+        B.line(`${hashed} = call i32 @scr_dyn_class_value_slot(ptr %d, i32 ${slotBits})`);
+        const base = B.newLabel("cv.base");
+        const cases = [...bySlot.keys()].sort((left, right) => left - right);
+        const entries = cases.map((slot) => `i32 ${slot}, label %${B.newLabel("cv.c")}`);
+        const caseLabels = entries.map((entry) => entry.slice(entry.indexOf("label %") + 7));
+        B.line(`switch i32 ${hashed}, label %${base} [ ${entries.join(" ")} ]`);
+        cases.forEach((slot, at) => {
+          const ofSlot = bySlot.get(slot)!;
+          // Every key of a slot keeps its exact test, in the chain's order;
+          // the last one falls through to the base check.
+          const tests = ofSlot.map((_, k) => (k === 0 ? caseLabels[at]! : B.newLabel("cv.n")));
+          ofSlot.forEach((i, k) => {
+            B.startBlock(tests[k]!);
+            const matched = B.tmp();
+            B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${keys[i]})`);
+            const yes = B.newLabel("cv.yes");
+            B.condBr(matched, yes, k + 1 < ofSlot.length ? tests[k + 1]! : base);
+            B.startBlock(yes);
+            const sub = B.tmp();
+            B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${keys[i]}, ptr %path)`);
+            B.line(`ret ptr ${sub}`);
+          });
+        });
+        B.startBlock(base);
+      } else if (subclasses.length > 0) {
         host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
         for (const className of subclasses) {
-          const subKey = host.cstr(typeKey({ kind: "classval", className }));
+          const subKey = subKeyOf(className);
           const matched = B.tmp();
           B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
           const yes = B.newLabel("sub.yes");

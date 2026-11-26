@@ -18,6 +18,10 @@ enum {
   SCR_WC_USAGE_DERIVE_BITS = 1u << 5,
   SCR_WC_USAGE_WRAP_KEY = 1u << 6,
   SCR_WC_USAGE_UNWRAP_KEY = 1u << 7,
+  SCR_WC_USAGE_ENCAPSULATE_KEY = 1u << 8,
+  SCR_WC_USAGE_ENCAPSULATE_BITS = 1u << 9,
+  SCR_WC_USAGE_DECAPSULATE_KEY = 1u << 10,
+  SCR_WC_USAGE_DECAPSULATE_BITS = 1u << 11,
 };
 
 /* Node's canonical usage order; the bit is the index. */
@@ -31,6 +35,9 @@ typedef struct {
 } ScrWcArgs;
 
 void scr_wc_type_error(const char *code, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+/* Node's once-per-process ExperimentalWarning for an experimental algorithm
+ * (ML-KEM's parameter sets among them). */
+void scr_wc_warn_experimental_algorithm(const char *canonical);
 void scr_wc_unsupported(const char *method, const char *what);
 void scr_wc_unsupported_algorithm(const char *method, const char *name);
 bool scr_wc_is_object(const ScrDyn *v);
@@ -91,6 +98,15 @@ typedef struct {
   /* The public CryptoKey derived from a private one (getPublicKey), or NULL
    * with the DOMException pending. */
   ScrDyn *(*get_public_key)(ScrDyn *key, long usages);
+  /* ML-KEM (FIPS 203) key encapsulation: the algorithm names one of the
+   * parameter sets the key must belong to; `method` names the operation for
+   * Node's usage error. encapsulate answers the 32-byte shared key and
+   * *ciphertext (+1 each); decapsulate answers the shared key. NULL with
+   * the DOMException pending. */
+  ScrBytes *(*kem_encapsulate)(const ScrDyn *algorithm, const ScrDyn *key, const char *method,
+                               ScrBytes **ciphertext);
+  ScrBytes *(*kem_decapsulate)(const ScrDyn *algorithm, const ScrDyn *key, const char *method,
+                               ScrBytes *ciphertext);
   bool (*is_key)(const ScrDyn *value);
   /* An asymmetric key's private/public pair member: true for the private
    * key. node:crypto's key type error names the member. */

@@ -66,6 +66,12 @@ bool scr_tls_srv_opts_walk(const struct ScrDyn *opts, const char *api, ScrBytes 
 void scr_http2_server_on_stream(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2StreamFn fn, bool once);
 void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH2SessionFn fn, bool once);
 
+/* http2.performServerHandshake(socket): a server session over an existing
+ * connected socket (the peer's prior-knowledge preface is expected), +1. */
+ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/); /* may throw */
+/* performServerHandshake(socket, options): the literal evaluated, ignored. */
+ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
+                                                       const ScrDyn *opts /*borrowed*/);
 /* client — h2c prior knowledge for http authorities, the TLS transport
  * with ALPN ["h2"] for https ones (ca len 0 = the system anchors;
  * reject_unauthorized false disables the verify gate — the local-CA
@@ -81,6 +87,8 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
 /* session */
 void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/);
 void scr_http2_session_destroy(ScrH2Session *s);
+/* setLocalWindowSize(windowSize): validated, then a no-op (Node 24). */
+void scr_http2_session_set_local_window_size(ScrH2Session *s, double window_size);
 void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
@@ -171,6 +179,15 @@ void scr_http2_stream_pause(ScrH2Stream *st);
 void scr_http2_stream_on_data(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
 void scr_http2_stream_on_end(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_close(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+/* 'ready' (the stream initialized) and the stream's own idle timer. */
+void scr_http2_stream_on_ready(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_set_timeout(ScrH2Stream *st, double msecs);
+void scr_http2_stream_set_timeout_cb(ScrH2Stream *st, double msecs, ScrClosure *cb /*moves*/);
+/* priority(options): deprecated by RFC 9113 — warns DEP0194 once and ignores
+ * the options, as Node does. */
+void scr_http2_stream_priority(ScrH2Stream *st /*borrowed, nullable*/,
+                               const ScrDyn *opts /*borrowed, nullable*/);
 void scr_http2_stream_on_aborted(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_stream_on_response(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrH2RespFn fn, bool once);

@@ -422,4 +422,6 @@ export const processSignatures = defineLibFnSignatures({
    * ("process.stdin.setRawMode is not a function") — the may-throw seed
    * carries it. */
   "process.stdinSetRawMode": { argTypes: [BOOL], result: VOID },
+  /** process.config: the frozen build-description object. */
+  "process.configValue": { argTypes: [], result: DYN },
 });

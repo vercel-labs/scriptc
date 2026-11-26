@@ -1378,17 +1378,32 @@ static void sf_mime_set_param(SfMime *m, const char *name, size_t name_len,
 /* The parameter de-duplication set: open addressing keyed by the lowercased
  * name's hash, holding a parameter's index + 1 (0 is empty). The parser then
  * keeps its parameters in time linear in the header's length, rather than
- * scanning every parameter already kept for each new one. */
+ * scanning every parameter already kept for each new one. The hash is keyed
+ * per thread (below), so names chosen by whoever wrote the header cannot be
+ * made to collide and turn a probe into that scan. */
 typedef struct {
   size_t *slots;
   size_t cap;
 } SfMimeSeen;
 
+/* The set's hash is keyed per thread: a name crafted ahead of time cannot be
+ * made to land on the names already kept, so the probe walk cannot be turned
+ * back into a scan of the parameter list. The key is drawn once per thread
+ * and never leaves the process. */
+static uint64_t sf_mime_hash_key(void) {
+  static SCR_TL uint64_t key;
+  if (key == 0) {
+    arc4random_buf(&key, sizeof key);
+    if (key == 0) key = 1469598103934665603ull;
+  }
+  return key;
+}
+
 static uint64_t sf_mime_name_hash(const char *name, size_t n) {
-  uint64_t h = 1469598103934665603ull; /* FNV-1a */
+  uint64_t h = sf_mime_hash_key();
   for (size_t i = 0; i < n; i++) {
     h ^= (unsigned char)name[i];
-    h *= 1099511628211ull;
+    h *= 1099511628211ull; /* FNV-1a, from the key rather than the fixed basis */
   }
   return h;
 }

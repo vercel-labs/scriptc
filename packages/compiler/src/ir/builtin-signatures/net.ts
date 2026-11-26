@@ -314,6 +314,12 @@ export const netSignatures = defineLibFnSignatures({
   /** socket.connect(port[, host][, connectListener]): an idle socket
    * starts the dial net.connect's port form performs (port and host run
    * the validation ladder first); answers the socket. */
+  /** socket.connect() with no arguments throws Node's ERR_MISSING_ARGS at
+   * the call (MAY THROW); socket.connect(path[, connectListener]) dials a
+   * Unix socket from the idle socket. */
+  "net.sockConnectMissing": { argTypes: [NETSOCKET_T], result: VOID },
+  "net.sockConnectPath": { argTypes: [NETSOCKET_T, STRING], result: VOID },
+  "net.sockConnectPathCb": { argTypes: [NETSOCKET_T, STRING, null], result: VOID },
   "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
   "net.sockConnectCb": {
     argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],

@@ -77139,6 +77139,8 @@
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-connect-missing-args.mjs",
+          "tests/corpus/net-connect-path-method.ts",
           "tests/corpus/net-is-ip-inputs.ts",
           "tests/corpus/net-listen-argument-shapes.ts",
           "tests/corpus/net-listen-dynamic-arguments.cjs",
@@ -78307,10 +78309,11 @@
       "anchor": "socketconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-missing-args.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -78329,9 +78332,9 @@
       "nodeStability": null,
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78349,10 +78352,11 @@
       "anchor": "socketconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-missing-args.mjs"
         ]
       },
       "anchorSource": "exact"

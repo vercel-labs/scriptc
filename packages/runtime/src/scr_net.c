@@ -3533,6 +3533,37 @@ ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
  * same validation ladder first; a socket already dialing or connected is
  * left as it is (Node re-dials a live socket and corrupts it — that shape
  * is not modelled). */
+static void scr_net_sock_dial_unix(ScrNetSocket *s);
+static void scr_net_missing_args(void);
+
+/* socket.connect(): Node's ERR_MISSING_ARGS at the call site (the
+ * receiver evaluates first, as Node's method call does). */
+void scr_net_sock_connect_missing(ScrNetSocket *s) {
+  (void)s;
+  scr_net_missing_args();
+}
+
+/* socket.connect(path[, connectListener]): an idle socket dials the Unix
+ * socket at `path` — Node's Socket.prototype.connect path form (the port
+ * form's sibling). A socket that is already dialing, connected or closed
+ * ignores the call, as the port form does. */
+void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/,
+                               ScrClosure *cb /*moves, nullable*/) {
+  if (s->fd >= 0 || s->connecting || s->wr_done || s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  s->unix_path = scr_str_retain(path);
+  s->dial_hook = &scr_net_sock_dial_unix;
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  scr_net_sock_dial_unix(s);
+  scr_net_sock_register(s);
+}
+
 void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/) {
   ScrDyn num;

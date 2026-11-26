@@ -537,6 +537,29 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn === "net.sockConnectMissing") {
+    // socket.connect(): Node's ERR_MISSING_ARGS is thrown at the call.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare void @scr_net_sock_connect_missing(ptr)`);
+    B.line(`call void @scr_net_sock_connect_missing(ptr ${args[0]!.name})`);
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockConnectPath" || e.fn === "net.sockConnectPathCb") {
+    // socket.connect(path[, cb]): the idle socket dials a Unix socket.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.sockConnectPathCb") {
+      host.toHeap(args[2]!);
+      cb = args[2]!.name;
+    }
+    host.declare(`declare void @scr_net_sock_connect_path(ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.socketNew") {
     // new net.Socket([options]): the unconnected socket handle; a signal
     // attaches through events.addAbortListener (event-target unit) only when

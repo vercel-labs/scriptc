@@ -284,6 +284,8 @@ ScrNetSocket *scr_net_sock_construct(const ScrDyn *options,
                                      const ScrStr *fence);
 /* socket.connect(port[, host][, connectListener]): an idle socket dials
  * (port and host validated first). */
+void scr_net_sock_connect_missing(ScrNetSocket *s);
+void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/);
 bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);

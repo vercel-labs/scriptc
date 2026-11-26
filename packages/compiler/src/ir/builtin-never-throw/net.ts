@@ -20,6 +20,11 @@ export const netNeverThrow: readonly IrLibFn[] = [
   // The autoSelectFamily default is plain storage in the core unit: the
   // getter answers the stored boolean and runs nothing else.
   "net.getDefaultAutoSel",
+  // socket.connect(path[, cb]): the idle socket starts the Unix dial; every
+  // failure (a refused path included) is the async 'error' event, and the
+  // connect listener is registered without running.
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
   // scr_net_sock_on_attempt adds the listener to the socket's attempt list
   // (or drops it past 'close'); no listener runs.
   "net.sockOnAttempt",

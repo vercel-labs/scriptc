@@ -3526,15 +3526,19 @@ function lowerNetSocketMethodCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if (name === "connect") {
-    // socket.connect(port[, host][, connectListener]): an idle socket
-    // starts the dial net.connect's port form performs. The path and
-    // options forms have no lowering yet.
+    // socket.connect(port[, host][, connectListener]) and
+    // socket.connect(path[, connectListener]) start the dial on an idle
+    // socket; connect() with no arguments throws Node's ERR_MISSING_ARGS
+    // at the call. The options-record form still has no lowering.
     if (args.length === 0) {
-      lowerer.noLowering(
-        "connect() with no arguments",
-        call,
-        "the form is connect(port[, host][, connectListener])",
-      );
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      return {
+        kind: "libCall",
+        fn: "net.sockConnectMissing",
+        args: [receiver],
+        type: VOID,
+        loc,
+      };
     } else if (args.length > 3) {
       lowerer.noLowering(
         `connect with ${args.length} arguments`,
@@ -3543,11 +3547,42 @@ function lowerNetSocketMethodCall(
       );
     }
     const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (firstT !== null && firstT.kind === "string") {
+      // socket.connect(path[, connectListener]): the idle socket dials a
+      // Unix socket path; answers the socket, Node's chaining.
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      const path = lowerer.lowerExprExpecting(args[0]!, STRING);
+      if (args.length === 1) {
+        return receiverReturningCall(
+          lowerer,
+          "net.sockConnectPath",
+          [receiver, path],
+          NETSOCKET_T,
+          loc,
+        );
+      }
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "connect listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return receiverReturningCall(
+        lowerer,
+        "net.sockConnectPathCb",
+        [receiver, path, cb],
+        NETSOCKET_T,
+        loc,
+      );
+    }
     if (firstT === null || firstT.kind !== "f64") {
       lowerer.noLowering(
         `connect(${firstT === null ? "a dynamic value" : lowerer.fmt(firstT)})`,
         call,
-        "this surface lowers connect(port[, host][, connectListener]); the path and options forms have no lowering yet",
+        "this surface lowers connect(port[, host][, connectListener]) and connect(path[, connectListener]); the options form has no lowering yet",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);

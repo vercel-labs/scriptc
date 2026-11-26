@@ -7121,6 +7121,10 @@ typedef struct SfRequest {
   ScrStr *method;
   ScrStr *redirect;
   ScrStr *cache;
+  /* The body was transferred to another Request by `new Request(source)`:
+   * Node marks the source's body used at once (bodyUsed true, the readers
+   * reject, clone() answers "unusable"). */
+  bool body_used;
   ScrStr *credentials;
   SfSignal *signal;
   /* The own-property table (+1), adopted and traced (see SfHeaders.props). */
@@ -7188,6 +7192,7 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (sf_name(key, len, "referrer")) default_value = "about:client";
   if (default_value) { ScrStr *s = scr_str_new(default_value, strlen(default_value)); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   if (sf_name(key, len, "keepalive") || sf_name(key, len, "isReloadNavigation") || sf_name(key, len, "isHistoryNavigation")) return scr_dyn_new_bool(false);
+  if (sf_name(key, len, "bodyUsed") && r->body_used) return scr_dyn_new_bool(true);
   if (sf_name(key, len, "body") || sf_name(key, len, "bodyUsed") || sf_name(key, len, "headers")) return sf_response_get(r->payload, key, len);
   return NULL;
 }
@@ -7208,6 +7213,7 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
   }
   SfRequest *c = scr_cyc_alloc(sizeof *c, &sf_request_cyc_type);
   c->rc = 1;
+  c->body_used = false;
   c->payload = payload;
   c->url = scr_str_retain(r->url);
   c->method = scr_str_retain(r->method);
@@ -7222,7 +7228,22 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
 }
 static ScrDyn *sf_request_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, const char *what) {
   SfRequest *r = ptr;
-  if (strcmp(method, "clone") == 0) return sf_request_clone(r);
+  if (strcmp(method, "clone") == 0) {
+    if (r->body_used) { sf_type_error("unusable"); return NULL; }
+    return sf_request_clone(r);
+  }
+  if (r->body_used &&
+      (strcmp(method, "text") == 0 || strcmp(method, "json") == 0 ||
+       strcmp(method, "bytes") == 0 || strcmp(method, "arrayBuffer") == 0 ||
+       strcmp(method, "blob") == 0 || strcmp(method, "formData") == 0)) {
+    /* Node's reader answers a rejected promise, never a synchronous throw. */
+    ScrPromise *used = scr_promise_new();
+    sf_type_error("Body is unusable: Body has already been read");
+    scr_promise_reject_pending(used);
+    ScrDyn *out = scr_dyn_new_promise(used);
+    scr_promise_release(used);
+    return out;
+  }
   return sf_response_invoke(r->payload, self, method, args, argc, what);
 }
 
@@ -7252,6 +7273,20 @@ static const char *const sf_cache_values[] = {
 };
 static const char *const sf_credentials_values[] = {"omit", "same-origin", "include"};
 
+/* undici's enum-converter TypeError for a value outside its list: the
+ * argument name renders as "undefined", then the value and the accepted
+ * list, exactly as Node's message reads. */
+static void sf_enum_value_rejected(const ScrStr *text, const char *expected) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "undefined: ");
+  scr_jb_write(&b, text->data, text->len);
+  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
+  scr_jb_puts(&b, expected);
+  scr_jb_puts(&b, ".");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
 static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, size_t key_len,
                                            const char *const *accepted, size_t count,
                                            const char *expected, const ScrStr *inherited,
@@ -7272,15 +7307,8 @@ static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, 
     if (strlen(accepted[i]) == text->len && memcmp(accepted[i], text->data, text->len) == 0)
       return text;
   }
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, "undefined: ");
-  scr_jb_write(&b, text->data, text->len);
-  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
-  scr_jb_puts(&b, expected);
-  scr_jb_puts(&b, ".");
+  sf_enum_value_rejected(text, expected);
   scr_str_release(text);
-  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
 }
 
@@ -7351,14 +7379,16 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *body = sf_response_init_get(init, "body", 4);
   bool supplied = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
+  bool transferred = false;
   if (!supplied && source && !source->payload->null_body) {
-    if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
+    if (source->body_used || source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
         sf_view_unusable(source->payload->body)) {
       scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url);
       scr_str_release(cache_text); scr_str_release(credentials_text);
       sf_type_error("Cannot construct a Request with a Request object that has already been used."); return NULL;
     }
     scr_dyn_release(body); body = scr_dyn_new_handle(source->payload->body, SCR_DYNH_WEB_STREAM);
+    transferred = true;
   }
   bool has_body = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
@@ -7431,11 +7461,19 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrDyn *redirect = sf_response_init_get(init, "redirect", 8);
   ScrStr *redirect_text = redirect && redirect->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(redirect) : source ? scr_str_retain(source->redirect) : scr_str_new("follow", 6);
   scr_dyn_release(redirect);
-  if (!redirect_text || !(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
-    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Invalid Request redirect value"); return NULL;
+  if (!redirect_text) {
+    sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL;
   }
+  if (!(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
+    sf_enum_value_rejected(redirect_text, "follow, manual, error");
+    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL;
+  }
+  /* `new Request(source)` transfers the source's body once the construction
+   * cannot fail any more: Node marks the source used at that point, not
+   * before the members that can still throw are converted. */
+  if (transferred) source->body_used = true;
   SfRequest *r = scr_cyc_alloc(sizeof *r, &sf_request_cyc_type);
-  r->rc = 1; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
+  r->rc = 1; r->body_used = false; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
   r->url = scr_url_href(url); scr_url_release(url); r->method = method_text; r->redirect = redirect_text; r->signal = following;
   r->cache = cache_text; r->credentials = credentials_text;
   ScrDyn *result = scr_dyn_new_handle(r, SCR_DYNH_FETCH_REQUEST); sf_request_release_v(r); return result;

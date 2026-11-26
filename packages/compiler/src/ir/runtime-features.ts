@@ -107,6 +107,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Web streams settle their promises with dyn values.
   "webstream.class",
   "webstream.from",
+  "webstream.tee",
   "webstream.instanceOf",
   "webstream.install",
   "dyn.promiseAll",
@@ -399,9 +400,11 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.optionValues",
   "stream.checkEncodingOption",
   "stream.duplexFromGen",
+  "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "stream.duplexFromAsyncFnNoSource",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
@@ -447,6 +450,7 @@ const STREAM_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "stream.dynIterableSource",
   "stream.dynSourceValue",
   "stream.dynTransformResult",
+  "stream.duplexBodyValue",
   "stream.unboxDynStage",
   "stream.handleStream",
   "stream.handleWritable",
@@ -467,6 +471,7 @@ const STREAM_LIB_PREFIXES: readonly string[] = [
   "stream.pipelineStages",
   "stream.composeStages",
   "stream.set",
+  "stream.duplexBodyValue",
   "transform.",
   "writable.",
   "zlib.stream",
@@ -496,9 +501,11 @@ const READABLE_DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "readable.fromDyn",
   "readable.fromIter",
   "stream.duplexFromGen",
+  "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "stream.duplexFromAsyncFnNoSource",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "stream.unboxDynStage",
@@ -1142,6 +1149,10 @@ export const DH_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 export const PKI_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.createPrivateKey",
   "crypto.createPublicKey",
+  "crypto.parsePKCS12",
+  "crypto.pkcs12Key",
+  "crypto.pkcs12Der",
+  "crypto.pkcs12Count",
   "crypto.createSign",
   "crypto.createVerify",
   "crypto.generateKeyPairCb",
@@ -2051,6 +2062,7 @@ const RUNTIME_FEATURE_RULES = {
       // scr_webstreams.c calls the iterators ReadableStream.from reads.
       "webstream.class",
       "webstream.from",
+      "webstream.tee",
       "webstream.instanceOf",
       "webstream.install",
       // Readable.toWeb links scr_webstreams.c, which invokes the source's
@@ -2883,6 +2895,7 @@ const RUNTIME_FEATURE_RULES = {
   fsExistsValue: rule({ fns: ["fs.existsSyncValue"] }),
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache: rule({ prefixes: ["module.compileCache"] }),
+  moduleClass: rule({ fns: ["module.ctor", "module.ctorPrototype"] }),
   /** The BYTE-data and checked-data spellings of the options write and of
    * fs.promises.writeFile: scr_fs_bytes_write.c, so a program that writes no
    * byte payload keeps scr_fs_flags.c's and scr_bytes_io.c's objects byte
@@ -2991,6 +3004,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsFlags: false,
     fsExistsValue: false,
     moduleCompileCache: false,
+    moduleClass: false,
     fsBytesWrites: false,
     fsWatch: false,
     fsWatchFile: false,

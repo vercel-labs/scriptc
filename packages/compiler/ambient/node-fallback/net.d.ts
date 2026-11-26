@@ -546,7 +546,24 @@ declare module "net" {
     signal?: AbortSignal;
   }
   export const Socket: new (options?: SocketConstructorOpts) => Socket;
+  /* net.createServer(options[, listener]): the options applied to every
+   * accepted socket — allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+   * keepAliveInitialDelay (milliseconds), highWaterMark, and the inbound
+   * blockList (@types/node's ServerOpts). */
+  export interface ServerOpts {
+    allowHalfOpen?: boolean;
+    pauseOnConnect?: boolean;
+    noDelay?: boolean;
+    keepAlive?: boolean;
+    keepAliveInitialDelay?: number;
+    highWaterMark?: number;
+    blockList?: BlockList;
+  }
   export function createServer(connectionListener?: (socket: Socket) => void): Server;
+  export function createServer(
+    options: ServerOpts,
+    connectionListener?: (socket: Socket) => void,
+  ): Server;
   export function connect(port: number, host?: string, connectListener?: () => void): Socket;
   export function createConnection(
     port: number,

@@ -15,4 +15,6 @@ const missing = (await import("node:module")).Module.marked;
 order.push(`missing:${String(missing)}`);
 const staticValue = (await import("node:module")).Module.builtinModules;
 order.push(`static:${Array.isArray(staticValue)}`);
+const literal = (await import("node:module")).Module["isBuiltin"];
+order.push(`literal:${typeof literal}`);
 console.log(order.join(" | "));

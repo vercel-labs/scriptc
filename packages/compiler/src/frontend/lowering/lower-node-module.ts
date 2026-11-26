@@ -1025,7 +1025,7 @@ const MODULE_CLASS_STATIC_NAMES: readonly string[] = [
  * an awaited literal import (`(await import("node:module")).Module`), which
  * the read does not lower: Node evaluates the await where the member is
  * read, before the call's own arguments and the computed key. */
-function withModuleClassReceiverLoad(
+export function withModuleClassReceiverLoad(
   lowerer: Lowerer,
   receiver: ts.Expression,
   value: IrExpr,

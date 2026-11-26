@@ -46,6 +46,7 @@ import {
   isModuleClassValue,
   lowerModuleClassDynamicStatic,
   lowerRequireCacheElement,
+  withModuleClassReceiverLoad,
 } from "../lower-node-module.js";
 import { lowerModuleNamespaceElement } from "../module-namespace-elements.js";
 import { type CompoundOp, stdlibGlobalNameOf } from "../surfaces.js";
@@ -212,7 +213,7 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const name = lowerer.foldedStringKeyOf(expr.argumentExpression);
     if (name !== null) {
       const value = lowerer.lowerBuiltinMemberDynValue("module", name, locOf(expr));
-      if (value) return value;
+      if (value) return withModuleClassReceiverLoad(lowerer, expr.expression, value, locOf(expr));
     }
     const dynamic = lowerModuleClassDynamicStatic(lowerer, expr);
     if (dynamic) return dynamic;

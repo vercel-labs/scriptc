@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { load } from "js-yaml";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import {
   outcome,
   runsBySpec,
 } from "../../scripts/ci/bisect-candidate.mjs";
+import { failureLine, trackingBody } from "../../scripts/ci/bisect-report.mjs";
 
 const sha = (index: number) => `${index}`.padStart(40, "a");
 
@@ -359,6 +360,20 @@ test("the culprit search starts on a failed post-merge CI run on main or canary 
   expect(planStep.run).toContain("workflow_runs[].head_sha");
   expect(planStep.run).toContain("--paginate --slurp");
   expect(planStep.run).toContain("merge-base --is-ancestor");
+  // gh rejects --slurp with --jq. Joining the shell's continuations reads each command as gh runs it.
+  const commands = readFileSync(
+    new URL("../../.github/workflows/bisect-main.yml", import.meta.url),
+    "utf8",
+  )
+    .replace(/\\\n\s*/g, " ")
+    .split("\n");
+  const api = commands.filter((command) => command.includes("gh api"));
+  expect(api.length).toBeGreaterThan(0);
+  for (const command of api)
+    expect(command.includes("--slurp") && command.includes("--jq"), command).toBe(false);
+  // The jobs query is the search's first step; a flag gh rejects stopped every search before it recorded jobs.
+  expect(planStep.run).toContain("jobs.jsonl");
+  expect(planStep.run).toContain("jq -s");
   // The revert lands on the branch that failed, not on main.
   const revert = workflow.jobs.conclude!.steps!.find((step) =>
     step.run?.includes("revert-pr.mjs"),
@@ -374,6 +389,107 @@ test("the culprit search starts on a failed post-merge CI run on main or canary 
   for (const job of Object.values(workflow.jobs))
     for (const step of job.steps ?? [])
       expect(step.run ?? "").not.toMatch(/push\s+(--force|-f)\b|push\s+origin\s+(main|canary)\b/);
+});
+
+test("a failure no search places adds a line to one open tracking issue", () => {
+  expect(
+    failureLine({
+      branch: "main",
+      red: "0123456789abcdef0123456789abcdef01234567",
+      reason: "the search stopped unexpectedly",
+      jobs: "",
+      run: "https://example.test/runs/1",
+    }),
+  ).toBe(
+    "- `012345678` on main: the search stopped unexpectedly (failed jobs: none recorded) — https://example.test/runs/1",
+  );
+  expect(trackingBody("- x")).toContain("\n\n- x");
+  const directory = mkdtempSync(join(tmpdir(), "ci-bisect-report-"));
+  try {
+    // gh records what it is asked and answers as the open tracking issue (or its absence) requires.
+    const log = join(directory, "gh.log");
+    const bin = join(directory, "gh");
+    writeFileSync(
+      bin,
+      `#!/bin/sh
+echo "$@" >> ${JSON.stringify(log)}
+case "$*" in
+  *"label create"*) exit 0 ;;
+  *"issue list"*) [ -n "$FAKE_GH_EXISTING" ] && echo "$FAKE_GH_EXISTING"; exit 0 ;;
+  *"issue create"*) echo "https://example.test/issues/1"; exit 0 ;;
+  *"issue comment"*) echo "https://example.test/issues/$3"; exit 0 ;;
+esac
+exit 0
+`,
+    );
+    chmodSync(bin, 0o755);
+    const args = [
+      new URL("../../scripts/ci/bisect-report.mjs", import.meta.url).pathname,
+      "--repo",
+      "o/r",
+      "--label",
+      "tracked",
+      "--title",
+      "Tracking",
+      "--branch",
+      "main",
+      "--red",
+      "0123456789abcdef0123456789abcdef01234567",
+      "--reason",
+      "the search stopped unexpectedly",
+      "--jobs",
+      "",
+      "--run",
+      "https://example.test/runs/1",
+    ];
+    const env = {
+      ...process.env,
+      PATH: `${directory}:${process.env["PATH"] ?? ""}`,
+      FAKE_GH_EXISTING: "",
+    };
+    // The first failure opens the tracking issue.
+    const created = spawnSync(process.execPath, args, { encoding: "utf8", env });
+    expect(created.status, created.stderr).toBe(0);
+    const first = readFileSync(log, "utf8").split("\n");
+    expect(
+      first.some((line) => line.startsWith("issue create") && line.includes("--label tracked")),
+    ).toBe(true);
+    // The next failure finds the open issue and adds one line to it instead.
+    const commented = spawnSync(process.execPath, args, {
+      encoding: "utf8",
+      env: { ...env, FAKE_GH_EXISTING: "12" },
+    });
+    expect(commented.status, commented.stderr).toBe(0);
+    const all = readFileSync(log, "utf8").split("\n");
+    expect(all.filter((line) => line.startsWith("issue create")).length).toBe(1);
+    expect(
+      all.some(
+        (line) =>
+          line.startsWith("issue comment 12") &&
+          line.includes(
+            "- `012345678` on main: the search stopped unexpectedly (failed jobs: none recorded)",
+          ),
+      ),
+    ).toBe(true);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("every report goes through the tracking-issue script, never a new issue", () => {
+  const text = readFileSync(
+    new URL("../../.github/workflows/bisect-main.yml", import.meta.url),
+    "utf8",
+  );
+  expect(text).not.toMatch(/gh issue create/);
+  const reports = [...text.matchAll(/node scripts\/ci\/bisect-report\.mjs/g)];
+  expect(reports.length).toBe(4);
+  for (const label of [
+    "post-merge-bisect-unresolved",
+    "post-merge-bisect-revert",
+    "post-merge-bisect-unconfirmed",
+  ])
+    expect(text).toContain(`--label ${label}`);
 });
 
 test("the probe action runs the reported tests and keeps their result", () => {

@@ -3,8 +3,9 @@ name: Bisect post-merge
 # A failed post-merge CI run on main or canary starts this. It re-runs the tests that failed, twice, to screen out
 # a flake; if they still fail it searches green-<branch>..<branch> in parallel for the first commit that fails
 # them, confirms the boundary with three failures on the culprit and three passes on the commit before it, and
-# opens a revert pull request into that branch. When it cannot confirm a culprit it opens an issue instead. It
-# never pushes main or canary and never force-pushes.
+# opens a revert pull request into that branch. When it cannot confirm a culprit it adds a line to a single open
+# tracking issue instead of opening a new issue for every run. It never pushes main or canary and never
+# force-pushes.
 on:
   workflow_run:
     workflows: [CI]
@@ -100,6 +101,11 @@ jobs:
           # probe matrix a valid (empty) list.
           fail() {
             EMPTY=$(jq -c --argjson width "$WIDTH" '[range(0; $width) | { index: -1, sha: "" }]')
+            # The jobs query may already have answered: a search that stops after it still names them in its report.
+            jobs=""
+            if [ -f "$RUNNER_TEMP/failing-jobs.json" ]; then
+              jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")
+            fi
             {
               echo "proceed=false"
               echo "reason=$1"
@@ -112,14 +118,19 @@ jobs:
               echo "resolved=false"
               echo "culprit_sha="
               echo "predecessor_sha="
+              echo "failing_jobs=$jobs"
             } >> "$GITHUB_OUTPUT"
             exit 0
           }
           trap 'fail "the search stopped unexpectedly"' ERR
           echo "head=$RED" >> "$GITHUB_OUTPUT"
           REPO="$GITHUB_REPOSITORY"
-          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate --slurp \
-            --jq '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' \
+          # gh refuses --slurp together with --jq, so the pages land one JSON value per line and one jq call
+          # slurps them. The jobs query is the first thing the search does; pairing the two flags made every
+          # search stop here with no failing jobs recorded.
+          gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
+            > "$RUNNER_TEMP/jobs.jsonl"
+          jq -s '[.[] | .jobs[] | select(.conclusion == "failure") | .name]' "$RUNNER_TEMP/jobs.jsonl" \
             > "$RUNNER_TEMP/failing-jobs.json"
           echo "failing_jobs=$(jq -r 'join(", ")' "$RUNNER_TEMP/failing-jobs.json")" >> "$GITHUB_OUTPUT"
           # The baseline is the newest passing commit on this branch before this run. Candidates are the
@@ -187,8 +198,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
+      contents: read
       issues: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -197,10 +212,11 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on $BRANCH and no culprit could be searched" \
-            --body "$(printf 'The post-merge run on `%s` failed.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${RED:0:9}" "${RANGE:-the search did not start}" "${JOBS:-none recorded}" "$RUN")"
+          node scripts/ci/bisect-report.mjs \
+            --label post-merge-bisect-unresolved \
+            --title "Post-merge CI failures no search could place" \
+            --branch "$BRANCH" --red "$RED" --reason "${RANGE:-the search did not start}" \
+            --jobs "$JOBS" --run "$RUN"
 
   # Re-run the reported tests twice on the failing commit. A test that passes both times is a flake: nothing is
   # bisected or reverted.
@@ -556,10 +572,12 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on $BRANCH and the revert needs a person" \
-            --body "$(printf 'The search confirmed `%s` after green-%s `%s`, but the revert could not be opened (a conflict or a failed push).\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
+          node scripts/ci/bisect-report.mjs \
+            --label post-merge-bisect-revert \
+            --title "Post-merge reverts that need a person" \
+            --branch "$BRANCH" --red "$RED" --jobs "$JOBS" --run "$RUN" \
+            --reason "$(printf 'the search confirmed `%s` after green-%s `%s`, but the revert could not be opened (a conflict or a failed push)' \
+              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}")"
 
       - name: Report what could not be confirmed
         if: ${{ needs.decide.outputs.reason != '' && needs.decide.outputs.reason != 'flake' }}
@@ -572,10 +590,10 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on $BRANCH and no culprit was confirmed" \
-            --body "$(printf 'The post-merge run on `%s` failed after green-%s `%s`.\n\n%s\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${RED:0:9}" "$BRANCH" "${GREEN:0:9}" "$REASON" "${JOBS:-none recorded}" "$RUN")"
+          node scripts/ci/bisect-report.mjs \
+            --label post-merge-bisect-unconfirmed \
+            --title "Post-merge failures no revert confirmed" \
+            --branch "$BRANCH" --red "$RED" --reason "$REASON" --jobs "$JOBS" --run "$RUN"
       - name: Report a boundary that did not confirm
         if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result != 'success' }}
         env:
@@ -587,7 +605,9 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "Post-merge CI failed on $BRANCH and the culprit did not confirm" \
-            --body "$(printf 'The search named `%s` after green-%s `%s`, but three runs either side did not confirm it.\n\nFailed jobs: %s\n\nRun: %s\n' \
-              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}" "${JOBS:-none recorded}" "$RUN")"
+          node scripts/ci/bisect-report.mjs \
+            --label post-merge-bisect-unconfirmed \
+            --title "Post-merge failures no revert confirmed" \
+            --branch "$BRANCH" --red "$RED" --jobs "$JOBS" --run "$RUN" \
+            --reason "$(printf 'the search named `%s` after green-%s `%s`, but three runs either side did not confirm it' \
+              "${CULPRIT:0:9}" "$BRANCH" "${GREEN:0:9}")"

@@ -56,4 +56,25 @@ setTimeout(() => {
 }, 5);
 slow.on('close', () => console.log('slow: source close'));
 slowWrapper.on('close', () => console.log('slow: wrapper close, source destroyed', slow.destroyed));
-setTimeout(() => console.log('done'), 150);
+// 4. A read in flight that completes at EOF keeps a half-open duplex's
+// writable side alive: the deferred return re-checks the end state when the
+// read settles (Node's finally), instead of destroying on the way in.
+const late = new Duplex({
+  allowHalfOpen: true,
+  read() {
+    setTimeout(() => this.push(null), 30);
+  },
+  write(chunk, encoding, callback) {
+    callback();
+  },
+});
+const lateWrapper = Readable.from(late);
+lateWrapper.on('data', (chunk) => console.log('late: data', String(chunk)));
+setTimeout(() => {
+  console.log('late: destroy');
+  lateWrapper.destroy();
+}, 5);
+lateWrapper.on('close', () =>
+  console.log('late: wrapper close, source destroyed', late.destroyed, 'writableEnded', late.writableEnded)
+);
+setTimeout(() => console.log('done'), 200);

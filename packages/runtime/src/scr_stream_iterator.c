@@ -86,14 +86,27 @@ static ScrDyn *sdi_next(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   return out;
 }
 
-/* The deferred half of return(): the source is destroyed (the iteration
- * ended before its readable side did) and the iteration answers
- * { value: undefined, done: true }. */
+/* Whether the iteration's end must leave the source alive: the readable
+ * side ENDED and the source is a half-open duplex whose writable side is
+ * still open. Node's iterator finally re-decides this when return() runs
+ * (preserveHalfOpenDuplex in readable.js's createAsyncIterator), so a read
+ * still in flight when return() arrives is re-checked when it settles. */
+static bool sdi_preserves_half_open(ScrStream *s) {
+  return s != NULL && scr_stream_prop(s, "readableEnded") != 0 &&
+         scr_stream_prop(s, "allowHalfOpen") != 0 && scr_stream_prop(s, "writable") != 0 &&
+         scr_stream_prop(s, "writableEnded") == 0;
+}
+
+/* The deferred half of return(): the outstanding read has settled, so the
+ * source is destroyed unless it ended half-open (a read that completed at
+ * EOF keeps the writable side alive, as Node's finally does), and the
+ * iteration answers { value: undefined, done: true }. */
 static ScrDyn *sdi_return_done(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   (void)args;
   (void)argc;
   SdiCtx *c = scr_box_get_ref(cl->caps[0]); /* +1 */
-  if (c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0) {
+  if (c->s && c->destroy_on_return && scr_stream_prop(c->s, "destroyed") == 0 &&
+      !sdi_preserves_half_open(c->s)) {
     scr_stream_release(scr_stream_destroy(c->s, NULL));
     if (scr_exc_pending()) scr_exc_clear();
   }
@@ -128,10 +141,7 @@ static ScrDyn *sdi_return(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   SdiCtx *c = sdi_of(cl);
   bool first = !c->finished;
   c->finished = true;
-  bool ended = c->s && scr_stream_prop(c->s, "readableEnded") != 0;
-  bool half_open_preserved = ended && scr_stream_prop(c->s, "allowHalfOpen") != 0 &&
-                             scr_stream_prop(c->s, "writable") != 0 &&
-                             scr_stream_prop(c->s, "writableEnded") == 0;
+  bool half_open_preserved = sdi_preserves_half_open(c->s);
   if (first && c->s && c->destroy_on_return && !half_open_preserved &&
       scr_stream_prop(c->s, "destroyed") == 0) {
     if (c->pending) {

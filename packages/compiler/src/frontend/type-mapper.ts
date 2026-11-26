@@ -5393,6 +5393,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // net.createServer's options record (@types/node's ServerOpts): an
+  // annotated value is checked-dynamic, read member-wise by the runtime.
+  if (isStdlibInterface("ServerOpts")) return DYN;
   // util.inspect as a value (a custom inspect method's third parameter is
   // `typeof inspect`): the runtime's inspect function, called through the
   // checked-dynamic boundary.

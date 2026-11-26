@@ -20,6 +20,12 @@ export class Request {
    * the field definitely assigned when a project disables
    * strictPropertyInitialization. */
   body: Buffer | null = null;
+  /** A streamed body: the request is written chunk by chunk (chunked
+   * transfer encoding unless a content-length header was given). Null when
+   * the body was a string or bytes. */
+  bodyStream: AsyncIterable<Uint8Array | string> | null = null;
+  /** Bytes handed to the wire so far, for onBodySent's running total. */
+  bodyBytesSent: number = 0;
   /** Header name/value pairs in insertion order (host and content-length
    * are consumed into their own fields, like undici). */
   headerPairs: string[];
@@ -98,9 +104,13 @@ export class Request {
       this.body =
         body.byteLength > 0 ? Buffer.from(body.buffer, body.byteOffset, body.byteLength) : null;
     } else {
-      throw new NotSupportedError(
-        "scriptc's undici client sends string and byte bodies (string, Buffer, Uint8Array); a stream, an iterable, a Blob or a FormData body is not supported yet",
-      );
+      const stream = asyncIterableOf(body);
+      if (stream === null) {
+        throw new NotSupportedError(
+          "scriptc's undici client sends string and byte bodies (string, Buffer, Uint8Array) and async-iterable bodies (for example Readable.from(...)); a Blob or a FormData body is not supported yet",
+        );
+      }
+      this.bodyStream = stream;
     }
 
     this.completed = false;
@@ -188,10 +198,11 @@ export class Request {
   }
 
   onBodySent(chunk: Buffer): void {
+    this.bodyBytesSent += chunk.length;
     const cb = this.handler.onBodySent;
     if (cb !== undefined) {
       try {
-        this.handler.onBodySent!(chunk.length, chunk.length);
+        this.handler.onBodySent!(chunk.length, this.bodyBytesSent);
       } catch (err) {
         this.onError(err as Error);
       }
@@ -322,4 +333,15 @@ function serverName(host: string | null): string | null {
   const idx = name.indexOf(":");
   if (idx !== -1) name = name.slice(0, idx);
   return /^\d+\.\d+\.\d+\.\d+$/.test(name) ? null : name;
+}
+
+/** The body as an async iterable, when it is one: a Node Readable, an
+ * AsyncIterable of bytes or strings, or an async generator. The parameter
+ * is untyped because the body's static type is unknown here; the protocol
+ * method is the check. */
+// oxlint-disable-next-line typescript/no-explicit-any
+function asyncIterableOf(body: any): AsyncIterable<Uint8Array | string> | null {
+  if (typeof body !== "object" || body === null) return null;
+  const iterator = body[Symbol.asyncIterator];
+  return typeof iterator === "function" ? body : null;
 }

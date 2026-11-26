@@ -69,6 +69,9 @@ export class Client extends DispatcherBase {
   __sockReset: boolean;
   __sockBlocking: boolean;
   __sockCounter: number;
+  /** Resolvers waiting for the socket's next 'drain' (streamed request
+   * bodies). The 'drain' listener in __onConnected flushes them. */
+  __drainWaiters: (() => void)[];
   __parser: ResponseParser | null;
   __sockError: Error | null;
   // The parser timer, held as closures over its handle (a nullable timer
@@ -181,6 +184,7 @@ export class Client extends DispatcherBase {
     this.__sockReset = false;
     this.__sockBlocking = false;
     this.__sockCounter = 0;
+    this.__drainWaiters = [];
     this.__parser = null;
     this.__sockError = null;
     this.__timerCancel = null;
@@ -413,6 +417,7 @@ export class Client extends DispatcherBase {
     this.__sockBlocking = false;
     this.__sockCounter = 0;
     this.__sockError = null;
+    this.__flushDrainWaiters();
     const parser = new ResponseParser(this, socket);
     this.__parser = parser;
     socket.on("data", (chunk: Buffer) => {
@@ -426,6 +431,9 @@ export class Client extends DispatcherBase {
     });
     socket.on("close", () => {
       if (this.__socket === socket) this.__onSocketClose(socket);
+    });
+    socket.on("drain", () => {
+      if (this.__socket === socket) this.__flushDrainWaiters();
     });
     if (channels.connected.hasSubscribers) {
       channels.connected.publish({ connectParams, connector: this.__connector, socket });
@@ -465,6 +473,7 @@ export class Client extends DispatcherBase {
   }
 
   __onSocketError(socket: Socket, err: Error): void {
+    this.__flushDrainWaiters();
     const parser = this.__parser;
     if (
       errorCode(err) === "ECONNRESET" &&
@@ -619,8 +628,10 @@ export class Client extends DispatcherBase {
       method === "PATCH" ||
       ((this.__profile.major >= 7 || request.framedAsNode) &&
         (method === "QUERY" || method === "PROPFIND" || method === "PROPPATCH"));
-    // util.bodyLength: a missing body has length 0.
-    let contentLength: number | null = body !== null ? body.length : 0;
+    // util.bodyLength: a missing body has length 0, a streamed body has
+    // whatever content-length the request declared (or none).
+    let contentLength: number | null =
+      request.bodyStream !== null ? request.contentLength : body !== null ? body.length : 0;
     if (contentLength === 0 && !expectsPayload) contentLength = null;
     const declared = request.contentLength;
     const sendsLength =
@@ -666,6 +677,19 @@ export class Client extends DispatcherBase {
     if (channels.sendHeaders.hasSubscribers) {
       channels.sendHeaders.publish({ request: request.diagnosticView(), headers: header, socket });
     }
+    if (request.bodyStream !== null) {
+      // A streamed body: the socket stays blocked to other requests while
+      // its chunks are written; chunked framing unless the request
+      // declared a content-length.
+      this.__sockBlocking = true;
+      if (request.contentLength !== null) {
+        socket.write(`${header}content-length: ${request.contentLength}\r\n\r\n`);
+      } else {
+        socket.write(`${header}transfer-encoding: chunked\r\n\r\n`);
+      }
+      this.__streamBody(request, socket);
+      return true;
+    }
     if (body === null) {
       if (contentLength === 0) socket.write(`${header}content-length: 0\r\n\r\n`);
       else socket.write(`${header}\r\n`);
@@ -678,6 +702,60 @@ export class Client extends DispatcherBase {
     }
     request.onRequestSent();
     return true;
+  }
+
+  /** Writes one chunk, resolving when the socket can take more. */
+  __writeChunk(socket: Socket, chunk: Buffer): Promise<void> {
+    if (socket.destroyed) return Promise.resolve();
+    if (socket.write(chunk)) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.__drainWaiters.push(resolve);
+    });
+  }
+
+  __flushDrainWaiters(): void {
+    const waiting = this.__drainWaiters;
+    this.__drainWaiters = [];
+    for (const resolve of waiting) resolve();
+  }
+
+  /** Writes an async-iterable body chunk by chunk, waiting for the
+   * socket's drain between writes. A source that fails errors the request
+   * and destroys the connection, as undici's writeBody does. */
+  __streamBody(request: Request, socket: Socket): void {
+    const stream = request.bodyStream;
+    if (stream === null) return;
+    const chunked = request.contentLength === null;
+    const pump = async (): Promise<void> => {
+      let failed = false;
+      try {
+        for await (const chunk of stream) {
+          if (request.aborted || socket.destroyed) break;
+          const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
+          if (bytes.length === 0) continue;
+          if (chunked) {
+            await this.__writeChunk(socket, Buffer.from(`${bytes.length.toString(16)}\r\n`));
+            await this.__writeChunk(socket, bytes);
+            await this.__writeChunk(socket, Buffer.from("\r\n"));
+          } else {
+            await this.__writeChunk(socket, bytes);
+          }
+          request.onBodySent(bytes);
+        }
+        if (!request.aborted && !socket.destroyed) {
+          if (chunked) await this.__writeChunk(socket, Buffer.from("0\r\n\r\n"));
+          request.onRequestSent();
+        }
+      } catch (err) {
+        failed = true;
+        this.__errorRequest(request, err as Error);
+        this.__destroySocket(socket, new InformationalError("aborted"));
+      } finally {
+        this.__sockBlocking = false;
+        if (!this.destroyed && !failed) this.__resume(false);
+      }
+    };
+    pump();
   }
 
   // ResponseParser callbacks.

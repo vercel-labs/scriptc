@@ -160,6 +160,14 @@ export class BodyReadable extends EventEmitter {
     });
   }
 
+  /** Readable's async iterator over the body chunks: each next() hands out
+   * one buffered chunk, waits for the next one, and resolves done after
+   * the end. Leaving the loop early destroys the body, as Readable's
+   * iterator does. */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Buffer> {
+    return new BodyIterator(this);
+  }
+
   /** True once text()/json()/arrayBuffer()/bytes()/blob()/dump() started
    * consuming the body. */
   get bodyUsed(): boolean {
@@ -250,6 +258,91 @@ export class BodyReadable extends EventEmitter {
         reject(new RequestAbortedError());
       });
     });
+  }
+}
+
+/** One async iteration over a BodyReadable: it listens for the body's
+ * events, queues the chunks it has not handed out yet, and wakes a waiting
+ * next(). Leaving the loop early destroys the body, as Readable's iterator
+ * does. */
+class BodyIterator implements AsyncIterableIterator<Buffer> {
+  __body: BodyReadable;
+  __queue: Buffer[];
+  __waiting: (() => void) | null;
+  __done: boolean;
+  __failure: Error | null;
+  __onData: (chunk: Buffer) => void;
+  __onEnd: () => void;
+  __onError: (err: Error) => void;
+  __onClose: () => void;
+
+  constructor(body: BodyReadable) {
+    this.__body = body;
+    this.__queue = [];
+    this.__waiting = null;
+    this.__done = false;
+    this.__failure = null;
+    this.__onData = (chunk: Buffer): void => {
+      this.__queue.push(chunk);
+      this.__wake();
+    };
+    this.__onEnd = (): void => {
+      this.__done = true;
+      this.__wake();
+    };
+    this.__onError = (err: Error): void => {
+      if (this.__failure === null) this.__failure = err;
+      this.__done = true;
+      this.__wake();
+    };
+    this.__onClose = (): void => {
+      this.__done = true;
+      this.__wake();
+    };
+    body.on("data", this.__onData);
+    body.on("end", this.__onEnd);
+    body.on("error", this.__onError);
+    body.on("close", this.__onClose);
+    body.resume();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<Buffer> {
+    return this;
+  }
+
+  next(): Promise<IteratorResult<Buffer>> {
+    const chunk = this.__queue.shift();
+    if (chunk !== undefined) {
+      const value: IteratorResult<Buffer> = { done: false, value: chunk };
+      return Promise.resolve<IteratorResult<Buffer>>(value);
+    }
+    if (this.__failure !== null) return Promise.reject(this.__failure);
+    if (this.__done) {
+      const value: IteratorResult<Buffer> = { done: true, value: undefined };
+      return Promise.resolve<IteratorResult<Buffer>>(value);
+    }
+    return new Promise<IteratorResult<Buffer>>((resolve, reject) => {
+      this.__waiting = (): void => {
+        this.__waiting = null;
+        this.next().then(resolve, reject);
+      };
+    });
+  }
+
+  return(): Promise<IteratorResult<Buffer>> {
+    this.__body.removeListener("data", this.__onData);
+    this.__body.removeListener("end", this.__onEnd);
+    this.__body.removeListener("close", this.__onClose);
+    // The error listener stays: destroy() reports its abort through
+    // 'error', and an unobserved 'error' event throws.
+    if (!this.__body.destroyed) this.__body.destroy();
+    const value: IteratorResult<Buffer> = { done: true, value: undefined };
+    return Promise.resolve<IteratorResult<Buffer>>(value);
+  }
+
+  __wake(): void {
+    const waiting = this.__waiting;
+    if (waiting !== null) waiting();
   }
 }
 

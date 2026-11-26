@@ -12,9 +12,10 @@ export type IncomingHttpHeaders = Record<string, string | string[] | undefined>;
  * [name, value, ...] array. */
 export type UndiciHeaders = Record<string, string | string[] | undefined> | string[] | null;
 
-/** The payloads the shim writes. Streams, iterables, Blob and FormData
- * bodies are outside the implemented subset. */
-export type RequestBody = string | Buffer | Uint8Array | null;
+/** The payloads the shim writes: strings and bytes with a known length,
+ * and async iterables (a Node Readable, an async generator) written as a
+ * stream. Blob and FormData bodies are outside the implemented subset. */
+export type RequestBody = string | Buffer | Uint8Array | AsyncIterable<Uint8Array | string> | null;
 
 /** undici's Dispatcher.DispatchOptions. The method is any string, as it
  * is in 7.x's declarations (5.x's name nine). A dispatcher typed by a
@@ -27,8 +28,9 @@ export interface DispatchOptions {
   path: string;
   method: string;
   /** undici-types declare streams and FormData here beside strings and
-   * bytes; what is sent is RequestBody, and any other value is refused
-   * where the request is made (request.ts). */
+   * bytes; strings, bytes and async iterables are sent (a streamed body
+   * with chunked framing), and any other value is refused where the
+   * request is made (request.ts). */
   body?: unknown;
   headers?: UndiciHeaders;
   idempotent?: boolean;

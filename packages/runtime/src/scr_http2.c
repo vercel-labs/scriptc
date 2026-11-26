@@ -871,7 +871,6 @@ struct ScrH2Session {
   int32_t max_created_stream_id;
   /* flow control + peer settings */
   int64_t send_window;
-  uint32_t recv_unacked; /* connection receive credit not yet given back */
   uint32_t peer_max_frame;
   uint32_t peer_init_window;
   /* the API-visible settings records + the in-flight local ack */
@@ -1172,9 +1171,11 @@ static void scr_h2_send_window_update(ScrH2Session *s, int32_t stream_id, uint32
 }
 
 /* The program consumed n bytes of a stream's body: give the peer that much
- * receive credit back on the stream and the connection, as nghttp2 does
- * when data is read. Data nobody reads keeps its credit, so the peer's
- * window is what bounds the buffered body. */
+ * credit back on the stream, as nghttp2 does when data is read. Data
+ * nobody reads keeps its credit, so the peer's window is what bounds the
+ * buffered body. Connection credit is not tied to consumption (see the
+ * DATA path): it returns as frames arrive, so one unread body cannot
+ * starve the connection's other streams. */
 static void scr_h2_stream_consume(ScrH2Stream *st, size_t n) {
   if (st == NULL || n == 0 || st->sess == NULL) return;
   ScrH2Session *s = st->sess;
@@ -1183,12 +1184,6 @@ static void scr_h2_stream_consume(ScrH2Stream *st, size_t n) {
   if (stream_take > 0) {
     st->recv_unacked -= stream_take;
     if (!s->destroyed) scr_h2_send_window_update(s, st->id, stream_take);
-  }
-  uint32_t conn_take = (uint32_t)n;
-  if (conn_take > s->recv_unacked) conn_take = s->recv_unacked;
-  if (conn_take > 0) {
-    s->recv_unacked -= conn_take;
-    if (!s->destroyed) scr_h2_send_window_update(s, 0, conn_take);
   }
 }
 
@@ -1309,18 +1304,9 @@ static void scr_h2_stream_settle(ScrH2Stream *st) {
    * sweep), which is where Node's pair hears of it */
   scr_h2_emit_push(SCR_H2_EMIT_STREAM_CLOSE, scr_http2_stream_retain(st));
   ScrH2Session *sess = st->sess;
-  /* The connection credit of a closed stream's unread body returns (the
-   * discarded bytes free the window), as nghttp2 does; the stream's own
-   * window goes with the stream. */
-  if (st->recv_unacked > 0) {
-    uint32_t give = st->recv_unacked;
-    st->recv_unacked = 0;
-    if (!sess->destroyed) {
-      uint32_t conn = give > sess->recv_unacked ? sess->recv_unacked : give;
-      sess->recv_unacked -= conn;
-      if (conn > 0) scr_h2_send_window_update(sess, 0, conn);
-    }
-  }
+  /* The stream's own window goes with the stream; the connection credit of
+   * its unread body already returned as the frames arrived. */
+  st->recv_unacked = 0;
   scr_h2_session_forget_stream(sess, st);
   scr_h2_session_maybe_finish_close(sess);
 }
@@ -1885,13 +1871,12 @@ static bool scr_h2_on_frame_in(ScrH2Session *s, uint8_t type, uint8_t flags, int
     }
     ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
     if (n > 0) {
-      if (!st || st->destroyed) {
-        /* nobody keeps this body: the connection credit returns at once */
-        scr_h2_send_window_update(s, 0, (uint32_t)n);
-      } else {
-        st->recv_unacked += (uint32_t)n;
-        s->recv_unacked += (uint32_t)n;
-      }
+      /* Connection credit returns as the frame is processed, as Node's
+       * does: the connection window bounds the session, not a reader, so
+       * one stream's unread body must not stall the others. The stream's
+       * own credit stays with the data until the program consumes it. */
+      scr_h2_send_window_update(s, 0, (uint32_t)n);
+      if (st && !st->destroyed) st->recv_unacked += (uint32_t)n;
     }
     if (!st || st->destroyed) break; /* late DATA on a gone stream: drop */
     if (n > 0) scr_h2_stream_touch_timeout(st);

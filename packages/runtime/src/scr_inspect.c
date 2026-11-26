@@ -2853,6 +2853,9 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
 static bool insp_tag_names_class(const char *tag, const char *cls) {
   if (!tag) return false;
   size_t tag_len = strlen(tag), cls_len = strlen(cls);
+  /* A tag that IS the class name (a web stream's, the spec's
+   * Symbol.toStringTag) is not repeated in brackets. */
+  if (tag_len == cls_len && memcmp(tag, cls, cls_len) == 0) return true;
   return tag_len > cls_len + 1 && tag[tag_len - cls_len - 1] == '.' &&
          memcmp(tag + tag_len - cls_len, cls, cls_len) == 0;
 }
@@ -5192,6 +5195,12 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
+        /* A custom inspector may refuse the value by throwing (a released
+         * stream writer's desiredSize does). The error leaves the whole
+         * inspection, as it does in Node, but a recursive renderer above
+         * expects a string: an empty one is answered with the exception
+         * pending, which the util.inspect boundary throws. */
+        if (view == NULL && scr_exc_pending()) return scr_str_new("", 0);
         if (ops->inspect_view_nested) {
           scr_insp_nested_begin();
           ScrStr *inner = scr_insp_dyn(view, 0, depth);

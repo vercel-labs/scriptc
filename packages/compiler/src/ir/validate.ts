@@ -6209,6 +6209,7 @@ function validateFunction(
       e.fn === "stream.decodeStrings" ||
       e.fn === "stream.optionValues" ||
       e.fn === "stream.duplexFromGen" ||
+      e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
@@ -6218,6 +6219,7 @@ function validateFunction(
       e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.duplexFromGenSignal" ||
       e.fn === "stream.duplexFromAsyncFnSignal" ||
+      e.fn === "stream.duplexFromAsyncFnNoSource" ||
       e.fn === "stream.setConstruct" ||
       e.fn === "stream.replaceConstruct" ||
       e.fn === "stream.setWritev" ||
@@ -6308,8 +6310,10 @@ function validateFunction(
       }
       if (
         e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||
         e.fn === "stream.duplexFromAsyncFnSignal"
       ) {

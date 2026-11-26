@@ -502,6 +502,9 @@ declare module "http2" {
     readonly localSettings: any;
     readonly remoteSettings: any;
     goaway(code?: number, lastStreamID?: number, opaqueData?: Uint8Array): void;
+    /* Node validates the argument and applies no observable change (the
+     * local settings record and the peer's view stay as they were). */
+    setLocalWindowSize(windowSize: number): void;
     on(event: "close" | "timeout", listener: () => void): void;
     on(event: "error", listener: (err: Error) => void): void;
     on(
@@ -882,6 +885,13 @@ declare module "http2" {
     options: Record<string, unknown>,
     listener?: (session: ClientHttp2Session, socket: import("net").Socket) => void,
   ): ClientHttp2Session;
+
+  /* A server session over an existing connected socket; the session's own
+   * 'stream' listeners see its streams (it has no owning server). */
+  export function performServerHandshake(
+    socket: import("net").Socket,
+    options?: { settings?: any; maxSessionMemory?: number; peerMaxConcurrentStreams?: number },
+  ): ServerHttp2Session;
 
   export function getDefaultSettings(): any;
   export function getPackedSettings(settings?: any): Buffer;

@@ -795,6 +795,7 @@ import {
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
   cryptoConstantsValue,
+  perfHooksConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -25829,6 +25830,10 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
     if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
+    // `perf_hooks.constants` as a value: the enumerable GC numbers (the
+    // entry-type and milestone names are non-enumerable in Node).
+    if (bi.member === "constants" && bi.module === "perf_hooks")
+      return perfHooksConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -26188,6 +26193,8 @@ export class Lowerer {
       return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
+    if (module === "perf_hooks" && member === "constants")
+      return perfHooksConstantsValue(this, loc);
     return null;
   }
 

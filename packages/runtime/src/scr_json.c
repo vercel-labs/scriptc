@@ -3889,33 +3889,154 @@ bool scr_dyn_perf_handle_is(const ScrDyn *value, double which) {
 static bool scr_dyn_error_view_on_error_prototype(const ScrDyn *object);
 static const ScrDynTypedRecordOps *scr_typed_ref_plain_record(const ScrDyn *d);
 static bool scr_typed_ref_plain_array(const ScrDyn *d);
+static ScrDyn *scr_dyn_proxy_trap(const ScrDyn *proxy, const char *name);
+static ScrDyn *scr_dyn_proxy_call(const ScrDyn *proxy, ScrDyn *trap, ScrDyn *const *args,
+                                   size_t argc);
+static void scr_dyn_proxy_invariant(void);
+
+ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
+                          const char *what) = NULL;
+/* The wrapper unit's primitive prototype (scr_js_wrapper.c) and the
+ * collection unit's class prototype (scr_dyn_collections.c): each installed
+ * by the unit that owns the objects, so an Object.getPrototypeOf on those
+ * values answers the very object X.prototype reads. */
+ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind) = NULL;
+ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value) = NULL;
+ScrDyn *(*scr_dyn_function_proto_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_date_proto_hook)(void) = NULL;
+ScrDyn *(*scr_dyn_array_buffer_proto_hook)(void) = NULL;
+/* The per-kind prototype of a primitive the program has no wrapper unit
+ * for (and of a promise): an ordinary object, so the edge answers an object
+ * as Node does. Kinds: 0 String, 1 Number, 2 Boolean, 3 BigInt, 4 Symbol,
+ * 5 everything else. Dropped at exit with the handle kinds' below. */
+static SCR_TL ScrDyn *scr_dyn_primitive_protos[6];
+/* A handle whose class unit the program does not link answers a per-kind
+ * ordinary object too: never Object.prototype (the plain-object test must
+ * say false, as Node does), and one object per handle kind. */
+static SCR_TL ScrDyn *scr_dyn_handle_protos[SCR_DYNH_CAPACITY];
+static void scr_dyn_primitive_protos_cleanup(void) {
+  for (int i = 0; i < 6; i++) {
+    ScrDyn *prototype = scr_dyn_primitive_protos[i];
+    scr_dyn_primitive_protos[i] = NULL;
+    scr_dyn_release(prototype);
+  }
+  for (int i = 0; i < SCR_DYNH_CAPACITY; i++) {
+    ScrDyn *prototype = scr_dyn_handle_protos[i];
+    scr_dyn_handle_protos[i] = NULL;
+    scr_dyn_release(prototype);
+  }
+}
+ScrDyn *scr_dyn_primitive_prototype(double kind) {
+  if (kind >= 0 && kind <= 2 && scr_js_wrapper_primitive_proto_hook) {
+    ScrDyn *wrapped = scr_js_wrapper_primitive_proto_hook(kind);
+    if (wrapped) return wrapped;
+  }
+  int k = kind >= 0 && kind <= 4 ? (int)kind : 5;
+  if (!scr_dyn_primitive_protos[k]) {
+    bool first = scr_dyn_primitive_protos[0] == NULL && scr_dyn_primitive_protos[1] == NULL &&
+                 scr_dyn_primitive_protos[2] == NULL && scr_dyn_primitive_protos[3] == NULL &&
+                 scr_dyn_primitive_protos[4] == NULL && scr_dyn_primitive_protos[5] == NULL;
+    ScrDyn *prototype = scr_dyn_new_obj();
+    prototype->prototype = scr_dyn_object_prototype();
+    scr_dyn_primitive_protos[k] = prototype;
+    if (first) scr_atexit(scr_dyn_primitive_protos_cleanup);
+  }
+  return scr_dyn_retain(scr_dyn_primitive_protos[k]);
+}
 
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
   if (object == scr_builtin_object_prototype) return scr_dyn_new_null();
   if (object->kind == SCR_DYN_OBJ && scr_dyn_error_view_on_error_prototype(object)) return scr_dyn_error_prototype();
-  if (scr_dyn_class_reflection_fence(object)) return NULL;
+  if (object->kind == SCR_DYN_PROXY) {
+    /* A trap-less Proxy forwards [[GetPrototypeOf]] to its target; a
+     * getPrototypeOf trap answers the result, which must be an object or
+     * null, and a non-extensible target fixes it. */
+    ScrDyn *trap = scr_dyn_proxy_trap(object, "getPrototypeOf");
+    if (scr_exc_pending()) return NULL;
+    ScrDyn *target = object->v.proxy.target;
+    if (trap == NULL) return scr_dyn_get_prototype(target);
+    ScrDyn *args[] = {target};
+    ScrDyn *result = scr_dyn_proxy_call(object, trap, args, 1);
+    if (result == NULL) return NULL;
+    /* Any object — an array, a function, a handle, a capsule — and null are
+     * the trap's allowed results. */
+    if (!scr_dyn_to_primitive_result_is_object(result) && result->kind != SCR_DYN_NULL) {
+      static const char message[] =
+          "'getPrototypeOf' on proxy: trap returned neither object nor null";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      scr_dyn_release(result);
+      return NULL;
+    }
+    /* A non-extensible target fixes the answer, functions included (their
+     * own property table carries the state a freeze sets). */
+    bool non_extensible = false;
+    if (target->kind == SCR_DYN_OBJ || target->kind == SCR_DYN_ARR) {
+      non_extensible = target->non_extensible;
+    } else if (target->kind == SCR_DYN_FUNC) {
+      ScrDyn *table = scr_dyn_function_properties_existing(target);
+      if (table != NULL) {
+        non_extensible = table->non_extensible;
+        scr_dyn_release(table);
+      }
+    }
+    if (non_extensible) {
+      ScrDyn *expected = scr_dyn_get_prototype(target);
+      bool same = expected != NULL &&
+          (expected->kind == SCR_DYN_NULL ? result->kind == SCR_DYN_NULL : expected == result);
+      scr_dyn_release(expected);
+      if (!same) {
+        static const char message[] =
+            "'getPrototypeOf' on proxy: proxy target is non-extensible but the trap did not return its actual prototype";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        scr_dyn_release(result);
+        return NULL;
+      }
+    }
+    return result;
+  }
   /* A program class instance whose prototype Object.setPrototypeOf
    * replaced: the replacement (the class's own prototype is answered by
    * the compiled class dispatch, which declines this instance). */
   ScrInstanceProto *replaced = scr_typed_ref_instance_proto(object);
   if (replaced) return replaced->prototype ? scr_dyn_retain(replaced->prototype) : scr_dyn_new_null();
-  if (object->kind == SCR_DYN_TYPED_REF && strncmp(object->v.typed_ref.type_key, "object:", 7)) {
-    /* A live record's snapshot is an ordinary object and a live array's an
-     * ordinary array, each with the prototype it is born with. */
-    if (scr_typed_ref_plain_record(object)) return scr_dyn_object_prototype();
-    if (scr_typed_ref_plain_array(object)) return scr_dyn_array_prototype_base();
+  if (object->kind == SCR_DYN_TYPED_REF) {
+    if (strncmp(object->v.typed_ref.type_key, "object:", 7)) {
+      /* A live record's snapshot is an ordinary object and a live array's
+       * an ordinary array, each with the prototype it is born with. */
+      if (scr_typed_ref_plain_record(object)) return scr_dyn_object_prototype();
+      if (scr_typed_ref_plain_array(object)) return scr_dyn_array_prototype_base();
+    }
+    /* Any other capsule reflects through the view it shows, whose own
+     * prototype is the class's or the value's. */
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
     if (!view) return NULL;
     ScrDyn *result = scr_dyn_get_prototype(view);
     scr_dyn_release(view);
     return result;
   }
-  if (object->kind == SCR_DYN_FUNC && scr_closure_identity(object->v.fn.clo)->props) {
-    ScrDyn *table = scr_dyn_fn_properties(object);
-    ScrDyn *result = table->prototype ? scr_dyn_retain(table->prototype)
-      : table->null_proto ? scr_dyn_new_null() : NULL;
-    scr_dyn_release(table);
-    if (result) return result;
+  if (object->kind == SCR_DYN_FUNC) {
+    /* A function whose own [[Prototype]] something replaced answers the
+     * replacement; every other function — a class value included, as in
+     * Node — answers Function.prototype. Function.prototype itself is a
+     * function whose prototype is Object.prototype. */
+    if (scr_closure_identity(object->v.fn.clo)->props) {
+      ScrDyn *table = scr_dyn_fn_properties(object);
+      ScrDyn *result = table->prototype ? scr_dyn_retain(table->prototype)
+        : table->null_proto ? scr_dyn_new_null() : NULL;
+      scr_dyn_release(table);
+      if (result) return result;
+    }
+    if (scr_dyn_function_proto_hook) {
+      ScrDyn *prototype = scr_dyn_function_proto_hook();
+      if (prototype) {
+        if (prototype == object) {
+          scr_dyn_release(prototype);
+          return scr_dyn_object_prototype();
+        }
+        return prototype;
+      }
+    }
+    return scr_dyn_primitive_prototype(5);
   }
   if (object->kind == SCR_DYN_ARR && object != scr_builtin_array_prototype) {
     if (object->prototype) return scr_dyn_retain(object->prototype);
@@ -3929,9 +4050,10 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     if (object->null_proto) return scr_dyn_new_null();
     return scr_dyn_object_prototype();
   }
-  if (object == scr_builtin_array_prototype) return scr_dyn_object_prototype();
   /* An island object: its V8 prototype, through the __proto__ accessor
-   * (undefined for an object without Object.prototype: null). */
+   * (undefined for an object without Object.prototype: null). Checked
+   * before the handle arm, whose class prototypes say nothing about a V8
+   * referent. */
   if (scr_ni_dyn_handle(object)) {
     ScrDyn *proto = scr_ni_dyn_ops->get_str(object, "__proto__", 9);
     if (proto != NULL && proto->kind == SCR_DYN_UNDEF) {
@@ -3940,14 +4062,58 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     }
     return proto;
   }
+  if (object->kind == SCR_DYN_HANDLE) {
+    ScrDyn *prototype = scr_dyn_handle_class_ops ? scr_dyn_handle_class_ops->prototype_of(object) : NULL;
+    if (prototype) return prototype;
+    if (object->v.handle.tag == SCR_DYNH_DATE && scr_dyn_date_proto_hook) {
+      ScrDyn *date = scr_dyn_date_proto_hook();
+      if (date) return date;
+    }
+    if (object->v.handle.tag == SCR_DYNH_ARRAY_BUFFER && scr_dyn_array_buffer_proto_hook) {
+      ScrDyn *buffer = scr_dyn_array_buffer_proto_hook();
+      if (buffer) return buffer;
+    }
+    if (scr_dyn_collection_proto_hook) {
+      ScrDyn *collection = scr_dyn_collection_proto_hook(object);
+      if (collection) return collection;
+    }
+    /* A handle whose class the program does not link (and Buffer views and
+     * typed arrays): the kind's own ordinary object, so the plain-object
+     * test answers false as Node does and kinds stay distinct. */
+    {
+      int tag = (int)object->v.handle.tag;
+      if (tag < 0 || tag >= SCR_DYNH_CAPACITY) tag = 0;
+      if (!scr_dyn_handle_protos[tag]) {
+        bool first = true;
+        for (int i = 0; i < SCR_DYNH_CAPACITY; i++)
+          if (scr_dyn_handle_protos[i]) {
+            first = false;
+            break;
+          }
+        ScrDyn *prototype = scr_dyn_new_obj();
+        prototype->prototype = scr_dyn_object_prototype();
+        scr_dyn_handle_protos[tag] = prototype;
+        if (first) scr_atexit(scr_dyn_primitive_protos_cleanup);
+      }
+      return scr_dyn_retain(scr_dyn_handle_protos[tag]);
+    }
+  }
+  if (object == scr_builtin_array_prototype) return scr_dyn_object_prototype();
   if (object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_UNDEF) {
     static const char message[] = "Cannot convert undefined or null to object";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
     return NULL;
   }
-  static const char message[] = "Object.getPrototypeOf on this value is not supported yet";
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-  return NULL;
+  /* A primitive is boxed, as Node does: its wrapper's prototype where the
+   * program links the wrapper unit, else the kind's ordinary object. */
+  if (object->kind == SCR_DYN_STR) return scr_dyn_primitive_prototype(0);
+  if (object->kind == SCR_DYN_NUM) return scr_dyn_primitive_prototype(1);
+  if (object->kind == SCR_DYN_BOOL) return scr_dyn_primitive_prototype(2);
+  if (object->kind == SCR_DYN_BIGINT) return scr_dyn_primitive_prototype(3);
+  if (object->kind == SCR_DYN_SYMBOL) return scr_dyn_primitive_prototype(4);
+  /* A promise and any other checked-dynamic value: an object, so the edge
+   * never refuses a value Node answers for. */
+  return scr_dyn_primitive_prototype(5);
 }
 
 /* scr_dyn_get_prototype for a walk that compares each prototype with a
@@ -10435,11 +10601,22 @@ void scr_dyn_fn_seed_prototype(ScrDyn *function, ScrDyn *prototype) {
   /* `prototype` comes before the static members, as in V8's own-key order
    * (length, name, prototype, then the statics). */
   ScrDyn *table = scr_dyn_fn_table(function);
-  scr_dyn_obj_set(table, "prototype", 9, prototype);
-  ScrDynEntry *entry = scr_dyn_find_entry(table, "prototype", 9);
-  entry->writable = false;
-  entry->enumerable = false;
-  entry->configurable = false;
+  /* A program may have frozen the constructor (or made it non-extensible)
+   * before this unit builds its prototype: the write would throw, and the
+   * entry would not be there to describe. The unit's own object still
+   * answers that constructor's prototype reads; the shared table keeps the
+   * property it had there. */
+  ScrDynEntry *existing = scr_dyn_find_entry(table, "prototype", 9);
+  bool writable = existing != NULL ? (existing->writable || existing->configurable)
+                                   : !table->non_extensible;
+  if (writable) scr_dyn_obj_set(table, "prototype", 9, prototype);
+  else scr_dyn_release(prototype);
+  ScrDynEntry *entry = writable ? scr_dyn_find_entry(table, "prototype", 9) : NULL;
+  if (entry != NULL) {
+    entry->writable = false;
+    entry->enumerable = false;
+    entry->configurable = false;
+  }
   if (scr_dyn_builtin_statics_own_fn) scr_dyn_builtin_statics_own_fn(function, table);
   scr_dyn_release(table);
 }

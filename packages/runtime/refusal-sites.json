@@ -1057,12 +1057,6 @@
  },
  {
   "file": "scr_json.c",
-  "function": "scr_dyn_get_prototype",
-  "message": "Object.getPrototypeOf on this value is not supported yet",
-  "code": "SC2020"
- },
- {
-  "file": "scr_json.c",
   "function": "scr_dyn_class_integrity_fence",
   "message": " of an object held in an untyped value is not supported yet",
   "code": "SC2020"

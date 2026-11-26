@@ -1,11 +1,13 @@
 // @requires-icu
 // Date.prototype.toLocale* and the Intl formatters with a locale the program
 // decides at run time: the runtime validates the tag with ECMA-402's grammar
-// (Node's RangeError for a malformed one), negotiates it against ICU's
-// locales as Node's best fit does, and formats with that locale's data. The
-// tags below cover right-to-left, non-Gregorian and non-Latin numbering, a
-// tag ICU has no locale for (the default locale), a deprecated language tag
-// and a Unicode extension.
+// (Node's RangeError for a malformed one), canonicalizes its language aliases
+// as Node does, negotiates it against ICU's locales as Node's best fit does,
+// and formats with that locale's data. The tags below cover right-to-left,
+// non-Gregorian and non-Latin numbering, a tag ICU has no locale for (the
+// default locale), deprecated and overlong language codes (iw, bih), aliases
+// whose canonical form adds a script or region (sh -> sr-Latn, cnr -> sr-ME,
+// prs -> fa-AF, sh-RS -> sr-Latn-RS) and a Unicode extension.
 const at = Date.UTC(2020, 0, 2, 15, 4, 5);
 const d = new Date(at);
 const tags = [
@@ -21,6 +23,12 @@ const tags = [
   "hi-IN",
   "pt-BR",
   "iw",
+  "bih",
+  "sh",
+  "sh-RS",
+  "cnr",
+  "cnr-RS",
+  "prs",
   "sr-Latn-RS",
   "EN-us",
   "xx-YY",
@@ -33,6 +41,7 @@ for (const spelled of tags) {
   console.log(" date", d.toLocaleDateString(locale));
   console.log(" both", d.toLocaleString(locale));
   console.log(" number", (1234.5).toLocaleString(locale));
+  console.log(" named", d.toLocaleDateString(locale, { weekday: "long", month: "long" }));
   console.log(" dtf", new Intl.DateTimeFormat(locale).format(d));
   console.log(" nf", new Intl.NumberFormat(locale).format(1234.5));
 }

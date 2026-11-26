@@ -41,6 +41,7 @@
 #include <unicode/unum.h>
 #include <unicode/unumberformatter.h>
 #include <unicode/unumsys.h>
+#include <unicode/ures.h>
 #include <unicode/ustring.h>
 
 #include <limits.h>
@@ -825,6 +826,14 @@ static bool scr_intl_tag_same(const char *a, const char *b, size_t n) {
   return true;
 }
 
+/** ASCII-lowercase copy of `s`, for a variant field used as an alias key. */
+static void scr_intl_tag_lower(const char *s, char *out, size_t size) {
+  size_t i = 0;
+  for (; s[i] != '\0' && i + 1 < size; i++)
+    out[i] = s[i] >= 'A' && s[i] <= 'Z' ? (char)(s[i] - 'A' + 'a') : s[i];
+  out[i] = '\0';
+}
+
 /** ECMA-402's IsStructurallyValidLanguageTag: the Unicode locale identifier
  * grammar (language (script)? (region)? (variant)* (extension)* (privateuse)?),
  * with grandfathered and private-use-only tags invalid, a language of four
@@ -926,6 +935,214 @@ static void scr_intl_throw_bad_locale(void) {
   scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
 }
 
+/* ── CLDR language aliases ────────────────────────────────────────────
+ * Node canonicalizes a requested tag before it negotiates it: V8's
+ * CanonicalizeLanguageTag runs ICU's Locale::canonicalize, which applies
+ * CLDR's alias data. The matcher below does not, so a deprecated or
+ * overlong language code would reach it unchanged: "cnr" falls back to the
+ * default locale where Node formats at sr-ME, and "sh-RS" matches Serbian
+ * Cyrillic where Node keeps the canonical sr-Latn-RS. Apply ICU's own
+ * language alias table (the metadata bundle's alias/language entries)
+ * first, with ICU's AliasReplacer field rules: an explicit script or region
+ * wins, the replacement fills in a field the tag leaves empty, and a region
+ * or variant the matched key names and the replacement drops is removed.
+ * Script, territory and variant aliases are not applied here. */
+
+#define SCR_INTL_ALIAS_ROUNDS 5
+
+/** The replacement of the language alias `key` in ICU's locale-id form, or
+ * false when the alias table has no such key. */
+static bool scr_intl_alias_lookup(const UResourceBundle *languages, const char *key, char *out,
+                                  size_t size) {
+  UErrorCode status = U_ZERO_ERROR;
+  UResourceBundle *entry = ures_getByKey(languages, key, NULL, &status);
+  if (U_FAILURE(status) || entry == NULL) {
+    if (entry != NULL) ures_close(entry);
+    return false;
+  }
+  UResourceBundle *replacement = ures_getByKey(entry, "replacement", NULL, &status);
+  ures_close(entry);
+  if (U_FAILURE(status) || replacement == NULL) {
+    if (replacement != NULL) ures_close(replacement);
+    return false;
+  }
+  int32_t length = (int32_t)size;
+  status = U_ZERO_ERROR;
+  ures_getUTF8String(replacement, out, &length, true, &status);
+  ures_close(replacement);
+  return U_SUCCESS(status) && (size_t)length < size;
+}
+
+/** `variants` without the subtag `drop` (case-insensitive), so a matched
+ * variant key removes the variant its replacement does not carry. */
+static void scr_intl_variants_without(const char *variants, const char *drop, char *out,
+                                      size_t size) {
+  size_t written = 0;
+  const char *at = variants;
+  while (*at != '\0') {
+    const char *end = strchr(at, '_');
+    const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+    if (!(len == strlen(drop) && scr_intl_tag_same(at, drop, len))) {
+      if (written != 0 && written + 1 < size) out[written++] = '_';
+      if (written + len >= size) break;
+      memcpy(out + written, at, len);
+      written += len;
+    }
+    at = end == NULL ? at + len : end + 1;
+  }
+  out[written] = '\0';
+}
+
+/** Rewrites the tag's ICU locale id with the CLDR language aliases its
+ * language, region and variants name, or copies it unchanged. */
+static void scr_intl_canonicalize_language(const char *icu, char *out, size_t size) {
+  char language[ULOC_LANG_CAPACITY] = "";
+  char script[ULOC_SCRIPT_CAPACITY] = "";
+  char region[ULOC_COUNTRY_CAPACITY] = "";
+  char variant[ULOC_FULLNAME_CAPACITY] = "";
+  UErrorCode status = U_ZERO_ERROR;
+  uloc_getLanguage(icu, language, sizeof language, &status);
+  UErrorCode scriptStatus = U_ZERO_ERROR;
+  uloc_getScript(icu, script, sizeof script, &scriptStatus);
+  UErrorCode regionStatus = U_ZERO_ERROR;
+  uloc_getCountry(icu, region, sizeof region, &regionStatus);
+  UErrorCode variantStatus = U_ZERO_ERROR;
+  uloc_getVariant(icu, variant, sizeof variant, &variantStatus);
+  const char *keywords = strchr(icu, '@');
+  snprintf(out, size, "%s", icu);
+  if (U_FAILURE(status) || U_FAILURE(scriptStatus) || U_FAILURE(regionStatus) ||
+      U_FAILURE(variantStatus) || language[0] == '\0')
+    return;
+
+  status = U_ZERO_ERROR;
+  UResourceBundle *metadata = ures_openDirect(NULL, "metadata", &status);
+  UResourceBundle *alias = NULL;
+  UResourceBundle *languages = NULL;
+  if (U_SUCCESS(status) && metadata != NULL)
+    alias = ures_getByKey(metadata, "alias", NULL, &status);
+  if (U_SUCCESS(status) && alias != NULL)
+    languages = ures_getByKey(alias, "language", NULL, &status);
+  if (U_FAILURE(status) || languages == NULL) {
+    if (languages != NULL) ures_close(languages);
+    if (alias != NULL) ures_close(alias);
+    if (metadata != NULL) ures_close(metadata);
+    return;
+  }
+
+  char lower_variant[ULOC_FULLNAME_CAPACITY];
+  scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    char key[ULOC_FULLNAME_CAPACITY];
+    char matched[ULOC_FULLNAME_CAPACITY] = "";
+    bool named_region = false;
+    bool named_variant = false;
+    bool found = false;
+    /* AliasReplacer's key order: language_region_variant, language_region,
+     * language_variant, language. */
+    const char *at = lower_variant;
+    while (!found && region[0] != '\0' && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%s_%.*s", language, region, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_region = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found && region[0] != '\0') {
+      snprintf(key, sizeof key, "%s_%s", language, region);
+      if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+        found = true;
+        named_region = true;
+      }
+    }
+    at = lower_variant;
+    while (!found && *at != '\0') {
+      const char *end = strchr(at, '_');
+      const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+      if (len >= 4) {
+        snprintf(key, sizeof key, "%s_%.*s", language, (int)len, at);
+        if (scr_intl_alias_lookup(languages, key, replacement, sizeof replacement)) {
+          found = true;
+          named_variant = true;
+          memcpy(matched, at, len);
+          matched[len] = '\0';
+        }
+      }
+      at = end == NULL ? at + len : end + 1;
+    }
+    if (!found) {
+      snprintf(key, sizeof key, "%s", language);
+      found = scr_intl_alias_lookup(languages, key, replacement, sizeof replacement);
+    }
+    if (!found) break;
+
+    char replaced_language[ULOC_LANG_CAPACITY] = "";
+    char replaced_script[ULOC_SCRIPT_CAPACITY] = "";
+    char replaced_region[ULOC_COUNTRY_CAPACITY] = "";
+    status = U_ZERO_ERROR;
+    uloc_getLanguage(replacement, replaced_language, sizeof replaced_language, &status);
+    status = U_ZERO_ERROR;
+    uloc_getScript(replacement, replaced_script, sizeof replaced_script, &status);
+    status = U_ZERO_ERROR;
+    uloc_getCountry(replacement, replaced_region, sizeof replaced_region, &status);
+    if (U_FAILURE(status)) break;
+
+    char next_language[ULOC_LANG_CAPACITY];
+    char next_script[ULOC_SCRIPT_CAPACITY];
+    char next_region[ULOC_COUNTRY_CAPACITY];
+    char next_variant[ULOC_FULLNAME_CAPACITY];
+    snprintf(next_language, sizeof next_language, "%s", language);
+    snprintf(next_script, sizeof next_script, "%s", script);
+    snprintf(next_region, sizeof next_region, "%s", region);
+    if (replaced_language[0] != '\0' && strcmp(replaced_language, "und") != 0)
+      snprintf(next_language, sizeof next_language, "%s", replaced_language);
+    if (next_script[0] == '\0' && replaced_script[0] != '\0')
+      snprintf(next_script, sizeof next_script, "%s", replaced_script);
+    if (named_region) {
+      /* The key names the tag's region; a replacement without one drops it. */
+      if (replaced_region[0] == '\0') next_region[0] = '\0';
+    } else if (next_region[0] == '\0' && replaced_region[0] != '\0') {
+      snprintf(next_region, sizeof next_region, "%s", replaced_region);
+    }
+    if (named_variant)
+      scr_intl_variants_without(variant, matched, next_variant, sizeof next_variant);
+    else
+      snprintf(next_variant, sizeof next_variant, "%s", variant);
+    /* A replacement that changes nothing ends the search, as AliasReplacer's
+     * does. */
+    if (strcmp(next_language, language) == 0 && strcmp(next_script, script) == 0 &&
+        strcmp(next_region, region) == 0 && strcmp(next_variant, variant) == 0)
+      break;
+    snprintf(language, sizeof language, "%s", next_language);
+    snprintf(script, sizeof script, "%s", next_script);
+    snprintf(region, sizeof region, "%s", next_region);
+    snprintf(variant, sizeof variant, "%s", next_variant);
+    scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
+  }
+
+  ures_close(languages);
+  ures_close(alias);
+  ures_close(metadata);
+
+  char rebuilt[ULOC_FULLNAME_CAPACITY * 2];
+  const int written = snprintf(rebuilt, sizeof rebuilt, "%s%s%s%s%s%s%s%s", language,
+                               script[0] != '\0' ? "_" : "", script,
+                               region[0] != '\0' ? "_" : "", region,
+                               variant[0] != '\0' ? "_" : "", variant,
+                               keywords != NULL ? keywords : "");
+  if (written > 0 && (size_t)written < sizeof rebuilt && (size_t)written < size)
+    snprintf(out, size, "%s", rebuilt);
+}
+
 /** The locale a valid tag resolves to: Node's best-fit matcher over ICU's
  * available locales (V8 hands ICU's LocaleMatcher the requested tags and the
  * service's locale list; uloc_acceptLanguage is that matcher). A tag ICU has
@@ -989,7 +1206,9 @@ static bool scr_intl_locale_of(const ScrStr *tag, char *out, size_t size) {
     scr_intl_throw_bad_locale();
     return false;
   }
-  scr_intl_resolve_locale(icu, out, size);
+  char canonical[ULOC_FULLNAME_CAPACITY];
+  scr_intl_canonicalize_language(icu, canonical, sizeof canonical);
+  scr_intl_resolve_locale(canonical, out, size);
   return true;
 }
 

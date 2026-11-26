@@ -5588,27 +5588,61 @@ static bool sf_headers_primitive(const ScrDyn *value) {
 /* A pair's two members as the name and value texts (+1 each): the ByteString
  * conversion of each, with Node's symbol message. False with the exception
  * pending. */
-static bool sf_headers_pair_members(ScrDyn *const *items, size_t index, ScrStr **name_out,
-                                    ScrStr **value_out) {
-  for (size_t j = 0; j < 2; j++) {
-    if (items[j]->kind == SCR_DYN_SYMBOL) {
-      sf_headers_symbol_member_error(index, j);
-      return false;
-    }
+/* A pair's member `i` (+1; the immortal undefined when the pair has no such
+ * index), read through the array's live storage: a member's conversion is
+ * program code that can grow or shrink the pair it belongs to. */
+static ScrDyn *sf_pair_member_retained(const ScrDyn *pair, size_t i) {
+  size_t len = (size_t)scr_dyn_arr_len(pair);
+  if (i >= len) return scr_dyn_retain(scr_dyn_undefined());
+  return scr_dyn_retain(pair->v.arr.items[i]);
+}
+
+/* One pair member as its name/value text (+1): ToString, the ByteString
+ * conversion and the Latin-1→UTF-8 expansion; NULL with the exception
+ * pending. */
+static ScrStr *sf_headers_pair_text(const ScrDyn *member) {
+  ScrStr *raw = scr_dyn_string_coerce_js(member);
+  ScrStr *bytes = raw ? sf_header_value_bytestring(raw) : NULL;
+  ScrStr *text = bytes ? sf_latin1_to_utf8(bytes) : NULL;
+  scr_str_release(bytes);
+  scr_str_release(raw);
+  return text;
+}
+
+/* A pair's two members as the name and value texts (+1 each). Node reads and
+ * converts member 0, then member 1, and only then checks the pair's length,
+ * so a member's toString sees the other member read from the live pair.
+ * `drained` is a non-array pair's collected values (the caller owns the
+ * array), NULL for an array pair. False with the exception pending. */
+static bool sf_headers_pair_members(ScrDyn *pair, ScrDyn *drained, size_t index,
+                                    ScrStr **name_out, ScrStr **value_out) {
+  ScrDyn *pair_list = drained != NULL ? drained : pair;
+  ScrStr *name = NULL;
+  ScrStr *value = NULL;
+  ScrDyn *member = sf_pair_member_retained(pair_list, 0);
+  if (member->kind == SCR_DYN_SYMBOL)
+    sf_headers_symbol_member_error(index, 0);
+  else
+    name = sf_headers_pair_text(member);
+  scr_dyn_release(member);
+  if (name != NULL) {
+    member = sf_pair_member_retained(pair_list, 1);
+    if (member->kind == SCR_DYN_SYMBOL)
+      sf_headers_symbol_member_error(index, 1);
+    else
+      value = sf_headers_pair_text(member);
+    scr_dyn_release(member);
   }
-  ScrStr *raw_name = scr_dyn_string_coerce_js(items[0]);
-  ScrStr *name_bytes = raw_name ? sf_header_value_bytestring(raw_name) : NULL;
-  ScrStr *name = name_bytes ? sf_latin1_to_utf8(name_bytes) : NULL;
-  scr_str_release(name_bytes);
-  scr_str_release(raw_name);
-  ScrStr *raw_value = name ? scr_dyn_string_coerce_js(items[1]) : NULL;
-  ScrStr *value_bytes = raw_value ? sf_header_value_bytestring(raw_value) : NULL;
-  ScrStr *value = value_bytes ? sf_latin1_to_utf8(value_bytes) : NULL;
-  scr_str_release(value_bytes);
-  scr_str_release(raw_value);
-  if (!name || !value) {
+  size_t pair_len = (size_t)scr_dyn_arr_len(pair_list);
+  if (name == NULL || value == NULL) {
     scr_str_release(name);
     scr_str_release(value);
+    return false;
+  }
+  if (pair_len != 2) {
+    scr_str_release(name);
+    scr_str_release(value);
+    sf_headers_pair_length_error(pair_len);
     return false;
   }
   *name_out = name;
@@ -5616,36 +5650,26 @@ static bool sf_headers_pair_members(ScrDyn *const *items, size_t index, ScrStr *
   return true;
 }
 
-/* The sequence branch: every element answers a pair, and Node's messages name
- * the element's position. +1, or NULL with the exception pending. */
 static ScrArr *sf_headers_convert_sequence(ScrDyn *list /*borrowed*/) {
   ScrArr *converted = scr_arr_new(SCR_ELEM_STR, 8);
-  size_t count = (size_t)scr_dyn_arr_len(list);
-  for (size_t i = 0; i < count; i++) {
-    ScrDyn *pair = list->v.arr.items[i];
-    ScrDyn *items = NULL;
-    bool iterable;
-    if (pair->kind == SCR_DYN_ARR) {
-      items = scr_dyn_retain(pair);
-      iterable = true;
-    } else {
-      iterable = scr_dyn_sequence_values(pair, &items);
-    }
+  /* An array init is live: its iterator is index-based, so an element's
+   * conversion that appends to the init is visited too, and each element is
+   * held while it converts (its member conversions run program code). */
+  for (size_t i = 0; i < (size_t)scr_dyn_arr_len(list); i++) {
+    ScrDyn *pair = scr_dyn_retain(list->v.arr.items[i]);
+    ScrDyn *drained = NULL;
+    bool iterable = pair->kind == SCR_DYN_ARR || scr_dyn_sequence_values(pair, &drained);
     if (!iterable) {
       if (!scr_exc_pending())
         sf_headers_element_not_iterable(i, sf_headers_primitive(pair) ? pair : NULL);
-      goto fail;
-    }
-    size_t pair_len = (size_t)scr_dyn_arr_len(items);
-    if (pair_len != 2) {
-      scr_dyn_release(items);
-      sf_headers_pair_length_error(pair_len);
+      scr_dyn_release(pair);
       goto fail;
     }
     ScrStr *name = NULL;
     ScrStr *value = NULL;
-    bool ok = sf_headers_pair_members(items->v.arr.items, i, &name, &value);
-    scr_dyn_release(items);
+    bool ok = sf_headers_pair_members(pair, drained, i, &name, &value);
+    scr_dyn_release(drained);
+    scr_dyn_release(pair);
     if (!ok) goto fail;
     scr_arr_push_ref(converted, name);
     scr_arr_push_ref(converted, value);

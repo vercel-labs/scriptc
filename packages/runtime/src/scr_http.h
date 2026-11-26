@@ -485,6 +485,20 @@ ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double p
                                               bool auto_end, ScrClosure *cb /*moves, nullable*/,
                                               ScrHttpRespFn fn, int default_port,
                                               void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx); /* +1 */
+/* Whether the module's proxy policy routes a request for this host through a
+ * proxy (the request's own resolution would then be the proxy's, not the
+ * origin's). A malformed proxy value leaves the exception pending. */
+bool scr_http_proxy_applies(ScrStr *host /*borrowed*/, double port, bool tls);
+/* The same request over a transport the caller already established (the
+ * WebSocket dial's resolved connection): `sock` moves, and the proxy policy
+ * still applies — pass a socket only for a request it leaves direct. */
+ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                              ScrNetSocket *sock /*moves, nullable*/); /* +1 */
 /* The URL-string client form (http.get('http://host:port/path')): parses
  * through the WHATWG unit; throws catchably on an unparsable input
  * ("Invalid URL") or a non-http scheme (ERR_INVALID_PROTOCOL) and

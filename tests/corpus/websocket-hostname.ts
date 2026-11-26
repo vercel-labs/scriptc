@@ -1,6 +1,7 @@
 // A WebSocket URL with a host name (not an IP literal) dials through the
 // deferred connection: the constructor returns without resolving the name,
-// and the handshake opens, carries a message and closes normally.
+// the lookup runs off the loop thread, and the handshake then opens, carries
+// a message and closes normally.
 import * as http from "node:http";
 import { type IncomingMessage } from "node:http";
 import { type Socket } from "node:net";

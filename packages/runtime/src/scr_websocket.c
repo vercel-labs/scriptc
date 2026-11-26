@@ -1255,39 +1255,50 @@ static bool scr_ws_protocols(ScrDyn *protocols, ScrStr **offered) {
 
 /* The handshake starts on the loop's next turn: construction never resolves
  * the peer's name (Node's WebSocket starts connecting from a queued task,
- * not the constructor), and the request is built exactly as it was when the
- * constructor dialed directly. */
-static void scr_ws_connect(ScrClosure *cb) {
-  /* Every ref box answers +1; the releases below give those back before the
-   * callback returns, so the deferred connect leaves nothing alive. */
-  ScrWs *ws = scr_box_get_ref(cb->caps[0]);
-  if (ws == NULL) return;
-  if (ws->discard || ws->ready_state != SCR_WS_CONNECTING) {
-    scr_ws_release_v(ws);
-    return;
-  }
-  ScrStr *host = scr_box_get_ref(cb->caps[1]);
-  ScrStr *target = scr_box_get_ref(cb->caps[2]);
-  ScrStr *method = scr_box_get_ref(cb->caps[3]);
-  ScrArr *headers = scr_box_get_ref(cb->caps[4]);
-  double port = scr_box_get_f64(cb->caps[5]);
-  int secure = (int)scr_box_get_f64(cb->caps[6]);
+ * not the constructor). The task dials an address literal or a configured
+ * proxy's host directly; a name the peer chose is resolved off the loop
+ * thread first, so a slow or hostile resolver cannot stall the loop. */
+typedef struct ScrWsDial {
+  ScrWs *ws;       /* +1 */
+  ScrStr *host;    /* +1 */
+  ScrStr *target;  /* +1 */
+  ScrStr *method;  /* +1 */
+  ScrArr *headers; /* +1 */
+  double port;
+  int secure;
+} ScrWsDial;
+
+static void scr_ws_dial_free(ScrWsDial *dial) {
+  scr_ws_release_v(dial->ws);
+  scr_str_release(dial->host);
+  scr_str_release(dial->target);
+  scr_str_release(dial->method);
+  scr_arr_release(dial->headers);
+  free(dial);
+}
+
+/* Builds the handshake request over `sock` (moved; NULL dials the host
+ * itself) and wires its callbacks. */
+static void scr_ws_request(ScrWs *ws, ScrStr *host, double port, ScrStr *target, ScrStr *method,
+                           ScrArr *headers, int secure, ScrNetSocket *sock) {
   ScrStr *sni = secure ? scr_str_retain(host) : NULL;
   void *wrap_ctx = secure ? scr_tls_fetch_client_ctx(sni, true) : NULL;
-  ws->client = scr_http_request_ex(host, port, target, method, 0, headers, false, NULL, NULL,
-                                   secure ? 443 : 80, secure ? scr_tls_fetch_client_wrap : NULL,
-                                   wrap_ctx);
+  if (sock != NULL) {
+    ws->client = scr_http_request_ex_socket(host, port, target, method, 0, headers, false, NULL,
+                                            NULL, secure ? 443 : 80,
+                                            secure ? scr_tls_fetch_client_wrap : NULL, wrap_ctx,
+                                            sock);
+  } else {
+    ws->client = scr_http_request_ex(host, port, target, method, 0, headers, false, NULL, NULL,
+                                     secure ? 443 : 80,
+                                     secure ? scr_tls_fetch_client_wrap : NULL, wrap_ctx);
+  }
   scr_str_release(sni);
-  scr_str_release(host);
-  scr_str_release(target);
-  scr_str_release(method);
-  scr_arr_release(headers);
   if (ws->client == NULL) {
-    /* A request the constructor used to throw for (a malformed proxy
-     * environment, say): the connection fails through the events. */
+    /* A request that cannot be built (a malformed proxy environment, say):
+     * the connection fails through the events. */
     if (scr_exc_pending()) scr_exc_clear();
     scr_ws_fail(ws);
-    scr_ws_release_v(ws);
     return;
   }
   scr_http_client_on_upgrade(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_upgrade),
@@ -1301,6 +1312,69 @@ static void scr_ws_connect(ScrClosure *cb) {
   scr_http_client_on_close(ws->client, scr_ws_closure(ws, (void *)&scr_ws_on_client_close), false);
   scr_http_client_frame_any_method(ws->client);
   scr_http_client_flush_headers(ws->client);
+}
+
+/* The lookup's answers: dial them in resolver order and hand the socket to
+ * the request. No answer fails the connection the way an unreachable peer
+ * does. */
+static void scr_ws_resolved(void *ctx, ScrStr **ips, size_t n) {
+  ScrWsDial *dial = ctx;
+  ScrWs *ws = dial->ws;
+  if (!ws->discard && ws->ready_state == SCR_WS_CONNECTING) {
+    ScrNetSocket *sock = scr_net_connect_resolved(dial->port, dial->host, ips, n);
+    if (sock == NULL) {
+      scr_ws_fail(ws);
+    } else {
+      scr_ws_request(ws, dial->host, dial->port, dial->target, dial->method, dial->headers,
+                     dial->secure, sock);
+    }
+  }
+  scr_ws_dial_free(dial);
+}
+
+static void scr_ws_resolve_cancelled(void *ctx) { scr_ws_dial_free(ctx); }
+
+static void scr_ws_connect(ScrClosure *cb) {
+  /* Every ref box answers +1; each path gives those back before it
+   * returns, so the deferred connect leaves nothing alive. */
+  ScrWs *ws = scr_box_get_ref(cb->caps[0]);
+  if (ws == NULL) return;
+  ScrStr *host = scr_box_get_ref(cb->caps[1]);
+  ScrStr *target = scr_box_get_ref(cb->caps[2]);
+  ScrStr *method = scr_box_get_ref(cb->caps[3]);
+  ScrArr *headers = scr_box_get_ref(cb->caps[4]);
+  double port = scr_box_get_f64(cb->caps[5]);
+  int secure = (int)scr_box_get_f64(cb->caps[6]);
+  if (ws->discard || ws->ready_state != SCR_WS_CONNECTING) {
+    scr_str_release(host);
+    scr_str_release(target);
+    scr_str_release(method);
+    scr_arr_release(headers);
+    scr_ws_release_v(ws);
+    return;
+  }
+  /* Only a name needs the resolver, and only a request the proxy policy
+   * leaves direct dials that name: a configured proxy's host comes from the
+   * environment, and an address literal needs no lookup. */
+  if (scr_net_host_needs_lookup(host) && !scr_http_proxy_applies(host, port, secure != 0) &&
+      !scr_exc_pending()) {
+    ScrWsDial *dial = calloc(1, sizeof *dial);
+    if (!dial) scr_trap("scriptc: out of memory\n");
+    dial->ws = ws; /* the box's +1 moves into the dial */
+    dial->host = host;
+    dial->target = target;
+    dial->method = method;
+    dial->headers = headers;
+    dial->port = port;
+    dial->secure = secure;
+    scr_net_resolve_async(host, &scr_ws_resolved, &scr_ws_resolve_cancelled, dial);
+    return;
+  }
+  scr_ws_request(ws, host, port, target, method, headers, secure, NULL);
+  scr_str_release(host);
+  scr_str_release(target);
+  scr_str_release(method);
+  scr_arr_release(headers);
   scr_ws_release_v(ws);
 }
 

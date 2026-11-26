@@ -3387,6 +3387,121 @@ ScrStr *scr_net_blocking_lookup(ScrStr *host /*borrowed*/) {
   return scr_str_new(ip, strlen(ip));
 }
 
+/* ── the off-loop lookup ─────────────────────────────────────────────── */
+
+bool scr_net_host_needs_lookup(const ScrStr *host) {
+  struct in_addr a4;
+  struct in6_addr a6;
+  return inet_pton(AF_INET, host->data, &a4) != 1 && inet_pton(AF_INET6, host->data, &a6) != 1;
+}
+
+typedef struct ScrNetResolve {
+  ScrStr *host;         /* +1: read by the worker, released on the loop */
+  struct addrinfo *res; /* the worker's answers */
+  int rc;
+  ScrStr **ips; /* +1 each, built on the loop and handed to `answered` */
+  size_t n;
+  ScrNetResolveFn answered;
+  ScrNetResolveCancelFn cancel;
+  void *ctx;
+  bool delivered;
+} ScrNetResolve;
+
+/* The worker's half: only the resolver runs on the pool thread, so the
+ * loop thread never waits on it. */
+static void scr_net_resolve_work(void *payload) {
+  ScrNetResolve *job = payload;
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof hints);
+  hints.ai_socktype = SOCK_STREAM;
+#ifndef _WIN32
+  hints.ai_flags = AI_ADDRCONFIG;
+#endif
+  job->rc = getaddrinfo(job->host->data, NULL, &hints, &job->res);
+}
+
+/* The loop's half: the answers become address strings (duplicates dropped,
+ * resolver order kept, so the dial tries them in the order the resolver
+ * ranked them) and the caller's callback sees them. */
+static void scr_net_resolve_after(void *payload) {
+  ScrNetResolve *job = payload;
+  if (job->rc == 0 && job->res != NULL) {
+    size_t n = 0;
+    for (struct addrinfo *ai = job->res; ai != NULL; ai = ai->ai_next) {
+      if (ai->ai_family == AF_INET || ai->ai_family == AF_INET6) n++;
+    }
+    if (n > 0) {
+      job->ips = calloc(n, sizeof *job->ips);
+      if (!job->ips) scr_net_oom();
+    }
+    for (struct addrinfo *ai = job->res; ai != NULL && job->n < n; ai = ai->ai_next) {
+      char ip[INET6_ADDRSTRLEN];
+      const char *out = NULL;
+      if (ai->ai_family == AF_INET) {
+        out = inet_ntop(AF_INET, &((struct sockaddr_in *)ai->ai_addr)->sin_addr, ip, sizeof ip);
+      } else if (ai->ai_family == AF_INET6) {
+        out = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)ai->ai_addr)->sin6_addr, ip, sizeof ip);
+      }
+      if (out == NULL) continue;
+      bool seen = false;
+      for (size_t i = 0; i < job->n && !seen; i++) seen = strcmp(job->ips[i]->data, ip) == 0;
+      if (seen) continue;
+      job->ips[job->n++] = scr_str_new(ip, strlen(ip));
+    }
+  }
+  if (job->res != NULL) {
+    freeaddrinfo(job->res);
+    job->res = NULL;
+  }
+  job->delivered = true;
+  job->answered(job->ctx, job->ips, job->n);
+}
+
+/* The job's cleanup, on the loop after the callback or at teardown when the
+ * loop ended first. The answers belong to the callback's context, which is
+ * told to free them when it never saw them. */
+static void scr_net_resolve_destroy(void *payload) {
+  ScrNetResolve *job = payload;
+  if (!job->delivered) job->cancel(job->ctx);
+  if (job->res != NULL) freeaddrinfo(job->res);
+  for (size_t i = 0; i < job->n; i++) scr_str_release(job->ips[i]);
+  free(job->ips);
+  scr_str_release(job->host);
+  free(job);
+}
+
+void scr_net_resolve_async(ScrStr *host, ScrNetResolveFn answered, ScrNetResolveCancelFn cancel,
+                           void *ctx) {
+  ScrNetResolve *job = calloc(1, sizeof *job);
+  if (!job) scr_net_oom();
+  job->host = scr_str_retain(host);
+  job->answered = answered;
+  job->cancel = cancel;
+  job->ctx = ctx;
+  scr_work_submit(job, &scr_net_resolve_work, &scr_net_resolve_after, &scr_net_resolve_destroy);
+}
+
+ScrNetSocket *scr_net_connect_resolved(double port, ScrStr *name, ScrStr **ips, size_t n) {
+  if (ips == NULL || n == 0) return NULL;
+  ScrNetSocket *s = scr_net_sock_new();
+  s->peer_port = (int)port;
+  snprintf(s->peer_ip, sizeof s->peer_ip, "%.*s", (int)(name->len < 63 ? name->len : 63),
+           name->data);
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  s->connecting = true; /* logically connecting while the addresses dial */
+  s->dial_ips = malloc(n * sizeof *s->dial_ips);
+  if (!s->dial_ips) scr_net_oom();
+  for (size_t i = 0; i < n; i++) s->dial_ips[i] = scr_str_retain(ips[i]);
+  s->dial_n = n;
+  s->dial_i = 0;
+  scr_net_sock_register(s);
+  scr_net_sock_dial_next(s);
+  return s;
+}
+
 /* Records a host connect target: IP literals dial as given, "localhost"
  * is pinned to 127.0.0.1 (the documented divergence from Node's family
  * autoselect), and any other name is resolved when the dial starts. */

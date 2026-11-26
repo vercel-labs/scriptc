@@ -9139,6 +9139,31 @@ ScrHttpClientReq *scr_http_request_ex_direct(ScrStr *host /*borrowed*/, double p
                                   fn, default_port, wrap, wrap_ctx, false);
 }
 
+/* Whether the module's proxy policy routes a request for this host through a
+ * proxy: a caller that establishes the origin's transport itself needs to
+ * know that the request will dial a configured proxy instead. A malformed
+ * proxy value leaves the error pending, as the request constructor does. */
+bool scr_http_proxy_applies(ScrStr *host /*borrowed*/, double port, bool tls) {
+  return scr_http_proxy_configured(tls, host, port);
+}
+
+/* The same request over a transport the caller already established (the
+ * WebSocket dial's resolved connection): `sock` moves. The proxy policy
+ * still applies, so the caller passes a socket only for a request the
+ * policy leaves direct. */
+ScrHttpClientReq *scr_http_request_ex_socket(ScrStr *host /*borrowed*/, double port,
+                                              ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                              double timeout_ms, ScrArr *header_pairs /*borrowed*/,
+                                              bool auto_end, ScrClosure *cb /*moves, nullable*/,
+                                              ScrHttpRespFn fn, int default_port,
+                                              void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                              ScrNetSocket *sock /*moves, nullable*/) {
+  return scr_http_client_constructed(
+      scr_http_request_impl(host, port, path, method, timeout_ms, header_pairs, cb, fn,
+                            default_port, wrap, wrap_ctx, true, sock),
+      auto_end);
+}
+
 /* http.request({ createConnection, ... }): the caller's DIALER supplies
  * the socket — conn_cb runs ONCE, synchronously (Node invokes it from
  * the request constructor's onSocket path), and its socket carries the

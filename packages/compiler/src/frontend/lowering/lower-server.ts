@@ -4101,6 +4101,40 @@ function lowerNetSocketMethodCall(
       ? value
       : lowerer.coerceInto(call, value, declared);
   }
+  if (name === "getEphemeralKeyInfo" && args.length === 0) {
+    // TLSSocket.getEphemeralKeyInfo(): an object, or null server-side and
+    // before the handshake (the checked-dynamic shape Node declares).
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const value: IrExpr = {
+      kind: "libCall",
+      fn: "tls.sockEphemeralKeyInfo",
+      args: [receiver],
+      type: DYN,
+      loc,
+    };
+    const declared = lowerer.mapTypeOf(lowerer.typeOf(call));
+    return declared === null || declared.kind === "dyn"
+      ? value
+      : lowerer.coerceInto(call, value, declared);
+  }
+  if (name === "setMaxSendFragment") {
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `setMaxSendFragment with ${args.length} arguments`,
+        call,
+        "the form is setMaxSendFragment(size)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+    const size = lowerer.lowerExprExpecting(args[0]!, F64);
+    return {
+      kind: "libCall",
+      fn: "tls.sockSetMaxFragment",
+      args: [receiver, size],
+      type: BOOL,
+      loc,
+    };
+  }
   {
     const certificate = lowerTlsCertificateCall(lowerer, call, name, () =>
       coerceToHandle(lowerer, access.expression, NETSOCKET_T),

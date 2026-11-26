@@ -47,7 +47,11 @@ import { lowerUnionEquality, tagEqualityMayMissAlias } from "./strict-equality.j
 import { lowerHashStreamCall } from "./builtins/hash-stream.js";
 import { lowerUntypedStringLastIndexOfCall } from "./builtins/strings.js";
 import { lowerWebAssemblyValueOf } from "./builtins/webassembly.js";
-import { lowerResponseStaticJson } from "./lower-stdlib.js";
+import {
+  lowerResponseStaticError,
+  lowerResponseStaticJson,
+  lowerResponseStaticRedirect,
+} from "./lower-stdlib.js";
 import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 /** Dispatch source calls, builtin members and receiver-specific operations.
  * Signature collection, argument completion and function bodies have their
@@ -2329,6 +2333,8 @@ function lowerOrdinaryCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerStaticIsPrototypeOfCall(lowerer, expr, expr.expression) ??
       // Static Response.json(data, init?) builds a native Response.
       lowerResponseStaticJson(lowerer, expr) ??
+      lowerResponseStaticError(lowerer, expr) ??
+      lowerResponseStaticRedirect(lowerer, expr) ??
       // Refuse Response constructor operations before generic-call
       // fallbacks can report an unrelated SC1090 diagnostic.
       lowerer.fenceUnsupportedFetchConstructorMember(expr.expression) ??

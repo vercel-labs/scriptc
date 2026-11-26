@@ -3636,19 +3636,34 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
   session->db = scr_sqlite_db_retain(db);
   session->session = raw;
   session->conn_ref = scr_sqlite_conn_retain(db->conn_ref);
-  session->slot = scr_sqlite_session_slot_new(session);
-  if (db->session_n == db->session_cap) {
-    size_t cap = db->session_cap != 0 ? db->session_cap * 2 : 4;
-    void *grown = realloc(db->sessions, cap * sizeof *db->sessions);
-    if (grown == NULL) scr_sqlite_oom();
-    db->sessions = grown;
-    db->session_cap = cap;
+  /* Reuse the entry a collected session left behind. A collected session
+   * cannot take its entry out of the database's list (the collector frees a
+   * database and its sessions in no particular order, and the list may
+   * already be gone), so it only clears what the entry names; the database
+   * reuses those entries here instead of growing its list by every
+   * request-scoped session whose wrapper died in a cycle. */
+  ScrSqliteSessionSlot *reused = NULL;
+  for (size_t i = 0; i < db->session_n; i++) {
+    if (db->sessions[i]->session == NULL) {
+      reused = db->sessions[i];
+      break;
+    }
   }
-  /* The list shares its entries, like the statement registry: a session the
-   * program drops is deleted and untracked at once, so request-scoped
-   * sessions do not accumulate change tracking on a long-lived database, and
-   * a collected session clears its own entry. */
-  db->sessions[db->session_n++] = session->slot;
+  if (reused != NULL) {
+    reused->session = session;
+    reused->rc++; /* the session's reference; the list holds the other */
+    session->slot = reused;
+  } else {
+    session->slot = scr_sqlite_session_slot_new(session);
+    if (db->session_n == db->session_cap) {
+      size_t cap = db->session_cap != 0 ? db->session_cap * 2 : 4;
+      void *grown = realloc(db->sessions, cap * sizeof *db->sessions);
+      if (grown == NULL) scr_sqlite_oom();
+      db->sessions = grown;
+      db->session_cap = cap;
+    }
+    db->sessions[db->session_n++] = session->slot;
+  }
   scr_dyn_handle_install(SCR_DYNH_SQLITE_SESSION, &scr_sqlite_session_ops);
   ScrDyn *out = scr_dyn_new_handle(session, SCR_DYNH_SQLITE_SESSION);
   scr_sqlite_session_release(session);
@@ -3771,8 +3786,13 @@ static bool scr_sqlite_db_set_authorizer(ScrSqliteDb *db, ScrDyn *const *args, s
   const ScrDyn *callback = scr_sqlite_arg(args, argc, 0);
   if (callback->kind == SCR_DYN_NULL) {
     sqlite3_set_authorizer(db->conn, NULL, NULL);
-    scr_dyn_release(db->authorizer);
+    /* Clear the field before releasing the callback: its teardown releases
+     * the captures it owned, which can run a collection pass, and a pass
+     * that walks this database must not find the callback it is tearing
+     * down (its captures are already going). */
+    ScrDyn *old = db->authorizer;
     db->authorizer = NULL;
+    scr_dyn_release(old);
     return true;
   }
   if (callback->kind != SCR_DYN_FUNC) {
@@ -3783,8 +3803,12 @@ static bool scr_sqlite_db_set_authorizer(ScrSqliteDb *db, ScrDyn *const *args, s
     scr_sqlite_throw_db_error(db);
     return false;
   }
-  scr_dyn_release(db->authorizer);
+  /* Install the new callback before releasing the old one, for the same
+   * reason: the old callback's teardown can collect, and the database's
+   * trace reaches whichever callback the field names. */
+  ScrDyn *old = db->authorizer;
   db->authorizer = scr_dyn_retain((ScrDyn *)callback);
+  scr_dyn_release(old);
   return true;
 }
 

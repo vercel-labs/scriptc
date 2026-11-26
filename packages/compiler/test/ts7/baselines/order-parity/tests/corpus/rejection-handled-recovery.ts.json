@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/rejection-handled-recovery.ts"
+ ],
+ "diags": []
+}

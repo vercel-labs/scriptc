@@ -1254,6 +1254,11 @@ struct ScrHttpRes {
 };
 
 ScrHttpRes *scr_http_res_retain(ScrHttpRes *r) {
+  /* NULL-tolerant like the client's adapters: an owner box's reference is
+   * cleared when the response settles, and a socket callback registered
+   * earlier (a drain flush, the deferred close's watch) still asks the box
+   * for its response afterwards. */
+  if (r == NULL) return NULL;
   if (r->rc != SIZE_MAX) r->rc++;
   return r;
 }

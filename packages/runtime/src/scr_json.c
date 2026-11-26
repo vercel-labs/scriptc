@@ -5570,6 +5570,26 @@ static ScrDyn *scr_record_view_capsule(const void *rec) {
   return entry ? entry->capsule : NULL;
 }
 
+/* A collection key's conversion of a source the adopting walk did not take
+ * (a capsule, a view, or another non-plain value): the built key must be the
+ * source's own object (its referent) or a view of it, or the conversion left
+ * a copy that no other name shares — a later insertion or lookup of the same
+ * value would miss the key. The key sites that cannot adopt refuse here. */
+void scr_dyn_key_check(const ScrDyn *source, const void *key) {
+  /* A conversion that already threw keeps its own error: reading a getter
+   * that throws, a missing member, out of memory. The key refusal must not
+   * replace it. */
+  if (scr_exc_pending()) return;
+  if (source != NULL && source->kind == SCR_DYN_TYPED_REF) {
+    if (source->v.typed_ref.ptr == key) return;
+    ScrRecordSource *entry = scr_record_source_slot(key);
+    if (entry != NULL && entry->capsule == source) return;
+  }
+  static const char message[] =
+    "a dynamic collection key whose value cannot be adopted as the key type is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+}
+
 /* The table entry of `rec`, a record view's entry included, or NULL: the
  * way in for the gated units that add table operations
  * (scr_record_source_private.h). This file's own lookups keep the static

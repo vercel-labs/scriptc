@@ -515,6 +515,13 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule);
 /* The same for a conversion without an assertion: all of `source` becomes
  * one object with the value built from it, or nothing changes. */
 void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule);
+/* The collection key's adoption (dynCheck.keyIdentity): the same whole
+ * walk, refusing (SC2020) a source it cannot make one object with the built
+ * key instead of leaving the copy. */
+void scr_dyn_adopt_key(ScrDyn *source, ScrDyn *capsule);
+/* A key conversion of a source the adopting walk did not take: the built key
+ * must be the source's own object (or a view of it), or the refusal. */
+void scr_dyn_key_check(const ScrDyn *source, const void *key);
 bool scr_dyn_adoptable(const ScrDyn *source);
 /* A checked conversion into a type an npm package declares failed
  * (scr_type_origin.c, linked by programs with such checks): the pending

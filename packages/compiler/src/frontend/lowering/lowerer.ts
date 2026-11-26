@@ -431,6 +431,7 @@ import type {
   SrcLoc,
 } from "../../ir/ir.js";
 import {
+  adoptsAtTypedSlot,
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
@@ -21171,6 +21172,38 @@ export class Lowerer {
         ),
       );
     if (!preservesIdentity || value.kind === "dynCheck") {
+      // A dynamic value can take the key's type as a live capsule when the
+      // target has one: the record is the very object the other name
+      // holds, so the collection's key identity survives (the popup store's
+      // untyped layer array feeding a Set of layer records). Any other
+      // conversion copies, which would change the key.
+      // Only a target the checked conversion can represent adopts a key:
+      // a record with an accessor slot has no checked extraction, and
+      // adopting it would reach the IR validator's internal error instead
+      // of the refusal below.
+      if (
+        value.kind !== "dynCheck" &&
+        value.type.kind === "dyn" &&
+        canDynCheckTo(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        ) &&
+        adoptsAtTypedSlot(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        const conversion = sharedDynConversion(this, value, expected, locOf(node));
+        // A collection key must keep one identity with the value the program
+        // holds. The conversion's adoption is strict here: a value it cannot
+        // adopt is refused at run time instead of stored as a copy the
+        // program's other name does not share.
+        return conversion.kind === "dynCheck" && conversion.shared === true
+          ? { ...conversion, keyIdentity: true }
+          : conversion;
+      }
       this.noLowering(
         `collection key conversion from '${this.fmt(value.type)}' to '${this.fmt(expected)}' requiring a structural copy or dynamic conversion`,
         node,

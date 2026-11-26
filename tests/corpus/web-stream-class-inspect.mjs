@@ -39,3 +39,22 @@ try {
   console.log("released-writer", error.name, error.code, error.message);
 }
 console.log("after-released");
+
+// The same throw leaves an inspection that reaches the writer through a
+// container: an array, an object field, and a bounded-depth inspect.
+const nestedCases = [[released], { w: released }, [1, released, 2]];
+for (const value of nestedCases) {
+  try {
+    inspect(value);
+    console.log("nested no-throw");
+  } catch (error) {
+    console.log("nested", error.name, error.code, error.message);
+  }
+}
+try {
+  inspect([released], { depth: 1 });
+  console.log("bounded no-throw");
+} catch (error) {
+  console.log("bounded", error.name, error.message);
+}
+console.log("after-nested");

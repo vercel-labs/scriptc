@@ -5196,9 +5196,11 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
         /* A custom inspector may refuse the value by throwing (a released
-         * stream writer's desiredSize does): the error leaves the whole
-         * inspection, as Node's does. */
-        if (view == NULL && scr_exc_pending()) return NULL;
+         * stream writer's desiredSize does). The error leaves the whole
+         * inspection, as it does in Node, but a recursive renderer above
+         * expects a string: an empty one is answered with the exception
+         * pending, which the util.inspect boundary throws. */
+        if (view == NULL && scr_exc_pending()) return scr_str_new("", 0);
         if (ops->inspect_view_nested) {
           scr_insp_nested_begin();
           ScrStr *inner = scr_insp_dyn(view, 0, depth);

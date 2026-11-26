@@ -2434,7 +2434,23 @@ export function collectClassShapeInner(
     {
       classDecoratorNodes.push(...decoratorNodesOf(decl));
       const decoratedMembers = decl.members.nodes.filter((m) => decoratorNodesOf(m).length > 0);
-      if (classDecoratorNodes.length > 0 || decoratedMembers.length > 0) {
+      // A class decorated ONLY through parameter decorators is a decoration
+      // event too: this change fences those, but it must never drop them
+      // silently, so the block below (and its named refusal) runs.
+      const hasParameterDecorators = decl.members.nodes.some((member) =>
+        (
+          (member as { parameters?: ts.NodeArray<ts.ParameterDeclaration> }).parameters?.nodes ?? []
+        ).some((parameter) =>
+          ((parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []).some(
+            (m) => m.kind === ts.SyntaxKind.Decorator,
+          ),
+        ),
+      );
+      if (
+        classDecoratorNodes.length > 0 ||
+        decoratedMembers.length > 0 ||
+        (legacyDecorators && hasParameterDecorators)
+      ) {
         // Node itself cannot execute decorator syntax in a JavaScript
         // source (V8 has not shipped the proposal; the type-stripping
         // loaders leave `@dec` in place) — there is no runtime behavior
@@ -2442,7 +2458,19 @@ export function collectClassShapeInner(
         if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
           lowerer.unsupported(
             "SC1090",
-            (classDecoratorNodes[0] ?? decoratorNodesOf(decoratedMembers[0]!)[0])!,
+            (classDecoratorNodes[0] ??
+              (decoratedMembers.length > 0
+                ? decoratorNodesOf(decoratedMembers[0]!)[0]
+                : undefined) ??
+              (
+                (decl.members.nodes[0] as { parameters?: ts.NodeArray<ts.ParameterDeclaration> })
+                  .parameters?.nodes ?? []
+              ).flatMap((parameter) =>
+                (
+                  (parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+                ).filter((m) => m.kind === ts.SyntaxKind.Decorator),
+              )[0] ??
+              decl)!,
             "decorators in JavaScript sources (V8 has not shipped decorators — Node cannot execute this file)",
           );
         }
@@ -6496,6 +6524,18 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       loc,
     });
   }
+  if (legacy && info.decl !== null && info.classDecorators?.valueGlobalId !== undefined) {
+    // The class binding exists once the class definition (heritage included)
+    // completes. References to the name lower through this mutable global
+    // when a decorator can replace the class, so it must already hold the
+    // class while the static initializers and decorator bodies run.
+    out.push({
+      kind: "assign",
+      localId: info.classDecorators.valueGlobalId,
+      value: classValueRef(lowerer, info, info.decl),
+      loc: locOf(info.decl),
+    });
+  }
   if (info.runtimeStatics && !info.localClass && info.decl) {
     out.push({
       kind: "exprStmt",
@@ -6662,14 +6702,9 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       init: lowerer.coerceToExpected(prototype, DYN),
       loc,
     });
-    const dynField = (key: string, value: IrExpr, at: SrcLoc): { key: IrExpr; value: IrExpr } => ({
-      key: { kind: "strLit", value: key, type: STRING, loc: at },
-      value,
-    });
     for (const entry of members) {
       const at = locOf(entry.member);
-      const original = info.prototypeOriginals?.get(entry.name);
-      if (original === undefined) {
+      if (info.prototypeOriginals?.get(entry.name) === undefined) {
         lowerer.unsupported(
           "SC1090",
           entry.decorators[0]!,
@@ -6686,28 +6721,17 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         ),
         loc: at,
       });
-      // The descriptor JS's Object.getOwnPropertyDescriptor would answer for
-      // the prototype method: same value object, writable and configurable,
-      // non-enumerable.
+      // The descriptor is read from the prototype at decoration time, as
+      // tsc's `Object.getOwnPropertyDescriptor(target, key)` does: a static
+      // block or an earlier decorator factory may already have replaced the
+      // method, and that definition is what the decorators must see and
+      // redefine.
       const descriptor: IrExpr = {
-        kind: "dynObjLit",
-        fields: [
-          dynField("value", { kind: "varRef", localId: original, type: DYN, loc: at }, at),
-          dynField(
-            "writable",
-            lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc: at }, DYN),
-            at,
-          ),
-          dynField(
-            "enumerable",
-            lowerer.coerceToExpected({ kind: "boolLit", value: false, type: BOOL, loc: at }, DYN),
-            at,
-          ),
-          dynField(
-            "configurable",
-            lowerer.coerceToExpected({ kind: "boolLit", value: true, type: BOOL, loc: at }, DYN),
-            at,
-          ),
+        kind: "libCall",
+        fn: "dyn.getOwnPropertyDescriptor",
+        args: [
+          { kind: "varRef", localId: prototypeLocal.id, type: DYN, loc: at },
+          { kind: "varRef", localId: keyLocal.id, type: DYN, loc: at },
         ],
         type: DYN,
         loc: at,

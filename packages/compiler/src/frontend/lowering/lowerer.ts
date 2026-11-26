@@ -6961,6 +6961,13 @@ export class Lowerer {
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",
+    // The variadic store's look-through state: recorded while the adapter
+    // and the array-method helper of a unit are built, and read by the
+    // function-view pass of that same lowering, so a replayed unit records
+    // its own again.
+    "coercions.variadicAdapterSources",
+    "coercions.variadicWideServed",
+    "coercions.variadicServedAdapters",
     "assertInstances",
     "unionLiteralOwners",
     "strippedUndefinedArms",

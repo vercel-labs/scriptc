@@ -237,21 +237,29 @@ static void scr_console_bound_unlink(ScrConsoleInst *inst);
 /* A Console with a detached output method is a cycle: the instance holds
  * its bound functions and each function holds the instance. The instance
  * carries a cycle header so the collector can see the edges — the bound
- * functions and the inspectOptions record — and free a request-scoped
- * Console with its functions, its streams going through the teardown. */
+ * functions, the inspectOptions record, and the targets it owns. */
 static void scr_console_inst_cycle_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
   ScrConsoleInst *inst = ptr;
   for (int i = 0; i < 5; i++) visit(inst->bound[i], ctx);
   visit(inst->inspect_options, ctx);
+  /* The targets and their completion handlers are edges of the same graph:
+   * a detached method attached as a listener on the console's own stream
+   * closes a cycle through them, so a request-scoped logger whose stream
+   * only it references is collectable. */
+  for (int i = 0; i < 2; i++) {
+    visit(inst->stream[i], ctx);
+    visit(inst->on_written[i], ctx);
+  }
 }
 
-/* The collector's teardown: the complement of the trace — the streams and
- * their completion handlers, the counter and timer store — then the block. */
+/* The collector's teardown: the complement of the trace — the counter and
+ * timer store — then the block. The targets, their completion handlers, the
+ * bound functions and the options record are traced edges, which the
+ * collector accounted for itself. */
 static void scr_console_inst_gcfree(void *ptr) {
   ScrConsoleInst *inst = ptr;
   scr_console_bound_unlink(inst);
   scr_console_state_clear(&inst->state);
-  if (inst->stream_drop) inst->stream_drop(inst);
   scr_obj_free_note();
   scr_cyc_free(inst);
 }
@@ -272,6 +280,7 @@ static void scr_console_inst_destroy(void *ptr) {
   inst->inspect_options = NULL;
   scr_dyn_release(options);
   inst->rc = 0;
+  if (inst->stream_drop) inst->stream_drop(inst);
   scr_console_inst_gcfree(inst);
 }
 
@@ -510,9 +519,29 @@ static ScrDyn *scr_console_inst_invoke(void *ptr, ScrDyn *self, const char *key,
   if (self == NULL) {
     /* the stored method: the instance's own formatting, as a direct call */
     ScrConsoleInst *inst = ptr;
+    /* Node publishes a detached method's arguments on console.<member> as
+     * its direct call does, and then formats a private snapshot of them. */
+    int member = scr_console_member_index(key, strlen(key));
+    ScrDyn *snapshot = NULL;
+    ScrDyn *const *values = args;
+    size_t count = argc;
+    if (member >= 0 && scr_console_channel_active((double)member)) {
+      ScrDyn *pack = scr_dyn_new_arr();
+      for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(pack, scr_dyn_retain(args[i]));
+      scr_console_publish_args((double)member, pack);
+      if (scr_exc_pending()) {
+        scr_dyn_release(pack);
+        return NULL;
+      }
+      snapshot = scr_console_snapshot_pack(pack);
+      scr_dyn_release(pack);
+      values = snapshot->v.arr.items;
+      count = snapshot->v.arr.len;
+    }
     ScrStr *line = scr_insp_console_format_argv(
-        args, argc, inst->inspect_options, which ? "console.error" : "console.log",
+        values, count, inst->inspect_options, which ? "console.error" : "console.log",
         scr_console_inst_colors_mode(inst, which));
+    scr_dyn_release(snapshot);
     if (line == NULL) return NULL;
     scr_console_inst_print(inst, which, line);
     scr_str_release(line);

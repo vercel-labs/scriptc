@@ -7192,7 +7192,11 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
   if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
   inst->stream[i] = scr_stream_retain(stream);
   ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
-  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  /* The handler's stream is a traced edge like the console's own: a
+   * detached output method used as a listener on this stream closes a
+   * cycle through the console, and the collector has to see the handler's
+   * reference to give the whole group up. */
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, &scr_stream_trace);
   scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
   inst->on_written[i] = cb;
   inst->stream_write = &scr_console_stream_write;

@@ -23,6 +23,7 @@ import {
   npmBuiltinAliasOf,
   checkModuleOrder,
   checkPreflight,
+  isCjsJsFile,
   isNodeTypesPath,
   locOf,
   npmStaticDepSf7,
@@ -42,6 +43,7 @@ import {
 import {
   clearResolveCaches,
   isInstalledPackagePath,
+  nearestPackageType,
   resolveBareModule,
   resolveWorkspaceSourceModule,
 } from "./resolve.js";
@@ -309,6 +311,27 @@ function addLazyRequireGraph(load: LoadResult, scanned: Set<SourceFile>): void {
   }
 }
 
+/** Whether a literal `import(spec)` of a package compiles natively: its
+ * installed entry is an ES module or a TypeScript source, whose graph the
+ * build embeds and evaluates at the call. A CommonJS entry keeps its
+ * pre-existing treatment (the refusal a static import of its exports object
+ * gets, which the automatic policy may answer with a Node island): its
+ * import() namespace is Node's CJS facade, which this build has no
+ * compiled story for. Null when nothing installed resolves the specifier. */
+function dynamicImportCompilesNatively(
+  program: LoadResult["program"],
+  fromFile: string,
+  spec: string,
+): boolean | null {
+  const js = resolveBareModule(fromFile, spec, "js-only");
+  if (js === null) return null;
+  const source = program.getSourceFile(js.typesFile);
+  if (source !== undefined) return !isCjsJsFile(source, program);
+  if (/\.(mjs|mts)$/.test(js.typesFile)) return true;
+  if (/\.(cjs|cts)$/.test(js.typesFile)) return false;
+  return nearestPackageType(js.typesFile) === "module";
+}
+
 function detectAutoPackages(
   load: LoadResult,
   statuses: NpmStaticStatus[],
@@ -375,6 +398,32 @@ function detectAutoPackages(
         // import-statement scan alone would miss every one of them.
         for (const req of requiresOf(stmt, load.program))
           edges.push({ spec: req.spec, loc: locOf(req.node) });
+      }
+    }
+    // A program file's literal import("pkg") names a package the module
+    // graph must hold: the specifier is static, so the selection judges the
+    // package exactly as a static import would, and the compiled module is
+    // what the import() site evaluates at the call. Without this edge the
+    // package stays outside the graph and the site refuses with SC2013,
+    // even though nothing about the load is decided at run time.
+    if (
+      owner === null &&
+      !isInstalledPackagePath(sf.fileName) &&
+      sourceTextIncludes(sf, "import")
+    ) {
+      for (const call of moduleSourceCandidates(load.program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (
+          call.expression.kind !== SyntaxKind.ImportKeyword ||
+          arg === undefined ||
+          !isStringLiteralLike(arg)
+        )
+          continue;
+        // A CommonJS package keeps its old treatment: selecting it here
+        // would replace the island the automatic policy gives it with the
+        // dynamic-import refusal for its exports object.
+        if (dynamicImportCompilesNatively(load.program, sf.fileName, arg.text) !== true) continue;
+        edges.push({ spec: arg.text, loc: locOf(call) });
       }
     }
     // A program file's literal require() calls outside top-level require

@@ -8,11 +8,12 @@
   `eventNames()` lists symbol names after every string name, and the max-listeners warning renders a symbol name as `Symbol(description)`.
   Registering or removing a listener under a symbol name while a `newListener` or `removeListener` listener is registered is unsupported, as is `eventNames()` on an emitter with a registered `errorMonitor` listener.
   A stream's event names are strings: a symbol name is a type error at a typed call site and throws through an untyped value.
-  Once the program registers a listener under an unrestricted name, typed `listeners()`/`rawListeners()` results are unsupported for events that literal names register with typed listeners.
+  Once the program registers a listener under an unrestricted name, typed `listeners()` results are unsupported for events that literal names register with typed listeners.
+  `rawListeners()` answers Node's list in every lane: a plain listener is the function that was registered, and a `once()` registration is the wrapper Node registers — named `wrapper`, carrying the original as `.listener`, and removing the registration (then running the original) when called.
   An emitter reached through an untyped value shares one listener list with its typed uses, so untyped registrations and emits reach typed listeners and typed emits reach untyped listeners.
   A `pipe` or `unpipe` emission reaches such a listener with a live view of the stream (its methods and properties), not the same object identity.
   An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.
-  Through an untyped value, `listeners()` and `rawListeners()` of an event with a listener that has typed parameters are unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
+  Through an untyped value, `listeners()` of an event with a listener that has typed parameters is unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
   A `newListener` or `removeListener` listener registered through an untyped value receives `undefined` in place of a listener registered with typed parameters.
   A typed `error` or `errorMonitor` listener throws a `TypeError` when an emitted payload that is not an Error does not convert to its parameter.
   Reading EventEmitter methods as properties through an untyped value (`typeof emitter.listeners`) answers `undefined`.

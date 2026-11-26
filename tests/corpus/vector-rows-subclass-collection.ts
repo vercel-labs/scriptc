@@ -19,8 +19,9 @@ for (let i = 0; i < 50; i++) {
   // A dynamic store through the view commits the storage into a checked
   // array that takes the class: the retyped instance still holds headerless
   // rows, so the commit must carry the guard that keeps the trace off them.
-  const view: any = rows
-  view["meta"] = i
+  // The stored object is a foreign element in a number[][] row array.
+  const view: unknown[] = rows
+  view[4] = [i, i]
   total += rows.size() + rows.counter() + mapped.length + sliced.length
 }
 console.log("total", total)

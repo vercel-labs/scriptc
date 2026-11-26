@@ -19,10 +19,16 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 async function run(
   name: string,
   source: string,
+  optimization: "release" | "dev" = "release",
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   const entry = join(dir, `${name}.mjs`);
   writeFileSync(entry, source);
-  const result = await compile(entry, { outPath: join(dir, name), outDir: dir, sanitize });
+  const result = await compile(entry, {
+    outPath: join(dir, name),
+    outDir: dir,
+    sanitize,
+    optimization,
+  });
   expect(result.ok, !result.ok ? JSON.stringify(result.diagnostics, null, 2) : "").toBe(true);
   if (!result.ok) return { code: -1, stdout: "", stderr: "" };
   try {
@@ -48,6 +54,46 @@ console.log("dialed", socket !== null);
     "https.Agent createConnection (a TLS dial from an options record) is not supported yet",
   );
   expect(stderr).toContain("SC2020");
+});
+
+test("an http agent's dialer probes its capability before it validates arguments", async () => {
+  // The dialer asks the event-target unit whether it is linked before it looks
+  // at its arguments. That probe reads a variable, so a build that left it
+  // undefined would fault here (an undefined symbol's address is zero) instead
+  // of reaching the argument check below.
+  for (const optimization of ["release", "dev"] as const) {
+    const { code, stderr } = await run(
+      `probe-${optimization}`,
+      `import * as http from "node:http";
+const agent = new http.Agent({ keepAlive: true });
+agent.createConnection(undefined);
+console.log("survived");
+`,
+      optimization,
+    );
+    expect(code, stderr).toBe(1);
+    expect(stderr).toContain("ERR_MISSING_ARGS");
+  }
+});
+
+test("an http agent's dialer passes the abort listener it can see", async () => {
+  // `signal` reaches net.connect's addAbortListener. A value that only looks
+  // like a signal (Node's check is duck-typed) is refused there with the
+  // addEventListener TypeError — so this only raises when the event-target
+  // unit's listener was actually passed, which is what a capability probe that
+  // answers "not linked" would drop.
+  const { code, stderr } = await run(
+    "abort-listener",
+    `import * as http from "node:http";
+const controller = new AbortController(); // links the event-target unit
+const agent = new http.Agent({ keepAlive: true });
+agent.createConnection({ port: 1, host: "127.0.0.1", signal: { aborted: false } });
+console.log("dialed");
+`,
+  );
+  expect(code).toBe(1);
+  expect(stderr).toContain("signal.addEventListener is not a function");
+  expect(stderr).not.toContain("dialed");
 });
 
 test("an http agent's dialer still dials", async () => {

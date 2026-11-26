@@ -6,4 +6,10 @@ export const cryptoNeverThrow: readonly IrLibFn[] = [
   // extension: a certificate without one answers undefined and a malformed
   // extension is skipped, so no program-visible error is raised.
   "crypto.x509KeyUsage",
+  // parsePKCS12's parts accessors read the handle the parse itself built:
+  // an absent key or certificate answers null or empty bytes, and an index
+  // past the additional certificates answers empty bytes.
+  "crypto.pkcs12Key",
+  "crypto.pkcs12Der",
+  "crypto.pkcs12Count",
 ];

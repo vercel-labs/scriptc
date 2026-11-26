@@ -24,8 +24,16 @@ import type { JsGroup, JsGroupMember } from "../../ir/js-groups.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { DYN_KIND } from "./dyn.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
-import { asResult, gep, helperCall, jsIcSiteOf, kindIs, load } from "./js-ic.js";
-import { JS_BITS } from "./jsval-encoding.js";
+import {
+  gep,
+  helperCall,
+  jsIcSiteOf,
+  kindIs,
+  load,
+  slotStore,
+  slotStoreCell,
+  slotValue,
+} from "./js-ic.js";
 
 type Host = LlvmEmitterContext;
 
@@ -155,8 +163,8 @@ function emitMember(
   B.line(`${wide} = zext i8 ${index} to i64`);
   const address = B.tmp();
   B.line(`${address} = getelementptr inbounds ptr, ptr ${slots}, i64 ${wide}`);
-  const cell = load(host, "ptr", address, 0);
-  incoming.push(`[ ${asResult(host, cell, e, false)}, %${B.currentLabel()} ]`);
+  const word = load(host, "ptr", address, 0);
+  incoming.push(`[ ${slotValue(host, word, e.type)}, %${B.currentLabel()} ]`);
   B.br(join);
   B.startBlock(slow);
   incoming.push(`[ ${helperCall(host, e, callee, [receiver])}, %${B.currentLabel()} ]`);
@@ -219,7 +227,7 @@ export function emitGroupedSet(
   const fast = B.newLabel("grp.fast");
   const slow = B.newLabel("grp.slow");
   const join = B.newLabel("grp.j");
-  if (word !== null) host.declare(`declare ptr @scr_js_to_dyn_borrow(ptr)`);
+  if (word !== null) host.declare(`declare ptr @scr_dyn_slot_take(ptr)`);
   const ready = B.tmp();
   B.line(`${ready} = icmp ne ptr ${entry}, null`);
   B.condBr(ready, fast, slow);
@@ -241,50 +249,14 @@ export function emitGroupedSet(
   B.line(`${wide} = zext i8 ${index} to i64`);
   const address = B.tmp();
   B.line(`${address} = getelementptr inbounds ptr, ptr ${slots}, i64 ${wide}`);
-  const old = B.tmp();
-  B.line(`${old} = load ptr, ptr ${address}`);
-  if (word === null) {
-    B.line(`store ptr ${host.retainHeap(value!.name, DYN)}, ptr ${address}`);
-    host.releaseHeap(old, DYN);
-    B.br(join);
-  } else {
-    // A new number replaces the value of an unshared number cell in place;
-    // any other value is boxed, and the store takes the box.
-    const bits = B.tmp();
-    const isDouble = B.tmp();
-    B.line(`${bits} = ptrtoint ptr ${word} to i64`);
-    B.line(`${isDouble} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
-    const number = B.newLabel("grp.dbl");
-    const box = B.newLabel("grp.box");
-    B.condBr(isDouble, number, box);
-    B.startBlock(number);
-    const oldKind = load(host, "i32", old, 8);
-    const oldRc = load(host, "i64", old, 0);
-    const isNumber = B.tmp();
-    const unshared = B.tmp();
-    const inPlace = B.tmp();
-    B.line(`${isNumber} = icmp eq i32 ${oldKind}, ${DYN_KIND.NUM}`);
-    B.line(`${unshared} = icmp eq i64 ${oldRc}, 1`);
-    B.line(`${inPlace} = and i1 ${isNumber}, ${unshared}`);
-    const update = B.newLabel("grp.inplace");
-    B.condBr(inPlace, update, box);
-    B.startBlock(update);
-    const d = B.tmp();
-    B.line(`${d} = bitcast i64 ${bits} to double`);
-    B.line(`store double ${d}, ptr ${gep(host, old, 16)}`);
-    B.br(join);
-    B.startBlock(box);
-    const cell = B.tmp();
-    B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
-    B.line(`store ptr ${cell}, ptr ${address}`);
-    host.releaseHeap(old, DYN);
-    B.br(join);
-  }
+  if (word === null) slotStoreCell(host, address, value!.name);
+  else slotStore(host, address, word);
+  B.br(join);
   B.startBlock(slow);
   let cell: string;
   if (word !== null) {
     cell = B.tmp();
-    B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
+    B.line(`${cell} = call ptr @scr_dyn_slot_take(ptr ${word})`);
     B.line(`store ptr ${cell}, ptr ${boxedSlot}`);
   } else {
     cell = value!.name;

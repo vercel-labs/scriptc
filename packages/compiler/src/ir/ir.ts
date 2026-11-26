@@ -4663,6 +4663,11 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       shared?: true;
+      /** A collection key's conversion: the adoption must make the source
+       * one object with the built key, and a value it cannot adopt is
+       * refused (SC2020) instead of leaving a copy the collection and the
+       * program's other name do not share. */
+      keyIdentity?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an
@@ -4675,6 +4680,10 @@ export type IrExpr =
        * path (`$[0]`), where a standalone check names only the root
        * (`$`). */
       pathIndex?: number;
+      /** The member a dynamic read validated: a failure names that member
+       * in its path (`$.projectId`), where a standalone check names only
+       * the root (`$`). */
+      pathKey?: string;
       type: IrType;
       loc: SrcLoc;
     };

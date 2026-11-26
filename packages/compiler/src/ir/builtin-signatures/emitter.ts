@@ -90,6 +90,9 @@ export const emitterSignatures = defineLibFnSignatures({
   /** listeners()/rawListeners() through an untyped value: a checked-
    * dynamic array (throws when a listener has typed parameters). */
   "emitter.listenersDyn": { argTypes: [null, STRING], result: DYN },
+  /** rawListeners over a runtime or untyped read: the once wrapper replaces
+   * a once() registration (Node's list). */
+  "emitter.rawListenersDyn": { argTypes: [null, STRING], result: DYN },
   /** Stream-'data' registration twins of emitter.on/onDyn (same args):
    * chosen at registration sites whose receiver is stream-rooted, so the
    * backend emits DATA thunks — the runtime's 'data' emission carries

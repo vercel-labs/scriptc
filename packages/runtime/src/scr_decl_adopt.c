@@ -287,7 +287,9 @@ static bool scr_decl_adopt_walk(ScrDeclAdoptList *list, ScrDyn *n, ScrDyn *capsu
   return true;
 }
 
-static void scr_decl_adopt_run(ScrDyn *source, ScrDyn *capsule, bool lenient, bool whole) {
+/* Whether the walk made every node one object with the built value: false
+ * when a node it could not adopt (or could not pair) ended a whole walk. */
+static bool scr_decl_adopt_run(ScrDyn *source, ScrDyn *capsule, bool lenient, bool whole) {
   ScrDeclAdoptList list = { NULL, 0, 0, lenient, whole };
   bool ok = scr_decl_adopt_walk(&list, source, scr_dyn_retain(capsule), NULL, 0);
   for (size_t i = 0; i < list.len; i++) {
@@ -296,10 +298,11 @@ static void scr_decl_adopt_run(ScrDyn *source, ScrDyn *capsule, bool lenient, bo
     scr_dyn_release(item->capsule);
   }
   free(list.items);
+  return ok;
 }
 
 void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule) {
-  scr_decl_adopt_run(source, capsule, false, false);
+  (void)scr_decl_adopt_run(source, capsule, false, false);
 }
 
 /* Any other checked cast of a dynamic value to a record or array
@@ -308,7 +311,7 @@ void scr_dyn_decl_adopt(ScrDyn *source, ScrDyn *capsule) {
  * data, or that the value holds in two places, keeps the separate copy the
  * cast built (the conversion already succeeded; nothing throws here). */
 void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule) {
-  scr_decl_adopt_run(source, capsule, true, false);
+  (void)scr_decl_adopt_run(source, capsule, true, false);
 }
 
 /* A checked conversion without an assertion, where a typed slot takes a
@@ -321,7 +324,19 @@ void scr_dyn_adopt_shared(ScrDyn *source, ScrDyn *capsule) {
  * signature's values) is left as it is, and the conversion stays the copy.
  * Nothing throws here. */
 void scr_dyn_adopt_whole(ScrDyn *source, ScrDyn *capsule) {
-  scr_decl_adopt_run(source, capsule, true, true);
+  (void)scr_decl_adopt_run(source, capsule, true, true);
+}
+
+/* A collection key's adoption (the compiler's dynCheck.keyIdentity): the
+ * same whole walk, but a value it cannot make one object with the built key
+ * is refused instead of left as a copy. The program's other name and the
+ * collection would hold different objects, and a later insertion or lookup
+ * of the same value would silently miss the key. */
+void scr_dyn_adopt_key(ScrDyn *source, ScrDyn *capsule) {
+  if (scr_decl_adopt_run(source, capsule, true, true)) return;
+  static const char message[] =
+    "a dynamic collection key whose value cannot be adopted as the key type is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
 }
 
 /* Whether either adoption above can change anything for `source`: the walk

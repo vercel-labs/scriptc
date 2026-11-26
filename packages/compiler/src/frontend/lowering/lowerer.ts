@@ -10666,11 +10666,23 @@ export class Lowerer {
       this.facts.npmStaticModule(ts.getSourceFileOfNode(node), spec, "require");
     if (!dep || dep.fileName.endsWith(".json")) return null;
     if (this.asyncInitFiles.has(dep)) {
-      this.unsupported(
-        "SC1090",
-        node,
-        `require() of '${spec}' (its ES-module graph uses top-level await; use import() instead)`,
-      );
+      // Node throws here: the require is synchronous and the graph is not.
+      const loc = locOf(node);
+      return {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(
+          0,
+          "ERR_REQUIRE_ASYNC_MODULE",
+          "require() cannot be used on an ESM graph with top-level await. " +
+            "Use import() instead. To see where the top-level await comes from, " +
+            "use --experimental-print-required-tla." +
+            `\nRequired module: ${dep.fileName}` +
+            `\nRequire stack:\n- ${ts.getSourceFileOfNode(node).fileName}`,
+          VOID,
+          loc,
+        ),
+        loc,
+      };
     }
     const initName = this.initNameOf.get(dep);
     if (initName === undefined) return null;

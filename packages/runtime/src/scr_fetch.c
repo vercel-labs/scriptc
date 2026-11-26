@@ -219,6 +219,10 @@ struct SfResponse {
   int status;
   bool redirected;
   bool null_body;
+  /* Response.type: 0 "default" (constructed, Response.json,
+   * Response.redirect), 1 "basic" (a fetch result), 2 "error"
+   * (Response.error). */
+  int8_t response_type;
   /* @hono/node-server's lightweight-response state (scr_fetch_response_light):
    * whether a constructed Response is still one the package would write
    * from its constructor arguments, and in which header form. 0: not (it
@@ -711,16 +715,73 @@ static void sf_any_source_abort(SfSignalWatch *w, SfSignal *source) {
   scr_dyn_release(reason);
 }
 
-ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
-  if (!signals || signals->kind != SCR_DYN_ARR) {
-    static const char message[] =
-        "signals cannot be converted to sequence.";
-    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1,
-                             "ERR_INVALID_ARG_TYPE");
+/* AbortSignal.any's `signals` sequence: an array (or a materialized
+ * typed-ref array) is taken as it is; a typed array and the native
+ * collections (Set, Map) drain in iteration order; a user iterable keeps
+ * the SC2020 refusal new Blob's sources do; primitives (strings included),
+ * null, undefined, a DataView, the ArrayBuffer objects and other
+ * non-iterables throw Node's sequence TypeError. +1 array, or NULL with
+ * the exception pending. */
+static ScrDyn *sf_any_signal_list(const ScrDyn *signals) {
+  if (signals != NULL && signals->kind == SCR_DYN_ARR)
+    return scr_dyn_retain((ScrDyn *)signals);
+  if (signals != NULL && signals->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(signals)) {
+    ScrDyn *view = scr_dyn_typed_ref_materialize(signals);
+    if (view && view->kind == SCR_DYN_ARR) return view;
+    scr_dyn_release(view);
+    if (scr_exc_pending()) return NULL;
+  }
+  if (signals != NULL && signals->kind == SCR_DYN_BYTES) {
+    /* A typed array (Buffer included) is iterable; a DataView and the
+     * ArrayBuffer objects, shared included, are not — Node throws the
+     * sequence TypeError before any element is read. */
+    if (signals->v.bytes->is_data_view || scr_array_buffer_is(signals) ||
+        scr_shared_array_buffer_is(signals))
+      goto not_a_sequence;
+    return scr_dyn_iter_pack(signals, NULL);
+  }
+  if (signals != NULL && signals->kind == SCR_DYN_HANDLE &&
+      scr_dyn_handle_ops_of(signals)->iter_pack)
+    return scr_dyn_iter_pack(signals, NULL);
+  bool primitive = signals == NULL || signals->kind == SCR_DYN_UNDEF ||
+                   signals->kind == SCR_DYN_NULL || signals->kind == SCR_DYN_BOOL ||
+                   signals->kind == SCR_DYN_NUM || signals->kind == SCR_DYN_STR ||
+                   signals->kind == SCR_DYN_BIGINT || signals->kind == SCR_DYN_SYMBOL;
+  if (!primitive) {
+    ScrDyn *iterator = scr_dyn_iterator_optional(signals);
+    if (iterator) {
+      scr_dyn_release(iterator);
+      static const char message[] =
+          "AbortSignal.any over this iterable has no lowering; pass an array";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+      return NULL;
+    }
+    if (scr_exc_pending()) return NULL;
+  }
+not_a_sequence:
+  static const char message[] = "signals cannot be converted to sequence.";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+  return NULL;
+}
+
+/* The sequence's element conversion (WebIDL): anything but an AbortSignal
+ * throws Node's "signals[<i>] is not of type AbortSignal." */
+static SfSignal *sf_any_source_of(const ScrDyn *value, size_t index) {
+  if (value == NULL || value->kind != SCR_DYN_HANDLE ||
+      value->v.handle.tag != SCR_DYNH_ABORT_SIGNAL) {
+    char message[64];
+    int n = snprintf(message, sizeof message, "signals[%zu] is not of type AbortSignal.", index);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, (size_t)n, "ERR_INVALID_ARG_TYPE");
     return NULL;
   }
+  return (SfSignal *)value->v.handle.ptr;
+}
+
+ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
+  ScrDyn *list = sf_any_signal_list(signals);
+  if (!list) return NULL;
   SfSignal *out = sf_signal_new();
-  out->source_count = signals->v.arr.len;
+  out->source_count = list->v.arr.len;
   if (out->source_count) {
     out->sources = calloc(out->source_count, sizeof *out->sources);
     out->source_watches =
@@ -728,11 +789,12 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
     if (!out->sources || !out->source_watches) sf_oom();
   }
   for (size_t i = 0; i < out->source_count; i++) {
-    SfSignal *source =
-        sf_signal_of(signals->v.arr.items[i],
-                     "AbortSignal.any requires an array of AbortSignals");
+    const ScrDyn *item =
+        scr_dyn_arr_has_index(list, i) ? list->v.arr.items[i] : scr_dyn_undefined();
+    SfSignal *source = sf_any_source_of(item, i);
     if (!source) {
       sf_signal_release(out);
+      scr_dyn_release(list);
       return NULL;
     }
     out->sources[i] = sf_signal_retain(source);
@@ -745,6 +807,7 @@ ScrDyn *scr_fetch_abort_any(ScrDyn *signals) {
           sf_signal_watch(source, out, &sf_any_source_abort);
     }
   }
+  scr_dyn_release(list);
   ScrDyn *boxed = scr_dyn_new_handle(out, SCR_DYNH_ABORT_SIGNAL);
   sf_signal_release(out);
   return boxed;
@@ -5097,6 +5160,7 @@ static SfResponse *sf_response_clone(SfResponse *r, const char *unusable) {
   c->status_text = scr_str_retain(r->status_text);
   c->status = r->status;
   c->redirected = r->redirected;
+  c->response_type = r->response_type;
   c->null_body = r->null_body;
   c->light_length = r->light_length;
   return c;
@@ -5136,6 +5200,13 @@ static ScrDyn *sf_response_invoke(void *ptr, ScrDyn *self,
 
 static ScrDyn *sf_response_get(void *ptr, const char *key, size_t len) {
   SfResponse *r = ptr;
+  if (sf_name(key, len, "type")) {
+    const char *type = r->response_type == 2 ? "error" : r->response_type == 1 ? "basic" : "default";
+    ScrStr *text = scr_str_new(type, strlen(type));
+    ScrDyn *out = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return out;
+  }
   if (sf_name(key, len, "status")) return scr_dyn_new_num((double)r->status);
   if (sf_name(key, len, "ok")) {
     return scr_dyn_new_bool(r->status >= 200 && r->status <= 299);
@@ -6227,7 +6298,15 @@ static bool sf_method_validate(ScrStr **method_out) {
             strchr("!#$%&'*+-.^_`|~", c) != NULL;
   }
   if (!valid) {
-    sf_type_error("fetch failed");
+    /* Node's undici: TypeError "<value> is not a valid HTTP method." */
+    size_t message_len = method->len + 32;
+    char *message = malloc(message_len);
+    if (!message) sf_oom();
+    int len = snprintf(message, message_len, "'%.*s' is not a valid HTTP method.",
+                       (int)method->len, method->data);
+    if (len < 0 || (size_t)len >= message_len) sf_oom();
+    sf_type_error(message);
+    free(message);
     return false;
   }
   if (sf_eq_ci(method, "connect") || sf_eq_ci(method, "trace") ||
@@ -6666,6 +6745,7 @@ static void sf_on_response(ScrClosure *cb, ScrHttpReq *res) {
   scr_str_release(raw_status_text);
   response->status = status;
   response->redirected = t->redirected;
+  response->response_type = 1;
   response->null_body = null_body;
   ScrDyn *boxed = scr_dyn_new_handle(response, SCR_DYNH_FETCH_RESPONSE);
   sf_response_release(response);
@@ -7534,6 +7614,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
   response->status_text = status_text;
   response->status = status;
   response->redirected = false;
+  response->response_type = 0;
   response->null_body = null_body;
   response->light = light_form;
   response->auto_ct = auto_ct;
@@ -7601,6 +7682,90 @@ ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init) {
                                &sf_response_json_serialize);
 }
 
+/* The empty, immutable headers table Response.error() carries (Node's
+ * guard makes every response-header mutation throw "immutable"). */
+static SfHeaders *sf_headers_empty(void) {
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 0);
+  if (!pairs) sf_oom();
+  return sf_headers_new(pairs, true);
+}
+
+ScrDyn *scr_fetch_response_error(void) {
+  SfResponse *r = scr_cyc_alloc(sizeof *r, &sf_response_cyc_type);
+  if (!r) sf_oom();
+  r->rc = 1;
+  r->body = sf_stream_new_native();
+  sf_stream_close(r->body);
+  r->headers = sf_headers_empty();
+  r->url = scr_str_new("", 0);
+  r->status_text = scr_str_new("", 0);
+  r->status = 0;
+  r->redirected = false;
+  r->null_body = true;
+  r->response_type = 2;
+  ScrDyn *out = scr_dyn_new_handle(r, SCR_DYNH_FETCH_RESPONSE);
+  sf_response_release(r);
+  return out;
+}
+
+ScrDyn *scr_fetch_response_redirect(ScrDyn *url_value, ScrDyn *status_value) {
+  ScrStr *text = url_value != NULL ? scr_dyn_string_coerce_js(url_value)
+                                   : scr_str_new("undefined", 9);
+  if (!text) return NULL;
+  /* WebIDL converts every argument before the implementation runs: the url
+   * string first, then the status number, and only then the url parses (a
+   * parse failure still leaves the status conversion observed). */
+  double converted = 302.0;
+  if (status_value != NULL && status_value->kind != SCR_DYN_UNDEF) {
+    if (!scr_dyn_number_coerce_js(status_value, &converted)) {
+      scr_str_release(text);
+      return NULL;
+    }
+    converted = trunc(converted);
+    if (!isfinite(converted)) converted = 0.0;
+  }
+  ScrUrl *parsed = sf_url_parse_quiet(text);
+  if (!parsed) {
+    sf_throw_url_parse_failure(text);
+    scr_str_release(text);
+    return NULL;
+  }
+  scr_str_release(text);
+  /* Node's undici answers only the redirect statuses (301, 302, 303, 307
+   * and 308) and throws its RangeError for every other code, 300 and 304
+   * included. */
+  if (converted != 301.0 && converted != 302.0 && converted != 303.0 && converted != 307.0 &&
+      converted != 308.0) {
+    char message[48];
+    int n = snprintf(message, sizeof message, "Invalid status code %d", (int)converted);
+    scr_url_release(parsed);
+    scr_throw_error_msg(SCR_ERR_RANGE, message, (size_t)n);
+    return NULL;
+  }
+  ScrStr *href = scr_url_href(parsed);
+  scr_url_release(parsed);
+  ScrArr *pairs = scr_arr_new(SCR_ELEM_STR, 2);
+  if (!pairs) sf_oom();
+  scr_arr_push_ref(pairs, scr_str_new("location", 8));
+  scr_arr_push_ref(pairs, href);
+  SfResponse *r = scr_cyc_alloc(sizeof *r, &sf_response_cyc_type);
+  if (!r) sf_oom();
+  r->rc = 1;
+  r->body = sf_stream_new_native();
+  sf_stream_close(r->body);
+  r->headers = sf_headers_new(pairs, true);
+  r->headers->canonical = sf_header_values_trimmed(pairs);
+  r->url = scr_str_new("", 0);
+  r->status_text = scr_str_new("", 0);
+  r->status = (int)converted;
+  r->redirected = false;
+  r->null_body = true;
+  r->response_type = 0;
+  ScrDyn *out = scr_dyn_new_handle(r, SCR_DYNH_FETCH_RESPONSE);
+  sf_response_release(r);
+  return out;
+}
+
 /* Request uses the same body stream and Headers ownership as Response. */
 typedef struct SfRequest {
   size_t rc;
@@ -7609,6 +7774,10 @@ typedef struct SfRequest {
   ScrStr *method;
   ScrStr *redirect;
   ScrStr *cache;
+  /* The body was transferred to another Request by `new Request(source)`:
+   * Node marks the source's body used at once (bodyUsed true, the readers
+   * reject, clone() answers "unusable"). */
+  bool body_used;
   ScrStr *credentials;
   SfSignal *signal;
   /* The own-property table (+1), adopted and traced (see SfHeaders.props). */
@@ -7676,6 +7845,7 @@ static ScrDyn *sf_request_get(void *ptr, const char *key, size_t len) {
   if (sf_name(key, len, "referrer")) default_value = "about:client";
   if (default_value) { ScrStr *s = scr_str_new(default_value, strlen(default_value)); ScrDyn *v = scr_dyn_new_str(s); scr_str_release(s); return v; }
   if (sf_name(key, len, "keepalive") || sf_name(key, len, "isReloadNavigation") || sf_name(key, len, "isHistoryNavigation")) return scr_dyn_new_bool(false);
+  if (sf_name(key, len, "bodyUsed") && r->body_used) return scr_dyn_new_bool(true);
   if (sf_name(key, len, "body") || sf_name(key, len, "bodyUsed") || sf_name(key, len, "headers")) return sf_response_get(r->payload, key, len);
   return NULL;
 }
@@ -7696,6 +7866,7 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
   }
   SfRequest *c = scr_cyc_alloc(sizeof *c, &sf_request_cyc_type);
   c->rc = 1;
+  c->body_used = false;
   c->payload = payload;
   c->url = scr_str_retain(r->url);
   c->method = scr_str_retain(r->method);
@@ -7710,7 +7881,22 @@ static ScrDyn *sf_request_clone(SfRequest *r) {
 }
 static ScrDyn *sf_request_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc, const char *what) {
   SfRequest *r = ptr;
-  if (strcmp(method, "clone") == 0) return sf_request_clone(r);
+  if (strcmp(method, "clone") == 0) {
+    if (r->body_used) { sf_type_error("unusable"); return NULL; }
+    return sf_request_clone(r);
+  }
+  if (r->body_used &&
+      (strcmp(method, "text") == 0 || strcmp(method, "json") == 0 ||
+       strcmp(method, "bytes") == 0 || strcmp(method, "arrayBuffer") == 0 ||
+       strcmp(method, "blob") == 0 || strcmp(method, "formData") == 0)) {
+    /* Node's reader answers a rejected promise, never a synchronous throw. */
+    ScrPromise *used = scr_promise_new();
+    sf_type_error("Body is unusable: Body has already been read");
+    scr_promise_reject_pending(used);
+    ScrDyn *out = scr_dyn_new_promise(used);
+    scr_promise_release(used);
+    return out;
+  }
   return sf_response_invoke(r->payload, self, method, args, argc, what);
 }
 
@@ -7740,6 +7926,20 @@ static const char *const sf_cache_values[] = {
 };
 static const char *const sf_credentials_values[] = {"omit", "same-origin", "include"};
 
+/* undici's enum-converter TypeError for a value outside its list: the
+ * argument name renders as "undefined", then the value and the accepted
+ * list, exactly as Node's message reads. */
+static void sf_enum_value_rejected(const ScrStr *text, const char *expected) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "undefined: ");
+  scr_jb_write(&b, text->data, text->len);
+  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
+  scr_jb_puts(&b, expected);
+  scr_jb_puts(&b, ".");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
 static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, size_t key_len,
                                            const char *const *accepted, size_t count,
                                            const char *expected, const ScrStr *inherited,
@@ -7760,15 +7960,8 @@ static ScrStr *sf_request_init_string_enum(const ScrDyn *init, const char *key, 
     if (strlen(accepted[i]) == text->len && memcmp(accepted[i], text->data, text->len) == 0)
       return text;
   }
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, "undefined: ");
-  scr_jb_write(&b, text->data, text->len);
-  scr_jb_puts(&b, " is not an accepted type. Expected one of ");
-  scr_jb_puts(&b, expected);
-  scr_jb_puts(&b, ".");
+  sf_enum_value_rejected(text, expected);
   scr_str_release(text);
-  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
   return NULL;
 }
 
@@ -7839,14 +8032,16 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (!method_text || !sf_method_validate(&method_text)) { scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL; }
   ScrDyn *body = sf_response_init_get(init, "body", 4);
   bool supplied = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
+  bool transferred = false;
   if (!supplied && source && !source->payload->null_body) {
-    if (source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
+    if (source->body_used || source->payload->body->disturbed || source->payload->body->reader || source->payload->body->internal_lock ||
         sf_view_unusable(source->payload->body)) {
       scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url);
       scr_str_release(cache_text); scr_str_release(credentials_text);
       sf_type_error("Cannot construct a Request with a Request object that has already been used."); return NULL;
     }
     scr_dyn_release(body); body = scr_dyn_new_handle(source->payload->body, SCR_DYNH_WEB_STREAM);
+    transferred = true;
   }
   bool has_body = body && body->kind != SCR_DYN_UNDEF && body->kind != SCR_DYN_NULL;
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
@@ -7919,11 +8114,19 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   ScrDyn *redirect = sf_response_init_get(init, "redirect", 8);
   ScrStr *redirect_text = redirect && redirect->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(redirect) : source ? scr_str_retain(source->redirect) : scr_str_new("follow", 6);
   scr_dyn_release(redirect);
-  if (!redirect_text || !(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
-    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); sf_type_error("Invalid Request redirect value"); return NULL;
+  if (!redirect_text) {
+    sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL;
   }
+  if (!(sf_name(redirect_text->data, redirect_text->len, "follow") || sf_name(redirect_text->data, redirect_text->len, "manual") || sf_name(redirect_text->data, redirect_text->len, "error"))) {
+    sf_enum_value_rejected(redirect_text, "follow, manual, error");
+    scr_str_release(redirect_text); sf_signal_release(following); scr_dyn_release(payload); scr_str_release(method_text); scr_url_release(url); scr_str_release(cache_text); scr_str_release(credentials_text); return NULL;
+  }
+  /* `new Request(source)` transfers the source's body once the construction
+   * cannot fail any more: Node marks the source used at that point, not
+   * before the members that can still throw are converted. */
+  if (transferred) source->body_used = true;
   SfRequest *r = scr_cyc_alloc(sizeof *r, &sf_request_cyc_type);
-  r->rc = 1; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
+  r->rc = 1; r->body_used = false; r->payload = sf_response_retain(payload->v.handle.ptr); scr_dyn_release(payload);
   r->url = scr_url_href(url); scr_url_release(url); r->method = method_text; r->redirect = redirect_text; r->signal = following;
   r->cache = cache_text; r->credentials = credentials_text;
   ScrDyn *result = scr_dyn_new_handle(r, SCR_DYNH_FETCH_REQUEST); sf_request_release_v(r); return result;
@@ -8033,6 +8236,8 @@ static ScrDyn *sf_data_response(ScrStr *url) {
     SfResponse *response = result->v.handle.ptr;
     scr_str_release(response->url); response->url = scr_str_new(url->data, end);
     response->headers->immutable = true;
+    /* A fetch() result, as over http: type "basic". */
+    response->response_type = 1;
   }
   return result;
 }
@@ -8069,6 +8274,8 @@ static ScrDyn *sf_object_url_response(ScrStr *url) {
     SfResponse *response = result->v.handle.ptr;
     scr_str_release(response->url); response->url = scr_str_new(url->data, url->len);
     response->headers->immutable = true;
+    /* A fetch() result, as over http: type "basic". */
+    response->response_type = 1;
   }
   return result;
 }

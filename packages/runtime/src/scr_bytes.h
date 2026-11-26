@@ -595,6 +595,7 @@ ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const S
 ScrBytes *scr_bytes_buffer_source(const ScrDyn *value);
 ScrBytes *scr_text_decoder_input(const ScrDyn *value, double encoding, const ScrDyn *state, bool stream);
 bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name);
+ScrStr *scr_text_encode_input(const ScrDyn *value); /* encode() input: "" for undefined, else ToString */
 bool scr_text_decode_stream_option(const ScrDyn *options);
 double scr_text_decoder_encoding_options(const ScrDyn *label, const ScrDyn *options);
 ScrStr *scr_text_decode_buffer_source(const ScrDyn *value);

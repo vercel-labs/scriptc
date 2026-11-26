@@ -7001,7 +7001,16 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         for (let i = callees.length - 1; i >= 0; i--) {
           const d = callees[i]!.decorator;
           const dLoc = locOf(d);
+          const calleeRef: IrExpr = {
+            kind: "varRef",
+            localId: callees[i]!.localId,
+            type: DYN,
+            loc: dLoc,
+          };
+          const previous: IrExpr = { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc };
           const result = lowerer.declareHiddenLocal("legacyres", DYN);
+          // `d && (d(...) || r) || r`: a falsy decorator is skipped, as
+          // tsc's helper does, and the accumulated descriptor survives.
           stmts.push({
             kind: "varDecl",
             localId: result.id,
@@ -7009,18 +7018,28 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
               kind: "logical",
               op: "||",
               left: {
-                kind: "dynCall",
-                callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
-                calleeName: "decorator",
-                args: [
-                  target(dLoc),
-                  key(dLoc),
-                  { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
-                ],
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: {
+                  kind: "logical",
+                  op: "||",
+                  left: {
+                    kind: "dynCall",
+                    callee: calleeRef,
+                    calleeName: "decorator",
+                    args: [target(dLoc), key(dLoc), previous],
+                    type: DYN,
+                    loc: dLoc,
+                  },
+                  right: previous,
+                  type: DYN,
+                  loc: dLoc,
+                },
                 type: DYN,
                 loc: dLoc,
               },
-              right: { kind: "varRef", localId: descriptorId, type: DYN, loc: dLoc },
+              right: previous,
               type: DYN,
               loc: dLoc,
             },
@@ -7086,6 +7105,12 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
             resultId === null
               ? dynUndefinedExpr(dLoc)
               : { kind: "varRef", localId: resultId, type: DYN, loc: dLoc };
+          const calleeRef: IrExpr = {
+            kind: "varRef",
+            localId: callees[i]!.localId,
+            type: DYN,
+            loc: dLoc,
+          };
           const result = lowerer.declareHiddenLocal("legacyres", DYN);
           stmts.push({
             kind: "varDecl",
@@ -7094,10 +7119,24 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
               kind: "logical",
               op: "||",
               left: {
-                kind: "dynCall",
-                callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
-                calleeName: "decorator",
-                args: [target(dLoc), key(dLoc), previous],
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: {
+                  kind: "logical",
+                  op: "||",
+                  left: {
+                    kind: "dynCall",
+                    callee: calleeRef,
+                    calleeName: "decorator",
+                    args: [target(dLoc), key(dLoc), previous],
+                    type: DYN,
+                    loc: dLoc,
+                  },
+                  right: previous,
+                  type: DYN,
+                  loc: dLoc,
+                },
                 type: DYN,
                 loc: dLoc,
               },
@@ -7288,6 +7327,16 @@ export function analyzeClassDecoration(lowerer: Lowerer, info: ClassInfo): void 
       }
       shapes.push({ kind: "call", funcType: mapped, replaces });
     }
+    // A dynamic decorator's result cannot be checked at compile time, and a
+    // replacement constructor would be invisible to already-compiled
+    // subclasses (they extend the original class), so the combination is
+    // refused rather than silently bypassed.
+    if (shapes.some((s) => s.kind === "dynamic") && info.subclasses.length > 0)
+      lowerer.unsupported(
+        "SC1090",
+        cd.nodes[0]!,
+        `legacy class decorators that the compiled call cannot verify on '${display}', which has subclasses ('${info.subclasses[0]!.def.jsName ?? info.subclasses[0]!.def.name}' extends '${display}': a replacement constructor would be bypassed by the compiled subclass — decorate the leaf classes)`,
+      );
     const typedReplace = shapes.some((s) => s.kind === "call" && s.replaces);
     if (typedReplace || shapes.some((s) => s.kind === "dynamic")) {
       // The name can rebind at runtime: every reference must route
@@ -7432,11 +7481,31 @@ function lowerClassDecoration(lowerer: Lowerer, info: ClassInfo): IrStmt[] {
           type: DYN,
           loc: dLoc,
         };
+        const calleeRef: IrExpr = { kind: "varRef", localId: t.localId, type: DYN, loc: dLoc };
         const res = lowerer.declareHiddenLocal("decres", target);
+        // tsc's helper skips a falsy decorator (`if (d = decorators[i])`);
+        // the class value then stays the current one.
         stmts.push({
           kind: "varDecl",
           localId: res.id,
-          init: lowerer.coerceToExpected(chained, target),
+          init: lowerer.coerceToExpected(
+            {
+              kind: "logical",
+              op: "||",
+              left: {
+                kind: "logical",
+                op: "&&",
+                left: calleeRef,
+                right: chained,
+                type: DYN,
+                loc: dLoc,
+              },
+              right: lowerer.coerceToExpected(current, DYN),
+              type: DYN,
+              loc: dLoc,
+            },
+            target,
+          ),
           loc: dLoc,
         });
         current = { kind: "varRef", localId: res.id, type: target, loc: dLoc };

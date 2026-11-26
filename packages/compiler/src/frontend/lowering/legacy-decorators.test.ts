@@ -252,3 +252,33 @@ test("a standard-decorator program still fenced member decorators", async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a dynamic legacy class decorator on a base with subclasses is refused", async () => {
+  const source = [
+    "type LegacyClassDecorator = <T>(target: T) => T | void;",
+    "function injectable(): LegacyClassDecorator {",
+    "  return <T>(target: T): T | void => { return undefined; };",
+    "}",
+    "@injectable()",
+    "class Base {}",
+    "class Sub extends Base {}",
+    "console.log(new Sub() instanceof Base);",
+    "",
+  ].join("\n");
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-legacy-decorators-dynamic-sub-"));
+  try {
+    const entry = join(dir, "main.ts");
+    await writeFile(entry, source);
+    await writeFile(join(dir, "tsconfig.json"), JSON.stringify(legacyTsconfig));
+    const result = await compile(entry, {
+      outDir: dir,
+      outPath: join(dir, "main.ir.json"),
+      outputKind: "ir",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.diagnostics.map((d) => d.code)).toContain("SC1090");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

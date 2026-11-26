@@ -68,6 +68,41 @@ steps.push(() => {
 });
 
 steps.push(() => {
+  // a numeric string port keeps the supplied destination host
+  const tcpPort = tcpServer.address().port;
+  const client = new net.Socket();
+  let connected = false;
+  client.on("connect", () => {
+    connected = true;
+    say("string-port-host", "connected", client.remotePort === tcpPort);
+  });
+  client.on("error", (err) => say("string-port-host-error", codeOf(err)));
+  client.connect(String(tcpPort), "127.0.0.1");
+  setTimeout(() => {
+    if (!connected) say("string-port-host", "not-connected");
+    client.destroy();
+    run();
+  }, 200);
+});
+
+steps.push(() => {
+  // ...and dials THAT host: the server listens on 127.0.0.1 only, so the
+  // other loopback address is refused instead of being answered locally
+  const tcpPort = tcpServer.address().port;
+  const client = new net.Socket();
+  client.on("error", (err) => {
+    say("string-port-other-host", codeOf(err));
+    client.destroy();
+    run();
+  });
+  client.connect(String(tcpPort), "127.0.0.2");
+  setTimeout(() => {
+    client.destroy();
+    run();
+  }, 300);
+});
+
+steps.push(() => {
   const tcpPort = tcpServer.address().port;
   const client = new net.Socket();
   let connected = false;

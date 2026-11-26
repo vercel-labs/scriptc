@@ -3650,7 +3650,8 @@ function constructsStaticClass(
     break;
   }
   if (!ts.isNewExpression(e) || staticType === null) return false;
-  return typeEquals(lowerer.mapTypeOf(lowerer.typeOf(e)), staticType);
+  const constructed = lowerer.mapTypeOf(lowerer.typeOf(e));
+  return constructed !== null && typeEquals(constructed, staticType);
 }
 
 /** The compile-time value of a `highWaterMark` initializer that is

@@ -758,6 +758,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "stream.duplexFromGen",
   "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
+  "stream.composeStageDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
   "stream.duplexFromAsyncFnNoSource",

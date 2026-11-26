@@ -294,6 +294,10 @@ void scr_tls_fetch_client_wrap(ScrNetSocket *sock, void *ctx);
 void *scr_tls_fetch_tunnel_ctx(ScrStr *proxy_host /*borrowed*/, ScrStr *target_host /*borrowed, nullable*/,
                                const char *request, size_t len);
 void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *ctx);
+/* Give back a transport context that never reached its socket: the fetch
+ * unit owns it until the wrap hook takes it. */
+void scr_tls_fetch_ctx_release(void *ctx);
+void scr_tls_fetch_tunnel_ctx_release(void *ctx);
 /* The loop-side registration (scr_async.c, always linked): `pending`
  * joins the exhaustion test (a live handle keeps the process alive, like
  * Node's active TCP handles), `dispatch` runs at every turn top like the

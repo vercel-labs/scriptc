@@ -303,13 +303,13 @@ static ScrDyn *stw3_write(ScrClosure *cl, ScrDyn *const *args, size_t argc) {
   }
   /* A write that reaches a writable which already failed rejects with its
    * error, as Node's sink does; the branches below only resolve a write whose
-   * own failure emptied the queue. */
+   * own failure emptied the queue. The writable keeps its own lifecycle: one
+   * that auto-destroys has already done so, and one with autoDestroy: false
+   * stays open, as Node leaves it. */
   ScrError *failed = scr_stream_errored(c->writable);
   if (failed != NULL) {
     ScrPromise *rejected = scr_promise_new();
     stw3_reject(rejected, failed);
-    if (!scr_stream_prop(c->writable, "destroyed"))
-      scr_stream_release(scr_stream_destroy(c->writable, failed));
     scr_error_release(failed);
     ScrDyn *out = scr_dyn_new_promise(rejected);
     scr_promise_release(rejected);

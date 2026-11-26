@@ -502,6 +502,10 @@ export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
   // wss connections with scr_tls.c, and dispatches its events through
   // scr_event_target.c (with the emitter and symbol units that unit needs).
   { feature: "webSocket", requires: ["net", "http", "tls", "emitter", "symbol", "dynAsync"] },
+  // scr_sqlite.c interns DatabaseSync's Symbol(sqlite-type) brand through
+  // the symbol unit's registry, and reflection and util.inspect show it
+  // whatever the program does with symbols.
+  { feature: "sqlite", requires: ["symbol"] },
   // events.once with options registers the await through the emitter unit.
   { feature: "eventsOnceSignal", requires: ["emitter"] },
   // scr_perf.c resolves performance.measure's Node timing milestone names

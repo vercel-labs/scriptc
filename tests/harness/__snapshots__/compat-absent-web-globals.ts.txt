@@ -1,27 +1,20 @@
-compat-absent-web-globals.ts:5:20 - error SC0001: Cannot find name 'EventSource'.
+compat-absent-web-globals.ts:9:21 - error SC0001: Cannot find name 'URLPattern'. Did you mean 'pattern'?
 
-  4 | // rather than an unverified registry gap.
-  5 | const events = new EventSource("http://localhost:1/stream");
-    |                    ^~~~~~~~~~~
-  6 | events.close();
+   8 | 
+   9 | const pattern = new URLPattern({ pathname: "/books/:id" });
+     |                     ^~~~~~~~~~
+  10 | console.log(pattern.test("http://localhost/books/1"));
 
-compat-absent-web-globals.ts:8:21 - error SC0001: Cannot find name 'URLPattern'. Did you mean 'pattern'?
+compat-absent-web-globals.ts:12:18 - error SC0001: Cannot find name 'CompressionStream'.
 
-  7 | 
-  8 | const pattern = new URLPattern({ pathname: "/books/:id" });
-    |                     ^~~~~~~~~~
-  9 | console.log(pattern.test("http://localhost/books/1"));
-
-compat-absent-web-globals.ts:11:18 - error SC0001: Cannot find name 'CompressionStream'.
-
-  10 | 
-  11 | const gzip = new CompressionStream("gzip");
+  11 | 
+  12 | const gzip = new CompressionStream("gzip");
      |                  ^~~~~~~~~~~~~~~~~
-  12 | const gunzip = new DecompressionStream("gzip");
+  13 | const gunzip = new DecompressionStream("gzip");
 
-compat-absent-web-globals.ts:12:20 - error SC0001: Cannot find name 'DecompressionStream'.
+compat-absent-web-globals.ts:13:20 - error SC0001: Cannot find name 'DecompressionStream'.
 
-  11 | const gzip = new CompressionStream("gzip");
-  12 | const gunzip = new DecompressionStream("gzip");
+  12 | const gzip = new CompressionStream("gzip");
+  13 | const gunzip = new DecompressionStream("gzip");
      |                    ^~~~~~~~~~~~~~~~~~~
-  13 | console.log(typeof gzip.readable, typeof gunzip.writable);
+  14 | console.log(typeof gzip.readable, typeof gunzip.writable);

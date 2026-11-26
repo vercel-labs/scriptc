@@ -1,0 +1,4 @@
+{
+  "order": ["<repo>/tests/corpus/stream-pipe-error-unpipe.mjs"],
+  "diags": []
+}

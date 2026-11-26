@@ -4301,12 +4301,13 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     member === "toLocaleUpperCase"
   ) {
     hint =
-      "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
-      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
-      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
-      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
-      "resolvedOptions, and the remaining Intl constructors remain unsupported";
+      "collation and the remaining Intl surfaces stay outside the static runtime (the " +
+      "localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat " +
+      "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+      "toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the " +
+      "default locale, or one string tag validated and negotiated as Node does), and " +
+      "Intl.Segmenter with grapheme or word granularity; sentence segmentation, " +
+      "resolvedOptions, locale lists, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +

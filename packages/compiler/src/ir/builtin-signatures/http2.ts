@@ -85,6 +85,10 @@ export const http2Signatures = defineLibFnSignatures({
    * :status rides separately as a number). */
   "http2.createServer": { argTypes: [], result: NETSERVER_T },
   "http2.createServerReq": { argTypes: [null], result: NETSERVER_T },
+  /** createServer(options...): only settings.enableConnectProtocol is
+   * honored (the RFC 8441 advertisement); the rest stay at defaults. */
+  "http2.createServerOpts": { argTypes: [BOOL], result: NETSERVER_T },
+  "http2.createServerReqOpts": { argTypes: [null, BOOL], result: NETSERVER_T },
   "http2.serverOnStream": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   "http2.serverOnSession": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   // connect(authority, reject, ca[, cb]): the TLS client knobs an https
@@ -209,6 +213,11 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamHeadersSent": { argTypes: [HTTP2STREAM_T], result: BOOL },
   // Http2ServerRequest.complete: true once aborted, ended or closed.
   "http2.reqComplete": { argTypes: [HTTPREQ_T], result: BOOL },
+  /** Http2ServerRequest.url: the frame's :path, and Node's undefined when
+   * the block carries none (CONNECT). The VOID is the nullable-string
+   * sentinel (the interned `string | undefined` union; shape-checked in
+   * validate.ts like net.sockRemoteAddress). */
+  "http2.reqUrl": { argTypes: [HTTPREQ_T], result: VOID },
   // Every value a name has in a received [name, value, ...] pairs array:
   // the string[] a headers object holds for set-cookie.
   "http2.pairsValues": { argTypes: [arrayOf(STRING), STRING], result: arrayOf(STRING) },

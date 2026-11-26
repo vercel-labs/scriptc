@@ -1619,10 +1619,16 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
 
 /* The write half takes writes: not ending or closed, and connected,
  * connecting, or waiting to dial (the agent's deferred dial, the caller
- * lookup), which buffers them until the connection is established. */
+ * lookup), which buffers them until the connection is established. A dial
+ * that has already failed (the failure and its close wait for the sweep)
+ * still takes writes: Node's socket is still connecting when the error
+ * lands, so the write queues and its callback gets
+ * ERR_SOCKET_CLOSED_BEFORE_CONNECTION at the close (an explicit destroy()
+ * ends the write half first and keeps answering ERR_STREAM_DESTROYED). */
 static bool scr_net_sock_write_open(ScrNetSocket *w) {
   if (w->wr_ending || w->close_emitted) return false;
-  return w->fd >= 0 || w->dial_deferred || w->lookup_wait;
+  return w->fd >= 0 || w->dial_deferred || w->lookup_wait ||
+         (w->closed_before_connect && !w->wr_done);
 }
 
 /* A user write: Writable.write's answer, as Node 24's writeOrBuffer
@@ -1699,8 +1705,12 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
   }
   /* A socket whose dial hasn't STARTED yet (the agent's deferred dial,
    * the caller-lookup wait) has no fd but is logically connecting —
-   * bytes buffer and flush at establishment like any mid-connect write. */
-  bool pre_dial = s->fd < 0 && (s->dial_deferred || s->lookup_wait) &&
+   * bytes buffer and flush at establishment like any mid-connect write.
+   * A dial that already failed has no fd either; its writes queue the
+   * same way and answer at the close. */
+  bool pre_dial = s->fd < 0 &&
+                  (s->dial_deferred || s->lookup_wait ||
+                   (s->closed_before_connect && !s->wr_done)) &&
                   !s->wr_ending && !s->close_emitted;
   if (!pre_dial && (s->fd < 0 || s->wr_ending || s->close_emitted)) return;
   if (len == 0) return;
@@ -3725,11 +3735,16 @@ static void scr_net_sock_dial_peer(ScrNetSocket *s) {
   }
   char bind_err[128];
   if (scr_net_sock_bind_local(s, fd, family, bind_err, sizeof bind_err) != 0) {
+    /* Node's 'error' then 'close': the failed socket settles like any
+     * other dial failure (a registered socket left without emit_close
+     * would never close, retaining it and its listeners). */
     s->pending_err = scr_str_new(bind_err, strlen(bind_err));
     s->had_error = true;
     s->connecting = false;
     s->closed_before_connect = true;
+    s->emit_close = true;
     close(fd);
+    scr_net_work_add(s);
     return;
   }
   s->fd = fd;
@@ -4749,6 +4764,7 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
   /* the Socket constructor's ladder */
   static const char *const om[] = { "objectMode", "readableObjectMode", "writableObjectMode" };
   bool keepalive = false, ka_given = false;
+  bool allow_half_open = false;
   double ka_delay = 0;
   double tos = 0;
   bool tos_given = false;
@@ -4793,6 +4809,8 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
         goto fail;
       }
     }
+    v = scr_dyn_obj_get(opts, "allowHalfOpen", 13);
+    if (v != NULL && scr_net_dyn_truthy(v)) allow_half_open = true;
     v = scr_dyn_obj_get(opts, "noDelay", 7);
     (void)v; /* TCP_NODELAY stays the runtime's default: a documented divergence */
     v = scr_dyn_obj_get(opts, "keepAlive", 9);
@@ -4858,6 +4876,9 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
       return NULL;
     }
     if (timeout_ms > 0) ps->timeout_ms = timeout_ms;
+    /* the Socket constructor's members reach a pipe connection too:
+     * allowHalfOpen keeps the write half open after the peer's FIN */
+    ps->allow_half_open = allow_half_open;
     if (cb != NULL) scr_net_ls_add(&ps->conn_ls, cb, NULL, true);
     scr_dyn_release(made);
     return ps;
@@ -4977,6 +4998,7 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
   }
 
   ScrNetSocket *s = scr_net_sock_new();
+  s->allow_half_open = allow_half_open;
   s->peer_port = (int)port_num;
   scr_net_sock_set_peer(s, host_str);
   if (local_set) {
@@ -5860,7 +5882,8 @@ static int scr_net_sock_bind_local(ScrNetSocket *s, int fd, int family, char *er
     b.sin6_family = AF_INET6;
     b.sin6_port = htons((uint16_t)s->local_port);
     if (inet_pton(AF_INET6, addr, &b.sin6_addr) != 1) {
-      snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      if (s->local_port != 0) snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      else snprintf(err, errcap, "bind EINVAL %s", addr);
       return -1;
     }
     rc = bind(fd, (struct sockaddr *)&b, sizeof b);
@@ -5870,13 +5893,18 @@ static int scr_net_sock_bind_local(ScrNetSocket *s, int fd, int family, char *er
     b.sin_family = AF_INET;
     b.sin_port = htons((uint16_t)s->local_port);
     if (inet_pton(AF_INET, addr, &b.sin_addr) != 1) {
-      snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      if (s->local_port != 0) snprintf(err, errcap, "bind EINVAL %s:%d", addr, s->local_port);
+      else snprintf(err, errcap, "bind EINVAL %s", addr);
       return -1;
     }
     rc = bind(fd, (struct sockaddr *)&b, sizeof b);
   }
   if (rc != 0) {
-    snprintf(err, errcap, "bind %s %s:%d", scr_net_errname(errno), addr, s->local_port);
+    /* Node's ExceptionWithHostPort text names the endpoint, and omits
+     * the port when the request left it at 0 ("bind EADDRNOTAVAIL
+     * 192.0.2.1", not "192.0.2.1:0"). */
+    if (s->local_port != 0) snprintf(err, errcap, "bind %s %s:%d", scr_net_errname(errno), addr, s->local_port);
+    else snprintf(err, errcap, "bind %s %s", scr_net_errname(errno), addr);
     return -1;
   }
   return 0;
@@ -9625,6 +9653,21 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
     scr_net_fire_arg_this(&sock->close_ls, had_error, sock, SCR_DYNH_NET_SOCKET);
     scr_dyn_release(had_error);
   }
+  if (sock->closed_before_connect && sock->wcb_ls.n > 0) {
+    /* Writes queued before the connection was established answer at
+     * 'close', after the 'close' event: Node's _writeGeneric reports
+     * ERR_SOCKET_CLOSED_BEFORE_CONNECTION for them. */
+    static const char text[] = "Socket closed before the connection was established";
+    ScrStr *msg = scr_str_new(text, sizeof text - 1);
+    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
+    scr_str_release(msg);
+    scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
+    ScrDyn *error = scr_dyn_from_error(e);
+    scr_error_release(e);
+    scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
+    scr_dyn_release(error);
+    if (scr_exc_pending()) return false;
+  }
   /* the transport settles first: a listener its last events add (a TLS
    * server's 'tlsClientError') drops with the rest */
   if (sock->tops && sock->tops->settle) sock->tops->settle(sock->tctx);
@@ -9743,21 +9786,6 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     sock->pending_code = NULL;
     sock->pending_name = NULL;
     scr_str_release(msg);
-    if (scr_exc_pending()) return false;
-  }
-  if (sock->closed_before_connect && sock->wcb_ls.n > 0 && sock->fd < 0) {
-    /* The socket closed before it connected (destroy(), or a connect
-     * that failed): Node's _writeGeneric answers the queued writes with
-     * this error at 'close', after the 'error' event when there is one. */
-    static const char text[] = "Socket closed before the connection was established";
-    ScrStr *msg = scr_str_new(text, sizeof text - 1);
-    ScrError *e = scr_error_new(SCR_ERR_ERROR, msg);
-    scr_str_release(msg);
-    scr_error_set_code(e, "ERR_SOCKET_CLOSED_BEFORE_CONNECTION");
-    ScrDyn *error = scr_dyn_from_error(e);
-    scr_error_release(e);
-    scr_net_fire_arg_this(&sock->wcb_ls, error, sock, SCR_DYNH_NET_SOCKET);
-    scr_dyn_release(error);
     if (scr_exc_pending()) return false;
   }
   if (sock->emit_close && !sock->close_emitted && sock->fd < 0) {

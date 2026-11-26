@@ -8269,7 +8269,8 @@ export function lowerStreamMethodCall(
         loc,
       };
     }
-    const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(-1, loc);
+    // Node's read() with no argument is read(NaN): the absent form.
+    const size = args[0] ? lowerer.lowerExprExpecting(args[0], F64) : numLit(NaN, loc);
     const type: IrType = unionOf(lowerer, [BYTES, { kind: "nullT" }]);
     const read: IrExpr = {
       kind: "libCall",

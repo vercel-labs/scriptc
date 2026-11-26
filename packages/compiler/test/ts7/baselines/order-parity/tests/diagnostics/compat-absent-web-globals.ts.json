@@ -5,20 +5,11 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Cannot find name 'EventSource'.",
-   "loc": {
-    "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 270,
-    "end": 281
-   }
-  },
-  {
-   "code": "SC0001",
    "message": "Cannot find name 'URLPattern'. Did you mean 'pattern'?",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 349,
-    "end": 359
+    "start": 484,
+    "end": 494
    }
   },
   {
@@ -26,8 +17,8 @@
    "message": "Cannot find name 'CompressionStream'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 462,
-    "end": 479
+    "start": 597,
+    "end": 614
    }
   },
   {
@@ -35,8 +26,8 @@
    "message": "Cannot find name 'DecompressionStream'.",
    "loc": {
     "file": "<repo>/tests/diagnostics/compat-absent-web-globals.ts",
-    "start": 508,
-    "end": 527
+    "start": 643,
+    "end": 662
    }
   }
  ]

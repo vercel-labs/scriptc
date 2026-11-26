@@ -2,7 +2,8 @@
  * whole stack, but large live frames must still survive awaits and yields.
  * With the argument `timers`: the order of a loop turn's due timers and
  * immediates. With `resolve`: the off-loop lookup the WebSocket dial runs
- * through the worker pool. */
+ * through the worker pool, and with `timerwrap`: the timer sequence's
+ * ordering across the 2^32 boundary. */
 #undef NDEBUG
 #include "scr_async.c"
 #include <assert.h>
@@ -789,6 +790,24 @@ static void async_lookup_leaves_the_loop_free(void) {
 }
 #endif
 
+/* The timer heap's FIFO tiebreak and the turn's eligibility snapshot order
+ * timers by this sequence, so it must keep counting past 2^32: on Windows an
+ * unsigned long sequence wraps there, and a timer armed before the wrap read
+ * as armed by the current turn — an ineligible heap root that never fires
+ * again. */
+static void timer_sequence_orders_past_the_32_bit_boundary(void) {
+  _Static_assert(sizeof(((ScrTimer *)0)->seq) >= 8,
+                 "the timer sequence must outlast 2^32 arms");
+  ScrTimer older = {0};
+  ScrTimer newer = {0};
+  older.deadline_ms = newer.deadline_ms = 1.0;
+  older.seq = 0xFFFFFFF0ull;  /* armed just before the 2^32 wrap */
+  newer.seq = 0x100000010ull; /* two turns past it */
+  assert(scr_timer_before(&older, &newer));
+  assert(!scr_timer_before(&newer, &older));
+  printf("timer sequence orders past the 32-bit boundary\n");
+}
+
 int main(int argc, char **argv) {
   scr_init();
   if (argc > 1 && strcmp(argv[1], "promises") == 0) {
@@ -811,6 +830,10 @@ int main(int argc, char **argv) {
     return 0;
   }
 #endif
+  if (argc > 1 && strcmp(argv[1], "timerwrap") == 0) {
+    timer_sequence_orders_past_the_32_bit_boundary();
+    return 0;
+  }
   if (argc > 1 && strcmp(argv[1], "destroy") == 0) {
     async_resource_destroy_keeps_its_context();
     return 0;

@@ -77197,9 +77197,12 @@
           "tests/corpus/net-attempt-events.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
           "tests/corpus/net-connect-missing-args.mjs",
+          "tests/corpus/net-connect-options-audit.ts",
           "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-port-validation.cjs",
           "tests/corpus/net-create-server-block-list.ts",
           "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
@@ -77218,6 +77221,7 @@
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/corpus/net-typed-option-records.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -79669,19 +79673,14 @@
       "anchor": "netconnectoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79774,19 +79773,14 @@
       "anchor": "netcreateconnectionoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"

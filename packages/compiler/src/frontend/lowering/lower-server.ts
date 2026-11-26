@@ -1317,7 +1317,7 @@ function lowerNetConnectDyn(
     lowerer,
     `${member} with these arguments`,
     expr,
-    "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+    "port, host, localAddress, localPort, family, hints, lookup, noDelay, keepAlive, keepAliveInitialDelay, autoSelectFamily, autoSelectFamilyAttemptTimeout, blockList, signal and timeout are the supported options",
   );
   return {
     kind: "libCall",
@@ -1437,6 +1437,27 @@ function lowerNetConnectOptions(
       }
       return lowerNetConnectPath(lowerer, expr, member, path, false, args[1]);
     }
+  }
+  // A literal carrying any option the static walk does not handle routes to
+  // the runtime lane, whose normalization reads the rest of Node's
+  // TcpNetConnectOpts (localAddress/localPort, family, hints, noDelay,
+  // keepAlive/keepAliveInitialDelay, blockList, signal and timeout). Unknown
+  // members then follow Node's drop rule instead of a compile-time fence.
+  {
+    const staticKeys = new Set([
+      "port",
+      "host",
+      "autoSelectFamily",
+      "autoSelectFamilyAttemptTimeout",
+      "lookup",
+    ]);
+    const allStatic = optsNode.properties.nodes.every((p) => {
+      const named = ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p);
+      const key =
+        named && (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) ? p.name.text : null;
+      return key !== null && staticKeys.has(key);
+    });
+    if (!allStatic) return lowerNetConnectDyn(lowerer, expr, member, args, loc);
   }
   let port: IrExpr | null = null;
   let host: IrExpr | null = null;
@@ -1576,7 +1597,7 @@ function lowerNetConnectOptions(
       lowerer.noLowering(
         `${member} option '${key}'`,
         prop,
-        "port, host, autoSelectFamily, autoSelectFamilyAttemptTimeout, and lookup are the supported options",
+        "port, host, localAddress, localPort, family, hints, lookup, noDelay, keepAlive, keepAliveInitialDelay, autoSelectFamily, autoSelectFamilyAttemptTimeout, blockList, signal and timeout are the supported options",
       );
     }
   }

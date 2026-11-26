@@ -61,3 +61,20 @@ try {
 // nobody looks at).
 execFileSync("true", [], { stdio: "pipe" });
 console.log("done");
+
+// execFileSync's `shell` value is read at the call even when the expression's
+// type narrows to the literal true or false: Node evaluates the option like
+// any other, so a validation helper that returns the literal runs. Skipping
+// it would erase the check (and its recorded call).
+const shellChecks: string[] = [];
+function allowShell(): true {
+  shellChecks.push("allow");
+  return true;
+}
+function refuseShell(): false {
+  shellChecks.push("refuse");
+  return false;
+}
+console.log("shell-option:", JSON.stringify(execFileSync("echo via-shell", [], { encoding: "utf8", shell: allowShell() })));
+console.log("shell-option-bare:", JSON.stringify(execFileSync("echo", ["plain"], { encoding: "utf8", shell: refuseShell() })));
+console.log("shell-checks:", shellChecks.join(","));

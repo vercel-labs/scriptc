@@ -192,9 +192,16 @@ ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *ke
 ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
                                          ScrDyn *const *args, size_t argc) {
   const ScrDynHandleClass *klass = hc_classes[self->v.handle.tag];
-  if (klass && klass->method_invoke)
-    return klass->method_invoke(self->v.handle.ptr, self, method, args, argc, method);
-  return ops->invoke(self->v.handle.ptr, self, method, args, argc, method);
+  void *prev_target = scr_dyn_method_value_target;
+  const char *prev_name = scr_dyn_method_value_name;
+  scr_dyn_method_value_target = self->v.handle.ptr;
+  scr_dyn_method_value_name = method;
+  ScrDyn *result = klass && klass->method_invoke
+                       ? klass->method_invoke(self->v.handle.ptr, self, method, args, argc, method)
+                       : ops->invoke(self->v.handle.ptr, self, method, args, argc, method);
+  scr_dyn_method_value_target = prev_target;
+  scr_dyn_method_value_name = prev_name;
+  return result;
 }
 
 static void hc_define_method(ScrDyn *prototype, ScrDynHandleTag tag, const char *name) {
@@ -292,6 +299,12 @@ static const ScrDynHandleAccessor *hc_accessors(const ScrDyn *handle) {
   return klass && klass->accessors && klass->accessors->name ? klass->accessors : NULL;
 }
 
+/* The class's own method function for `name`: the prototype member a handle
+ * read answers, built over no receiver (methods ignore it). +1 or NULL. */
+static ScrDyn *hc_method_value(ScrDynHandleTag tag, const char *name) {
+  return scr_dyn_handle_class_member(tag, NULL, name, strlen(name));
+}
+
 static ScrDyn *hc_own_properties(const ScrDyn *handle) {
   ScrDynHandleTag tag = handle->v.handle.tag;
   if (tag == SCR_DYNH_CAPACITY || hc_classes[tag] == NULL) return NULL;
@@ -314,6 +327,7 @@ static const ScrDynHandleClassOps hc_class_ops = {
     .receiver = scr_dyn_handle_class_receiver,
     .method_call = scr_dyn_handle_class_method_call,
     .accessors = hc_accessors,
+    .method_value = hc_method_value,
     .owns_nothing = hc_owns_nothing,
     .own_properties = hc_own_properties,
 };

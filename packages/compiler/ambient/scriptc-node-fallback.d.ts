@@ -1822,6 +1822,7 @@ declare var Headers: {
 };
 interface Response {
   readonly ok: boolean;
+  readonly type: "basic" | "cors" | "default" | "error" | "opaque" | "opaqueredirect";
   readonly status: number;
   readonly statusText: string;
   readonly url: string;

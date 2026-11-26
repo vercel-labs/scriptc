@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sqlite-define-properties.ts"
+ ],
+ "diags": []
+}

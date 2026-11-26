@@ -86,6 +86,15 @@ static bool scr_td_options_ok(const ScrDyn *options) {
 
 /* options[name] with JS truthiness; undefined and null options read as
  * false. A getter's exception stays pending. */
+/* TextEncoder.encode's optional USVString: an absent or undefined argument
+ * takes the parameter's default "" (Node's WebIDL conversion), and every
+ * other value converts through ToString. +1 string, or NULL with the
+ * conversion's TypeError pending. */
+ScrStr *scr_text_encode_input(const ScrDyn *value) {
+  if (value == NULL || value->kind == SCR_DYN_UNDEF) return scr_str_new("", 0);
+  return scr_dyn_string_coerce_js(value);
+}
+
 bool scr_text_decoder_flag(const ScrDyn *options, const ScrStr *name) {
   if (options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL) return false;
   ScrDyn *value;

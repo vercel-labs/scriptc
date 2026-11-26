@@ -44,3 +44,29 @@ console.log(
   Object.getPrototypeOf(dRetyped) === protoInherits,
   (Object.getPrototypeOf(dRetyped) as any).marker2 === true,
 )
+
+// A subclass whose constructor installs noncanonical numeric reference
+// properties that point back at the instance: the type-changing map retypes
+// the species result, whose cleanup must unlink those edges before releasing
+// their payloads (a release can run a collection). The sanitized lane proves
+// no freed payload is traced.
+const stash = (target: any, key: string, value: any): void => {
+  target[key] = value
+}
+type Row = { v: number; back: any }
+class E extends Array<Row> {
+  constructor(len: number = 0) {
+    super(len)
+    const self: any = this
+    stash(self, "1.5", { v: 0, back: self })
+    stash(self, "-1", { v: 1, back: [self] })
+  }
+}
+let edgeTotal = 0
+for (let i = 0; i < 500; i++) {
+  const e = new E()
+  e.push({ v: i, back: null })
+  const relaid = e.map((x) => [x])
+  edgeTotal += relaid.length
+}
+console.log("edges", edgeTotal)

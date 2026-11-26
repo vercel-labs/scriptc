@@ -2130,40 +2130,62 @@ static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) 
   const ScrArrOps *old_ops = scr_arr_ops(a);
   /* The species result keeps the state its constructor installed: a
    * replaced prototype especially, which Node's retyped result inherits
-   * from the constructor call. Only the element storage is replaced. */
+   * from the constructor call. Only the element storage is replaced, and no
+   * collection may run between unlinking an edge and releasing its payload. */
+  scr_cyc_suspend();
   if (x != NULL) {
+    const size_t n = x->sparse_len + x->prop_len;
+    uint64_t *payloads = n > 0 ? malloc(n * sizeof *payloads) : NULL;
+    uint8_t *states = n > 0 ? malloc(n) : NULL;
+    if (n > 0 && (payloads == NULL || states == NULL)) scr_arr_oom();
     /* Out-of-line named properties and sparse slots carry the OLD element
-     * kind's payloads; release them before the kind changes and start the
-     * new storage with none. */
-    for (size_t i = 0; i < x->sparse_len; i++) {
-      if (x->sparse[i].state == SCR_ARR_VALUE)
-        scr_elem_release_with(old_elem, old_ops, x->sparse[i].slot);
-      else if (x->sparse[i].state == SCR_ARR_FOREIGN)
-        scr_dyn_release(scr_slot_to_ptr(x->sparse[i].slot));
+     * kind's payloads, and they are edges the collector traces while the
+     * array is a candidate. Unlink every edge first (a hole state and a null
+     * slot), then release: a release may run a collection synchronously, and
+     * a trace must never see a pointer this cleanup is about to free. */
+    size_t at = 0;
+    for (size_t i = 0; i < x->sparse_len; i++, at++) {
+      states[at] = x->sparse[i].state;
+      payloads[at] = x->sparse[i].slot;
+      x->sparse[i].state = SCR_ARR_HOLE;
+      x->sparse[i].slot = 0;
     }
-    scr_arr_sparse_free(x->sparse);
-    x->sparse = NULL;
-    x->sparse_len = x->sparse_cap = 0;
-    for (size_t i = 0; i < x->prop_len; i++) {
-      if (x->props[i].state == SCR_ARR_VALUE)
-        scr_elem_release_with(old_elem, old_ops, x->props[i].slot);
-      else if (x->props[i].state == SCR_ARR_FOREIGN)
-        scr_dyn_release(scr_slot_to_ptr(x->props[i].slot));
-      free(x->props[i].key);
+    for (size_t i = 0; i < x->prop_len; i++, at++) {
+      states[at] = x->props[i].state;
+      payloads[at] = x->props[i].slot;
+      x->props[i].state = SCR_ARR_HOLE;
+      x->props[i].slot = 0;
     }
-    free(x->props);
-    x->props = NULL;
-    x->prop_len = x->prop_cap = 0;
-    x->foreign = false;
     /* The dense slots are holes (the caller checked), so freeing the
      * allocation releases no payload; the extension's pointer word is
      * re-created around the same extension below. */
     if (!scr_arr_inline(a) && a->data != NULL) scr_mem_free(scr_arr_alloc_start(a));
+    a->data = NULL;
+    a->len = a->cap = a->filled = 0;
+    /* No dense storage is left to describe: a collection during the releases
+     * below must not compute state or inline addresses from the old flags. */
+    a->spare = (uint16_t)SCR_ARR_HAS_EXT;
+    for (size_t i = 0; i < n; i++) {
+      if (states[i] == SCR_ARR_VALUE)
+        scr_elem_release_with(old_elem, old_ops, payloads[i]);
+      else if (states[i] == SCR_ARR_FOREIGN)
+        scr_dyn_release(scr_slot_to_ptr(payloads[i]));
+    }
+    for (size_t i = 0; i < x->prop_len; i++) free(x->props[i].key);
+    scr_arr_sparse_free(x->sparse);
+    free(x->props);
+    x->sparse = NULL;
+    x->sparse_len = x->sparse_cap = 0;
+    x->props = NULL;
+    x->prop_len = x->prop_cap = 0;
+    x->foreign = false;
+    free(payloads);
+    free(states);
   } else if (!scr_arr_inline(a) && a->data != NULL) {
     scr_mem_free(scr_arr_alloc_start(a));
+    a->data = NULL;
+    a->len = a->cap = a->filled = 0;
   }
-  a->data = NULL;
-  a->len = a->cap = a->filled = 0;
   a->elem = elem;
   uint32_t id = ops ? scr_arr_ops_id(ops) : 0;
   a->spare = (uint16_t)((id << SCR_ARR_OPS_SHIFT) | (x != NULL ? SCR_ARR_HAS_EXT : 0));
@@ -2179,6 +2201,7 @@ static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) 
     x->untraced_rows = a->cyc && elem == SCR_ELEM_ARR && ops == NULL;
   }
   scr_arr_set_len(a, (double)len);
+  scr_cyc_resume();
 }
 
 /* Whether the species constructor Node resolves is this class. Get(recv,

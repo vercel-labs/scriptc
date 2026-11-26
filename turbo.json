@@ -39,14 +39,13 @@
         "scripts/toolchain.sha256",
         "scripts/ci-vercel/toolchain.mjs"
       ],
-      "outputs": [
-        ".ci/toolchain/**"
-      ],
+      "outputs": [],
       "tags": [
         "ci",
         "ci:os:ubuntu",
         "ci:cpus:8"
-      ]
+      ],
+      "cache": false
     },
     "//#ci:setup:native:musl": {
       "dependsOn": [

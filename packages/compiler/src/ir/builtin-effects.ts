@@ -254,6 +254,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "text.decoderInput",
   "text.decoderFlag",
   "text.decodeStreamOption",
+  "text.encodeInput",
   "text.decoderEncodingOptions",
   "text.decodeBufferSource",
 

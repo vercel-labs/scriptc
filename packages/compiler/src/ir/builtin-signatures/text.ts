@@ -15,6 +15,7 @@ export const textSignatures = defineLibFnSignatures({
   "text.decoderInput": { argTypes: [DYN, F64, DYN, BOOL], result: BYTES_U8 },
   "text.decoderFlag": { argTypes: [DYN, STRING], result: BOOL },
   "text.decodeStreamOption": { argTypes: [DYN], result: BOOL },
+  "text.encodeInput": { argTypes: [DYN], result: STRING },
   "text.decoderEncodingOptions": { argTypes: [DYN, DYN], result: F64 },
   "text.decodeBufferSource": { argTypes: [DYN], result: STRING },
   "text.decodeOptions": { argTypes: [BYTES_U8, BOOL, BOOL], result: STRING },

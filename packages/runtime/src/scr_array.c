@@ -6405,17 +6405,18 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
     scr_arr_ext(a)->cls = from->cls;
     from->cls = NULL;
   }
-  /* The commit gives `a` the storage `target` held, so the flags that
-   * describe that storage move with it: a traced Array subclass of an
-   * array-of-arrays must keep skipping its header-less rows, and slots the
-   * storage marks foreign stay foreign. Losing either here would hand plain
-   * rows to the cycle collector or release a foreign payload twice. */
+  /* The commit puts the two arrays' storage in each other's place, so both
+   * sides' flags must survive: a traced Array subclass of an array-of-arrays
+   * must keep skipping its header-less rows, and slots either side marks
+   * foreign stay foreign. The flags say "some slot may be foreign" / "rows
+   * carry no header", so keeping a true from either side is safe and losing
+   * one is not: a cleared foreign flag makes a following slice copy the
+   * pointer without retaining it, and replacing the source slot then leaves
+   * a dangling value in the copy. */
   if (from) {
     ScrArrExt *x = scr_arr_ext(a);
-    x->untraced_rows = from->untraced_rows;
-    x->foreign = from->foreign;
-    from->untraced_rows = false;
-    from->foreign = false;
+    x->untraced_rows = x->untraced_rows || from->untraced_rows;
+    x->foreign = x->foreign || from->foreign;
   }
   if (from && from->prop_len) {
     /* Both arrays have the same element type, so the slots keep their owner. */

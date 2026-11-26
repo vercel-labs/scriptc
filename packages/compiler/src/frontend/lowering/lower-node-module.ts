@@ -1021,10 +1021,27 @@ const MODULE_CLASS_STATIC_NAMES: readonly string[] = [
   "stripTypeScriptTypes",
 ];
 
+/** `value`, preceded by the receiver's own evaluation when the receiver is
+ * an awaited literal import (`(await import("node:module")).Module`), which
+ * the read does not lower: Node evaluates the await where the member is
+ * read, before the call's own arguments and the computed key. */
+function withModuleClassReceiverLoad(
+  lowerer: Lowerer,
+  receiver: ts.Expression,
+  value: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const load = lowerer.builtinReceiverLoad(receiver, loc);
+  return load === null
+    ? value
+    : { kind: "seqExpr", stmts: [load], result: value, type: value.type, loc };
+}
+
 /** `Module[key]` with a runtime STRING key: the key is evaluated once and
  * matched against the class's statics the compiled surface answers, so a
  * computed name reads the same value its own spelling does; any other name
- * answers undefined, as an object without the property does. Non-string
+ * reads the class value itself, which answers the constructor's own `name`,
+ * `length` and `prototype` and undefined for a name it lacks. Non-string
  * keys keep the general element-read behavior (Node's ToPropertyKey would
  * stringify them, which no static needs here). */
 export function lowerModuleClassDynamicStatic(
@@ -1038,7 +1055,17 @@ export function lowerModuleClassDynamicStatic(
   if (type === null || type.kind !== "string") return null;
   const loc = locOf(expr);
   const keyLocal = lowerer.declareHiddenLocal("%moduleStaticKey", STRING);
-  let chain: IrExpr = dynUndefinedExpr(loc);
+  const classValue = lowerer.lowerBuiltinMemberDynValue("module", "Module", loc);
+  let chain: IrExpr =
+    classValue === null
+      ? dynUndefinedExpr(loc)
+      : {
+          kind: "dynKeyGet",
+          value: classValue,
+          key: varRef(keyLocal.id, STRING, loc),
+          type: DYN,
+          loc,
+        };
   for (let i = MODULE_CLASS_STATIC_NAMES.length - 1; i >= 0; i--) {
     const member = MODULE_CLASS_STATIC_NAMES[i]!;
     const value = lowerer.lowerBuiltinMemberDynValue("module", member, loc);
@@ -1059,9 +1086,11 @@ export function lowerModuleClassDynamicStatic(
       loc,
     };
   }
+  const load = lowerer.builtinReceiverLoad(expr.expression, loc);
   return {
     kind: "seqExpr",
     stmts: [
+      ...(load === null ? [] : [load]),
       {
         kind: "varDecl",
         localId: keyLocal.id,
@@ -1085,7 +1114,10 @@ export function lowerModuleClassStatic(
 ): IrExpr | null {
   if (expr.questionDotToken) return null;
   if (!isModuleClassValue(lowerer, expr.expression)) return null;
-  return lowerer.lowerBuiltinMemberDynValue("module", expr.name.text, locOf(expr));
+  const value = lowerer.lowerBuiltinMemberDynValue("module", expr.name.text, locOf(expr));
+  return value === null
+    ? null
+    : withModuleClassReceiverLoad(lowerer, expr.expression, value, locOf(expr));
 }
 
 /** A call to a static of node:module's `Module` class (`Module.isBuiltin(
@@ -1127,7 +1159,9 @@ export function lowerModuleClassStaticCall(
     loc,
   };
   const result = lowerer.mapTypeOf(lowerer.typeOf(call));
-  return result !== null && result.kind !== "dyn"
-    ? lowerer.coerceToExpected(called, result)
-    : called;
+  const value_ =
+    result !== null && result.kind !== "dyn" ? lowerer.coerceToExpected(called, result) : called;
+  // The receiver evaluates before the call's own arguments: an awaited
+  // literal import does its microtask hop where the call stands.
+  return withModuleClassReceiverLoad(lowerer, receiver, value_, loc);
 }

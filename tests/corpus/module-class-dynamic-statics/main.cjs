@@ -29,3 +29,20 @@ for (const key of ["builtinModules", "constants", "nope"]) {
         : value === undefined,
   );
 }
+
+// A name the compiled surface does not answer reads the class value itself:
+// the constructor's own name, length and prototype, and undefined for a name
+// it lacks. The key's static type is string, which is what selects the
+// runtime-key lowering.
+/** @param {string} key */
+function readStatic(key) {
+  return Module[key];
+}
+console.log(
+  "constructor members",
+  readStatic("name"),
+  readStatic("length"),
+  typeof readStatic("prototype"),
+  readStatic("prototype") === Module.prototype,
+  readStatic("nope") === undefined,
+);

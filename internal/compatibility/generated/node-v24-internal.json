@@ -72594,6 +72594,7 @@
           "tests/corpus/cjs-module-alias-values/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/module-children-dynamic-fields/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs",
           "tests/corpus/module-class-dynamic-statics/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs"
@@ -72898,7 +72899,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73045,7 +73047,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73175,7 +73178,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73206,7 +73210,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73237,7 +73242,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73268,7 +73274,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73299,7 +73306,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73330,7 +73338,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -73361,7 +73370,8 @@
           "tests/corpus/module-children-dynamic-fields/main.cjs",
           "tests/corpus/module-class-instance/main.cjs",
           "tests/corpus/module-class-statics/main.cjs",
-          "tests/corpus/module-class-dynamic-statics/main.cjs"
+          "tests/corpus/module-class-dynamic-statics/main.cjs",
+          "tests/corpus/module-class-awaited-receiver/main.mjs"
         ]
       },
       "anchorSource": "exact"

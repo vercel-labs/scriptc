@@ -739,6 +739,7 @@ extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
  * prototype like Node's — answers keys, JSON and identity with
  * Module._extensions as Node's does. */
 static SCR_TL ScrDyn *scr_module_extensions_table;
+static SCR_TL bool scr_module_extensions_cleanup_registered;
 
 static ScrDyn *scr_module_extensions_refuse(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
   (void)clo;
@@ -750,8 +751,17 @@ static ScrDyn *scr_module_extensions_refuse(ScrClosure *clo, ScrDyn *const *args
   return NULL;
 }
 
+static void scr_module_extensions_cleanup(void) {
+  scr_dyn_release(scr_module_extensions_table);
+  scr_module_extensions_table = NULL;
+}
+
 ScrDyn *scr_module_extensions(void) {
   if (scr_module_extensions_table) return scr_dyn_retain(scr_module_extensions_table);
+  if (!scr_module_extensions_cleanup_registered) {
+    scr_atexit(scr_module_extensions_cleanup);
+    scr_module_extensions_cleanup_registered = true;
+  }
   ScrDyn *table = scr_dyn_new_obj_null_proto();
   static const char *names[] = {".js", ".json", ".node"};
   for (size_t i = 0; i < 3; i++) {

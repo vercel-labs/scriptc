@@ -161,7 +161,35 @@ export function lowerX509OwnKeyWalk(
   loc: SrcLoc,
 ): IrExpr | null {
   const resultT = lowerer.irTypeOf(call);
-  const stmts: IrStmt[] = [{ kind: "exprStmt", expr: lowerer.lowerExpr(receiverNode), loc }];
+  /** The answer for a present certificate. */
+  const present = (): IrExpr | null => {
+    if (
+      member === "keys" ||
+      member === "values" ||
+      member === "entries" ||
+      member === "getOwnPropertyNames"
+    ) {
+      if (resultT?.kind !== "array") return null;
+      return { kind: "arrayLit", elems: [], type: resultT, loc };
+    }
+    if (member === "getOwnPropertyDescriptor") {
+      if (resultT === null || resultT === undefined) return null;
+      const nothing: IrExpr = {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type: DYN,
+        loc,
+      };
+      return lowerer.coerceInto(call, nothing, resultT);
+    }
+    if (member === "hasOwn" || member === "hasOwnProperty" || member === "propertyIsEnumerable")
+      return { kind: "boolLit", value: false, type: BOOL, loc };
+    return null;
+  };
+  const answer = present();
+  if (answer === null) return null;
+  const receiver = lowerer.lowerExpr(receiverNode);
+  const stmts: IrStmt[] = [{ kind: "exprStmt", expr: receiver, loc }];
   const keyed =
     member === "getOwnPropertyDescriptor" ||
     member === "hasOwn" ||
@@ -176,27 +204,11 @@ export function lowerX509OwnKeyWalk(
     type: result.type,
     loc,
   });
-  if (
-    member === "keys" ||
-    member === "values" ||
-    member === "entries" ||
-    member === "getOwnPropertyNames"
-  ) {
-    if (resultT?.kind !== "array") return null;
-    return finish({ kind: "arrayLit", elems: [], type: resultT, loc });
-  }
-  if (member === "getOwnPropertyDescriptor") {
-    if (resultT === null || resultT === undefined) return null;
-    const nothing: IrExpr = {
-      kind: "dynFrom",
-      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
-      type: DYN,
-      loc,
-    };
-    return finish(lowerer.coerceInto(call, nothing, resultT));
-  }
-  if (member === "hasOwn" || member === "hasOwnProperty" || member === "propertyIsEnumerable")
-    return finish({ kind: "boolLit", value: false, type: BOOL, loc });
+  if (receiver.type.kind === "record" && isX509Type(lowerer, receiver.type)) return finish(answer);
+  // A certificate read that can be absent at run time (an indexed read the
+  // checker typed as the record) keeps the refusal: Node's walk throws its
+  // TypeError for it, and answering the present value's empty result would
+  // let a missing entry pass for a certificate.
   return null;
 }
 

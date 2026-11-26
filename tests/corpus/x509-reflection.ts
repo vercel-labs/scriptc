@@ -45,4 +45,14 @@ console.log(
 const json = JSON.stringify(cert);
 console.log("json", typeof json, json.slice(0, 28), json.length);
 console.log("instanceof", cert instanceof crypto.X509Certificate);
+
+// A certificate read that is absent at run time — a missing lookup entry the
+// checker typed as a certificate — answers false to the class test, as Node
+// does (its own-key walks over such a value are refused at compile time).
+const certificates: Record<string, crypto.X509Certificate> = {};
+console.log(
+  "missing lookup",
+  certificates["missing"] instanceof crypto.X509Certificate,
+  cert instanceof crypto.X509Certificate,
+);
 console.log("toString", typeof cert.toString(), String(cert).split("\n")[0], String(cert).length);

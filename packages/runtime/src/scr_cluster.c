@@ -910,14 +910,31 @@ static void scr_cl_child_disconnect_thunk(ScrClosure *cb) {
   scr_cl_defer_release(w);
 }
 
+/* A worker whose process could not start reports Node's error object, which
+ * the child unit leaves in the event payload while its listeners run; the
+ * worker and the cluster both answer 'error' with it. */
 static void scr_cl_child_error_thunk(ScrClosure *cb, ScrStr *msg) {
-  (void)cb;
-  (void)msg;
+  ScrClusterWorker *w = scr_cl_box_of(cb);
+  if (w == NULL) return;
+  ScrDyn *error = scr_event_error_payload != NULL ? scr_dyn_from_error(scr_event_error_payload)
+                                                  : scr_dyn_new_str(msg);
+  ScrDyn *worker_args[] = {error};
+  scr_cl_ls_emit(&w->ls, "error", worker_args, 1);
+  ScrDyn *self = scr_cl_worker_handle(w);
+  ScrDyn *cluster_args[] = {self, error};
+  scr_cl_ls_emit(&scr_cl_events, "error", cluster_args, 2);
+  scr_dyn_release(self);
+  scr_dyn_release(error);
+  scr_clw_release(w);
 }
 
 /* A cluster worker's channel starts armed: the raw listeners below hold
  * the reader and the exit/disconnect observation. */
 static void scr_cl_arm_child(ScrClusterWorker *w) {
+  /* The error listeners below are C callbacks, so the child unit's spawn
+   * failure payload (Node's error object) has to be installed here: the
+   * compiled listener path installs it for itself. */
+  scr_child_error_event_install();
   scr_child_ipc_on_message(w->child, scr_cl_closure(w, (void *)&scr_cl_child_message_thunk),
                            scr_cl_child_message_thunk, false);
   scr_child_on_exit(w->child, scr_cl_closure(w, (void *)&scr_cl_child_exit_thunk),
@@ -1038,11 +1055,17 @@ ScrDyn *scr_cluster_fork(const ScrDyn *env) {
   w->id = id;
   w->child = child;
   w->state = "none";
+  /* The arming below hands out references of its own, and a child that
+   * failed to spawn has no channel for them: the registrations release their
+   * closures at once, so the worker keeps a reference of its creator's while
+   * the other owners are put in place. */
+  scr_clw_retain(w);
   scr_cl_arm_child(w);
   scr_cl_register(w);
   w->all_next = scr_cl_all_workers;
   scr_cl_all_workers = scr_clw_retain(w);
   scr_cl_queue_fork(w);
+  scr_clw_release(w); /* the creator's reference: the owners above hold it now */
   return scr_cl_worker_handle(w);
 }
 

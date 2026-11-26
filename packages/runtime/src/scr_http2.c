@@ -1405,10 +1405,12 @@ static void scr_h2_stream_fire_error(ScrH2Stream *st) {
   int n = name != NULL
       ? snprintf(msg, sizeof msg, "Stream closed with error code %s", name)
       : snprintf(msg, sizeof msg, "Stream closed with error code %" PRIu32, code);
-  /* A stream error reaches the stream's listeners only: Node's session keeps
-   * an internal listener, so an unlistened RST (a peer can send one at will)
-   * is not an unhandled 'error' and must never end the process. */
-  if (st->err_ls.n > 0) {
+  /* A raw stream (no compatibility pair) has no internal error listener in
+   * Node, so an unlistened stream error throws there — an empty list here
+   * takes the fatal path on purpose. A compatibility stream swallows it
+   * (Node's compat layer listens), which is why a compat-only server
+   * survives a peer reset. */
+  if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
     ScrStr *m = scr_str_new(msg, (size_t)n);
     scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
     scr_str_release(m);
@@ -3769,19 +3771,22 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
    * reports the protocol error, and both before 'end' — the handler of a
    * request whose body never arrived never sees a clean success. */
   scr_h2_stream_begin_close(st);
-  if (st->err_ls.n > 0) {
+  {
     /* Node's ERR_HTTP2_STREAM_ERROR message for the reset code. */
     const char *name = scr_h2_code_name(1);
     char msg[80];
     int n = snprintf(msg, sizeof msg, "Stream closed with error code %s",
                      name != NULL ? name : "NGHTTP2_PROTOCOL_ERROR");
     ScrStr *m = scr_str_new(msg, (size_t)n);
-    scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    /* listeners, or — for a raw stream — Node's unhandled 'error' */
+    if (st->err_ls.n > 0 || (st->compat_req == NULL && st->compat_res == NULL)) {
+      scr_net_fire_err_this(&st->err_ls, m, st, SCR_DYNH_H2_STREAM);
+    }
     scr_str_release(m);
   }
-  /* Reported to the listeners above (or to none — Node's session keeps an
-   * internal listener, so a compat-only server must not die here). Either
-   * way the settle below must not raise it again. */
+  /* Reported above (or deliberately not: a compatibility stream swallows an
+   * unlistened error, Node's compat layer listens). Either way the settle
+   * below must not raise it again. */
   st->suppress_rst_error = true;
   /* Then it completes the request: the compat request's 'end' runs with no
    * trailers (nghttp2 closes the stream under it), so a handler never hangs

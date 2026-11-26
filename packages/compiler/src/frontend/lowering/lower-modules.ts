@@ -9,7 +9,7 @@ import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
-import { dynUndefinedExpr } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr } from "../../ir/build.js";
 import { everyStmtList, everyTypeChild } from "../../ir/traverse.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Module-graph lowering: splitting each source file into its parts, the
@@ -4825,12 +4825,25 @@ export function lowerFileInit(
           const loc = locOf(stmt);
           const depAsync = lowerer.asyncInitFiles.has(dep);
           if (depAsync && !isAsync) {
-            lowerer.unsupported(
-              "SC1090",
-              stmt,
-              `loading '${dep.fileName}' from a CommonJS module ` +
-                "(the required ES-module graph uses top-level await; use import() instead)",
-            );
+            // Node throws at the require: a CommonJS module cannot load an
+            // ES-module graph that awaits at its top level.
+            const throwLoc = locOf(stmt);
+            header.push({
+              kind: "exprStmt",
+              expr: nodeThrowExpr(
+                0,
+                "ERR_REQUIRE_ASYNC_MODULE",
+                "require() cannot be used on an ESM graph with top-level await. " +
+                  "Use import() instead. To see where the top-level await comes from, " +
+                  "use --experimental-print-required-tla." +
+                  `\nRequired module: ${dep.fileName}` +
+                  `\nRequire stack:\n- ${sf.fileName}`,
+                VOID,
+                throwLoc,
+              ),
+              loc: throwLoc,
+            });
+            continue;
           }
           const call: IrExpr = {
             kind: "call",

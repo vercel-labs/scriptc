@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-require-esm/leaf.mjs",
+  "<repo>/tests/corpus/module-require-esm/child.mjs",
+  "<repo>/tests/corpus/module-require-esm/tla.mjs",
+  "<repo>/tests/corpus/module-require-esm/main.cjs"
+ ],
+ "diags": []
+}

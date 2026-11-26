@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/npm-generic-class-declaration/main.ts"
+ ],
+ "diags": []
+}

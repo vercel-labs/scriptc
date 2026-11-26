@@ -1639,6 +1639,34 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // A package's .d.ts declares generic classes (rxjs's Subject<T> and a
+  // subclass of it) that its JavaScript implements. The program names them
+  // with type arguments, typechecks against the declarations, and the build
+  // compiles the package natively rather than serving it from a Node island.
+  // The corpus program pins the behavior against Node.
+  test("declared generic classes back their JavaScript classes without an island", async () => {
+    const entry = join(repoRoot, "tests/corpus/npm-generic-class-declaration/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toEqual([{ package: "subjectkit", status: "static" }]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics.map((d) => `${d.code} ${d.message}`)).toEqual([]);
+    const dir = mkdtempSync(join(tmpdir(), "scriptc-generic-declarations-"));
+    try {
+      const result = await compile(entry, {
+        outputKind: "ir",
+        npmStatic: "auto",
+        outDir: dir,
+        outPath: join(dir, "program.ir"),
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      expect((result.warnings ?? []).filter((d) => d.code === "SC8001")).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 180_000);
+
   // A package that is not compiled is typed the same whether or not another
   // package compiles beside it: typegapped ships no declarations, so its
   // import is the implicit-any error and the package refusal in both

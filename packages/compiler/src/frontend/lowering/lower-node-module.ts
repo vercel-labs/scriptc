@@ -814,6 +814,19 @@ export function lowerNodeModuleProperty(
   }
 }
 
+/** `require.extensions`: Node's loader table (node:module's
+ * Module._extensions), one shared null-prototype object whose three
+ * handlers are function values that refuse when called — a compiled
+ * program loads no module at run time. */
+export function lowerRequireExtensionsProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken || expr.name.text !== "extensions") return null;
+  if (!isCjsRequireGlobal(lowerer, expr.expression)) return null;
+  return { kind: "libCall", fn: "module.extensions", args: [], type: DYN, loc: locOf(expr) };
+}
+
 /** `typeof module.parent`: null (the CommonJS entry) and a module (a module
  * required by CommonJS) both answer "object"; a module loaded by an ES-module
  * entry has no CommonJS parent and answers "undefined". The registry's

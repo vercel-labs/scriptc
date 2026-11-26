@@ -442,6 +442,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.parent": "scr_module_parent",
   "module.loaded": "scr_module_loaded",
   "module.cacheGet": "scr_module_cache_get",
+  "module.extensions": "scr_module_extensions",
   "module.ctor": "scr_module_class_value",
   "module.ctorPrototype": "scr_module_class_prototype",
   "module.cacheHas": "scr_module_cache_has",

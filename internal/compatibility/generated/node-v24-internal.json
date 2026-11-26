@@ -72594,7 +72594,8 @@
           "tests/corpus/cjs-module-alias-values/main.cjs",
           "tests/corpus/cjs-module-object-metadata/main.cjs",
           "tests/corpus/module-children-dynamic-fields/main.cjs",
-          "tests/corpus/module-class-instance/main.cjs"
+          "tests/corpus/module-class-instance/main.cjs",
+          "tests/corpus/module-require-extensions/main.cjs"
         ]
       },
       "anchorSource": "chapter"
@@ -72917,8 +72918,11 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:modules.extensions"
+        "status": "partial",
+        "evidence": "compiler-feature:modules.extensions",
+        "tests": [
+          "tests/corpus/module-require-extensions/main.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },

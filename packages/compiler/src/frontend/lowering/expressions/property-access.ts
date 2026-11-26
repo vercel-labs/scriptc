@@ -192,6 +192,7 @@ import {
 import {
   isCjsModuleGlobal,
   lowerNodeModuleProperty,
+  lowerRequireExtensionsProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -946,6 +947,8 @@ export function lowerPropertyAccessExpr(
   }
   const requireMain = lowerRequireMainProperty(lowerer, expr);
   if (requireMain) return requireMain;
+  const requireExtensions = lowerRequireExtensionsProperty(lowerer, expr);
+  if (requireExtensions) return requireExtensions;
   const moduleProperty = lowerNodeModuleProperty(lowerer, expr);
   if (moduleProperty) return moduleProperty;
   if (

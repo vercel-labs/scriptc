@@ -732,6 +732,37 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
  * object prototype. */
 extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
 
+/* require.extensions (node:module's Module._extensions): Node's loader
+ * table. A compiled program loads no module at run time, so the three
+ * handlers exist as function values with Node's empty name and length 2 and
+ * refuse when called, while the table itself — one per thread, null
+ * prototype like Node's — answers keys, JSON and identity with
+ * Module._extensions as Node's does. */
+static SCR_TL ScrDyn *scr_module_extensions_table;
+
+static ScrDyn *scr_module_extensions_refuse(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  (void)args;
+  (void)argc;
+  static const char message[] =
+    "require.extensions handlers are part of the standard library types but have no scriptc lowering yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
+ScrDyn *scr_module_extensions(void) {
+  if (scr_module_extensions_table) return scr_dyn_retain(scr_module_extensions_table);
+  ScrDyn *table = scr_dyn_new_obj_null_proto();
+  static const char *names[] = {".js", ".json", ".node"};
+  for (size_t i = 0; i < 3; i++) {
+    ScrDyn *handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_module_extensions_refuse, 2,
+                                       "native:module", "");
+    scr_dyn_obj_set(table, names[i], strlen(names[i]), handler);
+  }
+  scr_module_extensions_table = scr_dyn_retain(table);
+  return table;
+}
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,

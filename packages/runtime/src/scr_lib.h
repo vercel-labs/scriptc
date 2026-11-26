@@ -42,6 +42,9 @@ ScrArr *scr_module_paths(double module_id);
 ScrArr *scr_module_children(double module_id);
 /* The checked-dynamic Module object for a record, one per record (+1), and
  * its children as a fresh checked-dynamic array (+1). */
+/** require.extensions / Module._extensions, one shared table per thread
+ * (+1): the three handlers as function values, the object null-prototype. */
+ScrDyn *scr_module_extensions(void);
 ScrDyn *scr_module_dyn_object(double module_id);
 ScrDyn *scr_module_dyn_children(double module_id);
 /* module.parent as a checked-dynamic value (+1): null, undefined or the

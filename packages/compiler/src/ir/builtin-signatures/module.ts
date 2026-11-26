@@ -69,6 +69,10 @@ export const moduleSignatures = defineLibFnSignatures({
   "module.dynObjectOrAbsent": { argTypes: [F64], result: DYN },
   "module.dynOf": { argTypes: [DYN], result: DYN },
   "module.setExportsDyn": { argTypes: [F64, DYN], result: VOID },
+  /** require.extensions / Module._extensions: Node's loader table as one
+   * shared null-prototype object whose three handlers refuse when called.
+   * Never throws. */
+  "module.extensions": { argTypes: [], result: DYN },
   /** Node's `Module` class value and its prototype (scr_module_class.c):
    * module views inherit the prototype, so instanceof and getPrototypeOf
    * answer as Node's do. Never throws. */

@@ -2274,18 +2274,6 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
     /* _duplexify({ readable }) / _duplexify({ writable }) */
     ScrStream *d = native->st->has_r ? scr_stream_duplexify(native, NULL)
                                      : scr_stream_duplexify(NULL, native);
-    /* A pipeline or compose stage keeps its web chunks (any flagged body):
-     * the duplexify and the handle's own stream both take a null a stage
-     * enqueued as a value, where Duplex.from's body (no flags) keeps node's
-     * null-write error. */
-    if ((int)pair_flags != 0) {
-      scr_stream_set_web_chunks(native, true);
-      scr_stream_set_object_mode(native, false, true);
-      if (d != NULL) {
-        scr_stream_set_web_chunks(d, true);
-        scr_stream_set_object_mode(d, false, true);
-      }
-    }
     scr_stream_release(native);
     return d;
   }
@@ -7259,7 +7247,11 @@ void scr_console_bind(ScrDyn *console, double which, ScrStream *stream) {
   if (inst->on_written[i]) scr_closure_release(inst->on_written[i]);
   inst->stream[i] = scr_stream_retain(stream);
   ScrClosure *cb = scr_closure_new((void *)&scr_console_on_written, 1);
-  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, NULL);
+  /* The handler's stream is a traced edge like the console's own: a
+   * detached output method used as a listener on this stream closes a
+   * cycle through the console, and the collector has to see the handler's
+   * reference to give the whole group up. */
+  cb->caps[0] = scr_box_new_obj(scr_stream_retain_v, scr_stream_release_v, &scr_stream_trace);
   scr_box_set_ref(cb->caps[0], scr_stream_retain(stream));
   inst->on_written[i] = cb;
   inst->stream_write = &scr_console_stream_write;

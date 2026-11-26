@@ -24,7 +24,7 @@ const fetchInit: RequestInit = {
 fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
-  console.log(response.type);
+  response.blob();
   response.formData();
 }
 void inspectResponse;

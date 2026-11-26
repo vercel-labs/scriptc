@@ -26,6 +26,19 @@ for (let i = 0; i < 200; i++) {
   Object.setPrototypeOf(list, listPrototype)
   total += listPrototype.first()
 }
+// Reflect.setPrototypeOf reaches the same prototype storage through the
+// Reflect wrapper: the array kinds it can touch are stamped as well, so the
+// cycle through the stored prototype is one the collector walks.
+for (let i = 0; i < 200; i++) {
+  const list: number[] = [i]
+  const listPrototype = {
+    first(): number {
+      return list[0]!
+    },
+  }
+  Reflect.setPrototypeOf(list, listPrototype)
+  total += listPrototype.first()
+}
 // An array of arrays given a prototype: its child slots are arrays the
 // collector walks, so every array in the program must be a collector object
 // too, or a plain child would be read as one.

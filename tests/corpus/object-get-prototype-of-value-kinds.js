@@ -32,6 +32,11 @@ for (const [name, value] of values) console.log(name, isPlain(value), notPlain(v
 // prototype was replaced with null or a custom object is not.
 const givenObjectPrototype = [1];
 Object.setPrototypeOf(givenObjectPrototype, Object.prototype);
+// A function's replaced prototype is its own: given Object.prototype, the
+// folded plain-object comparison answers true.
+const givenPrototypeFunction = function named() {};
+Object.setPrototypeOf(givenPrototypeFunction, Object.prototype);
+console.log("function-given-object-prototype", isPlain(givenPrototypeFunction));
 const givenNull = {};
 Object.setPrototypeOf(givenNull, null);
 const givenCustom = {};

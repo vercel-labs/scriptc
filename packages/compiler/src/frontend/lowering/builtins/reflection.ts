@@ -663,6 +663,11 @@ export function reflectMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc
         ];
       });
     case "setPrototypeOf":
+      // The wrapper's target is a checked-dynamic value, so it can be an
+      // array of any element kind: stamp every kind before the program runs.
+      // Each array of a stamped kind is born with the collector header, and
+      // the prototype it stores is a traced edge the collector walks.
+      for (const kind of [0, 1, 2, 3, 4, 5]) lowerer.prototypeArrayKinds.add(kind);
       // Reflect.setPrototypeOf's order: a primitive target throws, then a
       // primitive prototype throws (the runtime's own TypeError), an
       // unchanged prototype answers true (touching nothing, so a

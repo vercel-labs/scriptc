@@ -2928,22 +2928,10 @@ export function emitRecordShapes(
         );
         i++;
       }
-      if (proto >= 0)
-        clone.push(
-          `  %pp = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${proto}`,
-          `  %pv = load ptr, ptr %pp`,
-          `  %pn = icmp eq ptr %pv, null`,
-          `  br i1 %pn, label %proto.none, label %proto.some`,
-          `proto.some:`,
-          `  %pr = call ptr ${retainSym(host, DYN)}(ptr %pv)`,
-          `  br label %proto.join`,
-          `proto.none:`,
-          `  br label %proto.join`,
-          `proto.join:`,
-          `  %pc = phi ptr [ %pr, %proto.some ], [ null, %proto.none ]`,
-          `  %pd = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${proto}`,
-          `  store ptr %pc, ptr %pd ; [Prototype]`,
-        );
+      // The hidden prototype slot stays zero (the default Object.prototype):
+      // an object spread copies the source's own enumerable fields, never
+      // its [[Prototype]], so the clone must not inherit a prototype the
+      // source was given.
       clone.push(`  ret ptr %o`, `}`, ``);
       defs.push(...clone);
     }

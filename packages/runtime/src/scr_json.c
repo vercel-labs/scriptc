@@ -4095,6 +4095,17 @@ bool scr_dyn_is_plain_object(ScrDyn *value) {
     if (value->prototype) return value->prototype == scr_builtin_object_prototype;
     return !value->null_proto && value == scr_builtin_array_prototype;
   }
+  // A function's prototype Object.setPrototypeOf replaced is on its
+  // property table (scr_dyn_get_prototype reads it there first); without a
+  // replacement the function keeps Function.prototype, so it is not plain.
+  if (value->kind == SCR_DYN_FUNC) {
+    if (!scr_closure_identity(value->v.fn.clo)->props) return false;
+    ScrDyn *table = scr_dyn_fn_properties(value);
+    bool plain = table->kind == SCR_DYN_OBJ && !table->null_proto &&
+                 table->prototype == scr_builtin_object_prototype;
+    scr_dyn_release(table);
+    return plain;
+  }
   // A compiled value whose prototype Object.setPrototypeOf replaced keeps it
   // in the instance-prototype table (a checked view is rebuilt from the
   // source each time it is boxed), so the table's answer is the edge's; a

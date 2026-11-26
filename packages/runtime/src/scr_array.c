@@ -2135,6 +2135,10 @@ static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) 
   x = scr_arr_ext(a);
   if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
   x->cls = cls;
+  /* The new element type decides whether its rows carry the collector
+   * header, exactly as scr_arr_subclass_init does for a fresh instance: a
+   * retyped subclass of an array-of-arrays keeps the guard. */
+  x->untraced_rows = a->cyc && elem == SCR_ELEM_ARR && ops == NULL;
   scr_arr_set_len(a, (double)len);
 }
 

@@ -24,6 +24,17 @@ Object.setPrototypeOf(viewed, { i: 8 });
 const dynamic: any = viewed;
 void dynamic.h;
 console.log("viewed", isPlain(viewed), Object.getPrototypeOf(viewed) === null);
+// An object spread copies own enumerable fields only: the source's replaced
+// prototype is not inherited by the copy, which is an ordinary object.
+const spreadSource = { p: 1 };
+Object.setPrototypeOf(spreadSource, { inherited: 2 });
+const spreadCopy = { ...spreadSource, p: 3 };
+console.log(
+  "spread",
+  Object.getPrototypeOf(spreadCopy) === Object.prototype,
+  "inherited" in spreadCopy,
+  spreadCopy.p,
+);
 // A record of a shape that another record gave a prototype is unmodified: its
 // view keeps the default prototype when it is built.
 const marked = { m: 1 };

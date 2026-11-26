@@ -23,6 +23,7 @@ import { locOf } from "../program.js";
 import {
   ffiBindingDiag,
   ffiSignatureDiag,
+  ffiUnusedBindingDiag,
   libCallbackDiag,
   type ScrDiagnostic,
 } from "../../diagnostics/diagnostic.js";
@@ -264,6 +265,9 @@ function ffiDeclarationDiagnostic(
 
 export interface FfiValidationResult {
   diagnostics: ScrDiagnostic[];
+  /** Manifest bindings the program does not declare (SC5005). Warnings:
+   * a shared manifest may list several programs' bindings. */
+  warnings: ScrDiagnostic[];
   symbolsByName: ReadonlyMap<string, ReadonlySet<ts.Symbol>>;
 }
 
@@ -286,6 +290,7 @@ function libraryCallbackOwnsFile(lowerer: Lowerer, file: ts.SourceFile): boolean
  * declaration files as authored callback surface. */
 export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
   const diagnostics: ScrDiagnostic[] = [];
+  const warnings: ScrDiagnostic[] = [];
   const symbolsByName = new Map<string, ReadonlySet<ts.Symbol>>();
   const configuredNames = new Set(
     lowerer.ffiImports
@@ -294,7 +299,7 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
   );
   const candidates = new Map<string, Map<ts.Symbol, ts.FunctionDeclaration>>();
 
-  if (configuredNames.size === 0) return { diagnostics, symbolsByName };
+  if (configuredNames.size === 0) return { diagnostics, warnings, symbolsByName };
 
   for (const file of lowerer.program.getSourceFiles()) {
     if (lowerer.libraryCallbacks && !libraryCallbackOwnsFile(lowerer, file)) continue;
@@ -325,18 +330,18 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
     if (binding.library !== undefined) continue;
     const bySymbol = candidates.get(binding.name);
     if (bySymbol === undefined || bySymbol.size === 0) {
-      // A native-manifest binding with no declaration is a broken build
-      // input. A library callback channel with no declaration is unused
-      // CAPACITY: the registration symbol still dispatches it, nothing
-      // calls it, and a later program revision may (a program that calls
-      // the name without declaring it fails ordinary typechecking first).
+      // A native-manifest binding with no declaration is unused by THIS
+      // program: a shared manifest (a package's ffi.json beside the
+      // declarations every consumer may import) lists bindings for several
+      // entry points, and a program that declares none of them is not
+      // broken. Say so and go on; a program that calls the name without
+      // declaring it fails ordinary typechecking first. A library callback
+      // channel with no declaration is unused CAPACITY: the registration
+      // symbol still dispatches it, nothing calls it, and a later program
+      // revision may.
       if (!lowerer.libraryCallbacks) {
-        diagnostics.push(
-          ffiBindingDiag(
-            binding.name,
-            "the program has no signature-only function declaration with this name",
-            { file: lowerer.entry.fileName, start: 0, end: 0 },
-          ),
+        warnings.push(
+          ffiUnusedBindingDiag(binding.name, { file: lowerer.entry.fileName, start: 0, end: 0 }),
         );
       } else {
         // Preserve the distinction between unused capacity and a binding
@@ -363,7 +368,7 @@ export function validateFfiImports(lowerer: Lowerer): FfiValidationResult {
     if (valid) symbolsByName.set(binding.name, validSymbols);
   }
 
-  return { diagnostics, symbolsByName };
+  return { diagnostics, warnings, symbolsByName };
 }
 
 /** A manifest-bound call of a signature-only ambient declaration. This

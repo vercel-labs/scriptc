@@ -108,6 +108,7 @@ export const DIAGNOSTIC_CODES = {
   SC5002: "FFI binding is not an ambient function declaration",
   SC5003: "FFI signature does not match its native ABI",
   SC5004: "FFI native build failure",
+  SC5005: "FFI manifest binding the program does not declare (warning)",
   SC6001: "divergence: width copy written or compared through",
   SC6002: "divergence: observed object key order",
   SC6003: "divergence: localeCompare outside the built-in collation",

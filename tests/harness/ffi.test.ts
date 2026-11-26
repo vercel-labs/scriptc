@@ -719,13 +719,6 @@ test.each([
     message: "parameter 1",
   },
   {
-    id: "unused-missing",
-    name: "an unused manifest binding with no source declaration",
-    source: ["console.log('ok');", ""].join("\n"),
-    code: "SC5002",
-    message: "signature-only",
-  },
-  {
     id: "never-parameter",
     name: "an uninhabited TypeScript parameter presented as a native ABI slot",
     source: ["declare function nativeScale(value: never): number;", "console.log('ok');", ""].join(
@@ -781,6 +774,34 @@ test.each([
   if (!result.ok) {
     expect(result.diagnostics[0]?.code).toBe(code);
     expect(result.diagnostics[0]?.message).toContain(message);
+  }
+});
+
+test("a shared manifest may list bindings this program does not declare", async () => {
+  const outDir = join(cacheRoot, "unused-binding");
+  mkdirSync(outDir, { recursive: true });
+  const entry = join(outDir, "main.ts");
+  const profilePath = join(outDir, "profile.json");
+  writeFileSync(entry, "console.log('ok');\n");
+  writeFileSync(
+    profilePath,
+    JSON.stringify({
+      ffi_format: 1,
+      functions: [{ name: "nativeScale", symbol: "sf_scale", params: ["f64"], returns: "f64" }],
+    }),
+  );
+  // IR emission types and lowers the program without a native toolchain, so
+  // this covers the diagnostic path the build's warning rides on.
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "main.ir.json"),
+    outputKind: "ir",
+    ffiProfilePath: profilePath,
+  });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.warnings?.map((warning) => warning.code)).toEqual(["SC5005"]);
+    expect(result.warnings?.[0]?.message).toContain("not declared");
   }
 });
 

@@ -115,3 +115,49 @@ test("manifest-bound call initializers retain ffiCall IR and declaration storage
     records.some((record) => record.kind === "libCall" && record.fn === "global.undefRead"),
   ).toBe(false);
 });
+
+test("a shared manifest's binding the program does not declare is a warning, not a failure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-ffi-unused-"));
+  dirs.push(dir);
+  const entry = join(dir, "unrelated.ts");
+  const outDir = join(dir, ".scriptc");
+  const profilePath = join(dir, "ffi.json");
+  await writeFile(entry, 'console.log("unrelated");\n');
+  await writeFile(
+    profilePath,
+    JSON.stringify({
+      ffi_format: 1,
+      functions: [{ name: "nativeScale", symbol: "native_scale", params: ["f64"], returns: "f64" }],
+      libraries: [],
+    }),
+  );
+
+  const result = await compile(entry, {
+    outDir,
+    outPath: join(outDir, "unrelated.ir.json"),
+    outputKind: "ir",
+    ffiProfilePath: profilePath,
+  });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.warnings?.map((warning) => warning.code)).toEqual(["SC5005"]);
+    expect(result.warnings?.[0]?.message).toContain("nativeScale");
+    expect(result.warnings?.[0]?.message).toContain("not declared");
+  }
+
+  // The same manifest against a program that declares the binding builds
+  // without a warning: unused capacity is the only thing SC5005 reports.
+  const declared = join(dir, "declared.ts");
+  await writeFile(
+    declared,
+    "declare function nativeScale(value: number): number;\nconsole.log(nativeScale(21));\n",
+  );
+  const used = await compile(declared, {
+    outDir,
+    outPath: join(outDir, "declared.ir.json"),
+    outputKind: "ir",
+    ffiProfilePath: profilePath,
+  });
+  expect(used.ok).toBe(true);
+  if (used.ok) expect(used.warnings ?? []).toEqual([]);
+});

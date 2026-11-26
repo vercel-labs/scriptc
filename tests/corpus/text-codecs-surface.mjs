@@ -81,3 +81,39 @@ console.log(
   "surplus",
   JSON.stringify(decoder.decode(new Uint8Array([0x68]), { stream: false }, 1, 2)),
 );
+
+// Every argument expression evaluates before the conversions: the encode
+// input's ToString and the decode options' dictionary read come after the
+// surplus arguments Node evaluates and drops.
+const encodeOrder = [];
+encoder.encode(
+  {
+    toString() {
+      encodeOrder.push("input");
+      return "x";
+    },
+  },
+  (encodeOrder.push("extra"), 0),
+);
+console.log("encode order", JSON.stringify(encodeOrder));
+const decodeOrder = [];
+const decodeOptions = {
+  get stream() {
+    decodeOrder.push("option");
+    return false;
+  },
+};
+decoder.decode(new Uint8Array([0x61]), decodeOptions, (decodeOrder.push("extra"), 0));
+console.log("decode order", JSON.stringify(decodeOrder));
+
+// A runtime-typed undefined input takes the optional argument's default:
+// no bytes for the encoder, the empty string for the decoder.
+function maybeUndefined(flag) {
+  return flag ? undefined : 1;
+}
+const runtimeUndefined = maybeUndefined(true);
+console.log(
+  "runtime undefined",
+  encoder.encode(runtimeUndefined).length,
+  JSON.stringify(decoder.decode(runtimeUndefined)),
+);

@@ -353,6 +353,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatNew",
   "icu.dateTimeFormatFormat",
   "icu.dateToLocale",
+  "icu.dateToLocaleDyn",
+  // Reads a computed locales value's locale-list length, which may run a
+  // getter and throw, and raises Node's TypeError and RangeError.
+  "icu.localeValue",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",

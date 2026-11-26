@@ -251,7 +251,7 @@ import {
   perfEntryTag,
 } from "./builtins/performance.js";
 import { lowerSlidingWindowMethodCall } from "./builtins/sliding-histogram.js";
-import { fenceX509KeyWalk, isX509Type } from "./builtins/x509.js";
+import { fenceX509KeyWalk, isX509Type, lowerX509OwnKeyWalk } from "./builtins/x509.js";
 import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
@@ -4204,7 +4204,11 @@ function lowerObjectOwnCall(
   } else if (type.kind === "record") {
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
-    fenceX509KeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
+    if (isX509Type(lowerer, type) && receiverNode !== undefined) {
+      const x509 = lowerX509OwnKeyWalk(lowerer, receiverNode, method, keyNode, call, locOf(call));
+      if (x509) return x509;
+      fenceX509KeyWalk(lowerer, type, receiverNode, `Object.prototype.${method}`);
+    }
     if (!shape || shape.tuple || shapeHasAccessorSlots(shape)) {
       lowerer.noLowering(
         "Object.prototype." + method + " over this record shape",
@@ -11439,7 +11443,18 @@ function lowerObjectStaticCall(
     const shape = lowerer.shapes.get(recordT.shapeId);
     if (!shape || shape.tuple) return null; // tuple → the fence
     fencePerfEntryKeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
-    fenceX509KeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    if (isX509Type(lowerer, recordT)) {
+      const x509 = lowerX509OwnKeyWalk(
+        lowerer,
+        node,
+        "getOwnPropertyNames",
+        undefined,
+        call,
+        locOf(call),
+      );
+      if (x509) return x509;
+      fenceX509KeyWalk(lowerer, recordT, call, "Object.getOwnPropertyNames");
+    }
     if (shapeHasAccessorSlots(shape)) {
       lowerer.unsupported(
         "SC1090",
@@ -11793,7 +11808,18 @@ function lowerObjectStaticCall(
   // RESULTS, invoked in key order. The static field walk models neither
   // (accessor slots live outside declaredOrder), so the surface fences.
   fencePerfEntryKeyWalk(lowerer, argIr, call, `Object.${member}`);
-  fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
+  if (isX509Type(lowerer, argIr)) {
+    const x509 = lowerX509OwnKeyWalk(
+      lowerer,
+      argNode,
+      member,
+      call.arguments.nodes[1],
+      call,
+      locOf(call),
+    );
+    if (x509) return x509;
+    fenceX509KeyWalk(lowerer, argIr, call, `Object.${member}`);
+  }
   if (shapeHasAccessorSlots(shape)) {
     lowerer.unsupported(
       "SC1090",

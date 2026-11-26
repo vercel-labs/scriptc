@@ -1230,6 +1230,23 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         loc,
       };
     }
+    // A certificate is the X509Certificate record: Node's class test answers
+    // true for a value the program typed as one (the record is the class's
+    // only representation, and dyn slots are refused separately).
+    if (
+      rhsBuiltin?.module === "crypto" &&
+      rhsBuiltin.member === "X509Certificate" &&
+      isX509Type(lowerer, lowerer.mapTypeOf(lowerer.typeOf(expr.left)))
+    ) {
+      const value = lowerer.lowerExpr(expr.left);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: value, loc }],
+        result: { kind: "boolLit", value: true, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      };
+    }
     // A built-in class that has no test of its own above: name it, and
     // what a program can test instead.
     const builtinClass =

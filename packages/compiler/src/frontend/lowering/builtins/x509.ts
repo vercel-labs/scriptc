@@ -12,6 +12,7 @@ import {
   type IrExpr,
   type IrFunction,
   type IrLibFn,
+  type IrStmt,
   type IrType,
   type SrcLoc,
 } from "../../../ir/ir.js";
@@ -143,6 +144,60 @@ export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunc
  * its PEM. */
 export function x509ToString(record: IrExpr, loc: SrcLoc): IrExpr {
   return { kind: "libCall", fn: "crypto.x509Pem", args: [derOf(record, loc)], type: STRING, loc };
+}
+
+/** The own-key walk over a certificate: Node keeps its fields as prototype
+ * getters, so `Object.keys`/`values`/`entries`/`getOwnPropertyNames` see
+ * none, `Object.getOwnPropertyDescriptor` is undefined, and
+ * `Object.hasOwn`/`hasOwnProperty` answer false. The receiver (and the key
+ * of the keyed forms) is still evaluated, in argument order. NULL when the
+ * member is not one this answers. */
+export function lowerX509OwnKeyWalk(
+  lowerer: Lowerer,
+  receiverNode: ts.Expression,
+  member: string,
+  keyNode: ts.Expression | undefined,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  const resultT = lowerer.irTypeOf(call);
+  const stmts: IrStmt[] = [{ kind: "exprStmt", expr: lowerer.lowerExpr(receiverNode), loc }];
+  const keyed =
+    member === "getOwnPropertyDescriptor" ||
+    member === "hasOwn" ||
+    member === "hasOwnProperty" ||
+    member === "propertyIsEnumerable";
+  if (keyed && keyNode !== undefined)
+    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(keyNode), loc });
+  const finish = (result: IrExpr): IrExpr => ({
+    kind: "seqExpr",
+    stmts,
+    result,
+    type: result.type,
+    loc,
+  });
+  if (
+    member === "keys" ||
+    member === "values" ||
+    member === "entries" ||
+    member === "getOwnPropertyNames"
+  ) {
+    if (resultT?.kind !== "array") return null;
+    return finish({ kind: "arrayLit", elems: [], type: resultT, loc });
+  }
+  if (member === "getOwnPropertyDescriptor") {
+    if (resultT === null || resultT === undefined) return null;
+    const nothing: IrExpr = {
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: DYN,
+      loc,
+    };
+    return finish(lowerer.coerceInto(call, nothing, resultT));
+  }
+  if (member === "hasOwn" || member === "hasOwnProperty" || member === "propertyIsEnumerable")
+    return finish({ kind: "boolLit", value: false, type: BOOL, loc });
+  return null;
 }
 
 /** Node keeps a certificate's fields as prototype getters, so own-key

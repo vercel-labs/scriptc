@@ -2051,6 +2051,10 @@ bool scr_dyn_array_prototype_owns(const ScrStr *key);
  * NULL when the chain reaches Array.prototype without it. +1. */
 ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+/* An own data property on a function value: the closure's property table,
+ * created on first use (the compiler's function values share it). Moves
+ * `value`. */
+void scr_dyn_fn_set_prop(ScrDyn *function, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 /* The same, where the descriptor may be any object (scr_dyn_descriptor_snapshot). */

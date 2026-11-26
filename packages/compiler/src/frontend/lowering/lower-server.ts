@@ -3589,15 +3589,19 @@ function lowerNetSocketMethodCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if (name === "connect") {
-    // socket.connect(port[, host][, connectListener]): an idle socket
-    // starts the dial net.connect's port form performs. The path and
-    // options forms have no lowering yet.
+    // socket.connect(port[, host][, connectListener]) and
+    // socket.connect(path[, connectListener]) start the dial on an idle
+    // socket; connect() with no arguments throws Node's ERR_MISSING_ARGS
+    // at the call. The options-record form still has no lowering.
     if (args.length === 0) {
-      lowerer.noLowering(
-        "connect() with no arguments",
-        call,
-        "the form is connect(port[, host][, connectListener])",
-      );
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      return {
+        kind: "libCall",
+        fn: "net.sockConnectMissing",
+        args: [receiver],
+        type: VOID,
+        loc,
+      };
     } else if (args.length > 3) {
       lowerer.noLowering(
         `connect with ${args.length} arguments`,
@@ -3606,11 +3610,61 @@ function lowerNetSocketMethodCall(
       );
     }
     const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (firstT !== null && firstT.kind === "string") {
+      // socket.connect(string[, ...]): the string is Node's port-or-path
+      // argument — a numeric string (and the empty/out-of-range ladders)
+      // is the TCP port, everything else a Unix socket path — so the
+      // runtime classifies it with Node's own rule and throws the same
+      // ERR_SOCKET_BAD_PORT synchronously. Node evaluates EVERY argument,
+      // and the callback slot is the last argument when three are given and
+      // the second otherwise; a slot that is not statically a function is
+      // evaluated here and handed to the runtime, which registers it when
+      // its run-time value is a function.
+      const dynValue = (node: ts.Expression): IrExpr => {
+        const v = lowerer.lowerExpr(node);
+        return v.type.kind === "dyn"
+          ? v
+          : { kind: "dynFrom", value: v, type: DYN, loc: locOf(node) };
+      };
+      const absent = dynUndefinedExpr(loc);
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      const target = dynValue(args[0]!);
+      const slot = args.length >= 2 ? args[args.length - 1]! : undefined;
+      const slotT = slot !== undefined ? lowerer.mapTypeOf(lowerer.typeOf(slot)) : null;
+      const slotIsListener = slotT !== null && slotT.kind === "func";
+      const middle = args.length === 3 ? dynValue(args[1]!) : absent;
+      const last = slot !== undefined && !slotIsListener ? dynValue(slot) : absent;
+      if (!slotIsListener) {
+        return receiverReturningCall(
+          lowerer,
+          "net.sockConnectPath",
+          [receiver, target, middle, last],
+          NETSOCKET_T,
+          loc,
+        );
+      }
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        slot!,
+        "connect listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return receiverReturningCall(
+        lowerer,
+        "net.sockConnectPathCb",
+        [receiver, target, middle, last, cb],
+        NETSOCKET_T,
+        loc,
+      );
+    }
     if (firstT === null || firstT.kind !== "f64") {
       lowerer.noLowering(
         `connect(${firstT === null ? "a dynamic value" : lowerer.fmt(firstT)})`,
         call,
-        "this surface lowers connect(port[, host][, connectListener]); the path and options forms have no lowering yet",
+        "this surface lowers connect(port[, host][, connectListener]) and connect(path[, connectListener]); the options form has no lowering yet",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
@@ -8541,6 +8595,55 @@ function lowerHttp2ModuleCall(
     // Http2ServerResponse over h2 streams (scr_http2.c's compat layer).
     const cb = lowerRequestHandlerArg(lowerer, handlerNode);
     return { kind: "libCall", fn: "http2.createServerReq", args: [cb], type: NETSERVER_T, loc };
+  }
+  if (bi.member === "performServerHandshake") {
+    // http2.performServerHandshake(socket[, options]): a server session
+    // over an existing connected socket. The tuning options are accepted
+    // as an object literal and inert in this unit.
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `http2.performServerHandshake with ${args.length} arguments`,
+        expr,
+        "use performServerHandshake(socket[, options])",
+      );
+    }
+    const sock = lowerer.lowerExpr(args[0]!);
+    if (sock.type.kind !== "netSocket") {
+      lowerer.noLowering(
+        `http2.performServerHandshake with a '${lowerer.fmt(sock.type)}' socket`,
+        args[0]!,
+        "pass a net.Socket (the socket a net server's 'connection' listener receives)",
+      );
+    }
+    if (args.length === 2 && !ts.isObjectLiteralExpression(args[1]!)) {
+      lowerer.noLowering(
+        "http2.performServerHandshake options",
+        args[1]!,
+        "pass the options as an object literal ({ settings: ... })",
+      );
+    }
+    if (args.length === 2) {
+      // The options are inert here, but the literal is still EVALUATED: calls
+      // and spreads inside it run (an authorization helper must not be
+      // erased), then the value is handed to the runtime and ignored.
+      const optsV = lowerer.lowerExpr(args[1]!);
+      const dynOpts: IrExpr =
+        optsV.type.kind === "dyn" ? optsV : { kind: "dynFrom", value: optsV, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.performServerHandshakeOpts",
+        args: [sock, dynOpts],
+        type: HTTP2SESSION_T,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.performServerHandshake",
+      args: [sock],
+      type: HTTP2SESSION_T,
+      loc,
+    };
   }
   if (bi.member === "connect") {
     // http2.connect(authority[, listener]) — the h2c client. The

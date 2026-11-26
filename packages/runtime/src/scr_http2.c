@@ -4498,6 +4498,7 @@ static void scr_h2_on_connection(void *ctx, ScrNetSocket *sock) {
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   sess, &scr_h2_session_ctx_free);
   scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_h2_bound(sock);
   scr_h2_send_settings(sess);
   /* 'session' fires in the connection callback, before the connection's
    * first frame. Node's server listens to its own 'connection' (cleartext)
@@ -4720,6 +4721,56 @@ static void scr_h2_on_established(void *ctx) {
   }
 }
 
+/* http2.performServerHandshake(socket[, options]): adopt an already
+ * connected socket (ALPN h2 on TLS, prior knowledge on cleartext) as a
+ * server session. The session has no owning server, so only the session's
+ * own 'stream' listeners see its streams. */
+ScrH2Session *scr_http2_perform_server_handshake(ScrNetSocket *sock /*borrowed*/) {
+  /* Node binds a socket to one session: a second handshake over it (or over
+   * a socket a server or client session already owns) is SOCKET_BOUND rather
+   * than two sessions reading one socket. A bound socket reports the binding
+   * even after it closed, as Node's check does. */
+  if (sock != NULL && scr_net_sock_h2_bound(sock)) {
+    static const char text[] = "The socket is already bound to an Http2Session";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "ERR_HTTP2_SOCKET_BOUND");
+    return NULL;
+  }
+  if (sock == NULL || scr_net_sock_destroyed(sock)) {
+    static const char text[] = "The \"socket\" argument must be an instance of net.Socket";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_TYPE");
+    return NULL;
+  }
+  scr_http2_install();
+  ScrH2Session *sess = scr_h2_session_new(false);
+  sess->sock = scr_net_sock_retain(sock);
+  /* the socket may still own the parser's connection from an upgrade or
+   * CONNECT handover: take it over and release that context */
+  scr_net_sock_adopt_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
+                                    sess, &scr_h2_session_ctx_free);
+  scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_h2_bound(sock);
+  scr_h2_send_settings(sess);
+  /* Node resumes the socket it takes over: a paused one would never read the
+   * preface */
+  scr_net_sock_release(scr_net_sock_resume(sock));
+  /* The socket is already connected: Node fires the session's 'connect'
+   * (session, socket) after this call returns, so listeners attached next
+   * observe it (the deferred emit runs after the current work). */
+  if (!sess->connect_queued && !sess->destroyed) {
+    sess->connect_queued = true;
+    scr_h2_emit_push(SCR_H2_EMIT_SESSION_CONNECT, scr_http2_session_retain(sess));
+  }
+  return scr_http2_session_retain(sess); /* the socket's ctx holds its own */
+}
+
+ScrH2Session *scr_http2_perform_server_handshake_opts(ScrNetSocket *sock /*borrowed*/,
+                                                       const ScrDyn *opts /*borrowed*/) {
+  /* the options are inert in this unit, but the caller's literal has already
+   * evaluated (its calls and spreads run); the value itself is ignored */
+  (void)opts;
+  return scr_http2_perform_server_handshake(sock);
+}
+
 /* http2.connect(authority[, listener]): an http authority dials h2c
  * prior knowledge — the preface and SETTINGS go out immediately (the
  * socket buffers until the dial lands). An httpS authority dials the
@@ -4793,6 +4844,7 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   scr_net_sock_set_native_reader(sock, &scr_h2_on_data, &scr_h2_on_eof, &scr_h2_on_closed,
                                   s, &scr_h2_session_ctx_free);
   scr_net_sock_set_native_events(sock, NULL, &scr_h2_on_err);
+  scr_net_sock_set_h2_bound(sock);
   scr_net_sock_set_native_established(sock, &scr_h2_on_established);
   scr_net_sock_write_native(sock, SCR_H2_PREFACE, 24);
   scr_h2_send_settings(s);

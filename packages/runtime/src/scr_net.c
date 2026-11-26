@@ -640,6 +640,10 @@ struct ScrNetSocket {
   double hwm;
   size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
+  /* The socket already carries an HTTP/2 session (a handshake, an h2
+   * server's accepted connection, or a client session): a second
+   * performServerHandshake over it is Node's ERR_HTTP2_SOCKET_BOUND. */
+  bool h2_bound;
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool fin_seen;  /* peer FIN seen: 'end' fired (Node's writeAfterFIN state) */
@@ -848,6 +852,14 @@ struct ScrNetSocket {
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* Contexts of readers a protocol takeover replaced (http2.performServerHandshake
+   * over an upgrade/CONNECT socket): the stepped-aside reader may still be
+   * running when the takeover happens, so they are released with the socket. */
+  struct ScrNetRetiredCtx {
+    void *ctx;
+    void (*free_fn)(void *);
+  } *retired;
+  size_t nretired, retired_cap;
   /* transport layer (scr_tls.c): reads/writes redirect through the ops
    * once set; writes buffer and readiness drives the handshake until
    * t_est. Sits BELOW the protocol layer — an https socket carries both
@@ -986,6 +998,8 @@ void scr_net_sock_release(ScrNetSocket *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
     if (s->native_ctx_free) s->native_ctx_free(s->native_ctx);
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
     if (s->tops && s->tops->free) s->tops->free(s->tctx);
     scr_net_ls_drop(&s->data_ls);
     scr_net_ls_drop(&s->end_ls);
@@ -3708,6 +3722,83 @@ ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
  * same validation ladder first; a socket already dialing or connected is
  * left as it is (Node re-dials a live socket and corrupts it — that shape
  * is not modelled). */
+static void scr_net_sock_dial_unix(ScrNetSocket *s);
+static void scr_net_missing_args(void);
+static bool scr_net_dyn_is_pipe_name(const ScrDyn *v);
+static bool scr_net_validate_port_dyn(const ScrDyn *v, const char *name, double *out);
+
+/* socket.connect(): Node's ERR_MISSING_ARGS at the call site (the
+ * receiver evaluates first, as Node's method call does). */
+void scr_net_sock_connect_missing(ScrNetSocket *s) {
+  (void)s;
+  scr_net_missing_args();
+}
+
+/* socket.connect(string, ...): Node's port-or-path argument. A string that
+ * reads as a port (a non-empty numeric string in range) is the TCP port,
+ * with validatePort's synchronous ERR_SOCKET_BAD_PORT for the empty,
+ * whitespace and out-of-range forms; anything else is a Unix socket path,
+ * exactly isPipeName's rule. `extra1` is the middle argument of a
+ * three-argument call and `slot` the callback-slot value when its static
+ * type is not a function: for the port form a string in either position is
+ * the destination host (Node keeps it — dropping it would dial the local
+ * default instead), and a slot whose run-time value is a function is
+ * registered as the connect listener. A socket that is already dialing,
+ * connected or closed ignores the call, as the port form does. */
+void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*/,
+                               const ScrDyn *extra1 /*borrowed, nullable*/,
+                               const ScrDyn *slot /*borrowed, nullable*/,
+                               ScrClosure *cb /*moves, nullable*/) {
+  const bool pipe = scr_net_dyn_is_pipe_name(target);
+  double port = 0;
+  if (!pipe && !scr_net_validate_port_dyn(target, "Port", &port)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (s->fd >= 0 || s->connecting || s->wr_done || s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* Node's string-port form keeps a string second argument (or the middle
+   * argument of a three-argument call) as the destination host; a
+   * non-string value is ignored, and no host means the local default. The
+   * host validates BEFORE the connect listener is registered: a rejection
+   * must not leave a closure in the socket's list. Node validates the host
+   * like the port form's — an embedded NUL is ERR_INVALID_ARG_VALUE before
+   * anything dials (resolution would stop at the NUL while length-aware
+   * checks see the whole string). */
+  ScrStr *host = NULL;
+  if (!pipe) {
+    if (extra1 != NULL && extra1->kind == SCR_DYN_STR) host = extra1->v.str;
+    else if (slot != NULL && slot->kind == SCR_DYN_STR) host = slot->v.str;
+    if (!scr_net_host_chk(host)) {
+      scr_closure_release(cb);
+      return;
+    }
+  }
+  if (cb == NULL && slot != NULL && slot->kind == SCR_DYN_FUNC) {
+    cb = scr_dyn_listener_closure0(slot);
+  }
+  if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  if (pipe) {
+    s->unix_path = scr_str_retain(target->v.str);
+    s->dial_hook = &scr_net_sock_dial_unix;
+  } else {
+    s->peer_port = (int)port;
+    scr_net_sock_set_peer(s, host);
+  }
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  if (pipe) {
+    scr_net_sock_dial_unix(s);
+  } else {
+    scr_net_sock_dial_peer(s);
+  }
+  scr_net_sock_register(s);
+}
+
 void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/) {
   ScrDyn num;
@@ -8944,6 +9035,28 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
   scr_net_sock_update_read(s);
 }
 
+/* A protocol takeover: the stepped-aside reader's context (the HTTP parser
+ * behind an upgrade/CONNECT handover keeps its connection until socket
+ * death) is retired to the socket rather than released here — the takeover
+ * happens inside that reader's own read callback, so freeing it now would be
+ * a use-after-free. The socket releases retired contexts when it dies (and
+ * at exit). */
+void scr_net_sock_adopt_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
+                                      void *ctx, void (*ctx_free)(void *)) {
+  if (s->native_ctx_free != NULL && s->native_ctx != NULL) {
+    if (s->nretired == s->retired_cap) {
+      s->retired_cap = s->retired_cap ? s->retired_cap * 2 : 2;
+      s->retired = realloc(s->retired, s->retired_cap * sizeof *s->retired);
+      if (!s->retired) scr_net_oom();
+    }
+    s->retired[s->nretired].ctx = s->native_ctx;
+    s->retired[s->nretired].free_fn = s->native_ctx_free;
+    s->nretired++;
+  }
+  scr_net_sock_set_native_reader(s, data, eof, closed, ctx, ctx_free);
+}
+
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *)) {
   s->native_idle = fn;
   s->http_server_conn = true; /* stays set after an upgrade, as Node's setEncoding override does */
@@ -8970,6 +9083,12 @@ bool scr_net_sock_destroyed(ScrNetSocket *s) {
    * destroyed, as Node's stream flag says */
   return s->fd < 0 && (s->emit_close || s->close_emitted);
 }
+
+void scr_net_sock_set_h2_bound(ScrNetSocket *s) {
+  if (s != NULL) s->h2_bound = true;
+}
+
+bool scr_net_sock_h2_bound(ScrNetSocket *s) { return s != NULL && s->h2_bound; }
 
 /* socket.writable — Node's stream flag: the write half is open (no end()
  * yet, no FIN sent, fd alive). Connecting sockets answer true — writes
@@ -9851,6 +9970,10 @@ static void scr_net_cleanup_atexit(void) {
       s->native_err = NULL;
       ctx_free(ctx);
     }
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
+    s->retired = NULL;
+    s->nretired = s->retired_cap = 0;
     if (s->pipe_dst) {
       scr_net_sock_release(s->pipe_dst);
       s->pipe_dst = NULL;

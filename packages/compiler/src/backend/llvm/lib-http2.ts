@@ -220,6 +220,10 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
         a[e.fn === "http2.createSecureServer" ? 2 : 3]!,
       ]);
     }
+    case "http2.performServerHandshake":
+      return finishRuntimeCall(host, e, "scr_http2_perform_server_handshake", [a[0]!]);
+    case "http2.performServerHandshakeOpts":
+      return finishRuntimeCall(host, e, "scr_http2_perform_server_handshake_opts", [a[0]!, a[1]!]);
     case "http2.connect":
     case "http2.connectCb": {
       const cb = args[3];

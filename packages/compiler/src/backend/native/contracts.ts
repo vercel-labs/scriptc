@@ -136,6 +136,8 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** fs.openAsBlob: scr_fs_blob.c, the Blob unit reading a file on demand. */
+  fsOpenAsBlob?: boolean;
   /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
    * the IR): compiles the scr_js_* units (two-tier design I3). Programs
    * without them link no scr_js_ symbol. */

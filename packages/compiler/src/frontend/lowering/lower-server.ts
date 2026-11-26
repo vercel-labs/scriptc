@@ -11130,6 +11130,11 @@ function lowerWriteEndArgs(
   loc: SrcLoc,
 ): IrExpr | null {
   const typeAt = (node: ts.Expression): IrType | null => lowerer.mapTypeOf(lowerer.typeOf(node));
+  /* Node treats a present-but-undefined argument as absent: write(chunk,
+   * undefined, cb), write(chunk, encoding, undefined) and end(data,
+   * undefined) are the same calls without it. */
+  const absent = (i: number): boolean =>
+    i >= args.length || (lowerer.typeOf(args[i]!).flags & ts.TypeFlags.Undefined) !== 0;
   const dyn = (node: ts.Expression | undefined): IrExpr => {
     if (node === undefined) return dynUndefinedExpr(loc);
     const value = lowerer.lowerExpr(node);
@@ -11153,14 +11158,14 @@ function lowerWriteEndArgs(
   const encodingForm = second?.kind === "string";
   // both calls take a callback second (a request's end(data, cb) included)
   const callbackForm = second?.kind === "func";
-  if (!encodingForm && !callbackForm) return null;
-  if (third !== null && third.kind !== "func") return null;
+  if (!encodingForm && !callbackForm && !absent(1)) return null;
+  if (third !== null && third.kind !== "func" && !absent(2)) return null;
   const receiver = lowerReceiver();
   const chunk = dyn(args[0]);
   const encoding = encodingForm ? dyn(args[1]) : dynUndefinedExpr(loc);
   const callback = callbackForm
     ? dyn(args[1])
-    : args.length === 3
+    : args.length === 3 && !absent(2)
       ? dyn(args[2])
       : dynUndefinedExpr(loc);
   return {

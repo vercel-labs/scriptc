@@ -27,3 +27,15 @@ show("writer", new WritableStream().getWriter());
 // console.log prints the same shape.
 console.log("console", new ReadableStream());
 console.log("console-encoder", new TextEncoderStream());
+
+// A released writer's inspection throws its invalid-state TypeError (its
+// desiredSize getter does), as Node's inspector does.
+const released = new WritableStream().getWriter();
+released.releaseLock();
+try {
+  inspect(released);
+  console.log("released-writer no-throw");
+} catch (error) {
+  console.log("released-writer", error.name, error.code, error.message);
+}
+console.log("after-released");

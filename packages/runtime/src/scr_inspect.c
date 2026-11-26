@@ -5195,6 +5195,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
           return insp_bracketed_class(ops->cls);
         }
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
+        /* A custom inspector may refuse the value by throwing (a released
+         * stream writer's desiredSize does): the error leaves the whole
+         * inspection, as Node's does. */
+        if (view == NULL && scr_exc_pending()) return NULL;
         if (ops->inspect_view_nested) {
           scr_insp_nested_begin();
           ScrStr *inner = scr_insp_dyn(view, 0, depth);

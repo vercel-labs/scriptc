@@ -6311,7 +6311,13 @@ static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
  * wraps on each side. A nested stream prints through its own view here. */
 
 static ScrDyn *ws_inspect_text(const char *text) {
-  return scr_dyn_new_str(scr_str_new(text, strlen(text)));
+  /* scr_dyn_new_str retains the string it wraps, so the fresh string's own
+   * reference goes back here (otherwise every inspection of a stream
+   * leaks its state string). */
+  ScrStr *value = scr_str_new(text, strlen(text));
+  ScrDyn *boxed = scr_dyn_new_str(value);
+  scr_str_release(value);
+  return boxed;
 }
 
 static ScrDyn *ws_inspect_field(ScrDyn *view, const char *key, ScrDyn *value) {
@@ -6386,7 +6392,11 @@ static ScrDyn *ws_strategy_inspect_view(void *h) {
 static ScrDyn *ws_reader_inspect_view(void *h) {
   WsReader *r = h;
   ScrDyn *view = scr_dyn_new_obj();
-  if (r->stream != NULL) ws_inspect_field(view, "stream", ws_stream_box(r->stream));
+  /* A released reader has no stream: Node prints `stream: undefined`. */
+  if (r->stream != NULL)
+    ws_inspect_field(view, "stream", ws_stream_box(r->stream));
+  else
+    ws_inspect_field(view, "stream", scr_dyn_retain(scr_dyn_undefined()));
   ws_inspect_field(view, "readRequests", scr_dyn_new_num((double)r->requests));
   ScrDyn *closed = ws_reader_get(h, "closed", 6);
   if (closed != NULL && scr_exc_pending()) {
@@ -6400,6 +6410,13 @@ static ScrDyn *ws_reader_inspect_view(void *h) {
 /* WritableStreamDefaultWriter { stream, close, ready, desiredSize } */
 static ScrDyn *ws_writer_inspect_view(void *h) {
   WsWriter *w = h;
+  if (w->stream == NULL) {
+    /* A released writer: its desiredSize getter throws, and Node's
+     * inspector lets that error out of util.inspect instead of printing
+     * the writer. */
+    ws_state_error(ws_writer_unbound);
+    return NULL;
+  }
   ScrDyn *view = scr_dyn_new_obj();
   if (w->stream != NULL) ws_inspect_field(view, "stream", ws_writable_box(w->stream));
   ScrDyn *close = ws_writer_get(h, "closed", 6);

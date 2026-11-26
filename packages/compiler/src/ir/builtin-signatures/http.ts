@@ -276,6 +276,11 @@ export const httpSignatures = defineLibFnSignatures({
   "http.reqResume": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqPause": { argTypes: [HTTPREQ_T], result: VOID },
   "http.reqDestroy": { argTypes: [HTTPREQ_T], result: VOID },
+  /** req.destroy(err): err becomes the request's 'error'. */
+  "http.reqDestroyError": {
+    argTypes: [HTTPREQ_T, { kind: "object", className: "%Error" }],
+    result: VOID,
+  },
   "http.reqOnError": { argTypes: [HTTPREQ_T, null, BOOL], result: VOID },
   "http.reqOnClose": {
     argTypes: [HTTPREQ_T, { kind: "func", params: [], ret: VOID }, BOOL],

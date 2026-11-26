@@ -10585,7 +10585,7 @@ function lowerHttpReqMethodCall(
   }
   if (name === "resume" || name === "pause" || name === "destroy") {
     requireStatementPosition(lowerer, call, `req.${name}()`);
-    if (args.length !== 0) {
+    if (name !== "destroy" && args.length !== 0) {
       lowerer.noLowering(
         `${name} with ${args.length} arguments`,
         call,
@@ -10593,8 +10593,39 @@ function lowerHttpReqMethodCall(
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, HTTPREQ_T);
-    const fn: IrLibFn =
-      name === "resume" ? "http.reqResume" : name === "pause" ? "http.reqPause" : "http.reqDestroy";
+    if (name === "destroy") {
+      // destroy(err): err becomes the request's 'error' (Readable.destroy's
+      // payload); destroy(undefined) and destroy(null) are destroy().
+      if (args.length === 0) {
+        return { kind: "libCall", fn: "http.reqDestroy", args: [receiver], type: VOID, loc };
+      }
+      if (args.length !== 1) {
+        lowerer.noLowering(`destroy with ${args.length} arguments`, call, "use destroy([error])");
+      }
+      const arg = args[0]!;
+      if (
+        arg.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(arg) && arg.text === "undefined")
+      ) {
+        return { kind: "libCall", fn: "http.reqDestroy", args: [receiver], type: VOID, loc };
+      }
+      const err = lowerer.lowerExpr(arg);
+      if (err.type.kind !== "object") {
+        lowerer.noLowering(
+          `destroy with a '${lowerer.fmt(err.type)}' argument`,
+          arg,
+          "pass an Error value, or call destroy() without one",
+        );
+      }
+      return {
+        kind: "libCall",
+        fn: "http.reqDestroyError",
+        args: [receiver, lowerer.coerceToExpected(err, ERROR_T)],
+        type: VOID,
+        loc,
+      };
+    }
+    const fn: IrLibFn = name === "resume" ? "http.reqResume" : "http.reqPause";
     return { kind: "libCall", fn, args: [receiver], type: VOID, loc };
   }
   if (name === "setEncoding") {

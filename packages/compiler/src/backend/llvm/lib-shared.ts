@@ -2068,6 +2068,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "array.classConstructAdopt": "scr_arr_class_construct_adopt",
   "array.dynIsClass": "scr_dyn_is_array_class",
   "http.reqDestroy": "scr_http_req_destroy",
+  "http.reqDestroyError": "scr_http_req_destroy_error",
   "http.reqSetEncoding": "scr_http_req_set_encoding",
   "http.resSetHeader": "scr_http_res_set_header",
   "http.resSetHeaderDyn": "scr_http_res_set_header_dyn",

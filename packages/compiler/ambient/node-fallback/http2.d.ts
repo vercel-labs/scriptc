@@ -37,8 +37,9 @@ declare module "http2" {
     readonly httpVersionMinor: number;
     readonly aborted: boolean;
     readonly complete: boolean;
+    readonly destroyed: boolean;
     resume(): void;
-    destroy(): void;
+    destroy(error?: Error): void;
     setEncoding(encoding: string): void;
     pipe(destination: Socket | import("http").ClientRequest): void;
     on(event: "data", listener: (chunk: Buffer) => void): void;

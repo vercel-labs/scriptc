@@ -499,6 +499,7 @@ http.methods
 http.reqAborted
 http.reqComplete
 http.reqDestroy
+http.reqDestroyError
 http.reqDestroyed
 http.reqH2Stream
 http.reqHeader

@@ -4205,7 +4205,14 @@ function lowerObjectOwnCall(
     const shape = lowerer.shapes.get(type.shapeId);
     fencePerfEntryKeyWalk(lowerer, type, receiverNode ?? call, `Object.prototype.${method}`);
     if (isX509Type(lowerer, type) && receiverNode !== undefined) {
-      const x509 = lowerX509OwnKeyWalk(lowerer, receiverNode, method, keyNode, call, locOf(call));
+      const x509 = lowerX509OwnKeyWalk(
+        lowerer,
+        receiverNode,
+        method,
+        call.arguments.nodes,
+        call,
+        locOf(call),
+      );
       if (x509) return x509;
       fenceX509KeyWalk(lowerer, type, receiverNode, `Object.prototype.${method}`);
     }
@@ -11448,7 +11455,7 @@ function lowerObjectStaticCall(
         lowerer,
         node,
         "getOwnPropertyNames",
-        undefined,
+        call.arguments.nodes.slice(1),
         call,
         locOf(call),
       );
@@ -11813,7 +11820,7 @@ function lowerObjectStaticCall(
       lowerer,
       argNode,
       member,
-      call.arguments.nodes[1],
+      call.arguments.nodes.slice(1),
       call,
       locOf(call),
     );

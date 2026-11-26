@@ -156,7 +156,7 @@ export function lowerX509OwnKeyWalk(
   lowerer: Lowerer,
   receiverNode: ts.Expression,
   member: string,
-  keyNode: ts.Expression | undefined,
+  argNodes: readonly ts.Expression[],
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr | null {
@@ -190,13 +190,9 @@ export function lowerX509OwnKeyWalk(
   if (answer === null) return null;
   const receiver = lowerer.lowerExpr(receiverNode);
   const stmts: IrStmt[] = [{ kind: "exprStmt", expr: receiver, loc }];
-  const keyed =
-    member === "getOwnPropertyDescriptor" ||
-    member === "hasOwn" ||
-    member === "hasOwnProperty" ||
-    member === "propertyIsEnumerable";
-  if (keyed && keyNode !== undefined)
-    stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(keyNode), loc });
+  /* Every argument evaluates, in order, as Node's call does: the walk uses
+   * only the first, and the others' side effects still happen. */
+  for (const arg of argNodes) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
   const finish = (result: IrExpr): IrExpr => ({
     kind: "seqExpr",
     stmts,

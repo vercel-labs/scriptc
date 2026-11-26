@@ -54,6 +54,10 @@ ScrDyn *scr_blob_from_source(ScrBlobSource *source, double size, ScrStr *type);
  * caller gave it — Node's openAsBlob performs no type normalization, so
  * non-ASCII characters, tabs and newlines survive. Case is preserved too. */
 ScrStr *scr_blob_type_as_given(ScrStr *raw);
+/* The type a Blob or File value carries (+1, possibly empty), or NULL when
+ * `value` is not a Blob: the automatic Content-Type a Blob body contributes
+ * to fetch, validated where that header is inserted. */
+ScrStr *scr_blob_handle_type(const ScrDyn *value);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

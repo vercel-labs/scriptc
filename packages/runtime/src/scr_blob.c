@@ -168,6 +168,12 @@ static ScrStr *scr_blob_type_of(ScrStr *s) {
  * Case is preserved too: MIME parameters can be case-sensitive. */
 ScrStr *scr_blob_type_as_given(ScrStr *raw) { return scr_str_retain(raw); }
 
+ScrStr *scr_blob_handle_type(const ScrDyn *value) {
+  ScrBlob *b = scr_blob_of(value);
+  if (b == NULL) return NULL;
+  return b->type != NULL ? scr_str_retain(b->type) : scr_str_new("", 0);
+}
+
 /* One source part: a Blob contributes its own parts, an ArrayBuffer or
  * view its bytes, and anything else its UTF-8 string (line endings
  * rewritten to the platform's when `native`). */

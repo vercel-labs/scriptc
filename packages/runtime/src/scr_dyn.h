@@ -501,6 +501,14 @@ typedef struct ScrDynTypedRecordOps {
    * NULL when the program never writes through a dynamic view, and for a
    * field whose storage it cannot replace (an inline union). */
   bool (*set)(void *rec, size_t index, const ScrDyn *value);
+  /* Object.setPrototypeOf's prototype the native record owns: `proto_get`
+   * answers it (+1; a null-kind value for the null prototype) or NULL when
+   * the record has none. `proto_set` stores it: it takes its own reference,
+   * a NULL pointer stores no prototype, and a null-kind value the null
+   * prototype. Emitted only for a shape the program can prototype; NULL in
+   * every other table. */
+  ScrDyn *(*proto_get)(void *rec);
+  void (*proto_set)(void *rec, ScrDyn *prototype);
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
@@ -1554,6 +1562,7 @@ ScrDyn *scr_dyn_class_test_prototype(ScrDyn *object);
 bool scr_dyn_bag_create_field(ScrDyn *bag, const ScrStr *key);
 bool scr_dyn_is_class_capsule(const ScrDyn *d);
 ScrDyn *scr_dyn_get_prototype(ScrDyn *object);
+bool scr_dyn_is_plain_object(ScrDyn *value);
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object);
 ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype);
 ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object);

@@ -791,6 +791,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const testEntryPtr = usesNodeTest ? emitter.cstr(emitter.mod.sourceFile) : "";
   // Declared NOW — the extern block flushes before main assembles.
   if (usesEvents) emitter.declare(`declare void @scr_events_install()`);
+  // Arrays the program gives a prototype are born with the collector header
+  // (scr_array.h): their element kinds are stamped before %main.
+  const prototypeArrayKinds = emitter.mod.prototypeOverrideArrayKinds ?? [];
+  if (prototypeArrayKinds.length > 0)
+    emitter.declare(`declare void @scr_arr_force_cyclic_kind(double)`);
   if (usesChildProcess) emitter.declare(`declare void @scr_child_dyn_install()`);
   if (usesChildErrorEvent) emitter.declare(`declare void @scr_child_error_event_install()`);
   const childStreamBoxes =
@@ -1587,6 +1592,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       ``,
     );
   }
+  // Every array of a prototype-bearing element kind carries the collector
+  // header, so the stamps that set the flags are shared by the executable
+  // entry and the library initializer: both run them before compiled code can
+  // allocate an array.
+  for (const kind of prototypeArrayKinds)
+    stamps.push(`  call void @scr_arr_force_cyclic_kind(double ${kind}.0)`);
   if (emitter.mod.lib !== undefined) {
     // LIBRARY mode: no @main — the profile-declared external
     // symbols specified by the library IR instead.

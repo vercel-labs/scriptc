@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-get-prototype-of-compiled-record.ts"
+ ],
+ "diags": []
+}

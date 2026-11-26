@@ -134,6 +134,7 @@ import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
 import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 import { builtinConstructorText } from "../held-constructors.js";
 import { lowerArgumentsObjectInstanceOf } from "../arguments-object.js";
+import { plainObjectPrototypeComparison } from "../builtins/reflection.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -2451,6 +2452,16 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // whose arms all answer alike): a binding an import cycle can reach
     // before its declaration ran keeps its checked read.
     if (test) return withTypeofTestCycleRead(lowerer, expr, test, loc);
+  }
+  // `Object.getPrototypeOf(value) === Object.prototype`: the plain-object
+  // test, answered from the value's kind (a primitive, a Date, an array or a
+  // class instance is not one), intercepted BEFORE the call lowers.
+  if (
+    op === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken
+  ) {
+    const plain = plainObjectPrototypeComparison(lowerer, expr, loc);
+    if (plain !== null) return plain;
   }
   // `x.constructor === Readable` for an instance of EventEmitter or a
   // stream class: the instance's own class, compared without a class value.

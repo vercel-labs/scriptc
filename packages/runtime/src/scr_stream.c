@@ -1272,29 +1272,54 @@ static void *scr_stream_read_n(ScrStream *s, double size) {
 static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kind) {
   ScrStreamState *st = s->st;
   *kind = scr_stream_rkind(st);
-  bool absent = size < 0;
+  bool absent = isnan(size);
+  /* Node's read() takes the readable-event path only when its parsed size
+   * is 0 (or -0); a negative size reads nothing but does not. */
+  bool zero = false;
   size_t n = 0;
   if (!absent) {
-    n = (size_t)size;
-    if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n (readable.js's
-       * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
-       * of 0 still grows, and starting from 0 would never reach n. */
-      size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
-      while (h < n) {
-        if (h > SIZE_MAX / 2) {
-          h = n;
-          break;
+    if (!isfinite(size)) {
+      /* parseInt(±Infinity) is NaN: Node's absent form, which drains */
+      absent = true;
+    } else {
+      /* a non-integer size goes through parseInt (toward zero) */
+      double whole = trunc(size);
+      zero = whole == 0;
+      n = whole > 0 ? (size_t)whole : 0;
+      if (n > st->r.hwm) {
+        /* computeNewHighWaterMark's MAX_HWM (1GiB): only a size that grows
+         * the watermark is bounded, so a stream configured above it reads a
+         * larger size as it is. */
+        if (whole > 1073741824.0) {
+          char num[32];
+          size_t len = scr_f64_to_str(whole, num);
+          char msg[192];
+          int wrote = snprintf(msg, sizeof msg,
+                               "The value of \"size\" is out of range. It must be <= 1GiB. Received %.*s",
+                               (int)len, num);
+          scr_throw_error_msg_code(SCR_ERR_RANGE, msg, wrote < 0 ? 0 : (size_t)wrote,
+                                   "ERR_OUT_OF_RANGE");
+          return NULL;
         }
-        h *= 2;
+        /* Node grows hwm to the next power of two above n (readable.js's
+         * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
+         * of 0 still grows, and starting from 0 would never reach n. */
+        size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
+        while (h < n) {
+          if (h > SIZE_MAX / 2) {
+            h = n;
+            break;
+          }
+          h *= 2;
+        }
+        st->r.hwm = h;
       }
-      st->r.hwm = h;
     }
   }
   /* Node's read(): `if (n !== 0) state.emittedReadable = false` — the
    * absent form is NaN there, which also clears; only read(0) keeps it. */
-  if (absent || n != 0) st->r.emitted_readable = false;
-  if (!absent && n == 0 && st->r.need_readable &&
+  if (absent || !zero) st->r.emitted_readable = false;
+  if (!absent && zero && st->r.need_readable &&
       (st->r.length >= st->r.hwm || st->r.ended)) {
     if (st->r.length == 0 && st->r.ended) scr_stream_end_readable(s);
     else scr_stream_emit_readable_nt(s);
@@ -1365,7 +1390,7 @@ static void scr_stream_flow(ScrStream *s) {
   ScrStreamState *st = s->st;
   while (st->r.flowing == 1 && !scr_exc_pending()) {
     ScrEntryKind kind;
-    void *b = scr_stream_read_n_kind(s, -1, &kind);
+    void *b = scr_stream_read_n_kind(s, NAN, &kind);
     if (b == NULL) break;
     scr_stream_entry_release_kind(st, b, kind);
   }
@@ -1627,7 +1652,7 @@ static void scr_stream_iter_step(ScrStream *s) {
      * An empty buffer first runs the stream's _read through a zero-size
      * read, so the chunks it pushes synchronously buffer as entries of
      * their own instead of arriving as one merged read. */
-    double want = -1;
+    double want = NAN;
     if (st->r.next_single && !st->r.object_entries && st->r.n == 0 && !st->r.ended &&
         !st->r.reading && !st->destroyed && !st->errored && !st->constructing &&
         st->r.read_cb != NULL) {
@@ -5727,7 +5752,7 @@ static void scr_dupx_pull(ScrDuplexify *x) {
   ScrStream *d = x->d;
   while (d && x->r) {
     ScrEntryKind kind = SCR_ENTRY_BYTES;
-    void *chunk = scr_stream_read_n_kind(x->r, -1, &kind);
+    void *chunk = scr_stream_read_n_kind(x->r, NAN, &kind);
     if (scr_exc_pending()) return;
     if (!chunk) {
       x->onreadable = true;
@@ -7658,7 +7683,30 @@ ScrStream *scr_stream_on_dyn(ScrStream *s, ScrStr *name, ScrDyn *cb, bool once, 
 }
 
 ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {
-  double n = size && size->kind != SCR_DYN_UNDEF ? scr_dyn_number_coerce(size) : -1;
+  /* Node's read() takes parseInt of a value that is not an integer, and
+   * a NaN size (no argument, or one parseInt cannot read) is the absent
+   * form that drains. */
+  double n;
+  if (!size || size->kind == SCR_DYN_UNDEF) n = NAN;
+  else if (size->kind == SCR_DYN_STR) {
+    n = scr_parse_int(size->v.str, 10);
+    /* parseInt of a digit run too long for a double is Infinity, which
+     * Node's computeNewHighWaterMark refuses (a numeric Infinity is the
+     * absent form instead: parseInt(String(Infinity)) is NaN), and a
+     * negative Infinity reads nothing. */
+    if (isnan(n)) {
+      /* parseInt could not read a digit: Node's absent form */
+    } else if (!isfinite(n)) {
+      if (n > 0) {
+        static const char msg[] =
+            "The value of \"size\" is out of range. It must be <= 1GiB. Received Infinity";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+        return scr_dyn_undefined();
+      }
+      /* -Infinity: a negative size reads nothing */
+      n = -1.0;
+    }
+  } else n = scr_dyn_number_coerce(size);
   if (scr_exc_pending()) return scr_dyn_undefined();
   ScrEntryKind kind = SCR_ENTRY_BYTES;
   void *chunk = s->st->has_r ? scr_stream_read_n_kind(s, n, &kind) : NULL;

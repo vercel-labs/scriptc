@@ -100378,7 +100378,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "evidence": "compiler-feature:test.MockPropertyContext"
       },
       "anchorSource": "exact"
     },
@@ -100704,7 +100704,7 @@
       },
       "static": {
         "status": "not-implemented",
-        "evidence": "compiler-unmatched:test"
+        "evidence": "compiler-feature:test.mock.property"
       },
       "anchorSource": "exact"
     },
@@ -100811,7 +100811,7 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:test.MockTimers",
         "tests": [
           "tests/fixtures/node-test/cases/mock-timers.ts",

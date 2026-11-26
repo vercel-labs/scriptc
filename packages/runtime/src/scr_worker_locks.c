@@ -114,11 +114,13 @@ static void scr_locks_run(ScrLockEntry *entry, ScrLockReq *req) {
   ScrDyn *result = scr_dyn_call(req->callback, args, 1, "locks.request callback");
   scr_dyn_release(lock);
   scr_dyn_release(req->callback);
-  scr_promise_release(req->promise);
-  /* The promise keeps the reference the call answered, so it is not released
-   * here. */
+  /* The promise is settled before the queue drops its reference: a program
+   * that already released the promise it was handed must not find the settle
+   * writing into freed memory. The value keeps the reference the call
+   * answered. */
   scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
                           scr_dyn_trace_v);
+  scr_promise_release(req->promise);
   /* A request is done holding when its callback returned; releasing it here
    * lets the queue advance in the same turn, which is Node's ordering for a
    * callback that returns at once. */

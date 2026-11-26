@@ -204,6 +204,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # The reporter is copied out before any step can move the working tree: the run it reports can predate it.
+      - name: Keep the reporter outside the working tree
+        run: cp scripts/ci/bisect-report.mjs "$RUNNER_TEMP/bisect-report.mjs"
       - env:
           GH_TOKEN: ${{ github.token }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -212,7 +215,7 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          node scripts/ci/bisect-report.mjs \
+          node "$RUNNER_TEMP/bisect-report.mjs" \
             --label post-merge-bisect-unresolved \
             --title "Post-merge CI failures no search could place" \
             --branch "$BRANCH" --red "$RED" --reason "${RANGE:-the search did not start}" \
@@ -545,6 +548,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+      # The revert checks the culprit's commit out, and that commit can predate this reporter; a copy in
+      # RUNNER_TEMP still reports a revert that conflicts or a push that fails.
+      - name: Keep the reporter outside the working tree
+        run: cp scripts/ci/bisect-report.mjs "$RUNNER_TEMP/bisect-report.mjs"
       - name: Revert the culprit
         if: ${{ needs.decide.outputs.culprit_sha != '' && needs.confirm.result == 'success' }}
         env:
@@ -572,7 +579,7 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          node scripts/ci/bisect-report.mjs \
+          node "$RUNNER_TEMP/bisect-report.mjs" \
             --label post-merge-bisect-revert \
             --title "Post-merge reverts that need a person" \
             --branch "$BRANCH" --red "$RED" --jobs "$JOBS" --run "$RUN" \
@@ -590,7 +597,7 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          node scripts/ci/bisect-report.mjs \
+          node "$RUNNER_TEMP/bisect-report.mjs" \
             --label post-merge-bisect-unconfirmed \
             --title "Post-merge failures no revert confirmed" \
             --branch "$BRANCH" --red "$RED" --reason "$REASON" --jobs "$JOBS" --run "$RUN"
@@ -605,7 +612,7 @@ jobs:
           RED: ${{ github.event.workflow_run.head_sha }}
           RUN: ${{ github.event.workflow_run.html_url }}
         run: |
-          node scripts/ci/bisect-report.mjs \
+          node "$RUNNER_TEMP/bisect-report.mjs" \
             --label post-merge-bisect-unconfirmed \
             --title "Post-merge failures no revert confirmed" \
             --branch "$BRANCH" --red "$RED" --jobs "$JOBS" --run "$RUN" \

@@ -299,9 +299,11 @@ test("the workflow's plan and narrow commands speak JSON", () => {
 });
 
 test("the culprit search starts on a failed post-merge CI run on main or canary and never writes either", () => {
-  const workflow = load(
-    readFileSync(new URL("../../.github/workflows/bisect-main.yml", import.meta.url), "utf8"),
-  ) as {
+  const source = readFileSync(
+    new URL("../../.github/workflows/bisect-main.yml", import.meta.url),
+    "utf8",
+  );
+  const workflow = load(source) as {
     on: { workflow_run: { workflows: string[]; types: string[] } };
     jobs: Record<
       string,
@@ -361,12 +363,7 @@ test("the culprit search starts on a failed post-merge CI run on main or canary 
   expect(planStep.run).toContain("--paginate --slurp");
   expect(planStep.run).toContain("merge-base --is-ancestor");
   // gh rejects --slurp with --jq. Joining the shell's continuations reads each command as gh runs it.
-  const commands = readFileSync(
-    new URL("../../.github/workflows/bisect-main.yml", import.meta.url),
-    "utf8",
-  )
-    .replace(/\\\n\s*/g, " ")
-    .split("\n");
+  const commands = source.replace(/\\\n\s*/g, " ").split("\n");
   const api = commands.filter((command) => command.includes("gh api"));
   expect(api.length).toBeGreaterThan(0);
   for (const command of api)
@@ -375,6 +372,18 @@ test("the culprit search starts on a failed post-merge CI run on main or canary 
   expect(planStep.run).toContain("jobs.jsonl");
   expect(planStep.run).toContain("jq -s");
   // The revert lands on the branch that failed, not on main.
+  // The reporter is copied out of the working tree before the revert checks the culprit's commit out: a run whose
+  // culprit predates the reporter still reports a conflict or a failed push.
+  const concludeSteps = workflow.jobs.conclude!.steps!;
+  const copied = concludeSteps.findIndex((step) =>
+    step.run?.includes('cp scripts/ci/bisect-report.mjs "$RUNNER_TEMP/bisect-report.mjs"'),
+  );
+  const revertAt = concludeSteps.findIndex((step) => step.run?.includes("revert-pr.mjs"));
+  expect(copied).toBeGreaterThan(0); // after the checkout
+  expect(copied).toBeLessThan(revertAt);
+  // No report runs the tree's copy, which the moved checkout can remove.
+  expect(source.match(/node scripts\/ci\/bisect-report\.mjs/g)).toBeNull();
+  expect(source.match(/node "\$RUNNER_TEMP\/bisect-report\.mjs"/g)?.length).toBe(4);
   const revert = workflow.jobs.conclude!.steps!.find((step) =>
     step.run?.includes("revert-pr.mjs"),
   )!;
@@ -482,7 +491,7 @@ test("every report goes through the tracking-issue script, never a new issue", (
     "utf8",
   );
   expect(text).not.toMatch(/gh issue create/);
-  const reports = [...text.matchAll(/node scripts\/ci\/bisect-report\.mjs/g)];
+  const reports = [...text.matchAll(/node "\$RUNNER_TEMP\/bisect-report\.mjs"/g)];
   expect(reports.length).toBe(4);
   for (const label of [
     "post-merge-bisect-unresolved",

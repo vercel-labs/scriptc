@@ -94319,6 +94319,7 @@
           "tests/corpus/stream-duplex-pair.ts",
           "tests/corpus/stream-duplex-to-web.ts",
           "tests/corpus/stream-erased-data-listener.ts",
+          "tests/corpus/stream-lifecycle-state.mjs",
           "tests/corpus/stream-operators-option-values.ts",
           "tests/corpus/stream-predicate-values.ts",
           "tests/corpus/stream-readable-to-web-chunks.mjs",
@@ -96196,11 +96197,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-state.mjs",
-          "tests/corpus/compat-stream-state.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97617,10 +97617,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.destroyed",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97757,10 +97757,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableEnded",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97783,10 +97783,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.errored",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"
@@ -97862,10 +97862,10 @@
         "inherited": true
       },
       "static": {
-        "status": "partial",
+        "status": "supported",
         "evidence": "compiler-feature:stream.readableLength",
         "tests": [
-          "tests/corpus/compat-stream-classes.ts"
+          "tests/corpus/stream-lifecycle-state.mjs"
         ]
       },
       "anchorSource": "ancestor"

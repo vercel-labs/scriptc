@@ -5272,6 +5272,17 @@ static bool sf_header_value_ok(const ScrStr *value) {
   return true;
 }
 
+/* A value Node's HTTP stack sends: a field value may hold no C0 control but
+ * HTAB, and no DEL. Headers stores such bytes, but fetch refuses them before
+ * it writes anything. */
+static bool sf_wire_header_value_ok(const ScrStr *value) {
+  for (size_t i = 0; i < value->len; i++) {
+    unsigned char c = (unsigned char)value->data[i];
+    if ((c < 0x20 && c != '\t') || c == 0x7f) return false;
+  }
+  return true;
+}
+
 static ScrStr *sf_header_value_bytestring(ScrStr *value) {
   /* An ASCII value is its own ByteString: each byte is one UTF-16 unit. */
   size_t ascii = 0;
@@ -6635,6 +6646,42 @@ static bool sf_start_hop(SfTransfer *t) {
    * undici's dispatcher does; the bare host keys the pool, so origins that
    * share an address keep their own connections. A proxied request dials
    * its own connection. */
+  /* Node's dispatcher refuses a value holding a control byte other than
+   * HTAB (or DEL) before it opens the request: the fetch fails and nothing
+   * is written, though Headers itself stores such a value. */
+  for (size_t i = 0; i + 1 < (size_t)scr_arr_len(headers); i += 2) {
+    ScrStr *name = scr_arr_get_ref(headers, (double)i);
+    ScrStr *value = scr_arr_get_ref(headers, (double)(i + 1));
+    bool valid = sf_wire_header_value_ok(value);
+    if (!valid) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "invalid ");
+      scr_jb_write(&b, name->data, name->len);
+      scr_jb_puts(&b, " header");
+      ScrStr *text = scr_jb_finish(&b);
+      ScrError *cause = scr_error_new(SCR_ERR_ERROR, text);
+      scr_str_release(text);
+      scr_str_release(cause->name);
+      cause->name = scr_str_new("InvalidArgumentError", 20);
+      cause->name_present = true;
+      scr_error_set_code(cause, "UND_ERR_INVALID_ARG");
+      ScrDyn *reason = scr_dyn_from_error(cause);
+      scr_error_release(cause);
+      sf_reject_cause(t, reason);
+      scr_str_release(name);
+      scr_str_release(value);
+      scr_arr_release(headers);
+      scr_str_release(path);
+      scr_str_release(dial);
+      scr_str_release(bare);
+      scr_str_release(sni);
+      scr_url_release(proxy);
+      return false;
+    }
+    scr_str_release(name);
+    scr_str_release(value);
+  }
   ScrHttpClientReq *client =
       proxy ? scr_http_request_ex_direct(dial, dial_port, path, t->method, 0, headers, false, NULL,
                                          NULL, default_port, wrap, wrap_ctx)

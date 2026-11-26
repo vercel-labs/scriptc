@@ -36,7 +36,12 @@ import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { conditionRunsNothing, constantCondition } from "../constant-conditions.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
-import { narrowClassUnion, narrowStoredClassValue, structuralNarrowing } from "../class-unions.js";
+import {
+  narrowClassUnion,
+  narrowStoredClassValue,
+  narrowUnionToClassUnion,
+  structuralNarrowing,
+} from "../class-unions.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "../class-assertions.js";
 import {
   isOptionalProcessStreamProperty,
@@ -1162,6 +1167,17 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         loc: expr.loc,
       };
     }
+  }
+  // A union holding non-class arms (a Map beside node classes) narrowed to
+  // the class arms it kept: re-tag the stored value into the narrowed
+  // union so it converts as that union (a stranded arm traps).
+  if (
+    narrowed?.kind === "union" &&
+    expr.type.kind === "union" &&
+    narrowed.unionId !== expr.type.unionId
+  ) {
+    const retagged = narrowUnionToClassUnion(lowerer, expr, narrowed);
+    if (retagged) return retagged;
   }
   // A narrowing that refines record arms with an intersection keeps the
   // stored layout: view the value as the stored arms that can hold it.

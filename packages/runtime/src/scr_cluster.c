@@ -918,12 +918,10 @@ static void scr_cl_child_error_thunk(ScrClosure *cb, ScrStr *msg) {
   if (w == NULL) return;
   ScrDyn *error = scr_event_error_payload != NULL ? scr_dyn_from_error(scr_event_error_payload)
                                                   : scr_dyn_new_str(msg);
+  /* Node answers a launch that could not start on the worker alone: the
+   * cluster-level listener does not see it. */
   ScrDyn *worker_args[] = {error};
   scr_cl_ls_emit(&w->ls, "error", worker_args, 1);
-  ScrDyn *self = scr_cl_worker_handle(w);
-  ScrDyn *cluster_args[] = {self, error};
-  scr_cl_ls_emit(&scr_cl_events, "error", cluster_args, 2);
-  scr_dyn_release(self);
   scr_dyn_release(error);
   scr_clw_release(w);
 }

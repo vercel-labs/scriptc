@@ -375,6 +375,7 @@ import { fenceExpandoRead } from "./lower-expando.js";
 import {
   fenceNodeModuleMutationCall,
   isCjsRequireGlobal,
+  lowerModuleClassStaticCall,
   lowerRequireCacheKeys,
 } from "./lower-node-module.js";
 import { builtinConstantsObject, pathModuleValue } from "./lower-builtin-values.js";
@@ -610,6 +611,9 @@ export function refuseWrittenBuiltin(
 }
 
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  // `Module.isBuiltin(...)`: the class's statics are the module surface.
+  const moduleStatic = lowerModuleClassStaticCall(lowerer, expr);
+  if (moduleStatic) return moduleStatic;
   // `fs.readFileSync(…)` where `fs` is a require binding the file
   // reassigns: the binding's storage holds whatever the program stored, so
   // the method is read and called through that checked-dynamic value.

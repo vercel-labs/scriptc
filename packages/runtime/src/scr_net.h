@@ -80,6 +80,9 @@ void *scr_net_server_get_http_ctx(ScrNetServer *s);
  * drops its own request/upgrade/connect lists there (the settle-releases-
  * listeners story across the layer seam). */
 void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *));
+/* The protocol close hook (http_ctx): runs when the server stops
+ * listening, before its idle connections are torn down. */
+void scr_net_server_set_proto_close(ScrNetServer *s, void (*fn)(void *));
 /* the native context's settle hook: releases the listeners it owns that can
  * no longer fire once the server settles */
 void scr_net_server_set_native_settle(ScrNetServer *s, void (*fn)(void *));
@@ -146,6 +149,7 @@ void *scr_net_sock_retain_v(void *p);
 void scr_net_sock_release_v(void *p);
 
 ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, ScrNetConnFn fn); /* +1 */
+ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/, ScrClosure *handler /*moves, nullable*/, ScrNetConnFn fn); /* +1 */
 void scr_net_listen(ScrNetServer *s, double port, ScrClosure *cb /*moves, nullable*/);
 /* listen({ port, host, ipv6Only, reusePort }): host is an IP literal ("" =
  * the dual-stack any default); ipv6Only sets IPV6_V6ONLY before the bind.

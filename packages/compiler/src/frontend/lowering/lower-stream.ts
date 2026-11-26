@@ -4292,6 +4292,27 @@ export function lowerStreamModuleCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr | null {
+  if (bi.module === "stream/web") {
+    // ReadableStreamTee(stream[, cloneForBranch2]): the module's one
+    // function export beside the web stream classes, which lower through
+    // the globals' own paths. It answers the default tee's two branches,
+    // the second reading a structuredClone of each chunk when the flag is
+    // true; any other value but undefined is Node's argument TypeError,
+    // raised before the tee locks the source.
+    if (bi.member !== "ReadableStreamTee") return null;
+    const args = call.arguments.nodes;
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `ReadableStreamTee with ${args.length} arguments`,
+        call,
+        "the supported form is ReadableStreamTee(stream, cloneForBranch2)",
+      );
+    }
+    const source = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const clone =
+      args[1] === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(args[1]!, DYN);
+    return { kind: "libCall", fn: "webstream.tee", args: [source, clone], type: DYN, loc };
+  }
   if (bi.module === "stream/promises") {
     const args = call.arguments.nodes;
     // finished(stream) → a pending void promise the terminal watcher
@@ -5419,12 +5440,13 @@ function lowerDynFunctionStage(
   isLast: boolean,
   loc: SrcLoc,
   handoff?: DynStageHandoff,
+  check: "transform" | "body" = "transform",
 ): { closure: IrExpr; out: IrType } {
   const out: IrType = isLast ? DYN : dynStageGenType();
   const stageT = funcOf([srcT, DYN], out);
   const take = handoff?.take === true;
   const give = handoff?.give === true && !isLast;
-  const key = `dynFunctionStage:${isLast ? "dest" : "transform"}:${typeKey(srcT)}:${take ? 1 : 0}${give ? 1 : 0}`;
+  const key = `dynFunctionStage:${isLast ? "dest" : "transform"}:${typeKey(srcT)}:${take ? 1 : 0}${give ? 1 : 0}:${check}`;
   let maker = lowerer.valueHelpers.get(key);
   if (!maker) {
     maker = `%stream.dynFunctionStage.${lowerer.valueHelpers.size}`;
@@ -5484,18 +5506,26 @@ function lowerDynFunctionStage(
       if (isLast) {
         body.push({ kind: "return", value: varRef(resultId, DYN, loc), loc });
       } else {
-        body.push({
-          kind: "varDecl",
-          localId: nextId,
-          init: {
-            kind: "libCall",
-            fn: "stream.dynTransformResult",
-            args: [varRef(resultId, DYN, loc), varRef(labelId, STRING, loc)],
-            type: DYN,
-            loc,
-          },
-          loc,
-        });
+        // A transform stage must answer an async iterable; a Duplex body
+        // reads whatever iterable it answered (duplexify's from() accepts
+        // a synchronous one too and names the function "body").
+        const next: IrExpr =
+          check === "body"
+            ? {
+                kind: "libCall",
+                fn: "stream.duplexBodyValue",
+                args: [varRef(resultId, DYN, loc)],
+                type: DYN,
+                loc,
+              }
+            : {
+                kind: "libCall",
+                fn: "stream.dynTransformResult",
+                args: [varRef(resultId, DYN, loc), varRef(labelId, STRING, loc)],
+                type: DYN,
+                loc,
+              };
+        body.push({ kind: "varDecl", localId: nextId, init: next, loc });
         // the next untyped function stage takes the result itself; the
         // generator returned for the runtime is then never read
         if (give) body.push(handoffPut(cell(), varRef(nextId, DYN, loc), loc));
@@ -6511,13 +6541,6 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
   if (fn !== null) {
     const isAsync = (fn.modifiers?.nodes ?? []).some((m) => m.kind === ts.SyntaxKind.AsyncKeyword);
     const isGen = !ts.isArrowFunction(fn) && fn.asteriskToken !== undefined;
-    if (!isAsync) {
-      lowerer.noLowering(
-        "Duplex.from over a function that is not async",
-        node,
-        "write the body as async function* (source) { ... } or async function (source) { ... }",
-      );
-    }
     if (fn.parameters.nodes.length > 2) {
       lowerer.noLowering(
         "a Duplex.from body with parameters after the options argument",
@@ -6532,14 +6555,27 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
       retT: VOID,
       nextT: UNDEFINED_T,
     };
-    const lowered = lowerStageFunction(lowerer, fn, sourceT);
-    const params = lowered.closure.type.kind === "func" ? lowered.closure.type.params : [];
+    // A plain function whose declared answer is a promise is duplexify's
+    // thenable body: a writable-only Duplexify whose final awaits it, the
+    // same lowering an async function body takes.
+    let bodyFnT: IrType | null;
+    try {
+      bodyFnT = lowerer.mapTypeOf(lowerer.typeOf(node));
+    } catch {
+      bodyFnT = null;
+    }
+    const promisedBody =
+      !isAsync && bodyFnT !== null && bodyFnT.kind === "func" && bodyFnT.ret.kind === "promise";
+    const lowered = isAsync || promisedBody ? lowerStageFunction(lowerer, fn, sourceT) : null;
+    const params =
+      lowered !== null && lowered.closure.type.kind === "func" ? lowered.closure.type.params : [];
     // fromAsyncGen calls the body with { signal } of an AbortController
-    // that destroy aborts with its error.
+    // that destroy aborts with its error; a plain function body always
+    // receives it.
     let signalArgs: IrExpr[] = [];
     let signalDecls: IrStmt[] = [];
-    if (params.length > 1) {
-      if (params[1]!.kind !== "dyn") {
+    if ((!isAsync && !promisedBody) || params.length > 1) {
+      if ((isAsync || promisedBody) && params[1]!.kind !== "dyn") {
         lowerer.noLowering(
           "a Duplex.from body's options argument with this type",
           fn.parameters.nodes[1]!,
@@ -6573,11 +6609,33 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
         ? { kind: "seqExpr", stmts: signalDecls, result: call, type: duplex, loc }
         : call;
     };
+    if (!isAsync && !promisedBody) {
+      // duplexify's plain function body: the function is called with the
+      // write source and { signal } while the Duplex is built, and the
+      // value it answers (a synchronous or asynchronous iterable, or a
+      // readable stream) is read as the readable side.
+      const source = duplexSourceHelper(lowerer, sourceT, loc);
+      const fnValue = lowerer.lowerExprExpecting(node, DYN);
+      const plain = lowerDynFunctionStage(
+        lowerer,
+        fnValue,
+        sourceT,
+        0,
+        false,
+        loc,
+        undefined,
+        "body",
+      );
+      const helpers =
+        plain.out.kind === "generator" ? fromGenHelpers(lowerer, plain.out, loc) : null;
+      if (!source || !helpers) return lowerer.noLowering("Duplex.from over a function body", node);
+      return withSignal("stream.duplexFromGen", [plain.closure, source!, ...helpers!]);
+    }
     if (!isGen) {
       // an async function: a writable Duplexify whose final waits for
       // the function's promise
       const asyncSource = duplexSourceHelper(lowerer, sourceT, loc);
-      const out = lowered.out;
+      const out = lowered!.out;
       if (out.kind !== "promise" || !asyncSource)
         return lowerer.noLowering("Duplex.from over a function with this return type", node);
       if (
@@ -6593,18 +6651,20 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
           node,
         );
       }
-      return withSignal("stream.duplexFromAsyncFn", [
-        lowered.closure,
-        asyncSource,
-        pipelineBoxHelper(lowerer, out, loc),
-      ]);
+      return withSignal(
+        params.length === 0 ? "stream.duplexFromAsyncFnNoSource" : "stream.duplexFromAsyncFn",
+        [lowered!.closure, asyncSource, pipelineBoxHelper(lowerer, out, loc)],
+      );
     }
     const helpers =
-      lowered.out.kind === "generator" ? fromGenHelpers(lowerer, lowered.out, loc) : null;
+      lowered!.out.kind === "generator" ? fromGenHelpers(lowerer, lowered!.out, loc) : null;
     const source = duplexSourceHelper(lowerer, sourceT, loc);
     if (!helpers || !source)
       lowerer.noLowering("Duplex.from over a function with this generator type", node);
-    return withSignal("stream.duplexFromGen", [lowered.closure, source!, ...helpers!]);
+    return withSignal(
+      params.length === 0 ? "stream.duplexFromGenNoSource" : "stream.duplexFromGen",
+      [lowered!.closure, source!, ...helpers!],
+    );
   }
   // duplexify.js: a stream answers itself (a Duplex) or is wrapped; any
   // other body reads as from(Duplexify, body, { objectMode: true,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http2-perform-handshake-socket-bound.ts"
+ ],
+ "diags": []
+}

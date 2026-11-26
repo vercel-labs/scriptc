@@ -288,7 +288,7 @@ jobs:
       - name: TypeScript build
         run: pnpm build
       - name: Code quality and CI policy contracts
-        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts
+        run: pnpm test tests/harness/code-quality.test.ts tests/harness/ci-stack-scope.test.ts tests/harness/ci-preflight.test.ts tests/harness/ci-canary-suite.test.ts
         env:
           SCRIPTC_TEST_WORKERS: "1"
       - name: Verify mixed-source generated AST getters
@@ -346,28 +346,11 @@ jobs:
           fi
           node scripts/ci-fast-tests.mjs --base "$BASE" --head "$HEAD" --smoke
       # Canary's merge queue and post-merge tier: the fast PR jobs plus the compiler source-rule and snapshot tests.
-      # It reuses this job's native packages and build; the heavy lanes run only on main. Suites that read
-      # tests/harness/__snapshots__ are here; coverage.test.ts is the coverage lane's whole suite and stays there.
+      # It reuses this job's native packages and build; the heavy lanes run only on main. The selection lives in
+      # scripts/ci/canary-suite.mjs, so a local check of the canary tier runs the same command this job does.
       - name: Canary source-rule and snapshot tests
         if: needs.validation_scope.outputs.tier == 'canary'
-        run: >-
-          pnpm test
-          tests/harness/diagnostics.test.ts
-          tests/harness/node-island-marks.test.ts
-          tests/harness/project-config.test.ts
-          tests/harness/library-int.test.ts
-          tests/harness/surface-manifest.test.ts
-          tests/harness/decl-boundary.test.ts
-          tests/harness/workspace-source.test.ts
-          tests/harness/source-package.test.ts
-          tests/harness/partial-assertion-read-rule.test.ts
-          packages/compiler/src/program-facts.test.ts
-          tests/harness/ci-lanes.test.ts
-          tests/harness/ci-test-plan.test.ts
-          tests/harness/ci-bisect.test.ts
-          tests/harness/ci-green-tag.test.ts
-          tests/harness/ci-queue-tests.test.ts
-          tests/harness/ci-review-gate.test.ts
+        run: node scripts/ci/canary-suite.mjs
 
   native_macos:
     needs: [validation_scope, lanes, code_quality]

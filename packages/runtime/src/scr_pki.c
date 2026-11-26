@@ -745,9 +745,10 @@ static unsigned char *sp_mpi_bytes(const mbedtls_mpi *x, size_t *len);
  * given as a private one, DH PARAMETERS, junk) answers NULL, which the
  * create*Key callers report as Node's decoder error. */
 
-/* Skips one DER element (tag, length, body) of any tag. */
-static int sp_asn1_skip_element(const unsigned char **p, const unsigned char *end) {
-  const unsigned char *q = *p;
+/* Skips one DER element (tag, length, body) of any tag, advancing the
+ * mutable cursor the DH parser shares with mbedTLS's readers. */
+static int sp_asn1_skip_element(unsigned char **p, const unsigned char *end) {
+  unsigned char *q = *p;
   if (q >= end) return -1;
   q++;
   if (q >= end) return -1;

@@ -172,6 +172,7 @@ export const streamSignatures = defineLibFnSignatures({
   "stream.optionValues": { argTypes: [null, DYN, DYN], result: VOID },
   "stream.checkEncodingOption": { argTypes: [DYN], result: VOID },
   "stream.duplexFromGen": { argTypes: [null, null, null, null, null, null], result: VOID },
+  "stream.duplexFromGenNoSource": { argTypes: [null, null, null, null, null, null], result: VOID },
   "stream.duplexFromDyn": { argTypes: [DYN], result: VOID },
   /** Duplex.from over a lone Readable or Writable, or a { readable,
    * writable } pair of streams (duplexify.js's _duplexify). */
@@ -184,6 +185,7 @@ export const streamSignatures = defineLibFnSignatures({
   /** Duplex.from(asyncFunction): the stage, its source helper and the
    * promise's box helper. */
   "stream.duplexFromAsyncFn": { argTypes: [null, null, null], result: VOID },
+  "stream.duplexFromAsyncFnNoSource": { argTypes: [null, null, null], result: VOID },
   /** The same for a body that declares the options argument: then the
    * AbortController's abort() and its signal. */
   "stream.duplexFromGenSignal": {

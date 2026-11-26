@@ -29,6 +29,35 @@ const collect = async (stream) => {
   console.log("generator", await collect(duplex));
 }
 
+// a string body answers one whole chunk (from.js's string case)
+{
+  const duplex = Duplex.from(() => "ab");
+  const out = [];
+  for await (const chunk of duplex) out.push(`str:${String(chunk)}`);
+  console.log("string body", duplex.readable, duplex.writable, out.join(","));
+}
+
+// a Buffer body answers one whole chunk (from.js's Buffer case)
+{
+  const duplex = Duplex.from(() => Buffer.from("cd"));
+  const out = [];
+  for await (const chunk of duplex) {
+    out.push(Buffer.isBuffer(chunk) ? `buf:${chunk.toString()}` : `str:${String(chunk)}`);
+  }
+  console.log("buffer body", out.join(","));
+}
+
+// an async generator body without a source parameter
+{
+  const duplex = Duplex.from(async function* () {
+    yield "z1";
+    yield "z2";
+  });
+  const out = [];
+  for await (const chunk of duplex) out.push(String(chunk));
+  console.log("generator no source", out.join(","));
+}
+
 // a synchronous generator function body
 {
   const duplex = Duplex.from(function* () {
@@ -66,6 +95,20 @@ const collect = async (stream) => {
   duplex.end();
   await new Promise((resolve) => duplex.on("end", resolve));
   console.log("write source", out.join(","));
+}
+
+// a plain function answering a promise: duplexify's writable-only
+// Duplexify, whose settled-before-final promise destroys it with the abort
+// the destroy raises
+{
+  const duplex = Duplex.from(() => Promise.resolve(null));
+  console.log("promise body", duplex.readable, duplex.writable);
+  const events = [];
+  duplex.on("error", (err) => events.push(`error ${err.name}`));
+  duplex.on("close", () => events.push("close"));
+  await new Promise((resolve) => duplex.on("close", resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  console.log("promise body events", events.join(","), duplex.destroyed);
 }
 
 // results that are not iterable throw the "body" form of the error

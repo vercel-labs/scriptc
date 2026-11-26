@@ -6534,7 +6534,18 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
       retT: VOID,
       nextT: UNDEFINED_T,
     };
-    const lowered = isAsync ? lowerStageFunction(lowerer, fn, sourceT) : null;
+    // A plain function whose declared answer is a promise is duplexify's
+    // thenable body: a writable-only Duplexify whose final awaits it, the
+    // same lowering an async function body takes.
+    let bodyFnT: IrType | null;
+    try {
+      bodyFnT = lowerer.mapTypeOf(lowerer.typeOf(node));
+    } catch {
+      bodyFnT = null;
+    }
+    const promisedBody =
+      !isAsync && bodyFnT !== null && bodyFnT.kind === "func" && bodyFnT.ret.kind === "promise";
+    const lowered = isAsync || promisedBody ? lowerStageFunction(lowerer, fn, sourceT) : null;
     const params =
       lowered !== null && lowered.closure.type.kind === "func" ? lowered.closure.type.params : [];
     // fromAsyncGen calls the body with { signal } of an AbortController
@@ -6542,8 +6553,8 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
     // receives it.
     let signalArgs: IrExpr[] = [];
     let signalDecls: IrStmt[] = [];
-    if (!isAsync || params.length > 1) {
-      if (isAsync && params[1]!.kind !== "dyn") {
+    if ((!isAsync && !promisedBody) || params.length > 1) {
+      if ((isAsync || promisedBody) && params[1]!.kind !== "dyn") {
         lowerer.noLowering(
           "a Duplex.from body's options argument with this type",
           fn.parameters.nodes[1]!,
@@ -6577,7 +6588,7 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
         ? { kind: "seqExpr", stmts: signalDecls, result: call, type: duplex, loc }
         : call;
     };
-    if (!isAsync) {
+    if (!isAsync && !promisedBody) {
       // duplexify's plain function body: the function is called with the
       // write source and { signal } while the Duplex is built, and the
       // value it answers (a synchronous or asynchronous iterable, or a
@@ -6619,18 +6630,20 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
           node,
         );
       }
-      return withSignal("stream.duplexFromAsyncFn", [
-        lowered!.closure,
-        asyncSource,
-        pipelineBoxHelper(lowerer, out, loc),
-      ]);
+      return withSignal(
+        params.length === 0 ? "stream.duplexFromAsyncFnNoSource" : "stream.duplexFromAsyncFn",
+        [lowered!.closure, asyncSource, pipelineBoxHelper(lowerer, out, loc)],
+      );
     }
     const helpers =
       lowered!.out.kind === "generator" ? fromGenHelpers(lowerer, lowered!.out, loc) : null;
     const source = duplexSourceHelper(lowerer, sourceT, loc);
     if (!helpers || !source)
       lowerer.noLowering("Duplex.from over a function with this generator type", node);
-    return withSignal("stream.duplexFromGen", [lowered!.closure, source!, ...helpers!]);
+    return withSignal(
+      params.length === 0 ? "stream.duplexFromGenNoSource" : "stream.duplexFromGen",
+      [lowered!.closure, source!, ...helpers!],
+    );
   }
   // duplexify.js: a stream answers itself (a Duplex) or is wrapped; any
   // other body reads as from(Duplexify, body, { objectMode: true,

@@ -10129,6 +10129,13 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
  * form of ERR_INVALID_RETURN_VALUE. +1, or NULL with an exception
  * pending. */
 ScrDyn *scr_stream_duplex_body_value(const ScrDyn *value) {
+  /* from.js's string and Buffer bodies push the value whole, not each of
+   * its characters or bytes: one entry reads back as that chunk. */
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
+    ScrDyn *one = scr_dyn_new_arr();
+    scr_dyn_arr_push(one, scr_dyn_retain((ScrDyn *)value));
+    return one;
+  }
   ScrStream *native = scr_stream_of_handle(value);
   if (!native) native = scr_stream_boxed(value);
   if (native) {

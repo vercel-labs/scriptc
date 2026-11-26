@@ -802,6 +802,11 @@ void scr_stream_writev_fill_encodings(struct ScrDyn *chunks);
  * the Readable.from builders with SCR_FROM_DUPLEX. */
 ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                       ScrClosure *read, ScrClosure *ret, ScrClosure *thr);
+/* The same for a body without a source parameter: the stage is called
+ * with no argument and the source generator is released. */
+ScrStream *scr_stream_duplex_from_gen_nosource(ScrClosure *stage, ScrClosure *source,
+                                              ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                              ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
@@ -811,6 +816,10 @@ ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, do
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */
 ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box);
+/* The same for a body without a source parameter: the stage is called
+ * with no argument and the source generator is released. */
+ScrStream *scr_stream_duplex_from_async_fn_nosource(ScrClosure *stage, ScrClosure *source,
+                                                    ScrClosure *box);
 /* The same for a body that declares the options argument: it takes
  * { signal } (signal borrowed), and destroy calls abort(err) (borrowed),
  * the AbortController's abort, before it settles (fromAsyncGen's

@@ -10241,6 +10241,14 @@ void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value
   scr_dyn_obj_put(obj, key, key_len, value);
 }
 
+/* An own data property on a function value (Node's `wrapper.listener = fn`):
+ * the closure's property table, created on first use. Moves `value`. */
+void scr_dyn_fn_set_prop(ScrDyn *function, const char *key, size_t key_len, ScrDyn *value) {
+  ScrDyn *table = scr_dyn_fn_properties(function);
+  scr_dyn_obj_set(table, key, key_len, value);
+  scr_dyn_release(table);
+}
+
 /* The getter (or, with `setter`, the setter) of the own accessor property
  * `key`: +1, or the undefined value when the property is not an accessor
  * or has none. */

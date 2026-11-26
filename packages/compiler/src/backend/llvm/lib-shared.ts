@@ -1792,6 +1792,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "emitter.nameDyn": "scr_emitter_name_dyn",
   "emitter.listeners": "scr_emitter_listeners",
   "emitter.listenersDyn": "scr_emitter_listeners_dyn",
+  "emitter.rawListenersDyn": "scr_emitter_raw_listeners_dyn",
   "emitter.hasTyped": "scr_emitter_has_typed",
   "emitter.hasDyn": "scr_emitter_has_dyn",
   "emitter.setMax": "scr_emitter_set_max",

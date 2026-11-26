@@ -722,6 +722,9 @@ struct ScrNetSocket {
    * error is not an Error (Node's AbortError) */
   const char *pending_code;
   const char *pending_name;
+  /* an error object to emit in place of one rebuilt from the text (a
+   * custom verifier's own Error); +1 */
+  ScrDyn *pending_err_obj;
   /* the caller-lookup dial (net.connect with a lookup option): true while
    * the lookup decides; dial_ips holds its answered addresses (+1 each),
    * dialed in order — a connect failure closes the fd and tries
@@ -1015,6 +1018,7 @@ void scr_net_sock_release(ScrNetSocket *s) {
     scr_als_ctx_release(s->als);
     scr_als_ctx_release(s->end_ctx);
     scr_str_release(s->pending_err);
+    scr_dyn_release(s->pending_err_obj);
     scr_str_release(s->encoding);
     scr_str_release(s->remote_cache);
     for (size_t i = 0; i < s->dial_n; i++) scr_str_release(s->dial_ips[i]);
@@ -9305,6 +9309,25 @@ void scr_net_sock_on_established(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool
   scr_net_ls_add(&s->conn_ls, cb, NULL, once);
 }
 
+/* A transport failure that carries its own error object (tls.connect's
+ * checkServerIdentity returned it): the socket emits that error with the
+ * object's message and code. `err` moves. */
+void scr_net_sock_transport_error_obj(ScrNetSocket *s, ScrDyn *err /*moves*/) {
+  if (s->pending_err) {
+    scr_dyn_release(err);
+    return;
+  }
+  ScrDyn *mv = scr_dyn_obj_read(err, "message", 7);
+  ScrStr *text = mv != NULL && mv->kind == SCR_DYN_STR
+                     ? scr_str_retain(mv->v.str)
+                     : scr_str_new("certificate identity check failed", 36);
+  scr_dyn_release(mv);
+  s->pending_err = text;
+  s->had_error = true;
+  s->pending_err_obj = err; /* moves */
+  scr_net_sock_close_fd(s);
+}
+
 /* scr_net_sock_transport_error with the error's code given (static
  * storage), for messages whose text does not name it. */
 void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code) {
@@ -9633,6 +9656,13 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
       if (sock->pending_name != NULL && strcmp(sock->pending_name, "AbortError") == 0) {
         /* connect({ signal }) aborted: Node's AbortError, not an Error */
         coded = scr_error_abort(NULL);
+      } else if (sock->pending_err_obj != NULL) {
+        /* the failure carries its own error object (a custom verifier's
+         * Error): its message is the text, its code the error code */
+        coded = scr_error_new(SCR_ERR_ERROR, msg);
+        ScrDyn *cv = scr_dyn_obj_read(sock->pending_err_obj, "code", 4);
+        if (cv != NULL && cv->kind == SCR_DYN_STR) coded->code = scr_str_retain(cv->v.str);
+        scr_dyn_release(cv);
       } else if (sock->pending_code != NULL) {
         coded = scr_error_new(SCR_ERR_ERROR, msg);
         coded->code = scr_str_new(sock->pending_code, strlen(sock->pending_code));
@@ -9648,6 +9678,8 @@ static bool scr_net_sweep_sock(ScrNetSocket *sock) {
     sock->err_optional = false;
     sock->pending_code = NULL;
     sock->pending_name = NULL;
+    scr_dyn_release(sock->pending_err_obj);
+    sock->pending_err_obj = NULL;
     scr_str_release(msg);
     if (scr_exc_pending()) return false;
   }

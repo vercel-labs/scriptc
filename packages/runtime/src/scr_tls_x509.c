@@ -67,7 +67,8 @@ static ScrDyn *scr_tls_x509_link(ScrDyn *chain, ScrBytes *issuer) {
  * last certificate is its own issuerCertificate. +1. */
 ScrDyn *scr_tls_sock_get_peer_certificate(ScrNetSocket *s, const ScrDyn *detailed_arg) {
   /* Node reads the argument with IsTrue(): only true itself. */
-  bool detailed = detailed_arg->kind == SCR_DYN_BOOL && detailed_arg->v.b;
+  bool detailed =
+      detailed_arg != NULL && detailed_arg->kind == SCR_DYN_BOOL && detailed_arg->v.b;
   if (!scr_tls_sock_has_handle(s)) return scr_dyn_new_null();
   const uint8_t *der[SCR_TLS_X509_MAX_CHAIN];
   size_t len[SCR_TLS_X509_MAX_CHAIN];

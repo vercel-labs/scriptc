@@ -929,6 +929,9 @@ typedef struct ScrTlsCli {
   bool has_own;
   mbedtls_x509_crt own;
   mbedtls_pk_context own_pk;
+  /* tls.connect's checkServerIdentity (+1): the caller's verifier, which
+   * replaces the builtin name check; NULL keeps the builtin. */
+  ScrDyn *check_identity;
 } ScrTlsCli;
 
 /* The default trust anchors when no `ca` option is given: the host trust
@@ -1110,6 +1113,7 @@ static void scr_tls_cli_free(ScrTlsCli *c) {
   mbedtls_x509_crl_free(&c->crl);
   mbedtls_x509_crt_free(&c->own);
   mbedtls_pk_free(&c->own_pk);
+  scr_dyn_release(c->check_identity);
   free(c->hostname);
   free(c->verify_name);
   free(c);
@@ -1760,7 +1764,10 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
     t->vrfy_chain[depth] = crt;
     if ((size_t)depth + 1 > t->vrfy_chain_len) t->vrfy_chain_len = (size_t)depth + 1;
   }
-  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL) {
+  if (depth == 0 && t->cli != NULL && t->cli->hostname == NULL &&
+      t->cli->check_identity == NULL) {
+    /* a custom checkServerIdentity replaces the builtin name check (the
+     * chain verdict below still applies) */
     const char *name = t->cli->verify_name;
     if (name == NULL || name[0] == '\0') {
       *flags |= MBEDTLS_X509_BADCERT_CN_MISMATCH;
@@ -2549,6 +2556,31 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
   (void)scr_set_immediate(cb);
 }
 
+/* tls.connect's checkServerIdentity: the caller's verifier decides the
+ * identity, so the builtin name check is disabled for it (the chain check
+ * stands). Its returned Error fails the connection with that error's
+ * message and code. False when the connection must fail. */
+static bool scr_tls_run_check_identity(ScrTlsSock *t) {
+  const char *name = t->cli->verify_name != NULL ? t->cli->verify_name : "";
+  ScrStr *host = scr_str_new(name, strlen(name));
+  ScrDyn *hostv = scr_dyn_new_str(host);
+  scr_str_release(host);
+  ScrDyn *cert = scr_tls_sock_get_peer_certificate(t->sock, scr_dyn_undefined());
+  if (cert == NULL) {
+    scr_dyn_release(hostv);
+    return false;
+  }
+  ScrDyn *argv[2] = {hostv, cert};
+  ScrDyn *verdict = scr_dyn_call(t->cli->check_identity, argv, 2, "checkServerIdentity");
+  scr_dyn_release(hostv);
+  scr_dyn_release(cert);
+  if (verdict == NULL) return false; /* the verifier threw: that exception stands */
+  bool ok = verdict->kind == SCR_DYN_UNDEF || verdict->kind == SCR_DYN_NULL;
+  if (!ok) scr_net_sock_transport_error_obj(t->sock, verdict); /* moves */
+  else scr_dyn_release(verdict);
+  return ok;
+}
+
 static int scr_tls_handshake(void *tctx) {
   ScrTlsSock *t = (ScrTlsSock *)tctx;
   if (t->cli != NULL && t->cli->no_protocols) {
@@ -2570,6 +2602,9 @@ static int scr_tls_handshake(void *tctx) {
               ? scr_tls_handshake_requiring_cert(t)
               : mbedtls_ssl_handshake(&t->ssl);
   scr_tls_current = NULL;
+  if (r == 0 && t->cli != NULL && t->cli->check_identity != NULL) {
+    if (!scr_tls_run_check_identity(t)) return -1;
+  }
   if (r == 0) {
     scr_tls_hold_until_immediate(t);
   } else {
@@ -4938,6 +4973,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   const ScrDyn *timeout_value = NULL;
   int min_version = 12, max_version = 13;
   ScrNetSocket *wrap = NULL; /* options.socket: the open socket to take over */
+  ScrDyn *check_identity = NULL; /* options.checkServerIdentity (+1) */
   bool ok = true;
   if (opts != NULL && opts->kind != SCR_DYN_UNDEF && opts->kind != SCR_DYN_NULL) {
     if (opts->kind != SCR_DYN_OBJ) {
@@ -4960,9 +4996,9 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
           scr_dyn_prop_type_fail("options.checkServerIdentity", "of type function", v);
           ok = false;
         } else {
-          scr_tls_opt_fence("tls.connect", "checkServerIdentity",
-                            "custom identity verification has no lowering — the runtime verifies against the servername/host");
-          ok = false;
+          /* kept for the handshake: it replaces the builtin name check */
+          scr_dyn_release(check_identity);
+          check_identity = scr_dyn_retain((ScrDyn *)v);
         }
         continue;
       }
@@ -5102,6 +5138,7 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
     scr_bytes_release(crl);
     scr_bytes_release(own_cert);
     scr_bytes_release(own_key);
+    scr_dyn_release(check_identity);
     scr_closure_release(cb);
     return NULL;
   }
@@ -5147,6 +5184,8 @@ static ScrNetSocket *scr_tls_connect_plain(double port, ScrStr *host /*borrowed,
   ScrTlsCli *cli = scr_tls_cli_new2(verify_host, reject, scr_tls_ca_data(ca),
                                      ca != NULL ? ca->len : 0, scr_tls_crl_data(crl),
                                      crl != NULL ? crl->len : 0, !reject);
+  cli->check_identity = check_identity; /* moves */
+  check_identity = NULL;
   if (servername != NULL) scr_tls_cli_set_servername(cli, servername);
   if (own_cert != NULL) scr_tls_cli_set_own(cli, own_cert, own_key);
   scr_bytes_release(own_cert);

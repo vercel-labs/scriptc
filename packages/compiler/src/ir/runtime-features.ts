@@ -1310,6 +1310,28 @@ function computedBufferMemberScan(mod: IrModule): RuleScan {
   };
 }
 
+/** A body read whose member name the compiler cannot see — a checked-dynamic
+ * read with a key computed at run time, or the `blob` member read as a value
+ * to invoke later — in a module that uses fetch. The fetch handle's dispatch
+ * answers `blob` for such a read, and the Blob it builds needs the blob unit,
+ * which the webBodies feature links. */
+function computedBlobBodyScan(_mod: IrModule): RuleScan {
+  let computed = false;
+  let fetch = false;
+  return {
+    expr: (node) => {
+      if (
+        !computed &&
+        node.kind === "dynKeyGet" &&
+        (node.key.kind !== "strLit" || node.key.value === "blob")
+      )
+        computed = true;
+      else if (!fetch && node.kind === "libCall" && node.fn.startsWith("fetch.")) fetch = true;
+    },
+    result: () => computed && fetch,
+  };
+}
+
 /** Whether the module calls WebCrypto and a string literal in it names one
  * of the asymmetric algorithms (matched without regard to case, as
  * normalizeAlgorithm matches names): scr_webcrypto_pki.c and the pki unit
@@ -2326,6 +2348,7 @@ const RUNTIME_FEATURE_RULES = {
    * too, and the value it hands back is a body the same way. Every other
    * program keeps the default fetch unit, byte for byte. */
   webBodies: rule({
+    scan: computedBlobBodyScan,
     prefixes: ["blob."],
     fns: ["fetch.responseBlob"],
     expr: (node) =>

@@ -1380,7 +1380,11 @@ static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
     char *value = NULL;
     size_t value_len = 0;
     if (s[pos] == '"') {
-      char *buf = malloc(n - pos > 0 ? n - pos : 1);
+      /* Grow with the value instead of reserving the rest of the header:
+       * a header with many quoted parameters must cost its own length, not
+       * a suffix-sized allocation per parameter. */
+      size_t cap = 16;
+      char *buf = malloc(cap);
       if (!buf) sf_oom();
       pos++; /* opening quote */
       while (pos < n) {
@@ -1388,6 +1392,14 @@ static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
         if (c == '"') {
           pos++;
           break;
+        }
+        if (value_len == cap) {
+          size_t next = cap > (SIZE_MAX / 2) ? SIZE_MAX : cap * 2;
+          if (next <= cap) sf_oom();
+          char *grown = realloc(buf, next);
+          if (!grown) sf_oom();
+          buf = grown;
+          cap = next;
         }
         if (c == '\\') {
           pos++;

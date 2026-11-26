@@ -177,6 +177,19 @@ log.push(`null timing ${JSON.stringify((await nullPending).type)}`);
   log.push(`body header ${JSON.stringify(withHeader.headers.get("content-type"))} ${await withHeader.text()}`);
 }
 
+// A content type with many quoted parameters parses in allocations
+// proportional to the header, not to the suffix behind each quote.
+{
+  const many = Array.from({ length: 20000 }, (_, i) => `p${i}="v${i}"`).join("; ");
+  const heavy = await new Response(body(), {
+    headers: { "content-type": `text/plain; ${many}` },
+  }).blob();
+  const type = heavy.type;
+  log.push(
+    `many ${type.length} ${type.startsWith("text/plain;p0=v0;p1=v1")} ${type.endsWith("p19999=v19999")} ${heavy.size}`,
+  );
+}
+
 log.push(`then ${later.join(",")}`);
 
 for (const line of log) console.log(line);

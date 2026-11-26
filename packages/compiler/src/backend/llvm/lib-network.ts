@@ -561,7 +561,11 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb})`,
     );
-    // The dial never throws: a refused path is the async 'error' event.
+    // validatePort's ladder throws synchronously for the empty, whitespace
+    // and out-of-range port strings; the pending exception must reach the
+    // statement (a try/catch, or the unwind the caller expects). A refused
+    // path is the async 'error' event instead.
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "net.socketNew") {

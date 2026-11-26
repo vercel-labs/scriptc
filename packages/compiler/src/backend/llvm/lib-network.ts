@@ -546,18 +546,22 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     return { name: "", type: e.type };
   }
   if (e.fn === "net.sockConnectPath" || e.fn === "net.sockConnectPathCb") {
-    // socket.connect(path[, cb]): the idle socket dials a Unix socket.
+    // socket.connect(path, ...): the idle socket dials a Unix socket. The
+    // two dyn slots carry argument expressions Node evaluates and ignores
+    // (the middle of a three-argument call, or a non-function callback
+    // slot), so the runtime sees the evaluation even though it uses only
+    // the path and the listener.
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
     if (e.fn === "net.sockConnectPathCb") {
-      host.toHeap(args[2]!);
-      cb = args[2]!.name;
+      host.toHeap(args[4]!);
+      cb = args[4]!.name;
     }
-    host.declare(`declare void @scr_net_sock_connect_path(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_net_sock_connect_path(ptr, ptr, ptr, ptr, ptr)`);
     B.line(
-      `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${cb})`,
+      `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb})`,
     );
-    host.emitPendingCheck();
+    // The dial never throws: a refused path is the async 'error' event.
     return { name: "", type: e.type };
   }
   if (e.fn === "net.socketNew") {

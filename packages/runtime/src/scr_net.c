@@ -3548,7 +3548,14 @@ void scr_net_sock_connect_missing(ScrNetSocket *s) {
  * form's sibling). A socket that is already dialing, connected or closed
  * ignores the call, as the port form does. */
 void scr_net_sock_connect_path(ScrNetSocket *s, ScrStr *path /*borrowed*/,
+                               const ScrDyn *extra1 /*borrowed, ignored*/,
+                               const ScrDyn *extra2 /*borrowed, ignored*/,
                                ScrClosure *cb /*moves, nullable*/) {
+  /* Node evaluates every argument expression and drops the values the
+   * callback slot does not use; the lowering hands them over here so the
+   * evaluation happens even though the dial uses only path and cb. */
+  (void)extra1;
+  (void)extra2;
   if (s->fd >= 0 || s->connecting || s->wr_done || s->close_emitted) {
     scr_closure_release(cb);
     return;

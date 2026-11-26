@@ -3549,21 +3549,40 @@ function lowerNetSocketMethodCall(
     const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
     if (firstT !== null && firstT.kind === "string") {
       // socket.connect(path[, connectListener]): the idle socket dials a
-      // Unix socket path; answers the socket, Node's chaining.
+      // Unix socket path; answers the socket, Node's chaining. Node
+      // evaluates EVERY argument, and the callback slot is the last
+      // argument when three are given and the second otherwise; a slot
+      // that is not a function is evaluated and ignored (no listener is
+      // registered). The lowering therefore evaluates every argument: the
+      // value that is not the callback crosses as a dyn argument the
+      // runtime ignores, so a wrapper's third-argument expression still
+      // runs natively instead of being dropped.
+      const dynValue = (node: ts.Expression): IrExpr => {
+        const v = lowerer.lowerExpr(node);
+        return v.type.kind === "dyn"
+          ? v
+          : { kind: "dynFrom", value: v, type: DYN, loc: locOf(node) };
+      };
+      const absent = dynUndefinedExpr(loc);
       const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
       const path = lowerer.lowerExprExpecting(args[0]!, STRING);
-      if (args.length === 1) {
+      const slot = args.length >= 2 ? args[args.length - 1]! : undefined;
+      const slotT = slot !== undefined ? lowerer.mapTypeOf(lowerer.typeOf(slot)) : null;
+      const slotIsListener = slotT !== null && slotT.kind === "func";
+      const middle = args.length === 3 ? dynValue(args[1]!) : absent;
+      const last = slot !== undefined && !slotIsListener ? dynValue(slot) : absent;
+      if (!slotIsListener) {
         return receiverReturningCall(
           lowerer,
           "net.sockConnectPath",
-          [receiver, path],
+          [receiver, path, middle, last],
           NETSOCKET_T,
           loc,
         );
       }
       const { cb } = lowerCallbackArg(
         lowerer,
-        args[1]!,
+        slot!,
         "connect listeners",
         0,
         () => false,
@@ -3573,7 +3592,7 @@ function lowerNetSocketMethodCall(
       return receiverReturningCall(
         lowerer,
         "net.sockConnectPathCb",
-        [receiver, path, cb],
+        [receiver, path, middle, last, cb],
         NETSOCKET_T,
         loc,
       );

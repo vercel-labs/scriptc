@@ -1375,6 +1375,61 @@ static void sf_mime_set_param(SfMime *m, const char *name, size_t name_len,
   p->value_len = value_len;
 }
 
+/* The parameter de-duplication set: open addressing keyed by the lowercased
+ * name's hash, holding a parameter's index + 1 (0 is empty). The parser then
+ * keeps its parameters in time linear in the header's length, rather than
+ * scanning every parameter already kept for each new one. */
+typedef struct {
+  size_t *slots;
+  size_t cap;
+} SfMimeSeen;
+
+static uint64_t sf_mime_name_hash(const char *name, size_t n) {
+  uint64_t h = 1469598103934665603ull; /* FNV-1a */
+  for (size_t i = 0; i < n; i++) {
+    h ^= (unsigned char)name[i];
+    h *= 1099511628211ull;
+  }
+  return h;
+}
+
+static void sf_mime_seen_put(SfMimeSeen *seen, const SfMimeParam *params,
+                             size_t index) {
+  size_t mask = seen->cap - 1;
+  const SfMimeParam *p = &params[index];
+  size_t at = (size_t)sf_mime_name_hash(p->name, p->name_len) & mask;
+  while (seen->slots[at] != 0) at = (at + 1) & mask;
+  seen->slots[at] = index + 1;
+}
+
+/* Room for one more name, rehashing the kept ones when the table would pass
+ * half full (which also bounds a probe walk). */
+static void sf_mime_seen_reserve(SfMimeSeen *seen, const SfMimeParam *params,
+                                 size_t count) {
+  if (seen->cap != 0 && (count + 1) * 2 <= seen->cap) return;
+  size_t cap = seen->cap != 0 ? seen->cap * 2 : 16;
+  while ((count + 1) * 2 > cap) cap *= 2;
+  free(seen->slots);
+  seen->slots = calloc(cap, sizeof *seen->slots);
+  if (!seen->slots) sf_oom();
+  seen->cap = cap;
+  for (size_t i = 0; i < count; i++) sf_mime_seen_put(seen, params, i);
+}
+
+static bool sf_mime_seen_has(const SfMimeSeen *seen, const SfMimeParam *params,
+                             const char *name, size_t name_len) {
+  if (seen->cap == 0) return false;
+  size_t mask = seen->cap - 1;
+  size_t at = (size_t)sf_mime_name_hash(name, name_len) & mask;
+  while (seen->slots[at] != 0) {
+    const SfMimeParam *p = &params[seen->slots[at] - 1];
+    if (p->name_len == name_len && memcmp(p->name, name, name_len) == 0)
+      return true;
+    at = (at + 1) & mask;
+  }
+  return false;
+}
+
 /* "parse a MIME type": false when the value does not parse. */
 static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
   memset(out, 0, sizeof *out);
@@ -1398,6 +1453,8 @@ static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
 
   SfMimeParam *params = NULL;
   size_t count = 0;
+  size_t params_cap = 0;
+  SfMimeSeen seen = {NULL, 0};
 
   while (pos < n) {
     pos++; /* ';' */
@@ -1468,28 +1525,33 @@ static bool sf_mime_parse(const ScrStr *input, SfMime *out) {
         char c = s[name_start + i];
         name[i] = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
       }
-      for (size_t i = 0; i < count; i++) {
-        if (params[i].name_len == name_len &&
-            memcmp(params[i].name, name, name_len) == 0) {
-          keep = false;
-          break;
-        }
-      }
+      /* The first value of a name wins. */
+      sf_mime_seen_reserve(&seen, params, count);
+      if (sf_mime_seen_has(&seen, params, name, name_len)) keep = false;
     }
     if (keep) {
-      SfMimeParam *grown = realloc(params, (count + 1) * sizeof *grown);
-      if (!grown) sf_oom();
-      params = grown;
+      if (count == params_cap) {
+        /* Geometric growth: appending is amortized constant, so the whole
+         * parameter list costs its own length. */
+        size_t next = params_cap != 0 ? params_cap * 2 : 8;
+        SfMimeParam *grown = realloc(params, next * sizeof *grown);
+        if (!grown) sf_oom();
+        params = grown;
+        params_cap = next;
+      }
       params[count].name = name;
       params[count].name_len = name_len;
       params[count].value = value;
       params[count].value_len = value_len;
+      sf_mime_seen_put(&seen, params, count);
       count++;
     } else {
       free(value);
       free(name);
     }
   }
+
+  free(seen.slots);
 
   out->type = sf_mime_lower(s + type_start, type_len);
   out->type_len = type_len;

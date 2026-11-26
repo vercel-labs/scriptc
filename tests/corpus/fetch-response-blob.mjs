@@ -190,6 +190,17 @@ log.push(`null timing ${JSON.stringify((await nullPending).type)}`);
   );
 }
 
+// A repeated parameter name keeps only its first value, and de-duplication
+// is linear: each name is looked up through a set, not by scanning every
+// parameter already kept.
+{
+  const repeated = Array.from({ length: 20000 }, (_, i) => `x=${i}`).join("; ");
+  const dedup = await new Response(body(), {
+    headers: { "content-type": `text/plain; ${repeated}` },
+  }).blob();
+  log.push(`dedup ${dedup.type}`);
+}
+
 log.push(`then ${later.join(",")}`);
 
 for (const line of log) console.log(line);

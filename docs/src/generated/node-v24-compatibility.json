@@ -46359,8 +46359,8 @@
       "anchor": "socketconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -46378,7 +46378,7 @@
       "nodeStability": null,
       "static": {
         "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -46395,8 +46395,8 @@
       "anchor": "socketconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },

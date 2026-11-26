@@ -3568,15 +3568,19 @@ function lowerNetSocketMethodCall(
   const loc = locOf(call);
   const args = call.arguments.nodes;
   if (name === "connect") {
-    // socket.connect(port[, host][, connectListener]): an idle socket
-    // starts the dial net.connect's port form performs. The path and
-    // options forms have no lowering yet.
+    // socket.connect(port[, host][, connectListener]) and
+    // socket.connect(path[, connectListener]) start the dial on an idle
+    // socket; connect() with no arguments throws Node's ERR_MISSING_ARGS
+    // at the call. The options-record form still has no lowering.
     if (args.length === 0) {
-      lowerer.noLowering(
-        "connect() with no arguments",
-        call,
-        "the form is connect(port[, host][, connectListener])",
-      );
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      return {
+        kind: "libCall",
+        fn: "net.sockConnectMissing",
+        args: [receiver],
+        type: VOID,
+        loc,
+      };
     } else if (args.length > 3) {
       lowerer.noLowering(
         `connect with ${args.length} arguments`,
@@ -3585,11 +3589,61 @@ function lowerNetSocketMethodCall(
       );
     }
     const firstT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+    if (firstT !== null && firstT.kind === "string") {
+      // socket.connect(string[, ...]): the string is Node's port-or-path
+      // argument — a numeric string (and the empty/out-of-range ladders)
+      // is the TCP port, everything else a Unix socket path — so the
+      // runtime classifies it with Node's own rule and throws the same
+      // ERR_SOCKET_BAD_PORT synchronously. Node evaluates EVERY argument,
+      // and the callback slot is the last argument when three are given and
+      // the second otherwise; a slot that is not statically a function is
+      // evaluated here and handed to the runtime, which registers it when
+      // its run-time value is a function.
+      const dynValue = (node: ts.Expression): IrExpr => {
+        const v = lowerer.lowerExpr(node);
+        return v.type.kind === "dyn"
+          ? v
+          : { kind: "dynFrom", value: v, type: DYN, loc: locOf(node) };
+      };
+      const absent = dynUndefinedExpr(loc);
+      const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+      const target = dynValue(args[0]!);
+      const slot = args.length >= 2 ? args[args.length - 1]! : undefined;
+      const slotT = slot !== undefined ? lowerer.mapTypeOf(lowerer.typeOf(slot)) : null;
+      const slotIsListener = slotT !== null && slotT.kind === "func";
+      const middle = args.length === 3 ? dynValue(args[1]!) : absent;
+      const last = slot !== undefined && !slotIsListener ? dynValue(slot) : absent;
+      if (!slotIsListener) {
+        return receiverReturningCall(
+          lowerer,
+          "net.sockConnectPath",
+          [receiver, target, middle, last],
+          NETSOCKET_T,
+          loc,
+        );
+      }
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        slot!,
+        "connect listeners",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return receiverReturningCall(
+        lowerer,
+        "net.sockConnectPathCb",
+        [receiver, target, middle, last, cb],
+        NETSOCKET_T,
+        loc,
+      );
+    }
     if (firstT === null || firstT.kind !== "f64") {
       lowerer.noLowering(
         `connect(${firstT === null ? "a dynamic value" : lowerer.fmt(firstT)})`,
         call,
-        "this surface lowers connect(port[, host][, connectListener]); the path and options forms have no lowering yet",
+        "this surface lowers connect(port[, host][, connectListener]) and connect(path[, connectListener]); the options form has no lowering yet",
       );
     }
     const receiver = coerceToHandle(lowerer, access.expression, NETSOCKET_T);

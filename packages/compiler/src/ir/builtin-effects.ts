@@ -632,6 +632,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // socket.connect() with no arguments throws Node's ERR_MISSING_ARGS;
+  // socket.connect(string) runs validatePort's ladder (ERR_SOCKET_BAD_PORT
+  // for the empty, whitespace and out-of-range strings), and registers a
+  // run-time function callback.
+  "net.sockConnectMissing",
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
   // net.createServer(options[, listener]): Node's ServerOpts ladders —
   // options itself must be an object, options.highWaterMark and
   // options.keepAliveInitialDelay numbers, options.blockList a

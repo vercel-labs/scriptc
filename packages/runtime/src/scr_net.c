@@ -3707,6 +3707,83 @@ ScrNetSocket *scr_net_connect(double port, ScrStr *host /*borrowed, nullable*/,
  * same validation ladder first; a socket already dialing or connected is
  * left as it is (Node re-dials a live socket and corrupts it — that shape
  * is not modelled). */
+static void scr_net_sock_dial_unix(ScrNetSocket *s);
+static void scr_net_missing_args(void);
+static bool scr_net_dyn_is_pipe_name(const ScrDyn *v);
+static bool scr_net_validate_port_dyn(const ScrDyn *v, const char *name, double *out);
+
+/* socket.connect(): Node's ERR_MISSING_ARGS at the call site (the
+ * receiver evaluates first, as Node's method call does). */
+void scr_net_sock_connect_missing(ScrNetSocket *s) {
+  (void)s;
+  scr_net_missing_args();
+}
+
+/* socket.connect(string, ...): Node's port-or-path argument. A string that
+ * reads as a port (a non-empty numeric string in range) is the TCP port,
+ * with validatePort's synchronous ERR_SOCKET_BAD_PORT for the empty,
+ * whitespace and out-of-range forms; anything else is a Unix socket path,
+ * exactly isPipeName's rule. `extra1` is the middle argument of a
+ * three-argument call and `slot` the callback-slot value when its static
+ * type is not a function: for the port form a string in either position is
+ * the destination host (Node keeps it — dropping it would dial the local
+ * default instead), and a slot whose run-time value is a function is
+ * registered as the connect listener. A socket that is already dialing,
+ * connected or closed ignores the call, as the port form does. */
+void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*/,
+                               const ScrDyn *extra1 /*borrowed, nullable*/,
+                               const ScrDyn *slot /*borrowed, nullable*/,
+                               ScrClosure *cb /*moves, nullable*/) {
+  const bool pipe = scr_net_dyn_is_pipe_name(target);
+  double port = 0;
+  if (!pipe && !scr_net_validate_port_dyn(target, "Port", &port)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (s->fd >= 0 || s->connecting || s->wr_done || s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  /* Node's string-port form keeps a string second argument (or the middle
+   * argument of a three-argument call) as the destination host; a
+   * non-string value is ignored, and no host means the local default. The
+   * host validates BEFORE the connect listener is registered: a rejection
+   * must not leave a closure in the socket's list. Node validates the host
+   * like the port form's — an embedded NUL is ERR_INVALID_ARG_VALUE before
+   * anything dials (resolution would stop at the NUL while length-aware
+   * checks see the whole string). */
+  ScrStr *host = NULL;
+  if (!pipe) {
+    if (extra1 != NULL && extra1->kind == SCR_DYN_STR) host = extra1->v.str;
+    else if (slot != NULL && slot->kind == SCR_DYN_STR) host = slot->v.str;
+    if (!scr_net_host_chk(host)) {
+      scr_closure_release(cb);
+      return;
+    }
+  }
+  if (cb == NULL && slot != NULL && slot->kind == SCR_DYN_FUNC) {
+    cb = scr_dyn_listener_closure0(slot);
+  }
+  if (cb != NULL) scr_net_ls_add(&s->conn_ls, cb, NULL, true);
+  if (pipe) {
+    s->unix_path = scr_str_retain(target->v.str);
+    s->dial_hook = &scr_net_sock_dial_unix;
+  } else {
+    s->peer_port = (int)port;
+    scr_net_sock_set_peer(s, host);
+  }
+  if (!scr_net_poller_init()) {
+    fputs("scriptc: event poller init failed\n", stderr);
+    abort();
+  }
+  if (pipe) {
+    scr_net_sock_dial_unix(s);
+  } else {
+    scr_net_sock_dial_peer(s);
+  }
+  scr_net_sock_register(s);
+}
+
 void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/) {
   ScrDyn num;

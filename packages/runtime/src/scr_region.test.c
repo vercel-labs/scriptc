@@ -272,6 +272,65 @@ static void check_metadata_reference(void) {
   puts("array metadata references are walked with the region");
 }
 
+/* A number or string array whose METADATA is a dynamic object holding a
+ * region node (the direct form is check_metadata_reference): the walk
+ * enters the metadata, then its property, so the edge counts as internal.
+ * With the array also held outside, the region stays until that outside
+ * reference is dropped, and the next region creation frees it. */
+static void check_nested_metadata(void) {
+  for (int kind = 0; kind < 2; kind++) {
+    for (int outside_holder = 0; outside_holder < 2; outside_holder++) {
+      double r = region();
+      scr_region_enter(r);
+      Node *held = node_new(5);
+      Node *root = node_new(0);
+      ScrArr *items = scr_arr_new(kind == 0 ? SCR_ELEM_F64 : SCR_ELEM_STR, 0);
+      if (kind == 0) {
+        scr_arr_push_f64(items, 1);
+      } else {
+        scr_arr_push_ref(items, scr_str_new("x", 1)); /* moves the reference */
+      }
+      ScrDyn *meta = scr_dyn_new_obj();
+      scr_dyn_obj_set(meta, "owner", 5,
+                      scr_dyn_new_typed_ref(held, node_retain, node_release, "Node", 4, NULL, NULL));
+      scr_arr_ext(items)->metadata = meta;
+      root->kids = items; /* the walker reaches the array through the node */
+      scr_region_leave();
+      ScrArr *outside = outside_holder ? scr_arr_retain(items) : NULL;
+      node_release(held); /* the only outside reference to the object */
+      node_release(root);
+      ndisposed = 0; /* freed chunks are reused: only this iteration's entries count */
+      void (*hook)(void *) = scr_weak_dispose_hook;
+      scr_weak_dispose_hook = note_disposed;
+      scr_region_release(r);
+      if (outside == NULL) {
+        scr_weak_dispose_hook = hook;
+        assert(was_disposed(held));
+        assert(was_disposed(root));
+      } else {
+        /* The outside array reference keeps the region (and everything it
+         * reaches through the metadata) alive. */
+        assert(!was_disposed(held));
+        scr_arr_release(outside);
+        /* A condemned region is attempted again after enough region
+         * allocation (check_retry_schedule's volume). */
+        double big = region();
+        scr_region_enter(big);
+        for (size_t i = 0; i < ((size_t)9 << 20) / sizeof(Node); i++) node_release(node_new(0));
+        scr_region_leave();
+        scr_region_enter(big);
+        scr_region_leave();
+        scr_weak_dispose_hook = hook;
+        assert(was_disposed(held));
+        assert(was_disposed(root));
+        scr_region_release(big);
+      }
+      scr_region_release(region());
+    }
+  }
+  puts("nested array metadata references are walked with the region");
+}
+
 static void check_outside_container(void) {
   double r = region();
   scr_region_enter(r);
@@ -558,6 +617,8 @@ int main(int argc, char **argv) {
     check_poison();
   } else if (!strcmp(mode, "metadata")) {
     check_metadata_reference();
+  } else if (!strcmp(mode, "nested-metadata")) {
+    check_nested_metadata();
   } else if (!strcmp(mode, "debug")) {
     check_debug_report();
   } else if (!strcmp(mode, "retained")) {

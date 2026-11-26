@@ -48,9 +48,32 @@ class D {
   }
 }
 
+function param(label: string): (t: object, k: string | symbol | undefined, i: number) => void {
+  console.log("factory-param", label);
+  return (t: object, k: string | symbol | undefined, i: number): void => {
+    console.log("apply-param", label, i);
+  };
+}
+
+class E {
+  private v = 0;
+
+  @acc("e")
+  set e(@param("p") value: number) {
+    this.v = value;
+  }
+
+  get e(): number {
+    return this.v;
+  }
+}
+
 const c = new C();
 console.log("read", c.x, c.y);
 c.x = 7;
 c.y = 8;
 console.log("after", c.x);
 console.log("doubled", new D().z);
+const e = new E();
+e.e = 3;
+console.log("setter-param", e.e);

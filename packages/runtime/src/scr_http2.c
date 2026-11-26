@@ -2475,12 +2475,72 @@ static void scr_h2_encode_regulars(ScrH2Buf *b, ScrArr *pairs) {
 /* Node's check on the names of an outgoing header list, before anything
  * is sent: a regular name that holds a space throws ERR_INVALID_HTTP_TOKEN
  * with the lowercased name. False with the exception pending. */
+static bool scr_h2_name_is_ci(const ScrStr *name, const char *text) {
+  size_t n = strlen(text);
+  if (name->len != n) return false;
+  for (size_t k = 0; k < n; k++) {
+    char c = name->data[k];
+    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    if (c != text[k]) return false;
+  }
+  return true;
+}
+
+/* Node's isIllegalConnectionSpecificHeader: an HTTP/2 request may not carry
+ * the HTTP/1 connection-specific fields, and `te` may only hold "trailers"
+ * (the JS client compares that value literally, case-sensitively). */
+static bool scr_h2_field_illegal(const ScrStr *name, const ScrStr *value) {
+  static const char *const forbidden[] = {"connection", "upgrade", "http2-settings",
+                                          "keep-alive", "proxy-connection",
+                                          "transfer-encoding"};
+  for (size_t i = 0; i < sizeof forbidden / sizeof *forbidden; i++) {
+    if (scr_h2_name_is_ci(name, forbidden[i])) return true;
+  }
+  if (scr_h2_name_is_ci(name, "te")) {
+    static const char want[] = "trailers";
+    return !(value->len == sizeof want - 1 && memcmp(value->data, want, value->len) == 0);
+  }
+  return false;
+}
+
+/* Node's kValidPseudoHeaders: a request may carry only the pseudo-headers
+ * the HTTP/2 specification defines. :status passes this client-side check
+ * (Node validates the list before it knows it is a request); a server
+ * rejects it. */
+static bool scr_h2_pseudo_allowed(const ScrStr *name) {
+  static const char *const allowed[] = {":status", ":method", ":authority",
+                                         ":scheme", ":path",  ":protocol"};
+  for (size_t i = 0; i < sizeof allowed / sizeof *allowed; i++) {
+    if (scr_h2_name_is_ci(name, allowed[i])) return true;
+  }
+  return false;
+}
+
 static bool scr_h2_regular_names_valid(ScrArr *pairs /*borrowed, nullable*/) {
   size_t n = pairs ? (size_t)scr_arr_len(pairs) : 0;
   for (size_t i = 0; i + 1 < n; i += 2) {
     ScrStr *name = scr_arr_get_ref(pairs, (double)i);
-    bool valid = name->len == 0 || name->data[0] == ':' || memchr(name->data, ' ', name->len) == NULL;
-    if (!valid) {
+    ScrStr *value = scr_arr_get_ref(pairs, (double)(i + 1));
+    bool valid = true;
+    /* Node lowercases every key before any check, so the messages below
+     * carry the lowercased field name. A pseudo-header is validated first
+     * (processHeader's ':' branch): only the fields the specification
+     * defines may appear. */
+    if (name->len > 0 && name->data[0] == ':' && !scr_h2_pseudo_allowed(name)) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_putc(&b, '"');
+      for (size_t k = 0; k < name->len; k++) {
+        char c = name->data[k];
+        scr_jb_putc(&b, c >= 'A' && c <= 'Z' ? (char)(c + 32) : c);
+      }
+      scr_jb_puts(&b, "\" is an invalid pseudoheader or is used incorrectly");
+      ScrStr *msg = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len,
+                               "ERR_HTTP2_INVALID_PSEUDOHEADER");
+      scr_str_release(msg);
+      valid = false;
+    } else if (memchr(name->data, ' ', name->len) != NULL) {
       ScrJsonBuf b;
       scr_jb_init(&b);
       scr_jb_puts(&b, "Header name must be a valid HTTP token [\"");
@@ -2492,8 +2552,24 @@ static bool scr_h2_regular_names_valid(ScrArr *pairs /*borrowed, nullable*/) {
       ScrStr *msg = scr_jb_finish(&b);
       scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "ERR_INVALID_HTTP_TOKEN");
       scr_str_release(msg);
+      valid = false;
+    } else if (name->len > 0 && name->data[0] != ':' && scr_h2_field_illegal(name, value)) {
+      ScrJsonBuf b;
+      scr_jb_init(&b);
+      scr_jb_puts(&b, "HTTP/1 Connection specific headers are forbidden: \"");
+      for (size_t k = 0; k < name->len; k++) {
+        char c = name->data[k];
+        scr_jb_putc(&b, c >= 'A' && c <= 'Z' ? (char)(c + 32) : c);
+      }
+      scr_jb_puts(&b, "\"");
+      ScrStr *msg = scr_jb_finish(&b);
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len,
+                               "ERR_HTTP2_INVALID_CONNECTION_HEADERS");
+      scr_str_release(msg);
+      valid = false;
     }
     scr_str_release(name);
+    scr_str_release(value);
     if (!valid) return false;
   }
   return true;

@@ -51,6 +51,13 @@ export const netSignatures = defineLibFnSignatures({
    * 127.0.0.1 — SEMANTICS.md); the connect callback is once('connect'). */
   "net.createServer": { argTypes: [], result: NETSERVER_T },
   "net.createServerCb": { argTypes: [null], result: NETSERVER_T },
+  /** net.createServer(options[, listener]): Node's ServerOpts over every
+   * accepted socket (allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+   * keepAliveInitialDelay, highWaterMark, blockList). The record crosses
+   * as a checked-dynamic value; the option ladders throw Node's errors.
+   * MAY THROW. */
+  "net.createServerOpts": { argTypes: [DYN], result: NETSERVER_T },
+  "net.createServerOptsCb": { argTypes: [DYN, null], result: NETSERVER_T },
   "net.listen": { argTypes: [NETSERVER_T, F64], result: VOID },
   /** listen(path[, cb]): a Unix-socket server; the socket file is removed
    * when the server closes. Failures are the async 'error'. */

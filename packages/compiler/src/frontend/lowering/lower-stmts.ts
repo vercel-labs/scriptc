@@ -119,6 +119,7 @@ import {
 import { heldEnvValueType, refuseHeldEnvCopyHold } from "./builtins/environment.js";
 import { isRebindableRequireDecl } from "./rebindable-requires.js";
 import { requireInitFlagStmt } from "./require-initialization.js";
+import { sharedInitFlagStores } from "./lower-shared-modules.js";
 import { isJsonRequireDecl } from "./json-require.js";
 import { isTimeValueDateDeclaration } from "./date-values.js";
 import { bindingSource } from "../binding-source.js";
@@ -3032,7 +3033,9 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
     // A require binding earlier code can read is initialized from here on
     // (require-initialization.ts).
     const initialized = requireInitFlagStmt(lowerer, decl);
-    return initialized ? [...lowered, initialized] : lowered;
+    if (initialized) lowered.push(initialized);
+    if (lowerer.sharedInitFlags.size > 0) lowered.push(...sharedInitFlagStores(lowerer, decl));
+    return lowered;
   });
 }
 

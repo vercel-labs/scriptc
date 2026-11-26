@@ -23,11 +23,7 @@ import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-f
 import { collectRebindableRequireDecls, isRebindableRequireDecl } from "./rebindable-requires.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
-import {
-  sharedInitFlagStores,
-  sharedModulePlans,
-  sharedModuleRegistrations,
-} from "./lower-shared-modules.js";
+import { sharedModulePlans, sharedModuleRegistrations } from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
 import {
   packageNameOfPath,
@@ -53,6 +49,7 @@ import {
   entryPackageFilePredicate,
   isCjsJsFile,
   isJsSourceFile,
+  isNodeEsmFile,
   isRequireStatement,
   locOf,
   makeCycleAdmission,
@@ -5106,7 +5103,6 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
-      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Mixin instantiations created while THIS statement lowered (a class
       // expression's heritage is such a call) evaluate at this statement,
       // so their declaration-time code lands here, before the statement's
@@ -5167,29 +5163,28 @@ export function lowerFileInit(
       });
     }
     const moduleRef = cjsModuleRef(lowerer, sf);
-    if (moduleRef !== null) {
+    // A failed require clears the run-once flag even when the program
+    // never reads module metadata.
+    const retriesCommonJs = guardId !== undefined && !isNodeEsmFile(sf, lowerer.program);
+    if (moduleRef !== null || retriesCommonJs) {
       const preamble = (guardId !== undefined ? 2 : 0) + (evaluatingId !== undefined ? 1 : 0);
       const guardedBody = body.splice(preamble);
       const catchLocal = lowerer.declareHiddenLocal("%moduleError", { kind: "caught" });
-      guardedBody.unshift({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "module.enter", args: [moduleRef], type: VOID, loc: loc0 },
-        loc: loc0,
-      });
-      guardedBody.push({
-        kind: "exprStmt",
-        expr: { kind: "libCall", fn: "module.finish", args: [moduleRef], type: VOID, loc: loc0 },
-        loc: loc0,
-      });
+      const moduleEvent = (fn: "module.enter" | "module.finish" | "module.fail"): IrStmt[] =>
+        moduleRef === null
+          ? []
+          : [
+              {
+                kind: "exprStmt",
+                expr: { kind: "libCall", fn, args: [moduleRef], type: VOID, loc: loc0 },
+                loc: loc0,
+              },
+            ];
       body.push({
         kind: "tryCatch",
-        tryBody: guardedBody,
+        tryBody: [...moduleEvent("module.enter"), ...guardedBody, ...moduleEvent("module.finish")],
         catchBody: [
-          {
-            kind: "exprStmt",
-            expr: { kind: "libCall", fn: "module.fail", args: [moduleRef], type: VOID, loc: loc0 },
-            loc: loc0,
-          },
+          ...moduleEvent("module.fail"),
           ...(guardId !== undefined
             ? [
                 {

@@ -21099,7 +21099,14 @@ export class Lowerer {
           (id) => this.unions.get(id),
         )
       ) {
-        return sharedDynConversion(this, value, expected, locOf(node));
+        const conversion = sharedDynConversion(this, value, expected, locOf(node));
+        // A collection key must keep one identity with the value the program
+        // holds. The conversion's adoption is strict here: a value it cannot
+        // adopt is refused at run time instead of stored as a copy the
+        // program's other name does not share.
+        return conversion.kind === "dynCheck" && conversion.shared === true
+          ? { ...conversion, keyIdentity: true }
+          : conversion;
       }
       this.noLowering(
         `collection key conversion from '${this.fmt(value.type)}' to '${this.fmt(expected)}' requiring a structural copy or dynamic conversion`,

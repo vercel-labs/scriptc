@@ -11,8 +11,8 @@ function attempt(url: string): Promise<string> {
 }
 
 const attempts: Promise<string>[] = [];
-for (let i = 0; i < 4; i++) attempts.push(attempt("https://127.0.0.1:9/"));
-attempts.push(attempt("http://127.0.0.1:9/"));
+for (let i = 0; i < 4; i++) attempts.push(attempt("https://127.0.0.1:65534/"));
+attempts.push(attempt("http://127.0.0.1:65534/"));
 Promise.all(attempts).then((results) => {
   console.log(JSON.stringify(results));
 });

@@ -34,6 +34,30 @@ bool scr_blob_is(const ScrDyn *value, double kind);
  * (+1, NULL when the Blob has none), which becomes Content-Type. False,
  * touching neither output, for every other value. */
 bool scr_blob_body_info(const ScrDyn *value, ScrBytes **bytes, ScrStr **type);
+/* A Blob whose bytes another unit produces on demand rather than copying
+ * into an immutable store (fs.openAsBlob's file). read fills dst with the
+ * range [off, off + len) of the WHOLE source and answers false when the
+ * source changed or cannot be read; every read of the Blob then rejects
+ * with Node's NotReadableError DOMException. release drops what ctx owns
+ * (the Blob frees the source record itself). Slices
+ * share the source (rc), so scr_blob_from_source moves the source's
+ * reference in, borrows type, and answers +1 (NULL with the exception
+ * pending). */
+typedef struct ScrBlobSource {
+  size_t rc; /* the Blob unit's slices' references */
+  void *ctx;
+  bool (*read)(void *ctx, size_t off, size_t len, uint8_t *dst);
+  void (*release)(void *ctx);
+} ScrBlobSource;
+ScrDyn *scr_blob_from_source(ScrBlobSource *source, double size, ScrStr *type);
+/* The type a file-backed Blob carries: `raw` itself (+1), exactly as the
+ * caller gave it — Node's openAsBlob performs no type normalization, so
+ * non-ASCII characters, tabs and newlines survive. Case is preserved too. */
+ScrStr *scr_blob_type_as_given(ScrStr *raw);
+/* The type a Blob or File value carries (+1, possibly empty), or NULL when
+ * `value` is not a Blob: the automatic Content-Type a Blob body contributes
+ * to fetch, validated where that header is inserted. */
+ScrStr *scr_blob_handle_type(const ScrDyn *value);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

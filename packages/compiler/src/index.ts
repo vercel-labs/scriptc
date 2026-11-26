@@ -128,7 +128,11 @@ import {
   readProfileFunctionNames,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativeBuildPartitions, nativePartitionPaths } from "./backend/native-codegen-core.js";
+import {
+  generatedDispatchOptFor,
+  nativeBuildPartitions,
+  nativePartitionPaths,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import {
   nativeCodegenTarget,
@@ -872,6 +876,7 @@ async function compileExecutableNative(
     ...(features.nodeIsland ? { nodeIsland: true } : {}),
     ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
+    ...(features.moduleClass ? { moduleClass: true } : {}),
     ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
     ...(features.iteratorProto ? { iteratorProto: true } : {}),
     zlib: features.zlib,
@@ -884,6 +889,7 @@ async function compileExecutableNative(
     dynInvoke: features.dynInvoke,
     dc: features.dc,
     dynAsync: features.dynAsync,
+    ...(features.fsOpenAsBlob ? { fsOpenAsBlob: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.promiseGeneric ? { promiseGeneric: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
@@ -1024,6 +1030,7 @@ async function emitNativeProgramObject(
       outputKind: "obj",
       sourcePath: entryPath,
       optimization: opts.optimization === "dev" ? "0" : "2",
+      dispatchOpt: generatedDispatchOptFor(opts.optimization),
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
@@ -1387,6 +1394,7 @@ async function prepareExecutableInput(
           outputKind,
           sourcePath: entryPath,
           optimization: opts.optimization === "dev" ? "0" : "2",
+          dispatchOpt: generatedDispatchOptFor(opts.optimization),
           ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
         });
       } catch (err) {

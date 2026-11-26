@@ -6,11 +6,8 @@ const server = http2.createServer();
 server.setTimeout(1000);
 server.on("stream", (stream) => {
   stream.pushStream({ ":path": "/pushed" }, () => {});
-  stream.priority({ weight: 1 });
-  stream.setTimeout(1000);
   console.log(stream.pushAllowed, stream.state, stream.sentHeaders);
 });
 const client = http2.connect("http://127.0.0.1:1");
 const request = client.request({ ":path": "/" });
 request.on("push", () => {});
-request.on("ready", () => {});

@@ -97,18 +97,12 @@ test("a legacy method decorator runs after the static initializers, with a metho
   });
   expect(storeAt).toBeGreaterThanOrEqual(0);
   expect(applicationStatement).toBeGreaterThan(storeAt);
-  // The descriptor is a real object with the method's own value and the
-  // prototype attribute flags.
-  const descriptor = expressions.find((e) => e.kind === "dynObjLit");
+  // The descriptor is read from the prototype at decoration time, so a
+  // replacement made before the decoration is what the decorators see.
+  const descriptor = expressions.find(
+    (e) => e.kind === "libCall" && e.fn === "dyn.getOwnPropertyDescriptor",
+  );
   expect(descriptor).toBeDefined();
-  if (descriptor?.kind !== "dynObjLit" || descriptor.fields === undefined)
-    throw new Error("expected a dyn object literal");
-  expect(descriptor.fields.map((f) => (f.key.kind === "strLit" ? f.key.value : "?"))).toEqual([
-    "value",
-    "writable",
-    "enumerable",
-    "configurable",
-  ]);
   // The final descriptor is defined on the prototype (the defineProperty
   // builtin may be lifted to a `%dyn.class.defineProperty` call).
   const defines = expressions.filter(

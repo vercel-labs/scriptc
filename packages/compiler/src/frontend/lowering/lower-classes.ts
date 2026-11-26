@@ -2472,7 +2472,19 @@ export function collectClassShapeInner(
         if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
           lowerer.unsupported(
             "SC1090",
-            (classDecoratorNodes[0] ?? decoratorNodesOf(decoratedMembers[0]!)[0])!,
+            (classDecoratorNodes[0] ??
+              (decoratedMembers.length > 0
+                ? decoratorNodesOf(decoratedMembers[0]!)[0]
+                : undefined) ??
+              (
+                (decl.members.nodes[0] as { parameters?: ts.NodeArray<ts.ParameterDeclaration> })
+                  .parameters?.nodes ?? []
+              ).flatMap((parameter) =>
+                (
+                  (parameter as { modifiers?: ts.NodeArray<ts.Node> }).modifiers?.nodes ?? []
+                ).filter((m) => m.kind === ts.SyntaxKind.Decorator),
+              )[0] ??
+              decl)!,
             "decorators in JavaScript sources (V8 has not shipped decorators — Node cannot execute this file)",
           );
         }
@@ -6548,6 +6560,18 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       loc,
     });
   }
+  if (legacy && info.decl !== null && info.classDecorators?.valueGlobalId !== undefined) {
+    // The class binding exists once the class definition (heritage included)
+    // completes. References to the name lower through this mutable global
+    // when a decorator can replace the class, so it must already hold the
+    // class while the static initializers and decorator bodies run.
+    out.push({
+      kind: "assign",
+      localId: info.classDecorators.valueGlobalId,
+      value: classValueRef(lowerer, info, info.decl),
+      loc: locOf(info.decl),
+    });
+  }
   if (info.runtimeStatics && !info.localClass && info.decl) {
     out.push({
       kind: "exprStmt",
@@ -6832,12 +6856,6 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       }
       return classLocal;
     };
-    const dynField = (key: string, value: IrExpr, at: SrcLoc): { key: IrExpr; value: IrExpr } => ({
-      key: { kind: "strLit", value: key, type: STRING, loc: at },
-      value,
-    });
-    const bool = (value: boolean, at: SrcLoc): IrExpr =>
-      lowerer.coerceToExpected({ kind: "boolLit", value, type: BOOL, loc: at }, DYN);
     for (const entry of members) {
       const at = locOf(entry.member);
       const targetId = entry.static ? classTarget(at) : prototypeTarget(at);
@@ -6916,30 +6934,31 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
           });
         }
       } else if (entry.kind === "method") {
-        const original = info.prototypeOriginals?.get(entry.name);
-        if (original === undefined) {
+        if (info.prototypeOriginals?.get(entry.name) === undefined) {
           lowerer.unsupported(
             "SC1090",
             entry.decorators[0] ?? entry.parameters[0]!.decorators[0]!,
             `method decorators under "experimentalDecorators" on '${entry.name}' (its prototype slot has no static lowering)`,
           );
         }
-        // The descriptor Object.getOwnPropertyDescriptor would answer for
-        // the prototype method: same value object, writable and configurable,
-        // non-enumerable.
-        const descriptor: IrExpr = {
-          kind: "dynObjLit",
-          fields: [
-            dynField("value", { kind: "varRef", localId: original, type: DYN, loc: at }, at),
-            dynField("writable", bool(true, at), at),
-            dynField("enumerable", bool(false, at), at),
-            dynField("configurable", bool(true, at), at),
-          ],
-          type: DYN,
-          loc: at,
-        };
+        // The descriptor is read from the prototype at decoration time, as
+        // tsc's `Object.getOwnPropertyDescriptor(target, key)` does: a static
+        // block or an earlier decorator factory may already have replaced the
+        // method, and that definition is what the decorators must see and
+        // redefine.
         let descriptorId = lowerer.declareHiddenLocal("legacydesc", DYN).id;
-        stmts.push({ kind: "varDecl", localId: descriptorId, init: descriptor, loc: at });
+        stmts.push({
+          kind: "varDecl",
+          localId: descriptorId,
+          init: {
+            kind: "libCall",
+            fn: "dyn.getOwnPropertyDescriptor",
+            args: [target(at), key(at)],
+            type: DYN,
+            loc: at,
+          },
+          loc: at,
+        });
         // Parameter decorators apply first (reverse parameter order, and
         // within one parameter reverse source order); __param ignores the
         // descriptor and its undefined result leaves `r` alone.
@@ -7017,6 +7036,17 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
         // descriptor would be bypassed by a constructor-assigned field
         // (useDefineForClassFields: false), so that shape is a named fence.
         const defineSemantics = !parameterPropertiesFirst(lowerer, info);
+        // A decorator can install an accessor on the prototype even when its
+        // declared return is void. With constructor-assigned fields Node's
+        // `this.x = v` goes through that setter, but compiled field writes are
+        // direct own-field stores, so the pattern is refused rather than
+        // silently diverging.
+        if (!entry.static && !defineSemantics)
+          lowerer.unsupported(
+            "SC1090",
+            entry.decorators[0]!,
+            'instance property decorators under "experimentalDecorators" in a project whose fields are assigned in the constructor (useDefineForClassFields: false or a target below ES2022; a decorator-installed prototype accessor would be bypassed by the compiled field write)',
+          );
         for (const d of entry.decorators) {
           const mapped = lowerer.mapTypeOf(lowerer.typeOf(d.expression));
           const voidReturn =

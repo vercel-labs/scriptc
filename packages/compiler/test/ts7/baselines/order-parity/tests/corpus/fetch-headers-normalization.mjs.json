@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fetch-headers-normalization.mjs"
+ ],
+ "diags": []
+}

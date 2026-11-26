@@ -1143,32 +1143,93 @@ static void scr_intl_canonicalize_language(const char *icu, char *out, size_t si
     snprintf(out, size, "%s", rebuilt);
 }
 
-/** The locale a valid tag resolves to: Node's best-fit matcher over ICU's
- * available locales (V8 hands ICU's LocaleMatcher the requested tags and the
- * service's locale list; uloc_acceptLanguage is that matcher). A tag ICU has
- * no locale for falls back to the default locale, as Node's ResolveLocale
- * does, and the requested locale's own extension keywords ride onto the
- * matched locale so an explicit calendar or numbering system still reaches
- * ICU. `icu` is the tag's ICU locale id. */
+/** Whether the available enumeration holds `id`, an ICU locale id, compared
+ * case-insensitively in Node's spelling. */
+static bool scr_intl_locale_listed(UEnumeration *available, const char *id) {
+  const size_t want = strlen(id);
+  UErrorCode status = U_ZERO_ERROR;
+  uenum_reset(available, &status);
+  if (U_FAILURE(status)) return false;
+  int32_t len = 0;
+  const char *entry;
+  while ((entry = uenum_next(available, &len, &status)) != NULL && U_SUCCESS(status)) {
+    if ((size_t)len != want) continue;
+    size_t i = 0;
+    for (; i < want; i++) {
+      char a = entry[i], b = id[i];
+      if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+      if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+      if (a != b) break;
+    }
+    if (i == want) return true;
+  }
+  return false;
+}
+
+/** Replaces `tag` with the available locale its likely subtags name when one
+ * exists: sr_ME maximizes to sr_Latn_ME, so a region without its own data
+ * keeps the language's likely script instead of dropping to plain sr (which
+ * would format in Cyrillic). The variant is cut after language, script and
+ * region, since a variant-only suffix never names available data. */
+static bool scr_intl_locale_likely(UEnumeration *available, char *tag, size_t size) {
+  char maximized[ULOC_FULLNAME_CAPACITY];
+  UErrorCode status = U_ZERO_ERROR;
+  const int32_t n = uloc_addLikelySubtags(tag, maximized, (int32_t)sizeof maximized, &status);
+  if (U_FAILURE(status) || n <= 0 || (size_t)n >= sizeof maximized) return false;
+  size_t underscores = 0;
+  for (size_t i = 0; maximized[i] != '\0'; i++) {
+    if (maximized[i] == '_' && ++underscores == 3) {
+      maximized[i] = '\0';
+      break;
+    }
+  }
+  if (!scr_intl_locale_listed(available, maximized)) return false;
+  snprintf(tag, size, "%s", maximized);
+  return true;
+}
+
+/** The locale a valid tag resolves to: Node's matcher over ICU's available
+ * locales is ECMA-402's LookupMatcher, not a best-fit distance search. It
+ * tries the tag itself, then drops its last subtag in turn (variant, then
+ * region, then script) until an available locale matches, and falls back to
+ * the default locale when even the language has none. ICU's
+ * uloc_acceptLanguage instead picks the closest locale by distance, which
+ * resolves en-RU to en-GB and hak to zh-Hant where Node answers en and its
+ * default locale. The requested locale's own extension keywords ride onto
+ * the matched locale so an explicit calendar or numbering system still
+ * reaches ICU. `icu` is the tag's ICU locale id. */
 static void scr_intl_resolve_locale(const char *icu, char *out, size_t size) {
   UErrorCode status = U_ZERO_ERROR;
   UEnumeration *available = uloc_openAvailableByType(ULOC_AVAILABLE_DEFAULT, &status);
   if (U_SUCCESS(status) && available != NULL) {
-    const char *accept[1] = {icu};
-    char resolved[ULOC_FULLNAME_CAPACITY];
-    UAcceptResult result;
-    status = U_ZERO_ERROR;
-    const int32_t got = uloc_acceptLanguage(resolved, (int32_t)sizeof resolved, &result, accept, 1,
-                                            available, &status);
-    uenum_close(available);
-    if (U_SUCCESS(status) && got > 0) {
-      const char *keywords = strchr(icu, '@');
-      if (keywords != NULL && strchr(resolved, '@') == NULL)
-        snprintf(out, size, "%s%s", resolved, keywords);
-      else
-        snprintf(out, size, "%s", resolved);
+    const char *keywords = strchr(icu, '@');
+    const size_t base_len = keywords != NULL ? (size_t)(keywords - icu) : strlen(icu);
+    char candidate[ULOC_FULLNAME_CAPACITY];
+    if (base_len < sizeof candidate) {
+      memcpy(candidate, icu, base_len);
+      candidate[base_len] = '\0';
+      bool matched = false;
+      while (candidate[0] != '\0') {
+        if (scr_intl_locale_listed(available, candidate) ||
+            scr_intl_locale_likely(available, candidate, sizeof candidate)) {
+          matched = true;
+          break;
+        }
+        /* en_US_POSIX -> en_US -> en; sr_Latn_RS -> sr_Latn -> sr. */
+        char *cut = strrchr(candidate, '_');
+        if (cut == NULL) break;
+        *cut = '\0';
+      }
+      uenum_close(available);
+      if (matched) {
+        if (keywords != NULL) snprintf(out, size, "%s%s", candidate, keywords);
+        else snprintf(out, size, "%s", candidate);
+        return;
+      }
+      snprintf(out, size, "%s", scr_intl_locale);
       return;
     }
+    uenum_close(available);
   } else if (available != NULL) {
     uenum_close(available);
   }

@@ -30,6 +30,11 @@ const tags = [
   "cnr-RS",
   "prs",
   "sr-Latn-RS",
+  // Tags Node's matcher resolves by dropping subtags rather than by locale
+  // distance: en-RU has no date data (Node answers en), hak has no locale at
+  // all (Node answers the default locale).
+  "en-RU",
+  "hak",
   "EN-us",
   "xx-YY",
   "en-US-u-nu-latn",

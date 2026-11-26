@@ -114,6 +114,7 @@ static void scr_locks_run(ScrLockEntry *entry, ScrLockReq *req) {
   ScrDyn *result = scr_dyn_call(req->callback, args, 1, "locks.request callback");
   scr_dyn_release(lock);
   scr_dyn_release(req->callback);
+  scr_promise_release(req->promise);
   /* The promise keeps the reference the call answered, so it is not released
    * here. */
   scr_promise_fulfill_ref(req->promise, result, scr_dyn_retain_v, scr_dyn_release_v,
@@ -283,7 +284,10 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
   ScrLockReq *req = calloc(1, sizeof *req);
   if (req == NULL) scr_trap("out of memory");
   ScrPromise *promise = scr_promise_new();
-  req->promise = promise;
+  /* The queue keeps its own reference: a request can outlive the program's
+   * handle to the promise (a callback that starts a same-name request and
+   * drops the result), and draining it later settles that promise. */
+  req->promise = scr_promise_retain(promise);
   req->callback = scr_dyn_retain((ScrDyn *)callback);
   req->shared = shared;
   if (steal) {
@@ -295,6 +299,7 @@ ScrPromise *scr_worker_locks_request(ScrStr *name, const ScrDyn *options, const 
       if (entry->queue == NULL) entry->tail = NULL;
       scr_throw_domex("AbortError", "The lock was stolen");
       scr_promise_reject_pending(aborted->promise);
+      scr_promise_release(aborted->promise);
       scr_dyn_release(aborted->callback);
       free(aborted);
     }

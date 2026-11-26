@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sqlite-database-inspect-cycles.cjs"
+ ],
+ "diags": []
+}

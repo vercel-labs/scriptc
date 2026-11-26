@@ -7,11 +7,76 @@ runs:
       id: zig
       with:
         path: ${{ runner.tool_cache }}/zig/0.16.0
-        key: zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-minisign-v1
-    # The installer checks the verified marker and runs `zig version` on hits.
+        # The pin file is part of the key, so a cache never outlives the digest its archive was checked against.
+        key: zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/toolchain.sha256') }}
+    # The archive comes from Zig's release host and is checked against its pinned digest before it is unpacked,
+    # so the install does not depend on setup-zig's mirrors being up when the job runs.
+    - name: Install pinned Zig (POSIX)
+      id: pinned
+      if: steps.zig.outputs.cache-hit != 'true' && runner.os != 'Windows'
+      continue-on-error: true
+      shell: bash
+      run: sh scripts/install-zig.sh 0.16.0 "$RUNNER_TOOL_CACHE/zig/0.16.0"
+    - name: Download pinned Zig (Windows)
+      id: windows-download
+      if: steps.zig.outputs.cache-hit != 'true' && runner.os == 'Windows'
+      continue-on-error: true
+      shell: bash
+      run: |
+        case "${{ runner.arch }}" in
+          X64) ;;
+          *) echo "::error::no pinned Zig archive for windows ${{ runner.arch }}"; exit 1 ;;
+        esac
+        archive="zig-x86_64-windows-0.16.0.zip"
+        curl -fL --connect-timeout 20 --max-time 600 --speed-limit 102400 --speed-time 30 \
+          --retry 4 --retry-delay 30 --retry-max-time 900 -o "$RUNNER_TEMP/$archive" \
+          "https://ziglang.org/download/0.16.0/$archive"
+        sh scripts/verify-toolchain.sh "$RUNNER_TEMP/$archive" "$archive"
+    # windows-2022 and windows-latest include 7-Zip, which expands the archive faster than tar.exe does.
+    - name: Install pinned Zig (Windows)
+      if: steps.windows-download.outcome == 'success'
+      shell: pwsh
+      run: |
+        $archive = "$env:RUNNER_TEMP\zig-x86_64-windows-0.16.0.zip"
+        $destination = "$env:RUNNER_TOOL_CACHE\zig\0.16.0"
+        $expanded = "$env:RUNNER_TEMP\zig-expanded"
+        $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe"
+        if (-not (Test-Path $sevenZip)) {
+          choco install 7zip --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        if (-not (Test-Path $sevenZip)) { throw "7-Zip is unavailable" }
+        Remove-Item -Recurse -Force $expanded -ErrorAction SilentlyContinue
+        & $sevenZip x -y "-o$expanded" $archive
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $root = Join-Path $expanded "zig-x86_64-windows-0.16.0"
+        if (-not (Test-Path $root)) { throw "$archive has no zig-x86_64-windows-0.16.0 directory" }
+        Remove-Item -Recurse -Force $destination -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force (Split-Path $destination) | Out-Null
+        Move-Item $root $destination
+    # Only when the platform has no pin, or the archive host refused the archive after its retries.
     - uses: vercel-labs/setup-zig@83c1594f26b86da8a9a8ddd9b5ee5f3af0f96943 # v1.0.2
+      if: steps.zig.outputs.cache-hit != 'true' && (steps.pinned.outcome == 'failure' || steps.windows-download.outcome == 'failure')
       with:
         version: 0.16.0
+    # Fails when a restored cache or the fallback installed something other than the pin, before any build uses it.
+    - name: Select Zig
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        zig="$RUNNER_TOOL_CACHE/zig/0.16.0"
+        test "$("$zig/zig" version)" = "0.16.0"
+        echo "$zig" >> "$GITHUB_PATH"
+    - name: Select Zig (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $zig = "$env:RUNNER_TOOL_CACHE\zig\0.16.0"
+        $version = (& "$zig\zig.exe" version).Trim()
+        if ($LASTEXITCODE -ne 0 -or $version -ne "0.16.0") {
+          throw "Zig at $zig reports '$version', not 0.16.0"
+        }
+        echo $zig >> $env:GITHUB_PATH
     - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       if: steps.zig.outputs.cache-hit != 'true'
       with:

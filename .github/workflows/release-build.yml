@@ -130,7 +130,9 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           llvm-asset: ${{ matrix.llvm_asset }}
-          use-zig: ${{ matrix.use_zig }}
+      # Platforms whose runtime pack builds with Zig install it from the pinned archive (see the action).
+      - uses: ./.github/actions/zig
+        if: matrix.use_zig
       # The Linux helpers link LLVM built with ThinLTO and a profile of the
       # helper's code generation (native/llvm-codegen/llvm-dist.mjs), from a
       # release of this repository. Without that archive they link LLVM's
@@ -233,7 +235,9 @@ jobs:
         with:
           platform: ${{ matrix.platform }}
           llvm-asset: ${{ matrix.llvm_asset }}
-          use-zig: ${{ matrix.use_zig }}
+      # Platforms whose runtime pack builds with Zig install it from the pinned archive (see the action).
+      - uses: ./.github/actions/zig
+        if: matrix.use_zig
       # A musl CLI ships tsc-ts's musl executable, and these jobs run on glibc
       # runners, where pnpm installs only the glibc platform packages.
       - name: Let pnpm install musl platform packages

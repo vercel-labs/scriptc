@@ -547,6 +547,9 @@ jobs:
         with:
           sparse-checkout: |
             scripts/release-registry-smoke.mjs
+            scripts/install-zig.sh
+            scripts/toolchain.sha256
+            scripts/verify-toolchain.sh
             .github/actions/zig
           sparse-checkout-cone-mode: false
       - name: Setup Node.js

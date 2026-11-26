@@ -46,4 +46,16 @@ const getCert = (): crypto.X509Certificate => {
 console.log("borrowed", Object.prototype.hasOwnProperty.call(getCert(), "subject"), lookups);
 lookups = 0;
 console.log("own method", getCert().hasOwnProperty("subject"), lookups);
+// A validation call inside the reflected expression always runs: the walk
+// evaluates its receiver (here a counting lookup) before it answers.
+let inspections = 0;
+const inspected = (): crypto.X509Certificate => {
+  inspections++;
+  return cert;
+};
+console.log("keys receiver", JSON.stringify(Object.keys(inspected())), inspections);
+inspections = 0;
+console.log("names receiver", JSON.stringify(Object.getOwnPropertyNames(inspected())), inspections);
+inspections = 0;
+console.log("entries receiver", JSON.stringify(Object.entries(inspected())), inspections);
 console.log("toString", String(cert).split("\n")[0]);

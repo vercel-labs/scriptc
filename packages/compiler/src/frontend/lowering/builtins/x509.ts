@@ -200,8 +200,15 @@ export function lowerX509OwnKeyWalk(
 ): IrExpr | null {
   const answer = x509OwnKeyWalkAnswer(lowerer, member, call, loc);
   if (answer === null) return null;
+  /* The receiver is evaluated here (the caller lowered it but reads only its
+   * type), then every argument: a validation call inside the reflected
+   * expression always runs. */
   const stmts: IrStmt[] = [];
-  for (const arg of argNodes) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
+  if (!isSafeToDiscard(receiver)) stmts.push({ kind: "exprStmt", expr: receiver, loc });
+  for (const arg of argNodes) {
+    const effect = lowerer.lowerExpr(arg);
+    if (!isSafeToDiscard(effect)) stmts.push({ kind: "exprStmt", expr: effect, loc });
+  }
   const finish = (result: IrExpr): IrExpr => ({
     kind: "seqExpr",
     stmts,

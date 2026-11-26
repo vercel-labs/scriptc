@@ -575,6 +575,9 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // exportKeyingMaterial throws Node's validation ladder (ERR_OUT_OF_RANGE,
   // ERR_INVALID_ARG_TYPE) and the TLS state error.
   "tls.sockExportKeyingMaterial",
+  // setMaxSendFragment throws Node's ERR_OUT_OF_RANGE for NaN, an infinity
+  // or a fraction.
+  "tls.sockSetMaxFragment",
   "net.sockWriteDyn",
   "net.sockEndDyn",
   "http.resWriteDyn",

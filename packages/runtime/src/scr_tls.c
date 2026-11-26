@@ -6107,6 +6107,39 @@ ScrDyn *scr_tls_sock_get_tls_ticket(ScrNetSocket *s) {
   return d;
 }
 
+/* tlsSocket.getEphemeralKeyInfo(): Node answers the negotiated ephemeral
+ * key's facts (null on a server-side socket, before the handshake and
+ * after destroy). The bundled provider does not surface the negotiated
+ * group, so a client answers an empty object — Node's shape without the
+ * provider-specific members. */
+ScrDyn *scr_tls_sock_ephemeral_key_info(ScrNetSocket *s) {
+  ScrTlsSock *t = scr_tls_sock_of(s);
+  if (t == NULL || scr_net_sock_destroyed(s)) return scr_dyn_new_null();
+  if (!t->established || t->srv != NULL) return scr_dyn_new_null();
+  return scr_dyn_new_obj();
+}
+
+/* tlsSocket.setMaxSendFragment(size): Node's ladder over the C++ call.
+ * NaN, an infinity or a fraction throws ERR_OUT_OF_RANGE with Node's text;
+ * an integer answers true inside 512..16384 and false outside it (what the
+ * native call answers when the provider refuses the size). The bundled
+ * provider cannot change the record size after setup, so the accepted
+ * value's effect on fragments is a documented divergence. */
+bool scr_tls_sock_set_max_fragment(ScrNetSocket *s, double size) {
+  if (!(isfinite(size) && trunc(size) == size)) {
+    char received[48];
+    scr_num_received(size, received);
+    char text[192];
+    int n = snprintf(text, sizeof text,
+                     "The value of \"size\" is out of range. It must be an integer. Received %s",
+                     received);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+    return false;
+  }
+  if (s == NULL || scr_net_sock_destroyed(s)) return false;
+  return size >= 512 && size <= 16384;
+}
+
 /* tlsSocket.disableRenegotiation(): TLS renegotiation is off in this
  * provider by default (mbedTLS 3.x), which is what the call asks for. */
 void scr_tls_sock_disable_renegotiation(ScrNetSocket *s) { (void)s; }

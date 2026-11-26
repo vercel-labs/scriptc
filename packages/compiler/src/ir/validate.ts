@@ -4968,6 +4968,20 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "http2.reqUrl") {
+      // Result is the interned `string | undefined` union (the :path-less
+      // CONNECT arm).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "string" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall http2.reqUrl must return the 'string | undefined' union`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "net.sockRemoteAddress") {
       // Result is the interned `string | undefined` union (envGet's).
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;

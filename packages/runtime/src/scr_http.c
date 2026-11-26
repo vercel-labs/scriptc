@@ -282,6 +282,10 @@ struct ScrHttpReq {
   struct ScrDyn *headers_view;
   bool sock_held; /* this request stopped its socket's reads */
   ScrNetLs aborted_ls; /* req.on('aborted') — the h2 compat event */
+  ScrError *destroy_error; /* +1 — destroy(err)'s payload, Node's 'error' */
+  bool api_destroyed; /* req.destroy() ran on an h2 request (Readable.destroy) */
+  bool stream_closed; /* the h2 stream closed (its 'close' emission still owed) */
+  bool close_replayed; /* the second 'close' (stream close after destroy) ran */
 };
 
 #ifdef SCR_RC_AUDIT
@@ -406,6 +410,7 @@ void scr_http_req_release(ScrHttpReq *r) {
     scr_str_release(r->status_msg);
     if (r->headers_view != NULL) scr_dyn_release(r->headers_view);
     if (r->abort_controller != NULL) scr_dyn_release(r->abort_controller);
+    if (r->destroy_error != NULL) scr_error_release(r->destroy_error);
     scr_net_ls_drop(&r->data_ls);
     scr_net_ls_drop(&r->end_ls);
     scr_net_ls_drop(&r->err_ls);
@@ -730,6 +735,9 @@ ScrNetSocket *scr_http_req_socket(ScrHttpReq *r) {
  * drain rides it; the parser's deliver and the cork flush live below
  * their callers too */
 static void scr_http_emit_push(int kind, void *h /*moves +1*/);
+static void scr_http_queue_req_close(ScrHttpReq *req);
+static void scr_http_queue_req_destroy_error(ScrHttpReq *req);
+static void scr_http_queue_req_close_replay(ScrHttpReq *req);
 static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n);
 static void scr_http_res_cork_flush(ScrHttpRes *r);
 #define SCR_HTTP_EMIT_REQ_DRAIN_K 6
@@ -829,12 +837,32 @@ bool scr_http_req_readable(ScrHttpReq *r) { return !r->ended && !r->destroyed; }
 
 /* destroy(): tears the underlying connection down NOW; the teardown
  * events flow through the socket's native hooks like a peer close. */
+/* Their emission: the recorded error with its own payload. */
+static void scr_http_req_fire_destroy_error(ScrHttpReq *r) {
+  if (r->destroy_error == NULL) return;
+  ScrError *saved = scr_event_error_payload;
+  scr_event_error_payload = r->destroy_error;
+  scr_net_fire_err_this(&r->err_ls, r->destroy_error->message, r, SCR_DYNH_HTTP_REQ);
+  scr_event_error_payload = saved;
+}
+
 void scr_http_req_destroy(ScrHttpReq *r) {
   /* Abort listeners run user code: hold the request across the abort and the
    * teardown so a listener that destroys the connection cannot free it while
    * this call still reads its fields. */
   scr_http_req_retain(r);
   r->destroyed = true;
+  if (r->h2_stream != NULL) {
+    /* Http2ServerRequest.destroy is stream.Readable's destroy: the request
+     * reports the provided error, then closes, and the backing Http2Stream
+     * keeps running (Node does not reset it); the stream's own close later
+     * emits 'close' a second time, as Node's compat layer does. */
+    r->api_destroyed = true;
+    scr_http_queue_req_destroy_error(r);
+    scr_http_queue_req_close(r);
+    scr_http_req_release(r);
+    return;
+  }
   /* Node's _destroy: an unfinished message is reported 'aborted' and has
    * its signal aborted before destroy() returns, in that order — the
    * 'aborted' listeners run with the signal still unaborted, then the
@@ -847,13 +875,16 @@ void scr_http_req_destroy(ScrHttpReq *r) {
     }
     scr_http_req_abort_signal(r);
   }
-  if (r->h2_stream != NULL) {
-    scr_http_h2_ops->destroy(r->h2_stream);
-    scr_http_req_release(r);
-    return;
-  }
+  scr_http_queue_req_destroy_error(r);
   if (r->sock) scr_net_sock_destroy(r->sock);
   scr_http_req_release(r);
+}
+
+/* req.destroy(err): err (borrowed) becomes the request's 'error'. */
+void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err) {
+  if (r == NULL || r->destroyed || r->close_emitted) return;
+  if (err != NULL && r->destroy_error == NULL) r->destroy_error = scr_error_retain(err);
+  scr_http_req_destroy(r);
 }
 
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once) {
@@ -3369,7 +3400,9 @@ enum {
   SCR_HTTP_EMIT_CLIENT_FINISH = 9, /* ScrHttpClientReq: outgoing body flushed */
   SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
   SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
-  SCR_HTTP_EMIT_CLIENT_WAE = 12 /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_CLIENT_WAE = 12, /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_REQ_DESTROY_ERROR = 13, /* ScrHttpReq: destroy(err)'s 'error' */
+  SCR_HTTP_EMIT_REQ_CLOSE_REPLAY = 14   /* ScrHttpReq: the stream close after a destroy */
 };
 
 typedef struct {
@@ -3429,7 +3462,9 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_FINISH: scr_http_res_release((ScrHttpRes *)e->h); break;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: scr_http_req_release((ScrHttpReq *)e->h); break;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR:
+  case SCR_HTTP_EMIT_REQ_CLOSE_REPLAY: scr_http_req_release((ScrHttpReq *)e->h); break;
   case SCR_HTTP_EMIT_CLIENT_CLOSE:
   case SCR_HTTP_EMIT_CLIENT_SOCKET:
   case SCR_HTTP_EMIT_CLIENT_FINISH:
@@ -3456,6 +3491,21 @@ static void scr_http_queue_req_close(ScrHttpReq *req) {
 
 static void scr_http_queue_req_aborted(ScrHttpReq *req) {
   scr_http_emit_push(SCR_HTTP_EMIT_REQ_ABORTED, scr_http_req_retain(req));
+}
+
+/* Emits the payload destroy(err) recorded, through the deferred queue: the
+ * request's 'error' listeners receive that very Error (Node's
+ * Readable.destroy reports it before 'close'). */
+static void scr_http_queue_req_destroy_error(ScrHttpReq *req) {
+  if (req->destroy_error == NULL) return;
+  scr_http_emit_push(SCR_HTTP_EMIT_REQ_DESTROY_ERROR, scr_http_req_retain(req));
+}
+
+/* The h2 request's second 'close': Node's compat layer emits one from the
+ * Readable destroy and another when the stream closes. */
+static void scr_http_queue_req_close_replay(ScrHttpReq *req) {
+  if (req->close_replayed) return;
+  scr_http_emit_push(SCR_HTTP_EMIT_REQ_CLOSE_REPLAY, scr_http_req_retain(req));
 }
 
 /* The end(cb) deferral: 'finish'-time callbacks fire one sweep after the
@@ -3592,7 +3642,9 @@ static ScrAlsCtx *scr_http_emit_ctx(const ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_RES_WCB: return ((ScrHttpRes *)e->h)->als;
   case SCR_HTTP_EMIT_REQ_CLOSE:
   case SCR_HTTP_EMIT_REQ_DRAIN:
-  case SCR_HTTP_EMIT_REQ_ABORTED: return ((ScrHttpReq *)e->h)->als;
+  case SCR_HTTP_EMIT_REQ_ABORTED:
+  case SCR_HTTP_EMIT_REQ_DESTROY_ERROR:
+  case SCR_HTTP_EMIT_REQ_CLOSE_REPLAY: return ((ScrHttpReq *)e->h)->als;
   default: return scr_http_client_ctx((struct ScrHttpClientReq *)e->h);
   }
 }
@@ -3641,8 +3693,26 @@ static void scr_http_proto_sweep(void) {
       if (!req->close_emitted) {
         req->close_emitted = true;
         req->destroyed = true; /* Node: destroyed reads true inside 'close' */
-        if (!req->ended) scr_http_req_abort_signal(req);
+        /* An h2 request destroyed through the API emits 'close' again when
+         * its stream closes: keep the listeners for that second emission
+         * (Node's Readable close plus the compat stream close). */
+        const bool replay = req->h2_stream != NULL && req->api_destroyed;
+        if (!req->ended && !replay) scr_http_req_abort_signal(req);
         scr_net_fire0_this(&req->close_ls, req, SCR_DYNH_HTTP_REQ);
+        if (replay) {
+          /* a once listener fired for the last time */
+          for (size_t i = req->close_ls.n; i > 0; i--) {
+            ScrNetL *l = &req->close_ls.ls[i - 1];
+            if (!l->once) continue;
+            scr_closure_release(l->cb);
+            scr_net_once_release(l->shared_once);
+            memmove(l, l + 1, (req->close_ls.n - i) * sizeof *l);
+            req->close_ls.n--;
+          }
+          /* a stream that already closed owes its 'close' now */
+          if (req->stream_closed) scr_http_queue_req_close_replay(req);
+          break;
+        }
         scr_net_ls_drop(&req->err_ls);
         scr_net_ls_drop(&req->close_ls);
         scr_net_ls_drop(&req->timeout_ls);
@@ -3653,6 +3723,23 @@ static void scr_http_proto_sweep(void) {
         if (req->abort_controller != NULL && scr_http_abort_available())
           scr_abort_signal_drop_listeners(req->abort_controller);
       }
+      break;
+    }
+    case SCR_HTTP_EMIT_REQ_DESTROY_ERROR: {
+      ScrHttpReq *req = (ScrHttpReq *)e.h;
+      scr_http_req_fire_destroy_error(req);
+      break;
+    }
+    case SCR_HTTP_EMIT_REQ_CLOSE_REPLAY: {
+      ScrHttpReq *req = (ScrHttpReq *)e.h;
+      req->close_replayed = true;
+      scr_net_fire0_this(&req->close_ls, req, SCR_DYNH_HTTP_REQ);
+      scr_net_ls_drop(&req->err_ls);
+      scr_net_ls_drop(&req->close_ls);
+      scr_net_ls_drop(&req->timeout_ls);
+      scr_net_ls_drop(&req->aborted_ls);
+      if (req->abort_controller != NULL && scr_http_abort_available())
+        scr_abort_signal_drop_listeners(req->abort_controller);
       break;
     }
     case SCR_HTTP_EMIT_REQ_DRAIN: {
@@ -6161,7 +6248,15 @@ void scr_http_h2_req_aborted(ScrHttpReq *r) {
   scr_http_req_abort_signal(r);
 }
 
-void scr_http_h2_req_close(ScrHttpReq *r) { scr_http_queue_req_close(r); }
+void scr_http_h2_req_close(ScrHttpReq *r) {
+  r->stream_closed = true;
+  if (r->api_destroyed && r->close_emitted) {
+    /* the destroy already emitted 'close': this is Node's second one */
+    scr_http_queue_req_close_replay(r);
+    return;
+  }
+  scr_http_queue_req_close(r);
+}
 
 void scr_http_h2_req_trailers(ScrHttpReq *r, ScrArr *pairs /*borrowed*/) {
   size_t n = (size_t)scr_arr_len(pairs);

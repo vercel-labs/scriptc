@@ -99,7 +99,7 @@ declare module "http" {
     readonly signal: AbortSignal;
     resume(): void;
     pause(): void;
-    destroy(): void;
+    destroy(error?: Error): void;
     setTimeout(msecs: number, callback?: () => void): this;
     /* setEncoding('utf8'): 'data' delivers strings (other real encodings
      * throw a "not supported yet" Error at runtime; unknown names throw

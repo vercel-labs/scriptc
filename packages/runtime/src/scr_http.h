@@ -338,6 +338,8 @@ void scr_http_res_on_write_flush(ScrHttpRes *r, ScrClosure *cb /*moves*/);
 /* req.setEncoding(enc) — the socket twin's contract; may throw. */
 void scr_http_req_set_encoding(ScrHttpReq *r, ScrStr *enc /*borrowed*/);
 void scr_http_req_destroy(ScrHttpReq *r);
+/* req.destroy(err): err (borrowed) becomes the request's 'error'. */
+void scr_http_req_destroy_error(ScrHttpReq *r, ScrError *err);
 void scr_http_req_on_error(ScrHttpReq *r, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http_req_on_close(ScrHttpReq *r, ScrClosure *cb /*moves*/, bool once);
 void scr_http_res_destroy(ScrHttpRes *r);

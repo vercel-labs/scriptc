@@ -1,13 +1,7 @@
 import { keyedHelperName } from "./stable-names.js";
 import { lowerTlsCertificateCall } from "./builtins/x509.js";
-import {
-  dynUndefinedExpr,
-  nodeThrowExpr,
-  boolLit,
-  numLit,
-  strLit,
-  varRef,
-} from "../../ir/build.js";
+import { knownBufEncoding } from "./containers/bytes.js";
+import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 
 import * as ts from "../ts7/adapter.js";
 import { withoutParentheses, withoutParenthesesAssertions } from "../outer-expressions.js";
@@ -3774,32 +3768,60 @@ function lowerNetSocketMethodCall(
       name === "write"
         ? { kind: "libCall", fn, args: callArgs, type: BOOL, loc }
         : receiverReturningCall(lowerer, fn, callArgs, NETSOCKET_T, loc);
-    // write(chunk, encoding) — the two-argument encoding form: 'buffer'
-    // beside a string chunk is Writable's encoding check (a synchronous
-    // ERR_UNKNOWN_ENCODING TypeError, "Unknown encoding: buffer" — the
-    // invalid-input probes' shape); utf8 spellings are the plain write
-    // (that IS the encoding written); a Buffer chunk ignores the encoding
-    // like Node does. Other encodings keep the fence.
-    if (name === "write" && args.length === 2) {
-      const encT = lowerer.typeOf(args[1]!);
+    // write(chunk, encoding) and end(chunk, encoding): a string chunk is
+    // encoded like Buffer.from's (Node's ladder; an unknown name throws
+    // ERR_UNKNOWN_ENCODING catchably at run time), and a Buffer chunk
+    // ignores the encoding exactly as Node does.
+    if (args.length === 2) {
+      const encNodeT = lowerer.typeOf(args[1]!);
+      const encT = lowerer.mapTypeOf(encNodeT);
+      /* The compile-time fast paths below skip evaluating the encoding
+       * expression, so only a SYNTACTIC literal may take them: a value whose
+       * type happens to be a string-literal type (a call to a helper with a
+       * literal return type, a const) must still be evaluated for its side
+       * effects and errors, exactly as Node evaluates the argument. */
+      const literalEnc =
+        ts.isStringLiteral(args[1]!) || ts.isNoSubstitutionTemplateLiteral(args[1]!)
+          ? args[1]!.text
+          : null;
       const chunkT = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-      if (encT.isStringLiteralType() && chunkT !== null) {
-        if (
-          encT.value === "buffer" &&
-          chunkT.kind === "string" &&
-          isJsSourceFile(ts.getSourceFileOfNode(call))
-        ) {
-          lowerer.lowerExpr(args[0]!); // evaluation order (effect-free in practice)
-          return nodeThrowExpr(1, "ERR_UNKNOWN_ENCODING", "Unknown encoding: buffer", VOID, loc);
+      if (encT !== null && encT.kind === "string" && chunkT !== null) {
+        const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+        if (chunkT.kind === "string") {
+          const data = lowerer.lowerExprExpecting(args[0]!, STRING);
+          // a literal utf8 spelling is the plain write: the string's UTF-8
+          // bytes are what the wire carries either way
+          if (literalEnc === "utf8" || literalEnc === "utf-8") {
+            return resultOf(name === "write" ? "net.sockWrite" : "net.sockEndStr", [socket, data]);
+          }
+          const enc = lowerer.lowerExprExpecting(args[1]!, STRING);
+          return resultOf(name === "write" ? "net.sockWriteEnc" : "net.sockEndEnc", [
+            socket,
+            data,
+            enc,
+          ]);
         }
-        const passthrough =
-          (chunkT.kind === "string" && (encT.value === "utf8" || encT.value === "utf-8")) ||
-          (chunkT.kind === "bytes" && chunkT.elem === "u8");
-        if (passthrough) {
-          const socket = coerceToHandle(lowerer, access.expression, NETSOCKET_T);
+        if (chunkT.kind === "bytes" && chunkT.elem === "u8") {
           const chunk = lowerer.lowerExpr(args[0]!);
-          const fn: IrLibFn = chunk.type.kind === "string" ? "net.sockWrite" : "net.sockWriteBytes";
-          return { kind: "libCall", fn, args: [socket, chunk], type: BOOL, loc };
+          // a literal encoding Writable accepts (Buffer.isEncoding, or the
+          // exact "buffer"/"" spellings) needs no run-time validation
+          if (
+            literalEnc !== null &&
+            (literalEnc === "buffer" ||
+              literalEnc === "" ||
+              knownBufEncoding(literalEnc) !== undefined)
+          ) {
+            return resultOf(name === "write" ? "net.sockWriteBytes" : "net.sockEndBytes", [
+              socket,
+              chunk,
+            ]);
+          }
+          const enc = lowerer.lowerExprExpecting(args[1]!, STRING);
+          return resultOf(name === "write" ? "net.sockWriteBytesEnc" : "net.sockEndBytesEnc", [
+            socket,
+            chunk,
+            enc,
+          ]);
         }
       }
     }

@@ -293,8 +293,13 @@ static const ScrDynHandleAccessor *hc_accessors(const ScrDyn *handle) {
 }
 
 static ScrDyn *hc_own_properties(const ScrDyn *handle) {
-  ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
-  if (tag == SCR_DYNH_CAPACITY) return NULL;
+  ScrDynHandleTag tag = handle->v.handle.tag;
+  if (tag == SCR_DYNH_CAPACITY || hc_classes[tag] == NULL) return NULL;
+  /* An alias tag (a fetch unit stream, reader or identity transform that is
+   * an instance of one of these classes) keeps its state in the owning
+   * unit's shape, not this class's: the class's expando accessor would read
+   * that state as its own record. Such a handle keeps no expando here. */
+  if (scr_dyn_handle_class_tag_of(handle) != tag) return NULL;
   const ScrDynHandleOps *ops = hc_ops(tag);
   return ops->own_props ? ops->own_props(handle->v.handle.ptr, tag) : NULL;
 }

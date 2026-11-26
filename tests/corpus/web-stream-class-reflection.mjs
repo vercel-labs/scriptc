@@ -78,3 +78,22 @@ console.log(
     Object.getOwnPropertyDescriptor(added, "label").value,
   );
 }
+
+// The fetch unit's identity TransformStream (`new TransformStream()` with no
+// transformer) is an instance of the same class but keeps its state in the
+// fetch unit's shape. Reflecting on a started one answers its prototype's
+// members and must not read that state as an expando record.
+{
+  const legacy = new TransformStream();
+  const writer = legacy.writable.getWriter();
+  // Starts the transform; the write stays pending with no reader (the
+  // identity transform backpressures), which is what makes it "started".
+  void writer.write("x");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  console.log(
+    "legacy",
+    Object.getOwnPropertyNames(legacy).join(","),
+    Object.keys(legacy).join(","),
+    forIn(legacy),
+  );
+}

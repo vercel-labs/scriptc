@@ -68,6 +68,22 @@ steps.push(() => {
 });
 
 steps.push(() => {
+  // a host with an embedded NUL is Node's synchronous property error; C
+  // resolution would otherwise stop at the NUL while length-aware checks
+  // see the whole string
+  const tcpPort = tcpServer.address().port;
+  try {
+    const client = new net.Socket();
+    client.connect(String(tcpPort), "evil\0allowed.example");
+    say("nul-host", "accepted");
+    client.destroy();
+  } catch (err) {
+    say("nul-host", codeOf(err), JSON.stringify(err.message));
+  }
+  run();
+});
+
+steps.push(() => {
   // a numeric string port keeps the supplied destination host
   const tcpPort = tcpServer.address().port;
   const client = new net.Socket();

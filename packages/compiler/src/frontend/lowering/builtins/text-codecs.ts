@@ -58,7 +58,14 @@ function lowerDecodeInput(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): I
 function lowerEncodeInput(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrExpr {
   const undefinedArg = lowerStaticallyUndefinedArgument(lowerer, node);
   if (undefinedArg) return defaultAfterUndefined(undefinedArg, strLit("", loc));
-  return lowerer.lowerExprExpecting(node, STRING);
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "string") return value;
+  /* The argument is a WebIDL USVString: any value converts through
+   * ToString (a number, null, an object's toString, an array's join), and
+   * the UTF-8 encoder turns a lone surrogate into U+FFFD. A Symbol throws
+   * the conversion's TypeError. */
+  const boxed = lowerer.coerceInto(node, value, DYN);
+  return { kind: "libCall", fn: "dyn.toStringCoerce", args: [boxed], type: STRING, loc };
 }
 
 /** StringDecoder writes preserve pending bytes; end(input) performs the
@@ -536,7 +543,16 @@ export function lowerTextCodecNew(
       )
         lowerer.noLowering("unknown TextDecoder option", property);
       const value = ts.isPropertyAssignment(property) ? property.initializer : property.name;
-      flags.set(property.name.text, lowerer.lowerExprExpecting(value, BOOL));
+      // A WebIDL boolean member takes any value through ToBoolean (a
+      // string, a number, null), so the value crosses into dyn and the
+      // runtime converts it where Node reads the member.
+      flags.set(property.name.text, {
+        kind: "libCall",
+        fn: "dyn.truthy",
+        args: [lowerer.lowerExprExpecting(value, DYN)],
+        type: BOOL,
+        loc,
+      });
     }
   }
   const type = lowerer.mapTypeOf(lowerer.typeOf(ctor));
@@ -585,9 +601,11 @@ function lowerStoredTextCodecCall(
   const cls = storedTextCodecClassOf(lowerer, access.expression);
   if (cls === null || !lowerer.isStdlibMember(access)) return null;
   if (access.name.text !== (cls === "TextEncoder" ? "encode" : "decode")) return null;
-  if (call.arguments.nodes.length > (cls === "TextDecoder" ? 2 : 1)) {
-    lowerer.noLowering(`${cls}.${access.name.text} with extra arguments`, call);
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`${cls}.${access.name.text} with spread arguments`, call);
   }
+  const usedArgs = cls === "TextDecoder" ? 2 : 1;
+  const extraArgs = call.arguments.nodes.slice(usedArgs);
   const loc = locOf(call);
   let stream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   let optionsNode: ts.Expression | null = null;
@@ -603,10 +621,18 @@ function lowerStoredTextCodecCall(
         property.name.text !== "stream"
       )
         lowerer.noLowering("unknown TextDecoder.decode option", property);
-      stream = lowerer.lowerExprExpecting(
-        ts.isPropertyAssignment(property) ? property.initializer : property.name,
-        BOOL,
-      );
+      stream = {
+        kind: "libCall",
+        fn: "dyn.truthy",
+        args: [
+          lowerer.lowerExprExpecting(
+            ts.isPropertyAssignment(property) ? property.initializer : property.name,
+            DYN,
+          ),
+        ],
+        type: BOOL,
+        loc,
+      };
     }
   }
   const receiver = lowerer.lowerExpr(access.expression);
@@ -701,11 +727,38 @@ function lowerStoredTextCodecCall(
       loc,
     });
   }
-  return {
+  const type: IrType = cls === "TextEncoder" ? BYTES_U8 : STRING;
+  const invoke = (recv: IrExpr, input: IrExpr, streaming: IrExpr): IrExpr => ({
     kind: "call",
     callee: name,
-    args: [receiver, arg, stream],
-    type: cls === "TextEncoder" ? BYTES_U8 : STRING,
+    args: [recv, input, streaming],
+    type,
+    loc,
+  });
+  if (extraArgs.length === 0) return invoke(receiver, arg, stream);
+  /* The receiver, the input and the options evaluate, then the arguments
+   * the call ignores (Node evaluates them and drops them), then the call. */
+  const recvLocal = lowerer.declareHiddenLocal("%codecReceiver", receiver.type);
+  const argLocal = lowerer.declareHiddenLocal("%codecInput", arg.type);
+  const streamLocal = lowerer.declareHiddenLocal("%codecStream", BOOL);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
+    { kind: "varDecl", localId: argLocal.id, init: arg, loc },
+    { kind: "varDecl", localId: streamLocal.id, init: stream, loc },
+  ];
+  for (const extra of extraArgs) {
+    const value = lowerer.lowerExpr(extra);
+    if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+  }
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: invoke(
+      varRef(recvLocal.id, recvLocal.type, loc),
+      varRef(argLocal.id, argLocal.type, loc),
+      varRef(streamLocal.id, BOOL, loc),
+    ),
+    type,
     loc,
   };
 }
@@ -913,24 +966,44 @@ export function lowerTextCodecCall(
     return afterLabel(decoded);
   }
   const ctorEffects = textEncoderArgumentEffects(lowerer, recv);
-  if (call.arguments.nodes.length > 1) {
-    lowerer.noLowering(`TextEncoder.encode with ${call.arguments.nodes.length} arguments`, call);
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering("TextEncoder.encode with spread arguments", call);
   }
   const s =
     call.arguments.nodes.length === 0
       ? strLit("", loc)
       : lowerEncodeInput(lowerer, call.arguments.nodes[0]!, loc);
   const enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
-  const encoded: IrExpr = {
+  const invoke = (input: IrExpr): IrExpr => ({
     kind: "libCall",
     fn: "buffer.fromStr",
-    args: [s, enc],
+    args: [input, enc],
+    type: BYTES_U8,
+    loc,
+  });
+  const extraArgs = call.arguments.nodes.slice(1);
+  if (extraArgs.length === 0) {
+    return ctorEffects.length === 0
+      ? invoke(s)
+      : { kind: "seqExpr", stmts: ctorEffects, result: invoke(s), type: BYTES_U8, loc };
+  }
+  /* The input evaluates, then the arguments Node ignores, then the call. */
+  const inputLocal = lowerer.declareHiddenLocal("%encodeInput", s.type);
+  const stmts: IrStmt[] = [
+    ...ctorEffects,
+    { kind: "varDecl", localId: inputLocal.id, init: s, loc },
+  ];
+  for (const extra of extraArgs) {
+    const value = lowerer.lowerExpr(extra);
+    if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
+  }
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: invoke(varRef(inputLocal.id, inputLocal.type, loc)),
     type: BYTES_U8,
     loc,
   };
-  return ctorEffects.length === 0
-    ? encoded
-    : { kind: "seqExpr", stmts: ctorEffects, result: encoded, type: BYTES_U8, loc };
 }
 
 export function lowerBufferEncodingCall(

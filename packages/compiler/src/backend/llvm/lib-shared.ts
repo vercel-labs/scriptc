@@ -1358,6 +1358,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "bigint.cmp": "scr_bigint_cmp_f64",
   "bigint.cmpNumber": "scr_bigint_cmp_number",
   "bigint.truthy": "scr_bigint_truthy",
+  "dyn.truthy": "scr_dyn_truthy",
   "bigint.toString": "scr_bigint_to_string",
   "bigint.inspect": "scr_insp_bigint",
   "bigint.toF64": "scr_bigint_to_f64",

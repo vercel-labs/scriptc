@@ -3,7 +3,14 @@ import { fileURLToPath } from "node:url";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 // @ts-expect-error -- a plain script without declarations
-import { shimSource, verdict, workerPrograms } from "../../scripts/tsan-workers.mjs";
+import {
+  buildArguments,
+  icuAvailable,
+  requiresIcu,
+  shimSource,
+  verdict,
+  workerPrograms,
+} from "../../scripts/tsan-workers.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -17,6 +24,34 @@ test("the lane covers the corpus programs that use worker threads", () => {
     // Programs that take hardware traps on purpose cannot run under ThreadSanitizer.
     expect(source).not.toMatch(/\bWebAssembly\b/);
   }
+});
+
+test("a build carries the directive head's defines and optimization", () => {
+  const defined = buildArguments(
+    `${root}/tests/corpus/define-node-env/main.ts`,
+    "/tmp/program",
+  ) as string[];
+  expect(defined).toContain(`--define=process.env.NODE_ENV="production"`);
+  expect(defined).toContain(`--define=process.env.SCRIPTC_FEATURE="on"`);
+  expect(defined).not.toContain("--optimization=speed");
+  // A program with no directive head builds exactly as before.
+  const plain = buildArguments(`${root}/tests/corpus/1564-fs-watch.ts`, "/tmp/program") as string[];
+  expect(
+    plain.filter((arg) => arg.startsWith("--define") || arg.startsWith("--optimization")),
+  ).toEqual([]);
+});
+
+test("a program that asks for speed compiles at --optimization=speed", () => {
+  const file = `${root}/tests/corpus/4032-inline-rc-fast-paths.ts`;
+  expect(buildArguments(file, "/tmp/program")).toContain("--optimization=speed");
+});
+
+test("ICU programs are skipped only where the runtime packs have no ICU", () => {
+  expect(requiresIcu("// @requires-icu\n")).toBe(true);
+  expect(requiresIcu("// @requires-icu-something\n")).toBe(false);
+  expect(icuAvailable("linux", "x64")).toBe(true);
+  expect(icuAvailable("darwin", "arm64")).toBe(false);
+  expect(icuAvailable("linux", "arm64")).toBe(false);
 });
 
 test("the shim swaps the sanitizer and instruments the program's IR", () => {

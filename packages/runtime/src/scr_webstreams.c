@@ -6634,8 +6634,15 @@ static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
     out = scr_stream_duplex_from_web((ScrDyn *)target, (double)(bits & ~16));
   } else if (!scr_exc_pending() && self_writable && !has_readable &&
              scr_stream_writable_from_web != NULL) {
-    out = scr_stream_writable_from_web((ScrDyn *)target,
-                                       (bits & 16) != 0 ? (double)((bits & ~16) | 2) : flags);
+    double wflags =
+        bits == 0 ? 0 : (double)(((bits & 16) != 0 ? (bits & ~16) | 2 : bits) | 8);
+    out = scr_stream_writable_from_web((ScrDyn *)target, wflags);
+    /* That adapter's flags name its options (bit 2 object mode, bit 4
+     * decodeStrings), so a pipeline or compose stage — any flagged body —
+     * keeps its web chunks here: a null a stage enqueued is a value its write
+     * carries, where Duplex.from's body (no flags) keeps node's null-write
+     * error. */
+    if (out != NULL && bits != 0) scr_stream_set_web_chunks(out, true);
   }
   if (view) scr_dyn_release(view);
   return out;

@@ -2274,6 +2274,18 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
     /* _duplexify({ readable }) / _duplexify({ writable }) */
     ScrStream *d = native->st->has_r ? scr_stream_duplexify(native, NULL)
                                      : scr_stream_duplexify(NULL, native);
+    /* A pipeline or compose stage keeps its web chunks (any flagged body):
+     * the duplexify and the handle's own stream both take a null a stage
+     * enqueued as a value, where Duplex.from's body (no flags) keeps node's
+     * null-write error. */
+    if ((int)pair_flags != 0) {
+      scr_stream_set_web_chunks(native, true);
+      scr_stream_set_object_mode(native, false, true);
+      if (d != NULL) {
+        scr_stream_set_web_chunks(d, true);
+        scr_stream_set_object_mode(d, false, true);
+      }
+    }
     scr_stream_release(native);
     return d;
   }
@@ -2285,8 +2297,17 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
        * duplexify.js reads it as the body's `writable` (Duplex.from's
        * writable-only Duplex). */
       if (!(paired->st->has_r && paired->st->has_w)) {
+        /* The adapter's writable mode and web chunks reach the duplexify the
+         * pipeline writes through, so a null a stage enqueued is a value
+         * written here too. */
+        bool web_chunks = paired->st->web_chunks;
+        bool writable_object_mode = paired->st->has_w && paired->st->w.object_mode;
         ScrStream *d = paired->st->has_r ? scr_stream_duplexify(paired, NULL)
                                          : scr_stream_duplexify(NULL, paired);
+        if (d != NULL) {
+          if (web_chunks) scr_stream_set_web_chunks(d, true);
+          if (writable_object_mode) scr_stream_set_object_mode(d, false, true);
+        }
         scr_stream_release(paired);
         if (!d) return NULL;
         paired = d;

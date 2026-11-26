@@ -319,7 +319,36 @@ const zigAvailable = (() => {
   }
 })();
 
-test.runIf(zigAvailable)(
+/* A Mach-O object needs an nm that reads more than the host's own format:
+ * GNU nm answers "file format not recognized", so the check below reads the
+ * object with an LLVM nm (`llvm-nm`, or the `nm` that is one) and skips when
+ * neither is installed. */
+const machONm = (() => {
+  for (const candidate of ["llvm-nm", "nm"]) {
+    try {
+      const version = execFileSync(candidate, ["--version"], { encoding: "utf8" });
+      if (version.includes("LLVM")) return candidate;
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  return null;
+})();
+
+/** symbolsOf over another format, read with the given nm. */
+function symbolsWith(nm: string, path: string): Symbols {
+  const symbols: Symbols = { defined: new Set(), undefined: new Set(), weak: new Set() };
+  const out = execFileSync(nm, ["-g", path], { encoding: "utf8", maxBuffer: 1 << 28 });
+  for (const line of out.split("\n")) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length === 2 && (fields[0] === "U" || fields[0] === "w"))
+      symbols.undefined.add(fields[1]!);
+    else if (fields.length === 3) symbols.defined.add(fields[2]!);
+  }
+  return symbols;
+}
+
+test.runIf(zigAvailable && machONm !== null)(
   "a unit a web-streams-only program links defines its stream references for Mach-O",
   () => {
     const object = join(mkdtempSync(join(tmpdir(), "scr-macho-")), "scr_webstreams.o");
@@ -338,7 +367,8 @@ test.runIf(zigAvailable)(
       ],
       { stdio: "ignore" },
     );
-    const symbols = symbolsOf(object); /* Mach-O names carry a leading underscore */
+    /* Mach-O names carry a leading underscore. */
+    const symbols = symbolsWith(machONm!, object);
     for (const name of ["scr_stream_web_pair_hook", "scr_stream_duplex_from_web"]) {
       expect(
         symbols.undefined.has(`_${name}`),

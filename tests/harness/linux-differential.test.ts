@@ -19,6 +19,11 @@ import { normalizeNodeTestOutput } from "./node-test-normalize.js";
 import { eventLoopCases, type StdinScript } from "./event-loop-cases.js";
 import { requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import {
+  legacyDecoratorOracleEntry,
+  wantsDecoratorMetadata,
+  wantsLegacyDecorators,
+} from "./tsc-legacy-decorators.js";
 import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
@@ -67,6 +72,10 @@ function wantsTscDecorators(file: string): boolean {
  * nodeOracleFile, with the identical transform and cache key. */
 function nodeOracleFile(file: string): string {
   if (wantsTscOracle(directiveHead(file))) return tscOracleEntry(file, cacheDir);
+  if (wantsLegacyDecorators(directiveHead(file)))
+    return legacyDecoratorOracleEntry(file, cacheDir, {
+      metadata: wantsDecoratorMetadata(directiveHead(file)),
+    });
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {

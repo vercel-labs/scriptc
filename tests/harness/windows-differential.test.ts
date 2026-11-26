@@ -55,6 +55,11 @@ import ts5 from "typescript5";
 import { compile } from "@scriptc/compiler";
 import { requiresLibnode } from "./libnode.js";
 import { tscOracleEntry, wantsTscOracle } from "./jsx-oracle.js";
+import {
+  legacyDecoratorOracleEntry,
+  wantsDecoratorMetadata,
+  wantsLegacyDecorators,
+} from "./tsc-legacy-decorators.js";
 import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
@@ -234,13 +239,23 @@ function wantsTscDecorators(file: string): boolean {
 /** The downleveled oracle entry's box-side name: unique per program, and
  * .mjs so the box's module detection cannot re-guess. */
 function decOracleName(file: string): string {
+  if (wantsLegacyDecorators(directiveHead(file))) return basename(legacyDecoratorOraclePath(file));
   return `${laneName(file)}.dec-oracle.mjs`;
+}
+
+/** The pinned TypeScript 7 emit of a legacy-decorator program, which the
+ * box runs in the entry's place (single-file programs only). */
+function legacyDecoratorOraclePath(file: string): string {
+  return legacyDecoratorOracleEntry(file, cacheDir, {
+    metadata: wantsDecoratorMetadata(directiveHead(file)),
+  });
 }
 
 /** Materializes the decorator downlevel under the test cache (a pure
  * function of the program bytes and the typescript version) and answers
  * the local path to ship. */
 function decOraclePath(file: string): string {
+  if (wantsLegacyDecorators(directiveHead(file))) return legacyDecoratorOraclePath(file);
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
     compilerOptions: { target: ts5.ScriptTarget.ES2022, module: ts5.ModuleKind.ESNext },
@@ -355,7 +370,7 @@ async function runWindowsNode(file: string): Promise<RunResult> {
   const name = laneName(file);
   const entry = wantsTscOracle(directiveHead(file))
     ? `${basename(dirname(tscOracleEntry(file, cacheDir)))}\\main.js`
-    : wantsTscDecorators(file)
+    : wantsTscDecorators(file) || wantsLegacyDecorators(directiveHead(file))
       ? decOracleName(file)
       : name === basename(file)
         ? name
@@ -425,7 +440,7 @@ async function shipProgram(file: string): Promise<void> {
   // executes (the compiler still eats the real source above).
   const oracleExtra = wantsTscOracle(directiveHead(file))
     ? [dirname(tscOracleEntry(file, cacheDir))]
-    : wantsTscDecorators(file)
+    : wantsTscDecorators(file) || wantsLegacyDecorators(directiveHead(file))
       ? [decOraclePath(file)]
       : [];
   await scpToLane([binary, programRoot, ...oracleExtra]);

@@ -46,6 +46,7 @@ import {
   NativeCodegenError,
   nativePartitionPaths,
   nativeProgramPartitions,
+  GENERATED_DISPATCH_OPT,
 } from "../backend/native-codegen-core.js";
 import { llvmRefusalDiags } from "../backend/target-diagnostics.js";
 import { nativeCodegenDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -421,6 +422,7 @@ export class NativeCompiler {
       outputKind,
       partitions,
       ...(partitionCache === null ? {} : { partitionCache }),
+      ...(optimization === "release" ? { dispatchOpt: GENERATED_DISPATCH_OPT } : {}),
       ...(profile === undefined ? {} : { profile }),
     });
     if (this.cache !== null && key !== null) {

@@ -268,6 +268,10 @@ ScrStr *scr_intl_num_format_default(double x) {
 
 /* ── capability ───────────────────────────────────────────────────────── */
 
+__attribute__((constructor)) static void scr_intl_i18n_install(void) {
+  scr_intl_i18n_support_fn = &scr_intl_i18n_support;
+}
+
 double scr_intl_i18n_support(void) {
   /* Node's process.config.variables.v8_enable_i18n_support is the number 1;
    * so is this binary's, because this unit (and the ICU archive behind it)

@@ -165,6 +165,10 @@ struct ScrDyn *scr_stream_dyn_source_value(const struct ScrDyn *value, bool retu
 /* An untyped function stage's result before the last pipeline stage: the
  * async iterable itself (+1), or NULL with ERR_INVALID_RETURN_VALUE. */
 struct ScrDyn *scr_stream_dyn_transform_result(const struct ScrDyn *value, const ScrStr *label);
+/* duplexify's function body: the value the function answered, when it is
+ * a synchronous or asynchronous iterable or a native readable stream
+ * (+1), else NULL with the "body" form of ERR_INVALID_RETURN_VALUE. */
+struct ScrDyn *scr_stream_duplex_body_value(const struct ScrDyn *value);
 /* Handles that are Transforms (ScrDynHandleOps.transform: Cipheriv and
  * Decipheriv). scr_stream_of_handle: the handle's Transform (+1), built on
  * first use, or NULL when the value is not such a handle.
@@ -798,6 +802,11 @@ void scr_stream_writev_fill_encodings(struct ScrDyn *chunks);
  * the Readable.from builders with SCR_FROM_DUPLEX. */
 ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                       ScrClosure *read, ScrClosure *ret, ScrClosure *thr);
+/* The same for a body without a source parameter: the stage is called
+ * with no argument and the source generator is released. */
+ScrStream *scr_stream_duplex_from_gen_nosource(ScrClosure *stage, ScrClosure *source,
+                                              ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                              ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
@@ -807,6 +816,10 @@ ScrStream *scr_stream_readable_from_web(struct ScrDyn *web, bool object_mode, do
  * generator and answers its promise; source and the promise's box helper
  * borrowed): a writable Duplexify whose final waits for the promise. +1. */
 ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box);
+/* The same for a body without a source parameter: the stage is called
+ * with no argument and the source generator is released. */
+ScrStream *scr_stream_duplex_from_async_fn_nosource(ScrClosure *stage, ScrClosure *source,
+                                                    ScrClosure *box);
 /* The same for a body that declares the options argument: it takes
  * { signal } (signal borrowed), and destroy calls abort(err) (borrowed),
  * the AbortController's abort, before it settles (fromAsyncGen's

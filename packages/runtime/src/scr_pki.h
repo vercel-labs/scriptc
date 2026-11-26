@@ -94,6 +94,17 @@ extern const ScrPkiMlkemCore *scr_pki_mlkem_core;
  * { sharedKey, ciphertext } (both Buffers) or NULL with the error pending;
  * the decapsulation answers the 32-byte shared key, or NULL. */
 bool scr_pki_key_is_mlkem(const ScrPkiKey *key);
+/* WebCrypto's ML-KEM keys (scr_webcrypto_pki.c): the parameter set's level
+ * (512, 768 or 1024; 0 for any other key), a fresh key pair, a key from the
+ * raw public key or 64-byte seed, and those encodings back. Each answers +1,
+ * or NULL when the level is unknown, the bytes have the wrong length or are
+ * not canonical, or the core is not linked (no error pending). */
+int scr_pki_mlkem_level(const ScrPkiKey *key);
+size_t scr_pki_mlkem_public_len(int level);
+ScrPkiKey *scr_pki_mlkem_generate(int level);
+ScrPkiKey *scr_pki_mlkem_from_raw(int level, bool public_key, const uint8_t *bytes, size_t len);
+ScrBytes *scr_pki_mlkem_raw_public(const ScrPkiKey *key);
+ScrBytes *scr_pki_mlkem_raw_seed(const ScrPkiKey *key);
 ScrDyn *scr_pki_mlkem_encapsulate(const ScrPkiKey *key);
 ScrBytes *scr_pki_mlkem_decapsulate(const ScrPkiKey *key, const unsigned char *ciphertext,
                                     size_t len);

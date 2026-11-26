@@ -1053,13 +1053,18 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
    * its 'drain'. Encoded sources write the string (utf8 bytes at the
    * destination — Node writes the decoded string through). */
   for (size_t i = 0; i < st->pipes.n;) {
-    ScrStream *dst = st->pipes.dst[i];
+    /* Hold the destination across the write and its failure handling: a
+     * write's error renders an invalid chunk through the chunk's own hooks,
+     * and a hook that unpipes drops the pipe's reference before this
+     * iteration is done with the destination. */
+    ScrStream *dst = scr_stream_retain(st->pipes.dst[i]);
     if (dst->st->destroyed) {
       /* Node's pipe cleanup: a destroyed destination unhooks (the
        * onerror/onclose → unpipe path) and pauses the source — writing
        * after destroy would drop the error without reporting it and spin
        * an infinite synchronous flow over an endless source. */
       scr_stream_release(scr_stream_unpipe(s, dst));
+      scr_stream_release(dst);
       if (scr_exc_pending()) return;
       continue; /* the pipes array shifted down over i */
     }
@@ -1077,6 +1082,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         scr_stream_error_or_destroy(dst, werr);
         scr_error_release(werr);
       }
+      scr_stream_release(dst);
       return;
     }
     i++;
@@ -1098,6 +1104,7 @@ static void scr_stream_emit_data_entry(ScrStream *s, void *chunk, ScrEntryKind k
         st->r.flowing = 0;
       }
     }
+    scr_stream_release(dst);
   }
 }
 
@@ -7303,7 +7310,13 @@ void scr_stream_check_encoding_option(ScrDyn *v) {
     if (canonical) scr_str_release(canonical);
     return;
   }
-  ScrStr *shown = scr_dyn_string_coerce_js(v);
+  /* The conversion runs the value's own toString/valueOf, and that code can
+   * remove the last reference to the value (a delete of the property that
+   * held it): hold it across the conversion, which rereads it between the
+   * candidate methods. */
+  ScrDyn *held = scr_dyn_retain(v);
+  ScrStr *shown = scr_dyn_string_coerce_js(held);
+  scr_dyn_release(held);
   if (!shown) return;
   char msg[128];
   int len = snprintf(msg, sizeof msg, "Unknown encoding: %.*s", (int)(shown->len < 64 ? shown->len : 64),

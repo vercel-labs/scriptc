@@ -77,4 +77,9 @@ export const moduleSignatures = defineLibFnSignatures({
   "module.sourceMapsSupport": { argTypes: [], result: DYN },
   "module.setSourceMapsSupport": { argTypes: [DYN, DYN], result: VOID },
   "module.findSourceMap": { argTypes: [DYN], result: DYN },
+  /** Node's `Module` class value and its prototype (scr_module_class.c):
+   * module views inherit the prototype, so instanceof and getPrototypeOf
+   * answer as Node's do. Never throws. */
+  "module.ctor": { argTypes: [], result: DYN },
+  "module.ctorPrototype": { argTypes: [], result: DYN },
 });

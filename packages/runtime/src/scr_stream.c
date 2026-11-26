@@ -1277,9 +1277,17 @@ static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kin
   if (!absent) {
     n = (size_t)size;
     if (n > st->r.hwm) {
-      /* Node grows hwm to the next power of two above n */
-      size_t h = st->r.hwm;
-      while (h < n) h *= 2;
+      /* Node grows hwm to the next power of two above n (readable.js's
+       * computeNewHighWaterMark). The growth starts at 1: a highWaterMark
+       * of 0 still grows, and starting from 0 would never reach n. */
+      size_t h = st->r.hwm > 1 ? st->r.hwm : 1;
+      while (h < n) {
+        if (h > SIZE_MAX / 2) {
+          h = n;
+          break;
+        }
+        h *= 2;
+      }
       st->r.hwm = h;
     }
   }
@@ -4859,6 +4867,8 @@ static void scr_stream_throw_web_stage(void);
 static bool scr_stream_dyn_stage_returned_stream(const ScrDyn *value);
 static void scr_stream_throw_invalid_return(const char *expected, const char *name,
                                            const ScrDyn *got);
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls);
 
 /* What pipelineImpl does with an untyped destination function's result:
  * a promise settles the pipeline's value (the `then` branch), and an
@@ -10090,6 +10100,21 @@ static void scr_stream_throw_invalid_return(const char *expected, const char *na
   scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
 }
 
+/* The same error with a ready-made tail: a native stream renders as its
+ * Node class ("an instance of Writable"), which the checked-dynamic value
+ * the stage answered does not carry. */
+static void scr_stream_throw_invalid_return_class(const char *expected, const char *name,
+                                                  const char *cls) {
+  char detail[160];
+  snprintf(detail, sizeof detail, "an instance of %s", cls);
+  char msg[384];
+  int n = snprintf(msg, sizeof msg, "Expected %s to be returned from the \"%s\" function but got %s.",
+                   expected, name, detail);
+  if (n < 0) n = 0;
+  if ((size_t)n >= sizeof msg) n = (int)sizeof msg - 1;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)n, "ERR_INVALID_RETURN_VALUE");
+}
+
 /* An untyped pipeline function stage's result before the last stage
  * (pipelineImpl's `isIterable(ret, true)` check): an async iterable
  * answers itself (+1); other values throw ERR_INVALID_RETURN_VALUE naming
@@ -10100,6 +10125,44 @@ ScrDyn *scr_stream_dyn_transform_result(const ScrDyn *value, const ScrStr *label
   if (kind < 0) return NULL;
   if (kind != 2) {
     scr_stream_throw_invalid_return("AsyncIterable", label->data, value);
+    return NULL;
+  }
+  return scr_dyn_retain((ScrDyn *)value);
+}
+
+/* duplexify's function-body check: the function a Duplex was built from
+ * must answer an iterable (synchronous or asynchronous), or a native
+ * readable stream (which answers its iterator in Node); it reads that
+ * value as the duplex's readable side. Any other value throws the "body"
+ * form of ERR_INVALID_RETURN_VALUE. +1, or NULL with an exception
+ * pending. */
+ScrDyn *scr_stream_duplex_body_value(const ScrDyn *value) {
+  /* from.js's string and Buffer bodies push the value whole, not each of
+   * its characters or bytes: one entry reads back as that chunk. */
+  if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
+    ScrDyn *one = scr_dyn_new_arr();
+    scr_dyn_arr_push(one, scr_dyn_retain((ScrDyn *)value));
+    return one;
+  }
+  ScrStream *native = scr_stream_of_handle(value);
+  if (!native) native = scr_stream_boxed(value);
+  if (native) {
+    char cls[64];
+    snprintf(cls, sizeof cls, "%s", native->cls ? native->cls : "Stream");
+    bool readable = native->st->has_r;
+    scr_stream_release(native);
+    if (!readable) {
+      if (!scr_exc_pending())
+        scr_stream_throw_invalid_return_class("Iterable, AsyncIterable or AsyncFunction", "body",
+                                              cls);
+      return NULL;
+    }
+    return scr_dyn_retain((ScrDyn *)value);
+  }
+  int kind = scr_dyn_iterable_kind(value);
+  if (kind < 0) return NULL;
+  if (kind == 0) {
+    scr_stream_throw_invalid_return("Iterable, AsyncIterable or AsyncFunction", "body", value);
     return NULL;
   }
   return scr_dyn_retain((ScrDyn *)value);

@@ -42,6 +42,7 @@ import {
 } from "./harness.js";
 import type { TwoWorlds } from "./harness.js";
 import { ALL_BATTERIES } from "./fixtures.js";
+import { parseShard, shardItems } from "../../../../scripts/ts7-shard.mjs";
 import { TypeFormatFlags } from "../../src/frontend/ts7/enums.js";
 
 /** Both printers elide part of a large type by default, at different
@@ -53,9 +54,16 @@ const NO_TRUNCATION_7 = TypeFormatFlags.NoTruncation;
 
 const host = new Ts7Host();
 const worldsByName = new Map<string, TwoWorlds>();
-for (const battery of ALL_BATTERIES) {
+const batteries = shardItems(ALL_BATTERIES, parseShard(process.env["SCRIPTC_TS7_SHARD"]));
+for (const battery of batteries) {
   worldsByName.set(battery.name, buildTwoWorlds(battery.sources, host));
 }
+// The standalone tests below reach into one named battery's world. A shard that does not own that battery skips
+// them; the shard that owns it runs them, so the union still runs every one.
+const rt = worldsByName.has("rich") ? test : test.skip;
+const ct = worldsByName.has("cjs") ? test : test.skip;
+const at = worldsByName.has("async") ? test : test.skip;
+const mt = worldsByName.has("modules") ? test : test.skip;
 afterAll(() => {
   for (const w of worldsByName.values()) w.dispose();
   host.close();
@@ -169,7 +177,7 @@ function isFixtureSymbol(w: TwoWorlds, symbol: ts5.Symbol): boolean {
   return (symbol.declarations ?? []).some((d) => w.files.includes(d.getSourceFile().fileName));
 }
 
-for (const battery of ALL_BATTERIES) {
+for (const battery of batteries) {
   const { name } = battery;
   const w = (): TwoWorlds => worldsByName.get(name)!;
 
@@ -359,7 +367,7 @@ for (const battery of ALL_BATTERIES) {
   });
 }
 
-test("isTupleType and isArrayType agree with 5.9.3 at value positions", () => {
+rt("isTupleType and isArrayType agree with 5.9.3 at value positions", () => {
   const w = worldsByName.get("rich")!;
   const { n5, n7 } = walkBoth(w, w.files[0]!);
   let tuples = 0;
@@ -390,25 +398,28 @@ test("isTupleType and isArrayType agree with 5.9.3 at value positions", () => {
   expect(arrays).toBeGreaterThan(0);
 });
 
-test("finding pinned: binding-pattern elisions are BindingElement in 7, OmittedExpression in 5.9.3", () => {
-  const w = worldsByName.get("rich")!;
-  const { n5, n7 } = walkBoth(w, w.files[0]!);
-  const elisions = n5.map((n, i) => [n, i] as const).filter(([n]) => isBindingPatternElision(n));
-  expect(elisions.length).toBeGreaterThan(0);
-  for (const [, i] of elisions) {
-    expect(kindName7(n7[i]!.kind)).toBe("BindingElement");
-    expect(ad.isBindingElement(n7[i]!)).toBe(true);
-    expect(ad.isOmittedExpression(n7[i]!)).toBe(false);
-  }
-  // Expression-position elisions still agree.
-  const exprElision = n5.findIndex(
-    (n) => ts5.isOmittedExpression(n) && !isBindingPatternElision(n),
-  );
-  expect(exprElision).toBeGreaterThanOrEqual(0);
-  expect(ad.isOmittedExpression(n7[exprElision]!)).toBe(true);
-});
+rt(
+  "finding pinned: binding-pattern elisions are BindingElement in 7, OmittedExpression in 5.9.3",
+  () => {
+    const w = worldsByName.get("rich")!;
+    const { n5, n7 } = walkBoth(w, w.files[0]!);
+    const elisions = n5.map((n, i) => [n, i] as const).filter(([n]) => isBindingPatternElision(n));
+    expect(elisions.length).toBeGreaterThan(0);
+    for (const [, i] of elisions) {
+      expect(kindName7(n7[i]!.kind)).toBe("BindingElement");
+      expect(ad.isBindingElement(n7[i]!)).toBe(true);
+      expect(ad.isOmittedExpression(n7[i]!)).toBe(false);
+    }
+    // Expression-position elisions still agree.
+    const exprElision = n5.findIndex(
+      (n) => ts5.isOmittedExpression(n) && !isBindingPatternElision(n),
+    );
+    expect(exprElision).toBeGreaterThanOrEqual(0);
+    expect(ad.isOmittedExpression(n7[exprElision]!)).toBe(true);
+  },
+);
 
-test("finding pinned: type-position identifiers answer `any` through the 7 API", () => {
+rt("finding pinned: type-position identifiers answer `any` through the 7 API", () => {
   const w = worldsByName.get("rich")!;
   const { n5, n7 } = walkBoth(w, w.files[0]!);
   let pinned = 0;
@@ -424,67 +435,73 @@ test("finding pinned: type-position identifiers answer `any` through the 7 API",
   expect(pinned).toBeGreaterThan(0);
 });
 
-test("finding pinned: tsgo does not synthesize CJS expando members; module resolves as 'module'", () => {
-  const w = worldsByName.get("cjs")!;
-  const file = w.files[0]!;
-  const { n5, n7 } = walkBoth(w, file);
-  // The export table's type: 5.9.3 widens it with the expando members
-  // (last, extra); tsgo keeps the literal's own shape.
-  const tableIdx = n5.findIndex(
-    (n) => ts5.isBinaryExpression(n) && n.getText().startsWith("module.exports = helpers"),
-  );
-  expect(tableIdx).toBeGreaterThanOrEqual(0);
-  const t5 = w.c5.typeToString(w.c5.getTypeAtLocation(n5[tableIdx]!));
-  const t7 = w.c7.typeToString(w.c7.getTypeAtLocation(n7[tableIdx]!)!);
-  expect(t5).toContain("last");
-  expect(t7).not.toContain("last");
-  // The module.exports receiver's symbol name.
-  const moduleIdx = n5.findIndex((n) => ts5.isIdentifier(n) && n.getText() === "module");
-  expect(moduleIdx).toBeGreaterThanOrEqual(0);
-  expect(w.c5.getSymbolAtLocation(n5[moduleIdx]!)?.name).toBe("export=");
-  expect(symbolNameOf(w.c7.getSymbolAtLocation(n7[moduleIdx]!))).toBe("module");
-});
+ct(
+  "finding pinned: tsgo does not synthesize CJS expando members; module resolves as 'module'",
+  () => {
+    const w = worldsByName.get("cjs")!;
+    const file = w.files[0]!;
+    const { n5, n7 } = walkBoth(w, file);
+    // The export table's type: 5.9.3 widens it with the expando members
+    // (last, extra); tsgo keeps the literal's own shape.
+    const tableIdx = n5.findIndex(
+      (n) => ts5.isBinaryExpression(n) && n.getText().startsWith("module.exports = helpers"),
+    );
+    expect(tableIdx).toBeGreaterThanOrEqual(0);
+    const t5 = w.c5.typeToString(w.c5.getTypeAtLocation(n5[tableIdx]!));
+    const t7 = w.c7.typeToString(w.c7.getTypeAtLocation(n7[tableIdx]!)!);
+    expect(t5).toContain("last");
+    expect(t7).not.toContain("last");
+    // The module.exports receiver's symbol name.
+    const moduleIdx = n5.findIndex((n) => ts5.isIdentifier(n) && n.getText() === "module");
+    expect(moduleIdx).toBeGreaterThanOrEqual(0);
+    expect(w.c5.getSymbolAtLocation(n5[moduleIdx]!)?.name).toBe("export=");
+    expect(symbolNameOf(w.c7.getSymbolAtLocation(n7[moduleIdx]!))).toBe("module");
+  },
+);
 
-test("getAwaitedType shim agrees with 5.9.3 across the async battery (pinned limitation aside)", () => {
-  const w = worldsByName.get("async")!;
-  const { n5, n7 } = walkBoth(w, w.files[0]!);
-  let compared = 0;
-  const limitations: string[] = [];
-  for (let i = 0; i < n5.length; i++) {
-    const n = n5[i]!;
-    const valueish = ts5.isIdentifier(n) || ts5.isCallExpression(n) || ts5.isAwaitExpression(n);
-    if (!valueish || ts5.isPartOfTypeNode(n)) continue;
-    const t5 = w.c5.getTypeAtLocation(n);
-    const a5 = w.c5.getAwaitedType(t5);
-    const t7 = w.c7.getTypeAtLocation(n7[i]!);
-    if (t7 === undefined) continue;
-    const a7 = w.c7.getAwaitedType(t7);
-    const s5 = a5 === undefined ? "<none>" : w.c5.typeToString(a5, undefined, NO_TRUNCATION_5);
-    const s7 = a7 === undefined ? "<none>" : w.c7.typeToString(a7, undefined, NO_TRUNCATION_7);
-    if (canonTypeText(s5) !== canonTypeText(s7)) {
-      // The shim's DOCUMENTED limitation (checker.ts): a union whose arms
-      // unwrap to more than one distinct type identity cannot be rebuilt
-      // client-side, so the shim answers undefined and callers fall back to
-      // the input (the census call site's `?? tsType`). 5.9.3 builds the
-      // union (`{ lanIp } | { lanIp }` — two same-shaped identities).
-      // Anything outside that exact class is a real disagreement.
-      if (a7 === undefined && t7.isUnionType() && a5 !== undefined) {
-        limitations.push(`#${i} '${n.getText().slice(0, 40)}' -> ts5 '${s5}'`);
-        continue;
+at(
+  "getAwaitedType shim agrees with 5.9.3 across the async battery (pinned limitation aside)",
+  () => {
+    const w = worldsByName.get("async")!;
+    const { n5, n7 } = walkBoth(w, w.files[0]!);
+    let compared = 0;
+    const limitations: string[] = [];
+    for (let i = 0; i < n5.length; i++) {
+      const n = n5[i]!;
+      const valueish = ts5.isIdentifier(n) || ts5.isCallExpression(n) || ts5.isAwaitExpression(n);
+      if (!valueish || ts5.isPartOfTypeNode(n)) continue;
+      const t5 = w.c5.getTypeAtLocation(n);
+      const a5 = w.c5.getAwaitedType(t5);
+      const t7 = w.c7.getTypeAtLocation(n7[i]!);
+      if (t7 === undefined) continue;
+      const a7 = w.c7.getAwaitedType(t7);
+      const s5 = a5 === undefined ? "<none>" : w.c5.typeToString(a5, undefined, NO_TRUNCATION_5);
+      const s7 = a7 === undefined ? "<none>" : w.c7.typeToString(a7, undefined, NO_TRUNCATION_7);
+      if (canonTypeText(s5) !== canonTypeText(s7)) {
+        // The shim's DOCUMENTED limitation (checker.ts): a union whose arms
+        // unwrap to more than one distinct type identity cannot be rebuilt
+        // client-side, so the shim answers undefined and callers fall back to
+        // the input (the census call site's `?? tsType`). 5.9.3 builds the
+        // union (`{ lanIp } | { lanIp }` — two same-shaped identities).
+        // Anything outside that exact class is a real disagreement.
+        if (a7 === undefined && t7.isUnionType() && a5 !== undefined) {
+          limitations.push(`#${i} '${n.getText().slice(0, 40)}' -> ts5 '${s5}'`);
+          continue;
+        }
+        expect.fail(
+          `#${i} '${n.getText().slice(0, 40)}': ts5 awaited='${s5}' adapter awaited='${s7}'`,
+        );
       }
-      expect.fail(
-        `#${i} '${n.getText().slice(0, 40)}': ts5 awaited='${s5}' adapter awaited='${s7}'`,
-      );
+      compared++;
     }
-    compared++;
-  }
-  expect(compared).toBeGreaterThan(10);
-  // The limitation fires exactly where the fixture exercises it: the
-  // T | PromiseLike<T'> call results whose arms are distinct identities.
-  expect(limitations.length).toBeLessThanOrEqual(3);
-});
+    expect(compared).toBeGreaterThan(10);
+    // The limitation fires exactly where the fixture exercises it: the
+    // T | PromiseLike<T'> call results whose arms are distinct identities.
+    expect(limitations.length).toBeLessThanOrEqual(3);
+  },
+);
 
-test("symbol declarations resolve back into the same client AST", () => {
+mt("symbol declarations resolve back into the same client AST", () => {
   const w = worldsByName.get("modules")!;
   const mainFile = w.files.find((f) => f.endsWith("main.ts"))!;
   const { n5, n7 } = walkBoth(w, mainFile);

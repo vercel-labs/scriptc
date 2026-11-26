@@ -2,6 +2,11 @@ import type { IrLibFn } from "../builtin-signatures.js";
 
 /** The builtins in the module module decided never to throw. */
 export const moduleNeverThrow: readonly IrLibFn[] = [
+  // The Module class value and its prototype: plain runtime handles that run
+  // no program code (the node:module CommonJS-module identity the recent
+  // change added).
+  "module.ctor",
+  "module.ctorPrototype",
   // The Module view of a record: a cache lookup, a retain, and the object
   // built on first use from fields the registry already holds.
   "module.dynObject",

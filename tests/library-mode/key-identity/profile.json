@@ -1,0 +1,18 @@
+{
+  "profile_format": 2,
+  "name": "key-identity",
+  "entry": "lib.ts",
+  "emission": "llvm",
+  "abi": {
+    "prefix": "kk_",
+    "init_symbol": "kk_init",
+    "sink_register_symbol": "kk_set_panic_sink",
+    "collect_symbol": "kk_collect",
+    "result_reset_symbol": null,
+    "callback_register_symbol": "kk_set_callback"
+  },
+  "callbacks": [{ "name": "log", "params": ["cstring", "f64"], "returns": "void" }],
+  "exports": [
+    { "export": "parse", "symbol": "kk_parse", "params": ["cstring"], "returns": "f64" }
+  ]
+}

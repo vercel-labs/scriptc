@@ -103,6 +103,7 @@ export interface EarlyExecutableNativeFeatures {
   nodeIsland?: boolean;
   moduleNamespace?: boolean;
   moduleNamespaceDyn?: boolean;
+  moduleClass?: boolean;
   primitiveWrapper?: boolean;
   iteratorProto?: boolean;
   zlib: boolean;
@@ -113,6 +114,7 @@ export interface EarlyExecutableNativeFeatures {
   dynInvoke: boolean;
   dc: boolean;
   dynAsync: boolean;
+  fsOpenAsBlob?: boolean;
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;

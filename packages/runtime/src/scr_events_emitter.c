@@ -144,10 +144,28 @@ typedef struct ScrEeEntry {
    * it removes the registration and runs the original. +1, NULL until
    * rawListeners asks; a plain entry never gets one. Boxes of it compare
    * equal (they share the closure), and the `.listener` property lives on
-   * the closure's own-property table. */
+   * the closure's own-property table. The wrapper owns the call state its
+   * entry would otherwise provide (see scr_ee_once_wrap_thunk), so it keeps
+   * working after the registration is removed. */
   ScrClosure *once_wrapper;
   uint32_t refs;
 } ScrEeEntry;
+
+/* The once wrapper's captures. TARGET is traced: the collector sees the
+ * wrapper→emitter edge and collects the emitter/entry/wrapper cycle. */
+enum {
+  SCR_EE_ONCE_CAP_TARGET,
+  SCR_EE_ONCE_CAP_NAME,
+  SCR_EE_ONCE_CAP_LISTENER, /* checked-dynamic function value, traced */
+  SCR_EE_ONCE_CAP_RECV,     /* the static typed-ref recipe, or NULL */
+  SCR_EE_ONCE_CAP_FIRED,    /* the shared fired flag (bool box) */
+  SCR_EE_ONCE_CAPS
+};
+
+/* A box payload that is a static, process-lifetime pointer (the emitted
+ * receiver recipe). The box carries it and owns nothing. */
+static void *scr_ee_static_retain_v(void *p) { return p; }
+static void scr_ee_static_release_v(void *p) { (void)p; }
 
 typedef struct ScrEeBucket {
   ScrStr *name; /* owned; a scr_str_symbol_key for a symbol event name */
@@ -214,6 +232,22 @@ static void scr_ee_entry_unref(ScrEeEntry *e) {
 /* The entry's IDENTITY closure — what Node would see as the listener. */
 static ScrClosure *scr_ee_entry_fn(const ScrEeEntry *e) {
   return e->orig ? e->orig : e->cb ? e->cb : e->flex_cb;
+}
+
+/* removeListener/off and listenerCount(name, fn) match a once entry by the
+ * original listener OR by the wrapper rawListeners handed out: Node's
+ * `list === listener || list.listener === listener` covers both spellings. */
+static bool scr_ee_entry_matches(const ScrEeEntry *e, ScrClosure *fn) {
+  if (scr_closure_identity_equal(scr_ee_entry_fn(e), fn)) return true;
+  return e->once_wrapper != NULL && scr_closure_identity_equal(e->once_wrapper, fn);
+}
+
+/* A once entry is consumed: the emit path and a direct wrapper call both
+ * report it to the wrapper's own fired flag, so whichever came second is a
+ * no-op. */
+static void scr_ee_once_mark_fired(ScrEeEntry *e) {
+  e->fired = true;
+  if (e->once_wrapper != NULL) scr_box_set_bool(e->once_wrapper->caps[SCR_EE_ONCE_CAP_FIRED], true);
 }
 
 static ScrEeReg *scr_ee_reg_ensure(ScrEmitter *em) {
@@ -1298,7 +1332,7 @@ ScrEmitter *scr_emitter_off(ScrEmitter *em, ScrStr *name, ScrClosure *cb) {
   ScrEeBucket *b = em->reg ? scr_ee_bucket_of(em->reg, name) : NULL;
   if (b) {
     for (size_t i = b->n; i-- > 0;) {
-      if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), cb)) {
+      if (scr_ee_entry_matches(b->ls[i], cb)) {
         scr_ee_remove_at(em, b, i);
         break;
       }
@@ -1543,7 +1577,7 @@ static inline __attribute__((always_inline)) bool scr_ee_emit_pass(
         scr_ee_entry_unref(e);
         continue;
       }
-      e->fired = true;
+      scr_ee_once_mark_fired(e);
       /* Remove from the live list first (the wrapper's own removal). The
        * bucket may have been dropped/recreated by earlier listeners —
        * re-find it and match by entry identity. */
@@ -1611,13 +1645,27 @@ static bool scr_ee_emit_core(ScrEmitter *em, ScrStr *name, va_list *ap_template,
 }
 
 /* Node's once wrapper called directly (rawListeners answered it): remove the
- * registration first, then run the original with the emitter as `this` and
- * the arguments as given — Node's onceWrapper. A second call (or a call after
- * an emit already took the once) does nothing. */
+ * live registration (when it still exists), then run the original with the
+ * emitter as `this` and the arguments as given — Node's onceWrapper. The
+ * call target and the fired flag live on the wrapper, not on the entry, so a
+ * saved wrapper still runs its original once after off() or
+ * removeAllListeners() removed the registration, as in Node. A second call
+ * (or a call after an emit already took the once) does nothing. */
 static ScrDyn *scr_ee_once_wrap_thunk(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
-  ScrEmitter *em = scr_box_get_ref(clo->caps[0]);
-  ScrStr *name = scr_box_get_ref(clo->caps[1]);
-  if (em == NULL || name == NULL) {
+  ScrEmitter *em = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_TARGET]);
+  ScrStr *name = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_NAME]);
+  ScrDyn *listener = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_LISTENER]);
+  const ScrDynTypedRefRecipe *recv = scr_box_get_ref(clo->caps[SCR_EE_ONCE_CAP_RECV]);
+  ScrBox *fired = clo->caps[SCR_EE_ONCE_CAP_FIRED];
+  ScrDyn *answer = NULL;
+  if (em == NULL || name == NULL || listener == NULL) {
+    scr_dyn_release(listener);
+    scr_str_release(name);
+    scr_emitter_release(em);
+    return scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (scr_box_get_bool(fired)) {
+    scr_dyn_release(listener);
     scr_str_release(name);
     scr_emitter_release(em);
     return scr_dyn_retain(scr_dyn_undefined());
@@ -1630,51 +1678,58 @@ static ScrDyn *scr_ee_once_wrap_thunk(ScrClosure *clo, ScrDyn *const *args, size
       break;
     }
   }
-  ScrDyn *answer = NULL;
-  if (at != SIZE_MAX) {
-    ScrEeEntry *e = b->ls[at];
-    /* The call target outlives the removal below, which may drop the
-     * entry's last live reference. */
-    ScrDynThunk flex = e->flex_invoke;
-    ScrClosure *flex_cb = flex != NULL ? scr_closure_retain(e->flex_cb) : NULL;
-    ScrDynThunk fallback = e->fallback_invoke;
-    ScrClosure *orig = fallback != NULL ? scr_closure_retain(e->orig) : NULL;
-    const ScrDynTypedRefRecipe *recv = e->recv;
-    e->fired = true;
-    scr_ee_remove_at(em, b, at);
-    if (!scr_exc_pending()) {
-      if (recv != NULL) scr_dyn_this_push_typed(em, recv);
-      if (flex != NULL) {
-        answer = flex(flex_cb, args, argc);
-      } else if (fallback != NULL) {
-        answer = fallback(orig, args, argc);
-      } else {
-        scr_ee_listener_mismatch(name, false);
-      }
-      if (recv != NULL) scr_dyn_this_pop();
-    }
-    scr_closure_release(flex_cb);
-    scr_closure_release(orig);
+  if (at != SIZE_MAX && b->ls[at]->fired) {
+    /* An emit already took the once; the wrapper reports that. */
+    scr_box_set_bool(fired, true);
+    scr_dyn_release(listener);
+    scr_str_release(name);
+    scr_emitter_release(em);
+    return scr_dyn_retain(scr_dyn_undefined());
   }
+  scr_box_set_bool(fired, true);
+  if (at != SIZE_MAX) {
+    b->ls[at]->fired = true;
+    /* Removal fires 'removeListener' and may drop the entry's last live
+     * reference — the captured listener outlives it. */
+    scr_ee_remove_at(em, b, at);
+  }
+  if (!scr_exc_pending()) {
+    if (recv != NULL) scr_dyn_this_push_typed(em, recv);
+    answer = scr_dyn_call(listener, args, argc, "listener");
+    if (recv != NULL) scr_dyn_this_pop();
+  }
+  scr_dyn_release(listener);
   scr_str_release(name);
   scr_emitter_release(em);
   return answer != NULL ? answer : scr_dyn_retain(scr_dyn_undefined());
 }
 
 /* The once wrapper value rawListeners answers (+1), built on first ask:
- * `name` is the entry's bucket name (owned by the bucket). */
+ * `name` is the entry's bucket name (owned by the bucket). The wrapper owns
+ * everything its call needs, and its emitter capture is traced, so an
+ * abandoned emitter/wrapper cycle is collectable. */
 static ScrDyn *scr_ee_once_wrapper(ScrEmitter *em, ScrStr *name, ScrEeEntry *e) {
   if (!e->once) return NULL;
   if (e->once_wrapper == NULL) {
-    ScrClosure *w = scr_closure_new((void *)&scr_ee_once_wrap_thunk, 2);
-    w->caps[0] = scr_box_new_obj(&scr_emitter_retain_v, &scr_emitter_release_v, NULL);
-    scr_box_set_ref(w->caps[0], scr_emitter_retain(em));
-    w->caps[1] = scr_box_new_obj(&scr_str_retain_v, &scr_str_release_v, NULL);
-    scr_box_set_ref(w->caps[1], scr_str_retain(name));
-    ScrDyn *first = scr_dyn_new_func(scr_closure_retain(w), &scr_ee_once_wrap_thunk, 0, "()", "wrapper");
-    ScrDyn *orig = scr_ee_entry_dyn(e);
+    ScrDyn *listener = scr_ee_entry_dyn(e);
+    if (listener == NULL) return NULL;
+    ScrClosure *w = scr_closure_new((void *)&scr_ee_once_wrap_thunk, SCR_EE_ONCE_CAPS);
+    w->caps[SCR_EE_ONCE_CAP_TARGET] =
+        scr_box_new_obj(&scr_emitter_retain_v, &scr_emitter_release_v, &scr_emitter_trace);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_TARGET], scr_emitter_retain(em));
+    w->caps[SCR_EE_ONCE_CAP_NAME] = scr_box_new_obj(&scr_str_retain_v, &scr_str_release_v, NULL);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_NAME], scr_str_retain(name));
+    w->caps[SCR_EE_ONCE_CAP_LISTENER] =
+        scr_box_new_obj(&scr_dyn_retain_v, &scr_dyn_release_v, &scr_dyn_trace_v);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_LISTENER], scr_dyn_retain(listener));
+    w->caps[SCR_EE_ONCE_CAP_RECV] =
+        scr_box_new_obj(&scr_ee_static_retain_v, &scr_ee_static_release_v, NULL);
+    scr_box_set_ref(w->caps[SCR_EE_ONCE_CAP_RECV], (void *)e->recv);
+    w->caps[SCR_EE_ONCE_CAP_FIRED] = scr_box_new(SCR_BOX_BOOL);
+    ScrDyn *first =
+        scr_dyn_new_func(scr_closure_retain(w), &scr_ee_once_wrap_thunk, 0, "()", "wrapper");
     /* The own-property table lives on the closure, so every box answers it. */
-    if (orig != NULL) scr_dyn_fn_set_prop(first, "listener", 8, orig); /* moves the +1 */
+    scr_dyn_fn_set_prop(first, "listener", 8, listener); /* moves the +1 */
     scr_dyn_release(first);
     e->once_wrapper = w;
   }
@@ -2000,7 +2055,7 @@ double scr_emitter_listener_count_fn(ScrEmitter *em, ScrStr *name, ScrClosure *f
   if (!b) return 0;
   size_t count = 0;
   for (size_t i = 0; i < b->n; i++) {
-    if (scr_closure_identity_equal(scr_ee_entry_fn(b->ls[i]), fn)) count++;
+    if (scr_ee_entry_matches(b->ls[i], fn)) count++;
   }
   return (double)count;
 }

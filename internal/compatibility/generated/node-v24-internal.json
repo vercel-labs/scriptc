@@ -35061,6 +35061,8 @@
           "tests/corpus/compat-errors-buffer-encoding.mjs",
           "tests/corpus/compat-errors-cert-altname.mjs",
           "tests/corpus/compat-errors-cert-badsig.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs",
+          "tests/corpus/compat-errors-cert-crl.mjs",
           "tests/corpus/compat-errors-cert-expired.mjs",
           "tests/corpus/compat-errors-cert-future.mjs",
           "tests/corpus/compat-errors-cert-pathlen.mjs",
@@ -44444,8 +44446,12 @@
       "anchor": "crl_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_NOT_YET_VALID",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44462,8 +44468,12 @@
       "anchor": "crl_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_HAS_EXPIRED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44480,8 +44490,12 @@
       "anchor": "cert_revoked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CERT_REVOKED"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CERT_REVOKED",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44615,8 +44629,12 @@
       "anchor": "unable_to_get_crl",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.UNABLE_TO_GET_CRL",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -44864,8 +44882,12 @@
       "anchor": "crl_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE"
+        "status": "supported",
+        "evidence": "compiler-feature:errors.CRL_SIGNATURE_FAILURE",
+        "tests": [
+          "tests/corpus/compat-errors-cert-crl.mjs",
+          "tests/corpus/compat-errors-cert-crl-chain.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -74884,7 +74906,6 @@
           "tests/corpus/module-source-map-class.ts",
           "tests/corpus/module-source-maps-values.mjs",
           "tests/corpus/module-source-maps.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/harness/module-compile-cache.test.ts",
           "tests/harness/module-source-maps.test.ts",
           "tests/harness/npm-static.test.ts"
@@ -75003,11 +75024,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75029,8 +75047,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75665,8 +75683,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75688,8 +75706,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75711,8 +75729,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75734,8 +75752,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75872,11 +75890,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75898,8 +75913,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75921,8 +75936,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -76151,8 +76166,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -77216,9 +77231,12 @@
           "tests/corpus/net-attempt-events.ts",
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
           "tests/corpus/net-connect-missing-args.mjs",
+          "tests/corpus/net-connect-options-audit.ts",
           "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-port-validation.cjs",
           "tests/corpus/net-create-server-block-list.ts",
           "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
@@ -77237,6 +77255,7 @@
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
+          "tests/corpus/net-typed-option-records.ts",
           "tests/fixtures/node-types/net-blocklist.ts"
         ]
       },
@@ -79688,19 +79707,14 @@
       "anchor": "netconnectoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.connect",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"
@@ -79793,19 +79807,14 @@
       "anchor": "netcreateconnectionoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:net.createConnection",
+        "status": "supported",
+        "evidence": "compiler-feature:net.net.createConnection",
         "tests": [
-          "tests/corpus/2500-net-autosel-timeout.ts",
-          "tests/corpus/2596-net-arg-ladders.cjs",
-          "tests/corpus/net-socket-set-encoding-names.ts",
-          "tests/corpus/net-socket-write-rejected.cjs",
-          "tests/corpus/net-socket-method-values.cjs",
-          "tests/corpus/net-paused-socket-exit.cjs",
-          "tests/corpus/net-server-socket-peer-close.cjs",
-          "tests/corpus/net-socket-encoding-pipe.cjs",
-          "tests/corpus/net-socket-construct.ts",
-          "tests/corpus/net-socket-construct-dyn.cjs"
+          "tests/corpus/net-connect-options-audit.ts",
+          "tests/corpus/net-connect-duck-signal.cjs",
+          "tests/corpus/net-connect-port-validation.cjs",
+          "tests/corpus/net-typed-option-records.ts",
+          "tests/corpus/2500-net-autosel-timeout.ts"
         ]
       },
       "anchorSource": "exact"

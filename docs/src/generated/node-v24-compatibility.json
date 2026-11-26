@@ -23868,9 +23868,9 @@
       "anchor": "crl_not_yet_valid",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23886,9 +23886,9 @@
       "anchor": "crl_has_expired",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -23904,9 +23904,9 @@
       "anchor": "cert_revoked",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24012,9 +24012,9 @@
       "anchor": "unable_to_get_crl",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -24156,9 +24156,9 @@
       "anchor": "crl_signature_failure",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented in scriptc's static module-loader subset yet.",
-        "verification": "declared-gap"
+        "status": "supported",
+        "detail": "Exercised by a differential program written as a JavaScript module; a TypeScript source reaches the member only when the declarations in use list it.",
+        "verification": "test-backed"
       }
     },
     {
@@ -44778,9 +44778,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -44801,9 +44801,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45116,9 +45116,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45139,9 +45139,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45162,9 +45162,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45185,9 +45185,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45208,9 +45208,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45231,9 +45231,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45254,9 +45254,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45277,9 +45277,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -47372,8 +47372,8 @@
       "anchor": "netconnectoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },
@@ -47444,8 +47444,8 @@
       "anchor": "netcreateconnectionoptions-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "detail": "Implemented by a dedicated static compiler/runtime path.",
+        "status": "supported",
+        "detail": "Implemented for the documented scriptc module-loader subset.",
         "verification": "test-backed"
       }
     },

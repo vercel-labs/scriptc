@@ -3523,7 +3523,10 @@ static ScrDyn *scr_crypto_digest_call(ScrClosure *closure, ScrDyn *const *args, 
     ScrCryptoHash *hash = scr_crypto_hash_new(alg);
     scr_str_release(alg);
     if (hash) {
-      scr_crypto_hash_update_bytes(hash, bytes);
+      /* update answers the hash it retained for chaining; the digest owns
+       * this one reference, so it lets go of it. */
+      ScrCryptoHash *updated = scr_crypto_hash_update_bytes(hash, bytes);
+      if (updated) scr_crypto_hash_release(updated);
       ScrBytes *digest = scr_exc_pending() ? NULL : scr_crypto_hash_digest_buffer(hash);
       scr_crypto_hash_release(hash);
       if (digest) {

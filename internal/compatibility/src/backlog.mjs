@@ -3,10 +3,11 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildBacklog } from "./generate.mjs";
+import { parseLedger } from "./ledger-format.mjs";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const backlog = buildBacklog(
-  JSON.parse(readFileSync(`${packageRoot}generated/node-v24-internal.json`, "utf8")),
+  parseLedger(readFileSync(`${packageRoot}generated/node-v24-internal.json`, "utf8")),
 );
 const args = process.argv.slice(2);
 

@@ -8,6 +8,7 @@ import {
   renderRefusals,
   unsupportedBuiltinModules,
 } from "../../internal/compatibility/src/refusals.mjs";
+import { parseLedger } from "../../internal/compatibility/src/ledger-format.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -46,9 +47,9 @@ const pin = readJson<{ version: string; chapterModules: Record<string, string[]>
   "internal/compatibility/node-v24.json",
 );
 const compilerVersion = readJson<{ version: string }>("packages/compiler/package.json").version;
-const ledger = readJson<{
+const ledger = parseLedger(read("internal/compatibility/generated/node-v24-internal.json")) as {
   rows: Array<{ id: string; static?: { status?: string; evidence?: string } }>;
-}>("internal/compatibility/generated/node-v24-internal.json");
+};
 
 const fresh = renderRefusals(
   buildRefusals(ledger, { chapterModules: pin.chapterModules, compilerVersion }),

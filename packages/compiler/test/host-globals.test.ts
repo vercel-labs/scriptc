@@ -11,6 +11,7 @@ import { compile } from "../src/index.js";
 import { NODE_GLOBALS_WITHOUT_NATIVE } from "../src/frontend/lowering/host-globals.js";
 import { nodeGlobalKind } from "../src/frontend/lowering/node-values.js";
 import { COMMONJS_MODULE_BINDINGS } from "../src/frontend/builtin-modules.js";
+import { parseLedger } from "../../../internal/compatibility/src/ledger-format.mjs";
 
 const repoRoot = join(import.meta.dirname, "../../..");
 const read = (path: string): string => readFileSync(join(repoRoot, path), "utf8");
@@ -46,7 +47,7 @@ function declaredGlobals(): Set<string> {
 
 test("NODE_GLOBALS_WITHOUT_NATIVE is the ledger's derived set", () => {
   const pin = JSON.parse(read("internal/compatibility/node-v24.json")) as { version: string };
-  const ledger = JSON.parse(read("internal/compatibility/generated/node-v24-internal.json")) as {
+  const ledger = parseLedger(read("internal/compatibility/generated/node-v24-internal.json")) as {
     nodeVersion: string;
     rows: LedgerRow[];
   };

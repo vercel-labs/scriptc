@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { parseLedger } from "../../internal/compatibility/src/ledger-format.mjs";
 
 const repoRoot = join(import.meta.dirname, "../..");
-const snapshot = JSON.parse(
+const snapshot = parseLedger(
   readFileSync(join(repoRoot, "internal/compatibility/generated/node-v24-internal.json"), "utf8"),
 ) as {
   rows: Array<{

@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { buildRefusals, renderRefusals } from "./refusals.mjs";
+import { parseLedger, serializeLedger } from "./ledger-format.mjs";
 import { loadStaticSupport } from "./static-support.mjs";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
@@ -639,6 +640,16 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
 
 function render(snapshot) {
   return `${JSON.stringify(snapshot, null, 2)}\n`;
+}
+
+/** The internal ledger is the largest generated file in the tree, and the
+ * push tooling base64-encodes it into its request, so its text size is what
+ * limits publishing. serializeLedger keeps every field in its built order
+ * but names row fields once and interns stability notes and test paths
+ * (ledger-format.mjs); every reader parses it back to the object shape, and
+ * the public artifact keeps the indented form. */
+function renderInternal(snapshot) {
+  return serializeLedger(snapshot);
 }
 
 function refusalsRendered(snapshot) {
@@ -1495,7 +1506,7 @@ function checkLocal() {
     if (existsSync(path))
       throw new Error(`${path.slice(root.length)} is no longer generated; delete it`);
   }
-  const snapshot = JSON.parse(readFileSync(internalOutputPath, "utf8"));
+  const snapshot = parseLedger(readFileSync(internalOutputPath, "utf8"));
   if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
     throw new Error(
       `snapshot targets Node ${snapshot.nodeVersion}/${snapshot.nodeCommit}, pin targets ${pin.version}/${pin.commit}`,
@@ -1591,8 +1602,8 @@ async function main() {
   const args = new Set(process.argv.slice(2));
   if (args.has("--check-local")) return checkLocal();
   if (args.has("--local")) {
-    const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
-    writeFileSync(internalOutputPath, render(snapshot));
+    const snapshot = reclassify(parseLedger(readFileSync(internalOutputPath, "utf8")));
+    writeFileSync(internalOutputPath, renderInternal(snapshot));
     writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
     writeRefusals(snapshot);
     console.log(
@@ -1620,7 +1631,7 @@ async function main() {
     ),
   );
   verifyAnchors(snapshot, htmlByChapter);
-  const internalRendered = render(snapshot);
+  const internalRendered = renderInternal(snapshot);
   const publicRendered = render(publicSnapshot(snapshot));
 
   if (args.has("--check")) {

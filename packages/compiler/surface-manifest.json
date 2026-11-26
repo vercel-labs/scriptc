@@ -740,6 +740,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.parsePKCS12",
+      "kind": "node-builtin",
+      "name": "crypto.parsePKCS12",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.pbkdf2",
       "kind": "node-builtin",
       "name": "crypto.pbkdf2",
@@ -3040,6 +3046,12 @@
       "name": "stream/web",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.stream.web.ReadableStreamTee",
+      "kind": "node-builtin",
+      "name": "stream/web.ReadableStreamTee",
+      "status": "static"
     },
     {
       "id": "node-builtin.string_decoder",

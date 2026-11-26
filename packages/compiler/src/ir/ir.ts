@@ -4658,6 +4658,11 @@ export type IrExpr =
       preserveRefs?: true;
       adopt?: true;
       shared?: true;
+      /** A collection key's conversion: the adoption must make the source
+       * one object with the built key, and a value it cannot adopt is
+       * refused (SC2020) instead of leaving a copy the collection and the
+       * program's other name do not share. */
+      keyIdentity?: true;
       exact?: true;
       partialView?: true;
       /** Shape inference's overlay: this conversion checks an

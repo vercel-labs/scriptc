@@ -190,6 +190,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
+  "stream.duplexBodyValue",
   "stream.handleStream",
   "stream.handleWritable",
   "stream.pipeDyn",
@@ -627,6 +628,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // net.createServer(options[, listener]): Node's ServerOpts ladders —
+  // options itself must be an object, options.highWaterMark and
+  // options.keepAliveInitialDelay numbers, options.blockList a
+  // net.BlockList.
+  "net.createServerOpts",
+  "net.createServerOptsCb",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on
@@ -729,9 +736,11 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "writable.uncork",
   "writable.setDefaultEncoding",
   "stream.duplexFromGen",
+  "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "stream.duplexFromAsyncFnNoSource",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
@@ -1846,6 +1855,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509ValidToStr",
   "crypto.createPrivateKey",
   "crypto.createPublicKey",
+  // Node's bundle, options and passphrase checks, then the decoder, MAC and
+  // decryption errors.
+  "crypto.parsePKCS12",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
   "crypto.encapsulate",
@@ -1899,6 +1911,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
+  // ReadableStreamTee's argument TypeError and a locked stream's state
+  // error, which Node raises from the call itself.
+  "webstream.tee",
 ];
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member

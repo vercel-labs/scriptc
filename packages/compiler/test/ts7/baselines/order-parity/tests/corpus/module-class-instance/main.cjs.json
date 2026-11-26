@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-class-instance/child.cjs",
+  "<repo>/tests/corpus/module-class-instance/main.cjs"
+ ],
+ "diags": []
+}

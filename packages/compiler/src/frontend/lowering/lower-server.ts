@@ -1176,14 +1176,27 @@ export function lowerNetModuleCall(
       return { kind: "libCall", fn: "net.createServer", args: [], type: NETSERVER_T, loc };
     }
     if (args.length === 1) {
-      // A provably-non-object, non-function argument (the invalid-input
-      // probes: createServer('path'), createServer(0)): Node throws
-      // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
-      // result — the checked-dynamic lane's concise arrows box it, and
-      // the throw means it never materializes.
-      if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
-        const t = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
-        if (t !== null && (t.kind === "string" || t.kind === "f64" || t.kind === "bool")) {
+      // createServer(options): any non-function argument is Node's options
+      // argument — an object literal (including the empty `{}`), a record,
+      // an annotated ServerOpts value (checked-dynamic), or null/undefined —
+      // and crosses as a checked-dynamic value the runtime reads
+      // allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+      // keepAliveInitialDelay, highWaterMark and blockList from. A value
+      // that is a function at run time is the connection listener
+      // (Node's `typeof options === 'function'` rule).
+      const optionsType = lowerer.mapTypeOf(lowerer.typeOf(args[0]!));
+      if (optionsType === null || optionsType.kind !== "func") {
+        // A provably-primitive argument (the invalid-input probes:
+        // createServer('path'), createServer(0)) throws Node's
+        // ERR_INVALID_ARG_TYPE on 'options' before any server exists. DYN
+        // result — the checked-dynamic lane's concise arrows box it, and
+        // the throw means it never materializes.
+        const primitive =
+          optionsType !== null &&
+          (optionsType.kind === "string" ||
+            optionsType.kind === "f64" ||
+            optionsType.kind === "bool");
+        if (primitive && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
           const raw = lowerer.lowerExpr(args[0]!);
           return {
             kind: "libCall",
@@ -1197,6 +1210,14 @@ export function lowerNetModuleCall(
             loc,
           };
         }
+        const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+        return {
+          kind: "libCall",
+          fn: "net.createServerOpts",
+          args: [options],
+          type: NETSERVER_T,
+          loc,
+        };
       }
       const { cb } = lowerCallbackArg(
         lowerer,
@@ -1209,10 +1230,31 @@ export function lowerNetModuleCall(
       );
       return { kind: "libCall", fn: "net.createServerCb", args: [cb], type: NETSERVER_T, loc };
     }
+    if (args.length === 2) {
+      // createServer(options, listener): the ServerOpts record plus the
+      // connection handler (the two-argument form Node documents).
+      const options = lowerer.coerceToExpected(lowerer.lowerExpr(args[0]!), DYN);
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "connection handlers",
+        1,
+        (p) => p.kind === "netSocket",
+        "use (socket) or ()",
+        [NETSOCKET_T],
+      );
+      return {
+        kind: "libCall",
+        fn: "net.createServerOptsCb",
+        args: [options, cb],
+        type: NETSERVER_T,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `createServer with ${args.length} arguments`,
       expr,
-      "the supported forms are createServer() and createServer(socket => ...)",
+      "the supported forms are createServer([options][, socket => ...])",
     );
   }
   if (bi.member === "connect" || bi.member === "createConnection") {
@@ -7325,6 +7367,7 @@ const TLS_VALIDATED_OPTIONS: ReadonlySet<string> = new Set([
   "keepAliveInitialDelay",
   "sessionTimeout",
   "ticketKeys",
+  "secureProtocol",
 ]);
 
 /** The http.Server options https.createServer also reads (Node's
@@ -7399,6 +7442,8 @@ function tlsLiteralNeedsRuntimeWalk(
  * tls.createServer and https.createServer, and the literal cert/key
  * lowering does not. */
 const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca"]);
+/** secureProtocol is validated and applied by the runtime version ladder. */
+const TLS_SECURE_PROTOCOL_OPTIONS: ReadonlySet<string> = new Set(["secureProtocol"]);
 
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
@@ -7408,6 +7453,16 @@ const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
   "minVersion",
   "maxVersion",
   ...TLS_CLIENT_AUTH_OPTIONS,
+  ...TLS_SECURE_PROTOCOL_OPTIONS,
+]);
+
+/** https.createServer literals the runtime walk implements: the client-auth
+ * members plus secureProtocol, whose validation and bounds the https
+ * runtime server now applies. minVersion/maxVersion keep their static
+ * lowering there. */
+const TLS_HTTPS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
+  ...TLS_CLIENT_AUTH_OPTIONS,
+  ...TLS_SECURE_PROTOCOL_OPTIONS,
 ]);
 
 function lowerTlsServerOptionsOrDyn(
@@ -7854,7 +7909,7 @@ function lowerTlsModuleCall(
       args[0]!,
       "tls.createSecureContext",
       false,
-      TLS_CLIENT_AUTH_OPTIONS,
+      new Set([...TLS_CLIENT_AUTH_OPTIONS, ...TLS_SECURE_PROTOCOL_OPTIONS]),
     );
     if (opts.dyn !== undefined) {
       return {
@@ -8291,7 +8346,7 @@ function lowerHttpsModuleCall(
     // walk reads the same HTTP members from the record.
     const walkLiteral =
       ts.isObjectLiteralExpression(optionsNode) &&
-      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_CLIENT_AUTH_OPTIONS) ||
+      (tlsLiteralNeedsRuntimeWalk(optionsNode, false, TLS_HTTPS_SERVER_RUNTIME_OPTIONS) ||
         httpsLiteralOptionsNeedWalk(optionsNode));
     let httpOpts: HttpServerOptionPlan | null = null;
     if (ts.isObjectLiteralExpression(optionsNode) && !walkLiteral) {
@@ -8306,7 +8361,7 @@ function lowerHttpsModuleCall(
       optionsNode,
       "https.createServer",
       false,
-      TLS_CLIENT_AUTH_OPTIONS,
+      TLS_HTTPS_SERVER_RUNTIME_OPTIONS,
       false,
       walkLiteral,
     );

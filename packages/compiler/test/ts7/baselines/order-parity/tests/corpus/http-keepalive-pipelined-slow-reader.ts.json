@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-keepalive-pipelined-slow-reader.ts"
+ ],
+ "diags": []
+}

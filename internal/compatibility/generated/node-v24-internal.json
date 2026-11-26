@@ -64088,6 +64088,7 @@
           "tests/corpus/http2-check-continue.ts",
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
+          "tests/corpus/http2-concurrency-limits.ts",
           "tests/corpus/http2-informational.ts",
           "tests/corpus/http2-perform-handshake-connect.ts",
           "tests/corpus/http2-perform-handshake-options-throw.ts",
@@ -67191,7 +67192,8 @@
         "evidence": "compiler-feature:http2.http2.createServer",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
-          "tests/corpus/compat-http2-basics.ts"
+          "tests/corpus/compat-http2-basics.ts",
+          "tests/corpus/http2-concurrency-limits.ts"
         ]
       },
       "anchorSource": "exact"
@@ -67244,7 +67246,8 @@
         "evidence": "compiler-feature:http2.http2.connect",
         "tests": [
           "tests/corpus/compat-http2-basics.mjs",
-          "tests/corpus/compat-http2-basics.ts"
+          "tests/corpus/compat-http2-basics.ts",
+          "tests/corpus/http2-concurrency-limits.ts"
         ]
       },
       "anchorSource": "exact"

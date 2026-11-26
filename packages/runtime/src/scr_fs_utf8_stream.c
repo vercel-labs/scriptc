@@ -86,6 +86,7 @@ typedef struct ScrUtf8Stream {
   size_t rc;
   double fd; /* Node keeps the number after close (#fd is not reset) */
   int retired_fd; /* a descriptor reopen() replaced while a worker wrote */
+  int worker_fd;  /* the descriptor the in-flight pool job writes, or -1 */
   ScrStr *file;
   ScrDyn *mode_value; /* options.mode as given (+1): the getter's value, and
                        * what each open parses (Node parses at the open) */
@@ -529,10 +530,14 @@ static void scr_u8_job_destroy(void *p) {
 static void scr_u8_job_after(void *p) {
   ScrU8WriteJob *job = p;
   ScrUtf8Stream *s = job->s;
+  /* The worker is done: its descriptor is no longer in use, and only now may
+   * a reopen close it. */
+  s->worker_fd = -1;
   scr_u8_close_retired(s);
   if (scr_exc_pending()) {
     s->writing = false;
     s->release_units = 0;
+    scr_u8_close_if_pending(s);
     return;
   }
   if (s->close_pending) {
@@ -554,6 +559,8 @@ static void scr_u8_job_after(void *p) {
     scr_error_release(error);
     scr_u8_emit(s, SCR_U8_ERROR, value);
     scr_dyn_release(value);
+    /* An 'error' listener may have destroyed the stream. */
+    scr_u8_close_if_pending(s);
     return;
   }
   scr_u8_release_done(s, job->at);
@@ -598,6 +605,7 @@ static void scr_u8_actual_write(ScrUtf8Stream *s) {
   s->fill = 0; /* the snapshot owns the bytes now */
   s->writing = true;
   s->release_units = units;
+  s->worker_fd = job->fd;
   scr_work_submit(job, scr_u8_job_work, scr_u8_job_after, scr_u8_job_destroy);
 #endif
 }
@@ -692,7 +700,9 @@ static void scr_u8_finish_close(ScrUtf8Stream *s) {
  * close was waiting for the flush (close_pending), and it runs after the
  * events this completion still owes, as Node's does. */
 static void scr_u8_close_if_pending(ScrUtf8Stream *s) {
-  if (s->close_pending) scr_u8_finish_close(s);
+  /* A listener that destroyed the stream may also have started the next
+   * flush: the close waits until no pool job writes to the descriptor. */
+  if (s->close_pending && s->worker_fd < 0) scr_u8_finish_close(s);
 }
 
 /* 'ready' once the stream is open: a tick when the descriptor is already
@@ -895,11 +905,12 @@ static ScrDyn *scr_u8_reopen(ScrUtf8Stream *s, const ScrDyn *file) {
   int previous = (int)s->fd;
   s->fd = fd;
   if (previous >= 0 && previous != 1 && previous != 2) {
-    /* Only the descriptor an in-flight flush captured has to outlive the
-     * reopen. When an earlier reopen already retired that one, this
-     * descriptor belongs to no worker and is closed now: retiring it again
-     * would lose the first one. */
-    if (s->writing && s->retired_fd < 0) {
+    /* Only the descriptor the pool job actually captured outlives the
+     * reopen. A completion's listeners run after the worker finished, so a
+     * reopen there (or one of a descriptor a later reopen installed) must
+     * close its predecessor now; the descriptor another reopen already
+     * retired is closed by the job completion. */
+    if (previous == s->worker_fd) {
       s->retired_fd = previous;
     } else {
       scr_fs_close((double)previous);
@@ -940,6 +951,7 @@ ScrDyn *scr_fs_utf8_stream_new(ScrDyn *options) {
   s->rc = 1;
   s->fd = -1;
   s->retired_fd = -1;
+  s->worker_fd = -1;
   s->append = true;
   /* Node's #hwm: writes answer false once the buffer reaches it. */
   s->hwm = 16387;

@@ -89,6 +89,43 @@ stream.on("ready", () => {
     expect(responsive.error).toBeUndefined();
     expect(responsive.status).toBe(0);
     expect(responsive.stdout).toContain("timer\n");
+
+    // The same write on a descriptor the caller opened and supplied
+    // (options.fd), which is the finding's spelling: no path open protects
+    // it, so the flush itself must leave the event-loop thread.
+    const supplied = join(outDir, "supplied.mjs");
+    writeFileSync(
+      supplied,
+      `import fs from "node:fs";
+
+const fd = fs.openSync(${JSON.stringify(fifo)}, "w");
+const stream = new fs.Utf8Stream({ fd });
+stream.on("error", (error) => console.log("error", error.code));
+stream.on("ready", () => {
+  const accepted = stream.write("x".repeat(1024 * 1024));
+  console.log("write returned", accepted);
+  setTimeout(() => {
+    console.log("timer");
+    process.exit(0);
+  }, 500);
+});
+`,
+    );
+    const builtSupplied = await compile(supplied, {
+      backend: "llvm",
+      sanitize,
+      outDir,
+      outPath: join(outDir, "supplied"),
+    });
+    expect(builtSupplied.ok, JSON.stringify(builtSupplied.diagnostics)).toBe(true);
+    if (!builtSupplied.ok) return;
+    const suppliedRun = spawnSync(builtSupplied.binaryPath, [], {
+      encoding: "utf8",
+      timeout: 20000,
+    });
+    expect(suppliedRun.error).toBeUndefined();
+    expect(suppliedRun.status).toBe(0);
+    expect(suppliedRun.stdout).toContain("timer\n");
   } finally {
     closeSync(reader);
     rmSync(outDir, { recursive: true, force: true });

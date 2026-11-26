@@ -602,10 +602,9 @@ static bool scr_cl_worker_connected(ScrClusterWorker *w) {
 /* Node's send callback is asynchronous and carries the write's outcome:
  * the channel's send entry reports a write that could not complete (the
  * broken pipe of a worker that is already gone) as well as a channel
- * closed first. The thunk below turns that outcome into a queued callback
- * pair — it does not box the channel's error, so nothing of the error
- * survives the send — and the drain calls the program's callback on the
- * next tick with null or the canonical ERR_IPC_CHANNEL_CLOSED. */
+ * closed first. The queue below serves the serialization-refusal path,
+ * which has no channel completion; a channel completion calls the
+ * program's callback directly when it lands. */
 typedef struct {
   ScrDyn *cb; /* +1 */
   bool failed;
@@ -650,16 +649,25 @@ static void scr_cl_send_cb_drain(void) {
 }
 
 /* The channel's completion entry: it runs once, with the send's error or
- * NULL, and hands the outcome to the callback queue. The channel owns the
- * closure and releases it after this call. */
+ * NULL, and calls the program's callback here — Node runs a send callback
+ * when the write completes, and a closed channel's send already queued
+ * its one nextTick. Queuing another tick would let a user nextTick
+ * scheduled between two sends run ahead of the first send's callback.
+ * The channel owns the closure and releases it after this call. */
 static void scr_cl_send_done_thunk(ScrClosure *cb, ScrError *error) {
   ScrDyn *dyn_cb = scr_box_get_ref(cb->caps[0]); /* +1 */
-  scr_cl_send_cb_queue(dyn_cb, error != NULL);
+  /* Node's success argument is null (not undefined): a typed
+   * (error: Error | null) parameter converts it. The channel's error is
+   * not boxed; the callback receives the canonical closed-channel error. */
+  ScrDyn *arg = error != NULL ? scr_cl_channel_closed_error() : scr_dyn_new_null();
+  ScrDyn *args[] = {arg};
+  ScrDyn *r = scr_dyn_call(dyn_cb, args, 1, "send callback");
+  scr_dyn_release(r);
+  scr_dyn_release(arg);
   scr_dyn_release(dyn_cb);
   /* The completion's error belongs to this callback (the channel releases
-   * it only when no callback runs); its outcome is all the queue keeps. */
+   * it only when no callback runs); its outcome is all the callback sees. */
   scr_error_release(error);
-  if (scr_cl_send_cbs_n == 1) scr_next_tick_raw(&scr_cl_send_cb_drain);
 }
 
 static ScrClosure *scr_cl_send_done_closure(ScrDyn *callback) {

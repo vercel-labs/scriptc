@@ -5573,6 +5573,12 @@ ScrDyn *scr_tls_check_server_identity(ScrStr *hostname /*borrowed*/, const ScrDy
       scr_str_utf8_end(alt_owned);
       scr_tls_ident_list_free(&ctx.dns);
       scr_tls_ident_list_free(&ctx.ips);
+      /* The certificate's altnames, subject and CN may have been
+       * materialized from typed references at the top of this function;
+       * the malformed-SAN answer must let them go like every other path. */
+      scr_dyn_release(owned_alt);
+      scr_dyn_release(owned_subject);
+      scr_dyn_release(owned_cn);
       scr_dyn_release(owned);
       scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_TLS_CERT_ALTNAME_FORMAT");
       /* the caller boxes the answer before its pending check: a valid

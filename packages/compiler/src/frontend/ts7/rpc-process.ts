@@ -130,31 +130,32 @@ class Ts7NamedPipeIo implements Ts7WireIo {
 }
 
 /* POSIX: the server is not this process's child. A shell that spawnSync runs
- * and reaps creates two FIFOs, starts the server in the background with its
+ * and reaps creates the FIFOs, starts the server in the background with its
  * standard input and output on them, prints its PID and exits; the server's
- * parent becomes init (or the nearest subreaper), which reaps it. A child of
- * this process would stay a zombie after it exits: Node reaps children only
- * from its event loop, which a synchronous compile never returns to. The
- * subshell points its standard streams at /dev/null before it opens the
- * FIFOs, so spawnSync's output pipe closes as soon as the shell exits. A
- * missing or non-executable server fails here, before any FIFO exists: the
- * background subshell would otherwise block opening its input and the failure
- * would only surface as end of file on the first read. */
+ * parent is a lifetime subshell that outlives that shell. A child of this
+ * process would stay a zombie after it exits: Node reaps children only from
+ * its event loop, which a synchronous compile never returns to. The subshell
+ * points its standard input and output at /dev/null before it opens the
+ * FIFOs, so spawnSync's output pipe closes as soon as the shell exits, while
+ * its standard error stays connected so the server's startup and crash
+ * diagnostics reach this process. A missing or non-executable server fails
+ * here, before any FIFO exists: the background subshell would otherwise block
+ * opening its input and the failure would only surface as end of file on the
+ * first read. */
 const FIFO_LAUNCH =
   'i=$1 o=$2 l=$3 p=$4; shift 4; command -v "$1" >/dev/null || exit 127; ' +
   'mkfifo -m 600 "$i" "$o" "$l" "$p" || exit 1; ' +
-  // The server runs under a SUPERVISOR subshell that starts it, reports its
-  // PID, waits for it, and only then lets the lifetime watcher go. A
-  // detached server's PID is free to reuse once init reaps it; here its
-  // parent has not reaped it while the watcher can still run, so the
-  // watcher's kill cannot reach a different process.
-  "( exec </dev/null >/dev/null 2>&1; " +
+  // The lifetime subshell is the server's parent and its only reaper. It
+  // reports the PID, then blocks opening the lifetime pipe; when that pipe
+  // closes it kills the server and only then reaps it. Signalling its own
+  // unreaped child cannot reach another process, unlike a detached server
+  // that init reaps the moment it exits.
+  "( exec </dev/null >/dev/null; " +
   '"$@" <"$i" >"$o" & s=$!; ' +
   'echo "$s" >"$p"; ' +
-  '( read -r _ <"$l"; kill -9 "$s" 2>/dev/null ) & k=$!; ' +
-  'wait "$s" 2>/dev/null; ' +
-  'kill -9 "$k" 2>/dev/null; ' +
-  'wait "$k" 2>/dev/null ) & ' +
+  'read -r _ <"$l"; ' +
+  'kill -9 "$s" 2>/dev/null; ' +
+  'wait "$s" 2>/dev/null ) & ' +
   'read -r s <"$p"; echo "$s"';
 
 /** How long a starting server may take to open its input, in milliseconds. */
@@ -172,12 +173,12 @@ function processAlive(pid: number): boolean {
 export class Ts7FifoIo implements Ts7WireIo {
   private readFd = -1;
   private writeFd = -1;
-  /** The lifetime pipe's writer: the watcher subshell kills the server when
+  /** The lifetime pipe's writer: the server's parent kills and reaps it when
    * this end closes, which happens on close(), on any exit path, and when
    * the process dies (its descriptors close with it). */
   private lifeFd = -1;
   private closed = false;
-  /** The server's process ID, for tests: it is never signaled. */
+  /** The server's process ID, for tests: this process never signals it. */
   readonly pid: number;
 
   constructor(executable: string, args: string[]) {
@@ -196,8 +197,8 @@ export class Ts7FifoIo implements Ts7WireIo {
       if (shell.status !== 0 || !Number.isSafeInteger(pid) || pid <= 0)
         throw new Error(`Unable to start TypeScript server: ${executable}`);
       this.pid = pid;
-      // The watcher blocks opening its end, so this returns once it is
-      // watching; closing this descriptor is the stop signal.
+      // The server's parent blocks opening its end, so this returns once it
+      // is watching; closing this descriptor is the stop signal.
       this.lifeFd = openSync(life, "w");
       // A non-blocking open fails with ENXIO until the server opens its end,
       // so a server that exits as it starts cannot block this process.
@@ -242,13 +243,14 @@ export class Ts7FifoIo implements Ts7WireIo {
 
   /** Closing both FIFOs ends the session: the server reads end of file on
    * its input and exits, and a write to its closed output ends it with
-   * SIGPIPE. It is never signaled, because once init has reaped it its PID
-   * can belong to another process. */
+   * SIGPIPE. A server that does not exit when its input closes is killed and
+   * reaped by the lifetime subshell, which is its parent and still owns its
+   * PID. */
   close = (): void => {
     if (this.closed) return;
     this.closed = true;
     untrack(this);
-    // Closing the lifetime pipe makes the watcher kill the server; closing
+    // Closing the lifetime pipe makes the server's parent kill it; closing
     // the data pipes also ends a server that watches its input.
     for (const fd of [this.lifeFd, this.writeFd, this.readFd]) {
       if (fd === -1) continue;

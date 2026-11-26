@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -148,7 +148,7 @@ test.skipIf(process.platform !== "linux")(
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
       // A detached server would be reparented to init, whose reap frees the
-      // PID for reuse while the lifetime watcher still holds it.
+      // PID for reuse while the lifetime subshell still holds it.
       expect(ppid).not.toBe(1);
       expect(alive(ppid)).toBe(true);
     } finally {
@@ -157,13 +157,54 @@ test.skipIf(process.platform !== "linux")(
   },
 );
 
-test.skipIf(!posix)("closing after the server exited reaps it without a signal", async () => {
+test.skipIf(process.platform !== "linux")(
+  "an exited server's PID stays owned until its transport closes",
+  async () => {
+    const directory = mkdtempSync(join(tmpdir(), "scriptc-reap-owned-"));
+    const executed = join(directory, "executed");
+    const executable = join(directory, "server");
+    writeFileSync(executable, `#!/bin/sh\ntouch ${JSON.stringify(executed)}\nexit 3\n`);
+    chmodSync(executable, 0o755);
+    const io = new Ts7FifoIo(executable, []);
+    const pid = io.pid;
+    for (let waited = 0; !existsSync(executed) && waited < 100; waited++) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    }
+    expect(existsSync(executed)).toBe(true);
+    // The lifetime subshell is the server's parent and has not reaped it, so
+    // the PID is still owned. A reaped PID is free to reuse, and a signal to
+    // the server after that could reach another process.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    expect(alive(pid)).toBe(true);
+    expect(() => io.close()).not.toThrow();
+    expect(await waitForDeath(pid)).toBe(true);
+  },
+);
+
+test.skipIf(!posix)("closing after the server exited reaps it", async () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-reap-short-"));
   const executable = join(directory, "server");
   writeFileSync(executable, "#!/bin/sh\nexit 3\n");
   chmodSync(executable, 0o755);
   const io = new Ts7FifoIo(executable, []);
   const pid = io.pid;
-  expect(await waitForDeath(pid)).toBe(true);
   expect(() => io.close()).not.toThrow();
+  expect(await waitForDeath(pid)).toBe(true);
+});
+
+test.skipIf(!posix)("a checker that fails to serve reports its own stderr", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "scriptc-reap-stderr-"));
+  const executable = join(directory, "server");
+  writeFileSync(executable, "#!/bin/sh\necho 'checker: cannot read the project' >&2\nexit 7\n");
+  chmodSync(executable, 0o755);
+  const code = `import { Ts7FifoIo } from ${JSON.stringify(reapModuleUrl)};
+const io = new Ts7FifoIo(${JSON.stringify(executable)}, []);
+io.read(new Uint8Array(8), 0, 8);
+io.close();`;
+  const result = await execFileAsync(
+    process.execPath,
+    ["--import", "tsx", "--input-type=module", "--eval", code],
+    { timeout: 30_000 },
+  );
+  expect(result.stderr).toContain("checker: cannot read the project");
 });

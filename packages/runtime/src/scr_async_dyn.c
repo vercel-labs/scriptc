@@ -3535,9 +3535,55 @@ static ScrDyn *scr_crypto_digest_call(ScrClosure *closure, ScrDyn *const *args, 
   scr_str_release(text); scr_bytes_release(bytes);
   ScrDyn *result = scr_dyn_new_promise(promise); scr_promise_release(promise); return result;
 }
+/* A SubtleCrypto method read as a value (`const { importKey } = subtle`, a
+ * computed `subtle[name]`): Node answers the method function, and native
+ * code keeps no receiver-bearing value, so this one carries Node's name and
+ * length and refuses the call — the method is called on the SubtleCrypto
+ * object, as the compiler's member reads refuse it. */
+static ScrDyn *scr_crypto_subtle_method_fence(ScrClosure *closure, ScrDyn *const *args,
+                                              size_t argc) {
+  (void)args;
+  (void)argc;
+  ScrDyn *name = scr_box_get_ref(closure->caps[0]);
+  ScrStr *text = scr_dyn_string_coerce_js(name);
+  char message[128];
+  int n = snprintf(message, sizeof message,
+                   "crypto.subtle.%.*s as a value (call it on the SubtleCrypto object) [SC1090]",
+                   (int)(text ? text->len : 6), text ? (const char *)text->data : "method");
+  if (text) scr_str_release(text);
+  scr_dyn_release(name);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC1090");
+  return NULL;
+}
+
+/* Adds `name`, with Node's `length`, to `subtle` as a refusing method value. */
+static void scr_crypto_subtle_method(ScrDyn *subtle, const char *name, uint32_t length) {
+  ScrClosure *closure = scr_closure_new(NULL, 1);
+  ScrStr *text = scr_str_new(name, strlen(name));
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_box_set_ref(closure->caps[0], scr_dyn_new_str(text));
+  scr_str_release(text);
+  scr_dyn_obj_set(subtle, name, strlen(name),
+                  scr_dyn_new_func(closure, scr_crypto_subtle_method_fence, length,
+                                   "crypto.subtle.method", name));
+}
+
 ScrDyn *scr_crypto_native(void) {
   ScrDyn *subtle = scr_dyn_new_obj();
   scr_dyn_obj_set(subtle, "digest", 6, scr_dyn_new_func(scr_closure_new(NULL, 0), scr_crypto_digest_call, 2, "crypto.subtle.digest", "digest"));
+  /* The other methods answer Node's name and length; digest above keeps its
+   * working value, which the object has answered since before the rest. */
+  static const struct {
+    const char *name;
+    uint32_t length;
+  } methods[] = {
+      {"importKey", 5},       {"generateKey", 3},     {"exportKey", 2},       {"encrypt", 3},
+      {"decrypt", 3},         {"wrapKey", 4},         {"unwrapKey", 7},       {"deriveBits", 2},
+      {"deriveKey", 5},       {"sign", 3},            {"verify", 4},          {"getPublicKey", 2},
+      {"encapsulateBits", 2}, {"encapsulateKey", 5},  {"decapsulateBits", 3}, {"decapsulateKey", 6},
+  };
+  for (size_t i = 0; i < sizeof methods / sizeof methods[0]; i++)
+    scr_crypto_subtle_method(subtle, methods[i].name, methods[i].length);
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
 }
 

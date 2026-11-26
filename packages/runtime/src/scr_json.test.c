@@ -1856,12 +1856,32 @@ static void class_value_slots(void) {
   scr_dyn_release(value);
 }
 
+/* The leak scan's node record answers by provenance: an allocation the
+ * dynamic allocator did not make is not a node whatever its bytes hold, a
+ * node is, and a released node's memory is no longer one. */
+static void leak_scan_record_names_nodes(void) {
+#ifdef SCR_LSAN_IMMORTAL
+  extern bool scr_lsan_dyns_has(const void *node);
+  void *foreign = calloc(1, 256);
+  assert(foreign != NULL);
+  assert(!scr_lsan_dyns_has(foreign));
+  ScrDyn *node = scr_dyn_new_obj();
+  assert(scr_lsan_dyns_has(node));
+  scr_dyn_release(node);
+#ifdef SCR_RC_AUDIT
+  assert(!scr_lsan_dyns_has(node)); /* the memory went back to the allocator */
+#endif
+  free(foreign);
+#endif
+}
+
 int main(void) {
   json_string_boundaries();
   record_frozen_bit();
   json_indent_ownership();
   scr_init();
   class_value_slots();
+  leak_scan_record_names_nodes();
   checked_storage();
   shared_property_keys();
   named_record_assignment();

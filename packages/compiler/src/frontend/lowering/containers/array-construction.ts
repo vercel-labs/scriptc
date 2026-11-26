@@ -961,6 +961,55 @@ export function lowerArrayFromValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   };
 }
 
+/** The lifted `%builtin.Array.fromDirect(source, mapper, receiver)` helper —
+ * the runtime's own Array.from over checked-dynamic values (array-likes,
+ * iterables, a mapper). Registered once per program. */
+function arrayFromDirectName(lowerer: Lowerer, loc: SrcLoc): string {
+  const name = "%builtin.Array.fromDirect";
+  if (lowerer.liftedFnNamed(name) === undefined) {
+    const context = newFnCtx(false, null, null, DYN);
+    lowerer.fnStack.push(context);
+    try {
+      const params = ["source", "mapper", "receiver"].map((name) => {
+        const local = lowerer.declareHiddenLocal(name, DYN);
+        return { localId: local.id, name, type: DYN };
+      });
+      const refs = params.map((param) => varRef(param.localId, DYN, loc));
+      const value = lowerCheckedArrayFrom(lowerer, refs[0]!, loc, refs[1], refs[2]);
+      lowerer.liftedFns.push({
+        name,
+        params,
+        returnType: DYN,
+        locals: context.locals,
+        body: [...value.stmts, { kind: "return", value: value.result, loc }],
+        loc,
+      });
+    } finally {
+      lowerer.fnStack.pop();
+    }
+  }
+  return name;
+}
+
+/** A mapper-less `Array.from({ length: n })` whose call type maps to the
+ * checked-dynamic value (`unknown[]` — the plain index-range idiom — plus
+ * `object[]` and the other elements the mapper collapses): Node's result is
+ * n PRESENT undefined elements, and none of them is a static element the
+ * array could hold, so the runtime's Array.from builds the array from the
+ * array-like `{ length: n }` — ToLength-exact (fractional lengths truncate,
+ * negative/NaN lengths give an empty array). A following `.map`/`.forEach`
+ * then dispatches on the dynamic array, and its mapper receives the same
+ * (undefined, i) Node passes. */
+function lowerDynArrayFromCall(lowerer: Lowerer, source: ts.Expression, loc: SrcLoc): IrExpr {
+  return {
+    kind: "call",
+    callee: arrayFromDirectName(lowerer, loc),
+    args: [lowerer.lowerExprExpecting(source, DYN), dynUndefinedExpr(loc), dynUndefinedExpr(loc)],
+    type: DYN,
+    loc,
+  };
+}
+
 /** `Array.from({ length: n }, mapfn)` — the counted-generation idiom — on
  * THE stdlib Array global. The source must be an OBJECT LITERAL whose
  * single property is `length` (the shape the idiom always spells; the
@@ -994,32 +1043,9 @@ export function lowerArrayFromCall(
     args.length <= 3 &&
     !args.some(ts.isSpreadElement)
   ) {
-    const name = "%builtin.Array.fromDirect";
-    if (lowerer.liftedFnNamed(name) === undefined) {
-      const context = newFnCtx(false, null, null, DYN);
-      lowerer.fnStack.push(context);
-      try {
-        const params = ["source", "mapper", "receiver"].map((name) => {
-          const local = lowerer.declareHiddenLocal(name, DYN);
-          return { localId: local.id, name, type: DYN };
-        });
-        const refs = params.map((param) => varRef(param.localId, DYN, loc));
-        const value = lowerCheckedArrayFrom(lowerer, refs[0]!, loc, refs[1], refs[2]);
-        lowerer.liftedFns.push({
-          name,
-          params,
-          returnType: DYN,
-          locals: context.locals,
-          body: [...value.stmts, { kind: "return", value: value.result, loc }],
-          loc,
-        });
-      } finally {
-        lowerer.fnStack.pop();
-      }
-    }
     return {
       kind: "call",
-      callee: name,
+      callee: arrayFromDirectName(lowerer, loc),
       args: [0, 1, 2].map((i) =>
         args[i] ? lowerer.lowerExprExpecting(args[i]!, DYN) : dynUndefinedExpr(loc),
       ),
@@ -1084,7 +1110,13 @@ export function lowerArrayFromCall(
     if (n) {
       if (n.type.kind !== "f64") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
-      if (arrT?.kind !== "array") lowerer.badType(call, lowerer.typeOf(call));
+      if (arrT?.kind !== "array") {
+        // The call type IS the checked-dynamic value (`unknown[]` mapper-less
+        // `Array.from({ length: n })` is the index-range idiom): n present
+        // undefined elements, built by the runtime's Array.from.
+        if (arrT?.kind === "dyn") return lowerDynArrayFromCall(lowerer, args[0]!, loc);
+        lowerer.badType(call, lowerer.typeOf(call));
+      }
       const elem = arrT.elem;
       // A `(T | undefined)[]` (primitiveElement): n present undefined
       // elements.

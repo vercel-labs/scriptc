@@ -34,7 +34,16 @@
  *   ScrJsIc      entries of 40 bytes {layout, target, holder,
  *                holder_layout, slot}; 168 bytes in all */
 import { classCaseBranches, isClassCaseDispatch } from "../../ir/class-case.js";
-import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  STRING,
+  type IrExpr,
+  type IrFunction,
+  type IrStmt,
+  type IrType,
+} from "../../ir/ir.js";
 import { CLASS_NORMALIZER } from "../../ir/function-references.js";
 import { inertValue } from "../../ir/js-groups.js";
 import { jsIcMethodSites, DYN_INDEX_FASTPATH, type JsIcSite } from "../../ir/js-ic.js";
@@ -46,7 +55,7 @@ import { DYN_INDEX_SET } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
 import { dispatchesCall } from "./integer-clones.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
-import { JS_BITS } from "./jsval-encoding.js";
+import { JS_BITS, JS_TAGS } from "./jsval-encoding.js";
 import { emitGroupedGet, emitGroupedSet } from "./js-groups.js";
 import { jsImmediates } from "./jsval.js";
 
@@ -138,13 +147,157 @@ const LITERAL_PROBE: string =
   IC_WAYS_DEBUG === null ? "scr_js_store_probe" : "scr_js_literal_probe";
 const INLINE_PROTO = true;
 
-/** The address of slot `slot` of layout-mode object `d`. */
+/** The address of slot `slot` of layout-mode object `d`. The slot holds one
+ * jsval word (scr_dyn.h's layout slots), not a ScrDyn pointer. */
 function slotAt(host: Host, d: string, slot: string): string {
   const B = host.B;
   const slots = load(host, "ptr", d, 32);
   const address = B.tmp();
   B.line(`${address} = getelementptr inbounds ptr, ptr ${slots}, i64 ${slot}`);
   return address;
+}
+
+/** The cell pointer a cell-tagged jsval word holds. */
+function cellOf(host: Host, word: string): string {
+  const B = host.B;
+  const bits = B.tmp();
+  const address = B.tmp();
+  const cell = B.tmp();
+  B.line(`${bits} = ptrtoint ptr ${word} to i64`);
+  B.line(`${address} = and i64 ${bits}, ${JS_BITS.payloadMask}`);
+  B.line(`${cell} = inttoptr i64 ${address} to ptr`);
+  return cell;
+}
+
+/** A layout slot's word as an OWNED value of `type`. The slot holds a jsval
+ * (scr_dyn.h): an immediate owns nothing, a cell is retained, and a string
+ * or bigint word (which no store here writes) is boxed by the generic
+ * rising entry. On a 32-bit target the word is the cell pointer itself. */
+export function slotValue(host: Host, word: string, type: IrType): string {
+  const B = host.B;
+  const jsval = type.kind === "jsval";
+  if (!jsImmediates(host)) return host.retainFrame(word, type);
+  host.declare(`declare ptr @scr_dyn_new_num(double)`);
+  host.declare(`declare ptr @scr_dyn_slot_take(ptr)`);
+  const done = B.newLabel("slv.j");
+  const incoming: string[] = [];
+  const bits = B.tmp();
+  const isDouble = B.tmp();
+  B.line(`${bits} = ptrtoint ptr ${word} to i64`);
+  B.line(`${isDouble} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
+  const immediate = B.newLabel("slv.i");
+  const heap = B.newLabel("slv.h");
+  B.condBr(isDouble, immediate, heap);
+  B.startBlock(immediate);
+  if (jsval) {
+    // The slot's doubles are canonical, so the word is the result as is.
+    incoming.push(`[ ${word}, %${B.currentLabel()} ]`);
+  } else {
+    const d = B.tmp();
+    const cell = B.tmp();
+    B.line(`${d} = bitcast i64 ${bits} to double`);
+    B.line(`${cell} = call ptr @scr_dyn_new_num(double ${d})`);
+    incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+  }
+  B.br(done);
+  B.startBlock(heap);
+  const tag = B.tmp();
+  const isCell = B.tmp();
+  B.line(`${tag} = lshr i64 ${bits}, 48`);
+  B.line(`${isCell} = icmp eq i64 ${tag}, ${JS_TAGS.cell}`);
+  const cellBlock = B.newLabel("slv.c");
+  const otherBlock = B.newLabel("slv.o");
+  B.condBr(isCell, cellBlock, otherBlock);
+  B.startBlock(cellBlock);
+  {
+    const held = host.retainFrame(cellOf(host, word), DYN);
+    incoming.push(`[ ${jsval ? cellWord(host, held) : held}, %${B.currentLabel()} ]`);
+  }
+  B.br(done);
+  B.startBlock(otherBlock);
+  {
+    // undefined, null, false and true own nothing; a string or bigint word
+    // needs a box, which the rising entry retains.
+    const special = B.tmp();
+    B.line(`${special} = icmp ult i64 ${tag}, ${JS_TAGS.cell}`);
+    const keep = B.newLabel("slv.k");
+    const box = B.newLabel("slv.b");
+    B.condBr(special, keep, box);
+    B.startBlock(keep);
+    if (jsval) {
+      incoming.push(`[ ${word}, %${B.currentLabel()} ]`);
+    } else {
+      const cell = B.tmp();
+      B.line(`${cell} = call ptr @scr_dyn_slot_take(ptr ${word})`);
+      incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    }
+    B.br(done);
+    B.startBlock(box);
+    const boxed = B.tmp();
+    B.line(`${boxed} = call ptr @scr_dyn_slot_take(ptr ${word})`);
+    incoming.push(`[ ${jsval ? cellWord(host, boxed) : boxed}, %${B.currentLabel()} ]`);
+    B.br(done);
+  }
+  B.startBlock(done);
+  const out = B.tmp();
+  B.line(`${out} = phi ptr ${incoming.join(", ")}`);
+  return out;
+}
+
+/** Stores the jsval `word` (borrowed; the slot takes its own reference)
+ * into the layout slot at `address`, releasing the word it replaced. A
+ * double or primitive immediate is written directly — the common store
+ * allocates and calls nothing — and the rare heap word goes through
+ * scr_js_slot_put, which retains a cell or boxes a string or bigint. */
+export function slotStore(host: Host, address: string, word: string): void {
+  const B = host.B;
+  if (!jsImmediates(host)) {
+    // The word is a cell pointer: the runtime takes the reference.
+    host.declare(`declare void @scr_js_slot_put(ptr, ptr)`);
+    B.line(`call void @scr_js_slot_put(ptr ${address}, ptr ${word})`);
+    return;
+  }
+  const done = B.newLabel("sst.j");
+  const bits = B.tmp();
+  B.line(`${bits} = ptrtoint ptr ${word} to i64`);
+  const immediate = B.tmp();
+  B.line(`${immediate} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
+  const write = B.newLabel("sst.w");
+  const heap = B.newLabel("sst.h");
+  B.condBr(immediate, write, heap);
+  B.startBlock(heap);
+  host.declare(`declare void @scr_js_slot_put(ptr, ptr)`);
+  B.line(`call void @scr_js_slot_put(ptr ${address}, ptr ${word})`);
+  B.br(done);
+  B.startBlock(write);
+  // Write first and release after: a release can run a cycle collection,
+  // and a slot that still referenced the value being released would be a
+  // dangling edge during that pass. An immediate owns nothing, so only a
+  // cell takes the release.
+  const old = B.tmp();
+  B.line(`${old} = load ptr, ptr ${address}`);
+  B.line(`store ptr ${word}, ptr ${address}`);
+  host.declare(`declare void @scr_dyn_release_v(ptr)`);
+  const oldBits = B.tmp();
+  const oldTag = B.tmp();
+  const oldCell = B.tmp();
+  B.line(`${oldBits} = ptrtoint ptr ${old} to i64`);
+  B.line(`${oldTag} = lshr i64 ${oldBits}, 48`);
+  B.line(`${oldCell} = icmp eq i64 ${oldTag}, ${JS_TAGS.cell}`);
+  const release = B.newLabel("sst.r");
+  B.condBr(oldCell, release, done);
+  B.startBlock(release);
+  B.line(`call void @scr_dyn_release_v(ptr ${cellOf(host, old)})`);
+  B.br(done);
+  B.startBlock(done);
+}
+
+/** Stores the dynamic value `cell` (borrowed) into the layout slot at
+ * `address`, releasing the word it replaced. */
+export function slotStoreCell(host: Host, address: string, cell: string): void {
+  const B = host.B;
+  host.declare(`declare void @scr_js_slot_put_dyn(ptr, ptr)`);
+  B.line(`call void @scr_js_slot_put_dyn(ptr ${address}, ptr ${cell})`);
 }
 
 /** The inline part of a load site, entered for an ordinary object `d`:
@@ -158,7 +311,7 @@ function inlineLoad(
   ic: string,
   ways: number,
   proto: boolean,
-  result: (cell: string) => string,
+  result: (word: string) => string,
   incoming: string[],
   join: string,
   miss: string,
@@ -191,8 +344,8 @@ function inlineLoad(
     B.condBr(own, ownLabel, protoLabel);
     const hit = (holder: string): void => {
       const slot = load(host, "i64", ic, base + 32);
-      const value = load(host, "ptr", slotAt(host, holder, slot), 0);
-      const out = result(value);
+      const word = load(host, "ptr", slotAt(host, holder, slot), 0);
+      const out = result(word);
       incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
       B.br(join);
     };
@@ -581,6 +734,7 @@ function inlineCapsuleLoad(
   host: Host,
   d: string,
   reads: readonly CapsuleRead[],
+  result: (cell: string) => string,
   incoming: string[],
   join: string,
   miss: string,
@@ -610,7 +764,7 @@ function inlineCapsuleLoad(
     const hit = B.newLabel("icc.hit");
     B.condBr(set, hit, miss);
     B.startBlock(hit);
-    incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    incoming.push(`[ ${result(cell)}, %${B.currentLabel()} ]`);
     B.br(join);
   });
 }
@@ -995,10 +1149,28 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   const other = reads.length > 0 ? B.newLabel("icg.other") : probe;
   kindIs(host, receiver.name, DYN_KIND.OBJ, object, other);
   B.startBlock(object);
-  inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
+  inlineLoad(
+    host,
+    receiver.name,
+    ic,
+    INLINE_WAYS,
+    INLINE_PROTO,
+    (word) => slotValue(host, word, e.type),
+    hits,
+    hit,
+    probe,
+  );
   if (reads.length > 0) {
     B.startBlock(other);
-    inlineCapsuleLoad(host, receiver.name, reads, hits, hit, probe);
+    inlineCapsuleLoad(
+      host,
+      receiver.name,
+      reads,
+      (cell) => asResult(host, cell, e, false),
+      hits,
+      hit,
+      probe,
+    );
   }
   B.startBlock(probe);
   // The read's probe also answers keys the receiver's plain chain lacks.
@@ -1011,18 +1183,21 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   B.line(`${probed} = call ptr @${probeFn}(ptr ${receiver.name}, ptr ${name}, ptr ${ic})`);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${probed}, null`);
-  const probeEnd = B.currentLabel();
-  B.condBr(found, hit, slow);
+  // Every inline hit and the probe's answer is converted to an owned value
+  // of the site's type here, so the hit's phi needs no ownership bit. The
+  // conversion reads the probe's cell, so it runs only once `found` holds.
+  const probeHit = B.newLabel("icg.h");
+  B.condBr(found, probeHit, slow);
+  B.startBlock(probeHit);
+  {
+    const out = asResult(host, probed, e, true);
+    hits.push(`[ ${out}, %${B.currentLabel()} ]`);
+  }
+  B.br(hit);
   B.startBlock(hit);
   const cell = B.tmp();
-  const owned = B.tmp();
-  const ownedIn = hits.map((h) => h.replace(/^\[ [^,]+,/, "[ false,"));
-  B.line(`${cell} = phi ptr ${[...hits, `[ ${probed}, %${probeEnd} ]`].join(", ")}`);
-  B.line(`${owned} = phi i1 ${[...ownedIn, `[ true, %${probeEnd} ]`].join(", ")}`);
-  {
-    const out = asResult(host, cell, e, owned);
-    incoming.push(`[ ${out}, %${B.currentLabel()} ]`);
-  }
+  B.line(`${cell} = phi ptr ${hits.join(", ")}`);
+  incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
   B.br(join);
   B.startBlock(slow);
   const result = helperCall(host, e, callee, [receiver]);
@@ -1056,18 +1231,45 @@ function numberResult(host: Host, d: string, e: IrExpr): string {
  * operand of `js.toDyn`. The word of a double is its bits with NaN
  * canonicalized, the same word the pass carries for it. */
 function storeWord(host: Host, value: IrExpr): string | null {
+  const B = host.B;
   if (value.kind === "libCall" && value.fn === "js.toDyn")
     return host.emitExpr(value.args[0]!).name;
+  // A static number or boolean boxed for the store (ir/jsval.ts's
+  // STATIC_SOURCES): its jsval word is built here, so the slot takes the
+  // immediate and nothing is boxed on the fast path.
+  if (value.kind !== "dynFrom" || value.liveRef !== undefined || value.fnName !== undefined)
+    return null;
+  const source = value.value;
+  if (source.type.kind === "f64") {
+    const d = host.emitExpr(source).name;
+    const bits = B.tmp();
+    const nan = B.tmp();
+    const canonical = B.tmp();
+    const word = B.tmp();
+    B.line(`${bits} = bitcast double ${d} to i64`);
+    B.line(`${nan} = fcmp uno double ${d}, ${d}`);
+    B.line(`${canonical} = select i1 ${nan}, i64 ${JS_BITS.canonicalNan}, i64 ${bits}`);
+    B.line(`${word} = inttoptr i64 ${canonical} to ptr`);
+    return word;
+  }
+  if (source.type.kind === "bool") {
+    const b = host.emitExpr(source).name;
+    const bits = B.tmp();
+    const word = B.tmp();
+    B.line(`${bits} = select i1 ${b}, i64 ${JS_BITS.true}, i64 ${JS_BITS.false}`);
+    B.line(`${word} = inttoptr i64 ${bits} to ptr`);
+    return word;
+  }
   return null;
 }
 
 function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string): LlValue {
   const B = host.B;
   const receiver = emitBorrowedInput(host, e.args[0]!);
-  // A value the jsval pass left as `js.toDyn(x)` is stored from the jsval
-  // itself: a number replaces the value of an unshared number cell in place
-  // instead of boxing a new one, and the generic path boxes it only where it
-  // must store a cell.
+  // A value the jsval pass left as `js.toDyn(x)`, or a static number or
+  // boolean, is stored from its jsval word (storeWord): the slot takes the
+  // immediate instead of a box, and the sites that need a cell (the probe,
+  // the helper) box it there.
   const stored = e.args[1]!;
   const word = storeWord(host, stored);
   const value = word === null ? emitBorrowedInput(host, stored) : null;
@@ -1106,49 +1308,15 @@ function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
     B.condBr(outside, unshared, probe);
   }
   B.startBlock(unshared);
-  host.declare(`declare ptr @scr_js_to_dyn_borrow(ptr)`);
+  host.declare(`declare ptr @scr_dyn_slot_take(ptr)`);
   inlineReplace(
     host,
     receiver.name,
     ic,
     INLINE_WAYS,
     (slot) => {
-      const old = B.tmp();
-      B.line(`${old} = load ptr, ptr ${slot}`);
-      if (word === null) {
-        B.line(`store ptr ${host.retainHeap(value!.name, DYN)}, ptr ${slot}`);
-        host.releaseHeap(old, DYN);
-        B.br(join);
-        return;
-      }
-      const bits = B.tmp();
-      const isDouble = B.tmp();
-      B.line(`${bits} = ptrtoint ptr ${word} to i64`);
-      B.line(`${isDouble} = icmp ult i64 ${bits}, ${JS_BITS.limit}`);
-      const number = B.newLabel("ics.dbl");
-      const box = B.newLabel("ics.box");
-      B.condBr(isDouble, number, box);
-      B.startBlock(number);
-      const oldKind = load(host, "i32", old, 8);
-      const oldRc = load(host, "i64", old, 0);
-      const isNumber = B.tmp();
-      const unshared = B.tmp();
-      const inPlace = B.tmp();
-      B.line(`${isNumber} = icmp eq i32 ${oldKind}, ${DYN_KIND.NUM}`);
-      B.line(`${unshared} = icmp eq i64 ${oldRc}, 1`);
-      B.line(`${inPlace} = and i1 ${isNumber}, ${unshared}`);
-      const update = B.newLabel("ics.inplace");
-      B.condBr(inPlace, update, box);
-      B.startBlock(update);
-      const d = B.tmp();
-      B.line(`${d} = bitcast i64 ${bits} to double`);
-      B.line(`store double ${d}, ptr ${gep(host, old, 16)}`);
-      B.br(join);
-      B.startBlock(box);
-      const cell = B.tmp();
-      B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
-      B.line(`store ptr ${cell}, ptr ${slot}`);
-      host.releaseHeap(old, DYN);
+      if (word === null) slotStoreCell(host, slot, value!.name);
+      else slotStore(host, slot, word);
       B.br(join);
     },
     probe,
@@ -1157,7 +1325,8 @@ function emitSet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   let cell: string;
   if (word !== null) {
     cell = B.tmp();
-    B.line(`${cell} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
+    host.declare(`declare ptr @scr_dyn_slot_take(ptr)`);
+    B.line(`${cell} = call ptr @scr_dyn_slot_take(ptr ${word})`);
     B.line(`store ptr ${cell}, ptr ${boxedSlot}`);
   } else {
     cell = value!.name;
@@ -1694,7 +1863,7 @@ export function emitJsIcMethod(host: Host, e: ExprOf<"dynInvoke">, receiver: str
     ic,
     INLINE_WAYS,
     INLINE_PROTO,
-    (cell) => host.retainFrame(cell, DYN),
+    (word) => slotValue(host, word, DYN),
     incoming,
     join,
     probe,

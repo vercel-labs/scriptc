@@ -449,6 +449,7 @@ export class LlDyn {
           args[0] as IrType,
           args[1] as boolean,
           args[2] as boolean,
+          args[3] === true,
         );
       case "dyn.toDynHelper":
         return this.toDynHelper(args[0] as IrType);
@@ -3380,25 +3381,46 @@ export class LlDyn {
    * unit (a library), the type has no live capsule, or the adoption could
    * reach a record without fields, which would lose its source's properties
    * (adoptsAtTypedSlot). */
-  dynCheckAdoptingHelper(t: IrType, preserveRefs: boolean, borrowed: boolean): string {
+  dynCheckAdoptingHelper(
+    t: IrType,
+    preserveRefs: boolean,
+    borrowed: boolean,
+    keyIdentity = false,
+  ): string {
     const plain = this.dynCheckHelper(t, preserveRefs);
     const host = this.host;
-    if (host.declAdopt?.() !== true) return plain;
     const adopts = adoptsAtTypedSlot(
       t,
       (id) => host.recordsById.get(id),
       (id) => host.unionsById.get(id),
     );
-    if (!adopts) return plain;
+    // A library build does not link the adoption unit, and a target with no
+    // live capsule cannot adopt: the conversion would store a copy. A
+    // collection key cannot take that copy (no other name would share it),
+    // so it refuses at run time instead; every other conversion keeps the
+    // copy as before.
+    if (host.declAdopt?.() !== true || !adopts)
+      return keyIdentity ? this.dynKeyRefusedHelper(plain) : plain;
     // Named after the plain helper, one name per (plain helper, borrowed):
     // the variant takes no number of the `sc_dc_<n>` sequence, so a program
     // that adopts differs from the same program without the flag only in
     // its flagged sites and the helpers added for them.
-    const name = `${plain}_adopt${borrowed ? "_held" : ""}`;
+    const name = `${plain}_adopt${borrowed ? "_held" : ""}${keyIdentity ? "_key" : ""}`;
     if (this.dynAdopters.has(name)) return name;
     this.dynAdopters.add(name);
-    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [t, preserveRefs, borrowed]);
-    host.declare(`declare void @scr_dyn_adopt_whole(ptr, ptr)`);
+    host.journalAllocated?.(name, "dyn.dynCheckAdoptingHelper", [
+      t,
+      preserveRefs,
+      borrowed,
+      keyIdentity,
+    ]);
+    // A key's adoption is strict: the runtime refuses a source it cannot
+    // make one object with the built key instead of leaving the copy.
+    host.declare(
+      keyIdentity
+        ? `declare void @scr_dyn_adopt_key(ptr, ptr)`
+        : `declare void @scr_dyn_adopt_whole(ptr, ptr)`,
+    );
     host.declare(`declare void @scr_dyn_release(ptr)`);
     host.declare(`declare zeroext i1 @scr_exc_pending()`);
     const B = new BlockBuilder();
@@ -3415,9 +3437,21 @@ export class LlDyn {
     const lDone = B.newLabel("dca.done");
     B.condBr(plainData, lData, lOther);
     B.startBlock(lOther);
-    const passed = B.tmp();
-    B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
-    B.terminate(`ret ptr ${passed}`);
+    if (keyIdentity) {
+      // A capsule or other non-plain source is not adopted by the walk
+      // below: the plain conversion answers its own object where it can
+      // (the capsule fast path, a view), and a copy otherwise. The key
+      // check names the copy instead of storing it.
+      const got = B.tmp();
+      B.line(`${got} = call ptr @${plain}(ptr %d, ptr %path)`);
+      host.declare(`declare void @scr_dyn_key_check(ptr, ptr)`);
+      B.line(`call void @scr_dyn_key_check(ptr %d, ptr ${got})`);
+      B.terminate(`ret ptr ${got}`);
+    } else {
+      const passed = B.tmp();
+      B.line(`${passed} = tail call ptr @${plain}(ptr %d, ptr %path)`);
+      B.terminate(`ret ptr ${passed}`);
+    }
     B.startBlock(lData);
     const built = B.tmp();
     B.line(`${built} = call ptr @${plain}(ptr %d, ptr %path)`);
@@ -3428,7 +3462,9 @@ export class LlDyn {
     const capsule = this.liveToDyn(B, t, built);
     if (capsule !== null) {
       const held = borrowed ? this.retainDyn(B, "%d") : null;
-      B.line(`call void @scr_dyn_adopt_whole(ptr %d, ptr ${capsule})`);
+      B.line(
+        `call void @${keyIdentity ? "scr_dyn_adopt_key" : "scr_dyn_adopt_whole"}(ptr %d, ptr ${capsule})`,
+      );
       if (held !== null) B.line(`call void @scr_dyn_release(ptr ${held})`);
       B.line(`call void @scr_dyn_release(ptr ${capsule})`);
     }
@@ -3442,6 +3478,29 @@ export class LlDyn {
       ``,
     );
     host.journalBuilt?.();
+    return name;
+  }
+
+  /** The conversion of a collection key whose source cannot be adopted: it
+   * throws the named refusal and answers NULL instead of storing a copy no
+   * other name shares. Emitted for a library build (no adoption unit) and
+   * for a target with no live capsule. */
+  private dynKeyRefusedHelper(plain: string): string {
+    const name = `${plain}_key_refused`;
+    if (this.dynAdopters.has(name)) return name;
+    this.dynAdopters.add(name);
+    const host = this.host;
+    const message =
+      "a dynamic collection key whose value cannot be adopted as the key type is not supported yet";
+    host.declare(`declare void @scr_throw_error_msg_code(i32, ptr, ${host.sizeType}, ptr)`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} {`,
+      `entry:`,
+      `  call void @scr_throw_error_msg_code(i32 0, ptr ${host.cstr(message)}, ${host.sizeType} ${Buffer.byteLength(message, "utf8")}, ptr ${host.cstr("SC2020")})`,
+      `  ret ptr null`,
+      `}`,
+      ``,
+    );
     return name;
   }
 

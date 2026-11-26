@@ -2281,6 +2281,16 @@ static ScrStream *sf_duplex_from_dyn_flags(ScrDyn *body, double pair_flags) {
   if (scr_stream_web_pair_hook != NULL) {
     ScrStream *paired = scr_stream_web_pair_hook(body, pair_flags);
     if (paired) {
+      /* A lone web WritableStream answers its writer's adapter alone:
+       * duplexify.js reads it as the body's `writable` (Duplex.from's
+       * writable-only Duplex). */
+      if (!(paired->st->has_r && paired->st->has_w)) {
+        ScrStream *d = paired->st->has_r ? scr_stream_duplexify(paired, NULL)
+                                         : scr_stream_duplexify(NULL, paired);
+        scr_stream_release(paired);
+        if (!d) return NULL;
+        paired = d;
+      }
       paired->st->web_pair_body = true;
       return paired;
     }
@@ -10043,6 +10053,14 @@ ScrStream *scr_stream_duplex_stage_dyn(ScrDyn *body) {
     if (scr_exc_pending()) return NULL;
   }
   return sf_duplex_from_dyn_flags(body, 0);
+}
+
+/* compose's last stage (stream.composeTailDyn): a pair keeps duplexify's
+ * byte-for-byte sides (the composed Duplex reads them as Buffers), and a lone
+ * web WritableStream keeps the chunks the stage before it hands over, as the
+ * pipeline's stages do (bit 16). Any other value is Duplex.from's body. */
+ScrStream *scr_stream_duplex_tail_dyn(ScrDyn *body) {
+  return sf_duplex_from_dyn_flags(body, 16);
 }
 
 /* Whether a checked-dynamic object has a function member `key`. */

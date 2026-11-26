@@ -41,6 +41,16 @@ show("relative pathname", { pathname: "p" });
 show("relative dirname", { pathname: "p/" });
 show("empty pathname", { pathname: "" });
 show("dot segments", { pathname: "a/../p" });
+show("absolute dot segments", { pathname: "/a/../p" });
+
+// Canonicalization encodes literal text only: a custom regexp group keeps
+// its bytes (a space in a class stays a space), while literal spaces around
+// it are percent-encoded.
+show("regex mix", { pathname: "/a b/:x([a-z ]+) c" });
+show("regex relative", { pathname: "d/e f/:x([a-z ]+)" });
+show("regex percent", { pathname: "/:x([a-z%]+)" });
+show("regex plus", { pathname: "/:x(a+b)" });
+show("escaped space", { pathname: "/a\\ b" });
 
 // Inherited base components are literal pattern text.
 function showBase(label, baseURL) {

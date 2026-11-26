@@ -1453,32 +1453,211 @@ static ScrStr *ws_escape_pattern(ScrStr *value) {
   return ws_buf_finish(&b);
 }
 
-/* A pathname value resolved against the base: an absolute value only loses
- * its dot segments; a relative one (the empty value reads as ".") starts
- * from the base's directory. Pattern syntax the URL path serializer would
- * percent-encode keeps the plain directory join. */
-static ScrStr *ws_resolve_base_pathname(ScrStr *value, ScrUrl *base) {
-  bool plain = memchr(value->data, '?', value->len) == NULL &&
-               memchr(value->data, '{', value->len) == NULL &&
-               memchr(value->data, '}', value->len) == NULL;
-  if (plain) {
-    if (value->len == 0) {
-      ScrStr *dot = scr_str_new(".", 1);
-      ScrStr *resolved = ws_path_canonicalize(dot, base);
-      scr_str_release(dot);
-      return resolved;
+/* Encode one pathname pattern segment for the URL path: its literal bytes
+ * take the path percent-encode set, while a `\`-escaped pattern character
+ * and a `(...)` regexp group stay exactly as written, so encoding never
+ * changes what a custom class or group matches. */
+static ScrStr *ws_encode_pattern_segment(const ScrStr *seg) {
+  static const char hex[] = "0123456789ABCDEF";
+  WsBuf b = {0};
+  size_t i = 0;
+  while (i < seg->len) {
+    char c = seg->data[i];
+    if (c == '\\' && i + 1 < seg->len) {
+      char next = seg->data[i + 1];
+      if (strchr("*+?:{}()\\", next) != NULL) {
+        /* an escaped pattern character is literal pattern text */
+        ws_buf_add(&b, seg->data + i, 2);
+      } else {
+        /* a redundant escape is dropped; the character is a literal */
+        unsigned char u = (unsigned char)next;
+        if (u <= 0x20 || u >= 0x7f || strchr(WS_PATH_ENCODE, u) != NULL) {
+          char escaped[3] = {'%', hex[u >> 4], hex[u & 15]};
+          ws_buf_add(&b, escaped, 3);
+        } else {
+          ws_buf_add(&b, &next, 1);
+        }
+      }
+      i += 2;
+      continue;
     }
-    return ws_path_canonicalize(value, base);
+    if (c == '(') {
+      size_t start = i;
+      int depth = 0;
+      bool in_class = false;
+      while (i < seg->len) {
+        char d = seg->data[i];
+        if (d == '\\' && i + 1 < seg->len) {
+          i += 2;
+          continue;
+        }
+        if (in_class) {
+          if (d == ']') in_class = false;
+          i++;
+          continue;
+        }
+        if (d == '[') {
+          in_class = true;
+          i++;
+          continue;
+        }
+        if (d == '(') depth++;
+        else if (d == ')') {
+          depth--;
+          if (depth == 0) {
+            i++;
+            break;
+          }
+        }
+        i++;
+      }
+      ws_buf_add(&b, seg->data + start, i - start);
+      continue;
+    }
+    if (strchr("*?:{}", c) != NULL) {
+      /* pattern syntax, not text an encoder may touch */
+      ws_buf_add(&b, &c, 1);
+      i++;
+      continue;
+    }
+    unsigned char u = (unsigned char)c;
+    if (u <= 0x20 || u >= 0x7f || strchr(WS_PATH_ENCODE, u) != NULL) {
+      char escaped[3] = {'%', hex[u >> 4], hex[u & 15]};
+      ws_buf_add(&b, escaped, 3);
+    } else {
+      ws_buf_add(&b, &c, 1);
+    }
+    i++;
   }
-  if (value->len > 0 && value->data[0] == '/') return scr_str_retain(value);
-  ScrStr *base_path = scr_url_pathname(base);
-  size_t cut = base_path->len;
-  while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
-  ScrStr *dir = ws_slice(base_path, 0, cut);
-  ScrStr *joined = scr_str_concat(dir, value);
-  scr_str_release(dir);
-  scr_str_release(base_path);
-  return joined;
+  return ws_buf_finish(&b);
+}
+
+/* Split a pathname pattern at the `/` separators outside regexp groups and
+ * escapes. The returned strings are +1 and own their text. */
+static ScrStr **ws_split_pattern_path(const ScrStr *value, size_t start, size_t *count) {
+  ScrStr **segs = NULL;
+  size_t n = 0, cap = 0;
+  size_t seg_start = start;
+  int depth = 0;
+  bool in_class = false;
+  for (size_t i = start; i <= value->len; i++) {
+    bool end = i == value->len;
+    if (!end) {
+      char c = value->data[i];
+      if (c == '\\' && i + 1 < value->len) {
+        i++;
+        continue;
+      }
+      if (depth > 0) {
+        if (in_class) {
+          if (c == ']') in_class = false;
+          continue;
+        }
+        if (c == '[') {
+          in_class = true;
+          continue;
+        }
+        if (c == '(') depth++;
+        else if (c == ')') depth--;
+        continue;
+      }
+      if (c == '(') {
+        depth = 1;
+        continue;
+      }
+      if (c != '/') continue;
+    }
+    if (n == cap) {
+      cap = cap ? cap * 2 : 8;
+      segs = realloc(segs, cap * sizeof *segs);
+      if (segs == NULL) scr_trap("scriptc: out of memory\n");
+    }
+    segs[n++] = ws_slice(value, seg_start, i);
+    seg_start = i + 1;
+  }
+  *count = n;
+  return segs;
+}
+
+/* Whether a segment is plain literal text, so "." and ".." mean what the
+ * URL path parser says they mean. */
+static bool ws_pattern_segment_literal(const ScrStr *seg) {
+  for (size_t i = 0; i < seg->len; i++)
+    if (strchr("\\*+?:{}()", seg->data[i]) != NULL) return false;
+  return true;
+}
+
+/* A pathname pattern resolved against the base: a value that starts with
+ * "/" keeps no directory; a relative one (the empty value reads as ".")
+ * starts from the base's directory. Literal text takes the path
+ * percent-encode set, while escapes and regexp groups stay as written, and
+ * "."/".." segments resolve over literal segments only. */
+static ScrStr *ws_canonicalize_pattern_path(ScrStr *value, ScrUrl *base) {
+  ScrStr *empty_dot = NULL;
+  if (value->len == 0) {
+    if (base == NULL) return scr_str_new("", 0);
+    empty_dot = scr_str_new(".", 1);
+    value = empty_dot;
+  }
+  bool absolute = value->len > 0 && value->data[0] == '/';
+  size_t n = 0;
+  ScrStr **mine = ws_split_pattern_path(value, absolute ? 1 : 0, &n);
+  ScrStr **base_segs = NULL;
+  size_t base_n = 0;
+  if (!absolute && base != NULL) {
+    ScrStr *base_path = scr_url_pathname(base);
+    if (base_path->len > 0 && base_path->data[0] == '/') {
+      size_t cut = base_path->len;
+      if (base_path->data[cut - 1] != '/') {
+        while (cut > 0 && base_path->data[cut - 1] != '/') cut--;
+        if (cut == 0) cut = 1;
+      }
+      ScrStr *dir = ws_slice(base_path, 0, cut);
+      base_segs = ws_split_pattern_path(dir, 1, &base_n);
+      scr_str_release(dir);
+      /* the directory's trailing empty segment is the boundary, not a
+       * component of the path */
+      if (base_n > 0 && base_segs[base_n - 1]->len == 0) {
+        scr_str_release(base_segs[--base_n]);
+      }
+    }
+    scr_str_release(base_path);
+  }
+  ScrStr **out = calloc(n + base_n + 1, sizeof *out);
+  if (out == NULL) scr_trap("scriptc: out of memory\n");
+  size_t out_n = 0;
+  for (size_t b = 0; b < base_n; b++) out[out_n++] = base_segs[b];
+  for (size_t i = 0; i < n; i++) {
+    ScrStr *seg = mine[i];
+    bool literal = ws_pattern_segment_literal(seg);
+    bool last = i == n - 1;
+    if (literal && ws_single_dot(seg->data, seg->len)) {
+      /* a "." ends the path with its empty directory segment */
+      if (last) out[out_n++] = scr_str_new("", 0);
+      scr_str_release(seg);
+      continue;
+    }
+    if (literal && ws_double_dot(seg->data, seg->len)) {
+      if (out_n > 0) scr_str_release(out[--out_n]);
+      if (last) out[out_n++] = scr_str_new("", 0);
+      scr_str_release(seg);
+      continue;
+    }
+    out[out_n++] = ws_encode_pattern_segment(seg);
+    scr_str_release(seg);
+  }
+  WsBuf b = {0};
+  for (size_t i = 0; i < out_n; i++) {
+    ws_buf_add(&b, "/", 1);
+    ws_buf_scr(&b, out[i]);
+    scr_str_release(out[i]);
+  }
+  if (out_n == 0) ws_buf_add(&b, "/", 1);
+  free(out);
+  free(mine);
+  free(base_segs);
+  scr_str_release(empty_dot);
+  return ws_buf_finish(&b);
 }
 
 /* A base URL's components fill the init's missing ones by the standard's
@@ -1523,7 +1702,7 @@ static bool ws_apply_base(WsInit *init, ScrStr *base_text) {
     init->pathname = ws_escape_pattern(pathname);
     scr_str_release(pathname);
   } else if (has_pathname) {
-    ScrStr *resolved = ws_resolve_base_pathname(init->pathname, base);
+    ScrStr *resolved = ws_canonicalize_pattern_path(init->pathname, base);
     scr_str_release(init->pathname);
     init->pathname = resolved;
   }

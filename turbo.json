@@ -39,14 +39,13 @@
         "scripts/toolchain.sha256",
         "scripts/ci-vercel/toolchain.mjs"
       ],
-      "outputs": [
-        ".ci/toolchain/**"
-      ],
+      "outputs": [],
       "tags": [
         "ci",
         "ci:os:ubuntu",
         "ci:cpus:8"
-      ]
+      ],
+      "cache": false
     },
     "//#ci:setup:native:musl": {
       "dependsOn": [
@@ -146,33 +145,6 @@
         "tests/harness/coverage*.ts",
         "tests/coverage-fixtures/**",
         "tests/harness/coverage/**",
-        "vitest.config.ts"
-      ],
-      "outputs": [],
-      "tags": [
-        "ci",
-        "ci:os:ubuntu",
-        "ci:cpus:8"
-      ]
-    },
-    "//#ci:lane:ts7-parity": {
-      "dependsOn": [
-        "ci:setup:build"
-      ],
-      "inputs": [
-        "packages/compiler/src/**",
-        "packages/compiler/package.json",
-        "packages/types/**",
-        "tests/ts7/**",
-        "tests/corpus/**",
-        "tests/diagnostics/**",
-        "tests/deadstrip/**",
-        "tests/coverage-fixtures/**",
-        "tests/fixtures/**",
-        "scripts/test-ts7.mjs",
-        "scripts/generate-ts7-ast-schema.mjs",
-        "scripts/ts7-order-fixtures.mjs",
-        "packages/compiler/test/ts7/**",
         "vitest.config.ts"
       ],
       "outputs": [],
@@ -7357,6 +7329,62 @@
         "scripts/checker-identity.mjs",
         "tests/corpus/**",
         "vitest.config.ts"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:ts7-parity:1": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "packages/types/**",
+        "tests/ts7/**",
+        "tests/corpus/**",
+        "tests/diagnostics/**",
+        "tests/deadstrip/**",
+        "tests/coverage-fixtures/**",
+        "tests/fixtures/**",
+        "scripts/test-ts7.mjs",
+        "scripts/generate-ts7-ast-schema.mjs",
+        "scripts/ts7-order-fixtures.mjs",
+        "packages/compiler/test/ts7/**",
+        "vitest.config.ts",
+        "scripts/ts7-shard.mjs"
+      ],
+      "outputs": [],
+      "tags": [
+        "ci",
+        "ci:os:ubuntu",
+        "ci:cpus:8"
+      ]
+    },
+    "//#ci:lane:ts7-parity:2": {
+      "dependsOn": [
+        "ci:setup:build"
+      ],
+      "inputs": [
+        "packages/compiler/src/**",
+        "packages/compiler/package.json",
+        "packages/types/**",
+        "tests/ts7/**",
+        "tests/corpus/**",
+        "tests/diagnostics/**",
+        "tests/deadstrip/**",
+        "tests/coverage-fixtures/**",
+        "tests/fixtures/**",
+        "scripts/test-ts7.mjs",
+        "scripts/generate-ts7-ast-schema.mjs",
+        "scripts/ts7-order-fixtures.mjs",
+        "packages/compiler/test/ts7/**",
+        "vitest.config.ts",
+        "scripts/ts7-shard.mjs"
       ],
       "outputs": [],
       "tags": [

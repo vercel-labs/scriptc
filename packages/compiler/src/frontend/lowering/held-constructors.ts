@@ -19,17 +19,19 @@
  * fewer refusals, a refusal deferred to run time counting like a build
  * error behind the errors (constructorRefusals, fewerRefusals).
  *
- * This module answers which refusals involve one. Once the program has
- * written a constructor as a value (Lowerer.constructorFunctionTypes), the
- * lowerer counts each value it lowers whose type holds a constructor's
- * function type and each mapping of such a type
+ * This module answers which refusals involve one. From the first statement
+ * lowered, the lowerer counts each value it lowers whose type holds a
+ * constructor's function type and each mapping of such a type
  * (Lowerer.constructorTouches); a diagnostic made after the innermost
  * statement being lowered counted one is marked
- * (ScrDiagnostic.heldConstructor), and so is every diagnostic made before
- * that first value. The mark over-approximates on purpose: it decides
- * only whether the comparison pass runs, never which pass stands. A program
- * that writes no constructor as a value looks at nothing and never
- * compares. */
+ * (ScrDiagnostic.heldConstructor). Counting starts before the program
+ * writes its first constructor value (Lowerer.constructorFunctionTypes),
+ * because lowering order is not evaluation order; marking every diagnostic
+ * made before that value instead sent programs with unrelated refusals
+ * (React's untyped code, for one) through a whole second lowering whose
+ * result they then discarded. The mark over-approximates on purpose: it
+ * decides only whether the comparison pass runs, never which pass stands.
+ * A program that writes no constructor as a value never compares. */
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import {
   BIGINT_T,
@@ -59,58 +61,85 @@ export function holdsConstructorFunction(lowerer: Lowerer, type: IrType): boolea
     case "generator":
     case "record":
     case "union":
-    case "object":
-      return holds(lowerer, type, null);
+    case "object": {
+      const walk: Walk = { keys: new Set<string>(), incomplete: false };
+      const result = holds(lowerer, type, null, walk);
+      // A walk that answered no settles every type it met: none of them
+      // holds a constructor, whatever cut kept the walk from repeating a
+      // type already on its path. Keeping them answers a type met again
+      // where another union, record or lowered value reaches it without
+      // walking its members again. A type whose definition was not
+      // registered when the walk met it is not settled.
+      if (!result && !walk.incomplete)
+        for (const key of walk.keys) lowerer.constructorHolders.set(key, false);
+      return result;
+    }
     default:
       return false;
   }
 }
 
-function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): boolean {
+/** One question's walk: the named types it met (settled by a no answer) and
+ * whether it met one whose definition was not registered yet. */
+interface Walk {
+  keys: Set<string>;
+  incomplete: boolean;
+}
+
+/** The walk met a type whose definition is not registered yet (a shape, a
+ * union, a class still being collected): the no it answers is no answer to
+ * keep. */
+function incompleteWalk(walk: Walk): false {
+  walk.incomplete = true;
+  return false;
+}
+
+function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null, walk: Walk): boolean {
   switch (type.kind) {
     case "func": {
       if (type.argumentsPresence === true) return true;
-      for (const param of type.params) if (holds(lowerer, param, visiting)) return true;
-      return holds(lowerer, type.ret, visiting);
+      for (const param of type.params) if (holds(lowerer, param, visiting, walk)) return true;
+      return holds(lowerer, type.ret, visiting, walk);
     }
     case "array":
     case "set":
-      return holds(lowerer, type.elem, visiting);
+      return holds(lowerer, type.elem, visiting, walk);
     case "map":
-      return holds(lowerer, type.key, visiting) || holds(lowerer, type.value, visiting);
+      return holds(lowerer, type.key, visiting, walk) || holds(lowerer, type.value, visiting, walk);
     case "promise":
-      return holds(lowerer, type.inner, visiting);
+      return holds(lowerer, type.inner, visiting, walk);
     case "generator":
       return (
-        holds(lowerer, type.yieldT, visiting) ||
-        holds(lowerer, type.retT, visiting) ||
-        holds(lowerer, type.nextT, visiting)
+        holds(lowerer, type.yieldT, visiting, walk) ||
+        holds(lowerer, type.retT, visiting, walk) ||
+        holds(lowerer, type.nextT, visiting, walk)
       );
     case "record": {
       const shapeId = type.shapeId;
-      return named(lowerer, `r:${shapeId}`, visiting, (inner) => {
+      return named(lowerer, `r:${shapeId}`, visiting, walk, (inner) => {
         const shape = lowerer.shapes.get(shapeId);
-        if (shape === undefined) return false;
-        for (const field of shape.fields) if (holds(lowerer, field.type, inner)) return true;
-        return shape.indexValue !== undefined && holds(lowerer, shape.indexValue, inner);
+        if (shape === undefined) return incompleteWalk(walk);
+        for (const field of shape.fields) if (holds(lowerer, field.type, inner, walk)) return true;
+        return shape.indexValue !== undefined && holds(lowerer, shape.indexValue, inner, walk);
       });
     }
     case "union": {
       const unionId = type.unionId;
-      return named(lowerer, `u:${unionId}`, visiting, (inner) => {
-        const arms = lowerer.unions.get(unionId)?.arms ?? [];
-        for (const arm of arms) if (holds(lowerer, arm, inner)) return true;
+      return named(lowerer, `u:${unionId}`, visiting, walk, (inner) => {
+        const arms = lowerer.unions.get(unionId)?.arms;
+        if (arms === undefined) return incompleteWalk(walk);
+        for (const arm of arms) if (holds(lowerer, arm, inner, walk)) return true;
         return false;
       });
     }
     case "object": {
       const className = type.className;
       const fields = lowerer.classes.get(className)?.fields;
-      if (fields === undefined) return false;
+      if (fields === undefined) return incompleteWalk(walk);
       // A class gains fields while it is collected: the answer is kept for
       // the fields it was given for.
-      return named(lowerer, `c:${className}:${fields.size}`, visiting, (inner) => {
-        for (const field of fields.values()) if (holds(lowerer, field, inner)) return true;
+      return named(lowerer, `c:${className}:${fields.size}`, visiting, walk, (inner) => {
+        for (const field of fields.values()) if (holds(lowerer, field, inner, walk)) return true;
         return false;
       });
     }
@@ -121,22 +150,25 @@ function holds(lowerer: Lowerer, type: IrType, visiting: Set<string> | null): bo
 
 /** The answer for a named type (a record shape, a union, a class), kept in
  * Lowerer.constructorHolders. A type met again while it is being answered
- * holds nothing new: the rest of the walk decides. An answer found under
- * such a cut is not kept unless it is a yes. */
+ * holds nothing new: the rest of the walk decides (a cut answers no, and a
+ * no is right for the whole walk). A yes is kept at once; a no is kept by
+ * the walk (holdsConstructorFunction) once no type it met was incomplete. */
 function named(
   lowerer: Lowerer,
   key: string,
   visiting: Set<string> | null,
+  walk: Walk,
   answer: (visiting: Set<string>) => boolean,
 ): boolean {
   const known = lowerer.constructorHolders.get(key);
   if (known !== undefined) return known;
   if (visiting !== null && visiting.has(key)) return false;
   const inner = visiting ?? new Set<string>();
+  walk.keys.add(key);
   inner.add(key);
   const result = answer(inner);
   inner.delete(key);
-  if (result || inner.size === 0) lowerer.constructorHolders.set(key, result);
+  if (result) lowerer.constructorHolders.set(key, true);
   return result;
 }
 

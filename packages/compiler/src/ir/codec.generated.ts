@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "9841de211e2a2418";
+export const IR_CODEC_LAYOUT = "af0104a72cb69fa0";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -156,7 +156,7 @@ const KEYS128: readonly string[] = ["kind","numbers","strings","index","type","l
 const KEYS129: readonly string[] = ["kind","value","type","loc"];
 const KEYS130: readonly string[] = ["kind","elems","type","loc"];
 const KEYS131: readonly string[] = ["kind","callee","receiver","calleeName","calleeNameValue","args","spreads","type","loc"];
-const KEYS132: readonly string[] = ["kind","value","preserveRefs","adopt","shared","keyIdentity","exact","partialView","inferredSite","origin","pathIndex","type","loc"];
+const KEYS132: readonly string[] = ["kind","value","preserveRefs","adopt","shared","keyIdentity","exact","partialView","inferredSite","origin","pathIndex","pathKey","type","loc"];
 const KEYS133: readonly string[] = ["kind","value","spelling","firstProp","type","loc"];
 const KEYS134: readonly string[] = ["kind","value","type","loc","liveRef","fnName","fnNameMainThreadOnly","fnLength"];
 const KEYS135: readonly string[] = ["kind","key","negated","value","type","loc"];
@@ -3160,6 +3160,11 @@ function encIrExpr(w: IrWriter, v: IrExpr): void {
         w.byte(1);
         w.num(v.pathIndex);
       }
+      if (v.pathKey === undefined) w.byte(0);
+      else {
+        w.byte(1);
+        w.str(v.pathKey);
+      }
       encIrType(w, v.type);
       encSrcLoc(w, v.loc);
       return;
@@ -4252,9 +4257,10 @@ function decIrExpr(r: IrReader): IrExpr {
       const f7 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.inferredSite") === 0 ? undefined : r.str();
       const f8 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.origin") === 0 ? undefined : r.num();
       const f9 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathIndex") === 0 ? undefined : r.num();
-      const f10 = decIrType(r);
-      const f11 = decSrcLoc(r);
-      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { shared: f3 } : {}), ...(f4 !== undefined ? { keyIdentity: f4 } : {}), ...(f5 !== undefined ? { exact: f5 } : {}), ...(f6 !== undefined ? { partialView: f6 } : {}), ...(f7 !== undefined ? { inferredSite: f7 } : {}), ...(f8 !== undefined ? { origin: f8 } : {}), ...(f9 !== undefined ? { pathIndex: f9 } : {}), type: f10, loc: f11 };
+      const f10 = r.tag(2, "IrFunction.body[]<arrayDelete>.arr<dynCheck>.pathKey") === 0 ? undefined : r.str();
+      const f11 = decIrType(r);
+      const f12 = decSrcLoc(r);
+      const o: Extract<IrExpr, { kind: "dynCheck" }> = { kind: "dynCheck", value: f0, ...(f1 !== undefined ? { preserveRefs: f1 } : {}), ...(f2 !== undefined ? { adopt: f2 } : {}), ...(f3 !== undefined ? { shared: f3 } : {}), ...(f4 !== undefined ? { keyIdentity: f4 } : {}), ...(f5 !== undefined ? { exact: f5 } : {}), ...(f6 !== undefined ? { partialView: f6 } : {}), ...(f7 !== undefined ? { inferredSite: f7 } : {}), ...(f8 !== undefined ? { origin: f8 } : {}), ...(f9 !== undefined ? { pathIndex: f9 } : {}), ...(f10 !== undefined ? { pathKey: f10 } : {}), type: f11, loc: f12 };
       return o;
     }
     case 27: {

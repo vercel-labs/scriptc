@@ -201,6 +201,7 @@ typedef enum {
   X(MESSAGE_PORT, 36) \
   X(MIME_PARAMS, 81) /* util.MIMEParams (scr_mime.c) */ \
   X(MIME_TYPE, 82) /* util.MIMEType (scr_mime.c) */ \
+  X(MODULE_CLASS, 63) /* node:module's Module class object (scr_module_class.c) */ \
   X(MODULE_NAMESPACE, 79) /* module namespace object read through its exports (scr_module_namespace.c) */ \
   X(NAVIGATOR, 83) /* Node's navigator global (scr_node_builtin.c) */ \
   X(NET_BLOCK_LIST, 48) /* net.BlockList (scr_net.c) */ \
@@ -290,7 +291,6 @@ typedef enum {
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
 #define SCR_DYNH_UNASSIGNED(Z) \
-  Z(63) /* skipped: claimed by a branch that took another number */
 
 /* One member per pinned tag, sized value + 1, so its size is the largest
  * pinned value + 1: the new tags are numbered from there. Never instantiated. */
@@ -1876,6 +1876,29 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
  * over the same primitive, or NULL when `value` is not a wrapper. Installed
  * by the wrapper unit, so a program without one keeps the refusal. */
 extern SCR_TL ScrDyn *(*scr_js_wrapper_clone_hook)(const ScrDyn *value);
+/* The wrapper unit's primitive prototype of a kind (0 String, 1 Number,
+ * 2 Boolean), +1: the object X.prototype reads, so Object.getPrototypeOf(prim)
+ * answers it. NULL when the program links no wrapper unit. */
+extern ScrDyn *(*scr_js_wrapper_primitive_proto_hook)(double kind);
+/* The collection unit's class prototype of a Map, Set, WeakMap or WeakSet
+ * value (+1), NULL for any other value. Installed by scr_dyn_collections.c. */
+extern ScrDyn *(*scr_dyn_collection_proto_hook)(ScrDyn *value);
+/* Function.prototype as a value (+1), installed by the untyped-invoke unit
+ * (scr_dyn_invoke.c), which owns it; NULL when the program links no unit
+ * that can hold a function prototype. */
+extern ScrDyn *(*scr_dyn_function_proto_hook)(void);
+/* Date.prototype as a value (+1), installed by scr_dyn_stdlib_prototype.c,
+ * which owns it; NULL when the program links no standard-library prototype
+ * unit (it cannot name Date.prototype then). */
+extern ScrDyn *(*scr_dyn_date_proto_hook)(void);
+/* ArrayBuffer.prototype as a value (+1), installed by
+ * scr_dyn_stdlib_prototype.c, which owns it; NULL when the program links no
+ * standard-library prototype unit (it cannot name ArrayBuffer.prototype
+ * then). */
+extern ScrDyn *(*scr_dyn_array_buffer_proto_hook)(void);
+/* Object.getPrototypeOf's answer for a primitive: its wrapper prototype
+ * where the program has one, else the per-kind cached ordinary object. +1. */
+ScrDyn *scr_dyn_primitive_prototype(double kind);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
@@ -2410,6 +2433,14 @@ ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *m
 ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke_buffer_wide(ScrDyn *recv, ScrDyn *callee, const char *method, int32_t *mid_slot, ScrDyn *const *args, size_t argc, const char *what);
 ScrDyn *scr_dyn_invoke(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, const char *what);
+/* The invoke unit installs itself here when it links: units that may call a
+ * dynamic method only for a value form (the wrapper prototype's generic
+ * string methods called through their function value) reach it through this
+ * pointer, so they do not make the whole invoke unit a link dependency of
+ * every program that boxes a primitive. NULL means the program links no
+ * untyped-call support, and the caller raises its own refusal. */
+extern ScrDyn *(*scr_dyn_invoke_fn)(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                    size_t argc, const char *what);
 /* A %TypedArray%.prototype method called on a checked typed array (not a
  * DataView): its answer (+1, or NULL with the exception pending), with
  * *handled false for a name it does not implement. */
@@ -2754,6 +2785,15 @@ typedef struct ScrDynHandleOps {
    * (a definition still shadows it), and it is the set the fetch classes
    * answer from their interfaces. NULL = the class declares no accessors. */
   const ScrDynHandleName *attributes;
+  /* Reflect.get on a class accessor with an explicit receiver that is not
+   * an instance of the class raises this TypeError (`key` is the accessor's
+   * name). NULL = V8's text: "Illegal invocation", or "Cannot convert
+   * undefined or null to object" for a nullish receiver. */
+  void (*accessor_brand_error)(const char *key, size_t key_len, const ScrDyn *receiver);
+  /* The accessors that answer a rejected promise, not a throw, when a
+   * Reflect.get receiver is not an instance of the class (a WebIDL `rejects`
+   * attribute such as a reader's closed). NULL = none. */
+  const ScrDynHandleName *rejecting_names;
   /* The class name V8's property TypeErrors print when it differs from
    * cls: undici's constructors are `_Request` and `_Response`, which V8
    * shows as `#<_Request>`. NULL = cls. */
@@ -2794,6 +2834,12 @@ typedef struct ScrDynHandlePropsHooks {
   /* scr_dyn_handle_install: the ops to install for `tag` in place of
    * `ops` (the wrapped ops when the tag has tables). */
   const ScrDynHandleOps *(*install)(ScrDynHandleTag tag, const ScrDynHandleOps *ops);
+  /* The class's own member read for a handle of `tag`, skipping the
+   * handle's own-property table: Reflect.get invokes an inherited getter on
+   * an explicit receiver, and the receiver's own properties do not take
+   * part. NULL result without a pending exception = the class has no such
+   * member. */
+  ScrDyn *(*class_get)(const ScrDyn *handle, const char *key, size_t key_len);
   /* The table a write of `key` lands in (borrowed, made on first use), or
    * NULL when the write is not a table write (a modeled property, or a
    * member key the slice refuses). */

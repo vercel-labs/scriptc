@@ -431,7 +431,12 @@ export function emitSerializationExpr(
       // plain object or array. The helper itself for every other conversion.
       const adopting =
         e.shared === true
-          ? host.dyn.dynCheckAdoptingHelper(e.type, e.preserveRefs === true, sourceBorrowed)
+          ? host.dyn.dynCheckAdoptingHelper(
+              e.type,
+              e.preserveRefs === true,
+              sourceBorrowed,
+              e.keyIdentity === true,
+            )
           : helper;
       // A check of an analysis-proven fact (shape inference's overlay)
       // names its site, so a failure reports a compiler bug.

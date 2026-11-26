@@ -63,7 +63,7 @@ int version(int Argc, char **Argv) {
       // that also run against older helpers.
       {"features", json::Array{"runtime-unit-profile", "profile-functions",
                                 "runtime-unit-optional-bitcode",
-                                "partition-jobs"}},
+                                "partition-jobs", "dispatch-opt"}},
   };
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
   return 0;

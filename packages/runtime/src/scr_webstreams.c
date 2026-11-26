@@ -5297,6 +5297,7 @@ static const char *const ws_readable_order[] = {"locked", "cancel", "getReader",
 
 static const ScrDynHandleClass ws_readable_class = {
     "ReadableStream", 0, ws_readable_construct, ws_readable_accessors, ws_readable_statics, ws_readable_order, ws_readable_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamDefaultReader */
@@ -5378,6 +5379,7 @@ static const char *const ws_reader_order[] = {"read", "releaseLock", "closed", "
 
 static const ScrDynHandleClass ws_reader_class = {
     "ReadableStreamDefaultReader", 1, ws_reader_construct, ws_reader_accessors, NULL, ws_reader_order, ws_reader_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamBYOBReader */
@@ -5440,6 +5442,7 @@ static const char *const ws_byob_reader_order[] = {"read", "releaseLock", "close
 static const ScrDynHandleClass ws_byob_reader_class = {
     "ReadableStreamBYOBReader", 1, ws_byob_reader_construct, ws_reader_accessors, NULL, ws_byob_reader_order,
     ws_byob_reader_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamDefaultController */
@@ -5508,6 +5511,7 @@ static const char *const ws_rcontroller_order[] = {"desiredSize", "close", "enqu
 
 static const ScrDynHandleClass ws_rcontroller_class = {
     "ReadableStreamDefaultController", 0, NULL, ws_rcontroller_accessors, NULL, ws_rcontroller_order, ws_rcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ReadableByteStreamController */
@@ -5521,6 +5525,7 @@ static const char *const ws_byob_controller_order[] = {"byobRequest", "desiredSi
 static const ScrDynHandleClass ws_byob_controller_class = {
     "ReadableByteStreamController", 0, NULL, ws_byob_controller_accessors, NULL, ws_byob_controller_order,
     ws_rcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ReadableStreamBYOBRequest */
@@ -5627,6 +5632,7 @@ static const char *const ws_byob_request_order[] = {"view", "respond", "respondW
 static const ScrDynHandleClass ws_byob_request_class = {
     "ReadableStreamBYOBRequest", 0, NULL, ws_byob_request_accessors, NULL, ws_byob_request_order,
     ws_byob_request_method,
+    .no_own_properties = true,
 };
 
 /* WritableStream */
@@ -5672,6 +5678,7 @@ static const char *const ws_writable_order[] = {"locked", "abort", "close", "get
 
 static const ScrDynHandleClass ws_writable_class = {
     "WritableStream", 0, ws_writable_construct, ws_writable_accessors, NULL, ws_writable_order, ws_writable_method,
+    .no_own_properties = true,
 };
 
 /* WritableStreamDefaultWriter */
@@ -5744,6 +5751,7 @@ static const char *const ws_writer_order[] = {"closed", "desiredSize", "ready", 
 
 static const ScrDynHandleClass ws_writer_class = {
     "WritableStreamDefaultWriter", 1, ws_writer_construct, ws_writer_accessors, NULL, ws_writer_order, ws_writer_method,
+    .no_own_properties = true,
 };
 
 /* WritableStreamDefaultController */
@@ -5773,6 +5781,7 @@ static const char *const ws_wcontroller_order[] = {"signal", "error", NULL};
 
 static const ScrDynHandleClass ws_wcontroller_class = {
     "WritableStreamDefaultController", 0, NULL, ws_wcontroller_accessors, NULL, ws_wcontroller_order, ws_wcontroller_method,
+    .no_own_properties = true,
 };
 
 /* TransformStream */
@@ -5807,6 +5816,7 @@ WS_MEMBER_INVOKE(ws_transform)
 
 static const ScrDynHandleClass ws_transform_class = {
     "TransformStream", 0, ws_transform_construct, ws_transform_accessors, NULL, NULL, ws_transform_method,
+    .no_own_properties = true,
 };
 
 /* TransformStreamDefaultController */
@@ -5847,6 +5857,7 @@ static const char *const ws_tcontroller_order[] = {"desiredSize", "enqueue", "er
 
 static const ScrDynHandleClass ws_tcontroller_class = {
     "TransformStreamDefaultController", 0, NULL, ws_tcontroller_accessors, NULL, ws_tcontroller_order, ws_tcontroller_method,
+    .no_own_properties = true,
 };
 
 /* ── TextEncoderStream and TextDecoderStream (webstreams/encoding.js) */
@@ -6128,10 +6139,12 @@ WS_MEMBER_INVOKE(ws_text)
 
 static const ScrDynHandleClass ws_text_encoder_class = {
     "TextEncoderStream", 0, ws_text_encoder_construct, ws_text_encoder_accessors, NULL, NULL, ws_text_method,
+    .no_own_properties = true,
 };
 
 static const ScrDynHandleClass ws_text_decoder_class = {
     "TextDecoderStream", 0, ws_text_decoder_construct, ws_text_decoder_accessors, NULL, NULL, ws_text_method,
+    .no_own_properties = true,
 };
 
 /* ── queuing strategies ────────────────────────────────────────────── */
@@ -6245,10 +6258,12 @@ static const ScrDynHandleAccessor ws_strategy_accessors[] = {{"highWaterMark", f
 
 static const ScrDynHandleClass ws_count_strategy_class = {
     "CountQueuingStrategy", 1, ws_count_strategy_construct, ws_strategy_accessors, NULL, NULL,
+    .no_own_properties = true,
 };
 
 static const ScrDynHandleClass ws_byte_strategy_class = {
     "ByteLengthQueuingStrategy", 1, ws_byte_strategy_construct, ws_strategy_accessors, NULL, NULL,
+    .no_own_properties = true,
 };
 
 /* ── installation and the compiler's entry points ─────────────────── */
@@ -6302,7 +6317,177 @@ static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
   }
 }
 
-#define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID) \
+
+/* ── util.inspect of the class instances ─────────────────────────────
+ * Node prints each instance as its class plus the fields its custom
+ * inspector reports: the stream's state, a reader's parked requests and
+ * closed promise, a writer's promises and desired size, the queuing
+ * strategies' high-water mark, and the stream a transform or text stream
+ * wraps on each side. A nested stream prints through its own view here. */
+
+static ScrDyn *ws_inspect_text(const char *text) {
+  /* scr_dyn_new_str retains the string it wraps, so the fresh string's own
+   * reference goes back here (otherwise every inspection of a stream
+   * leaks its state string). */
+  ScrStr *value = scr_str_new(text, strlen(text));
+  ScrDyn *boxed = scr_dyn_new_str(value);
+  scr_str_release(value);
+  return boxed;
+}
+
+static ScrDyn *ws_inspect_field(ScrDyn *view, const char *key, ScrDyn *value) {
+  if (value != NULL) scr_dyn_obj_set(view, key, strlen(key), value);
+  return view;
+}
+
+/* ReadableStream { locked, state, supportsBYOB } */
+static ScrDyn *ws_readable_inspect_view(void *h) {
+  WsReadable *s = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  ws_inspect_field(view, "locked", scr_dyn_new_bool(ws_readable_locked(s)));
+  const char *state =
+      s->state == WS_STATE_CLOSED ? "closed" : s->state == WS_STATE_ERRORED ? "errored" : "readable";
+  ws_inspect_field(view, "state", ws_inspect_text(state));
+  ws_inspect_field(view, "supportsBYOB", scr_dyn_new_bool(s->controller != NULL && s->controller->bytes));
+  return view;
+}
+
+/* WritableStream { locked, state } */
+static ScrDyn *ws_writable_inspect_view(void *h) {
+  WsWritable *s = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  ws_inspect_field(view, "locked", scr_dyn_new_bool(s->writer != NULL));
+  const char *state = s->state == WS_W_CLOSED     ? "closed"
+                      : s->state == WS_W_ERRORED  ? "errored"
+                      : s->state == WS_W_ERRORING ? "erroring"
+                                                  : "writable";
+  ws_inspect_field(view, "state", ws_inspect_text(state));
+  return view;
+}
+
+/* TransformStream { readable, writable, backpressure } */
+static ScrDyn *ws_transform_inspect_view(void *h) {
+  WsTransform *t = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  ws_inspect_field(view, "readable", ws_transform_readable_box(t));
+  ws_inspect_field(view, "writable", ws_transform_writable_box(t));
+  ws_inspect_field(view, "backpressure", scr_dyn_new_bool(t->backpressure));
+  return view;
+}
+
+/* TextEncoderStream { encoding, readable, writable } and
+ * TextDecoderStream { encoding, fatal, ignoreBOM, readable, writable }. */
+static ScrDyn *ws_text_inspect_view(void *h) {
+  WsTextStream *t = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  ScrDyn *encoding = ws_text_get(h, "encoding", 8);
+  if (encoding != NULL && scr_exc_pending()) {
+    scr_dyn_release(encoding);
+    encoding = NULL;
+  }
+  ws_inspect_field(view, "encoding", encoding);
+  if (t->decoder) {
+    ws_inspect_field(view, "fatal", scr_dyn_new_bool(t->fatal));
+    ws_inspect_field(view, "ignoreBOM", scr_dyn_new_bool(t->ignore_bom));
+  }
+  ws_inspect_field(view, "readable", ws_transform_readable_box(t->transform));
+  ws_inspect_field(view, "writable", ws_transform_writable_box(t->transform));
+  return view;
+}
+
+/* CountQueuingStrategy / ByteLengthQueuingStrategy { highWaterMark } */
+static ScrDyn *ws_strategy_inspect_view(void *h) {
+  WsStrategy *s = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  ws_inspect_field(view, "highWaterMark", scr_dyn_new_num(s->high_water_mark));
+  return view;
+}
+
+/* ReadableStreamDefaultReader { stream, readRequests, close } */
+static ScrDyn *ws_reader_inspect_view(void *h) {
+  WsReader *r = h;
+  ScrDyn *view = scr_dyn_new_obj();
+  /* A released reader has no stream: Node prints `stream: undefined`. */
+  if (r->stream != NULL)
+    ws_inspect_field(view, "stream", ws_stream_box(r->stream));
+  else
+    ws_inspect_field(view, "stream", scr_dyn_retain(scr_dyn_undefined()));
+  ws_inspect_field(view, "readRequests", scr_dyn_new_num((double)r->requests));
+  ScrDyn *closed = ws_reader_get(h, "closed", 6);
+  if (closed != NULL && scr_exc_pending()) {
+    scr_dyn_release(closed);
+    closed = NULL;
+  }
+  ws_inspect_field(view, "close", closed);
+  return view;
+}
+
+/* WritableStreamDefaultWriter { stream, close, ready, desiredSize } */
+static ScrDyn *ws_writer_inspect_view(void *h) {
+  WsWriter *w = h;
+  if (w->stream == NULL) {
+    /* A released writer: its desiredSize getter throws, and Node's
+     * inspector lets that error out of util.inspect instead of printing
+     * the writer. */
+    ws_state_error(ws_writer_unbound);
+    return NULL;
+  }
+  ScrDyn *view = scr_dyn_new_obj();
+  if (w->stream != NULL) ws_inspect_field(view, "stream", ws_writable_box(w->stream));
+  ScrDyn *close = ws_writer_get(h, "closed", 6);
+  if (close != NULL && scr_exc_pending()) {
+    scr_dyn_release(close);
+    close = NULL;
+  }
+  ws_inspect_field(view, "close", close);
+  ScrDyn *ready = ws_writer_get(h, "ready", 5);
+  if (ready != NULL && scr_exc_pending()) {
+    scr_dyn_release(ready);
+    ready = NULL;
+  }
+  ws_inspect_field(view, "ready", ready);
+  ws_inspect_field(view, "desiredSize", ws_writer_desired_size(w));
+  return view;
+}
+
+/* The expando properties a program set on the state's object: a handle's
+ * own properties beside the class's prototype members. Borrowed. */
+static ScrDyn *ws_own_props(void *h, ScrDynHandleTag tag) {
+  /* The queuing strategies' states are not WsObj states and keep no
+   * expando. */
+  if (tag == SCR_DYNH_WS_COUNT_STRATEGY || tag == SCR_DYNH_WS_BYTE_STRATEGY) return NULL;
+  return h ? ((WsObj *)h)->own : NULL;
+}
+
+/* The classes' accessor names for the generic member read: a Reflect.get
+ * with an explicit receiver answers these from the receiver and brand-checks
+ * it, whether or not the handle-class unit is linked. */
+#define WS_ATTR(NAME) SCR_DYN_HANDLE_NAME(NAME)
+static const ScrDynHandleName ws_readable_attrs[] = {WS_ATTR("locked"), {NULL, 0}};
+static const ScrDynHandleName ws_reader_attrs[] = {WS_ATTR("closed"), {NULL, 0}};
+static const ScrDynHandleName ws_rcontroller_attrs[] = {WS_ATTR("desiredSize"), {NULL, 0}};
+static const ScrDynHandleName ws_byob_controller_attrs[] = {WS_ATTR("byobRequest"),
+                                                            WS_ATTR("desiredSize"), {NULL, 0}};
+static const ScrDynHandleName ws_byob_request_attrs[] = {WS_ATTR("view"), {NULL, 0}};
+static const ScrDynHandleName ws_writable_attrs[] = {WS_ATTR("locked"), {NULL, 0}};
+static const ScrDynHandleName ws_writer_attrs[] = {WS_ATTR("closed"), WS_ATTR("desiredSize"),
+                                                   WS_ATTR("ready"), {NULL, 0}};
+static const ScrDynHandleName ws_wcontroller_attrs[] = {WS_ATTR("signal"), {NULL, 0}};
+static const ScrDynHandleName ws_transform_attrs[] = {WS_ATTR("readable"), WS_ATTR("writable"),
+                                                      {NULL, 0}};
+static const ScrDynHandleName ws_tcontroller_attrs[] = {WS_ATTR("desiredSize"), {NULL, 0}};
+static const ScrDynHandleName ws_text_encoder_attrs[] = {
+    WS_ATTR("encoding"), WS_ATTR("readable"), WS_ATTR("writable"), {NULL, 0}};
+static const ScrDynHandleName ws_text_decoder_attrs[] = {
+    WS_ATTR("encoding"), WS_ATTR("fatal"), WS_ATTR("ignoreBOM"), WS_ATTR("readable"),
+    WS_ATTR("writable"), {NULL, 0}};
+static const ScrDynHandleName ws_strategy_attrs[] = {WS_ATTR("highWaterMark"), WS_ATTR("size"),
+                                                     {NULL, 0}};
+/* Accessors that answer a rejected promise for an incompatible receiver. */
+static const ScrDynHandleName ws_reader_rejects[] = {WS_ATTR("closed"), {NULL, 0}};
+static const ScrDynHandleName ws_writer_rejects[] = {WS_ATTR("closed"), WS_ATTR("ready"), {NULL, 0}};
+
+#define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID, ATTR, REJECTS, INSPECT) \
   static const ScrDynHandleOps NAME = {                                           \
       .cls = CLS,                                                                 \
       .retain = RETAIN,                                                           \
@@ -6313,9 +6498,13 @@ static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
       .json_empty_object = true,                                                  \
       .to_string_tag = CLS,                                                       \
       .methods = METHODS,                                                         \
+      .attributes = ATTR,                                                         \
+      .rejecting_names = REJECTS,                                                 \
       .invalid_this = INVALID,                                                    \
+      .inspect_view = INSPECT,                                                    \
       .rejected = ws_rejected_value,                                              \
       .stream_predicate = ws_stream_predicate,                                    \
+      .own_props = ws_own_props,                                                  \
   }
 
 static const ScrDynHandleOps ws_readable_ops = {
@@ -6329,30 +6518,32 @@ static const ScrDynHandleOps ws_readable_ops = {
     .to_string_tag = "ReadableStream",
     .symbol_get = ws_readable_symbol_get,
     .methods = ws_readable_methods,
+    .attributes = ws_readable_attrs,
+    .inspect_view = ws_readable_inspect_view,
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
 
 WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_reader_invoke, ws_reader_get, ws_own_set, ws_reader_methods,
-       "Value of \"this\" must be of type ReadableStreamDefaultReader");
+       "Value of \"this\" must be of type ReadableStreamDefaultReader", ws_reader_attrs, ws_reader_rejects, ws_reader_inspect_view);
 WS_OPS(ws_rcontroller_ops, "ReadableStreamDefaultController", ws_retain, ws_release, ws_rcontroller_invoke, ws_rcontroller_get, ws_own_set, ws_rcontroller_methods,
-       "Value of \"this\" must be of type ReadableStreamDefaultController");
+       "Value of \"this\" must be of type ReadableStreamDefaultController", ws_rcontroller_attrs, NULL, NULL);
 WS_OPS(ws_byob_controller_ops, "ReadableByteStreamController", ws_retain, ws_release, ws_rcontroller_invoke, ws_byob_controller_get, ws_own_set,
-       ws_byob_controller_methods, "Value of \"this\" must be of type ReadableByteStreamController");
+       ws_byob_controller_methods, "Value of \"this\" must be of type ReadableByteStreamController", ws_byob_controller_attrs, NULL, NULL);
 WS_OPS(ws_byob_reader_ops, "ReadableStreamBYOBReader", ws_retain, ws_release, ws_byob_reader_invoke, ws_byob_reader_get, ws_own_set,
-       ws_byob_reader_methods, "Value of \"this\" must be of type ReadableStreamBYOBReader");
+       ws_byob_reader_methods, "Value of \"this\" must be of type ReadableStreamBYOBReader", ws_reader_attrs, ws_reader_rejects, NULL);
 WS_OPS(ws_byob_request_ops, "ReadableStreamBYOBRequest", ws_retain, ws_release, ws_byob_request_invoke, ws_byob_request_get, ws_own_set,
-       ws_byob_request_methods, "Value of \"this\" must be of type ReadableStreamBYOBRequest");
+       ws_byob_request_methods, "Value of \"this\" must be of type ReadableStreamBYOBRequest", ws_byob_request_attrs, NULL, NULL);
 WS_OPS(ws_writable_ops, "WritableStream", ws_retain, ws_release, ws_writable_invoke, ws_writable_get, ws_own_set,
-       ws_writable_methods, "Value of \"this\" must be of type WritableStream");
+       ws_writable_methods, "Value of \"this\" must be of type WritableStream", ws_writable_attrs, NULL, ws_writable_inspect_view);
 WS_OPS(ws_writer_ops, "WritableStreamDefaultWriter", ws_retain, ws_release, ws_writer_invoke, ws_writer_get, ws_own_set,
-       ws_writer_methods, "Value of \"this\" must be of type WritableStreamDefaultWriter");
-WS_OPS(ws_wcontroller_ops, "WritableStreamDefaultController", ws_retain, ws_release, ws_wcontroller_invoke, ws_wcontroller_get, ws_own_set, ws_wcontroller_methods, "Value of \"this\" must be of type WritableStreamDefaultController");
+       ws_writer_methods, "Value of \"this\" must be of type WritableStreamDefaultWriter", ws_writer_attrs, ws_writer_rejects, ws_writer_inspect_view);
+WS_OPS(ws_wcontroller_ops, "WritableStreamDefaultController", ws_retain, ws_release, ws_wcontroller_invoke, ws_wcontroller_get, ws_own_set, ws_wcontroller_methods, "Value of \"this\" must be of type WritableStreamDefaultController", ws_wcontroller_attrs, NULL, NULL);
 WS_OPS(ws_transform_ops, "TransformStream", ws_retain, ws_release, ws_transform_invoke, ws_transform_get, ws_own_set, NULL,
-       "Value of \"this\" must be of type TransformStream");
-WS_OPS(ws_tcontroller_ops, "TransformStreamDefaultController", ws_retain, ws_release, ws_tcontroller_invoke, ws_tcontroller_get, ws_own_set, ws_tcontroller_methods, "Value of \"this\" must be of type TransformStreamDefaultController");
-/* TextEncoderStream and TextDecoderStream have no @@toStringTag. */
+       "Value of \"this\" must be of type TransformStream", ws_transform_attrs, NULL, ws_transform_inspect_view);
+WS_OPS(ws_tcontroller_ops, "TransformStreamDefaultController", ws_retain, ws_release, ws_tcontroller_invoke, ws_tcontroller_get, ws_own_set, ws_tcontroller_methods, "Value of \"this\" must be of type TransformStreamDefaultController", ws_tcontroller_attrs, NULL, NULL);/* TextEncoderStream and TextDecoderStream have no @@toStringTag. */
 static const ScrDynHandleOps ws_text_encoder_ops = {
     .cls = "TextEncoderStream",
     .retain = ws_retain,
@@ -6361,9 +6552,12 @@ static const ScrDynHandleOps ws_text_encoder_ops = {
     .get = ws_text_get,
     .set = ws_own_set,
     .json_empty_object = true,
+    .attributes = ws_text_encoder_attrs,
+    .inspect_view = ws_text_inspect_view,
     .invalid_this = "Value of \"this\" must be of type TextEncoderStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
 static const ScrDynHandleOps ws_text_decoder_ops = {
     .cls = "TextDecoderStream",
@@ -6373,14 +6567,16 @@ static const ScrDynHandleOps ws_text_decoder_ops = {
     .get = ws_text_get,
     .set = ws_own_set,
     .json_empty_object = true,
+    .attributes = ws_text_decoder_attrs,
+    .inspect_view = ws_text_inspect_view,
     .invalid_this = "Value of \"this\" must be of type TextDecoderStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
-WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy");
+WS_OPS(ws_count_strategy_ops, "CountQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL, "Value of \"this\" must be of type CountQueuingStrategy", ws_strategy_attrs, NULL, ws_strategy_inspect_view);
 WS_OPS(ws_byte_strategy_ops, "ByteLengthQueuingStrategy", ws_strategy_retain, ws_strategy_release, ws_strategy_invoke, ws_strategy_get, ws_set_noop, NULL,
-       "Value of \"this\" must be of type ByteLengthQueuingStrategy");
-
+       "Value of \"this\" must be of type ByteLengthQueuingStrategy", ws_strategy_attrs, NULL, ws_strategy_inspect_view);
 static SCR_TL bool ws_installed;
 
 /* Defined by the stream unit; weak so a web-streams-only link stays valid. */

@@ -95,6 +95,13 @@ bool scr_net_server_settled(ScrNetServer *s); /* 'close' already emitted */
  * supported yet" Error). */
 void scr_net_set_dynh_http_on(bool (*fn)(ScrNetServer *, const char *, const ScrDyn *, bool));
 void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data, ScrNetNativeEventFn eof, ScrNetNativeEventFn closed, void *ctx, void (*ctx_free)(void *));
+/* A protocol takeover (http2.performServerHandshake): the socket may still
+ * own the context of a reader that stepped aside (an HTTP/1 upgrade or
+ * CONNECT handover keeps it until socket death) — install the new reader and
+ * release that context, so the taking-over protocol does not leak it. */
+void scr_net_sock_adopt_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
+                                      void *ctx, void (*ctx_free)(void *));
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *));
 /* The upgrade handover: clear the reader's fn pointers, keep the ctx. */
 void scr_net_sock_clear_native_reader(ScrNetSocket *s);
@@ -110,6 +117,11 @@ void scr_net_sock_set_encoding(ScrNetSocket *s, ScrStr *enc /*borrowed*/);
  * is Node's argument TypeError. May throw. */
 void scr_net_sock_set_encoding_dyn(ScrNetSocket *s, const ScrDyn *enc /*borrowed*/);
 bool scr_net_sock_destroyed(ScrNetSocket *s); /* socket.destroyed */
+/* The socket carries an HTTP/2 session already (a handshake, an accepted h2
+ * connection, or a client session): a second handshake over it is Node's
+ * ERR_HTTP2_SOCKET_BOUND. */
+void scr_net_sock_set_h2_bound(ScrNetSocket *s);
+bool scr_net_sock_h2_bound(ScrNetSocket *s);
 bool scr_net_sock_writable(ScrNetSocket *s);  /* socket.writable */
 bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS handshake */
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
@@ -285,6 +297,8 @@ ScrNetSocket *scr_net_sock_construct(const ScrDyn *options,
                                      const ScrStr *fence);
 /* socket.connect(port[, host][, connectListener]): an idle socket dials
  * (port and host validated first). */
+void scr_net_sock_connect_missing(ScrNetSocket *s);
+void scr_net_sock_connect_path(ScrNetSocket *s, const ScrDyn *target /*borrowed*/, const ScrDyn *extra1 /*borrowed*/, const ScrDyn *slot /*borrowed, nullable*/, ScrClosure *cb /*moves, nullable*/);
 void scr_net_sock_connect_port(ScrNetSocket *s, double port, ScrStr *host /*borrowed, nullable*/,
                                ScrClosure *cb /*moves, nullable*/);
 bool scr_net_host_chk(const ScrStr *host /*borrowed, nullable*/);

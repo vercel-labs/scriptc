@@ -6706,7 +6706,7 @@ static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_FINISH, scr_http_client_retain(c));
 }
 
-static void scr_http_client_maybe_drain(ScrHttpClientReq *c);
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed);
 
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   if (c->socket_emitted) return;
@@ -6730,13 +6730,16 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   /* Node's request 'drain' follows the socket's buffer, so a write that
    * answered false drains here even while its corked bytes wait in the
    * message (they do not hold the socket's 'drain' back). */
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
 }
 
 /* 'drain' from the sweep: the write that answered false has returned, so a
  * handler that writes the next chunk adds no frames to that stack. */
 static void scr_http_client_emit_drain(struct ScrHttpClientReq *c) {
   c->drain_emit_queued = false;
+  /* end() or destroy() between the queue and this sweep: a request that is no
+   * longer writable emits no 'drain', as Node's Writable does not. */
+  if (c->ended || c->destroyed || c->close_emitted) return;
   scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
 }
 
@@ -7287,7 +7290,7 @@ static void scr_http_client_autocork(ScrHttpClientReq *c) {
 /* write()'s answer, below with the rest of the OutgoingMessage
  * backpressure state. */
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c);
-static void scr_http_client_maybe_drain(ScrHttpClientReq *c);
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed);
 
 bool scr_http_client_write_str(ScrHttpClientReq *c, ScrStr *data /*borrowed*/) {
   if (c->ended && !c->destroyed && !c->close_emitted) {
@@ -7354,7 +7357,7 @@ static void scr_http_client_cork_flush(ScrHttpClientReq *c) {
   free(sizes);
   free(held);
   c->ended = was_ended;
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
 }
 
 void scr_http_client_cork(ScrHttpClientReq *c) { c->corked++; }
@@ -7406,7 +7409,7 @@ void scr_http_client_on_drain(ScrHttpClientReq *c, ScrClosure *cb /*moves*/, boo
 static void scr_http_client_socket_drained_nt(ScrClosure *cb) {
   ScrHttpClientReq *c = scr_box_get_ref(cb->caps[0]);
   c->drain_wait = false;
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
   scr_http_client_release(c);
 }
 
@@ -7419,7 +7422,7 @@ static void scr_http_client_arm_socket_drain(ScrHttpClientReq *c) {
   scr_net_sock_on_write_flush(c->sock, cb);
 }
 
-static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c, bool flushed) {
   if (!c->need_drain || c->ended || c->destroyed || c->close_emitted) return;
   /* While the CONNECT reply is pending nothing request-owned can leave, and
    * the socket's own buffer is empty: arming its flush callback here would
@@ -7437,6 +7440,11 @@ static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
     scr_http_client_arm_socket_drain(c);
     return;
   }
+  /* A write that lands in the message's own buffer is not a drain: Node
+   * emits 'drain' from a socket flush (or the socket's assignment), so a
+   * producer that keeps writing from 'drain' is paced by the socket instead
+   * of filling the message's buffer between flushes. */
+  if (!flushed) return;
   c->need_drain = false;
   /* Node emits 'drain' asynchronously: a handler that writes the next chunk
    * must not re-enter this write's stack (a drain-driven upload would grow
@@ -7449,7 +7457,7 @@ static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c) {
   bool ok = scr_http_client_writable_length(c) < c->hwm;
   if (!ok) c->need_drain = true;
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, false);
   return ok;
 }
 
@@ -8336,7 +8344,7 @@ static void scr_http_client_sock_established(void *ctx) {
       scr_http_send_chunk_end(c->sock, &c->trailers);
   }
   /* the upload held for the tunnel can drain now */
-  scr_http_client_maybe_drain(c);
+  scr_http_client_maybe_drain(c, true);
   scr_http_client_queue_finish(c);
 }
 

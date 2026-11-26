@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-client-drain-after-end.ts"
+ ],
+ "diags": []
+}

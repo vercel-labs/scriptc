@@ -3253,6 +3253,9 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
         /* a FIFO nobody writes yet: Node's open waits off the loop and the
          * request stays pending — retry from the timer, never in open() */
         scr_str_utf8_end(owned);
+        /* the timer's box owns a reference of its own: retain for it before
+         * this fire releases the one it took */
+        scr_h2_file_call_retain(c);
         scr_h2_file_call_defer_ms(c, SCR_H2_FILE_RETRY_MS);
         scr_h2_file_call_cleanup(c);
         return;
@@ -5046,12 +5049,15 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
   const char *host = sep + 3;
   const char *end = p + url->len;
   const char *host_end = host;
-  while (host_end < end && *host_end != ':' && *host_end != '/') host_end++;
+  while (host_end < end && *host_end != ':' && *host_end != '/' && *host_end != '?' &&
+         *host_end != '#') {
+    host_end++;
+  }
   double default_port = secure ? 443 : 80;
   double port = default_port;
   if (host_end < end && *host_end == ':') {
     const char *q = host_end + 1;
-    if (q < end && *q != '/') {
+    if (q < end && *q != '/' && *q != '?' && *q != '#') {
       /* a port is present: WHATWG URL rules — digits only, below 65536
        * (Node rejects anything else as an invalid URL before dialing) */
       if (*q < '0' || *q > '9') {
@@ -5065,7 +5071,7 @@ ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthoriz
         parsed = parsed * 10 + (*q - '0');
         q++;
       }
-      if ((q < end && *q != '/') || parsed > 65535) {
+      if ((q < end && *q != '/' && *q != '?' && *q != '#') || parsed > 65535) {
         if (cb) scr_closure_release(cb);
         static const char text[] = "Invalid URL";
         scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_URL");

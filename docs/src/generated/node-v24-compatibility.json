@@ -44778,9 +44778,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -44801,9 +44801,9 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45116,9 +45116,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45139,9 +45139,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45162,9 +45162,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45185,9 +45185,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45208,9 +45208,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "Not implemented: a test pins the refusal a program using this API gets.",
-        "verification": "verified-absence"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45231,9 +45231,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45254,9 +45254,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {
@@ -45277,9 +45277,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "by-design",
+        "detail": "Intentionally outside the static native execution model.",
+        "verification": "architectural-policy"
       }
     },
     {

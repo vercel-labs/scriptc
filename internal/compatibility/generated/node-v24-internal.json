@@ -74880,7 +74880,6 @@
           "tests/corpus/module-compile-cache-values.mjs",
           "tests/corpus/module-find-package-json/main.ts",
           "tests/corpus/module-function-values/main.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/harness/module-compile-cache.test.ts",
           "tests/harness/npm-static.test.ts"
         ]
@@ -74998,11 +74997,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75024,8 +75020,8 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75631,8 +75627,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75654,8 +75650,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75677,8 +75673,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75700,8 +75696,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75838,11 +75834,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-feature:module.module.register",
-        "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
-        ]
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75864,8 +75857,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -75887,8 +75880,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },
@@ -76117,8 +76110,8 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:module"
+        "status": "by-design",
+        "evidence": "compiler-chapter-policy:vm"
       },
       "anchorSource": "exact"
     },

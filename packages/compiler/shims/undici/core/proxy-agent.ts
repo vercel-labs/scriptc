@@ -69,6 +69,11 @@ export interface ProxyAgentOptions extends Omit<AgentOptions, "interceptors"> {
 
 export class ProxyAgent extends DispatcherBase {
   __agent: Dispatcher;
+  /** The TLS options the tunnel applies to the origin and to the proxy;
+   * kept so a dispatcher that builds this agent (EnvHttpProxyAgent) and
+   * its tests can see what was forwarded. */
+  __requestTls: ConnectorBuildOptions | undefined;
+  __proxyTls: ConnectorBuildOptions | undefined;
 
   constructor(
     options: ProxyAgentOptions | string,
@@ -140,6 +145,8 @@ export class ProxyAgent extends DispatcherBase {
       "lookup",
     ]);
     const requestTls = opts.requestTls;
+    this.__requestTls = requestTls;
+    this.__proxyTls = opts.proxyTls;
     const connect = tunnelConnector(
       proxy,
       proxyHeaders,

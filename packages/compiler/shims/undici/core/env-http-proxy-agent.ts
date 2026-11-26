@@ -13,7 +13,7 @@
 import { Agent } from "./agent.ts";
 import { Dispatcher, DispatcherBase } from "./dispatcher.ts";
 import { ProxyAgent, type ProxyAgentOptions } from "./proxy-agent.ts";
-import type { AgentOptions, DispatchHandlers, DispatchOptions, Profile } from "./types.ts";
+import type { DispatchHandlers, DispatchOptions, Profile } from "./types.ts";
 
 /** undici's EnvHttpProxyAgent.Options. */
 export interface EnvHttpProxyAgentOptions extends Omit<ProxyAgentOptions, "uri"> {
@@ -52,34 +52,11 @@ export class EnvHttpProxyAgent extends DispatcherBase {
   constructor(options: EnvHttpProxyAgentOptions, profile: Profile) {
     super(profile);
     const opts: EnvHttpProxyAgentOptions = options ?? {};
-    const httpProxy = opts.httpProxy;
-    const httpsProxy = opts.httpsProxy;
-    const noProxy = opts.noProxy;
-    const agentOptions: AgentOptions = {
-      keepAliveTimeout: opts.keepAliveTimeout,
-      keepAliveMaxTimeout: opts.keepAliveMaxTimeout,
-      keepAliveTimeoutThreshold: opts.keepAliveTimeoutThreshold,
-      pipelining: opts.pipelining,
-      maxHeaderSize: opts.maxHeaderSize,
-      bodyTimeout: opts.bodyTimeout,
-      headersTimeout: opts.headersTimeout,
-      strictContentLength: opts.strictContentLength,
-      maxRequestsPerClient: opts.maxRequestsPerClient,
-      maxResponseSize: opts.maxResponseSize,
-      connectTimeout: opts.connectTimeout,
-      localAddress: opts.localAddress,
-      connections: opts.connections,
-      connect: opts.connect,
-      factory: opts.factory,
-      interceptors:
-        opts.interceptors === undefined
-          ? undefined
-          : {
-              Agent: opts.interceptors.Agent,
-              Pool: opts.interceptors.Pool,
-              Client: opts.interceptors.Client,
-            },
-    };
+    // Everything but the three environment members belongs to the agents
+    // this dispatcher builds, ProxyAgent's requestTls and proxyTls
+    // included: a configured private trust store must reach the tunnel,
+    // never be replaced by the system roots.
+    const { httpProxy, httpsProxy, noProxy, ...agentOptions } = opts;
     this.__noProxyAgent = new Agent(agentOptions, profile);
     const http = httpProxy ?? envValue("http_proxy") ?? envValue("HTTP_PROXY");
     this.__httpProxyAgent =

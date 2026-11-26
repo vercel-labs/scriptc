@@ -262,15 +262,20 @@ export class BodyReadable extends EventEmitter {
 }
 
 /** One async iteration over a BodyReadable: it listens for the body's
- * events, queues the chunks it has not handed out yet, and wakes a waiting
- * next(). Leaving the loop early destroys the body, as Readable's iterator
- * does. */
+ * events, hands a chunk straight to a waiting next(), queues what the
+ * consumer has not asked for yet, and pauses the body once that queue
+ * reaches the high-water mark, so a slow consumer cannot make the
+ * iterator's queue grow without bound. Leaving the loop early destroys the
+ * body, as Readable's iterator does. */
 class BodyIterator implements AsyncIterableIterator<Buffer> {
   __body: BodyReadable;
   __queue: Buffer[];
-  __waiting: (() => void) | null;
+  __queuedBytes: number;
+  /** The next() waiting for a chunk; null when none is outstanding. */
+  __waiting: ((chunk: Buffer | null) => void) | null;
   __done: boolean;
   __failure: Error | null;
+  __paused: boolean;
   __onData: (chunk: Buffer) => void;
   __onEnd: () => void;
   __onError: (err: Error) => void;
@@ -279,31 +284,48 @@ class BodyIterator implements AsyncIterableIterator<Buffer> {
   constructor(body: BodyReadable) {
     this.__body = body;
     this.__queue = [];
+    this.__queuedBytes = 0;
     this.__waiting = null;
-    this.__done = false;
+    // A body whose end (or close) already fired has nothing left to read.
+    // Resuming it would leave next() waiting for an event that cannot come.
+    this.__done = body.readableEnded || body.destroyed;
     this.__failure = null;
+    this.__paused = false;
     this.__onData = (chunk: Buffer): void => {
+      if (this.__done) return;
+      const waiting = this.__waiting;
+      if (waiting !== null) {
+        this.__waiting = null;
+        waiting(chunk);
+        return;
+      }
       this.__queue.push(chunk);
-      this.__wake();
+      this.__queuedBytes += chunk.length;
+      if (this.__queuedBytes >= HIGH_WATER_MARK && !this.__paused) {
+        this.__paused = true;
+        this.__body.pause();
+      }
     };
     this.__onEnd = (): void => {
       this.__done = true;
-      this.__wake();
+      this.__wake(null);
     };
     this.__onError = (err: Error): void => {
       if (this.__failure === null) this.__failure = err;
       this.__done = true;
-      this.__wake();
+      this.__wake(null);
     };
     this.__onClose = (): void => {
       this.__done = true;
-      this.__wake();
+      this.__wake(null);
     };
     body.on("data", this.__onData);
     body.on("end", this.__onEnd);
     body.on("error", this.__onError);
     body.on("close", this.__onClose);
-    body.resume();
+    // The data listener switches the body to flowing mode (BodyReadable's
+    // newListener hook); pause until the consumer asks for a chunk.
+    body.pause();
   }
 
   [Symbol.asyncIterator](): AsyncIterableIterator<Buffer> {
@@ -313,18 +335,28 @@ class BodyIterator implements AsyncIterableIterator<Buffer> {
   next(): Promise<IteratorResult<Buffer>> {
     const chunk = this.__queue.shift();
     if (chunk !== undefined) {
+      this.__queuedBytes -= chunk.length;
+      if (this.__paused && this.__queuedBytes < HIGH_WATER_MARK) {
+        this.__paused = false;
+        this.__body.resume();
+      }
       const value: IteratorResult<Buffer> = { done: false, value: chunk };
       return Promise.resolve<IteratorResult<Buffer>>(value);
     }
     if (this.__failure !== null) return Promise.reject(this.__failure);
-    if (this.__done) {
+    if (this.__done || this.__body.readableEnded || this.__body.destroyed) {
       const value: IteratorResult<Buffer> = { done: true, value: undefined };
       return Promise.resolve<IteratorResult<Buffer>>(value);
     }
+    this.__body.resume();
     return new Promise<IteratorResult<Buffer>>((resolve, reject) => {
-      this.__waiting = (): void => {
-        this.__waiting = null;
-        this.next().then(resolve, reject);
+      this.__waiting = (chunk: Buffer | null): void => {
+        if (chunk !== null) {
+          const value: IteratorResult<Buffer> = { done: false, value: chunk };
+          resolve(value);
+        } else {
+          this.next().then(resolve, reject);
+        }
       };
     });
   }
@@ -340,9 +372,12 @@ class BodyIterator implements AsyncIterableIterator<Buffer> {
     return Promise.resolve<IteratorResult<Buffer>>(value);
   }
 
-  __wake(): void {
+  __wake(chunk: Buffer | null): void {
     const waiting = this.__waiting;
-    if (waiting !== null) waiting();
+    if (waiting !== null) {
+      this.__waiting = null;
+      waiting(chunk);
+    }
   }
 }
 

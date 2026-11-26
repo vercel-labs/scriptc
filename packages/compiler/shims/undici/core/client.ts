@@ -720,19 +720,28 @@ export class Client extends DispatcherBase {
   }
 
   /** Writes an async-iterable body chunk by chunk, waiting for the
-   * socket's drain between writes. A source that fails errors the request
-   * and destroys the connection, as undici's writeBody does. */
+   * socket's drain between writes. When the request declared a
+   * content-length, the bytes written must be exactly that many: a stream
+   * that writes more or fewer fails the request and destroys the
+   * connection, so the excess can never be parsed as the next request on a
+   * kept-alive connection. A source that fails is handled the same way, as
+   * undici's writeBody does. */
   __streamBody(request: Request, socket: Socket): void {
     const stream = request.bodyStream;
     if (stream === null) return;
-    const chunked = request.contentLength === null;
+    const declared = request.contentLength;
+    const chunked = declared === null;
     const pump = async (): Promise<void> => {
       let failed = false;
+      let written = 0;
       try {
         for await (const chunk of stream) {
           if (request.aborted || socket.destroyed) break;
           const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
           if (bytes.length === 0) continue;
+          if (declared !== null && written + bytes.length > declared) {
+            throw new RequestContentLengthMismatchError();
+          }
           if (chunked) {
             await this.__writeChunk(socket, Buffer.from(`${bytes.length.toString(16)}\r\n`));
             await this.__writeChunk(socket, bytes);
@@ -740,9 +749,13 @@ export class Client extends DispatcherBase {
           } else {
             await this.__writeChunk(socket, bytes);
           }
+          written += bytes.length;
           request.onBodySent(bytes);
         }
         if (!request.aborted && !socket.destroyed) {
+          if (declared !== null && written !== declared) {
+            throw new RequestContentLengthMismatchError();
+          }
           if (chunked) await this.__writeChunk(socket, Buffer.from("0\r\n\r\n"));
           request.onRequestSent();
         }

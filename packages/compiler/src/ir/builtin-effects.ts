@@ -190,6 +190,7 @@ const MAY_THROW_LIB_FNS_PART_1: readonly IrLibFn[] = [
   "stream.dynSourceValue",
   "stream.unboxDynStage",
   "stream.dynTransformResult",
+  "stream.duplexBodyValue",
   "stream.handleStream",
   "stream.handleWritable",
   "stream.pipeDyn",
@@ -352,6 +353,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatNew",
   "icu.dateTimeFormatFormat",
   "icu.dateToLocale",
+  "icu.dateToLocaleDyn",
+  // Reads a computed locales value's locale-list length, which may run a
+  // getter and throw, and raises Node's TypeError and RangeError.
+  "icu.localeValue",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
@@ -518,6 +523,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "tls.serverAddContext",
   "tls.serverAddContextCtx",
   "tls.serverSetSecureContext",
+  // getTicketKeys/setTicketKeys: the non-TLS-server fence, setTicketKeys'
+  // validateBuffer and its ERR_INTERNAL_ASSERTION length ladder.
+  "tls.serverGetTicketKeys",
+  "tls.serverSetTicketKeys",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free
@@ -623,6 +632,12 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // net.createServer(options[, listener]): Node's ServerOpts ladders —
+  // options itself must be an object, options.highWaterMark and
+  // options.keepAliveInitialDelay numbers, options.blockList a
+  // net.BlockList.
+  "net.createServerOpts",
+  "net.createServerOptsCb",
   // The h2 client's throwing entries: connect on a bad/non-http
   // authority (ERR_INVALID_URL / ERR_INVALID_PROTOCOL), request on a
   // closed/destroyed session (ERR_HTTP2_INVALID_SESSION), setEncoding on
@@ -630,6 +645,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // synchronously (the stream-operations stance below), so the data/
   // write paths that can fire inline join too.
   "http2.connect",
+  "http2.performServerHandshake",
+  "http2.performServerHandshakeOpts",
   "http2.connectCb",
   "http2.sessionRequest",
   "http2.streamSetEncoding",
@@ -640,6 +657,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionSettingsCb0",
   "http2.sessionSettingsDynCb",
   "http2.sessionOnSettingsDyn",
+  "http2.sessionSetLocalWindowSize",
   "http2.sessionPing",
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
@@ -724,9 +742,11 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "writable.uncork",
   "writable.setDefaultEncoding",
   "stream.duplexFromGen",
+  "stream.duplexFromGenNoSource",
   "stream.duplexFromDyn",
   "stream.duplexFromPromise",
   "stream.duplexFromAsyncFn",
+  "stream.duplexFromAsyncFnNoSource",
   "stream.duplexFromGenSignal",
   "stream.duplexFromAsyncFnSignal",
   "fetch.readableFromWeb",
@@ -1841,6 +1861,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   "crypto.x509ValidToStr",
   "crypto.createPrivateKey",
   "crypto.createPublicKey",
+  // Node's bundle, options and passphrase checks, then the decoder, MAC and
+  // decryption errors.
+  "crypto.parsePKCS12",
   "crypto.generateKeyPairSync",
   "crypto.generateKeyPairCb",
   "crypto.encapsulate",
@@ -1856,6 +1879,12 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // and convert the keyUsages sequence.
   "webcrypto.keyObjectToCryptoKey",
   "webcrypto.keyObjectFrom",
+  // The KEM methods convert their algorithms and keyUsages sequence and
+  // import the shared secret through the secret-key import path.
+  "webcrypto.encapsulateBits",
+  "webcrypto.encapsulateKey",
+  "webcrypto.decapsulateBits",
+  "webcrypto.decapsulateKey",
   "crypto.signOneshot",
   "crypto.signOneshotCb",
   "crypto.signOneshotMaybe",
@@ -1888,6 +1917,9 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // ReadableStream.from's iterability and iterator-method errors, which
   // Node raises from the call itself.
   "webstream.from",
+  // ReadableStreamTee's argument TypeError and a locked stream's state
+  // error, which Node raises from the call itself.
+  "webstream.tee",
 ];
 
 /** The may-throw seed: libCall members that can raise. Every fs.* member

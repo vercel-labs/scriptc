@@ -61,6 +61,9 @@ export interface NativeLinkFeatures {
   fsExistsValue?: boolean;
   /** node:module's compile cache family: scr_module_cache.c. */
   moduleCompileCache?: boolean;
+  /** node:module's Module class object: scr_module_class.c and the
+   * class installs in scr_dyn_handle_class.c. */
+  moduleClass?: boolean;
   /** The program writes, defines or deletes a function's inherited member
    * name (`fn.call = f`): links the SCR_FN_MEMBER_PROPS builds of scr_json.c
    * and scr_dyn_invoke.c. Absent for every other program, so their objects
@@ -469,7 +472,9 @@ interface LinkFeatureRequirement {
  * scr_symbol.c, and its object keeps those functions when Windows links
  * it. */
 export const LINK_FEATURE_REQUIREMENTS: readonly LinkFeatureRequirement[] = [
-  { feature: "http2", requires: ["http", "net"] },
+  // scr_http2.c reports DEP0194 (stream.priority) through scr_emit_warning
+  // (scr_async_dyn.c, Node's process warning report and listeners).
+  { feature: "http2", requires: ["http", "net", "dynAsync"] },
   // scr_dgram.c reads the options' net.BlockList members through scr_net.c's
   // matcher (createSocket's checks and the send/connect filters), so the
   // block-list unit comes with the dgram unit.

@@ -44,21 +44,25 @@ console.log(read(o), at(dyn([5, 6]), 1), call(o), o.n);
     expect(validateModule(mod)).toEqual([]);
     expect(moduleUsesDynTier(mod)).toBe(true);
     const llvm = emitLlvmModule(mod);
-    // Each site owns a zeroed thread-local cache record.
+    // Each site owns a zeroed thread-local cache record, named by the
+    // function that holds the site and its place in it.
     expect(llvm).toMatch(
-      /@sc_js_ic_0 = internal (thread_local )?global \[21 x i64\] zeroinitializer/,
+      /@sc_js_ic\.sc_f_read\.0 = internal (thread_local )?global \[21 x i64\] zeroinitializer/,
     );
+    expect(llvm).not.toMatch(/@sc_js_ic_\d/);
     expect(body(llvm, "read")).toContain("@scr_js_get_probe(");
     expect(body(llvm, "write")).toContain("@scr_js_store_probe(");
     // Reads and writes test the first two entries inline: the second
     // starts 40 bytes into the record.
     for (const site of ["read", "write"])
-      expect(body(llvm, site)).toMatch(/getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 40$/m);
+      expect(body(llvm, site)).toMatch(
+        /getelementptr inbounds i8, ptr @sc_js_ic\.[\w.$]+, i64 40$/m,
+      );
     expect(body(llvm, "at")).toContain("@scr_js_keyed_probe(");
     expect(body(llvm, "call")).toContain("@scr_js_load_probe(");
-    // A compound assignment stores its number result from the jsval: an
-    // unshared number cell is updated in place.
-    expect(body(llvm, "bump")).toMatch(/store double %t\d+, ptr %t\d+/);
+    // A compound assignment stores its result's jsval word in the slot: the
+    // old word is loaded, the new one stored, and an old cell released.
+    expect(body(llvm, "bump")).toMatch(/store ptr %t\d+, ptr %t\d+/);
     // The helper stays the out-of-line slow path of every site.
     expect(body(llvm, "read")).toMatch(
       /@sc_bf__x25_dyn_class_property_[0-9a-f]+\(ptr %t\d+\) noinline cold/,
@@ -133,7 +137,7 @@ console.log(JSON.stringify(make(1, "c")), top.t);
     // Zero ways: no cache entry is tested inline, so the site branches to
     // the probe without loading an entry.
     expect(body(llvm, "read")).not.toMatch(
-      /getelementptr inbounds i8, ptr @sc_js_ic_\d+, i64 \d+$/m,
+      /getelementptr inbounds i8, ptr @sc_js_ic[._][\w.$]+, i64 \d+$/m,
     );
   } finally {
     delete process.env["SCRIPTC_DEBUG_JS_IC_WAYS"];
@@ -345,7 +349,7 @@ console.log(len2({ x: 3, y: 4 }), typeof parsed);
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     expect(moduleUsesDynTier(mod)).toBe(false);
     const llvm = emitLlvmModule(mod);
-    expect(llvm).not.toContain("@sc_js_ic_");
+    expect(llvm).not.toMatch(/@sc_js_ic[._]/);
     expect(llvm).not.toContain("@scr_js_");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -481,7 +485,7 @@ console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c
     // The group's record and its key list are private to the module: four
     // entries of a layout and a slot per key, and one pointer per key.
     expect(llvm).toMatch(
-      /@sc_js_group_0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
+      /@sc_js_group\.sc_f_sum\.0 = internal (thread_local )?global \[9 x i64\] zeroinitializer/,
     );
     expect(llvm).toMatch(/@sc_gkeys_\d+ = internal constant \[3 x ptr\]/);
     const sum = body(llvm, "sum");
@@ -490,7 +494,7 @@ console.log(sum(dyn(JSON.parse('{"a":1,"b":2,"c":3}'))), sum(dyn(JSON.parse('{"c
     expect(sum.match(/@scr_js_group_probe\(/g)).toHaveLength(1);
     expect(sum).not.toContain("@scr_js_get_probe(");
     // The guard compares the subject's layout against the record's ways.
-    expect(sum).toContain("load ptr, ptr @sc_js_group_0");
+    expect(sum).toContain("load ptr, ptr @sc_js_group.sc_f_sum.0");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

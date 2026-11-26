@@ -172,6 +172,7 @@ export function eachStringField(
     case "dynCheck": {
       visit(node.kind, "kind");
       if (typeof node.inferredSite === "string") visit(node.inferredSite, "inferredSite");
+      if (typeof node.pathKey === "string") visit(node.pathKey, "pathKey");
       return;
     }
     case "dynDestrCheck": {
@@ -904,6 +905,9 @@ export function walkExprFields(node: IrExpr, walker: IrFieldWalker, skipType: bo
       walkExprFields(node.value, walker, skipType);
       if (node.inferredSite !== undefined && node.inferredSite !== null) {
         walker.string(node.inferredSite);
+      }
+      if (node.pathKey !== undefined && node.pathKey !== null) {
+        walker.string(node.pathKey);
       }
       if (!skipType) {
         walkTypeFields(node.type, walker, skipType);
@@ -3239,10 +3243,11 @@ export type IrFieldsCurrent = [
   Unread<FieldsNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>, "arg" | "what">>,
   Unread<ValuesNotRead<Extract<NonNullable<Extract<NonNullable<Extract<IrExpr, { kind: "dynCall" }>["spreads"]>, readonly unknown[]>[number]>, object>["arg"]>>,
   Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCall" }>, "kind" | "callee" | "receiver" | "calleeName" | "calleeNameValue" | "args" | "spreads" | "type" | "loc">>,
-  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "shared" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "type" | "loc">>,
+  Unread<FieldsNotRead<Extract<IrExpr, { kind: "dynCheck" }>, "kind" | "value" | "preserveRefs" | "adopt" | "shared" | "keyIdentity" | "exact" | "partialView" | "inferredSite" | "origin" | "pathIndex" | "pathKey" | "type" | "loc">>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["preserveRefs"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["adopt"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["shared"]>>,
+  Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["keyIdentity"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["exact"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["partialView"]>>,
   Unread<ValuesNotRead<Extract<IrExpr, { kind: "dynCheck" }>["origin"]>>,

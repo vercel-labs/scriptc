@@ -557,6 +557,19 @@ struct ScrNetServer {
   bool max_conns_set;
   double max_conns;
   ScrNetLs drop_ls;
+  /* net.createServer(options): Node's ServerOpts, applied to every
+   * accepted socket — allowHalfOpen, pauseOnConnect, noDelay (this
+   * runtime's accept default), keepAlive with its initial delay in
+   * milliseconds, and highWaterMark — plus the inbound blockList (+1,
+   * NULL when none). */
+  bool opts_allow_half_open;
+  bool opts_pause_on_connect;
+  bool opts_keep_alive;
+  bool opts_ka_delay_given;
+  double opts_ka_delay_ms;
+  bool opts_hwm_set;
+  double opts_hwm;
+  ScrDyn *opts_block_list;
   /* server.dropMaxConnection (NULL = undefined): Node reads it only in
    * cluster mode, so here it is a stored value */
   ScrDyn *drop_max_connection;
@@ -585,6 +598,11 @@ struct ScrNetServer {
    * cycle through edges the collector cannot trace (box → dyn → handle →
    * ctx → closure → box). Takes http_ctx; NULL = no hook. */
   void (*proto_settle)(void *http_ctx);
+  /* The protocol's close hook: called with http_ctx when the server stops
+   * listening, before its idle connections are torn down. The h2 server
+   * closes every live session there (GOAWAY, then streams drain), which
+   * is Node's closeAllSessions. */
+  void (*proto_close)(void *http_ctx);
   /* wrapper.close = fn — the portless close-proxy idiom: when set,
    * server.close() invokes THIS closure (a compiler-emitted zero-arg
    * wrapper around the user override) instead of closing; the override
@@ -622,6 +640,10 @@ struct ScrNetSocket {
   double hwm;
   size_t read_ahead;
   bool unrefd; /* socket.unref(): does not keep the loop alive */
+  /* The socket already carries an HTTP/2 session (a handshake, an h2
+   * server's accepted connection, or a client session): a second
+   * performServerHandshake over it is Node's ERR_HTTP2_SOCKET_BOUND. */
+  bool h2_bound;
   bool connecting;
   bool rd_eof;    /* peer FIN seen (or read half abandoned) */
   bool fin_seen;  /* peer FIN seen: 'end' fired (Node's writeAfterFIN state) */
@@ -830,6 +852,14 @@ struct ScrNetSocket {
   bool (*native_idle)(void *); /* HTTP parser: no active request or partial head */
   void *native_ctx;
   void (*native_ctx_free)(void *);
+  /* Contexts of readers a protocol takeover replaced (http2.performServerHandshake
+   * over an upgrade/CONNECT socket): the stepped-aside reader may still be
+   * running when the takeover happens, so they are released with the socket. */
+  struct ScrNetRetiredCtx {
+    void *ctx;
+    void (*free_fn)(void *);
+  } *retired;
+  size_t nretired, retired_cap;
   /* transport layer (scr_tls.c): reads/writes redirect through the ops
    * once set; writes buffer and readiness drives the handshake until
    * t_est. Sits BELOW the protocol layer — an https socket carries both
@@ -941,6 +971,7 @@ void scr_net_server_release(ScrNetServer *s) {
     scr_dyn_release(s->abort_dispose);
     for (size_t i = 0; i < 5; i++) scr_dyn_release(s->http_timeout_dyn[i]);
     scr_dyn_release(s->drop_max_connection);
+    scr_dyn_release(s->opts_block_list);
     scr_dyn_release(s->max_headers_count);
     scr_dyn_release(s->max_requests_per_socket);
     scr_str_release(s->bound_host);
@@ -967,6 +998,8 @@ void scr_net_sock_release(ScrNetSocket *s) {
   if (!s || s->rc == SIZE_MAX) return;
   if (--s->rc == 0) {
     if (s->native_ctx_free) s->native_ctx_free(s->native_ctx);
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
     if (s->tops && s->tops->free) s->tops->free(s->tctx);
     scr_net_ls_drop(&s->data_ls);
     scr_net_ls_drop(&s->end_ls);
@@ -2335,6 +2368,116 @@ ScrNetServer *scr_net_create_server(ScrClosure *handler /*moves, nullable*/, Scr
   return s;
 }
 
+static bool scr_net_dyn_truthy(const ScrDyn *v);
+static bool scr_net_validate_number_dyn(const ScrDyn *v, const char *name);
+static void scr_net_dynh_fire_conn(ScrClosure *cb, ScrNetSocket *sock /* +1 */);
+
+/* A ServerOpts member read the way Node reads a property: an accessor on a
+ * boxed record runs with the record as its receiver (the raw own-data
+ * lookup the option walks elsewhere use would answer the accessor's
+ * function instead of calling it). Owned (+1); NULL when the member is
+ * absent or undefined. */
+static ScrDyn *scr_net_server_opt_read(const ScrDyn *o, const char *name, size_t len) {
+  ScrDyn *v = scr_dyn_obj_read(o, name, len);
+  if (v == NULL) return NULL;
+  if (v->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(v);
+    return NULL;
+  }
+  return v;
+}
+
+/* net.createServer(options[, listener]): Node's ServerOpts read the way
+ * its Server constructor reads them — allowHalfOpen, pauseOnConnect,
+ * noDelay and keepAlive for their truthiness, keepAliveInitialDelay and
+ * highWaterMark as numbers, blockList as a net.BlockList (a falsy member
+ * is no list). An options value that is not an object throws Node's
+ * ERR_INVALID_ARG_TYPE; null and undefined mean no option set. +1, or
+ * NULL with the exception pending. */
+ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
+                                         ScrClosure *handler /*moves, nullable*/,
+                                         ScrNetConnFn fn) {
+  const ScrDyn *v = options != NULL ? options : scr_dyn_undefined();
+  ScrDyn *owned = v->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(v) : NULL;
+  const ScrDyn *o = owned != NULL ? owned : v;
+  ScrNetServer *s = NULL;
+  if (o->kind == SCR_DYN_FUNC) {
+    /* Node: a function argument IS the connection listener — the options
+     * record is not read, and a listener passed beside it is replaced. */
+    s = scr_net_server_new();
+    if (handler != NULL) scr_closure_release(handler);
+    scr_net_ls_add(&s->conn_ls, scr_dyn_listener_closure_fn(o, (void *)&scr_net_dynh_fire_conn),
+                   (void *)&scr_net_dynh_fire_conn, false);
+    scr_dyn_release(owned);
+    return s;
+  }
+  if (o->kind == SCR_DYN_UNDEF || o->kind == SCR_DYN_NULL) {
+    /* createServer() and createServer(null): the default option set */
+  } else if (o->kind != SCR_DYN_OBJ && o->kind != SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("options", "of type object", o);
+    goto fail;
+  }
+  s = scr_net_server_new();
+  if (o->kind == SCR_DYN_OBJ) {
+    ScrDyn *m = scr_net_server_opt_read(o, "allowHalfOpen", 13);
+    s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "pauseOnConnect", 14);
+    s->opts_pause_on_connect = m != NULL && scr_net_dyn_truthy(m);
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "keepAlive", 9);
+    s->opts_keep_alive = m != NULL && scr_net_dyn_truthy(m);
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "keepAliveInitialDelay", 21);
+    if (m != NULL) {
+      if (!scr_net_validate_number_dyn(m, "options.keepAliveInitialDelay")) {
+        scr_dyn_release(m);
+        goto fail;
+      }
+      s->opts_ka_delay_given = true;
+      s->opts_ka_delay_ms = m->v.num < 0 ? 0 : m->v.num;
+      scr_dyn_release(m);
+    }
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "highWaterMark", 13);
+    if (m != NULL) {
+      if (m->kind != SCR_DYN_NUM) {
+        scr_dyn_prop_type_fail("options.highWaterMark", "of type number", m);
+        scr_dyn_release(m);
+        goto fail;
+      }
+      s->opts_hwm_set = true;
+      s->opts_hwm = m->v.num;
+      scr_dyn_release(m);
+    }
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "blockList", 9);
+    if (m != NULL && scr_net_dyn_truthy(m)) {
+      if (!scr_net_is_block_list(m)) {
+        scr_dyn_prop_type_fail("options.blockList", "an net.BlockList", m);
+        scr_dyn_release(m);
+        goto fail;
+      }
+      s->opts_block_list = scr_dyn_retain(m);
+    }
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    /* noDelay: TCP_NODELAY is this runtime's accept default (a documented
+     * divergence shared with the dial path) */
+  }
+  if (handler != NULL) scr_net_ls_add(&s->conn_ls, handler, (void *)fn, false);
+  scr_dyn_release(owned);
+  return s;
+fail:
+  scr_dyn_release(owned);
+  if (handler != NULL) scr_closure_release(handler);
+  if (s != NULL) scr_net_server_release_v(s);
+  return NULL;
+}
+
 /* listen() on a server that is listening: Node throws
  * ERR_SERVER_ALREADY_LISTEN at the call, so a caller that catches it
  * keeps running (the callback it passed, if any, is never registered). */
@@ -2708,6 +2851,9 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
     s->close_seq = ++scr_net_close_seq;
   }
   s->closing = true; /* the sweep fires 'close' once nconns drains */
+  /* Node's http2 server close runs closeAllSessions BEFORE its idle
+   * connection sweep, so every live session gets its GOAWAY. */
+  if (s->proto_close != NULL && s->http_ctx != NULL) s->proto_close(s->http_ctx);
   /* a server that never listened is not registered yet: Node still emits
    * its 'close' (and runs close callbacks) */
   scr_net_server_register(s);
@@ -3113,6 +3259,28 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     scr_net_nonblock(fd);
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    if (srv->opts_block_list != NULL) {
+      /* net.createServer({ blockList }): Node destroys a connection from a
+       * blocked address before any 'connection' listener runs. */
+      struct sockaddr_storage peer;
+      socklen_t peer_len = sizeof peer;
+      char ip[INET6_ADDRSTRLEN];
+      const char *text = NULL;
+      int family = 0;
+      if (getpeername(fd, (struct sockaddr *)&peer, &peer_len) == 0) {
+        if (peer.ss_family == AF_INET) {
+          text = inet_ntop(AF_INET, &((struct sockaddr_in *)&peer)->sin_addr, ip, sizeof ip);
+          family = 4;
+        } else if (peer.ss_family == AF_INET6) {
+          text = inet_ntop(AF_INET6, &((struct sockaddr_in6 *)&peer)->sin6_addr, ip, sizeof ip);
+          family = 6;
+        }
+      }
+      if (text != NULL && scr_net_block_list_blocks(srv->opts_block_list, text, family)) {
+        close(fd);
+        continue;
+      }
+    }
     if (srv->max_conns_set && (double)srv->nconns >= srv->max_conns) {
       /* server.maxConnections: Node closes the connection and emits
        * 'drop' with the addresses instead of 'connection' */
@@ -3131,6 +3299,20 @@ static void scr_net_server_accept(ScrNetServer *srv) {
     sock->fd = fd;
     sock->server = scr_net_server_retain(srv);
     srv->nconns++;
+    /* net.createServer(options): the accepted socket's option set, applied
+     * before the 'connection' listeners see the socket. */
+    if (srv->opts_allow_half_open) sock->allow_half_open = true;
+    if (srv->opts_hwm_set) {
+      sock->hwm = srv->opts_hwm;
+      sock->read_ahead = srv->opts_hwm > 0
+                             ? (srv->opts_hwm >= (double)SIZE_MAX ? SIZE_MAX : (size_t)srv->opts_hwm)
+                             : 0;
+    }
+    if (srv->opts_keep_alive)
+      scr_net_sock_set_keepalive(sock, true, srv->opts_ka_delay_given ? srv->opts_ka_delay_ms : 0);
+    /* pauseOnConnect: the socket starts paused, so its data waits for
+     * resume() (Node's `socket.pause()` before the connection event) */
+    if (srv->opts_pause_on_connect) sock->user_paused = true;
     scr_net_sock_register(sock);
     if (srv->http_timeout_surface && srv->http_timeouts[0] > 0)
       scr_net_sock_set_timeout(sock, srv->http_timeouts[0]);
@@ -8727,6 +8909,10 @@ void scr_net_server_set_proto_settle(ScrNetServer *s, void (*fn)(void *)) {
   s->proto_settle = fn;
 }
 
+void scr_net_server_set_proto_close(ScrNetServer *s, void (*fn)(void *)) {
+  s->proto_close = fn;
+}
+
 bool scr_net_server_settled(ScrNetServer *s) { return s->close_emitted; }
 
 void scr_net_server_set_http_ctx(ScrNetServer *s, void *ctx) { s->http_ctx = ctx; }
@@ -8742,6 +8928,28 @@ void scr_net_sock_set_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
   s->native_ctx = ctx;
   s->native_ctx_free = ctx_free;
   scr_net_sock_update_read(s);
+}
+
+/* A protocol takeover: the stepped-aside reader's context (the HTTP parser
+ * behind an upgrade/CONNECT handover keeps its connection until socket
+ * death) is retired to the socket rather than released here — the takeover
+ * happens inside that reader's own read callback, so freeing it now would be
+ * a use-after-free. The socket releases retired contexts when it dies (and
+ * at exit). */
+void scr_net_sock_adopt_native_reader(ScrNetSocket *s, ScrNetNativeDataFn data,
+                                      ScrNetNativeEventFn eof, ScrNetNativeEventFn closed,
+                                      void *ctx, void (*ctx_free)(void *)) {
+  if (s->native_ctx_free != NULL && s->native_ctx != NULL) {
+    if (s->nretired == s->retired_cap) {
+      s->retired_cap = s->retired_cap ? s->retired_cap * 2 : 2;
+      s->retired = realloc(s->retired, s->retired_cap * sizeof *s->retired);
+      if (!s->retired) scr_net_oom();
+    }
+    s->retired[s->nretired].ctx = s->native_ctx;
+    s->retired[s->nretired].free_fn = s->native_ctx_free;
+    s->nretired++;
+  }
+  scr_net_sock_set_native_reader(s, data, eof, closed, ctx, ctx_free);
 }
 
 void scr_net_sock_set_native_idle_checker(ScrNetSocket *s, bool (*fn)(void *)) {
@@ -8770,6 +8978,12 @@ bool scr_net_sock_destroyed(ScrNetSocket *s) {
    * destroyed, as Node's stream flag says */
   return s->fd < 0 && (s->emit_close || s->close_emitted);
 }
+
+void scr_net_sock_set_h2_bound(ScrNetSocket *s) {
+  if (s != NULL) s->h2_bound = true;
+}
+
+bool scr_net_sock_h2_bound(ScrNetSocket *s) { return s != NULL && s->h2_bound; }
 
 /* socket.writable — Node's stream flag: the write half is open (no end()
  * yet, no FIN sent, fd alive). Connecting sockets answer true — writes
@@ -9651,6 +9865,10 @@ static void scr_net_cleanup_atexit(void) {
       s->native_err = NULL;
       ctx_free(ctx);
     }
+    for (size_t i = 0; i < s->nretired; i++) s->retired[i].free_fn(s->retired[i].ctx);
+    free(s->retired);
+    s->retired = NULL;
+    s->nretired = s->retired_cap = 0;
     if (s->pipe_dst) {
       scr_net_sock_release(s->pipe_dst);
       s->pipe_dst = NULL;

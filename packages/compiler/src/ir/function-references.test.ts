@@ -109,7 +109,7 @@ const EXPR_FIELDS: Classified<IrExpr> = {
   unionIsTag: { unionId: "other" },
   unionEq: { unionId: "other" },
   jsonStringify: { indent: "other" },
-  dynCheck: { inferredSite: "other" },
+  dynCheck: { inferredSite: "other", pathKey: "other" },
 };
 
 const STMT_FIELDS: Classified<IrStmt> = {

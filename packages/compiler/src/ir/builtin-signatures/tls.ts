@@ -144,6 +144,13 @@ export const tlsSignatures = defineLibFnSignatures({
   "tls.serverAddContext": { argTypes: [NETSERVER_T, DYN, DYN], result: VOID },
   "tls.serverAddContextCtx": { argTypes: [NETSERVER_T, DYN, SECURECTX_T], result: VOID },
   "tls.serverSetSecureContext": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  /** server.getTicketKeys(): the 48-byte ticket key material the server
+   * mints under, as a dyn Buffer (a fresh copy per call). MAY THROW. */
+  "tls.serverGetTicketKeys": { argTypes: [NETSERVER_T], result: DYN },
+  /** server.setTicketKeys(keys): Node's validateBuffer ladder (a
+   * Buffer/TypedArray/DataView of 48 BYTES) then a re-key, so tickets
+   * minted under the previous material no longer resume. MAY THROW. */
+  "tls.serverSetTicketKeys": { argTypes: [NETSERVER_T, DYN], result: VOID },
   "tls.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   /** tls.getCACertificates(type): validateString + the documented name
    * set, then the trailing compiler-rendered fence — ALWAYS THROWS (the

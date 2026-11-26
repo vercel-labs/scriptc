@@ -979,6 +979,37 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
       guessedOverloadValue(lowerer, node)
     )
       return expr;
+    // A dynamic read names the member it validated, so a failing check
+    // reports `$.projectId` (or `$[0]`) instead of the bare `$`. The path
+    // spelling is a dot for a name and a decimal index for a position, so a
+    // key it cannot spell unambiguously (`d[""]`, `d["a-b"]`, `d[1.5]`)
+    // keeps the bare root path.
+    const readPath: { pathKey?: string; pathIndex?: number } = {};
+    if (ts.isPropertyAccessExpression(node)) readPath.pathKey = node.name.text;
+    else if (ts.isElementAccessExpression(node)) {
+      const key = node.argumentExpression;
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) {
+        if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key.text)) readPath.pathKey = key.text;
+      } else if (ts.isNumericLiteral(key)) {
+        const index = Number(key.text);
+        if (Number.isSafeInteger(index) && index >= 0) readPath.pathIndex = index;
+      }
+    }
+    // A property read through the receiver's index signature answers
+    // undefined for a key the value does not hold, exactly as the same read
+    // of a record does. The checker types it as the index value alone, so
+    // validating the read as that value would throw on a missing key where
+    // Node answers undefined; keep the undefined arm instead.
+    if (
+      narrowed !== null &&
+      (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+    ) {
+      const indexValue = lowerer.dynIndexSignatureValueRead(node);
+      if (indexValue !== null && typeEquals(indexValue, narrowed)) {
+        const armed = lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(narrowed));
+        return armed.kind === "dynCheck" ? { ...armed, ...readPath } : armed;
+      }
+    }
     if (
       narrowed &&
       (narrowed.kind === "f64" ||
@@ -986,12 +1017,12 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         narrowed.kind === "string" ||
         narrowed.kind === "bigint")
     ) {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // An instanceof narrow retains the native view after validating its
     // exact element kind. Buffer also matches Uint8Array.
     if (narrowed?.kind === "bytes" || narrowed?.kind === "url") {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // The same for a URLSearchParams. The operand of an assertion is left
     // to the assertion, which makes the same check.
@@ -1003,14 +1034,14 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         node.parent.expression === node
       )
     ) {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     // An `instanceof Error` narrow: the checked-dynamic tree's error encoding rebuilds a
     // fresh %Error (name/message/code from the marker object — a COPY,
     // the unknown boundary's stance; SEMANTICS.md 67), validated like
     // every dyn extraction.
     if (narrowed?.kind === "object" && narrowed.className === "%Error") {
-      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc };
+      return { kind: "dynCheck", value: expr, type: narrowed, loc: expr.loc, ...readPath };
     }
     return expr;
   }

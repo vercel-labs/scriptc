@@ -841,6 +841,12 @@
  },
  {
   "file": "scr_http.c",
+  "function": "scr_http_agent_create_connection_check",
+  "message": "createConnection on an Agent this compiled program did not create is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_http.c",
   "function": "scr_http_req_opts_fence",
   "message": "' has no static lowering — ",
   "code": "SC2020"

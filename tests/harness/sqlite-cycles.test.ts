@@ -40,6 +40,11 @@ const cases = [
     fixture: "sqlite-session-lifetime/main.ts",
     bound: 12,
   },
+  {
+    name: "a session collected before its database leaves no registry entry",
+    fixture: "sqlite-session-registry-cycle/main.ts",
+    bound: 20,
+  },
 ];
 
 describe.skipIf(sanitize)("sqlite object lifetimes", () => {

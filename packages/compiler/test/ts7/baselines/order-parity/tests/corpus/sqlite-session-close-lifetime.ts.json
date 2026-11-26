@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/sqlite-session-close-lifetime.ts"
+ ],
+ "diags": []
+}

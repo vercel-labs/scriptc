@@ -33,6 +33,7 @@
 #include "sqlite3.h"
 
 typedef struct ScrSqliteDb ScrSqliteDb;
+typedef struct ScrSqliteSessionSlot ScrSqliteSessionSlot;
 typedef struct ScrSqliteStmt ScrSqliteStmt;
 typedef struct ScrSqliteLimits ScrSqliteLimits;
 typedef struct ScrSqliteIter ScrSqliteIter;
@@ -87,6 +88,7 @@ static void scr_sqlite_tag_trace(void *p, ScrTraceVisit visit, void *ctx);
 static void scr_sqlite_tag_gcfree(void *p);
 static void scr_sqlite_session_trace(void *p, ScrTraceVisit visit, void *ctx);
 static void scr_sqlite_session_gcfree(void *p);
+static void scr_sqlite_db_sessions_free(ScrSqliteDb *db);
 static ScrCycType scr_sqlite_db_cyc = {scr_sqlite_db_trace, scr_sqlite_db_gcfree, SCR_CYC_KIND_NONE, 0};
 static ScrCycType scr_sqlite_stmt_cyc = {scr_sqlite_stmt_trace, scr_sqlite_stmt_gcfree, SCR_CYC_KIND_NONE, 0};
 static ScrCycType scr_sqlite_limits_cyc = {scr_sqlite_limits_trace, scr_sqlite_limits_gcfree, SCR_CYC_KIND_NONE, 0};
@@ -167,9 +169,9 @@ struct ScrSqliteDb {
   int callback_depth;
   /* The JavaScript authorizer, owned, or NULL (Node's kAuthorizerCallback). */
   ScrDyn *authorizer;
-  /* Live sessions: raw, non-owning (a session owns a reference to its
-   * database). */
-  ScrSqliteSession **sessions;
+  /* Live sessions: entries a session and the database share (a session owns
+   * a reference to its database, never the other way around). */
+  ScrSqliteSessionSlot **sessions;
   size_t session_n, session_cap;
   bool ignore_next_error;
   /* The limits object Node hands out for this database, owned: every read
@@ -206,15 +208,27 @@ static ScrSqliteDb scr_sqlite_closed_db = {.rc = SIZE_MAX, .conn = NULL};
 
 /* A changeset session (Node's Session): the SQLite session and the database
  * it observes. */
-typedef struct ScrSqliteSession {
+typedef struct ScrSqliteSession ScrSqliteSession;
+
+/* A session's entry in its database's live-session list. Both sides own one
+ * reference and neither touches the other directly, so a session and its
+ * database can be reclaimed in either order (the statement registry's
+ * ScrSqliteStmtSlot). */
+typedef struct ScrSqliteSessionSlot {
+  size_t rc; /* the database's list and the session */
+  ScrSqliteSession *session;
+} ScrSqliteSessionSlot;
+
+struct ScrSqliteSession {
   size_t rc;
   ScrSqliteDb *db; /* owned */
   sqlite3_session *session; /* NULL once closed */
   /* The connection lifetime, owned: it keeps the connection open until
    * this session has been deleted. */
   ScrSqliteConn *conn_ref;
+  ScrSqliteSessionSlot *slot; /* the live-session entry, or NULL once gone */
   bool generating;
-} ScrSqliteSession;
+};
 
 /* One registered user-defined function or aggregate (Node's
  * UserDefinedFunction and CustomAggregate): the JavaScript callables and the
@@ -2429,7 +2443,7 @@ static void scr_sqlite_db_gcfree(void *p) {
   }
   scr_str_release(db->path);
   scr_sqlite_db_slots_free(db);
-  free(db->sessions);
+  scr_sqlite_db_sessions_free(db);
   scr_cyc_free(db);
 }
 
@@ -3268,14 +3282,53 @@ static ScrDyn *scr_sqlite_db_apply_changeset(ScrSqliteDb *db, ScrDyn *const *arg
 
 /* ── changeset sessions ─────────────────────────────────────────────── */
 
-static void scr_sqlite_session_untrack(ScrSqliteDb *db, ScrSqliteSession *session) {
+static ScrSqliteSessionSlot *scr_sqlite_session_slot_new(ScrSqliteSession *session) {
+  ScrSqliteSessionSlot *slot = malloc(sizeof *slot);
+  if (slot == NULL) scr_sqlite_oom();
+  slot->rc = 2; /* the database's list and the session */
+  slot->session = session;
+  return slot;
+}
+
+static void scr_sqlite_session_slot_release(ScrSqliteSessionSlot *slot) {
+  if (slot == NULL || --slot->rc > 0) return;
+  free(slot);
+}
+
+/* Removes the session's entry from its database's list, answering it (+1: the
+ * reference the list held) or NULL when it was not listed. */
+static ScrSqliteSessionSlot *scr_sqlite_session_detach(ScrSqliteDb *db,
+                                                       ScrSqliteSession *session) {
   for (size_t i = 0; i < db->session_n; i++) {
-    if (db->sessions[i] == session) {
+    if (db->sessions[i] == session->slot) {
+      ScrSqliteSessionSlot *slot = db->sessions[i];
       db->sessions[i] = db->sessions[db->session_n - 1];
       db->session_n--;
-      return;
+      return slot;
     }
   }
+  return NULL;
+}
+
+/* A collected session lets go of its entry: it answers NULL from now on,
+ * and neither side touches the other (the collector frees a database and its
+ * sessions in no particular order). */
+static void scr_sqlite_session_untrack_slot(ScrSqliteSession *session) {
+  ScrSqliteSessionSlot *slot = session->slot;
+  if (slot == NULL) return;
+  slot->session = NULL;
+  session->slot = NULL;
+  scr_sqlite_session_slot_release(slot);
+}
+
+/* The database drops the session's entry while the database is reachable. */
+static void scr_sqlite_db_untrack_session(ScrSqliteDb *db, ScrSqliteSession *session) {
+  ScrSqliteSessionSlot *slot = scr_sqlite_session_detach(db, session);
+  if (slot == NULL) return;
+  slot->session = NULL;
+  session->slot = NULL;
+  scr_sqlite_session_slot_release(slot); /* the session's reference */
+  scr_sqlite_session_slot_release(slot); /* the database's reference */
 }
 
 static void scr_sqlite_session_delete(ScrSqliteSession *session);
@@ -3290,6 +3343,9 @@ static void scr_sqlite_session_gcfree(void *p) {
   ScrSqliteSession *session = p;
   if (session->session != NULL) sqlite3session_delete(session->session);
   session->session = NULL;
+  /* The entry answers NULL from now on; the database's list may already be
+   * gone, so only the entry is touched. */
+  scr_sqlite_session_untrack_slot(session);
   /* The session is deleted before the connection's reference goes, so the
    * connection cannot close first whatever order the collector frees in. */
   ScrSqliteConn *ref = session->conn_ref;
@@ -3328,23 +3384,45 @@ static void scr_sqlite_session_delete(ScrSqliteSession *session) {
   if (session->session == NULL) return;
   sqlite3session_delete(session->session);
   session->session = NULL;
-  scr_sqlite_session_untrack(session->db, session);
+  if (session->slot != NULL) {
+    if (session->db != &scr_sqlite_closed_db)
+      scr_sqlite_db_untrack_session(session->db, session);
+    else
+      scr_sqlite_session_untrack_slot(session);
+  }
 }
 
 /* Node's DatabaseSync::DeleteSessions: every session dies with its
  * connection. */
 static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db) {
   while (db->session_n > 0) {
-    ScrSqliteSession *session = db->sessions[db->session_n - 1];
-    db->sessions[db->session_n - 1] = NULL;
-    db->session_n--;
-    if (session->session != NULL) {
-      sqlite3session_delete(session->session);
-      session->session = NULL;
+    ScrSqliteSessionSlot *slot = db->sessions[--db->session_n];
+    db->sessions[db->session_n] = NULL;
+    ScrSqliteSession *session = slot->session;
+    if (session != NULL) {
+      if (session->session != NULL) {
+        sqlite3session_delete(session->session);
+        session->session = NULL;
+      }
+      /* The program may still hold the wrapper; its entry is gone. */
+      session->slot = NULL;
     }
-    /* The list does not own the session: a program that still holds one
-     * keeps a closed one until its last reference goes. */
+    slot->session = NULL;
+    scr_sqlite_session_slot_release(slot); /* the list's reference */
   }
+}
+
+/* Drops the database's list and the references it held. The entries may
+ * outlive it through their sessions, which clear themselves. */
+static void scr_sqlite_db_sessions_free(ScrSqliteDb *db) {
+  for (size_t i = 0; i < db->session_n; i++) {
+    if (db->sessions[i] != NULL) db->sessions[i]->session = NULL;
+    scr_sqlite_session_slot_release(db->sessions[i]);
+  }
+  free(db->sessions);
+  db->sessions = NULL;
+  db->session_n = 0;
+  db->session_cap = 0;
 }
 
 static ScrDyn *scr_sqlite_session_changeset(ScrSqliteSession *session, bool patch) {
@@ -3395,9 +3473,9 @@ static ScrDyn *scr_sqlite_session_invoke(void *h, ScrDyn *self, const char *meth
       scr_sqlite_invalid_state("session is currently in use");
       return NULL;
     }
+    /* Only the SQLite session goes: the wrapper stays until its last
+     * reference does, and its database reference with it. */
     scr_sqlite_session_delete(session);
-    /* The database's reference goes with it. */
-    scr_sqlite_session_release(session);
     return scr_dyn_retain(scr_dyn_undefined());
   }
   scr_sqlite_not_a_function(what);
@@ -3457,10 +3535,8 @@ static ScrDyn *scr_sqlite_session_dispose_call(ScrClosure *clo, ScrDyn *const *a
   ScrDyn *out = NULL;
   if (session != NULL) {
     /* Disposal swallows the state errors of an already closed session. */
-    if (session->db->conn != NULL && session->session != NULL && !session->generating) {
+    if (session->db->conn != NULL && session->session != NULL && !session->generating)
       scr_sqlite_session_delete(session);
-      scr_sqlite_session_release(session);
-    }
     out = scr_dyn_retain(scr_dyn_undefined());
   } else {
     scr_sqlite_not_a_function("[Symbol.dispose]");
@@ -3542,6 +3618,7 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
   session->db = scr_sqlite_db_retain(db);
   session->session = raw;
   session->conn_ref = scr_sqlite_conn_retain(db->conn_ref);
+  session->slot = scr_sqlite_session_slot_new(session);
   if (db->session_n == db->session_cap) {
     size_t cap = db->session_cap != 0 ? db->session_cap * 2 : 4;
     void *grown = realloc(db->sessions, cap * sizeof *db->sessions);
@@ -3549,10 +3626,11 @@ static ScrDyn *scr_sqlite_db_create_session(ScrSqliteDb *db, ScrDyn *const *args
     db->sessions = grown;
     db->session_cap = cap;
   }
-  /* The list is non-owning, like the statement registry: a session the
+  /* The list shares its entries, like the statement registry: a session the
    * program drops is deleted and untracked at once, so request-scoped
-   * sessions do not accumulate change tracking on a long-lived database. */
-  db->sessions[db->session_n++] = session;
+   * sessions do not accumulate change tracking on a long-lived database, and
+   * a collected session clears its own entry. */
+  db->sessions[db->session_n++] = session->slot;
   scr_dyn_handle_install(SCR_DYNH_SQLITE_SESSION, &scr_sqlite_session_ops);
   ScrDyn *out = scr_dyn_new_handle(session, SCR_DYNH_SQLITE_SESSION);
   scr_sqlite_session_release(session);

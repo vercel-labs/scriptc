@@ -56306,6 +56306,7 @@
           "tests/corpus/fetch-headers-set-cookie-iteration.ts",
           "tests/corpus/formdata-basics.mjs",
           "tests/corpus/formdata-body-escaping.mjs",
+          "tests/corpus/formdata-boundary.mjs",
           "tests/corpus/formdata-entries.ts",
           "tests/corpus/formdata-iteration.mjs",
           "tests/corpus/formdata-request-body.mjs",
@@ -57081,7 +57082,8 @@
           "tests/corpus/formdata-entries.ts",
           "tests/corpus/formdata-iteration.mjs",
           "tests/corpus/formdata-request-body.mjs",
-          "tests/corpus/formdata-body-escaping.mjs"
+          "tests/corpus/formdata-body-escaping.mjs",
+          "tests/corpus/formdata-boundary.mjs"
         ]
       },
       "anchorSource": "exact"

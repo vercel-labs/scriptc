@@ -519,11 +519,108 @@ static void fd_buf_normalized(FdBuf *b, const ScrStr *s) {
   }
 }
 
+/* ── the multipart boundary ───────────────────────────────────────────
+ * undici's shape, drawn from the system CSPRNG (arc4random_buf): a
+ * co-resident client must not be able to predict the boundary and inject
+ * parts of its own. Every part's text is checked for the boundary; a
+ * conflict draws a longer boundary, and once it is longer than the longest
+ * part it cannot occur inside one, so the loop always ends with a boundary
+ * no part contains. */
+static bool fd_bytes_contain(const unsigned char *hay, size_t n, const char *needle, size_t m) {
+  if (m == 0 || n < m) return false;
+  for (size_t i = 0; i + m <= n; i++)
+    if (memcmp(hay + i, needle, m) == 0) return true;
+  return false;
+}
+
+static bool fd_str_contains(const ScrStr *s, const char *needle, size_t m) {
+  return fd_bytes_contain((const unsigned char *)s->data, s->len, needle, m);
+}
+
+/* The File handle's name (+1, or NULL). */
+static ScrStr *fd_file_name(const ScrDyn *value) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(value);
+  ScrDyn *read = ops->get ? ops->get(value->v.handle.ptr, "name", 4) : NULL;
+  ScrStr *name = NULL;
+  if (read) {
+    if (read->kind == SCR_DYN_STR) name = scr_str_retain(read->v.str);
+    scr_dyn_release(read);
+  }
+  return name;
+}
+
+/* The longest text any part can contribute, from lengths alone. */
+static size_t fd_longest_part(const ScrFormData *fd) {
+  size_t longest = 0;
+  for (size_t i = 0; i < fd->len; i++) {
+    const FormEntry *e = &fd->entries[i];
+    if (e->name->len > longest) longest = e->name->len;
+    if (e->value->kind == SCR_DYN_STR) {
+      if (e->value->v.str->len > longest) longest = e->value->v.str->len;
+      continue;
+    }
+    ScrStr *name = fd_file_name(e->value);
+    if (name) {
+      if (name->len > longest) longest = name->len;
+      scr_str_release(name);
+    }
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(e->value);
+    ScrDyn *size = ops->get ? ops->get(e->value->v.handle.ptr, "size", 4) : NULL;
+    if (size) {
+      if (size->kind == SCR_DYN_NUM && size->v.num > (double)longest)
+        longest = (size_t)size->v.num;
+      scr_dyn_release(size);
+    }
+  }
+  return longest;
+}
+
+static bool fd_boundary_conflicts(const ScrFormData *fd, const char *boundary, size_t len) {
+  for (size_t i = 0; i < fd->len; i++) {
+    const FormEntry *e = &fd->entries[i];
+    if (fd_str_contains(e->name, boundary, len)) return true;
+    if (e->value->kind == SCR_DYN_STR) {
+      if (fd_str_contains(e->value->v.str, boundary, len)) return true;
+      continue;
+    }
+    ScrStr *name = fd_file_name(e->value);
+    bool hit = name && fd_str_contains(name, boundary, len);
+    scr_str_release(name);
+    if (hit) return true;
+    ScrBytes *bytes = NULL;
+    ScrStr *type = NULL;
+    if (scr_blob_body_info(e->value, &bytes, &type)) {
+      hit = fd_bytes_contain(bytes->data, bytes->len, boundary, len);
+      scr_bytes_release(bytes);
+      scr_str_release(type);
+      if (hit) return true;
+    }
+  }
+  return false;
+}
+
 ScrBytes *scr_formdata_encode(const ScrDyn *form, ScrStr **content_type) {
   ScrFormData *fd = form->v.handle.ptr;
-  unsigned long long random = (unsigned long long)(scr_hrtime_ns() ^ (unsigned long long)rand());
-  char boundary[64];
-  snprintf(boundary, sizeof boundary, "----formdata-undici-0%011llu", random % 100000000000ULL);
+  char boundary[192];
+  size_t longest_part = fd_longest_part(fd);
+  for (unsigned attempt = 0;; attempt++) {
+    unsigned char raw[8];
+    arc4random_buf(raw, sizeof raw);
+    unsigned long long value = 0;
+    for (size_t i = 0; i < sizeof raw; i++) value = (value << 8) | raw[i];
+    size_t blen = (size_t)snprintf(boundary, sizeof boundary,
+                                   "----formdata-undici-0%011llu", value % 100000000000ULL);
+    /* A conflict draws a longer boundary: 8 more CSPRNG bytes per retry. */
+    size_t extra = attempt == 0 ? 0 : attempt * 8;
+    if (extra > 64) extra = 64;
+    if (extra) {
+      unsigned char more[64];
+      arc4random_buf(more, extra);
+      for (size_t i = 0; i < extra && blen + 2 < sizeof boundary; i++)
+        blen += (size_t)snprintf(boundary + blen, sizeof boundary - blen, "%02x", more[i]);
+    }
+    if (blen > longest_part || !fd_boundary_conflicts(fd, boundary, blen)) break;
+  }
   FdBuf out = {0};
   for (size_t i = 0; i < fd->len; i++) {
     const FormEntry *e = &fd->entries[i];

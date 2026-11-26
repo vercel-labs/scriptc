@@ -6597,6 +6597,18 @@ extern ScrStream *scr_stream_duplex_from_web(ScrDyn *pair, double flags) __attri
  * (Duplex.from over a lone web WritableStream): the hook answers that writer's
  * adapter and the stream unit duplexifies it. Weak for the same reason. */
 extern ScrStream *scr_stream_writable_from_web(ScrDyn *web, double flags) __attribute__((weak));
+/* The stream unit marks the adapter's chunks as web values. The hook only
+ * runs when that unit is linked, and a web-streams-only program links this
+ * object without it, so the reference is weak; Mach-O refuses an undefined
+ * weak reference in an executable, so it gets a weak definition there. */
+#if defined(__APPLE__)
+__attribute__((weak)) void scr_stream_set_web_chunks(ScrStream *s, bool on) {
+  (void)s;
+  (void)on;
+}
+#else
+extern void scr_stream_set_web_chunks(ScrStream *s, bool on) __attribute__((weak));
+#endif
 
 static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
   if (value == NULL) return NULL;
@@ -6642,7 +6654,8 @@ static ScrStream *ws_stream_web_pair(ScrDyn *value, double flags) {
      * keeps its web chunks here: a null a stage enqueued is a value its write
      * carries, where Duplex.from's body (no flags) keeps node's null-write
      * error. */
-    if (out != NULL && bits != 0) scr_stream_set_web_chunks(out, true);
+    if (out != NULL && bits != 0 && scr_stream_set_web_chunks != NULL)
+      scr_stream_set_web_chunks(out, true);
   }
   if (view) scr_dyn_release(view);
   return out;

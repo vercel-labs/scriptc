@@ -55,7 +55,6 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
-#include "llvm/Transforms/Scalar/CorrelatedValuePropagation.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
@@ -967,38 +966,6 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
   return std::nullopt;
 }
 
-// The level of an optimized partition's simplification before the thin
-// link. The backend optimizes every partition again at Level after
-// importing, so without a profile to use the pre-link runs the O1
-// simplification: it inlines and simplifies enough for the summaries the
-// import decisions read, and leaves the full simplification to the backend.
-// The O2 simplification before the link repeated most of the backend's
-// work: on a partition dominated by one large function it took about half
-// as long as the backend's optimization and code generation of that
-// partition. A build that uses a profile keeps the pre-link at Level: with
-// the O1 pre-link, profile-guided programs ran up to 3% slower.
-OptimizationLevel preLinkLevel(OptimizationLevel Level, bool UsingProfile) {
-  if (!UsingProfile &&
-      (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3))
-    return OptimizationLevel::O1;
-  return Level;
-}
-
-// Adds correlated value propagation, which the O2 simplification runs and
-// the O1 one does not, once per function after the O1 pre-link simplifies
-// it. On the edge where a loop's early exit is taken, it replaces the values
-// the exit condition fixed with constants. Without it, SimplifyCFG folds a
-// jammed loop's early exit and its trip-count exit into one branch, the
-// latch no longer exits, and the backend's unroller keeps a trip-count test
-// in every unrolled iteration.
-void addPreLinkValuePropagation(PassBuilder &PB) {
-  PB.registerCGSCCOptimizerLateEPCallback(
-      [](CGSCCPassManager &CGPM, OptimizationLevel) {
-        CGPM.addPass(
-            createCGSCCToFunctionPassAdaptor(CorrelatedValuePropagationPass()));
-      });
-}
-
 // The threads one build compiles with: its caller's --jobs cap, else one per
 // hardware thread.
 ThreadPoolStrategy laneStrategy(const EmitOptions &Options) {
@@ -1255,14 +1222,11 @@ compileOptimizedPartitions(const EmitOptions &Options,
         P.collectAnnotated(Weigher.Annotated);
         P.afterProfileAnnotation(PartitionMatch);
       }
-      // The backend optimizes every partition again at Level after importing,
-      // so the pre-link runs the O1 simplification unless a profile needs the
-      // build's own level (see preLinkLevel).
-      OptimizationLevel PreLink = preLinkLevel(Level, Annotating);
-      if (PreLink != Level)
-        addPreLinkValuePropagation(P.PB);
-      ModulePassManager MPM =
-          P.PB.buildThinLTOPreLinkDefaultPipeline(PreLink);
+      // The pre-link runs at the build's own level. An O1 pre-link leaves
+      // the backend's optimization after the import more to do: measured on
+      // three Native SDK apps it built no faster at 8 lanes and its
+      // executables were 0.9% larger.
+      ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
       MPM.addPass(UnnameStructTypes());
       // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,

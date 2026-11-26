@@ -185,7 +185,7 @@ static ScrDyn *scr_js_load_hit(ScrDyn *receiver, const ScrJsIcEntry *entry) {
         holder->v.obj.layout != entry->target)
       return NULL;
   }
-  return scr_dyn_retain(holder->v.obj.slots[entry->slot]);
+  return scr_dyn_slot_take(holder->v.obj.slots[entry->slot]);
 }
 
 /* An absent entry: its target is this tag and its holder is a placeholder
@@ -297,7 +297,7 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
   size_t slot = scr_js_layout_find(shape, key->data, key->len);
   if (slot != SIZE_MAX) {
     scr_js_load_fill(ic, stale, shared, key, (ScrJsIcEntry){shape, NULL, NULL, NULL, slot});
-    return scr_dyn_retain(receiver->v.obj.slots[slot]);
+    return scr_dyn_slot_take(receiver->v.obj.slots[slot]);
   }
   absent = absent && scr_js_absent_cacheable(key);
   /* One prototype link: an ordinary object other than the builtin
@@ -320,7 +320,7 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
     return scr_dyn_retain(scr_dyn_undefined());
   }
   scr_js_load_fill(ic, stale, shared, key, (ScrJsIcEntry){shape, holder_shape, holder, NULL, slot});
-  return scr_dyn_retain(holder->v.obj.slots[slot]);
+  return scr_dyn_slot_take(holder->v.obj.slots[slot]);
 }
 
 /* Receivers other than ordinary objects have no layout: they miss before
@@ -356,11 +356,41 @@ static bool scr_js_error_synced_key(const ScrStr *key) {
 
 static bool scr_js_replace(ScrDyn *receiver, size_t slot, ScrDyn *value) {
   scr_dyn_region_store(receiver, value);
-  ScrDyn **found = &receiver->v.obj.slots[slot];
-  ScrDyn *old = *found;
-  *found = scr_dyn_retain(value);
-  scr_dyn_release(old);
+  void **found = &receiver->v.obj.slots[slot];
+  void *next = scr_dyn_slot_from_value(scr_dyn_retain(value));
+  void *old = *found;
+  *found = next;
+  scr_dyn_slot_release(old);
   return true;
+}
+
+/* ── layout stores of values that are not doubles ───────────────────────
+ * A compiled site writes a number (or another immediate) into a slot
+ * inline; the runtime entries below carry every heap value, keeping the
+ * slot's owning reference correct. */
+
+/* The word a slot holds for `value` (borrowed): an immediate unchanged, a
+ * cell retained, a string or bigint word boxed. Only dynamic values and the
+ * object core are used, so a slot store links no jsval unit of its own. */
+static ScrJsVal scr_js_slot_reference(ScrJsVal value) {
+  if (!scr_js_is_heap(value)) return value;
+  if (scr_js_is_cell(value)) return scr_js_of_cell(scr_dyn_retain(scr_js_cell(value)));
+  if (scr_js_is_str(value)) return scr_js_of_cell(scr_dyn_new_str(scr_js_str(value)));
+  return scr_js_of_cell(scr_dyn_new_bigint(scr_js_bigint(value)));
+}
+
+void scr_js_slot_put(ScrJsVal *slot, ScrJsVal value) {
+  ScrJsVal next = scr_js_slot_reference(value);
+  ScrJsVal old = *slot;
+  *slot = next;
+  scr_dyn_slot_release(old);
+}
+
+void scr_js_slot_put_dyn(ScrJsVal *slot, ScrDyn *value) {
+  ScrJsVal next = scr_dyn_slot_from_value(scr_dyn_retain(value));
+  ScrJsVal old = *slot;
+  *slot = next;
+  scr_dyn_slot_release(old);
 }
 
 /* Whether an add may skip the generic path's prototype-chain walk: the
@@ -449,10 +479,10 @@ ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic) {
     if (slot >= len) continue;
     const ScrLayoutKey *found = &shape->keys[slot];
     if (found->len == name->len && scr_key_equal(found->key, name->data, name->len))
-      return scr_dyn_retain(receiver->v.obj.slots[slot]);
+      return scr_dyn_slot_take(receiver->v.obj.slots[slot]);
   }
   size_t slot = scr_js_layout_find(shape, name->data, name->len);
   if (slot == SIZE_MAX) return NULL;
   scr_js_ic_add(ic, UINT32_MAX, (ScrJsIcEntry){NULL, NULL, NULL, NULL, slot});
-  return scr_dyn_retain(receiver->v.obj.slots[slot]);
+  return scr_dyn_slot_take(receiver->v.obj.slots[slot]);
 }

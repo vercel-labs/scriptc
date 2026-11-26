@@ -6195,6 +6195,7 @@ function validateFunction(
       e.fn === "stream.decodeStrings" ||
       e.fn === "stream.optionValues" ||
       e.fn === "stream.duplexFromGen" ||
+      e.fn === "stream.duplexFromGenNoSource" ||
       e.fn === "stream.duplexFromDyn" ||
       e.fn === "stream.duplexifyReadable" ||
       e.fn === "stream.duplexifyWritable" ||
@@ -6204,6 +6205,7 @@ function validateFunction(
       e.fn === "stream.duplexFromAsyncFn" ||
       e.fn === "stream.duplexFromGenSignal" ||
       e.fn === "stream.duplexFromAsyncFnSignal" ||
+      e.fn === "stream.duplexFromAsyncFnNoSource" ||
       e.fn === "stream.setConstruct" ||
       e.fn === "stream.replaceConstruct" ||
       e.fn === "stream.setWritev" ||
@@ -6294,8 +6296,10 @@ function validateFunction(
       }
       if (
         e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromGenNoSource" ||
         e.fn === "stream.duplexFromDyn" ||
         e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromAsyncFnNoSource" ||
         e.fn === "stream.duplexFromGenSignal" ||
         e.fn === "stream.duplexFromAsyncFnSignal"
       ) {
@@ -6819,6 +6823,8 @@ function validateFunction(
           err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
         if (e.pathIndex !== undefined && (!Number.isInteger(e.pathIndex) || e.pathIndex < 0))
           err(`dynCheck pathIndex ${e.pathIndex} is not an array position`, e.loc);
+        if (e.pathKey !== undefined && (typeof e.pathKey !== "string" || e.pathKey === ""))
+          err("dynCheck pathKey is not a member name", e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).

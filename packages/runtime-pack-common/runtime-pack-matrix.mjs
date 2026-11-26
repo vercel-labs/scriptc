@@ -168,6 +168,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // perf_hooks event-loop metrics, only for programs that read them.
   ["scr_perf_loop.c", "perfLoop"],
   // Module namespace objects as checked-dynamic values.
+  ["scr_module_class.c", "moduleClass"],
   ["scr_module_namespace.c", "moduleNamespace"],
   // The same namespace as the frozen null-prototype object typed code sees.
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
@@ -177,6 +178,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_iterator.c", "iteratorProto"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
+  ["scr_fs_blob.c", "fsOpenAsBlob"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
   ["scr_zstd.c", all("zlib", "zstd")],
@@ -207,7 +209,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_fs_web_stream.c", "fsWebStream"],
   // The class installs (scr_dyn_handle_class_install) that web streams and
   // the stub resolver's Resolver classes need.
-  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve")],
+  ["scr_dyn_handle_class.c", any("webStreams", "dnsResolve", "moduleClass")],
   ["scr_util_timing.c", "utilTiming"],
   // util.markPromiseAsHandled boxes and describes its argument through the
   // checked-dynamic units.

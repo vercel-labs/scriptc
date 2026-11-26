@@ -426,6 +426,13 @@ declare module "node:fs" {
     prefix: string,
     options?: string | { encoding?: string },
   ): DisposableTempDir;
+  /** fs.openAsBlob(path[, options]): the file's content as a Blob — the
+   * size and type the call saw, with the bytes read on demand
+   * (scr_fs_blob.c). */
+  export function openAsBlob(
+    path: string | URL | Uint8Array,
+    options?: { type?: string },
+  ): Promise<globalThis.Blob>;
   export const constants: {
     readonly F_OK: number;
     readonly R_OK: number;

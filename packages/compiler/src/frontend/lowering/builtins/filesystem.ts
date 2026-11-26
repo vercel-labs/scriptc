@@ -3027,3 +3027,40 @@ export function lowerDirentMethodCall(
     loc,
   };
 }
+
+/** `fs.openAsBlob(path[, options])`: Node's Blob over a file's bytes. The
+ * runtime opens and fstats the file when the call is made (its errors
+ * throw then, as Node's do) and reads the bytes per read, so a file that
+ * changed after the call rejects the read with NotReadableError. The path
+ * and the options record cross as dyn values for the runtime's Node-order
+ * checks; the result is a promise of the Blob. */
+export function lowerFsOpenAsBlobCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const nodes = expr.arguments.nodes;
+  if (nodes.length < 1 || nodes.length > 2 || nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `fs.openAsBlob with ${nodes.length} arguments`,
+      expr,
+      "the call is fs.openAsBlob(path[, options])",
+    );
+  }
+  const toDyn = (node: ts.Expression): IrExpr => {
+    const raw = lowerer.lowerExpr(node);
+    if (raw.type.kind === "dyn") return raw;
+    if (raw.kind === "unitLit" || lowerer.dynConvertible(raw.type)) {
+      return { kind: "dynFrom", value: raw, type: DYN, loc };
+    }
+    lowerer.noLowering(
+      `fs.openAsBlob with a '${lowerer.fmt(raw.type)}' argument`,
+      node,
+      "the path is a string, Buffer or file: URL and the options are a plain object",
+    );
+    return raw;
+  };
+  const args: IrExpr[] = [toDyn(nodes[0]!)];
+  args.push(nodes[1] !== undefined ? toDyn(nodes[1]) : dynUndefinedExpr(loc));
+  return { kind: "libCall", fn: "fs.openAsBlob", args, type: { kind: "promise", inner: DYN }, loc };
+}

@@ -78,6 +78,55 @@ test("a helper whose version answer is rejected is not recorded", () => {
   expect(remember).not.toHaveBeenCalled();
 });
 
+/** A complete version reply advertising `features`. */
+function versionReply(features: string[]): string {
+  const target = LINUX_X64_GNU_TARGET;
+  return JSON.stringify({
+    ok: true,
+    protocol_version: NATIVE_CODEGEN_PROTOCOL_VERSION,
+    scriptc_package_version: "1.2.3",
+    llvm_version: NATIVE_CODEGEN_LLVM_VERSION,
+    default_target: target.helper.defaultTarget,
+    data_layout: target.helper.defaultDataLayout,
+    targets: [target.llvmBackend],
+    supported_targets: [target.llvmTriple],
+    host_triple: target.llvmTriple,
+    features,
+  });
+}
+
+test("replacing the helper executable at the same path asks its version again", () => {
+  const options = helperOptions();
+  const inputPath = join(options.packageRoot, "program.ll");
+  const outputPath = join(options.packageRoot, "program.o");
+  writeFileSync(inputPath, "; module\n");
+  writeFileSync(outputPath, "object");
+  /** The emit arguments of one build, its version probe elided. */
+  const emitArgs = (): string[] => {
+    vi.mocked(execFileSync).mockClear();
+    emitNativeObject({
+      ...options,
+      dispatchOpt: "light",
+      verified: { known: () => false, remember: vi.fn() },
+      inputPath,
+      outputPath,
+      sourcePath: "program.ts",
+      optimization: "release",
+    });
+    const calls = vi.mocked(execFileSync).mock.calls.map((call) => call[1] as string[]);
+    return calls[calls.length - 1]!;
+  };
+
+  vi.mocked(execFileSync).mockReturnValue(versionReply(["dispatch-opt"]));
+  expect(emitArgs()).toContain("--dispatch-opt");
+
+  // The path now holds a different executable, an older helper whose protocol
+  // has no dispatch-opt feature: the cached reply must not be reused.
+  writeFileSync(options.executable, "replacement helper");
+  vi.mocked(execFileSync).mockReturnValue(versionReply([]));
+  expect(emitArgs()).not.toContain("--dispatch-opt");
+});
+
 /** The options of an emit whose helper the record already verified. */
 function emitOptions() {
   const options = helperOptions();

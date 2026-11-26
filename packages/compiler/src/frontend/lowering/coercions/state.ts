@@ -58,6 +58,21 @@ export class CoercionState {
    * the same conversions with more parameters; it must not be inferred
    * from the helper's name. */
   readonly signatureAdapters = new Map<string, string>();
+  /** The source signature of each variadic function adapter
+   * (variadicBoundaryAdapter): the variadic function type its closure
+   * stands for, which function-views.ts reads to look through the store
+   * when a caller passes more arguments than the slot's type names. */
+  readonly variadicAdapterSources = new Map<string, IrType & { kind: "func" }>();
+  /** The slot types (typeKey) at which the variadic stores a program made
+   * are served, by the callers function-views.ts looked the stored
+   * function up for: an array method's name, or the adapter whose test
+   * reaches the function. A store is not refused for a caller it names
+   * (variadic-functions.ts). */
+  readonly variadicWideServed = new Map<string, Set<string>>();
+  /** The widening adapter factories function-views.ts gave a look-through
+   * to a variadic store's view: a call of one of them passes the stored
+   * function every argument. */
+  readonly variadicServedAdapters = new Set<string>();
   readonly narrows = new Map<string, string>();
   readonly widthNarrows = new Map<string, string>();
   /** Unions widenReducedReturn produced: only these read through the

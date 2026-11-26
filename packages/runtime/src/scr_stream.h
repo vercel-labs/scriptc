@@ -808,6 +808,11 @@ ScrStream *scr_stream_duplex_from_gen_nosource(ScrClosure *stage, ScrClosure *so
                                               ScrClosure *next, ScrClosure *read, ScrClosure *ret,
                                               ScrClosure *thr);
 ScrStream *scr_stream_duplex_from_dyn(struct ScrDyn *body);
+/* Duplex.from over a checked-dynamic compose stage in a position before the
+ * last: a web stream pair answers a Duplex whose chunks stay web values
+ * (object mode), as the pipeline's stages do; any other body is Duplex.from's
+ * (borrowed). +1. */
+ScrStream *scr_stream_duplex_stage_dyn(struct ScrDyn *body);
 /* Readable.fromWeb(readableStream, { objectMode, highWaterMark, encoding })
  * (scr_stream_from_web.c): hwm < 0 is the mode's default, encoding NULL or
  * a known name; web and encoding borrowed. +1, or NULL with the error. */

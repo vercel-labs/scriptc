@@ -432,6 +432,7 @@ import type {
   SrcLoc,
 } from "../../ir/ir.js";
 import {
+  adoptsAtTypedSlot,
   arrayOf,
   BOOL,
   canAdaptDynFuncTo,
@@ -796,6 +797,7 @@ import {
   builtinConstantBindingOf,
   builtinConstantsDestructureDecl,
   cryptoConstantsValue,
+  perfHooksConstantsValue,
   zlibConstantsValue,
 } from "./builtins/constants.js";
 import { lowerStringStaticCall, lowerStringLastIndexOfCall } from "./builtins/strings.js";
@@ -1775,6 +1777,20 @@ function markModuleInitFences(lowerer: Lowerer, fences: readonly ScrDiagnostic[]
 /** A pass's result a replacing pass drops to before it lowers: the replacing
  * pass overwrites it before anything reads it, so the replaced pass's IR
  * does not stay reachable through the end of the pipeline. */
+/** A refused construct that escaped its local recovery after recording its
+ * diagnostic: report the recorded diagnostics instead of letting the
+ * message-less PoisonError become an internal SC3004. Null when the error is
+ * not a lowerer poison or nothing was recorded. */
+export function lowerFailureFromPoison(error: unknown, lowerer: Lowerer): LowerResult | null {
+  if (!(error instanceof PoisonError) || lowerer.diags.length === 0) return null;
+  return {
+    module: null,
+    diagnostics: [...lowerer.diags],
+    runtimeFences: [],
+    stats: lowerer.stats,
+  };
+}
+
 function releasedLowerResult(): LowerResult {
   return {
     module: null,
@@ -2057,12 +2073,21 @@ function lowerToIrWithIslands(
     reachable = emitted.reachable;
     result = emitted.result;
   } catch (e) {
-    if (!(e instanceof StreamFlagsAbort)) throw e;
-    // The pass asked for a stream mode, so the stream pass below replaces
-    // its reachable set, result and Lowerer before any of them is read.
-    pushDownAborted = true;
-    reachable = new Set();
-    result = { module: null, diagnostics: [], runtimeFences: [], stats: pushDownEmit.stats };
+    const recovered = lowerFailureFromPoison(e, pushDownEmit);
+    if (recovered !== null) {
+      // A refusal escaped the statement-local recovery after its diagnostic
+      // was recorded: the build fails with that diagnostic, as every other
+      // refused construct does.
+      reachable = new Set();
+      result = recovered;
+    } else {
+      if (!(e instanceof StreamFlagsAbort)) throw e;
+      // The pass asked for a stream mode, so the stream pass below replaces
+      // its reachable set, result and Lowerer before any of them is read.
+      pushDownAborted = true;
+      reachable = new Set();
+      result = { module: null, diagnostics: [], runtimeFences: [], stats: pushDownEmit.stats };
+    }
   }
   let resultLowerer: Lowerer = pushDownEmit;
   timing("reachable-emit", {
@@ -2176,7 +2201,14 @@ function lowerToIrWithIslands(
       });
       for (const d of extraModuleCycleDiags) pass.pushDiag(d);
       for (const d of ffiValidation.diagnostics) pass.pushDiag(d);
-      const emitted = pass.emitReachable(options.libRoots);
+      let emitted: ReturnType<Lowerer["emitReachable"]>;
+      try {
+        emitted = pass.emitReachable(options.libRoots);
+      } catch (e) {
+        const recovered = lowerFailureFromPoison(e, pass);
+        if (recovered === null) throw e;
+        emitted = { reachable: new Set(), result: recovered };
+      }
       // The whole-slot comparison alone judges build errors, as it always
       // has; a comparison that involves held constructors also counts the
       // refusals deferred to run time.
@@ -2271,6 +2303,13 @@ function lowerToIrWithIslands(
       reachable = generalEmitted.reachable;
       result = generalEmitted.result;
     } catch (e) {
+      const recovered = lowerFailureFromPoison(e, general);
+      if (recovered !== null) {
+        reachable = new Set();
+        result = recovered;
+        timing(phase, { reachable: 0 });
+        return general;
+      }
       if (!(e instanceof StreamFlagsAbort)) throw e;
       timing(phase, { reachable: 0, aborted: "stream-flags" });
       return general;
@@ -4705,6 +4744,54 @@ export class Lowerer {
     return !(read?.kind === "union" && this.armTag(read.unionId, UNDEFINED_T) >= 0);
   }
 
+  /** The index-signature value type a member read of a checked-dynamic
+   * receiver resolves to, or null. The receiver must declare no member of
+   * that name, and the signature's value must be a typed one that does not
+   * admit undefined. The read is a JavaScript property read even when a
+   * TypeScript assertion typed the value (`const params = raw as
+   * Record<string, string>`): a missing key answers undefined, as a
+   * record's index-signature read does, so the read keeps the undefined
+   * arm rather than validating the missing value as the declared type. */
+  dynIndexSignatureValueRead(
+    e: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  ): IrType | null {
+    const receiverType = this.checker.getNonNullableType(
+      this.checker.getTypeAtLocation(e.expression),
+    );
+    if ((receiverType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return null;
+    const declaredName = (): string | null => {
+      if (ts.isPropertyAccessExpression(e)) return e.name.text;
+      const key = e.argumentExpression;
+      if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+      if (ts.isNumericLiteral(key)) return String(Number(key.text));
+      return null;
+    };
+    if (!ts.isPropertyAccessExpression(e)) {
+      // A key that may hold a symbol names something no string index
+      // signature answers.
+      const keyType = this.checker.getTypeAtLocation(e.argumentExpression);
+      const arms =
+        (keyType.flags & ts.TypeFlags.Union) !== 0 ? ts.constituentTypes(keyType) : [keyType];
+      if (
+        !arms.every(
+          (arm) => (arm.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike)) !== 0,
+        )
+      )
+        return null;
+    }
+    const name = declaredName();
+    if (name !== null && this.checker.getPropertyOfType(receiverType, name) !== undefined)
+      return null;
+    const signature = this.checker
+      .getIndexInfosOfType(receiverType)
+      .find((info) => (info.keyType.flags & ts.TypeFlags.String) !== 0);
+    if (signature === undefined) return null;
+    const value = panicSafe(() => this.mapTypeOf(signature.type), null);
+    if (!value || value.kind === "dyn" || value.kind === "void" || isUnitType(value)) return null;
+    if (value.kind === "union" && this.armTag(value.unionId, UNDEFINED_T) >= 0) return null;
+    return value;
+  }
+
   /** The index value of a keyed read of a record's index signature that
    * can answer undefined for a missing key while its checker type does not
    * admit undefined, or null. A literal key naming a declared field is a
@@ -6333,6 +6420,10 @@ export class Lowerer {
       irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
       mapTable("coercions.retags", this.coercions.retags),
       mapTable("coercions.signatureAdapters", this.coercions.signatureAdapters),
+      // A variadic store's adapter records the source signature it stands
+      // for; a unit that reuses the journaled adapter without rebuilding it
+      // needs the entry to look through the store (function-views.ts).
+      irDataTable("coercions.variadicAdapterSources", this.coercions.variadicAdapterSources),
       mapTable("coercions.narrows", this.coercions.narrows),
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
@@ -6966,6 +7057,11 @@ export class Lowerer {
     "runtimeOptionalRoots",
     "coercions.planning",
     "coercions.copyRetags",
+    // The function-view pass's served-caller state: computed after every
+    // unit has lowered (the store's adapter is journaled by then), so a
+    // replay recomputes it from the restored adapters and helpers.
+    "coercions.variadicWideServed",
+    "coercions.variadicServedAdapters",
     "assertInstances",
     "unionLiteralOwners",
     "strippedUndefinedArms",
@@ -17284,12 +17380,13 @@ export class Lowerer {
       ? { ...diag, message: `${diag.message} (${this.instantiationContext})` }
       : diag;
     // Made after the statement being lowered met a held constructor
-    // (held-constructors.ts): the type mapper raises constructorTouches for
-    // every mapping that reaches a constructor's function type, and
-    // lowerExpr for every value that holds one, in any pass. A diagnostic
-    // made before the program's first constructor value is not marked for
-    // that reason alone: ordering changes which unit lowers first, not
-    // whether the refusal involves a constructor.
+    // (held-constructors.ts): lowerExpr raises constructorTouches for every
+    // value it lowers that holds one, and the type mapper for every mapping
+    // that reaches a constructor's function type, in any pass. Both count
+    // from the first statement lowered, since lowering order is not
+    // evaluation order, so a diagnostic made before the program writes its
+    // first constructor value is marked only when its own statement met one;
+    // the mark counts only if the program turns out to hold a constructor.
     if (this.constructorTouches > this.constructorTouchMark) d.heldConstructor = true;
     const pending = this.pendingFlushes.get(diag);
     // Deferred collection: the wrapper decides whether these ever report
@@ -21083,6 +21180,38 @@ export class Lowerer {
         ),
       );
     if (!preservesIdentity || value.kind === "dynCheck") {
+      // A dynamic value can take the key's type as a live capsule when the
+      // target has one: the record is the very object the other name
+      // holds, so the collection's key identity survives (the popup store's
+      // untyped layer array feeding a Set of layer records). Any other
+      // conversion copies, which would change the key.
+      // Only a target the checked conversion can represent adopts a key:
+      // a record with an accessor slot has no checked extraction, and
+      // adopting it would reach the IR validator's internal error instead
+      // of the refusal below.
+      if (
+        value.kind !== "dynCheck" &&
+        value.type.kind === "dyn" &&
+        canDynCheckTo(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        ) &&
+        adoptsAtTypedSlot(
+          expected,
+          (id) => this.shapes.get(id),
+          (id) => this.unions.get(id),
+        )
+      ) {
+        const conversion = sharedDynConversion(this, value, expected, locOf(node));
+        // A collection key must keep one identity with the value the program
+        // holds. The conversion's adoption is strict here: a value it cannot
+        // adopt is refused at run time instead of stored as a copy the
+        // program's other name does not share.
+        return conversion.kind === "dynCheck" && conversion.shared === true
+          ? { ...conversion, keyIdentity: true }
+          : conversion;
+      }
       this.noLowering(
         `collection key conversion from '${this.fmt(value.type)}' to '${this.fmt(expected)}' requiring a structural copy or dynamic conversion`,
         node,
@@ -25751,6 +25880,10 @@ export class Lowerer {
     if (bi.member === "constants" && bi.module === "zlib") return zlibConstantsValue(this, loc);
     // `crypto.constants` as a value: the same story over the OpenSSL table.
     if (bi.member === "constants" && bi.module === "crypto") return cryptoConstantsValue(this, loc);
+    // `perf_hooks.constants` as a value: the enumerable GC numbers (the
+    // entry-type and milestone names are non-enumerable in Node).
+    if (bi.member === "constants" && bi.module === "perf_hooks")
+      return perfHooksConstantsValue(this, loc);
     // `stream.Readable` as a JavaScript value: the runtime's untyped
     // constructor, the base a constructor function inherits.
     if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
@@ -25830,6 +25963,11 @@ export class Lowerer {
       const mode = ZLIB_STREAM_FACTORIES[bi.member];
       if (mode !== undefined) return this.lowerZlibStreamFactoryValue(bi.member, mode, loc);
     }
+    // node:module's Module: the runtime class object whose prototype every
+    // module view inherits (scr_module_class.c), so instanceof and
+    // Object.getPrototypeOf(module) answer as Node's do.
+    if (bi.module === "module" && bi.member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (bi.module === "module" && bi.member === "isBuiltin")
       return this.lowerModuleIsBuiltinValue(loc);
     if (bi.module === "module" && bi.member === "syncBuiltinESMExports")
@@ -26079,6 +26217,8 @@ export class Lowerer {
     const c = builtinModuleConstOf(this, module, member);
     if (c !== undefined) return builtinConstLit(c, loc);
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
+    if (module === "module" && member === "Module")
+      return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")
@@ -26103,6 +26243,8 @@ export class Lowerer {
       return fsConstantsObject(loc);
     if (module === "zlib" && member === "constants") return zlibConstantsValue(this, loc);
     if (module === "crypto" && member === "constants") return cryptoConstantsValue(this, loc);
+    if (module === "perf_hooks" && member === "constants")
+      return perfHooksConstantsValue(this, loc);
     return null;
   }
 

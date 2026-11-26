@@ -415,9 +415,11 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       lowered = islandFunctionView(lowerer, lowered, expr) ?? lowered;
     // A value that holds a primitive constructor by the constructor's own
     // function type: a refusal of the statement around it is counted
-    // (held-constructors.ts). Programs that hold no constructor skip it.
-    if (lowerer.constructorFunctionTypes && holdsConstructorFunction(lowerer, lowered.type))
-      lowerer.constructorTouches++;
+    // (held-constructors.ts). Counted before the program writes its first
+    // constructor value too, since lowering order is not evaluation order:
+    // a statement lowered earlier can still hold one the program writes
+    // later.
+    if (holdsConstructorFunction(lowerer, lowered.type)) lowerer.constructorTouches++;
     const nanCoded = lowerer.nanCodedReads;
     if (nanCoded) {
       if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))

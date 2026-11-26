@@ -2,6 +2,7 @@ import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
 import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
+import { PERF_HOOKS_CONSTANTS } from "./lowering/perf-hooks-constants.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -233,6 +234,7 @@ export const CRYPTO_KEY_OPTION_DYN_TYPES: ReadonlySet<string> = new Set([
   "JsonWebKeyInput",
   "JwkKeyExportOptions",
   "KeyExportOptions",
+  "ParsePKCS12Options",
   "PrivateKeyInput",
   "PublicKeyInput",
   "RSAKeyPairKeyObjectOptions",
@@ -5393,6 +5395,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // net.createServer's options record (@types/node's ServerOpts): an
+  // annotated value is checked-dynamic, read member-wise by the runtime.
+  if (isStdlibInterface("ServerOpts")) return DYN;
   // util.inspect as a value (a custom inspect method's third parameter is
   // `typeof inspect`): the runtime's inspect function, called through the
   // checked-dynamic boundary.
@@ -6969,6 +6974,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ),
     };
   }
+  // @types/node declares perf_hooks.constants as a namespace of number
+  // constants too. The value form carries the enumerable GC numbers Node's
+  // object walks (the table also holds the GC_MINOR_MARK_SWEEP the
+  // declarations omit), so the shape comes from that table —
+  // perfHooksConstantsValue builds the value from it — in Node's insertion
+  // order.
+  if (
+    psym !== undefined &&
+    psymName === "constants" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isModuleDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "perf_hooks"),
+    )
+  ) {
+    const keys = Object.keys(PERF_HOOKS_CONSTANTS);
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        keys
+          .map((name) => ({ name, type: F64 as IrType }))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        keys,
+      ),
+    };
+  }
   // net's 'drop' payload: the record the runtime's address object checks
   // into, each optional field with its declared type.
   if (isStdlibInterface("DropArgument")) {
@@ -7331,6 +7365,42 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         false,
         undefined,
         ["publicKey", "privateKey"],
+      ),
+    };
+  }
+  // crypto.parsePKCS12's ParsedPKCS12: { privateKey, certificate,
+  // additionalCertificates } over the mapped property types — the KeyObject
+  // handle (or null), the X509Certificate record (or null) and an array of
+  // them — in Node's field order.
+  if (
+    psym !== undefined &&
+    psymName === "ParsedPKCS12" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isInterfaceDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "crypto"),
+    )
+  ) {
+    const field = (name: string): IrType | null => {
+      const prop = ctx.checker.getPropertyOfType(type, name);
+      return prop ? mapType(ctx.checker.getTypeOfSymbol(prop), ctx) : null;
+    };
+    const privateKey = field("privateKey");
+    const certificate = field("certificate");
+    const additionalCertificates = field("additionalCertificates");
+    if (!privateKey || !certificate || !additionalCertificates) return null;
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        [
+          { name: "additionalCertificates", type: additionalCertificates },
+          { name: "certificate", type: certificate },
+          { name: "privateKey", type: privateKey },
+        ],
+        false,
+        undefined,
+        ["privateKey", "certificate", "additionalCertificates"],
       ),
     };
   }

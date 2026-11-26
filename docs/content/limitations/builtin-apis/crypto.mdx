@@ -43,6 +43,7 @@
   RSA keys generate with modulus lengths from 512 to 8192 bits, an odd length from 2048 bits yielding one bit less as in Node, and odd public exponents up to 4294967295; longer moduli that Node accepts, and `paramEncoding: 'explicit'`, throw a coded SC2020 error.
   The EC curves are prime256v1 (P-256), secp384r1 (P-384), secp521r1 (P-521), and secp256k1.
   Keys read and write PEM and DER as PKCS#1, SEC1, PKCS#8, and SubjectPublicKeyInfo, and JWK (Ed25519, X25519, and X448 keys use PKCS#8, SubjectPublicKeyInfo, and JWK); `createPublicKey` also takes a private key or an X.509 certificate.
+  `crypto.parsePKCS12` reads a DER PKCS#12 bundle with its passphrase, checking its MAC, and answers the first private key, the certificate matching it, and every other certificate; PBES2 with PBKDF2 and AES and the PKCS#12 3DES password schemes decrypt, while a bundle that uses the legacy RC2 or RC4 schemes throws Node's unsupported-operation error.
   EC, Ed25519, and X25519 keys also read and write the `raw-public` and `raw-private` formats, including compressed EC points.
   Raw X448, Ed448, and post-quantum keys, EC scalars of 0 or at least the curve order, and the EC point at infinity, which Node accepts, throw a coded SC2020 error.
   They support `type`, `asymmetricKeyType`, `asymmetricKeyDetails`, `export()`, `equals()`, and `instanceof KeyObject`.
@@ -66,7 +67,7 @@
   The other key types (`dsa`, `dh`, `ed448`, `ml-dsa`, and the rest) and wasm32-wasi builds throw a coded SC2020 error or are refused.
   `crypto.getFips()` answers 0 and `crypto.setFips()` is refused at compile time: a compiled binary has no OpenSSL property query to switch, where Node's `setFips(true)` succeeds, makes `getFips()` answer 1, and makes later crypto fetches fail with `ERR_OSSL_EVP_UNSUPPORTED` on a build without a FIPS provider.
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.
-  `publicEncrypt`/`privateDecrypt` remain unsupported.
+  `publicEncrypt`, `privateDecrypt`, `privateEncrypt`, and `publicDecrypt` take an RSA key as a KeyObject, as PEM or DER key material, or as an options object with `key`, `padding` (PKCS#1 v1.5 — the default for `privateEncrypt` and `publicDecrypt` — OAEP, the default for `publicEncrypt` and `privateDecrypt`, or no padding), `oaepHash`, and `oaepLabel`, on native targets, and report Node's key-type, key-size, and data-length errors.
   The WebCrypto `crypto` global, which node:crypto also exports as `webcrypto`, supports `randomUUID()` and `getRandomValues()`, also read as values from untyped JavaScript.
   `digest()` also runs KangarooTwelve KT128 and KT256 (RFC 9861), including the 8192-byte tree-hash chunks, with the optional `customization`, byte-aligned `outputLength` and each algorithm's ExperimentalWarning once per process.
   `digest()` also runs TurboSHAKE128 and TurboSHAKE256 (RFC 9861) with their optional `domainSeparation` (0x01 to 0x7f, default 0x1f) and byte-aligned `outputLength`, each reporting Node's ExperimentalWarning once per process.
@@ -82,6 +83,8 @@
   The asymmetric algorithms link when a string literal in the program names one; a name built only at run time throws a coded SC2020 error.
   `getPublicKey()` derives the public CryptoKey of a private ECDSA, Ed25519, ECDH, X25519 or RSA key, reporting Node's ExperimentalWarning once per process.
   `wrapKey()` and `unwrapKey()` of an ECDSA, Ed25519, ECDH, X25519 or RSA key wrap its exported `pkcs8`, `spki`, `raw` or `jwk` encoding, applying AES-KW's space padding to a JWK's JSON, and the unwrapped key takes the requested extractability and usages.
-  Node's experimental Ed448 and ML-DSA key algorithms and its post-quantum ML-KEM and hybrid encapsulation algorithms are refused with a coded SC2020 error.
+  Node's experimental Ed448 and ML-DSA key algorithms and its hybrid KEM algorithms (MLKEM768-P256, MLKEM768-X25519, and MLKEM1024-P384) are refused with a coded SC2020 error.
+  `generateKey()`, `importKey()`, and `exportKey()` also support ML-KEM-512, ML-KEM-768, and ML-KEM-1024 in the `raw-public`, `raw-seed`, `spki`, `pkcs8`, and `jwk` formats, whose public keys carry the `encapsulateKey` and `encapsulateBits` usages and private keys the `decapsulateKey` and `decapsulateBits` ones.
+  `encapsulateBits()`, `encapsulateKey()`, `decapsulateBits()`, and `decapsulateKey()` derive the shared secret, reporting Node's per-algorithm and per-method ExperimentalWarnings once per process and its usage, algorithm-mismatch, and ciphertext-length errors; the `*Key` forms import the shared secret as the requested key type.
   Other SubtleCrypto methods, algorithms, and key formats are refused or throw a coded SC2020 error.
   Native derivations finish before their deferred callbacks, so computation blocks the caller.

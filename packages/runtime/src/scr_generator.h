@@ -301,6 +301,11 @@ bool scr_webstream_instanceof(ScrDyn *value, double kind);
  * among them; +1. The call also counts as a runtime iterator step, so a
  * program that passes a generator here registers its member getters. */
 ScrDyn *scr_webstream_from(ScrDyn *iterable);
+/* node:stream/web's ReadableStreamTee(stream[, cloneForBranch2])
+ * (webstream.tee): the two branches of the default tee, the second reading
+ * a structuredClone of each chunk when cloneForBranch2 is truthy; an array
+ * of the two streams (+1), or NULL with Node's argument TypeError pending. */
+ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone);
 /* A TransformStream whose transformer callbacks are native: the web
  * compression streams' zlib transform, flush and cancel (scr_webstreams.c).
  * Each callback runs with `state` (a box made with retain/release/trace) as

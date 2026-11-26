@@ -60,3 +60,21 @@ console.log(
   new TextEncoderStream() instanceof TextEncoderStream,
   new TextDecoderStream() instanceof TextDecoderStream,
 );
+
+// A property a program adds to a stream is the instance's own: it appears
+// in getOwnPropertyNames and Object.keys, comes first in for-in, and `in`,
+// hasOwnProperty and getOwnPropertyDescriptor see it.
+{
+  const added = new ReadableStream();
+  added.label = "x";
+  console.log(
+    "added",
+    Object.getOwnPropertyNames(added).join(","),
+    Object.keys(added).join(","),
+    forIn(added),
+    "label" in added,
+    "no-such-member" in added,
+    Object.hasOwn(added, "label"),
+    Object.getOwnPropertyDescriptor(added, "label").value,
+  );
+}

@@ -292,6 +292,13 @@ static const ScrDynHandleAccessor *hc_accessors(const ScrDyn *handle) {
   return klass && klass->accessors && klass->accessors->name ? klass->accessors : NULL;
 }
 
+static ScrDyn *hc_own_properties(const ScrDyn *handle) {
+  ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
+  if (tag == SCR_DYNH_CAPACITY) return NULL;
+  const ScrDynHandleOps *ops = hc_ops(tag);
+  return ops->own_props ? ops->own_props(handle->v.handle.ptr, tag) : NULL;
+}
+
 static bool hc_owns_nothing(const ScrDyn *handle) {
   ScrDynHandleTag tag = scr_dyn_handle_class_tag_of(handle);
   return tag != SCR_DYNH_CAPACITY && hc_classes[tag] && hc_classes[tag]->no_own_properties;
@@ -303,6 +310,7 @@ static const ScrDynHandleClassOps hc_class_ops = {
     .method_call = scr_dyn_handle_class_method_call,
     .accessors = hc_accessors,
     .owns_nothing = hc_owns_nothing,
+    .own_properties = hc_own_properties,
 };
 
 __attribute__((constructor)) static void hc_install(void) { scr_dyn_handle_class_ops = &hc_class_ops; }

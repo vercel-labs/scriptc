@@ -6216,6 +6216,15 @@ static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
   }
 }
 
+/* The expando properties a program set on the state's object: a handle's
+ * own properties beside the class's prototype members. Borrowed. */
+static ScrDyn *ws_own_props(void *h, ScrDynHandleTag tag) {
+  /* The queuing strategies' states are not WsObj states and keep no
+   * expando. */
+  if (tag == SCR_DYNH_WS_COUNT_STRATEGY || tag == SCR_DYNH_WS_BYTE_STRATEGY) return NULL;
+  return h ? ((WsObj *)h)->own : NULL;
+}
+
 #define WS_OPS(NAME, CLS, RETAIN, RELEASE, INVOKE, GET, SET, METHODS, INVALID) \
   static const ScrDynHandleOps NAME = {                                           \
       .cls = CLS,                                                                 \
@@ -6230,6 +6239,7 @@ static ScrDyn *ws_stream_predicate(void *h, ScrDynHandleTag tag, double which) {
       .invalid_this = INVALID,                                                    \
       .rejected = ws_rejected_value,                                              \
       .stream_predicate = ws_stream_predicate,                                    \
+      .own_props = ws_own_props,                                                  \
   }
 
 static const ScrDynHandleOps ws_readable_ops = {
@@ -6246,6 +6256,7 @@ static const ScrDynHandleOps ws_readable_ops = {
     .invalid_this = "Value of \"this\" must be of type ReadableStream",
     .rejected = ws_rejected_value,
     .stream_predicate = ws_stream_predicate,
+    .own_props = ws_own_props,
 };
 
 WS_OPS(ws_reader_ops, "ReadableStreamDefaultReader", ws_retain, ws_release, ws_reader_invoke, ws_reader_get, ws_own_set, ws_reader_methods,

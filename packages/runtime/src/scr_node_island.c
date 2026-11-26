@@ -770,7 +770,8 @@ static bool ni_dir_private(NiDir *dir);
 static bool ni_dir_rename(NiDir *dir, const char *from, const char *to);
 static bool ni_dir_unlink(NiDir *dir, const char *name);
 static bool ni_dir_rmdir(NiDir *dir, const char *name);
-static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target);
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target,
+                           const char *final_dir);
 static bool ni_dir_link_matches(NiDir *dir, const char *name, const char *target);
 static bool ni_dir_exists(NiDir *dir, const char *name);
 static void ni_dir_each(NiDir *dir, NiVisit visit, void *arg);
@@ -1036,13 +1037,14 @@ static bool ni_junction(const wchar_t *link, const wchar_t *target) {
                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
   if (handle == INVALID_HANDLE_VALUE) return false;
   size_t length = wcslen(target);
-  size_t names = (4 + length + 1) * sizeof(wchar_t); /* \??\ + target + NUL, twice */
-  size_t total = offsetof(NiMountReparse, path) + 2 * names;
+  /* \??\ + target + NUL, then the printed target + NUL: the names, whose
+   * sizes the record declares. */
+  size_t total = offsetof(NiMountReparse, path) + (4 + length + 1 + length + 1) * sizeof(wchar_t);
   NiMountReparse *data = malloc(total);
   if (data == NULL) ni_oom();
   memset(data, 0, total);
   data->tag = IO_REPARSE_TAG_MOUNT_POINT;
-  data->length = (USHORT)(total - offsetof(NiMountReparse, path) + 8);
+  data->length = (USHORT)(total - 8); /* the data after the eight-byte header */
   data->substitute_length = (USHORT)((4 + length) * sizeof(wchar_t));
   data->print_offset = (USHORT)((4 + length + 1) * sizeof(wchar_t));
   data->print_length = (USHORT)(length * sizeof(wchar_t));
@@ -1061,19 +1063,34 @@ static bool ni_junction(const wchar_t *link, const wchar_t *target) {
   return ok;
 }
 
-static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target) {
+/* The link `name` in `dir` to `target`. `final_dir` is the absolute path the
+ * link's directory has once it is in place, when that differs from
+ * `dir->path` (an install writes into a staging directory it renames): a
+ * junction stores its target absolutely and the target need not exist yet,
+ * so it names the directory that will exist rather than the staging one. */
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target, const char *final_dir) {
   wchar_t *path = ni_wjoin(dir->path, name);
   wchar_t *relative = ni_wide(target, strlen(target));
-  wchar_t *full = ni_wresolve(dir->path, target);
-  /* SYMBOLIC_LINK_FLAG_DIRECTORY when the target is one (the package
-   * directories of a module tree are), and the flag that lets a
-   * non-elevated process create it (Developer Mode); a junction, which
-   * needs no privilege at all, otherwise. */
-  DWORD directory = full != NULL && (GetFileAttributesW(full) & FILE_ATTRIBUTE_DIRECTORY) ? 0x1 : 0;
+  wchar_t *final = final_dir != NULL ? ni_wide(final_dir, strlen(final_dir)) : NULL;
+  wchar_t *full = ni_wresolve(final != NULL ? final : dir->path, target);
+  /* SYMBOLIC_LINK_FLAG_DIRECTORY when the target is one, and the flag that
+   * lets a non-elevated process create it (Developer Mode); a junction,
+   * which needs no privilege at all, otherwise. The target is probed where
+   * it exists — beside the link while an install stages the tree, at its
+   * final path once the link is in place — and a tree's links name package
+   * directories, so one that cannot be probed is a directory link. */
+  DWORD attributes = INVALID_FILE_ATTRIBUTES;
+  wchar_t *staged = ni_wresolve(dir->path, target);
+  if (staged != NULL) attributes = GetFileAttributesW(staged);
+  if (attributes == INVALID_FILE_ATTRIBUTES && full != NULL) attributes = GetFileAttributesW(full);
+  free(staged);
+  DWORD directory =
+      attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) ? 0x1 : 0;
   bool ok = path != NULL && relative != NULL &&
             CreateSymbolicLinkW(path, relative, directory | 0x2) != 0;
   if (!ok && path != NULL && full != NULL && directory != 0 && ni_junction(path, full)) ok = true;
   free(full);
+  free(final);
   free(relative);
   free(path);
   return ok;
@@ -1311,7 +1328,10 @@ static bool ni_dir_rmdir(NiDir *dir, const char *name) {
   return unlinkat(dir->fd, name, AT_REMOVEDIR) == 0;
 }
 
-static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target) {
+/* `final_dir` is unread: a relative symlink names its target from wherever
+ * the link is, so moving the directory keeps it valid. */
+static bool ni_dir_symlink(NiDir *dir, const char *name, const char *target, const char *final_dir) {
+  (void)final_dir;
   return symlinkat(target, dir->fd, name) == 0;
 }
 
@@ -1579,28 +1599,43 @@ static bool ni_extract_files(NiDir *root) {
   return ok;
 }
 
-/* Writes the manifest's links below `root`. An install makes them after it
- * renames its staging directory into place: a junction names its target
- * absolutely, and nothing replaces that target when a link is created
- * without symlink privileges, so a target inside the staging name would
- * dangle once it is renamed. */
-static bool ni_extract_links(NiDir *root) {
+/* Writes the manifest's links below `root`. `final_root` is the tree's path
+ * once it is in place, when `root` is a staging directory an install
+ * renames (NULL when it already is the final tree): each link's directory
+ * is named from there, so a junction's absolute target survives the
+ * rename. The tree is complete before the rename publishes it, so a start
+ * that opens the installed tree never finds it without its links. */
+static bool ni_extract_links(NiDir *root, const char *final_root) {
   NiWalk walk;
   ni_walk_begin(&walk, root);
   bool ok = true;
   for (size_t i = 0; i < ni_nlinks && ok; i++) {
     const char *base;
     NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, true, &base);
-    ok = dir != NULL && ni_dir_symlink(dir, base, ni_links[i].target);
+    const char *final_dir = NULL;
+    char final[4352];
+    if (dir != NULL && final_root != NULL) {
+      const char *slash = strrchr(ni_links[i].path, '/');
+      size_t relative = slash != NULL ? (size_t)(slash - ni_links[i].path) : 0;
+      int n = relative > 0 ? snprintf(final, sizeof final, "%s/%.*s", final_root, (int)relative,
+                                      ni_links[i].path)
+                           : snprintf(final, sizeof final, "%s", final_root);
+      if (n <= 0 || (size_t)n >= sizeof final) {
+        ok = false;
+        break;
+      }
+      final_dir = final;
+    }
+    ok = dir != NULL && ni_dir_symlink(dir, base, ni_links[i].target, final_dir);
   }
   ni_walk_end(&walk);
   return ok;
 }
 
-/* Writes the executable's tree below `root` (an empty directory that keeps
- * its name): its files, then its links. */
-static bool ni_extract(NiDir *root) {
-  return ni_extract_files(root) && ni_extract_links(root);
+/* Writes the executable's tree below `root` (an empty directory): its files,
+ * then its links (see ni_extract_links for `final_root`). */
+static bool ni_extract(NiDir *root, const char *final_root) {
+  return ni_extract_files(root) && ni_extract_links(root, final_root);
 }
 
 
@@ -1684,17 +1719,18 @@ static bool ni_cached_root(const char *digest) {
     ni_manifest_ready();
     char staging[128];
     snprintf(staging, sizeof staging, "%s.%ld.tmp", digest, ni_pid());
+    /* The tree's path once it is in place: the links name their targets from
+     * there while the staging directory still holds them, so the rename
+     * publishes a complete tree in one step. */
+    char final_root[4352];
+    int named = snprintf(final_root, sizeof final_root, "%s/scriptc/node-islands/%s", base, digest);
     NiDir *fresh = ni_dir_open(islands, staging, true, false);
-    bool placed = fresh != NULL && ni_dir_private(fresh) && ni_extract_files(fresh) &&
-                  ni_dir_flush(fresh) && ni_dir_rename(islands, staging, digest);
+    bool placed = named > 0 && (size_t)named < sizeof final_root && fresh != NULL &&
+                  ni_dir_private(fresh) && ni_extract(fresh, final_root) && ni_dir_flush(fresh) &&
+                  ni_dir_rename(islands, staging, digest);
     if (placed) {
       ni_dir_close(fresh);
-      /* The links after the rename: see ni_extract_links. */
       tree = ni_dir_open(islands, digest, false, false);
-      if (tree != NULL && !ni_extract_links(tree)) {
-        ni_dir_remove_tree(tree);
-        tree = NULL;
-      }
     } else {
       if (fresh != NULL) ni_dir_remove_tree(fresh);
       ni_dir_rmdir(islands, staging);
@@ -1804,7 +1840,7 @@ void scr_ni_tree_repair(void) {
   for (size_t i = 0; i < ni_nlinks; i++) {
     const char *base;
     NiDir *dir = ni_walk_parent(&walk, ni_links[i].path, true, &base);
-    if (dir != NULL && !ni_dir_exists(dir, base) && ni_dir_symlink(dir, base, ni_links[i].target))
+    if (dir != NULL && !ni_dir_exists(dir, base) && ni_dir_symlink(dir, base, ni_links[i].target, NULL))
       restored++;
   }
   ni_walk_end(&walk);
@@ -1876,7 +1912,7 @@ static bool ni_temporary_root(void) {
   scr_atexit(ni_remove_temp_root);
   NiDir *dir = ni_dir_open_path(ni_temp_root, false);
   ni_manifest_ready();
-  bool ok = dir != NULL && ni_dir_private(dir) && ni_extract(dir);
+  bool ok = dir != NULL && ni_dir_private(dir) && ni_extract(dir, NULL);
   ni_dir_close(dir);
   return ok && ni_set_root(ni_temp_root, "", "");
 }

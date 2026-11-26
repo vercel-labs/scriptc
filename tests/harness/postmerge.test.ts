@@ -187,6 +187,7 @@ const unprobed: Record<string, string> = {
   mobile_runtime_packs_ios: "composite action",
   // release-build.yml and release-dry-run.yml: they need other jobs' artifacts, or are not platform builds.
   plan: "reads a file",
+  "cli-layout": "not run by the rehearsal",
   "cli-profile": "not run by the rehearsal",
   mobile: "composite action",
   assemble: "needs every platform's artifacts",

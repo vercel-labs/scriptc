@@ -2353,6 +2353,21 @@ static bool scr_net_dyn_truthy(const ScrDyn *v);
 static bool scr_net_validate_number_dyn(const ScrDyn *v, const char *name);
 static void scr_net_dynh_fire_conn(ScrClosure *cb, ScrNetSocket *sock /* +1 */);
 
+/* A ServerOpts member read the way Node reads a property: an accessor on a
+ * boxed record runs with the record as its receiver (the raw own-data
+ * lookup the option walks elsewhere use would answer the accessor's
+ * function instead of calling it). Owned (+1); NULL when the member is
+ * absent or undefined. */
+static ScrDyn *scr_net_server_opt_read(const ScrDyn *o, const char *name, size_t len) {
+  ScrDyn *v = scr_dyn_obj_read(o, name, len);
+  if (v == NULL) return NULL;
+  if (v->kind == SCR_DYN_UNDEF) {
+    scr_dyn_release(v);
+    return NULL;
+  }
+  return v;
+}
+
 /* net.createServer(options[, listener]): Node's ServerOpts read the way
  * its Server constructor reads them — allowHalfOpen, pauseOnConnect,
  * noDelay and keepAlive for their truthiness, keepAliveInitialDelay and
@@ -2385,35 +2400,52 @@ ScrNetServer *scr_net_create_server_opts(const ScrDyn *options /*borrowed*/,
   }
   s = scr_net_server_new();
   if (o->kind == SCR_DYN_OBJ) {
-    const ScrDyn *m = scr_dyn_obj_get(o, "allowHalfOpen", 13);
+    ScrDyn *m = scr_net_server_opt_read(o, "allowHalfOpen", 13);
     s->opts_allow_half_open = m != NULL && scr_net_dyn_truthy(m);
-    m = scr_dyn_obj_get(o, "pauseOnConnect", 14);
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "pauseOnConnect", 14);
     s->opts_pause_on_connect = m != NULL && scr_net_dyn_truthy(m);
-    m = scr_dyn_obj_get(o, "keepAlive", 9);
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "keepAlive", 9);
     s->opts_keep_alive = m != NULL && scr_net_dyn_truthy(m);
-    m = scr_dyn_obj_get(o, "keepAliveInitialDelay", 21);
-    if (m != NULL && m->kind != SCR_DYN_UNDEF) {
-      if (!scr_net_validate_number_dyn(m, "options.keepAliveInitialDelay")) goto fail;
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "keepAliveInitialDelay", 21);
+    if (m != NULL) {
+      if (!scr_net_validate_number_dyn(m, "options.keepAliveInitialDelay")) {
+        scr_dyn_release(m);
+        goto fail;
+      }
       s->opts_ka_delay_given = true;
       s->opts_ka_delay_ms = m->v.num < 0 ? 0 : m->v.num;
+      scr_dyn_release(m);
     }
-    m = scr_dyn_obj_get(o, "highWaterMark", 13);
-    if (m != NULL && m->kind != SCR_DYN_UNDEF) {
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "highWaterMark", 13);
+    if (m != NULL) {
       if (m->kind != SCR_DYN_NUM) {
         scr_dyn_prop_type_fail("options.highWaterMark", "of type number", m);
+        scr_dyn_release(m);
         goto fail;
       }
       s->opts_hwm_set = true;
       s->opts_hwm = m->v.num;
+      scr_dyn_release(m);
     }
-    m = scr_dyn_obj_get(o, "blockList", 9);
+    if (scr_exc_pending()) goto fail;
+    m = scr_net_server_opt_read(o, "blockList", 9);
     if (m != NULL && scr_net_dyn_truthy(m)) {
       if (!scr_net_is_block_list(m)) {
         scr_dyn_prop_type_fail("options.blockList", "an net.BlockList", m);
+        scr_dyn_release(m);
         goto fail;
       }
-      s->opts_block_list = scr_dyn_retain((ScrDyn *)m);
+      s->opts_block_list = scr_dyn_retain(m);
     }
+    scr_dyn_release(m);
+    if (scr_exc_pending()) goto fail;
     /* noDelay: TCP_NODELAY is this runtime's accept default (a documented
      * divergence shared with the dial path) */
   }

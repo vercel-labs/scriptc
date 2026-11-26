@@ -61,4 +61,35 @@ steps.push(() => {
   });
 });
 
+steps.push(() => {
+  // a getter-backed blockList reads the way Node's property access does:
+  // the accessor runs and the inbound connection is blocked
+  const list = new net.BlockList();
+  list.addAddress("127.0.0.1", "ipv4");
+  let reads = 0;
+  const options = {
+    get blockList() {
+      reads += 1;
+      return list;
+    },
+  };
+  const server = net.createServer(options, (socket) => {
+    say("getter-handler", "called");
+    socket.destroy();
+  });
+  let connections = 0;
+  server.on("connection", () => {
+    connections += 1;
+  });
+  server.listen(0, "127.0.0.1", () => {
+    const port = (server.address() as { port: number }).port;
+    const client = net.connect(port, "127.0.0.1");
+    client.on("error", () => {});
+    client.on("close", () => {
+      say("getter-blocked-connections", connections, "reads", reads);
+      server.close(() => run());
+    });
+  });
+});
+
 run();

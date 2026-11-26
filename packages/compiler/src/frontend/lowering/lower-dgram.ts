@@ -808,9 +808,12 @@ function isBindOptionsArgument(lowerer: Lowerer, node: ts.Expression): boolean {
   /* A JavaScript call's first argument is untyped: Node's normalizeArgs
    * decides at run time (an object is the options record, a number or a
    * port string is the port), so it takes the runtime lane. */
+  /* A null first argument is Node's number form with a null port:
+   * validatePort turns it into 0, so it takes the runtime lane too. */
   return (
     t?.kind === "dyn" ||
-    (lowerer.typeOf(node).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+    (lowerer.typeOf(node).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.Null)) !==
+      0
   );
 }
 

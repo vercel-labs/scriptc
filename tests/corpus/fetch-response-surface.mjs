@@ -50,6 +50,37 @@ try {
   console.log("redirect nan", caught.constructor.name, caught.message);
 }
 console.log("redirect truncation", Response.redirect("https://example.com/", 302.9).status);
+
+for (const status of [300, 301, 302, 303, 304, 305, 307, 308, 309, 399]) {
+  try {
+    console.log("status", status, Response.redirect("https://example.com/", status).status);
+  } catch (caught) {
+    console.log("status", status, caught.constructor.name, caught.message);
+  }
+}
+
+// All argument expressions evaluate in source order first; then the url
+// converts to a string and the status to a number before the url parses.
+const order = [];
+try {
+  Response.redirect(
+    {
+      toString() {
+        order.push("url");
+        return "bad url";
+      },
+    },
+    {
+      valueOf() {
+        order.push("status");
+        return 200;
+      },
+    },
+    (order.push("extra"), 0),
+  );
+} catch (caught) {
+  console.log("argument order", JSON.stringify(order), caught.constructor.name, caught.message);
+}
 try {
   redirect.headers.set("x", "1");
 } catch (caught) {

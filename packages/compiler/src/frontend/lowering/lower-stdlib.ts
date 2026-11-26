@@ -2209,10 +2209,20 @@ export function lowerResponseStaticRedirect(
     return null;
   const loc = locOf(call);
   const args = call.arguments.nodes;
-  const url = lowerer.lowerExprExpecting(args[0]!, DYN);
-  const status =
-    args[1] !== undefined ? lowerer.lowerExprExpecting(args[1], DYN) : dynUndefinedExpr(loc);
+  /* Arguments evaluate in source order — url, status, then the arguments
+   * Node's redirect ignores — before the runtime converts the url and the
+   * status. The conversions themselves stay in the call: the runtime parses
+   * the url and then coerces the status, as WebIDL converts them. */
   const stmts: IrStmt[] = [];
+  const capture = (node: ts.Expression, name: string): IrExpr => {
+    const value = lowerer.lowerExprExpecting(node, DYN);
+    const local = lowerer.declareHiddenLocal(name, value.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
+    return varRef(local.id, local.type, value.loc);
+  };
+  const url = capture(args[0]!, "%redirectUrl");
+  const status =
+    args[1] !== undefined ? capture(args[1], "%redirectStatus") : dynUndefinedExpr(loc);
   for (const argument of args.slice(2)) {
     const discarded = lowerer.lowerExpr(argument);
     if (discarded.kind !== "unitLit")
@@ -2225,7 +2235,7 @@ export function lowerResponseStaticRedirect(
     type: DYN,
     loc,
   };
-  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: DYN, loc };
+  return { kind: "seqExpr", stmts, result, type: DYN, loc };
 }
 
 function lowerResponseConstruction(

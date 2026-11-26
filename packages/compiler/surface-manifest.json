@@ -6249,7 +6249,7 @@
       "kind": "stdlib",
       "name": "Response.redirect",
       "status": "static",
-      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, error-shape, state-machine; supported scope: an absolute URL as the Location header and a status in 300..399 (WebIDL truncation, Node's RangeError), immutable headers; differential evidence: fixture:static"
+      "note": "Node 24.22.1 / Undici 7.30.1; facets: webidl-conversion, error-shape, state-machine; supported scope: an absolute URL as the Location header and one of the redirect statuses 301, 302, 303, 307 or 308 (WebIDL truncation; any other code is Node's RangeError), immutable headers; differential evidence: fixture:static"
     },
     {
       "id": "stdlib.response.status",

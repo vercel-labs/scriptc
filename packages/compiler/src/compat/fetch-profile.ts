@@ -586,15 +586,13 @@ function buildFetchCompatProfile() {
         "headers",
         "body",
         "bodyUsed",
-      ].map(
-        (member): FetchCompatOperation => ({
-          id: `stdlib.response.${member}`,
-          name: `Response.${member}`,
-          kind: "property",
-          facets: ["property-read"],
-          evidence: [fixture("static")],
-        }),
-      ),
+      ].map((member): FetchCompatOperation => ({
+        id: `stdlib.response.${member}`,
+        name: `Response.${member}`,
+        kind: "property",
+        facets: ["property-read"],
+        evidence: [fixture("static")],
+      })),
       {
         id: "stdlib.response.static.json",
         name: "Response.json",
@@ -618,7 +616,7 @@ function buildFetchCompatProfile() {
         kind: "static-method",
         facets: ["webidl-conversion", "error-shape", "state-machine"],
         scope:
-          "an absolute URL as the Location header and a status in 300..399 (WebIDL truncation, Node's RangeError), immutable headers",
+          "an absolute URL as the Location header and one of the redirect statuses 301, 302, 303, 307 or 308 (WebIDL truncation; any other code is Node's RangeError), immutable headers",
         evidence: [fixture("static")],
       },
       ...["json", "text", "bytes", "arrayBuffer"].map((member): FetchCompatOperation => ({

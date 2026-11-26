@@ -7074,6 +7074,18 @@ ScrDyn *scr_fetch_response_redirect(ScrDyn *url_value, ScrDyn *status_value) {
   ScrStr *text = url_value != NULL ? scr_dyn_string_coerce_js(url_value)
                                    : scr_str_new("undefined", 9);
   if (!text) return NULL;
+  /* WebIDL converts every argument before the implementation runs: the url
+   * string first, then the status number, and only then the url parses (a
+   * parse failure still leaves the status conversion observed). */
+  double converted = 302.0;
+  if (status_value != NULL && status_value->kind != SCR_DYN_UNDEF) {
+    if (!scr_dyn_number_coerce_js(status_value, &converted)) {
+      scr_str_release(text);
+      return NULL;
+    }
+    converted = trunc(converted);
+    if (!isfinite(converted)) converted = 0.0;
+  }
   ScrUrl *parsed = sf_url_parse_quiet(text);
   if (!parsed) {
     sf_throw_url_parse_failure(text);
@@ -7081,16 +7093,11 @@ ScrDyn *scr_fetch_response_redirect(ScrDyn *url_value, ScrDyn *status_value) {
     return NULL;
   }
   scr_str_release(text);
-  double converted = 302.0;
-  if (status_value != NULL && status_value->kind != SCR_DYN_UNDEF) {
-    if (!scr_dyn_number_coerce_js(status_value, &converted)) {
-      scr_url_release(parsed);
-      return NULL;
-    }
-    converted = trunc(converted);
-    if (!isfinite(converted)) converted = 0.0;
-  }
-  if (converted < 300.0 || converted > 399.0) {
+  /* Node's undici answers only the redirect statuses (301, 302, 303, 307
+   * and 308) and throws its RangeError for every other code, 300 and 304
+   * included. */
+  if (converted != 301.0 && converted != 302.0 && converted != 303.0 && converted != 307.0 &&
+      converted != 308.0) {
     char message[48];
     int n = snprintf(message, sizeof message, "Invalid status code %d", (int)converted);
     scr_url_release(parsed);

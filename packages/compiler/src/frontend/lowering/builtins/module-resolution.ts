@@ -55,6 +55,7 @@ import {
   createRequireProgramModuleOf,
   createRequireCalleeFileOf,
   createRequireFactoryBinding,
+  isCreateRequireImportValue,
   createRequireLoaderAnchorOf,
   createRequireRuntimeBaseOf,
 } from "./module-bindings.js";
@@ -760,6 +761,58 @@ function deferredCreateRequireThrow(
   };
 }
 
+/** Node's argument check for createRequire: the base must be a file URL
+ * object, a file URL string, or an absolute path string. A statically known
+ * argument of any other shape is Node's ERR_INVALID_ARG_VALUE throw, where
+ * the factory call stands — the compiled loader fence would otherwise stand
+ * in for a loader Node never creates. Null for valid or runtime-computed
+ * bases. */
+function createRequireArgumentThrow(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr | null {
+  // Only the FACTORY call (`createRequire(<base>)`) takes a filename: a
+  // call through the loader it made takes a module id, which has its own
+  // lowering.
+  if (!isCreateRequireImportValue(lowerer, call.expression)) return null;
+  if (call.arguments.nodes.length !== 1) return null;
+  const arg = withoutParenthesesTypeWrappers(call.arguments.nodes[0]!);
+  let received: string | null = null;
+  if (ts.isStringLiteralLike(arg)) {
+    const text = arg.text;
+    if (text.startsWith("file:") || isAbsoluteRuntimePath(text)) return null;
+    received = `'${text}'`;
+  } else if (ts.isNumericLiteral(arg)) {
+    received = arg.text;
+  } else if (arg.kind === ts.SyntaxKind.TrueKeyword) {
+    received = "true";
+  } else if (arg.kind === ts.SyntaxKind.FalseKeyword) {
+    received = "false";
+  } else if (arg.kind === ts.SyntaxKind.NullKeyword) {
+    received = "null";
+  } else if (ts.isIdentifier(arg) && arg.text === "undefined") {
+    received = "undefined";
+  } else if (ts.isObjectLiteralExpression(arg) && arg.properties.nodes.length === 0) {
+    received = "{}";
+  } else if (ts.isArrayLiteralExpression(arg) && arg.elements.nodes.length === 0) {
+    received = "[]";
+  }
+  if (received === null) return null;
+  return nodeThrowExpr(
+    1,
+    "ERR_INVALID_ARG_VALUE",
+    "The argument 'filename' must be a file URL object, file URL string, " +
+      `or absolute path string. Received ${received}`,
+    DYN,
+    loc,
+  );
+}
+
+function isAbsoluteRuntimePath(text: string): boolean {
+  return text.startsWith("/") || /^[A-Za-z]:[\\/]/.test(text) || text.startsWith("\\\\");
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -771,6 +824,10 @@ export function lowerCreateRequireCall(
     // run-time require over a base the compiled graph cannot anchor.
     if (!isJsSourceFile(ts.getSourceFileOfNode(call))) return null;
     const callee = withoutParenthesesTypeWrappers(call.expression);
+    // A statically invalid base is Node's argument error, thrown where the
+    // factory call stands.
+    const invalid = createRequireArgumentThrow(lowerer, call, loc);
+    if (invalid !== null) return invalid;
     // The factory call itself over a run-time base — `createRequire(base)`
     // or a destructured `cr(base)`: Node evaluates the base arguments,
     // then the factory returns the loader. The compiled loader is the

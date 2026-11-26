@@ -437,6 +437,7 @@ const char *scr_error_message_code(const ScrStr *msg) {
     { "CRL is not yet valid", true, "CRL_NOT_YET_VALID" },
     { "CRL signature failure", true, "CRL_SIGNATURE_FAILURE" },
     { "unable to get certificate CRL", true, "UNABLE_TO_GET_CRL" },
+    { "key usage does not include CRL signing", true, "UNSPECIFIED" },
     { "certificate has expired", true, "CERT_HAS_EXPIRED" },
     { "self-signed certificate in certificate chain", true, "SELF_SIGNED_CERT_IN_CHAIN" },
     { "self-signed certificate", false, "DEPTH_ZERO_SELF_SIGNED_CERT" },

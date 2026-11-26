@@ -61,6 +61,8 @@ Minted ONCE with the openssl recipe below (see san.cnf) and committed with a 100
 
 `int-leaf.pem` is signed by `int-ca.pem` for CN=localhost with the usual SANs.
 
+`ku-ca.pem` is a CA whose critical keyUsage extension carries keyCertSign only (no cRLSign); `ku-leaf.pem`/`ku-leaf-key.pem` is a localhost leaf it signed and `crl-ku-clean.pem` is a CRL its key signed. A client that supplies that CRL must reject it with OpenSSL's key-usage failure even though the signature verifies. The CA is `openssl req -x509` with `keyUsage = critical,keyCertSign`, minted like `ca.pem`.
+
 `rollover-ca.pem`/`rollover-ca-key.pem` is a key-rollover CA: it carries the root's subject (`CN=tsnative test CA`) but a new key, and the root signed it, so its issuer and subject names are equal while its key differs from the root's. `rollover-leaf.pem`/`rollover-leaf-key.pem` is a localhost leaf signed by that key. `crl-rollover-clean.pem` is the rollover CA's own empty CRL and `crl-rollover-revoked.pem` is the root's CRL revoking the rollover CA, so the two CRLs share an issuer name but not a key. They are minted in throwaway CA directories copying `ca.pem`/`ca-key.pem` and the rollover key:
 
     openssl ecparam -genkey -name prime256v1 -noout -out rollover-ca-key.pem

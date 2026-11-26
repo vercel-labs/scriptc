@@ -1174,6 +1174,8 @@ typedef struct ScrTlsSock {
   bool vrfy_crl_expired;
   bool vrfy_crl_future;
   bool vrfy_crl_sig_fail;
+  /* the CRL's issuer may not sign CRLs (its key usage excludes cRLSign) */
+  bool vrfy_crl_key_usage;
   bool vrfy_crl_missing;
   /* the leaf's subjectAltName rendered the way OpenSSL prints it, recorded
    * while the peer chain is alive for Node's altname-failure message */
@@ -1538,6 +1540,7 @@ static void scr_tls_crl_check_chain(ScrTlsSock *t) {
   const mbedtls_x509_crt *chain[16];
   size_t n = scr_tls_crl_chain(t, chain);
   bool revoked = false, missing = n == 0, sig_fail = false, expired = false, future = false;
+  bool key_usage = false;
   for (size_t i = 0; i < n; i++) {
     const mbedtls_x509_crt *cert = chain[i];
     const mbedtls_x509_crt *issuer;
@@ -1577,6 +1580,14 @@ static void scr_tls_crl_check_chain(ScrTlsSock *t) {
       sig_fail = true;
       continue;
     }
+    /* OpenSSL checks the CRL signer's key usage as soon as the signature
+     * verifies: a CA whose keyUsage extension is present without cRLSign
+     * may not revoke (or vouch for) anything. */
+    if (issuer->MBEDTLS_PRIVATE(key_usage) != 0 &&
+        (issuer->MBEDTLS_PRIVATE(key_usage) & MBEDTLS_X509_KU_CRL_SIGN) == 0) {
+      key_usage = true;
+      continue;
+    }
     if (mbedtls_x509_time_is_past(&match->next_update)) {
       expired = true;
       continue;
@@ -1592,6 +1603,7 @@ static void scr_tls_crl_check_chain(ScrTlsSock *t) {
   } else if (missing) {
     t->vrfy_crl_missing = true;
   } else {
+    if (key_usage) t->vrfy_crl_key_usage = true;
     if (sig_fail) t->vrfy_crl_sig_fail = true;
     if (expired) t->vrfy_crl_expired = true;
     if (future) t->vrfy_crl_future = true;
@@ -1786,7 +1798,8 @@ static int scr_tls_vrfy_cb(void *ctx, mbedtls_x509_crt *crt, int depth, uint32_t
    * false still records it for authorizationError. */
   if (depth == 0 && !t->vrfy_blocked && scr_tls_client_crls(t) != NULL) {
     scr_tls_crl_check_chain(t);
-    if (t->vrfy_crl_revoked || t->vrfy_crl_missing || t->vrfy_crl_sig_fail ||
+    if (t->vrfy_crl_revoked || t->vrfy_crl_missing || t->vrfy_crl_key_usage ||
+        t->vrfy_crl_sig_fail ||
         t->vrfy_crl_expired || t->vrfy_crl_future)
       *flags |= MBEDTLS_X509_BADCERT_OTHER;
   }
@@ -2026,6 +2039,10 @@ static void scr_tls_verify_msg(ScrTlsSock *t, char *out, size_t n) {
   }
   if (t->vrfy_crl_missing) {
     snprintf(out, n, "unable to get certificate CRL");
+    return;
+  }
+  if (t->vrfy_crl_key_usage) {
+    snprintf(out, n, "key usage does not include CRL signing");
     return;
   }
   if (t->vrfy_crl_sig_fail) {
@@ -5683,6 +5700,7 @@ static const char *scr_tls_auth_code(ScrTlsSock *t) {
   if (t->vrfy_blocked) return "CERT_REVOKED";
   if (t->vrfy_crl_revoked) return "CERT_REVOKED";
   if (t->vrfy_crl_missing) return "UNABLE_TO_GET_CRL";
+  if (t->vrfy_crl_key_usage) return "UNSPECIFIED";
   if (t->vrfy_crl_sig_fail) return "CRL_SIGNATURE_FAILURE";
   if (t->vrfy_crl_expired) return "CRL_HAS_EXPIRED";
   if (t->vrfy_crl_future) return "CRL_NOT_YET_VALID";

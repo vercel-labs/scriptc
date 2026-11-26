@@ -20721,6 +20721,7 @@
           "tests/corpus/crypto-create-mac.ts",
           "tests/corpus/crypto-dep0203-deprecation-flags.cjs",
           "tests/corpus/crypto-dep0203-warning-override.cjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
           "tests/corpus/crypto-ecdh-dh-argument-shapes.ts",
           "tests/corpus/crypto-fips-deprecated.cjs",
@@ -21508,6 +21509,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21563,6 +21565,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21829,6 +21832,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -21861,6 +21865,7 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
           "tests/corpus/crypto-dh-keyobjects.mjs",
+          "tests/corpus/crypto-dh-key-parse.mjs",
           "tests/fixtures/node-types/keys.ts",
           "tests/corpus/crypto-key-sources.cjs",
           "tests/harness/crypto-unsupported-audit.test.ts"
@@ -47547,6 +47552,7 @@
           "tests/corpus/fs-links-times.cjs",
           "tests/corpus/fs-mkdtemp-disposable.ts",
           "tests/corpus/fs-native-realpath.ts",
+          "tests/corpus/fs-open-as-blob.ts",
           "tests/corpus/fs-opendir-buffer-size-uncaught.cjs",
           "tests/corpus/fs-opendir-callbacks.ts",
           "tests/corpus/fs-permissions-family.cjs",
@@ -47596,7 +47602,6 @@
           "tests/corpus/node24-fs-timestamps.ts",
           "tests/corpus/node24-fs-write-modes-sync.ts",
           "tests/corpus/node24-fs-write-options-flags.ts",
-          "tests/diagnostics/compat-absent-node-apis.ts",
           "tests/fixtures/node-types/fs-glob.ts",
           "tests/fixtures/node-types/fs-links.ts",
           "tests/fixtures/node-types/fs-statfs.ts",
@@ -50289,10 +50294,10 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:fs.fs.openAsBlob",
         "tests": [
-          "tests/diagnostics/compat-absent-node-apis.ts"
+          "tests/corpus/fs-open-as-blob.ts"
         ]
       },
       "anchorSource": "exact"
@@ -64062,12 +64067,23 @@
           "tests/corpus/http2-compat-request-state.ts",
           "tests/corpus/http2-compat-trailers.ts",
           "tests/corpus/http2-informational.ts",
+          "tests/corpus/http2-perform-handshake-connect.ts",
+          "tests/corpus/http2-perform-handshake-options-throw.ts",
+          "tests/corpus/http2-perform-handshake-paused.ts",
+          "tests/corpus/http2-perform-handshake-upgrade-repeat.ts",
+          "tests/corpus/http2-perform-handshake-upgrade.ts",
+          "tests/corpus/http2-perform-handshake.ts",
           "tests/corpus/http2-respond-with-file/main.ts",
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
           "tests/corpus/http2-session-error.ts",
+          "tests/corpus/http2-session-local-window.ts",
           "tests/corpus/http2-session-properties.ts",
+          "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-stream-readbacks.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -64565,8 +64581,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.http2session.setLocalWindowSize",
+        "tests": [
+          "tests/corpus/http2-session-local-window.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65542,10 +65561,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.priority",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65568,10 +65590,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66063,10 +66088,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'ready'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -67295,8 +67323,16 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.http2.performServerHandshake",
+        "tests": [
+          "tests/corpus/http2-perform-handshake-connect.ts",
+          "tests/corpus/http2-perform-handshake-options-throw.ts",
+          "tests/corpus/http2-perform-handshake-paused.ts",
+          "tests/corpus/http2-perform-handshake-upgrade-repeat.ts",
+          "tests/corpus/http2-perform-handshake-upgrade.ts",
+          "tests/corpus/http2-perform-handshake.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -77147,6 +77183,8 @@
           "tests/corpus/net-bound-socket-pipe.cjs",
           "tests/corpus/net-bound-socket.ts",
           "tests/corpus/net-connect-dynamic-arguments.cjs",
+          "tests/corpus/net-connect-missing-args.mjs",
+          "tests/corpus/net-connect-path-method.ts",
           "tests/corpus/net-create-server-block-list.ts",
           "tests/corpus/net-create-server-options.ts",
           "tests/corpus/net-is-ip-inputs.ts",
@@ -78317,10 +78355,11 @@
       "anchor": "socketconnect",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-missing-args.mjs"
         ]
       },
       "anchorSource": "exact"
@@ -78339,9 +78378,9 @@
       "nodeStability": null,
       "static": {
         "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts"
         ]
       },
       "anchorSource": "exact"
@@ -78359,10 +78398,11 @@
       "anchor": "socketconnectpath-connectlistener",
       "nodeStability": null,
       "static": {
-        "status": "partial",
-        "evidence": "compiler-dedicated:socket.connect",
+        "status": "supported",
+        "evidence": "compiler-feature:net.socket.connect",
         "tests": [
-          "tests/corpus/2597-dgram-send-ladders.cjs"
+          "tests/corpus/net-connect-path-method.ts",
+          "tests/corpus/net-connect-missing-args.mjs"
         ]
       },
       "anchorSource": "exact"

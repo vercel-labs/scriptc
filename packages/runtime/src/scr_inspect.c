@@ -2888,6 +2888,9 @@ static ScrStr *scr_insp_class_tag(const char *cls, const char *tail) {
 static bool insp_tag_names_class(const char *tag, const char *cls) {
   if (!tag) return false;
   size_t tag_len = strlen(tag), cls_len = strlen(cls);
+  /* A tag that IS the class name (a web stream's, the spec's
+   * Symbol.toStringTag) is not repeated in brackets. */
+  if (tag_len == cls_len && memcmp(tag, cls, cls_len) == 0) return true;
   return tag_len > cls_len + 1 && tag[tag_len - cls_len - 1] == '.' &&
          memcmp(tag + tag_len - cls_len, cls, cls_len) == 0;
 }
@@ -5240,8 +5243,13 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
          * view by the value behind it. */
         g_seen_alias = d->v.handle.ptr;
         ScrDyn *view = ops->inspect_view(d->v.handle.ptr);
-        /* The class's view is built by reading native state and threw
-         * (a closed database): the caller reports the exception. */
+        /* A custom inspector may refuse the value by throwing (a released
+         * stream writer's desiredSize does) or build no view at all (a
+         * closed database). The error leaves the whole inspection, as it
+         * does in Node, but a recursive renderer above expects a string: an
+         * empty one is answered with the exception pending, which the
+         * util.inspect boundary throws. The alias is cleared first so a
+         * failed build leaves no half-walked identity behind. */
         if (view == NULL) {
           g_seen_alias = NULL;
           return scr_str_new("", 0);

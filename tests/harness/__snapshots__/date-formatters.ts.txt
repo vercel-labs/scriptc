@@ -1,17 +1,17 @@
-date-formatters.ts:6:25 - error SC2020: 'Date.prototype.toLocaleDateString at locale "de-DE"' is part of the standard library types but has no scriptc lowering yet
+date-formatters.ts:6:25 - error SC2020: 'Date.prototype.toLocaleDateString with a locale list' is part of the standard library types but has no scriptc lowering yet
 
   5 | const date = new Date(0);
-  6 | date.toLocaleDateString("de-DE");
-    |                         ^~~~~~~
+  6 | date.toLocaleDateString(["de-DE"]);
+    |                         ^~~~~~~~~
   7 | date.toLocaleString(["en-US"]);
 
-  hint: which locale Node picks for a requested tag is locale negotiation, which is not modelled; the default locale (no argument), "en-US", "en" and "en-GB" compile
+  hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string
 
-date-formatters.ts:7:21 - error SC2020: 'Date.prototype.toLocaleString with a non-literal locale' is part of the standard library types but has no scriptc lowering yet
+date-formatters.ts:7:21 - error SC2020: 'Date.prototype.toLocaleString with a locale list' is part of the standard library types but has no scriptc lowering yet
 
-  6 | date.toLocaleDateString("de-DE");
+  6 | date.toLocaleDateString(["de-DE"]);
   7 | date.toLocaleString(["en-US"]);
     |                     ^~~~~~~~~
   8 | 
 
-  hint: the locale is decided at compile time: omit it or pass undefined for the default locale, or write "en-US" or "en"
+  hint: choosing a locale from a list is locale negotiation, which is not modelled; pass one locale string

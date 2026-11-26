@@ -563,6 +563,37 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
+  if (e.fn === "net.sockConnectMissing") {
+    // socket.connect(): Node's ERR_MISSING_ARGS is thrown at the call.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare void @scr_net_sock_connect_missing(ptr)`);
+    B.line(`call void @scr_net_sock_connect_missing(ptr ${args[0]!.name})`);
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockConnectPath" || e.fn === "net.sockConnectPathCb") {
+    // socket.connect(path, ...): the idle socket dials a Unix socket. The
+    // two dyn slots carry argument expressions Node evaluates and ignores
+    // (the middle of a three-argument call, or a non-function callback
+    // slot), so the runtime sees the evaluation even though it uses only
+    // the path and the listener.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.sockConnectPathCb") {
+      host.toHeap(args[4]!);
+      cb = args[4]!.name;
+    }
+    host.declare(`declare void @scr_net_sock_connect_path(ptr, ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb})`,
+    );
+    // validatePort's ladder throws synchronously for the empty, whitespace
+    // and out-of-range port strings; the pending exception must reach the
+    // statement (a try/catch, or the unwind the caller expects). A refused
+    // path is the async 'error' event instead.
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "net.socketNew") {
     // new net.Socket([options]): the unconnected socket handle; a signal
     // attaches through events.addAbortListener (event-target unit) only when

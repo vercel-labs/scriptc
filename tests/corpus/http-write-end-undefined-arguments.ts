@@ -1,9 +1,14 @@
-// Node treats a present-but-undefined encoding or callback as absent:
-// write(chunk, undefined, cb), write(chunk, encoding, undefined) and
-// write(chunk, undefined) are the shorter calls, and end(data, undefined, cb)
-// ends with the callback. Each shape compiles and runs identically.
+// Node treats a present-but-undefined encoding or callback as absent, but it
+// still evaluates the argument: an undefined-returning expression runs for
+// its side effects before the call. Each shape below compiles, the checks
+// print in argument order, and the callbacks follow at the write flush.
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+
+function note(label: string): undefined {
+  console.log("note", label);
+  return undefined;
+}
 
 const server = http.createServer((req, res) => {
   req.resume();
@@ -18,8 +23,8 @@ server.listen(0, "127.0.0.1", () => {
       response.on("end", () => server.close());
     },
   );
-  request.write("a", undefined, () => console.log("first callback"));
-  request.write("b", "utf8", undefined);
-  request.write("c", undefined);
-  request.end("d", undefined, () => console.log("end callback"));
+  request.write("a", note("encoding"), () => console.log("first callback"));
+  request.write("b", "utf8", note("callback"));
+  request.write("c", note("only encoding"));
+  request.end("d", note("end"), () => console.log("end callback"));
 });

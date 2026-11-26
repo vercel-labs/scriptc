@@ -11162,12 +11162,34 @@ function lowerWriteEndArgs(
   if (third !== null && third.kind !== "func" && !absent(2)) return null;
   const receiver = lowerReceiver();
   const chunk = dyn(args[0]);
-  const encoding = encodingForm ? dyn(args[1]) : dynUndefinedExpr(loc);
+  /* A present argument whose value is undefined still evaluates, in its own
+   * argument position — Node evaluates every argument before the call, and an
+   * undefined-returning expression can carry a side effect. The expression
+   * runs as a statement inside the slot and the constant undefined is what
+   * the call sees (the runtime reads it as the argument's absence). */
+  const undefinedArg = (node: ts.Expression): IrExpr => {
+    const value = lowerer.lowerExpr(node);
+    if (value.kind === "unitLit") return dynUndefinedExpr(loc);
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc: locOf(node) }],
+      result: dynUndefinedExpr(loc),
+      type: DYN,
+      loc: locOf(node),
+    };
+  };
+  const encoding = encodingForm
+    ? dyn(args[1])
+    : absent(1)
+      ? undefinedArg(args[1]!)
+      : dynUndefinedExpr(loc);
   const callback = callbackForm
     ? dyn(args[1])
-    : args.length === 3 && !absent(2)
-      ? dyn(args[2])
-      : dynUndefinedExpr(loc);
+    : third === null
+      ? dynUndefinedExpr(loc)
+      : third.kind === "func"
+        ? dyn(args[2]!)
+        : undefinedArg(args[2]!);
   return {
     kind: "libCall",
     fn,

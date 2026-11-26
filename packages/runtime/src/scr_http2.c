@@ -741,6 +741,11 @@ struct ScrH2Stream {
   int file_fd;             /* -1 when there is no source */
   bool file_owns_fd;       /* the unit opened it and closes it */
   bool file_done;          /* drained, gone, or replaced */
+  /* A non-regular source (FIFO, character device) has no length: the pump
+   * streams it until a writer's data has arrived and the source then ends,
+   * Node's file-stream shape. */
+  bool file_eof_mode;
+  bool file_got_data;
   scr_h2_file_off file_off;
   scr_h2_file_off file_remaining;
   double file_retry_handle; /* a pending backpressure retry timer (0 none) */
@@ -3057,6 +3062,50 @@ static bool scr_h2_file_pump(ScrH2Stream *st) {
     }
     int64_t window = st->send_window < s->send_window ? st->send_window : s->send_window;
     if (window <= 0) return false;
+    if (st->file_eof_mode) {
+      /* A source with no length streams until it ends. A non-blocking read
+       * that returns 0 before any byte arrived means no writer has produced
+       * one yet (Node's open/read wait off the loop); the pump parks like a
+       * window-blocked body and retries instead of ending the response. */
+      size_t chunk = (size_t)window;
+      if (chunk > max_frame) chunk = max_frame;
+      char *buf = malloc(chunk);
+      if (!buf) scr_h2_oom();
+#ifndef _WIN32
+      ssize_t got = read(st->file_fd, buf, chunk);
+#else
+      int got = _read(st->file_fd, buf, (unsigned)chunk);
+#endif
+      if (got < 0) {
+        int err = errno;
+        free(buf);
+#ifndef _WIN32
+        if (err == EAGAIN || err == EWOULDBLOCK || err == EINTR) {
+          scr_h2_file_schedule_retry(st);
+          return false;
+        }
+#endif
+        scr_h2_file_close(st);
+        scr_http2_stream_close(st, 2 /* NGHTTP2_INTERNAL_ERROR */, NULL);
+        return false;
+      }
+      if (got == 0) {
+        free(buf);
+        if (!st->file_got_data) {
+          scr_h2_file_schedule_retry(st);
+          return false;
+        }
+        st->file_remaining = 0;
+        break;
+      }
+      st->file_got_data = true;
+      scr_h2_send_frame(s, SCR_H2_F_DATA, 0, st->id, buf, (size_t)got);
+      scr_h2_stream_touch_timeout(st);
+      free(buf);
+      st->send_window -= got;
+      s->send_window -= got;
+      continue;
+    }
     size_t chunk = (size_t)window;
     if (chunk > max_frame) chunk = max_frame;
     if ((scr_h2_file_off)chunk > st->file_remaining) chunk = (size_t)st->file_remaining;
@@ -3390,8 +3439,10 @@ static void scr_h2_file_call_fire(ScrClosure *cb) {
     st->file_fd = fd;
     st->file_owns_fd = owns;
     st->file_done = false;
+    st->file_eof_mode = !is_file;
+    st->file_got_data = false;
     st->file_off = start;
-    st->file_remaining = want;
+    st->file_remaining = !is_file ? (scr_h2_file_off)INT64_MAX : want;
     scr_h2_stream_flush(st);
   } else if (owns) {
     scr_h2_close_fd(fd);

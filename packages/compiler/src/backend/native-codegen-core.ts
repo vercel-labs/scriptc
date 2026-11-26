@@ -1,6 +1,7 @@
 /** Native codegen helper protocol shared by compiler hosts. */
 import { availableParallelism } from "node:os";
 
+import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -314,6 +315,17 @@ export type NativeDispatchOpt = "off" | "light";
  * program's own code. Development builds leave them at the program's level
  * (opt-level 0). */
 export const GENERATED_DISPATCH_OPT: NativeDispatchOpt = "light";
+
+/** The dispatch-helper level a program object asks for, from the build's
+ * posture: release only. Speed is an optimized posture that deliberately
+ * trades build time for run time, so its program code keeps the fully
+ * optimized pipeline, large helpers included; development builds compile
+ * everything at opt-level 0. */
+export function generatedDispatchOptFor(
+  optimization: NativeOptimization | undefined,
+): NativeDispatchOpt | undefined {
+  return (optimization ?? "release") === "release" ? GENERATED_DISPATCH_OPT : undefined;
+}
 
 export function validateNativeCodegenVersion(
   value: Record<string, unknown>,

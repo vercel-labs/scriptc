@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
@@ -684,12 +685,18 @@ struct Pipeline {
     // a PassBuilder built around explicit callbacks never registers the
     // standard "skip an optional pass on an optnone function" predicate.
     // Without it the `optnone` simplifyDispatchHelpers adds would not stop the
-    // O2 function pipeline from running over the large dispatch helpers the
-    // light level exists to keep it off.
+    // O2 pipeline from running over the large dispatch helpers the light level
+    // exists to keep it off. Loop passes are handed Loop IR, not the enclosing
+    // function, so a helper whose loop survives the O1 simplification is
+    // resolved through the loop's parent.
     Callbacks.registerShouldRunOptionalPassCallback([](StringRef, Any IR) {
       const Function *F = nullptr;
       if (const auto **Stored = any_cast<const Function *>(&IR)) F = *Stored;
       else if (auto **Mutable = any_cast<Function *>(&IR)) F = *Mutable;
+      else if (const auto **StoredLoop = any_cast<const Loop *>(&IR))
+        F = (*StoredLoop)->getHeader()->getParent();
+      else if (auto **MutableLoop = any_cast<Loop *>(&IR))
+        F = (*MutableLoop)->getHeader()->getParent();
       return F == nullptr || !F->hasOptNone();
     });
   }

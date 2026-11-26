@@ -5,6 +5,7 @@
 import { dirname } from "node:path";
 import type { FrontendServices } from "./services.js";
 import { isBundledShimForwarder } from "./package-shims.js";
+import { applyPreferredConditions } from "./scriptc-condition.js";
 import type {
   NpmStaticDeclarationOverloads,
   NpmStaticDeclarationProperties,
@@ -268,6 +269,9 @@ function aliasedPackageName(pkgDir: string): string | null {
  *      must execute the same module Node selects, including packages that
  *      ship separate ESM and CommonJS builds. */
 export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
+  // The scriptc branches the project configures join the document first, so
+  // step 0 below publishes them like the package's own.
+  applyPreferredConditions(pkg);
   delete pkg["types"];
   delete pkg["typings"];
   const transform = (v: unknown): unknown => {

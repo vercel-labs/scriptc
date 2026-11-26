@@ -11,8 +11,83 @@
  * scriptc target is published under the keys the checker matches, ahead of
  * every key but types. Both worlds then answer one file for the import, a
  * package self-reference and a package import alike. */
+import { readProjectConfig } from "../project-config.js";
 
 export const SCRIPTC_CONDITION = "scriptc";
+
+/* A project can give an installed package the scriptc branch it does not
+ * publish: `"scriptc": { "packages": { "rxjs": { "conditions": ["es2015"] } } }`
+ * in the entry's nearest package.json. In each of that package's condition
+ * objects without a scriptc entry, the first listed condition it has
+ * supplies the scriptc target (preferredConditionsManifest), so every world
+ * scriptc resolves selects that branch before node, import, require and
+ * default. Node islands run the package as Node resolves it. */
+
+/** The configured conditions, by package name. */
+let preferredConditions: ReadonlyMap<string, readonly string[]> = new Map();
+
+/** Reads the `conditions` of the entry's `scriptc.packages` settings.
+ * Called once per program load, before any package.json is resolved. */
+export function configurePreferredConditions(entryPath: string): void {
+  const next = new Map<string, readonly string[]>();
+  for (const [name, setting] of readProjectConfig(entryPath).packages) {
+    if (setting.conditions.length > 0) next.set(name, setting.conditions);
+  }
+  const same =
+    next.size === preferredConditions.size &&
+    [...next].every(
+      ([name, list]) => preferredConditions.get(name)?.join("\0") === list.join("\0"),
+    );
+  if (same) return;
+  preferredConditions = next;
+  servedManifests.clear();
+}
+
+/** `value` with a scriptc entry added to each condition object that has
+ * one of `conditions` and no scriptc entry of its own, or the value itself
+ * when none changes. */
+function withPreferred(value: unknown, conditions: readonly string[]): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    const items = value.map((item) => withPreferred(item, conditions));
+    return items.some((item, index) => item !== value[index]) ? items : value;
+  }
+  const record = value as Record<string, unknown>;
+  const entries = Object.entries(record);
+  const children: [string, unknown][] = entries.map(([key, child]) => [
+    key,
+    withPreferred(child, conditions),
+  ]);
+  const changed = children.some(([, child], index) => child !== entries[index]![1]);
+  const isConditions =
+    entries.length > 0 &&
+    !entries.some(([key]) => key.startsWith(".") || key.startsWith("#")) &&
+    !Object.prototype.hasOwnProperty.call(record, SCRIPTC_CONDITION);
+  const preferred = isConditions
+    ? conditions.find((condition) => Object.prototype.hasOwnProperty.call(record, condition))
+    : undefined;
+  if (preferred === undefined) return changed ? Object.fromEntries(children) : value;
+  const target = children.find(([key]) => key === preferred)![1];
+  return Object.fromEntries([...children, [SCRIPTC_CONDITION, target]]);
+}
+
+/** Adds the scriptc entries the project configures for the package `pkg`
+ * names (its "exports" and "imports"), in place. True when one was added. */
+export function applyPreferredConditions(pkg: Record<string, unknown>): boolean {
+  if (preferredConditions.size === 0 || typeof pkg["name"] !== "string") return false;
+  const conditions = preferredConditions.get(pkg["name"]);
+  if (conditions === undefined) return false;
+  let changed = false;
+  for (const field of ["exports", "imports"]) {
+    const value = pkg[field];
+    if (value === undefined) continue;
+    const next = withPreferred(value, conditions);
+    if (next === value) continue;
+    pkg[field] = next;
+    changed = true;
+  }
+  return changed;
+}
 
 /** A condition object's entries with the scriptc entry first, preceded by
  * the types entry in a world that matches types. Unchanged without a
@@ -70,8 +145,9 @@ function forChecker(value: unknown): unknown {
  * written). Malformed documents are served as written too, so resolution
  * reports them as it always does. */
 export function scriptcConditionManifest(text: string): string | null {
-  // A cheap probe: a manifest without the key anywhere is served as written.
-  if (!text.includes(`"${SCRIPTC_CONDITION}"`)) return null;
+  // A cheap probe: a manifest without the key anywhere is served as written,
+  // unless the project configures conditions for some package.
+  if (preferredConditions.size === 0 && !text.includes(`"${SCRIPTC_CONDITION}"`)) return null;
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -80,7 +156,7 @@ export function scriptcConditionManifest(text: string): string | null {
   }
   if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return null;
   const pkg = doc as Record<string, unknown>;
-  let changed = false;
+  let changed = applyPreferredConditions(pkg);
   for (const field of ["exports", "imports"]) {
     const value = pkg[field];
     if (value === undefined) continue;

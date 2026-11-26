@@ -11,7 +11,8 @@
  *       "dd-trace": "node",              // run in a Node island
  *       "hot-shots": "native",           // must compile natively (SC8003)
  *       "proper-lockfile": { "run": "node", "evaluate": "lazy" },
- *       "zod": { "shapes": false }       // no shape-inference overlay
+ *       "zod": { "shapes": false },      // no shape-inference overlay
+ *       "rxjs": { "conditions": ["es2015"] } // export conditions scriptc prefers
  *     },
  *     "nodeIslands": { "auto": true, "modules": ["src/plugins/*.ts"] },
  *     "wasm": ["build/module.wasm"],
@@ -43,11 +44,14 @@ export type PackageSchedule = "lockstep" | "free";
 
 /** One `scriptc.packages.<name>` entry. `unloaded` packages never load;
  * `shapes: false` compiles the package without shape inference's typed
- * overlay (shape-inference/overlay.ts); the other settings choose where the
+ * overlay (shape-inference/overlay.ts); `conditions` names the export
+ * conditions the package's code is selected by in place of a scriptc branch
+ * (frontend/scriptc-condition.ts); the other settings choose where the
  * package runs. */
 export interface PackageSetting {
   unloaded: boolean;
   shapes: boolean;
+  conditions: string[];
   run: PackageRun;
   evaluate: PackageEvaluate;
   share: PackageShare;
@@ -128,9 +132,9 @@ const PACKAGE_OBJECT_KEYS: Record<string, string[]> = {
   marshal: ["copy", "handles"],
   schedule: ["lockstep", "free"],
 };
-/** Every key of a package setting object: the string-valued ones above and
- * the boolean `shapes`. */
-const PACKAGE_SETTING_KEYS = [...Object.keys(PACKAGE_OBJECT_KEYS), "shapes"];
+/** Every key of a package setting object: the string-valued ones above, the
+ * boolean `shapes` and the `conditions` list. */
+const PACKAGE_SETTING_KEYS = [...Object.keys(PACKAGE_OBJECT_KEYS), "shapes", "conditions"];
 const NODE_ISLANDS_KEYS = [
   "auto",
   "modules",
@@ -145,6 +149,7 @@ function defaultPackageSetting(): PackageSetting {
   return {
     unloaded: false,
     shapes: true,
+    conditions: [],
     run: "auto",
     evaluate: "auto",
     share: "auto",
@@ -276,6 +281,32 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
               );
               valid = false;
             } else setting.shapes = v;
+            continue;
+          }
+          if (key === "conditions") {
+            const v = value[key];
+            // A condition is a key of a condition object: never a subpath
+            // ("./x"), an imports key ("#x") or "types", which only the
+            // checker's declarations world matches.
+            const listed =
+              Array.isArray(v) &&
+              v.length > 0 &&
+              v.every(
+                (c: unknown) =>
+                  typeof c === "string" &&
+                  c !== "" &&
+                  c !== "types" &&
+                  !c.startsWith(".") &&
+                  !c.startsWith("#"),
+              );
+            if (!listed) {
+              problem(
+                ["packages", name, key],
+                `must be a non-empty array of export condition names, not ${shown(v)}`,
+                `write "conditions": ["es2015"]`,
+              );
+              valid = false;
+            } else setting.conditions = v as string[];
             continue;
           }
           const allowed = Object.hasOwn(PACKAGE_OBJECT_KEYS, key)

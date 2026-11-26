@@ -9,7 +9,7 @@ import {
   trackedReadFile,
 } from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
-import { SCRIPTC_CONDITION } from "./scriptc-condition.js";
+import { applyPreferredConditions, SCRIPTC_CONDITION } from "./scriptc-condition.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { isBundlerCjsCandidate, rewriteBundlerCjsSyntax } from "./npm-static-rewrite-syntax.js";
 import { lowerBundledEsmInits } from "./npm-static-bundled-esm.js";
@@ -74,8 +74,9 @@ function resolveBareRequireCjs(fromFile: string, spec: string): string | null {
         let exports: unknown;
         try {
           const pkgText = trackedReadFile(pkgPath);
-          exports =
-            pkgText === null ? undefined : (JSON.parse(pkgText) as { exports?: unknown }).exports;
+          const pkg = pkgText === null ? null : (JSON.parse(pkgText) as Record<string, unknown>);
+          if (pkg !== null) applyPreferredConditions(pkg);
+          exports = pkg?.exports;
         } catch {
           return null;
         }

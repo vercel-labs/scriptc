@@ -173,7 +173,7 @@ import {
   trackedReadSource,
   trackedRealpath,
 } from "./input-tracker.js";
-import { scriptcConditionManifestAt } from "./scriptc-condition.js";
+import { configurePreferredConditions, scriptcConditionManifestAt } from "./scriptc-condition.js";
 import { NODE_GLOBAL_NAMES } from "./node-global-names.js";
 import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { isBundledLibraryFile } from "./default-library.js";
@@ -2426,6 +2426,9 @@ export function loadProgram(
   // JavaScript, even when named. A registry entry's `sourceVersions`
   // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
+  // The export conditions the project prefers for its packages, read by
+  // every package.json resolution this load makes.
+  configurePreferredConditions(entryPath);
   resetDeclBoundaryOrigins();
   resetDeclOriginVersions();
   // The project's type patches (type-patches/layer.ts), read by every host

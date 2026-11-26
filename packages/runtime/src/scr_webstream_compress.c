@@ -5,6 +5,10 @@
  * below, feeding one of Node's zlib streams (`gzip`, `deflate`,
  * `deflate-raw`): written chunks go through scr_zlib.c's streaming engine
  * and every output chunk is enqueued on the transform's readable side.
+ * Every engine step runs on the shared worker pool, as node:zlib's writes
+ * do, so compressing a large chunk does not hold the event loop: only the
+ * step's input copy, output buffer and result bookkeeping touch the main
+ * thread between completions.
  * psClass builds the transform through scr_webstream_native_transform
  * (scr_webstreams.c), so the stream machinery stays in that unit and this
  * one links only when a program constructs the class (its pack predicate
@@ -20,8 +24,10 @@
 /* The two classes' kinds in the frontend's WEB_STREAM_CLASSES order. */
 enum { WS_COMPRESS_KIND = 15, WS_DECOMPRESS_KIND = 16 };
 
-/* One output buffer per engine step (zlib's own chunk-size default). */
-enum { WS_COMP_OUT = 16 * 1024 };
+/* One output buffer per engine step (zlib's own chunk-size default), and
+ * the most backlog one step hands the engine (a worker copies its input, so
+ * a large write is fed in bounded slices instead of one copy of itself). */
+enum { WS_COMP_OUT = 16 * 1024, WS_COMP_IN = 1024 * 1024 };
 /* Input the engine has accepted but not consumed yet (bytes), and output
  * chunks a flush may queue before it waits for the reader (chunks: the
  * readable strategy has no size function, so its queue counts chunks):
@@ -48,10 +54,11 @@ typedef struct WsCompState {
   bool finishing; /* flush began: drain the backlog, then finish the engine */
   bool drain;     /* the last step filled its output buffer: more is due */
   bool pumping;   /* a pump is on the stack: enqueues may pull again */
+  bool step_pending; /* an engine step runs on the worker pool */
+  bool cancelled;    /* a cancel took the stream under a running step */
   ScrDyn *controller; /* +1, the transform controller while a job runs */
   ScrPromise *pending_write; /* +1, a write waiting for the backlog to drain */
   ScrPromise *pending_flush; /* +1, close waiting for the output to drain */
-  unsigned char *out; /* the WS_COMP_OUT scratch, allocated on first use */
 } WsCompState;
 
 static void *ws_comp_retain(void *p) {
@@ -79,8 +86,6 @@ static void ws_comp_drop(void *p, bool gc) {
   s->engine = NULL;
   free(s->in);
   s->in = NULL;
-  free(s->out);
-  s->out = NULL;
   if (gc) return;
   if (s->transform) scr_dyn_release(s->transform);
   if (s->own) scr_dyn_release(s->own);
@@ -270,14 +275,24 @@ static bool ws_comp_enqueue(ScrDyn *controller, const unsigned char *data, size_
   return ok;
 }
 
+/* Drops the consumed prefix of the backlog. A worker step reads its own
+ * copy of the input, so this is safe whenever no step result is being
+ * applied: without it the buffer would grow by every byte the stream ever
+ * carried while steps were in flight. */
+static void ws_comp_compact(WsCompState *s) {
+  /* The consumed prefix goes once it is at least half the backlog: a single
+   * large write is not moved after every step, and halving keeps the moves
+   * amortized linear in the bytes the stream carries. */
+  if (s->in_off == 0 || s->in_off < s->in_len - s->in_off) return;
+  memmove(s->in, s->in + s->in_off, s->in_len - s->in_off);
+  s->in_len -= s->in_off;
+  s->in_off = 0;
+}
+
 /* Appends a written chunk to the backlog (compacting the consumed prefix
  * first). The backlog is what the engine has accepted and not consumed. */
 static void ws_comp_backlog(WsCompState *s, const unsigned char *data, size_t len) {
-  if (s->in_off > 0) {
-    memmove(s->in, s->in + s->in_off, s->in_len - s->in_off);
-    s->in_len -= s->in_off;
-    s->in_off = 0;
-  }
+  if (!s->step_pending) ws_comp_compact(s);
   if (s->in_len + len > s->in_cap) {
     size_t cap = s->in_cap ? s->in_cap : 4096;
     while (cap < s->in_len + len) cap *= 2;
@@ -324,13 +339,18 @@ static void ws_comp_release_write(WsCompState *s) {
   scr_promise_release(write);
 }
 
+/* Frees the engine, or defers the free while a worker step still reads it:
+ * the step's completion frees it once nothing runs. */
+static void ws_comp_engine_free(WsCompState *s) {
+  if (s->step_pending) return;
+  if (s->engine) scr_zlib_engine_free(s->engine);
+  s->engine = NULL;
+}
+
 /* The job is done: the backlog is consumed, and after a flush the engine
  * itself is released. */
 static void ws_comp_job_done(WsCompState *s) {
-  if (s->finishing && s->engine) {
-    scr_zlib_engine_free(s->engine);
-    s->engine = NULL;
-  }
+  if (s->finishing) ws_comp_engine_free(s);
   s->in_len = 0;
   s->in_off = 0;
   s->drain = false;
@@ -347,8 +367,7 @@ static void ws_comp_fail(WsCompState *s, const ScrZlibError *ze) {
   ScrDyn *error = ws_comp_error_value(ze);
   ScrDyn *controller = s->controller;
   s->controller = NULL;
-  if (s->engine) scr_zlib_engine_free(s->engine);
-  s->engine = NULL;
+  ws_comp_engine_free(s);
   s->in_len = 0;
   s->in_off = 0;
   s->drain = false;
@@ -374,8 +393,7 @@ static void ws_comp_junk(WsCompState *s) {
   scr_error_release(err);
   ScrDyn *controller = s->controller;
   s->controller = NULL;
-  if (s->engine) scr_zlib_engine_free(s->engine);
-  s->engine = NULL;
+  ws_comp_engine_free(s);
   s->in_len = 0;
   s->in_off = 0;
   s->drain = false;
@@ -399,102 +417,202 @@ static void ws_comp_abandon(WsCompState *s) {
   if (controller) scr_dyn_release(controller);
 }
 
-/* Runs the engine as far as the readable side allows: one step per
- * outstanding read request, and during a flush up to WS_COMP_QUEUED bytes
- * of queued output (so a close before any read completes for a small
- * stream and waits for the reader for a bomb). Returns -1 with the
- * exception pending when enqueueing failed. */
-static int ws_comp_pump_steps(WsCompState *s) {
-  if (!s->out) {
-    s->out = malloc(WS_COMP_OUT);
-    if (!s->out) ws_comp_oom();
-  }
-  for (;;) {
-    bool input_left = s->in_off < s->in_len;
-    if (!input_left && !s->finishing && !s->drain) {
-      ws_comp_job_done(s);
-      return 0;
-    }
-    /* A reader's request always admits one chunk. A COMPRESSION stream may
-     * also fill the readable queue to WS_COMP_QUEUED without one: a write
-     * must not wait for a reader when its compressed output fits that bound
-     * (Node's writable side resolves the write as soon as the transform
-     * accepted the chunk), and a bomb-shaped stream still stops at the
-     * bound. A DECOMPRESSION stream produces its output only for the reader:
-     * a trailing junk error and the chunk boundaries are the reader's turn,
-     * as in Node. */
-    bool room = scr_webstream_controller_has_request(s->controller) ||
-                ((s->finishing || !s->decompressing) &&
-                 scr_webstream_controller_queue_size(s->controller) < WS_COMP_QUEUED);
-    if (!room) {
-      ws_comp_release_write(s);
-      return 0; /* wait for the reader's next pull */
-    }
-    /* A flush finishes the engine over whatever backlog remains: the last
-     * input and the end marker go in the same operation. */
-    int op = s->finishing ? s->finish_op : Z_NO_FLUSH;
-    size_t in_left = s->in_len - s->in_off;
-    scr_zlib_engine_work(s->engine, op, input_left ? s->in + s->in_off : NULL,
-                         (uint32_t)in_left, s->out, WS_COMP_OUT);
-    uint32_t avail_in = 0, avail_out = 0;
-    scr_zlib_engine_offsets(s->engine, &avail_in, &avail_out);
-    size_t took = in_left - avail_in;
-    size_t made = WS_COMP_OUT - avail_out;
-    s->in_off += took;
-    s->drain = made == WS_COMP_OUT;
-    if (made) {
-      if (!ws_comp_enqueue(s->controller, s->out, made)) {
-        ws_comp_abandon(s);
-        return -1;
-      }
-      /* Enqueueing can settle a read synchronously and run hooks that
-       * cancel the stream: the cancel clears the controller and releases
-       * the engine. Re-check both before touching either again. */
-      if (!s->controller || !s->engine) return 0;
-      /* The chunk satisfied the read request that pulled for it: settle
-       * that pull so the reader's next read reaches the engine. */
-      if (!scr_webstream_controller_has_request(s->controller))
-        scr_webstream_controller_pull_done(s->controller);
-    }
-    ScrZlibError ze;
-    if (scr_zlib_engine_error(s->engine, &ze)) {
-      ws_comp_fail(s, &ze);
-      return 0;
-    }
-    /* The decoder stopped with output space left and input unread: the
-     * compressed stream ended and bytes follow it. A chunk this step made
-     * already went to a waiting read, so the stream's bytes arrive before
-     * the error; the error settles every other request now (a deferred
-     * error would wait for a pump that nothing triggers). */
-    if (s->decompressing && took < in_left && made < WS_COMP_OUT) {
-      ws_comp_junk(s);
-      return 0;
-    }
-    bool input_done = s->in_off >= s->in_len;
-    /* A step that left output space: with the finish operation the engine
-     * has ended (an incomplete stream is an error above), and without it
-     * the backlog is consumed and deflate has emitted everything it will
-     * until the next write or flush. */
-    bool done = s->finishing ? (made < WS_COMP_OUT && !s->drain)
-                             : (input_done && !s->drain);
-    if (done) {
-      ws_comp_job_done(s);
-      return 0;
-    }
-    ws_comp_release_write(s);
-    if (took == 0 && made == 0 && !s->drain) return 0;
-  }
+/* ── the worker steps ─────────────────────────────────────────────────── */
+
+/* One engine step in flight. Its input slice and output buffer are its own,
+ * so a write that appends to the backlog while the worker runs cannot move
+ * memory under the engine; only the main thread's result bookkeeping and
+ * enqueues touch the stream. */
+typedef struct WsCompStep {
+  WsCompState *state; /* +1 */
+  unsigned char *in;  /* owned copy of up to WS_COMP_IN backlog bytes, or NULL */
+  unsigned char *out; /* owned WS_COMP_OUT result buffer */
+  uint32_t in_len;
+  int op;
+} WsCompStep;
+
+static void ws_comp_start_step(WsCompState *s);
+static void ws_comp_pump(WsCompState *s);
+static bool ws_comp_ready_step(WsCompState *s);
+static WsCompStep *ws_comp_make_step(WsCompState *s);
+
+/* Runs on a worker: the engine's codec state and the step's buffers only. */
+static void ws_comp_step_work(void *payload) {
+  WsCompStep *step = payload;
+  scr_zlib_engine_work(step->state->engine, step->op, step->in_len ? step->in : NULL,
+                       step->in_len, step->out, WS_COMP_OUT);
 }
 
-/* Runs the pump unless it is already on the stack: enqueueing can call the
- * readable's pull, whose resume hook pumps again, and a nested pump must not
- * free the engine under the outer one's steps. */
-static int ws_comp_pump(WsCompState *s) {
-  if (!s->controller || !s->engine || s->pumping) return 0;
+/* Applies a step's result: accounts the input it consumed, enqueues what it
+ * made, and answers whether the pump may start another step. */
+static bool ws_comp_step_result(WsCompState *s, const WsCompStep *step) {
+  if (s->cancelled || !s->controller || !s->engine) {
+    if (s->cancelled) ws_comp_engine_free(s); /* the free the cancel deferred */
+    return false;
+  }
+  uint32_t avail_in = 0, avail_out = 0;
+  scr_zlib_engine_offsets(s->engine, &avail_in, &avail_out);
+  size_t took = step->in_len - avail_in;
+  size_t made = WS_COMP_OUT - avail_out;
+  s->in_off += took;
+  s->drain = made == WS_COMP_OUT;
+  if (made) {
+    if (!ws_comp_enqueue(s->controller, step->out, made)) {
+      /* The readable side closed or errored under the job (its state is the
+       * stream's error): drop the job and the refusal with it. */
+      ScrCaught *refused = scr_exc_pending() ? scr_exc_take() : NULL;
+      ws_comp_abandon(s);
+      s->cancelled = true;
+      scr_caught_release(refused);
+      return false;
+    }
+    /* Enqueueing can run hooks that cancel the stream: the cancel cleared
+     * the controller and released the engine. Re-check both. */
+    if (!s->controller || !s->engine) return false;
+    /* The chunk satisfied the read request that pulled for it: settle that
+     * pull so the reader's next read reaches the engine. */
+    if (!scr_webstream_controller_has_request(s->controller))
+      scr_webstream_controller_pull_done(s->controller);
+  }
+  ScrZlibError ze;
+  if (scr_zlib_engine_error(s->engine, &ze)) {
+    ws_comp_fail(s, &ze);
+    return false;
+  }
+  /* The decoder stopped with output space left and input unread: the
+   * compressed stream ended and bytes follow it. A chunk this step made
+   * already went to a waiting read, so the stream's bytes arrive before the
+   * error; the error settles every other request now. */
+  if (s->decompressing && took < (size_t)step->in_len && made < WS_COMP_OUT) {
+    ws_comp_junk(s);
+    return false;
+  }
+  bool input_done = s->in_off >= s->in_len;
+  ws_comp_compact(s); /* only the backlog itself stays allocated */
+  /* A step that left output space: with the finish operation the engine has
+   * ended (an incomplete stream is an error above), and without it the
+   * backlog is consumed and the codec has emitted everything it will until
+   * the next write or flush. A step that was handed out before the flush
+   * began carries no finish operation: it ends the slice it took, not the
+   * job, so the pump runs on to put the end marker in. */
+  bool finish_step = step->op == s->finish_op;
+  bool done = s->finishing ? (finish_step && made < WS_COMP_OUT && !s->drain)
+                           : (input_done && !s->drain);
+  if (done) {
+    ws_comp_job_done(s);
+    return false;
+  }
+  ws_comp_release_write(s);
+  return !(took == 0 && made == 0 && !s->drain);
+}
+
+static void ws_comp_step_destroy(void *payload) {
+  WsCompStep *step = payload;
+  free(step->in);
+  free(step->out);
+  ws_comp_release(step->state);
+  free(step);
+}
+
+#if defined(SCR_LIB)
+/* A library target has no worker pool: the host thread runs the step and its
+ * bookkeeping, looping while the pump has more it may do — the host's call
+ * blocks here either way. */
+static void ws_comp_step_submit(WsCompStep *step) {
+  WsCompState *s = ws_comp_retain(step->state); /* the loop's own hold */
+  for (;;) {
+    ws_comp_step_work(step);
+    s->step_pending = false;
+    bool again = ws_comp_step_result(s, step) && ws_comp_ready_step(s);
+    WsCompStep *next = again ? ws_comp_make_step(s) : NULL;
+    s->step_pending = next != NULL;
+    ws_comp_step_destroy(step);
+    if (next == NULL) break;
+    step = next;
+  }
+  ws_comp_release(s);
+}
+#else
+/* The step came back from a worker: apply it and run the pump on. */
+static void ws_comp_step_after(void *payload) {
+  WsCompStep *step = payload;
+  WsCompState *s = step->state;
+  s->step_pending = false;
+  /* Enqueueing can settle a read synchronously and run hooks that cancel
+   * the stream; a nested pump must not start a second step meanwhile. */
   s->pumping = true;
-  int result = ws_comp_pump_steps(s);
+  bool again = ws_comp_step_result(s, step);
   s->pumping = false;
-  return result;
+  if (again) ws_comp_pump(s);
+}
+
+static void ws_comp_step_submit(WsCompStep *step) {
+  scr_work_submit(step, &ws_comp_step_work, &ws_comp_step_after, &ws_comp_step_destroy);
+}
+#endif
+
+/* Copies the next slice of the backlog into a step, carrying the finish
+ * operation when the stream is flushing. */
+static WsCompStep *ws_comp_make_step(WsCompState *s) {
+  size_t in_left = s->in_len - s->in_off;
+  size_t take = in_left > WS_COMP_IN ? WS_COMP_IN : in_left;
+  WsCompStep *step = malloc(sizeof *step);
+  if (!step) ws_comp_oom();
+  step->in = NULL;
+  step->out = malloc(WS_COMP_OUT);
+  if (!step->out) ws_comp_oom();
+  if (take) {
+    step->in = malloc(take);
+    if (!step->in) ws_comp_oom();
+    memcpy(step->in, s->in + s->in_off, take);
+  }
+  step->in_len = (uint32_t)take;
+  step->op = s->finishing ? s->finish_op : Z_NO_FLUSH;
+  step->state = ws_comp_retain(s);
+  return step;
+}
+
+/* Whether the engine may take a step now: a reader's request always admits
+ * one chunk. A COMPRESSION stream may also fill the readable queue to
+ * WS_COMP_QUEUED without one: a write must not wait for a reader when its
+ * compressed output fits that bound (Node's writable side resolves the write
+ * as soon as the transform accepted the chunk), and a bomb-shaped stream
+ * still stops at the bound. A DECOMPRESSION stream produces its output only
+ * for the reader: a trailing junk error and the chunk boundaries are the
+ * reader's turn, as in Node. */
+static bool ws_comp_ready_step(WsCompState *s) {
+  if (s->step_pending || s->cancelled || !s->controller || !s->engine) return false;
+  bool input_left = s->in_off < s->in_len;
+  if (!input_left && !s->finishing && !s->drain) {
+    ws_comp_job_done(s);
+    return false;
+  }
+  bool room = scr_webstream_controller_has_request(s->controller) ||
+              ((s->finishing || !s->decompressing) &&
+               scr_webstream_controller_queue_size(s->controller) < WS_COMP_QUEUED);
+  if (!room) {
+    ws_comp_release_write(s);
+    return false; /* wait for the reader's next pull */
+  }
+  return true;
+}
+
+/* Hands the engine one step on the worker pool, as far as the readable side
+ * allows. */
+static void ws_comp_start_step(WsCompState *s) {
+  if (!ws_comp_ready_step(s)) return;
+  WsCompStep *step = ws_comp_make_step(s);
+  s->step_pending = true;
+  ws_comp_step_submit(step);
+}
+
+/* Runs a pump unless it is already on the stack: enqueueing can call the
+ * readable's pull, whose resume hook pumps again. */
+static void ws_comp_pump(WsCompState *s) {
+  if (s->pumping) return;
+  s->pumping = true;
+  ws_comp_start_step(s);
+  s->pumping = false;
 }
 
 /* A write hands its chunk to the backlog and returns: output is produced on
@@ -511,20 +629,20 @@ static ScrDyn *ws_comp_transform(ScrClosure *closure, ScrDyn *const *args, size_
     if (s->engine) {
       ws_comp_backlog(s, in->data, in->len);
       ws_comp_bind(s, controller);
-      s->drain = false;
-      /* Produce what the readable side can take now: a reader already
-       * waiting must not wait for another pull to start the engine, and a
-       * backlog past its cap would otherwise never drain. */
-      int pumped = ws_comp_pump(s);
+      /* Start the engine on what the readable side can take now: a reader
+       * already waiting must not wait for another pull, and a backlog past
+       * its cap would otherwise never drain. The step itself runs on the
+       * worker pool. */
+      ws_comp_pump(s);
       /* Output the pump produced with no reader waiting sits in the readable
        * queue; the next write must not park for a reader that has not
        * started (the queue bound above keeps the buffering finite). */
       if (!s->decompressing && !scr_webstream_controller_has_request(controller))
         scr_webstream_controller_clear_write_backpressure(controller);
-      if (s->in_len - s->in_off > WS_COMP_BACKLOG) {
+      if (s->in_len - s->in_off > WS_COMP_BACKLOG && !s->pending_write) {
         s->pending_write = scr_promise_new();
         result = scr_dyn_new_promise(s->pending_write);
-      } else if (pumped == 0) {
+      } else {
         result = scr_dyn_retain(scr_dyn_undefined());
       }
     } else {
@@ -547,9 +665,9 @@ static ScrDyn *ws_comp_flush(ScrClosure *closure, ScrDyn *const *args, size_t ar
     s->finishing = true;
     s->drain = false;
     if (!s->pending_flush) s->pending_flush = scr_promise_new();
-    if (ws_comp_pump(s) == 0)
-      result = s->pending_flush ? scr_dyn_new_promise(s->pending_flush)
-                                : scr_dyn_retain(scr_dyn_undefined());
+    ws_comp_pump(s);
+    result = s->pending_flush ? scr_dyn_new_promise(s->pending_flush)
+                              : scr_dyn_retain(scr_dyn_undefined());
   } else {
     result = scr_dyn_retain(scr_dyn_undefined());
   }
@@ -564,8 +682,10 @@ static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t a
   ScrDyn *reason = argc > 0 && args[0] != NULL ? args[0] : scr_dyn_undefined();
   ScrDyn *controller = s->controller;
   s->controller = NULL;
-  if (s->engine) scr_zlib_engine_free(s->engine);
-  s->engine = NULL;
+  /* A step on a worker still reads the engine: mark the stream cancelled so
+   * its completion drops the job, and let it do the free. */
+  s->cancelled = true;
+  ws_comp_engine_free(s);
   s->in_len = 0;
   s->in_off = 0;
   s->drain = false;
@@ -581,8 +701,9 @@ static ScrDyn *ws_comp_cancel(ScrClosure *closure, ScrDyn *const *args, size_t a
  * the pump's next enqueue settles it. */
 static bool ws_comp_resume_hook(void *state) {
   WsCompState *s = state;
-  if (!s->controller || !s->engine) return false;
-  (void)ws_comp_pump(s);
+  if (!s->controller || !s->engine || s->cancelled) return false;
+  ws_comp_pump(s);
+  /* A step on a worker keeps the request parked until its chunk arrives. */
   return s->controller != NULL && scr_webstream_controller_has_request(s->controller);
 }
 

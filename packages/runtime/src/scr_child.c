@@ -9796,6 +9796,8 @@ static void scr_ipc_closed_send_tick(void) {
   }
 }
 
+static void scr_ipc_closed_sends_teardown(void);
+
 static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
                                       ScrIpcSendFn fn) {
   ScrIpcClosedSend *items =
@@ -9809,6 +9811,11 @@ static void scr_ipc_queue_closed_send(ScrStr *send_error, ScrClosure *cb,
   scr_str_release(message);
   scr_error_set_code(error, "ERR_IPC_CHANNEL_CLOSED");
   items[scr_ipc_closed_n++] = (ScrIpcClosedSend){cb, fn, error, scr_als_capture()};
+  /* Install the raw-tick teardown the first time a closed send is queued: a
+   * constructor would keep this unit's IPC symbols in every executable
+   * (runtime-tree-shaking.test.ts). */
+  if (scr_raw_tick_teardown_hook == NULL)
+    scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
   /* One tick per send, FIFO among the ticks the program queues itself. */
   scr_next_tick_raw(&scr_ipc_closed_send_tick);
 }
@@ -9826,10 +9833,6 @@ static void scr_ipc_closed_sends_teardown(void) {
   scr_ipc_closed_n = 0;
   free(scr_ipc_closed_sends);
   scr_ipc_closed_sends = NULL;
-}
-
-__attribute__((constructor)) static void scr_ipc_install_closed_send_teardown(void) {
-  scr_raw_tick_teardown_hook = scr_ipc_closed_sends_teardown;
 }
 
 static bool scr_ipc_send(ScrIpc *ipc, ScrStr *json, ScrClosure *cb,

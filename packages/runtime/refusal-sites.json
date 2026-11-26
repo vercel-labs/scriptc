@@ -667,6 +667,12 @@
  },
  {
   "file": "scr_events_emitter.c",
+  "function": "scr_emitter_raw_listeners_dyn",
+  "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_events_emitter.c",
   "function": "scr_emitter_listeners_dyn",
   "message": "listeners() through an untyped value of an event with a typed listener is not supported yet",
   "code": "SC2020"

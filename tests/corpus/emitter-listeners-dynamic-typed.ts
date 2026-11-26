@@ -13,3 +13,22 @@ for (const l of e.listeners("tick")) (l as (n: number, s: string) => void)(2, "t
 e.off("tick", typed);
 e.emit("tick", 3, "three");
 console.log(e.listenerCount("tick"), e.listeners("tick").length);
+
+// A saved once() wrapper owns its call state in the typed lane too: it counts
+// as a listener identity, off(wrapper) removes the registration, and calling
+// it after removal runs the original once (converted to the typed parameters).
+const onceEmitter = new EventEmitter();
+let onceRuns = 0;
+const onceTyped = (n: number): void => {
+  onceRuns += n;
+};
+onceEmitter.once("wrap", onceTyped);
+const rawOnce = onceEmitter.rawListeners("wrap") as any[];
+const wrapFirst: any = rawOnce[0];
+const wrap = wrapFirst as (n: number) => void;
+console.log("wrap-count", onceEmitter.listenerCount("wrap", wrap), onceEmitter.listenerCount("wrap", onceTyped));
+onceEmitter.off("wrap", wrap);
+console.log("wrap-off", onceEmitter.listenerCount("wrap"), onceEmitter.listenerCount("wrap", wrap));
+wrap(5);
+wrap(6);
+console.log("wrap-runs", onceRuns);

@@ -544,6 +544,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "emitter.emitMixed",
   "emitter.hasDyn",
   "emitter.listenersDyn",
+  "emitter.rawListenersDyn",
   "emitter.emitError",
   "emitter.on",
   "emitter.onNamed",

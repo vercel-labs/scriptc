@@ -105,6 +105,35 @@ const decodeOptions = {
 };
 decoder.decode(new Uint8Array([0x61]), decodeOptions, (decodeOrder.push("extra"), 0));
 console.log("decode order", JSON.stringify(decodeOrder));
+// A literal options object's member expression is an argument expression: it
+// evaluates with the input and before the surplus arguments, and its
+// conversion waits for the call.
+const literalOrder = [];
+console.log(
+  "literal option order",
+  JSON.stringify(
+    decoder.decode(
+      new Uint8Array([0x62]),
+      { stream: (literalOrder.push("option"), false) },
+      (literalOrder.push("extra"), 0),
+    ),
+  ),
+  JSON.stringify(literalOrder),
+);
+function literalStreamThrows(order) {
+  order.push("option");
+  throw new Error("option boom");
+}
+const throwOrder = [];
+try {
+  decoder.decode(
+    new Uint8Array([0x63]),
+    { stream: literalStreamThrows(throwOrder) },
+    (throwOrder.push("extra"), 0),
+  );
+} catch (caught) {
+  console.log("literal option throws", JSON.stringify(throwOrder), caught.message);
+}
 
 // A runtime-typed undefined input takes the optional argument's default:
 // no bytes for the encoder, the empty string for the decoder.

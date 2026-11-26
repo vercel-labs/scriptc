@@ -618,7 +618,10 @@ function lowerStoredTextCodecCall(
   const usedArgs = cls === "TextDecoder" ? 2 : 1;
   const extraArgs = call.arguments.nodes.slice(usedArgs);
   const loc = locOf(call);
-  let literalStream: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+  // The options object literal's `stream` member is an argument expression:
+  // it evaluates with the other arguments (below), and only its ToBoolean
+  // conversion waits for the call.
+  let literalStreamRaw: IrExpr | null = null;
   let optionsNode: ts.Expression | null = null;
   if (cls === "TextDecoder" && call.arguments.nodes[1]) {
     const options = withoutParenthesesTypeWrappers(call.arguments.nodes[1]);
@@ -632,18 +635,10 @@ function lowerStoredTextCodecCall(
         property.name.text !== "stream"
       )
         lowerer.noLowering("unknown TextDecoder.decode option", property);
-      literalStream = {
-        kind: "libCall",
-        fn: "dyn.truthy",
-        args: [
-          lowerer.lowerExprExpecting(
-            ts.isPropertyAssignment(property) ? property.initializer : property.name,
-            DYN,
-          ),
-        ],
-        type: BOOL,
-        loc,
-      };
+      literalStreamRaw = lowerer.lowerExprExpecting(
+        ts.isPropertyAssignment(property) ? property.initializer : property.name,
+        DYN,
+      );
     }
   }
   const receiver = lowerer.lowerExpr(access.expression);
@@ -673,10 +668,21 @@ function lowerStoredTextCodecCall(
   // A dictionary outside an object literal is read where Node's WebIDL
   // conversion reads it: after every argument expression has evaluated.
   const optionsRaw = optionsNode !== null ? lowerer.lowerExprExpecting(optionsNode, DYN) : null;
-  const streamArg = (optionsValue: IrExpr): IrExpr =>
-    optionsRaw !== null
-      ? { kind: "libCall", fn: "text.decodeStreamOption", args: [optionsValue], type: BOOL, loc }
-      : literalStream;
+  // The `stream` value evaluates where Node evaluates it — with the options
+  // argument, before the surplus arguments — and converts at the call: an
+  // outside literal is read there (Node's dictionary conversion), a literal
+  // member only takes its unobservable ToBoolean.
+  const streamValue: IrExpr | null = optionsRaw ?? literalStreamRaw;
+  const streamArg = (value: IrExpr | null): IrExpr =>
+    value === null
+      ? { kind: "boolLit", value: false, type: BOOL, loc }
+      : {
+          kind: "libCall",
+          fn: optionsRaw !== null ? "text.decodeStreamOption" : "dyn.truthy",
+          args: [value],
+          type: BOOL,
+          loc,
+        };
   const key = `textCodec.${cls}.${receiver.type.shapeId}${dynInput ? ".dyn" : ""}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
@@ -753,20 +759,20 @@ function lowerStoredTextCodecCall(
     type,
     loc,
   });
-  if (extraArgs.length === 0) return invoke(receiver, arg, streamArg(optionsRaw ?? literalStream));
+  if (extraArgs.length === 0) return invoke(receiver, arg, streamArg(streamValue));
   /* The receiver, the input and the options expressions evaluate, then the
    * arguments the call ignores (Node evaluates them and drops them), then
    * the conversions and the call. */
   const recvLocal = lowerer.declareHiddenLocal("%codecReceiver", receiver.type);
   const argLocal = lowerer.declareHiddenLocal("%codecInput", rawArg.type);
-  const optionsLocal =
-    optionsRaw !== null ? lowerer.declareHiddenLocal("%codecOptions", DYN) : null;
+  const streamLocal =
+    streamValue !== null ? lowerer.declareHiddenLocal("%codecStream", streamValue.type) : null;
   const stmts: IrStmt[] = [
     { kind: "varDecl", localId: recvLocal.id, init: receiver, loc },
     { kind: "varDecl", localId: argLocal.id, init: rawArg, loc },
   ];
-  if (optionsLocal !== null && optionsRaw !== null)
-    stmts.push({ kind: "varDecl", localId: optionsLocal.id, init: optionsRaw, loc });
+  if (streamLocal !== null && streamValue !== null)
+    stmts.push({ kind: "varDecl", localId: streamLocal.id, init: streamValue, loc });
   for (const extra of extraArgs) {
     const value = lowerer.lowerExpr(extra);
     if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc: value.loc });
@@ -777,7 +783,7 @@ function lowerStoredTextCodecCall(
     result: invoke(
       varRef(recvLocal.id, recvLocal.type, loc),
       convertInput(varRef(argLocal.id, argLocal.type, loc)),
-      streamArg(optionsLocal !== null ? varRef(optionsLocal.id, DYN, loc) : literalStream),
+      streamArg(streamLocal !== null ? varRef(streamLocal.id, streamLocal.type, loc) : null),
     ),
     type,
     loc,

@@ -8526,19 +8526,42 @@ export function blockCommentSpansOf(sf: ts.SourceFile): readonly (readonly [numb
     // one admitted setter and a large comment-free body gives every node a
     // trivia span with no opener in it, so the walk would be quadratic in the
     // file's length.
-    const trivia = text.slice(from, to);
-    let offset = trivia.indexOf("/*");
-    while (offset >= 0) {
-      const open = from + offset;
-      const close = text.indexOf("*/", open + 2);
-      const end = close < 0 ? text.length : close + 2;
-      // A block-comment opener in the leading trivia of several nodes (a
-      // statement and its first token share a full start) is one comment.
-      if (!scanned.has(open)) {
-        scanned.add(open);
-        found.push([open, end]);
+    //
+    // Walk the trivia by comment, not by raw `indexOf("/*")`: an opener
+    // spelled inside a line comment (`// /*`) or a shebang opens nothing,
+    // and treating it as a block comment would let it swallow the code that
+    // follows up to the next `*/`. Line terminators are every ECMAScript
+    // one, including CRLF and the Unicode separators.
+    const lineEnd = (at: number): number => {
+      let i = at;
+      while (i < text.length) {
+        const ch = text.charCodeAt(i);
+        if (ch === 10 || ch === 13 || ch === 0x2028 || ch === 0x2029) return i;
+        i++;
       }
-      offset = trivia.indexOf("/*", end - from);
+      return text.length;
+    };
+    let i = from;
+    if (i === 0 && text.startsWith("#!")) i = lineEnd(2);
+    while (i < to) {
+      if (text[i] === "/" && text[i + 1] === "/") {
+        i = Math.max(lineEnd(i + 2), i + 2);
+        continue;
+      }
+      if (text[i] === "/" && text[i + 1] === "*") {
+        const open = i;
+        const close = text.indexOf("*/", open + 2);
+        const end = close < 0 ? text.length : close + 2;
+        // A block-comment opener in the leading trivia of several nodes (a
+        // statement and its first token share a full start) is one comment.
+        if (!scanned.has(open)) {
+          scanned.add(open);
+          found.push([open, end]);
+        }
+        i = Math.min(end, to);
+        continue;
+      }
+      i++;
     }
   };
   let triviaFrom = -1;

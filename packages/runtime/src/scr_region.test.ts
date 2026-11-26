@@ -206,6 +206,26 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
     }
   });
 
+  // The metadata itself is a dynamic object holding the region object (the
+  // direct form is the test above). With the array also held outside, the
+  // region is kept until that reference is dropped and the next creation
+  // frees it; without it the region frees at its release.
+  test("nested array metadata references are walked with the region", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-region-"));
+    try {
+      const bin = await build(dir, "region", ["-fsanitize=undefined"]);
+      const result = await run(bin, "nested-metadata");
+      expect(result.stdout.trim()).toBe(
+        "nested array metadata references are walked with the region",
+      );
+      const parsed = attempts(result.stderr);
+      expect(parsed.summaries.at(-1)).toMatch(/, 0 pinned, 0 kept$/);
+      expect(parsed.other).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("worker threads free their own regions under ThreadSanitizer", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-region-"));
     try {

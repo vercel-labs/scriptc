@@ -60,6 +60,7 @@ import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
 import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { lowerSqliteInstanceof } from "../builtins/sqlite.js";
+import { lowerSourceMapInstanceof } from "../builtins/source-map.js";
 import { lowerPerfInstanceof } from "../builtins/performance.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
@@ -681,6 +682,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (mime) return mime;
     const sqlite = lowerSqliteInstanceof(lowerer, expr);
     if (sqlite) return sqlite;
+    const sourceMap = lowerSourceMapInstanceof(lowerer, expr);
+    if (sourceMap) return sourceMap;
     const perfClass = lowerPerfInstanceof(lowerer, expr);
     if (perfClass) return perfClass;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);

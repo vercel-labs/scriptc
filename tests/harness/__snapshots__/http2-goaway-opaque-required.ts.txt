@@ -1,0 +1,8 @@
+http2-goaway-opaque-required.ts:8:11 - error SC0001: No overload matches this call.
+  The last overload gave the following error.
+    Argument of type '"goaway"' is not assignable to parameter of type '"localSettings" | "remoteSettings"'.
+
+  7 | const client = http2.connect("http://127.0.0.1:1");
+  8 | client.on("goaway", (code: number, lastStreamID: number, opaque: Uint8Array) => {
+    |           ^~~~~~~~
+  9 |   void code;

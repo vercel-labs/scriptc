@@ -620,11 +620,23 @@ static bool ws_comp_set(void *ptr, const char *key, size_t len, const ScrDyn *va
  * TypeError. */
 static ScrDyn *ws_comp_invoke(void *ptr, ScrDyn *self, const char *method, ScrDyn *const *args,
                               size_t argc, const char *what) {
-  (void)ptr;
-  (void)method;
-  (void)args;
-  (void)argc;
-  (void)self; /* a borrowed receiver: the caller owns it */
+  WsCompState *s = ptr;
+  size_t len = strlen(method);
+  /* A function the program assigned to the instance, or a member the class's
+   * prototype chain answers (toString, valueOf), is the callable Node calls;
+   * only a name with neither throws "is not a function". */
+  ScrDyn *callable = s->own ? scr_dyn_obj_get(s->own, method, len) : NULL;
+  if (callable != NULL) callable = scr_dyn_retain(callable);
+  else callable = scr_dyn_handle_class_member(ws_comp_tag_of(s), ptr, method, len);
+  if (callable == NULL && scr_exc_pending()) return NULL;
+  if (callable != NULL && scr_dyn_is_callable(callable)) {
+    scr_dyn_this_push_dyn(self);
+    ScrDyn *result = scr_dyn_call(callable, args, argc, what);
+    scr_dyn_this_pop();
+    scr_dyn_release(callable);
+    return result;
+  }
+  scr_dyn_release(callable);
   /* The callee's source spelling can be arbitrarily long; the message holds
    * all of it, as Node's does, so it is sized for this call instead of a
    * fixed stack buffer (a truncated snprintf's return would read past one). */
@@ -693,10 +705,20 @@ bool scr_webstream_compress_instanceof(ScrDyn *value, double kind) {
   if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC)
     return false;
   ScrDyn *prototype = scr_dyn_handle_class_prototype(tag);
+  if (prototype == NULL) return false;
   ScrDyn *current = scr_dyn_get_prototype(value);
-  while (current && current->kind == SCR_DYN_OBJ) {
-    if (current == prototype) return true;
-    current = scr_dyn_get_prototype(current);
+  bool found = false;
+  while (current != NULL && current->kind == SCR_DYN_OBJ) {
+    if (current == prototype) {
+      found = true;
+      break;
+    }
+    ScrDyn *next = scr_dyn_get_prototype(current);
+    scr_dyn_release(current);
+    current = next;
+    if (current == NULL && scr_exc_pending()) break;
   }
-  return false;
+  scr_dyn_release(current);
+  scr_dyn_release(prototype);
+  return found;
 }

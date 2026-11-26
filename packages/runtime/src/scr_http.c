@@ -6690,6 +6690,8 @@ static void scr_http_client_queue_finish(ScrHttpClientReq *c) {
   scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_FINISH, scr_http_client_retain(c));
 }
 
+static void scr_http_client_maybe_drain(ScrHttpClientReq *c);
+
 static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   if (c->socket_emitted) return;
   if (c->destroyed) {
@@ -6709,6 +6711,10 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
   scr_dyn_this_pop();
   free(snap);
   scr_net_ls_drop(&c->socket_ls);
+  /* Node's request 'drain' follows the socket's buffer, so a write that
+   * answered false drains here even while its corked bytes wait in the
+   * message (they do not hold the socket's 'drain' back). */
+  scr_http_client_maybe_drain(c);
 }
 
 static void scr_http_client_emit_finish(ScrHttpClientReq *c) {
@@ -7396,7 +7402,15 @@ static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
    * the socket's own buffer is empty: arming its flush callback here would
    * re-enter immediately on every tick. The establishment path resumes. */
   if (c->tunnel_pending) return;
-  if (scr_http_client_writable_length(c) != 0) {
+  /* No socket yet: the bytes wait in the message, and the socket's
+   * assignment (its 'socket' event, where Node's drain follows) runs this. */
+  if (c->sock == NULL || !c->socket_emitted) return;
+  /* Node's request 'drain' follows the SOCKET's buffer; the message's own
+   * corked bytes do not hold it back (they leave at the cork flush). Only
+   * bytes in the socket's buffer empty with its flush — arming for anything
+   * else would wait on a flush that never comes and leave the loop turning
+   * on a waiter no event can satisfy. */
+  if (scr_net_sock_writable_length(c->sock) != 0) {
     scr_http_client_arm_socket_drain(c);
     return;
   }

@@ -3255,6 +3255,22 @@ void scr_tls_fetch_tunnel_wrap(ScrNetSocket *sock, void *vctx) {
   scr_net_sock_set_transport(sock, &SCR_TLS_TUNNEL_OPS, tun);
 }
 
+/* A fetch transport context the request never wrapped: the fetch unit owns
+ * it until the socket takes it in the wrap hook, and gives it back here when
+ * the request stops before wrapping. */
+void scr_tls_fetch_ctx_release(void *vctx) {
+  if (vctx != NULL) scr_tls_cli_free(vctx);
+}
+
+void scr_tls_fetch_tunnel_ctx_release(void *vctx) {
+  ScrTlsTunnelCtx *ctx = vctx;
+  if (ctx == NULL) return;
+  if (ctx->proxy != NULL) scr_tls_cli_free(ctx->proxy);
+  if (ctx->target != NULL) scr_tls_cli_free(ctx->target);
+  free(ctx->req);
+  free(ctx);
+}
+
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,

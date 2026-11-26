@@ -6511,6 +6511,25 @@ static void sf_tunnel_wrap(ScrNetSocket *sock, void *ctx) {
   free(tunnel);
 }
 
+/* Give up a transport context the request allocated but never wrapped: the
+ * fetch unit owns it until the socket takes it in the wrap hook, so a
+ * request that stops before dialing has to hand it back. */
+static void sf_wrap_ctx_release(void (*wrap)(ScrNetSocket *, void *), void *ctx) {
+  if (ctx == NULL) return;
+  if (wrap == &sf_tunnel_wrap) {
+    SfTunnel *tunnel = ctx;
+    if (tunnel->tls_ctx != NULL) scr_tls_fetch_ctx_release(tunnel->tls_ctx);
+    free(tunnel->head);
+    free(tunnel);
+    return;
+  }
+  if (wrap == &scr_tls_fetch_tunnel_wrap) {
+    scr_tls_fetch_tunnel_ctx_release(ctx);
+    return;
+  }
+  scr_tls_fetch_ctx_release(ctx);
+}
+
 static bool sf_start_hop(SfTransfer *t) {
   ScrUrl *url = t->url;
   bool https = sf_eq_ci(url->scheme, "https");
@@ -6671,6 +6690,7 @@ static bool sf_start_hop(SfTransfer *t) {
       sf_reject_cause(t, reason);
       scr_str_release(name);
       scr_str_release(value);
+      sf_wrap_ctx_release(wrap, wrap_ctx);
       scr_arr_release(headers);
       scr_str_release(path);
       scr_str_release(dial);
@@ -6694,6 +6714,7 @@ static bool sf_start_hop(SfTransfer *t) {
   scr_str_release(sni);
   scr_url_release(proxy);
   if (!client) {
+    sf_wrap_ctx_release(wrap, wrap_ctx);
     sf_reject_now(t->promise, "fetch failed");
     sf_settle(t);
     return false;

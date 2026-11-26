@@ -820,6 +820,24 @@ static bool sp_dh_public_from_private(const SpKey *k, unsigned char **y, size_t 
   return ok;
 }
 
+/* The parameters' optional tail: PKCS#3's privateValueLength, which
+ * OpenSSL's decoder validates (the third INTEGER must fit an int, so the q of
+ * X9.42 parameters — larger than INT_MAX — makes the key unreadable, as Node
+ * reports), then any fields after it, which are skipped. */
+static bool sp_dh_read_params_tail(unsigned char **p, const unsigned char *params_end) {
+  if (*p < params_end) {
+    mbedtls_mpi length;
+    mbedtls_mpi_init(&length);
+    int r = sp_dh_read_param(p, params_end, &length);
+    bool fits = r == 0 && mbedtls_mpi_bitlen(&length) <= 31;
+    mbedtls_mpi_free(&length);
+    if (!fits) return false;
+  }
+  while (*p < params_end)
+    if (sp_asn1_skip_element(p, params_end) != 0) return false;
+  return true;
+}
+
 static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
   const unsigned char *const end = der + len;
   /* mbedTLS's parsers advance the cursor through unsigned char **; the
@@ -855,9 +873,7 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     params_end = p + params_len;
     if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
     if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
-    /* Optional q, j and validation fields follow; skip them. */
-    while (p < params_end)
-      if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
+    if (!sp_dh_read_params_tail(&p, params_end)) goto done;
     if (p != alg_end) goto done;
     {
       size_t oct_len;
@@ -883,8 +899,7 @@ static SpKey *sp_dh_from_der(const uint8_t *der, size_t len, bool private_key) {
     params_end = p + params_len;
     if (sp_dh_read_param(&p, params_end, &P) != 0) goto done;
     if (sp_dh_read_param(&p, params_end, &G) != 0) goto done;
-    while (p < params_end)
-      if (sp_asn1_skip_element(&p, params_end) != 0) goto done;
+    if (!sp_dh_read_params_tail(&p, params_end)) goto done;
     if (p != alg_end) goto done;
     {
       mbedtls_asn1_bitstring bits;

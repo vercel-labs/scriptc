@@ -3404,8 +3404,11 @@ static void scr_sqlite_db_delete_sessions(ScrSqliteDb *db) {
         sqlite3session_delete(session->session);
         session->session = NULL;
       }
-      /* The program may still hold the wrapper; its entry is gone. */
+      /* The program may still hold the wrapper; its entry is gone, and both
+       * references on it go here — the session no longer answers it, so its
+       * own reference would otherwise never be released. */
       session->slot = NULL;
+      scr_sqlite_session_slot_release(slot); /* the session's reference */
     }
     slot->session = NULL;
     scr_sqlite_session_slot_release(slot); /* the list's reference */

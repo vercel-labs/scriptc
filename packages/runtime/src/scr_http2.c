@@ -3624,6 +3624,95 @@ static void scr_h2_fire_headers_list(ScrNetLs *ls, ScrH2Stream *st, ScrArr *pair
   free(snap);
 }
 
+/* A received request block's pseudo-headers, validated the way nghttp2 does
+ * for Node's server: :method always; :scheme and :path for every method but
+ * a plain CONNECT (which forbids both and requires :authority); :authority
+ * or a host field for the non-CONNECT case; an extended CONNECT only when
+ * the client enabled the connect protocol, and then with :scheme, :path and
+ * :authority. Unknown and repeated pseudo-headers are malformed too.
+ *
+ * A malformed block is a stream protocol error that never reaches a
+ * listener: without the :path rule a peer could hand a request with no url
+ * (Node's undefined) to a router that assumed a string. */
+/* A regular header field in a received block: field names are lowercase in
+ * HTTP/2, the connection-specific fields are forbidden, and `te` may carry
+ * nothing but "trailers" (nghttp2's HTTP-messaging rules; a mixed proxy
+ * relies on them to keep request smuggling out). */
+static bool scr_h2_regular_field_valid(const ScrStr *name, const ScrStr *value) {
+  for (size_t k = 0; k < name->len; k++) {
+    unsigned char c = (unsigned char)name->data[k];
+    if (c >= 'A' && c <= 'Z') return false;
+  }
+  if (scr_h2_name_is(name, "connection") || scr_h2_name_is(name, "keep-alive") ||
+      scr_h2_name_is(name, "proxy-connection") || scr_h2_name_is(name, "transfer-encoding") ||
+      scr_h2_name_is(name, "upgrade")) {
+    return false;
+  }
+  if (scr_h2_name_is(name, "te")) {
+    static const char want[] = "trailers";
+    if (value->len != sizeof want - 1) return false;
+    for (size_t k = 0; k < value->len; k++) {
+      char c = value->data[k];
+      if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+      if (c != want[k]) return false;
+    }
+  }
+  return true;
+}
+
+static bool scr_h2_request_block_valid(const ScrH2Session *s, const ScrH2Headers *h) {
+  const ScrStr *method = NULL;
+  const ScrStr *scheme = NULL;
+  const ScrStr *path = NULL;
+  const ScrStr *authority = NULL;
+  const ScrStr *protocol = NULL;
+  bool host = false;
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    const ScrStr *value = h->values[i];
+    if (name->len == 0) return false;
+    if (name->data[0] != ':') {
+      if (!scr_h2_regular_field_valid(name, value)) return false;
+      if (scr_h2_name_is(name, "host")) host = true;
+      continue;
+    }
+    const ScrStr **slot;
+    if (scr_h2_name_is(name, ":method")) {
+      slot = &method;
+    } else if (scr_h2_name_is(name, ":scheme")) {
+      slot = &scheme;
+    } else if (scr_h2_name_is(name, ":path")) {
+      slot = &path;
+    } else if (scr_h2_name_is(name, ":authority")) {
+      slot = &authority;
+    } else if (scr_h2_name_is(name, ":protocol")) {
+      slot = &protocol;
+    } else {
+      return false; /* a pseudo-header the request may not carry */
+    }
+    if (*slot != NULL) return false; /* a field the block may carry once */
+    *slot = value;
+  }
+  if (method == NULL || method->len == 0) return false;
+  if (scr_h2_name_is(method, "CONNECT")) {
+    if (protocol != NULL) {
+      /* extended CONNECT: only when the client enabled the setting, and
+       * with a non-empty :protocol, :scheme and :path */
+      if (!s->remote_settings.enable_connect_protocol) return false;
+      if (protocol->len == 0) return false;
+      if (scheme == NULL || scheme->len == 0) return false;
+      if (path == NULL || path->len == 0) return false;
+      return authority != NULL;
+    }
+    if (authority == NULL) return false;
+    return scheme == NULL && path == NULL;
+  }
+  if (protocol != NULL) return false; /* :protocol belongs to CONNECT alone */
+  if (scheme == NULL || scheme->len == 0) return false;
+  if (path == NULL || path->len == 0) return false;
+  return authority != NULL || host;
+}
+
 /* Node's test for the Expect header: "100-continue", ASCII-insensitive. */
 static bool scr_h2_expects_continue(const ScrStr *v) {
   static const char want[] = "100-continue";
@@ -3634,6 +3723,19 @@ static bool scr_h2_expects_continue(const ScrStr *v) {
     if (c != want[i]) return false;
   }
   return true;
+}
+
+/* A received block that breaks RFC 9113's request rules: answer the peer
+ * with RST_STREAM(PROTOCOL_ERROR) and settle the stream. Nothing is
+ * dispatched, and no local 'error' fires — Node's server streams surface
+ * the rejection to the peer alone. */
+static void scr_h2_reject_protocol_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
+  scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+  st->rst_code = 1;
+  st->suppress_rst_error = true;
+  st->destroyed = true;
+  scr_h2_stream_begin_close(st);
+  scr_h2_stream_settle(st);
 }
 
 static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t flags,
@@ -3656,22 +3758,14 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
          * peer from appending header fields to one request without bound:
          * every accepted block would land in the request's trailer
          * storage, and nothing else limits how many arrive. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_protocol_error(s, st, stream_id);
         return;
       }
       if (st->got_trailers || st->end_recv) {
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
-        scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
-        st->rst_code = 1;
-        st->destroyed = true;
-        scr_h2_stream_begin_close(st);
-        scr_h2_stream_settle(st);
+        scr_h2_reject_protocol_error(s, st, stream_id);
         return;
       }
       st->got_trailers = true;
@@ -3704,6 +3798,15 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
     }
     st = scr_h2_stream_new(s, stream_id);
     s->max_created_stream_id = stream_id;
+    if (!scr_h2_request_block_valid(s, h)) {
+      /* RFC 9113's malformed-request rule as nghttp2 applies it: a stream
+       * protocol error, and the block reaches no listener at all. The
+       * dispatcher's own reference (stream_new's +1) goes with it — the
+       * settle dropped the session's. */
+      scr_h2_reject_protocol_error(s, st, stream_id);
+      scr_http2_stream_release(st);
+      return;
+    }
     if (end_stream) {
       st->end_recv = true;
       st->end_after_headers = true;

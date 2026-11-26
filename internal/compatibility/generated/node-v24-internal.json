@@ -64066,8 +64066,13 @@
           "tests/corpus/http2-server-close-late-stream.ts",
           "tests/corpus/http2-server-close.ts",
           "tests/corpus/http2-session-error.ts",
+          "tests/corpus/http2-session-local-window.ts",
           "tests/corpus/http2-session-properties.ts",
+          "tests/corpus/http2-stream-controls.ts",
           "tests/corpus/http2-stream-readbacks.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts",
           "tests/corpus/http2-trailers.ts",
           "tests/diagnostics/compat-absent-http2-members.ts"
         ]
@@ -64565,8 +64570,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:http2"
+        "status": "supported",
+        "evidence": "compiler-feature:http2.http2session.setLocalWindowSize",
+        "tests": [
+          "tests/corpus/http2-session-local-window.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -65542,10 +65550,13 @@
         "inherited": false
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.priority",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -65568,10 +65579,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.http2stream.setTimeout",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"
@@ -66063,10 +66077,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
+        "status": "supported",
         "evidence": "compiler-feature:http2.'ready'",
         "tests": [
-          "tests/diagnostics/compat-absent-http2-members.ts"
+          "tests/corpus/http2-stream-controls.ts",
+          "tests/corpus/http2-stream-timeout-file.ts",
+          "tests/corpus/http2-stream-timeout-idle.ts",
+          "tests/corpus/http2-stream-timeout-stalled.ts"
         ]
       },
       "anchorSource": "exact"

@@ -103,6 +103,7 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.sessionClose": { argTypes: [HTTP2SESSION_T], result: VOID },
   "http2.sessionCloseCb": { argTypes: [HTTP2SESSION_T, null], result: VOID },
   "http2.sessionDestroy": { argTypes: [HTTP2SESSION_T], result: VOID },
+  "http2.sessionSetLocalWindowSize": { argTypes: [HTTP2SESSION_T, F64], result: VOID },
   "http2.sessionOnClose": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnError": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
   "http2.sessionOnConnect": { argTypes: [HTTP2SESSION_T, null, BOOL], result: VOID },
@@ -134,6 +135,14 @@ export const http2Signatures = defineLibFnSignatures({
   "http2.streamOnHeaders": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
   "http2.streamOnWantTrailers": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
   "http2.streamOnContinue": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  "http2.streamOnReady": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  "http2.streamOnTimeout": { argTypes: [HTTP2STREAM_T, null, BOOL], result: VOID },
+  /** setTimeout(msecs[, callback]) — the stream's own idle timer. */
+  "http2.streamSetTimeout": { argTypes: [HTTP2STREAM_T, F64], result: VOID },
+  "http2.streamSetTimeoutCb": { argTypes: [HTTP2STREAM_T, F64, null], result: VOID },
+  /** priority(options) — deprecated by RFC 9113; accepted and ignored. */
+  "http2.streamPriority": { argTypes: [HTTP2STREAM_T, DYN], result: VOID },
+  "http2.streamPriority0": { argTypes: [HTTP2STREAM_T], result: VOID },
   /** res.writeInformation(statusCode[, headers]) on a compat response. */
   "http2.responseWriteInformation": {
     argTypes: [HTTPRES_T, F64, arrayOf(STRING)],

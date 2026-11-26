@@ -81,6 +81,8 @@ ScrH2Stream *scr_http2_session_request(ScrH2Session *s, ScrArr *pairs /*borrowed
 /* session */
 void scr_http2_session_close(ScrH2Session *s, ScrClosure *cb /*moves, nullable*/);
 void scr_http2_session_destroy(ScrH2Session *s);
+/* setLocalWindowSize(windowSize): validated, then a no-op (Node 24). */
+void scr_http2_session_set_local_window_size(ScrH2Session *s, double window_size);
 void scr_http2_session_on_close(ScrH2Session *s, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_server_on_session_error(ScrNetServer *s, ScrClosure *cb /*moves*/,
@@ -171,6 +173,15 @@ void scr_http2_stream_pause(ScrH2Stream *st);
 void scr_http2_stream_on_data(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrNetDataFn fn, bool once);
 void scr_http2_stream_on_end(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_close(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+/* 'ready' (the stream initialized) and the stream's own idle timer. */
+void scr_http2_stream_on_ready(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_on_timeout(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
+void scr_http2_stream_set_timeout(ScrH2Stream *st, double msecs);
+void scr_http2_stream_set_timeout_cb(ScrH2Stream *st, double msecs, ScrClosure *cb /*moves*/);
+/* priority(options): deprecated by RFC 9113 — warns DEP0194 once and ignores
+ * the options, as Node does. */
+void scr_http2_stream_priority(ScrH2Stream *st /*borrowed, nullable*/,
+                               const ScrDyn *opts /*borrowed, nullable*/);
 void scr_http2_stream_on_aborted(ScrH2Stream *st, ScrClosure *cb /*moves*/, bool once);
 void scr_http2_stream_on_error(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
 void scr_http2_stream_on_response(ScrH2Stream *st, ScrClosure *cb /*moves*/, ScrH2RespFn fn, bool once);

@@ -4657,6 +4657,27 @@ function lowerH2SessionMethodCall(
     requireStatementPosition(lowerer, call, "session.destroy(...)");
     return { kind: "libCall", fn: "http2.sessionDestroy", args: [receiver()], type: VOID, loc };
   }
+  if (name === "setLocalWindowSize") {
+    // Node validates the window size and applies no observable change in
+    // Node 24 (the local settings record and the peer's view stay as they
+    // were); the lowering keeps that shape.
+    requireStatementPosition(lowerer, call, "session.setLocalWindowSize(...)");
+    if (args.length !== 1) {
+      lowerer.noLowering(
+        `session.setLocalWindowSize with ${args.length} arguments`,
+        call,
+        "use setLocalWindowSize(windowSize)",
+      );
+    }
+    const windowSize = lowerer.lowerExprExpecting(args[0]!, F64);
+    return {
+      kind: "libCall",
+      fn: "http2.sessionSetLocalWindowSize",
+      args: [receiver(), windowSize],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "ping") {
     // session.ping([payload, ]callback): the (err, duration, payload)
     // callback crosses the checked-dynamic boundary. Node answers a
@@ -5234,6 +5255,75 @@ function lowerH2StreamMethodCall(
       loc,
     };
   }
+  if (name === "setTimeout") {
+    // setTimeout(msecs[, callback]): the stream's own idle timer (not the
+    // session socket's), callback a once 'timeout' listener — Node's shape.
+    requireStatementPosition(lowerer, call, "stream.setTimeout(...)");
+    if (args.length < 1 || args.length > 2) {
+      lowerer.noLowering(
+        `stream.setTimeout with ${args.length} arguments`,
+        call,
+        "use setTimeout(msecs) or setTimeout(msecs, callback)",
+      );
+    }
+    const ms = lowerer.lowerExprExpecting(args[0]!, F64);
+    if (args.length === 2) {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        "timeout callbacks",
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: "http2.streamSetTimeoutCb",
+        args: [receiver(), ms, cb],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamSetTimeout",
+      args: [receiver(), ms],
+      type: VOID,
+      loc,
+    };
+  }
+  if (name === "priority") {
+    // RFC 9113 removed priority signalling; Node accepts any options and
+    // warns DEP0194 once per process, ignoring them.
+    requireStatementPosition(lowerer, call, "stream.priority(...)");
+    if (args.length > 1) {
+      lowerer.noLowering(
+        `stream.priority with ${args.length} arguments`,
+        call,
+        "use priority() or priority(options)",
+      );
+    }
+    if (args.length === 1) {
+      const v = lowerer.lowerExpr(args[0]!);
+      const dynOpts: IrExpr =
+        v.type.kind === "dyn" ? v : { kind: "dynFrom", value: v, type: DYN, loc };
+      return {
+        kind: "libCall",
+        fn: "http2.streamPriority",
+        args: [receiver(), dynOpts],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "http2.streamPriority0",
+      args: [receiver()],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `stream.${name}(...)`);
     const once = boolLit(name === "once", loc);
@@ -5340,16 +5430,34 @@ function lowerH2StreamMethodCall(
         loc,
       };
     }
+    if (event === "ready" || event === "timeout") {
+      const { cb } = lowerCallbackArg(
+        lowerer,
+        args[1]!,
+        `${event} listeners`,
+        0,
+        () => false,
+        "use ()",
+        [],
+      );
+      return {
+        kind: "libCall",
+        fn: event === "ready" ? "http2.streamOnReady" : "http2.streamOnTimeout",
+        args: [receiver(), cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     lowerer.noLowering(
       `stream.${name}("${event ?? "?"}", ...)`,
       args[0]!,
-      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", and "continue" are the supported stream events',
+      '"data", "end", "close", "aborted", "error", "response", "trailers", "wantTrailers", "headers", "continue", "ready", and "timeout" are the supported stream events',
     );
   }
   lowerer.noLowering(
     `stream.${name}`,
     call,
-    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause and on(...) are the lowered stream members",
+    "respond/sendTrailers/additionalHeaders/write/end/close/destroy/setEncoding/resume/pause/setTimeout/priority and on(...) are the lowered stream members",
   );
 }
 

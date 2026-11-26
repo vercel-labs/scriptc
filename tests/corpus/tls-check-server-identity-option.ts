@@ -17,13 +17,21 @@ const say = (...parts: unknown[]): void => {
 const codeOf = (err: unknown): string => String((err as { code?: string }).code);
 const messageOf = (err: unknown): string => JSON.stringify((err as Error).message);
 
-type Case = { label: string; check: ((hostname: string, cert: unknown) => Error | undefined) | null };
+type Case = {
+  label: string;
+  check: ((hostname: string, cert: unknown) => Error | undefined) | null;
+  servername?: string;
+  reject?: boolean;
+  reportAuth?: boolean;
+};
 const cases: Case[] = [
   {
     label: "accept",
-    // the chain verifies, so the caller's verifier decides the identity
+    // the chain verifies, so the caller's verifier decides the identity; the
+    // peer-certificate object carries the certificate's fields
     check: (hostname, peer) => {
-      say("accept-called", hostname, typeof peer);
+      const subject = (peer as { subject?: { CN?: string } }).subject;
+      say("accept-called", hostname, typeof peer, subject !== undefined ? subject.CN : "no-subject");
       return undefined;
     },
   },
@@ -36,12 +44,45 @@ const cases: Case[] = [
     },
   },
   { label: "builtin", check: null },
+  {
+    // a servername the certificate does not name: the caller's verifier
+    // replaces the builtin name check
+    label: "servername",
+    servername: "pin.example",
+    check: (hostname) => {
+      say("servername-called", hostname);
+      return undefined;
+    },
+  },
+  {
+    // a connection-scoped verifier captures its own socket: settlement must
+    // release the verifier so the cycle does not retain the closed socket
+    label: "capture",
+    check: () => {
+      say("capture-called", captured !== null);
+      return undefined;
+    },
+  },
+  {
+    // rejectUnauthorized:false: a rejecting verifier leaves the socket
+    // unauthorized and secureConnect still fires
+    label: "no-reject",
+    reject: false,
+    reportAuth: true,
+    check: () => {
+      const err = new Error("pinned out");
+      (err as { code?: string }).code = "ERR_PIN_MISMATCH";
+      return err;
+    },
+  },
 ];
 
 const server = tls.createServer({ key, cert }, (socket) => {
   socket.on("error", () => {});
   socket.end("bye");
 });
+
+let captured: tls.TLSSocket | null = null;
 
 const next = (): void => {
   const entry = cases.shift();
@@ -52,12 +93,11 @@ const next = (): void => {
     });
     return;
   }
-  let message: string | null = null;
+  let connected = false;
   const port = (server.address() as { port: number }).port;
-  const onConnect = (): void => {
-    message = "connected";
-  };
   const check = entry.check;
+  const servername = entry.servername;
+  const reject = entry.reject ?? true;
   const client =
     check !== null
       ? tls.connect(
@@ -65,12 +105,22 @@ const next = (): void => {
             port,
             host: "127.0.0.1",
             ca,
-            rejectUnauthorized: true,
+            rejectUnauthorized: reject,
+            ...(servername !== undefined ? { servername } : {}),
             checkServerIdentity: (hostname: string, peer: object) => check(hostname, peer),
           },
-          onConnect,
+          () => {
+            connected = true;
+            if (entry.reportAuth === true) {
+              say(entry.label, "connected", "authorized", client.authorized,
+                  "reason", JSON.stringify(client.authorizationError));
+            }
+          },
         )
-      : tls.connect({ port, host: "127.0.0.1", ca, rejectUnauthorized: true }, onConnect);
+      : tls.connect({ port, host: "127.0.0.1", ca, rejectUnauthorized: reject }, () => {
+          connected = true;
+        });
+  if (entry.label === "capture") captured = client;
   client.on("data", () => {});
   client.on("error", (err) => {
     say(entry.label, "error", codeOf(err), messageOf(err));
@@ -78,8 +128,8 @@ const next = (): void => {
     next();
   });
   client.on("close", () => {
-    if (message !== null) {
-      say(entry.label, message);
+    if (connected) {
+      say(entry.label, "connected");
       next();
     }
   });

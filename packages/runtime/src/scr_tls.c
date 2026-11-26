@@ -2572,11 +2572,20 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
  * stands). Its returned Error fails the connection with that error's
  * message and code. False when the connection must fail. */
 static bool scr_tls_run_check_identity(ScrTlsSock *t) {
+  /* Node runs the caller's verifier only when the chain verified: a chain
+   * failure stands on its own (the socket answers unauthorized and the
+   * chain's error), and the caller's function never sees a certificate the
+   * chain rejected. */
+  if (mbedtls_ssl_get_verify_result(&t->ssl) != 0) return true;
   const char *name = t->cli->verify_name != NULL ? t->cli->verify_name : "";
   ScrStr *host = scr_str_new(name, strlen(name));
   ScrDyn *hostv = scr_dyn_new_str(host);
   scr_str_release(host);
-  ScrDyn *cert = scr_tls_sock_get_peer_certificate(t->sock, scr_dyn_undefined());
+  /* Node hands the verifier the detailed certificate: the leaf linked to
+   * its issuers, so issuer pinning can read `issuerCertificate`. */
+  ScrDyn *detailed = scr_dyn_new_bool(true);
+  ScrDyn *cert = scr_tls_sock_get_peer_certificate(t->sock, detailed);
+  scr_dyn_release(detailed);
   if (cert == NULL) {
     scr_dyn_release(hostv);
     return false;

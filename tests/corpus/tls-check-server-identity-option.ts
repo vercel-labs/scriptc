@@ -22,6 +22,7 @@ type Case = {
   check: ((hostname: string, cert: unknown) => Error | undefined) | null;
   servername?: string;
   reject?: boolean;
+  noCa?: boolean;
   reportAuth?: boolean;
 };
 const cases: Case[] = [
@@ -30,8 +31,18 @@ const cases: Case[] = [
     // the chain verifies, so the caller's verifier decides the identity; the
     // peer-certificate object carries the certificate's fields
     check: (hostname, peer) => {
-      const subject = (peer as { subject?: { CN?: string } }).subject;
-      say("accept-called", hostname, typeof peer, subject !== undefined ? subject.CN : "no-subject");
+      const viewed = peer as {
+        subject?: { CN?: string };
+        issuerCertificate?: { subject?: { CN?: string } };
+      };
+      say("accept-called", hostname, typeof peer,
+          viewed.subject !== undefined ? viewed.subject.CN : "no-subject",
+          "issuer",
+          viewed.issuerCertificate !== undefined && viewed.issuerCertificate !== null
+            ? (viewed.issuerCertificate.subject !== undefined
+                ? viewed.issuerCertificate.subject.CN
+                : "no-issuer-subject")
+            : "no-issuer");
       return undefined;
     },
   },
@@ -44,6 +55,18 @@ const cases: Case[] = [
     },
   },
   { label: "builtin", check: null },
+  {
+    // rejectUnauthorized:false with an untrusted chain: the chain verdict
+    // stands and the caller's verifier is never called (Node's rule)
+    label: "untrusted",
+    reject: false,
+    noCa: true,
+    reportAuth: true,
+    check: () => {
+      say("untrusted-called");
+      return undefined;
+    },
+  },
   {
     // a servername the certificate does not name: the caller's verifier
     // replaces the builtin name check
@@ -104,7 +127,7 @@ const next = (): void => {
           {
             port,
             host: "127.0.0.1",
-            ca,
+            ...(entry.noCa === true ? {} : { ca }),
             rejectUnauthorized: reject,
             ...(servername !== undefined ? { servername } : {}),
             checkServerIdentity: (hostname: string, peer: object) => check(hostname, peer),

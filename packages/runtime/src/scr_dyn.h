@@ -122,7 +122,7 @@ typedef enum {
  * links byte-identical objects. Raising the capacity is a program-wide
  * layout change; do it in a change of its own, measured as neutral, and
  * only when the tags outgrow it. */
-#define SCR_DYNH_CAPACITY 128
+#define SCR_DYNH_CAPACITY 160
 
 /* The handle-type tags the checked-dynamic tree can carry. The set is deliberately the
  * HANDLE kinds whose member surfaces already have complete static
@@ -279,6 +279,7 @@ typedef enum {
   Y(PERF_OBSERVER) /* PerformanceObserver (scr_perf.c) */ \
   Y(RUN_SCOPE) /* async_hooks RunScope — AsyncLocalStorage.withScope (scr_async_dyn.c) */ \
   Y(SLIDING_HISTOGRAM) /* perf_hooks SlidingWindowHistogram (scr_perf_loop.c) */ \
+  Y(SOURCE_MAP) /* node:module SourceMap (scr_source_map.c) */ \
   Y(SQLITE_DB) /* node:sqlite DatabaseSync (scr_sqlite.c) */ \
   Y(SQLITE_ITERATOR) /* StatementSync.iterate()'s iterator (scr_sqlite.c) */ \
   Y(SQLITE_LIMITS) /* node:sqlite DatabaseSync#limits (scr_sqlite.c) */ \

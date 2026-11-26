@@ -6370,6 +6370,11 @@ static void scr_hosted_microtask(ScrFiber *f) {
   scr_loop_hosted->microtask(token);
 }
 
+/* Whether a tick was handed to Node since the last hosted microtask
+ * checkpoint: Node runs it before the destroy phase, so the checkpoint that
+ * handed it over leaves the drain to the next one. */
+static SCR_TL bool scr_hosted_tick_handed = false;
+
 static void scr_hosted_tick(ScrNtick *t) {
   /* Node drops what process.nextTick is given once the exit sequence began
    * (an 'exit' listener's ticks never run), and so does the hosted queue. */
@@ -6380,6 +6385,7 @@ static void scr_hosted_tick(ScrNtick *t) {
   }
   uint32_t token = scr_hjob_new(SCR_HJ_TICK, t);
   scr_hosted_queued++;
+  scr_hosted_tick_handed = true;
   scr_loop_hosted->tick(token);
 }
 
@@ -6738,9 +6744,16 @@ void scr_loop_hosted_microtasks_done(void) {
    * drained after their ticks and jobs, and never while the pre-handover
    * due batch still has timers to run. */
   if (scr_hosted_due_depth == 0 && scr_async_checkpoint_idle != NULL) {
-    scr_async_checkpoint_idle();
-    if (scr_exc_pending()) scr_hosted_settle_exception();
-    if (scr_exc_pending()) return;
+    /* A tick this checkpoint handed to Node (a microtask queued it) runs
+     * before the destroy phase, as in Node: leave the drain to the next
+     * checkpoint. */
+    if (scr_hosted_tick_handed) {
+      scr_hosted_tick_handed = false;
+    } else {
+      scr_async_checkpoint_idle();
+      if (scr_exc_pending()) scr_hosted_settle_exception();
+      if (scr_exc_pending()) return;
+    }
   }
   /* A handler native code attached since the last checkpoint raises its
    * 'rejectionHandled' now, in this turn's tick phase. */
@@ -7118,6 +7131,13 @@ static bool scr_loop_run_checkpoint(void) {
  * branch re-tests it after listeners ran). */
 static bool scr_loop_has_reffed_work(void);
 
+/* Whether the current turn's timers phase still has a due timer to run: a
+ * callback's checkpoint restarts the loop, and Node's destroy phase follows
+ * the whole timers phase, not each of its callbacks. */
+static bool scr_loop_timers_left(unsigned long turn_start, double now) {
+  return scr_ntimers > 0 && scr_timers[0].deadline_ms <= now && scr_timers[0].seq < turn_start;
+}
+
 static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
   /* The FIRST checkpoint after the synchronous main body runs promise
    * jobs BEFORE the first tick drain: Node's main-module evaluation is
@@ -7198,7 +7218,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * callback queued a microtask) is not this boundary: the rest of its
      * timers phase still runs, so its destroys wait for the turn's end
      * below, as Node's timers phase completes before its destroy phase. */
-    if (!timer_snapshot_taken && scr_async_checkpoint_idle != NULL) {
+    if (!timer_snapshot_taken && !scr_loop_timers_left(timer_seq_at_turn_start, scr_now_ms()) &&
+        scr_async_checkpoint_idle != NULL) {
       scr_async_checkpoint_idle();
       if (scr_exc_pending()) return false;
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
@@ -7834,18 +7855,19 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       scr_loop_io_open = true;
       scr_loop_io_batches = 0;
     }
-    /* This turn is complete: its timer, poll and check callbacks have run,
-     * so the destroy ids their microtasks queued reach Node's destroy phase
-     * now, before the next turn's startup checkpoint. A destroy hook may
-     * queue work; the next turn's checkpoint drains it first. */
-    if (scr_async_checkpoint_idle != NULL) {
-      scr_async_checkpoint_idle();
-      if (scr_exc_pending()) return false;
+    /* This turn is complete — unless its timers phase still has a due timer
+     * to run after a restart. Then the destroy ids wait for the phase's end,
+     * as Node's destroy phase follows the whole timers phase. */
+    if (!scr_loop_timers_left(timer_seq_at_turn_start, scr_now_ms())) {
+      if (scr_async_checkpoint_idle != NULL) {
+        scr_async_checkpoint_idle();
+        if (scr_exc_pending()) return false;
+      }
+      /* Everything armed during the turn (I/O callbacks, timer callbacks, the
+       * check phase) is eligible for the next one; the next turn recaptures
+       * after its own startup checkpoint. */
+      timer_snapshot_taken = false;
     }
-    /* Everything armed during the turn (I/O callbacks, timer callbacks, the
-     * check phase) is eligible for the next one; the next turn recaptures
-     * after its own startup checkpoint. */
-    timer_snapshot_taken = false;
     if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
   }
   /* The loop ran dry: Node's teardown runs the destroy hooks the last

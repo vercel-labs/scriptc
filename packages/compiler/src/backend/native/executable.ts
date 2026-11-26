@@ -454,7 +454,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.symbol,
     "scr_dyn_builtin_stream.c",
   ),
-  unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // The web-streams unit's pair adaptation lives in the stream unit, and a
+  // program that uses web streams without node:stream links both: on macOS an
+  // undefined weak reference fails the link, and everywhere the hook stayed
+  // empty without it.
+  unit((u) => u.opts.stream || u.opts.webStreams === true, "scr_stream.c", "scr_fs_stream.c"),
   // stream.duplexPair builds its two Duplexes on the stream constructor and
   // its implementer hooks (scr_stream_pair.c).
   unit((u) => u.opts.stream, "scr_stream_pair.c"),
@@ -609,15 +613,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_stream_to_web.c",
   ),
   // Duplex.fromWeb reads and writes the web pair directly.
-  unit(
-    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
-    "scr_stream_duplex_from_web.c",
-  ),
+  unit((u) => u.opts.webStreams === true && u.opts.dynAsync, "scr_stream_duplex_from_web.c"),
   // Writable.fromWeb wraps a web WritableStream's writer.
-  unit(
-    (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,
-    "scr_stream_from_web_writable.c",
-  ),
+  unit((u) => u.opts.webStreams === true && u.opts.dynAsync, "scr_stream_from_web_writable.c"),
   // Writable.toWeb wraps the writable in a web WritableStream.
   unit(
     (u) => u.opts.stream && u.opts.webStreams === true && u.opts.dynAsync,

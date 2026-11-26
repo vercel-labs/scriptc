@@ -47,6 +47,26 @@ test("node:module's Module class links the handle-class unit its value installs"
   expect(source({ moduleClass: true })).toEqual(["scr_module_class.c", "scr_dyn_handle_class.c"]);
   // The unit keeps its other two gates and links nothing else: the DNS
   // resolvers settle their promises through the checked-dynamic async unit.
-  expect(source({ webStreams: true })).toEqual(["scr_webstreams.c", "scr_dyn_handle_class.c"]);
+  // A web-streams program links the stream unit beside it: the pair
+  // adaptation the web unit's hook answers with lives there, and a macOS
+  // link fails an undefined weak reference to it where the other formats read
+  // it as 0 and left the hook empty.
+  expect(source({ webStreams: true })).toEqual([
+    "scr_webstreams.c",
+    "scr_dyn_handle_class.c",
+    "scr_stream.c",
+    "scr_fs_stream.c",
+  ]);
+  expect(source({ webStreams: true, dynAsync: true })).toEqual([
+    "scr_async_dyn.c",
+    "scr_perf.c",
+    "scr_blob.c",
+    "scr_webstreams.c",
+    "scr_dyn_handle_class.c",
+    "scr_stream.c",
+    "scr_fs_stream.c",
+    "scr_stream_duplex_from_web.c",
+    "scr_stream_from_web_writable.c",
+  ]);
   expect(source({ dnsResolve: true })).toEqual(["scr_async_dyn.c", "scr_dyn_handle_class.c"]);
 });

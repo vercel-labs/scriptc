@@ -1379,7 +1379,10 @@ static ScrPromise *sw_sign_verify(const ScrDyn *args, bool verify) {
       scr_wc_missing_member("EcdsaParams", "hash");
       goto done;
     }
-    hash = sw_hash(plain, "EcdsaParams", false, method);
+    /* Node runs its SHA-only check for EcdsaParams before normalizing, so
+     * any name that does not start with "SHA" answers that message (a
+     * non-SHA hash such as MD5 and an unrecognized name alike). */
+    hash = sw_hash(plain, "EcdsaParams", true, method);
     if (!hash) goto done;
   } else if (kind == SW_PSS) {
     if (!scr_wc_is_object(plain)) {

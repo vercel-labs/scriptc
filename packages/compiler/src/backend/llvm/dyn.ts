@@ -2488,6 +2488,15 @@ export class LlDyn {
           B.terminate(`ret i1 false`);
           break;
         }
+        this.host.declare(`declare zeroext i1 @scr_dyn_ref_is_error(ptr)`);
+        const branded = B.tmp();
+        B.line(`${branded} = call zeroext i1 @scr_dyn_ref_is_error(ptr %d)`);
+        const lBrand = B.newLabel("dm.err.brand");
+        const lEncoding = B.newLabel("dm.err.encoding");
+        B.condBr(branded, lBrand, lEncoding);
+        B.startBlock(lBrand);
+        B.terminate(`ret i1 true`);
+        B.startBlock(lEncoding);
         const kd = this.kindOf(B, "%d");
         const isObj = B.tmp();
         B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
@@ -3950,14 +3959,8 @@ export class LlDyn {
         break;
       }
       case "object": {
-        // The %Error extraction (an instanceof-Error narrow on unknown):
-        // validate the checked-dynamic tree's error encoding — the reserved "%error" marker
-        // caughtToDyn builds — and extract through the runtime's IDENTITY
-        // CACHE (scr_error_from_dyn): a dyn error that came from a runtime
-        // ScrError answers that very instance, so out-and-back crossings
-        // compare reference-equal (the tracing suite's shape); alien
-        // %error objects rebuild once and cache the pair. The C walker's
-        // arm exactly.
+        // Native capsules and island Error handles keep their identity through
+        // the runtime extraction owner. Legacy OBJ encodings retain their check.
         if (t.className !== "%Error") {
           // Exact class capsules returned before this switch. A plain dyn
           // object cannot acquire a class brand structurally.
@@ -3965,6 +3968,13 @@ export class LlDyn {
           B.terminate(`ret ptr null`);
           break;
         }
+        host.declare(`declare zeroext i1 @scr_dyn_ref_is_error(ptr)`);
+        const branded = B.tmp();
+        B.line(`${branded} = call zeroext i1 @scr_dyn_ref_is_error(ptr %d)`);
+        const lGo = B.newLabel("dce.g");
+        const lEncoding = B.newLabel("dce.encoding");
+        B.condBr(branded, lGo, lEncoding);
+        B.startBlock(lEncoding);
         const kd = this.kindOf(B, "%d");
         const isObj = B.tmp();
         B.line(`${isObj} = icmp eq i32 ${kd}, ${DYN_KIND.OBJ}`);
@@ -3975,7 +3985,6 @@ export class LlDyn {
         const marker = this.objGetLit(B, "%d", "%error");
         const hasMarker = B.tmp();
         B.line(`${hasMarker} = icmp ne ptr ${marker}, null`);
-        const lGo = B.newLabel("dce.g");
         B.condBr(hasMarker, lGo, lFail);
         B.startBlock(lFail);
         B.line(`call void @scr_dyn_check_fail(ptr %path, ptr ${want}, ptr %d)`);

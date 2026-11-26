@@ -308,6 +308,11 @@ typedef struct ScrNiDynOps {
    * an entry added in the middle changes the bytes of programs that have
    * no island at all. */
   int (*has_own)(ScrDyn *obj, ScrDyn *key, int enumerable);
+  /* V8 recorded the Error brand when the handle crossed the bridge. */
+  bool (*is_error)(const ScrDyn *value);
+  struct ScrError *(*error_of)(const ScrDyn *value); /* +1 native view of a branded handle. */
+  ScrDyn *(*error_value)(const struct ScrError *error); /* +1 original island handle, or NULL. */
+  bool (*error_instanceof)(const ScrDyn *value, int kind);
 } ScrNiDynOps;
 extern const ScrNiDynOps *scr_ni_dyn_ops;
 
@@ -355,7 +360,6 @@ void scr_ni_stop(void);
  * referent. The conversions of scr_node_island_handle.c call these. */
 bool scr_ni_value_out(ScrDyn *v, struct ScrNodeValue *out); /* NI-4's into-V8 conversion */
 ScrDyn *scr_ni_value_in(const struct ScrNodeValue *v);      /* +1 */
-ScrDyn *scr_ni_arg_in(const struct ScrNodeValue *v); /* +1; island Errors as their ScrError */
 bool scr_ni_exportable(const ScrDyn *v);
 void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
 uint32_t scr_ni_export_id(ScrDyn *v); /* the export id of `v` (borrowed), minted on first crossing */

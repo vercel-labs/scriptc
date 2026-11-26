@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerIslandErrorInstanceOf } from "../lower-node-island.js";
 import { withoutParentheses } from "../../outer-expressions.js";
 import { reprototypedGuard, reprototypedReceiver } from "../reprototyped-reads.js";
 import { mayReplacePrototype } from "../class-method-mutations.js";
@@ -453,6 +454,8 @@ function hostGlobalInstanceOfAnswer(
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const islandError = lowerIslandErrorInstanceOf(lowerer, expr, loc);
+  if (islandError !== null) return islandError;
   const iteratorTest = lowerIteratorInstanceOf(lowerer, expr, loc);
   if (iteratorTest !== null) return iteratorTest;
   // `value instanceof AbortSignal`: the runtime's signal handles are the

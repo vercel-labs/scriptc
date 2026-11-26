@@ -7865,7 +7865,7 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
    * objects inheriting Error.prototype. */
   for (size_t i = 0; i < SCR_ERROR_CTORS; i++) {
     if (!scr_error_ctor_values[i] || callee->v.fn.clo != scr_error_ctor_values[i]->v.fn.clo) continue;
-    return scr_dyn_err_instanceof(value, (double)i) || (i == 0 && scr_dyn_inherits_error_prototype(value));
+    return scr_dyn_err_instanceof(value, (double)i);
   }
   if (scr_array_buffer_ctor && callee->v.fn.clo == scr_array_buffer_ctor->v.fn.clo) return scr_array_buffer_is(value);
   if (scr_array_ctor && callee->v.fn.clo == scr_array_ctor->v.fn.clo) return value->kind == SCR_DYN_ARR || scr_dyn_ref_is_array(value);
@@ -9731,6 +9731,7 @@ bool scr_dyn_ref_is_array(const ScrDyn *d) {
 }
 
 bool scr_dyn_ref_is_error(const ScrDyn *d) {
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->is_error(d);
   if (scr_dyn_generator(d)) return false;
   /* Registered native Error capsules retain their brand even when their
    * public property view omits the internal error marker. */
@@ -13110,7 +13111,7 @@ void scr_dyn_throw(ScrDyn *d) {
   /* Only actual boxed Errors qualify: a user object's name or properties
    * cannot manufacture an Error instance. The cache preserves identity
    * when a caught native Error is boxed again. */
-  ScrError *error = scr_errdyn_err_of(d);
+  ScrError *error = scr_ni_dyn_handle(d) ? scr_ni_dyn_ops->error_of(d) : scr_errdyn_err_of(d);
   if (error) {
     scr_throw_obj(error, scr_error_retain_v, scr_error_release_v, scr_error_trace_arg());
     scr_dyn_release(d);
@@ -14238,6 +14239,10 @@ ScrError *scr_dyn_error_value(const ScrDyn *d) {
 }
 
 ScrDyn *scr_dyn_from_error(const ScrError *e) {
+  if (scr_ni_dyn_ops != NULL) {
+    ScrDyn *value = scr_ni_dyn_ops->error_value(e);
+    if (value != NULL) return value;
+  }
   size_t hit = scr_errdyn_find(e, true);
   if (hit != SIZE_MAX) return scr_dyn_retain(scr_errdyn_cache[hit].dyn);
   ScrDyn *d = NULL;
@@ -14351,6 +14356,7 @@ void scr_error_commit_dyn(ScrError *e, const ScrDyn *view) {
 }
 
 ScrError *scr_error_from_dyn(const ScrDyn *d) {
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->error_of(d);
   ScrError *hit = scr_errdyn_err_of(d);
   if (hit) return hit;
   /* Only a node with the error encoding's marker is an Error. Any other
@@ -20482,10 +20488,11 @@ ScrDyn *scr_structured_clone_missing(void) {
 }
 
 bool scr_dyn_err_instanceof(const ScrDyn *d, double kind) {
-  size_t hit = scr_errdyn_find(d, false);
-  if (hit == SIZE_MAX) return false;
-  const ScrVt *vt = scr_errdyn_cache[hit].err->vt;
   int k = (int)kind;
+  if (scr_ni_dyn_handle(d)) return scr_ni_dyn_ops->error_instanceof(d, k);
+  size_t hit = scr_errdyn_find(d, false);
+  if (hit == SIZE_MAX) return k == SCR_ERR_ERROR && scr_dyn_inherits_error_prototype(d);
+  const ScrVt *vt = scr_errdyn_cache[hit].err->vt;
   return scr_error_vts[k].pre <= vt->pre && vt->pre <= scr_error_vts[k].post;
 }
 

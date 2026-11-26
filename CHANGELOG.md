@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Sorting a frozen or published sparse array now preserves empty and singleton receivers and reports the first property a comparator sort tries to change. Frozen array operations skip empty spans in sparse storage.
+
 <!-- release:start -->
 
 ## 0.4.17

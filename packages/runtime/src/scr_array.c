@@ -2220,6 +2220,27 @@ static bool scr_frozen_present(const ScrArr *a, size_t len, size_t index) {
   return scr_arr_state_at(a, index, NULL) != SCR_ARR_HOLE;
 }
 
+/* Find a present index in a bounded range in mutation order. Sparse tails
+ * are searched as entries, never by walking their potentially huge holes. */
+static size_t scr_frozen_first_present(const ScrArr *a, size_t start, size_t end, bool backwards) {
+  if (start >= end) return SIZE_MAX;
+  if (a == NULL) return backwards ? end - 1 : start;
+  if (!backwards) {
+    size_t index = (size_t)scr_arr_next_present(a, (double)start);
+    return index < end ? index : SIZE_MAX;
+  }
+  const ScrArrExt *ext = scr_arr_ext_of(a);
+  if (ext) {
+    size_t pos = scr_arr_sparse_lower_bound(ext->sparse, ext->sparse_len, end);
+    if (pos && ext->sparse[pos - 1].index >= start) return ext->sparse[pos - 1].index;
+  }
+  if (end > a->cap) end = a->cap;
+  while (end > start) {
+    if (scr_arr_dense_state(a, --end) != SCR_ARR_HOLE) return end;
+  }
+  return SIZE_MAX;
+}
+
 /* Each case finds the operation's first write in the order the spec makes
  * its writes, among the elements the receiver actually holds, and answers
  * SCR_FROZEN_NOOP when that walk finds no write at all — reversing an
@@ -2228,11 +2249,20 @@ static bool scr_frozen_present(const ScrArr *a, size_t len, size_t index) {
  * not run the mutating helper: it would rebuild or widen the storage of an
  * array that stays as it is. */
 int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double y, double z) {
+  /* A typed receiver retains its hole map and numeric expando properties.
+   * Dynamic callers without a receiver use the dense length contract. */
   switch (op) {
   case 0:
-    if (x >= 0 && x < (double)len && x == (double)(size_t)x) scr_frozen_read_only(x);
+  case 5: {
+    bool has_index = a != NULL ? scr_arr_has(a, x)
+                               : x >= 0 && x < (double)len && x == (double)(size_t)x;
+    if (op == 5) {
+      if (!has_index) return SCR_FROZEN_RUN;
+      scr_frozen_undeletable(x);
+    } else if (has_index) scr_frozen_read_only(x);
     else scr_frozen_not_extensible(x);
     return SCR_FROZEN_THREW;
+  }
   case 1:
     if (y == 0) break;
     scr_frozen_not_extensible((double)len);
@@ -2248,23 +2278,15 @@ int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double
     if (y == 0) break;
     scr_frozen_not_extensible(len ? (double)len + y - 1 : 0);
     return SCR_FROZEN_THREW;
-  case 5:
-    if (!(x >= 0 && x < (double)len && x == (double)(size_t)x)) return SCR_FROZEN_RUN;
-    scr_frozen_undeletable(x);
+  case 7: {
+    size_t lower = scr_frozen_first_present(a, 0, len / 2, false);
+    size_t upper = scr_frozen_first_present(a, len - len / 2, len, true);
+    if (lower == SIZE_MAX && upper == SIZE_MAX) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    size_t mirrored = upper == SIZE_MAX ? SIZE_MAX : len - 1 - upper;
+    if (lower < mirrored) scr_frozen_undeletable((double)lower);
+    else if (lower > mirrored) scr_frozen_not_extensible((double)mirrored);
+    else scr_frozen_read_only((double)lower);
     return SCR_FROZEN_THREW;
-  case 7: { /* reverse: each pair swaps, and a hole paired with a hole is
-             * no write; the middle of an odd length is never written. */
-    for (size_t lower = 0; lower < len / 2; lower++) {
-      size_t upper = len - 1 - lower;
-      bool lower_p = scr_frozen_present(a, len, lower);
-      bool upper_p = scr_frozen_present(a, len, upper);
-      if (lower_p && upper_p) scr_frozen_read_only((double)lower);
-      else if (lower_p) scr_frozen_undeletable((double)lower);
-      else if (upper_p) scr_frozen_not_extensible((double)lower);
-      else continue;
-      return SCR_FROZEN_THREW;
-    }
-    return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
   }
   case 8: { /* fill: the range's first index, present or not, decides. */
     size_t k = scr_frozen_relative_index(x, len), final = scr_frozen_relative_index(y, len);
@@ -2273,24 +2295,22 @@ int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double
     else scr_frozen_not_extensible((double)k);
     return SCR_FROZEN_THREW;
   }
-  case 9: { /* copyWithin: a hole copied onto a hole writes nothing. */
+  case 9: {
     size_t to = scr_frozen_relative_index(x, len), from = scr_frozen_relative_index(y, len);
     size_t final = scr_frozen_relative_index(z, len);
-    if (final <= from || len <= to) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    if (final <= from || to == len) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
     size_t count = final - from < len - to ? final - from : len - to;
-    /* An overlapping copy toward the end writes its last index first. */
     bool backwards = from < to && to < from + count;
-    for (size_t step = 0; step < count; step++) {
-      size_t k = backwards ? count - 1 - step : step;
-      bool source_p = scr_frozen_present(a, len, from + k);
-      bool target_p = scr_frozen_present(a, len, to + k);
-      if (!source_p && !target_p) continue;
-      if (!source_p) scr_frozen_undeletable((double)(to + k));
-      else if (target_p) scr_frozen_read_only((double)(to + k));
-      else scr_frozen_not_extensible((double)(to + k));
-      return SCR_FROZEN_THREW;
-    }
-    return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    size_t source = scr_frozen_first_present(a, from, from + count, backwards);
+    size_t target = scr_frozen_first_present(a, to, to + count, backwards);
+    if (source == SIZE_MAX && target == SIZE_MAX) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
+    size_t offset = source == SIZE_MAX ? target - to : source - from;
+    if (target != SIZE_MAX && (backwards ? target - to > offset : target - to < offset))
+      offset = target - to;
+    if (!scr_frozen_present(a, len, from + offset)) scr_frozen_undeletable((double)(to + offset));
+    else if (!scr_frozen_present(a, len, to + offset)) scr_frozen_not_extensible((double)(to + offset));
+    else scr_frozen_read_only((double)(to + offset));
+    return SCR_FROZEN_THREW;
   }
   case 10: {
     size_t start = scr_frozen_relative_index(x, len);
@@ -2318,11 +2338,7 @@ int scr_array_frozen_guard(int op, const ScrArr *a, size_t len, double x, double
   }
   case 11: { /* the default sort: one element (or none) is written none. */
     if (len < 2) return a == NULL ? SCR_FROZEN_RUN : SCR_FROZEN_NOOP;
-    if (a != NULL) {
-      bool any = false;
-      for (size_t i = 0; i < len && !any; i++) any = scr_frozen_present(a, len, i);
-      if (!any) return SCR_FROZEN_NOOP;
-    }
+    if (scr_frozen_first_present(a, 0, len, false) == SIZE_MAX) return SCR_FROZEN_NOOP;
     /* The sorted values are written from index 0 up. */
     if (scr_frozen_present(a, len, 0)) scr_frozen_read_only(0);
     else scr_frozen_not_extensible(0);

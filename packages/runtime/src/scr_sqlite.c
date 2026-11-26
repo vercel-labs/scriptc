@@ -2519,8 +2519,11 @@ static void scr_sqlite_db_close_statements(ScrSqliteDb *db) {
        * closed stand-in; a program that still holds the statement keeps
        * it. */
       if (s->db != &scr_sqlite_closed_db) {
-        scr_sqlite_db_release(s->db);
+        /* Clear the edge before the release can collect the database: the
+         * statement must not expose a released reference. */
+        ScrSqliteDb *owner = s->db;
         s->db = &scr_sqlite_closed_db;
+        scr_sqlite_db_release(owner);
       }
       slot->stmt = NULL;
       s->slot = NULL;
@@ -2544,8 +2547,11 @@ static bool scr_sqlite_db_close_all(ScrSqliteDb *db) {
        * closed stand-in; a program that still holds the statement keeps
        * it. */
       if (s->db != &scr_sqlite_closed_db) {
-        scr_sqlite_db_release(s->db);
+        /* Clear the edge before the release can collect the database: the
+         * statement must not expose a released reference. */
+        ScrSqliteDb *owner = s->db;
         s->db = &scr_sqlite_closed_db;
+        scr_sqlite_db_release(owner);
       }
       slot->stmt = NULL;
       s->slot = NULL;

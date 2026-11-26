@@ -148,7 +148,12 @@ describe.skipIf(skip)("Node island handles", () => {
       outDir: dir,
       sanitize,
     });
-    expect(result.ok, name).toBe(true);
+    // A failed build says why: the diagnostics name the program, the code and
+    // the message, which the raw `ok` flag would hide.
+    const failure = result.ok
+      ? ""
+      : result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n");
+    expect(result.ok, `${name}: ${failure}`).toBe(true);
     if (!result.ok) return [];
     return (result.warnings ?? [])
       .filter((d) => d.code === "SC8001" && d.message.includes(`'${pkg}@`))

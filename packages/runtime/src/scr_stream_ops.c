@@ -2702,18 +2702,25 @@ static OpChan *op_chan_new(ScrClosure *abort, ScrDyn *signal, ScrDyn **opts) {
  * compiler's helpers over the stage's generator are borrowed. With a
  * signal, the stage also takes { signal }. +1, or NULL with the
  * function's throw pending. */
+typedef ScrGen *(*OpStageNoArgFn)(ScrClosure *);
+typedef ScrPromise *(*OpStageNoArgPromiseFn)(ScrClosure *);
+
 static ScrStream *op_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                      ScrClosure *read, ScrClosure *ret, ScrClosure *thr,
-                                     ScrClosure *abort, ScrDyn *signal) {
+                                     ScrClosure *abort, ScrDyn *signal, bool no_source) {
   ScrDyn *opts;
   OpChan *c = op_chan_new(abort, signal, &opts);
   ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
                                          op_chan_closure((void *)&op_chan_ack_inv, c));
-  ScrGen *g = NULL; /* src and opts move in */
+  ScrGen *g = NULL; /* opts moves in; src moves in unless the body takes none */
   if (scr_exc_pending()) {
     if (opts) scr_dyn_release(opts);
   } else {
-    g = opts ? ((OpStageOptsFn)stage->fn)(stage, src, opts) : ((OpStageFn)stage->fn)(stage, src);
+    g = no_source ? ((OpStageNoArgFn)stage->fn)(stage)
+                  : opts ? ((OpStageOptsFn)stage->fn)(stage, src, opts)
+                         : ((OpStageFn)stage->fn)(stage, src);
+    /* a body without a source parameter never received it */
+    if (no_source) scr_gen_release(src);
   }
   if (scr_exc_pending()) {
     if (g) scr_gen_release(g);
@@ -2753,13 +2760,19 @@ static ScrStream *op_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrC
 
 ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                       ScrClosure *read, ScrClosure *ret, ScrClosure *thr) {
-  return op_duplex_from_gen(stage, source, next, read, ret, thr, NULL, NULL);
+  return op_duplex_from_gen(stage, source, next, read, ret, thr, NULL, NULL, false);
+}
+
+ScrStream *scr_stream_duplex_from_gen_nosource(ScrClosure *stage, ScrClosure *source,
+                                              ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                                              ScrClosure *thr) {
+  return op_duplex_from_gen(stage, source, next, read, ret, thr, NULL, NULL, true);
 }
 
 ScrStream *scr_stream_duplex_from_gen_signal(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
                                              ScrClosure *read, ScrClosure *ret, ScrClosure *thr,
                                              ScrClosure *abort, ScrDyn *signal) {
-  return op_duplex_from_gen(stage, source, next, read, ret, thr, abort, signal);
+  return op_duplex_from_gen(stage, source, next, read, ret, thr, abort, signal, false);
 }
 
 /* ── Duplex.from(asyncFunction) ── duplexify.js: the function's promise
@@ -2794,8 +2807,10 @@ static void op_async_body_entry(ScrFiber *fiber, void *arg) {
                        "Expected nully to be returned from the \"body\" function but got %s.", got);
       c->body_err = op_coded_error(SCR_ERR_TYPE, "ERR_INVALID_RETURN_VALUE", msg);
       (void)n;
-    } else if (!c->finalized && d) {
-      /* returned without consuming the input: destroyer(d) */
+    } else if (!c->finalized && d && !scr_stream_prop(d, "ending")) {
+      /* returned without consuming the input: destroyer(d). An end()
+       * already requested starts the final (duplexify's `finalized`), so a
+       * promise that resolved before it is not an early return. */
       ScrError *e = op_chan_abort_error();
       scr_stream_release(scr_stream_destroy(d, e));
       scr_error_release(e);
@@ -2844,17 +2859,20 @@ static void op_chan_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
  * its promise; source and box (promise → dyn promise) borrowed. +1, or
  * NULL with the function's throw pending. */
 static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box,
-                                          ScrClosure *abort, ScrDyn *signal) {
+                                          ScrClosure *abort, ScrDyn *signal, bool no_source) {
   ScrDyn *opts;
   OpChan *c = op_chan_new(abort, signal, &opts);
   ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
                                          op_chan_closure((void *)&op_chan_ack_inv, c));
-  ScrPromise *p = NULL; /* src and opts move in */
+  ScrPromise *p = NULL; /* opts moves in; src moves in unless the body takes none */
   if (scr_exc_pending()) {
     if (opts) scr_dyn_release(opts);
   } else {
-    p = opts ? ((OpAsyncStageOptsFn)stage->fn)(stage, src, opts)
-             : ((OpAsyncStageFn)stage->fn)(stage, src);
+    p = no_source ? ((OpStageNoArgPromiseFn)stage->fn)(stage)
+                  : opts ? ((OpAsyncStageOptsFn)stage->fn)(stage, src, opts)
+                         : ((OpAsyncStageFn)stage->fn)(stage, src);
+    /* a body without a source parameter never received it */
+    if (no_source) scr_gen_release(src);
   }
   if (scr_exc_pending()) {
     if (p) scr_promise_release(p);
@@ -2887,13 +2905,18 @@ static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source,
 }
 
 ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box) {
-  return op_duplex_from_async_fn(stage, source, box, NULL, NULL);
+  return op_duplex_from_async_fn(stage, source, box, NULL, NULL, false);
+}
+
+ScrStream *scr_stream_duplex_from_async_fn_nosource(ScrClosure *stage, ScrClosure *source,
+                                                    ScrClosure *box) {
+  return op_duplex_from_async_fn(stage, source, box, NULL, NULL, true);
 }
 
 ScrStream *scr_stream_duplex_from_async_fn_signal(ScrClosure *stage, ScrClosure *source,
                                                   ScrClosure *box, ScrClosure *abort,
                                                   ScrDyn *signal) {
-  return op_duplex_from_async_fn(stage, source, box, abort, signal);
+  return op_duplex_from_async_fn(stage, source, box, abort, signal, false);
 }
 
 /* ── the promise operators ─────────────────────────────────────────── */

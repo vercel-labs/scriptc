@@ -45,7 +45,104 @@ import {
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { isGlobalObjectRead } from "./host-globals.js";
 import type { Lowerer, LowerResult } from "./lowerer.js";
+import { stdlibGlobalNameOf } from "./surfaces.js";
+
+const PRIMITIVE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set([
+  "String",
+  "Number",
+  "Boolean",
+  "BigInt",
+]);
+
+/** Whether the program writes a primitive constructor as a value anywhere
+ * (held-constructors.ts's comparison exists for those programs). Decided
+ * before lowering from the symbols of value positions: an identifier that
+ * resolves to the global String, Number, Boolean or BigInt constructor and
+ * is not the callee of a call or the target of `new`. Reading the fact first
+ * makes every touch mark exact: the "made before the program's first
+ * constructor value" catch-all is no longer needed (RELEASE-PLAN H-1). */
+export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
+  for (const sf of lowerer.program.getSourceFiles()) {
+    // A type declaration writes no value. The standard library's
+    // `interface String` names the constructor without holding it, and a
+    // scan of declaration files would make every program hold one.
+    if (sf.isDeclarationFile) continue;
+    let found = false;
+    ts.walkPreorder(sf, (node) => {
+      if (found || !ts.isIdentifier(node)) return;
+      // A cheap prefilter: only these four spellings can name a primitive
+      // constructor, so the symbol resolution (a checker round trip) runs for
+      // the few identifiers that do.
+      const text = node.text;
+      if (text !== "String" && text !== "Number" && text !== "Boolean" && text !== "BigInt") return;
+      const parent = node.parent;
+      if (parent !== undefined) {
+        if (
+          (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+          parent.expression === node
+        )
+          return;
+        if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+          const access = parent.parent;
+          // A callee is not a held value, exactly like a bare `Number(...)`.
+          if (
+            access !== undefined &&
+            (ts.isCallExpression(access) || ts.isNewExpression(access)) &&
+            access.expression === parent
+          )
+            return;
+          // A member name is not a value, but `globalThis.Number` (a cast of
+          // the global object, or a const alias of it — `const g =
+          // globalThis; g.Number`) names the constructor itself: resolve the
+          // access as a whole rather than its name.
+          if (
+            PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, parent) ?? "") ||
+            isGlobalObjectRead(lowerer, parent.expression)
+          )
+            found = true;
+          return;
+        }
+        if (
+          (ts.isPropertyAssignment(parent) ||
+            ts.isPropertyDeclaration(parent) ||
+            ts.isVariableDeclaration(parent) ||
+            ts.isParameter(parent) ||
+            ts.isFunctionDeclaration(parent) ||
+            ts.isFunctionExpression(parent) ||
+            ts.isClassDeclaration(parent) ||
+            ts.isClassExpression(parent) ||
+            ts.isMethodDeclaration(parent) ||
+            ts.isBindingElement(parent) ||
+            ts.isImportSpecifier(parent) ||
+            ts.isExportSpecifier(parent) ||
+            ts.isImportClause(parent) ||
+            ts.isNamespaceImport(parent) ||
+            ts.isInterfaceDeclaration(parent) ||
+            ts.isTypeAliasDeclaration(parent) ||
+            ts.isEnumDeclaration(parent) ||
+            ts.isEnumMember(parent) ||
+            ts.isTypeParameterDeclaration(parent) ||
+            ts.isModuleDeclaration(parent)) &&
+          parent.name === node
+        )
+          return;
+        if (ts.isQualifiedName(parent)) return;
+        // `class X extends String` uses the constructor as a value; every
+        // other type node's identifier is a type name.
+        if (ts.isTypeNode(parent)) {
+          if (ts.isExpressionWithTypeArguments(parent) && parent.expression === node) {
+            // fall through: a heritage clause's expression is a value use
+          } else return;
+        }
+      }
+      if (PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, node) ?? "")) found = true;
+    });
+    if (found) return true;
+  }
+  return false;
+}
 
 /** Whether a value of `type` holds a primitive constructor by its own
  * function type at any depth: the function itself, a member of a record, an

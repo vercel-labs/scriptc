@@ -16,7 +16,10 @@ const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.ur
   scripts: Record<string, string>;
 };
 const turbo = JSON.parse(readFileSync(new URL("../../turbo.json", import.meta.url), "utf8")) as {
-  tasks: Record<string, { env?: string[]; inputs?: string[]; outputs?: string[]; tags?: string[] }>;
+  tasks: Record<
+    string,
+    { cache?: boolean; env?: string[]; inputs?: string[]; outputs?: string[]; tags?: string[] }
+  >;
 };
 
 function runLane(args: string[], env: Record<string, string>) {
@@ -47,7 +50,8 @@ test("the effect tasks hash the branch and pull request they sample for", () => 
   const effects = Object.entries(turbo.tasks).filter(([name]) =>
     name.startsWith("//#ci:lane:effects:"),
   );
-  expect(effects.map(([name]) => name)).toHaveLength(98);
+  // 48 plain + 128 sanitized shards and the two sample lanes.
+  expect(effects.map(([name]) => name)).toHaveLength(178);
   for (const [name, task] of effects)
     expect(task.env, name).toEqual(
       expect.arrayContaining([
@@ -83,6 +87,21 @@ test("the toolchain task rebuilds from the pinned archives instead of trusting a
   expect(turbo.tasks["//#ci:setup:toolchain"]!.inputs).toContain("scripts/ci-vercel/toolchain.mjs");
 });
 
+test("the toolchain is installed per task and never cached", () => {
+  // The installed tree is 12 GiB, over the Remote Cache artifact limit: an upload returns 413 and every
+  // dependent task would rebuild it inside its own deadline anyway. The task declares no output and
+  // is not cached, so each task installs it once from the pinned archives.
+  const toolchain = turbo.tasks["//#ci:setup:toolchain"]!;
+  expect(toolchain.outputs).toEqual([]);
+  expect(toolchain.cache).toBe(false);
+  // The install is bounded: archives download in parallel through mirrors, and a stalled source is
+  // abandoned at its deadline instead of consuming the lane.
+  expect(toolchainSource).toContain("Promise.all");
+  expect(toolchainSource).toContain("attemptsPerUrl = 1");
+  expect(toolchainSource).toContain("deadlineMs");
+  expect(toolchainSource).toContain("pkg.hexops.org");
+});
+
 test("the other setup outputs are rebuilt from empty directories", () => {
   expect(runnerSource).toContain("fresh(libnodeDirectory)");
   expect(runnerSource).toContain('fresh(join(root, ".ci/bootstrap-seed", flavor))');
@@ -100,11 +119,16 @@ test("the toolchain provides the static zlib and zstd the helper links", () => {
 });
 
 test("the Vercel lanes are resharded to keep each task under the runner deadline", () => {
+  // The sanitized tiers are sized from the measured cost tables: the sanitized corpus is 106,633 s
+  // and its side queue 18,423 s, so 230 shards carry 543 s each; the Effect tables hold one weight
+  // per fixture for both lanes and the harness gives the sanitized lane twice the plain limits
+  // (effect-runner.ts), so 128 shards carry 2 x 34,380 / 128 = 537 s. Both leave room for the
+  // toolchain install and the sanitized runtime compile inside the 900 s deadline.
   const names = Object.keys(turbo.tasks);
   const count = (pattern: RegExp) => names.filter((name) => pattern.test(name)).length;
   expect(count(/^\/\/#ci:lane:test:plain:\d+$/)).toBe(60);
-  expect(count(/^\/\/#ci:lane:test:san:\d+$/)).toBe(90);
-  expect(count(/^\/\/#ci:lane:effects:(plain|san):\d+$/)).toBe(96);
+  expect(count(/^\/\/#ci:lane:test:san:\d+$/)).toBe(230);
+  expect(count(/^\/\/#ci:lane:effects:(plain|san):\d+$/)).toBe(176);
   expect(count(/^\/\/#ci:lane:islands:\d+$/)).toBe(8);
   expect(count(/^\/\/#ci:lane:llvm-artifacts:/)).toBe(9);
   // The monolithic builds stay in the task graph for local runs but are no longer selected by Vercel CI.
@@ -174,9 +198,9 @@ test("the checker identity lane is sharded and the toolchain reports its steps",
   expect(toolchainSource).toContain("[toolchain]");
 });
 
-test("the TypeScript 7 parity sweep is sharded and the toolchain downloads recover", () => {
+test("the TypeScript 7 parity sweep is sharded and the toolchain downloads are bounded", () => {
   // The full sweep outgrew the task deadline; two stable shards keep each task under it. The toolchain downloads
-  // now have a stall watchdog, per-request retries, mirror fallbacks and progress bytes.
+  // have a stall watchdog, one attempt per mirror with a per-source deadline, mirror fallbacks and progress bytes.
   expect(
     Object.keys(turbo.tasks).filter((name) => name.startsWith("//#ci:lane:ts7-parity:")),
   ).toHaveLength(2);
@@ -184,7 +208,9 @@ test("the TypeScript 7 parity sweep is sharded and the toolchain downloads recov
     expect(turbo.tasks[name]!.inputs, name).toContain("scripts/ts7-shard.mjs");
   expect(toolchainSource).toContain("AbortController");
   expect(toolchainSource).toContain("no data for");
-  expect(toolchainSource).toContain("download ${attempt}/3");
+  expect(toolchainSource).toContain("attemptsPerUrl = 1");
+  expect(toolchainSource).toContain("trying the next source");
+  expect(toolchainSource).toContain("deadlineMs");
   expect(toolchainSource).toContain("MB in");
   expect((toolchainSource.match(/urls: \[/g) ?? []).length).toBeGreaterThanOrEqual(6);
 });

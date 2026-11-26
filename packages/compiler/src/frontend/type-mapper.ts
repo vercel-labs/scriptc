@@ -2,6 +2,7 @@ import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
 import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
 import { CRYPTO_CONSTANTS } from "./lowering/crypto-tables.js";
+import { PERF_HOOKS_CONSTANTS } from "./lowering/perf-hooks-constants.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -5392,6 +5393,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // spawn consumes a presence-sensitive option bag, including optional
   // stdio and env values. Keep it checked-dynamic for native normalization.
   if (isStdlibInterface("SpawnOptions")) return DYN;
+  // net.createServer's options record (@types/node's ServerOpts): an
+  // annotated value is checked-dynamic, read member-wise by the runtime.
+  if (isStdlibInterface("ServerOpts")) return DYN;
   // util.inspect as a value (a custom inspect method's third parameter is
   // `typeof inspect`): the runtime's inspect function, called through the
   // checked-dynamic boundary.
@@ -6961,6 +6965,35 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
             name,
             type: (typeof CRYPTO_CONSTANTS[name] === "string" ? STRING : F64) as IrType,
           }))
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+        false,
+        undefined,
+        keys,
+      ),
+    };
+  }
+  // @types/node declares perf_hooks.constants as a namespace of number
+  // constants too. The value form carries the enumerable GC numbers Node's
+  // object walks (the table also holds the GC_MINOR_MARK_SWEEP the
+  // declarations omit), so the shape comes from that table —
+  // perfHooksConstantsValue builds the value from it — in Node's insertion
+  // order.
+  if (
+    psym !== undefined &&
+    psymName === "constants" &&
+    psym.declarations.some(
+      (d) =>
+        ts.isModuleDeclaration(d) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)) &&
+        isDeclaredInAmbientModule(d, "perf_hooks"),
+    )
+  ) {
+    const keys = Object.keys(PERF_HOOKS_CONSTANTS);
+    return {
+      kind: "record",
+      shapeId: ctx.shapes.intern(
+        keys
+          .map((name) => ({ name, type: F64 as IrType }))
           .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
         false,
         undefined,

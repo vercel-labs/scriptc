@@ -11,8 +11,12 @@ import {
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { everyStmtList, everyTypeChild, transformStmtList } from "../../ir/traverse.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
-import { funcSlotAdaptable, strandedFuncAdapter } from "./coercions/function-adapters.js";
-import { widerArrayHelper } from "./containers/array-callbacks.js";
+import {
+  dynRestPackingAdapter,
+  funcSlotAdaptable,
+  strandedFuncAdapter,
+} from "./coercions/function-adapters.js";
+import { arrayHelperConsumer, widerArrayHelper } from "./containers/array-callbacks.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
 
 /* Function values and the views of them.
@@ -212,6 +216,11 @@ export class FunctionViews {
   private readonly helpers = new Map<string, { own: IrStmt[]; tests: Map<string, IrStmt> }>();
   /** How many helper recipes the last call saw. */
   private recipes = 0;
+  /** Whether the look-through built last handed the wide call to the
+   * function through exact conversions: a stranded adapter would still
+   * throw when invoked, so a variadic store it serves stays refused
+   * (variadic-functions.ts). */
+  private exactThrough = false;
 
   /** Reads the adapters lowering added since the last call and gives every
    * widening adapter its tests. True when it added or changed a function. */
@@ -248,6 +257,12 @@ export class FunctionViews {
           if (test === null) continue;
           widening.tests.set(view.factory.name, test);
           install(widening);
+          // The widening now reaches the variadic function with every
+          // argument when its value is the variadic store's view, so
+          // variadic-functions.ts does not refuse that store for this
+          // caller.
+          if (more.includes(view) && view.source.rest === true && this.exactThrough)
+            lowerer.coercions.variadicServedAdapters.add(widening.factory.name);
           added = true;
         }
       }
@@ -272,17 +287,19 @@ export class FunctionViews {
         this.looked.add(pair);
         const test = this.quietly(lowerer, () => this.throughHelper(lowerer, helper, view));
         if (test === null) continue;
-        let entry = this.helpers.get(name);
-        if (entry === undefined) {
-          entry = { own: helper.body, tests: new Map() };
-          this.helpers.set(name, entry);
-          // A fused pipeline calls the callback itself and would skip the
-          // tests: the helper leaves the registry fusion reads.
-          lowerer.arrHofInfo.delete(name);
+        this.addHelperTest(lowerer, helper, view.factory.name, test);
+        // A caller of this helper that hands the callback a longer list
+        // reaches the variadic function through the test above.
+        if (view.source.rest === true && this.exactThrough) {
+          const recipe = lowerer.arrHofRecipes.get(helper.name);
+          if (recipe !== undefined) {
+            const key = typeKey(callback.type);
+            let served = lowerer.coercions.variadicWideServed.get(key);
+            if (served === undefined)
+              lowerer.coercions.variadicWideServed.set(key, (served = new Set()));
+            served.add(arrayHelperConsumer(recipe));
+          }
         }
-        entry.tests.set(view.factory.name, test);
-        const tests = entry.tests;
-        helper.body = [...[...tests.keys()].sort().map((key) => tests.get(key)!), ...entry.own];
         added = true;
       }
     }
@@ -302,9 +319,9 @@ export class FunctionViews {
     const callback = helper.params[1]!;
     if (full?.kind !== "func" || callback.type.kind !== "func") return null;
     const value: IrExpr = { kind: "varRef", localId: callback.localId, type: callback.type, loc };
-    const first =
-      this.adapter(lowerer, view.source, full, view.checked, loc) ??
-      strandedFuncAdapter(lowerer, view.source, full, loc);
+    const direct = this.adapter(lowerer, view.source, full, view.checked, loc);
+    this.exactThrough = direct !== null;
+    const first = direct ?? strandedFuncAdapter(lowerer, view.source, full, loc);
     const source: IrExpr = {
       kind: "viewSource",
       value,
@@ -326,6 +343,77 @@ export class FunctionViews {
     return {
       kind: "if",
       cond: { kind: "viewOf", value, adapter: view.body, type: BOOL, loc },
+      then:
+        helper.returnType.kind === "void"
+          ? [
+              { kind: "exprStmt", expr: call, loc },
+              { kind: "return", value: null, loc },
+            ]
+          : [{ kind: "return", value: call, loc }],
+      else_: null,
+      loc,
+    };
+  }
+
+  /** Installs `test` in the array-method helper under `name`, keeping the
+   * tests ahead of the helper's own body. */
+  private addHelperTest(lowerer: Lowerer, helper: IrFunction, name: string, test: IrStmt): void {
+    let entry = this.helpers.get(helper.name);
+    if (entry === undefined) {
+      entry = { own: helper.body, tests: new Map() };
+      this.helpers.set(helper.name, entry);
+      // A fused pipeline calls the callback itself and would skip the
+      // tests: the helper leaves the registry fusion reads.
+      lowerer.arrHofInfo.delete(helper.name);
+    }
+    entry.tests.set(name, test);
+    const tests = entry.tests;
+    helper.body = [...[...tests.keys()].sort().map((key) => tests.get(key)!), ...entry.own];
+  }
+
+  /** `if (f is a callable the program checked into this type) return <the
+   * same helper for the full parameter list>(…, <the callable checked into
+   * that list>, …)`, for the array-method helper `helper`. The callable
+   * reaches the function behind it with every argument the method passes.
+   * Null when the helper already passes everything or the wide signature
+   * is outside the boundary's domain. */
+  private throughBoundaryHelper(lowerer: Lowerer, helper: IrFunction): IrStmt | null {
+    const loc = helper.loc;
+    const recipe = lowerer.arrHofRecipes.get(helper.name);
+    const wide = recipe === undefined ? null : widerArrayHelper(lowerer, recipe, loc);
+    if (wide === null || wide === helper.name) return null;
+    const full = lowerer.liftedFnNamed(wide)?.params[1]?.type;
+    const callback = helper.params[1]!;
+    if (full?.kind !== "func" || callback.type.kind !== "func") return null;
+    if (
+      !canAdaptDynFuncTo(
+        full,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    )
+      return null;
+    const value: IrExpr = { kind: "varRef", localId: callback.localId, type: callback.type, loc };
+    const callable: IrExpr = {
+      kind: "dynCheck",
+      value: { kind: "viewSource", value, adapter: null, type: DYN, loc },
+      type: full,
+      loc,
+    };
+    const call: IrExpr = {
+      kind: "call",
+      callee: wide,
+      args: helper.params.map((param): IrExpr =>
+        param === callback
+          ? callable
+          : { kind: "varRef", localId: param.localId, type: param.type, loc },
+      ),
+      type: helper.returnType,
+      loc,
+    };
+    return {
+      kind: "if",
+      cond: { kind: "viewOf", value, adapter: null, type: BOOL, loc },
       then:
         helper.returnType.kind === "void"
           ? [
@@ -363,7 +451,19 @@ export class FunctionViews {
     const wideners = this.adapters
       .filter((adapter) => this.widens(adapter) || this.widensArgument(lowerer, adapter))
       .sort(byFactoryName);
-    if (wideners.length === 0 && this.holders.size === 0 && this.converters.size === 0) return;
+    // A program that stores a variadic function in a fixed signature and
+    // hands it to an array method: the helper tests for a callable the
+    // program checked into the callback's type below.
+    const boundaryHelpers =
+      lowerer.arrHofRecipes.size > 0 &&
+      (lowerer.coercions.variadicAdapterSources.size > 0 || lowerer.notedVariadicStores.size > 0);
+    if (
+      wideners.length === 0 &&
+      this.holders.size === 0 &&
+      this.converters.size === 0 &&
+      !boundaryHelpers
+    )
+      return;
     // A dynamic caller passes more arguments than a view's type has, and
     // untyped ones where the type names one. The views it must see through
     // box as the function they forward to, in a program that boxes a
@@ -386,7 +486,7 @@ export class FunctionViews {
       if (body !== undefined) body.boxesSource = true;
     }
     if (this.converters.size > 0) this.untypedCalls(lowerer, functions);
-    if (wideners.length === 0) return;
+    if (wideners.length === 0 && !boundaryHelpers) return;
     // The function types the program checks callables into.
     const checkedInto = new Set<string>();
     const noted = new Set<string>();
@@ -413,6 +513,28 @@ export class FunctionViews {
         },
         stmt: () => true,
       });
+    }
+    if (boundaryHelpers) {
+      for (const name of [...lowerer.arrHofRecipes.keys()].sort()) {
+        const helper = lowerer.liftedFnNamed(name);
+        const callback = helper?.params[1];
+        if (helper === undefined || callback?.type.kind !== "func") continue;
+        if (!checkedInto.has(typeKey(callback.type))) continue;
+        const pair = `${name}\n@boundary`;
+        if (this.looked.has(pair)) continue;
+        this.looked.add(pair);
+        const test = this.quietly(lowerer, () => this.throughBoundaryHelper(lowerer, helper));
+        if (test === null) continue;
+        this.addHelperTest(lowerer, helper, "", test);
+        const recipe = lowerer.arrHofRecipes.get(name);
+        if (recipe !== undefined) {
+          const key = typeKey(callback.type);
+          let served = lowerer.coercions.variadicWideServed.get(key);
+          if (served === undefined)
+            lowerer.coercions.variadicWideServed.set(key, (served = new Set()));
+          served.add(arrayHelperConsumer(recipe));
+        }
+      }
     }
     for (const widening of wideners) {
       if (!checkedInto.has(typeKey(widening.source))) continue;
@@ -451,6 +573,10 @@ export class FunctionViews {
         loc,
       });
       install(widening);
+      // The test hands the untyped callable behind the view the wide
+      // call's whole argument list, so a variadic function stored in the
+      // slot reaches it with every argument there.
+      lowerer.coercions.variadicServedAdapters.add(widening.factory.name);
     }
   }
 
@@ -614,8 +740,14 @@ export class FunctionViews {
     for (; this.scanned < lowerer.liftedFns.length; this.scanned++) {
       const factory = lowerer.liftedFns[this.scanned]!;
       const mode = provenance.get(factory.name);
-      if (mode === undefined) continue;
-      const source = factory.params[0]?.type;
+      // A variadic store's adapter (variadicBoundaryAdapter) stands for
+      // the variadic function it wraps; its factory records that signature
+      // beside it. It is a view of that function: a consumer that passes
+      // more arguments than the slot's type names reaches the function
+      // itself.
+      const variadic = lowerer.coercions.variadicAdapterSources.get(factory.name);
+      if (mode === undefined && variadic === undefined) continue;
+      const source = variadic ?? factory.params[0]?.type;
       const made = factory.body.at(-1);
       if (
         source?.kind !== "func" ||
@@ -630,7 +762,7 @@ export class FunctionViews {
         body: made.value.fnName,
         source,
         target: factory.returnType,
-        checked: mode === "checked",
+        checked: mode === undefined || mode === "checked",
         plain: made,
         tests: new Map(),
         converts: new Set(),
@@ -785,11 +917,11 @@ export class FunctionViews {
       loc,
     };
     if (!typeEquals(view.source, extended)) {
-      const first =
-        this.adapter(lowerer, view.source, extended, view.checked, loc) ??
-        strandedFuncAdapter(lowerer, view.source, extended, loc);
+      const direct = this.adapter(lowerer, view.source, extended, view.checked, loc);
+      this.exactThrough = direct !== null;
+      const first = direct ?? strandedFuncAdapter(lowerer, view.source, extended, loc);
       result = { kind: "call", callee: first, args: [result], type: extended, loc };
-    }
+    } else this.exactThrough = true;
     if (!typeEquals(extended, target)) {
       const second = this.adapter(lowerer, extended, target, widening.checked, loc);
       if (second === null) return null;
@@ -813,7 +945,16 @@ export class FunctionViews {
     checked: boolean,
     loc: SrcLoc,
   ): string | null {
-    return this.inMode(lowerer, checked, () => lowerer.funcCoerceAdapter(from, to, loc));
+    return this.inMode(lowerer, checked, () => {
+      const adapter = lowerer.funcCoerceAdapter(from, to, loc);
+      if (adapter !== null) return adapter;
+      // The variadic function the view stands for receives the wide
+      // call's whole argument list as its hidden array: the slot's
+      // parameters are not all it observes.
+      return from.rest === true && from.restAbi === undefined
+        ? dynRestPackingAdapter(lowerer, from, to, loc)
+        : null;
+    });
   }
 
   /** Runs `build` in the checked mode a method field's adapter is planned

@@ -89,6 +89,18 @@ console.log(named, get()("4") + 1);
   expect(result.errors).toEqual([]);
 });
 
+// A const alias of the global object names the same constructor values:
+// `const globals = globalThis; globals.Number` is a held constructor, so an
+// early refusal still gets the comparison pass.
+test("a constructor read through a const alias of the global object arms the comparison pass", async () => {
+  const result = await compileSource(`const globals = globalThis;
+function get() { return globals.Number; }
+const named = "name" in get();
+console.log(named, get()("4") + 1);
+`);
+  expect(result.errors).toEqual([]);
+});
+
 // A statement whose refusal waits for it to run, or that hands a held
 // constructor to an operation the runtime refuses, is named by the build:
 // a TypeScript program is otherwise told at build time what does not compile.

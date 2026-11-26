@@ -45,6 +45,7 @@ import {
 import type { IrExpr, IrType } from "../../ir/ir.js";
 import * as ts from "../ts7/adapter.js";
 import { isSafeToDiscard } from "./expressions/evaluation-safety.js";
+import { isGlobalObjectRead } from "./host-globals.js";
 import type { Lowerer, LowerResult } from "./lowerer.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
 
@@ -92,10 +93,14 @@ export function programHoldsConstructorValue(lowerer: Lowerer): boolean {
             access.expression === parent
           )
             return;
-          // A member name is not a value, but `globalThis.Number` (and a
-          // cast of the global object) names the constructor itself: resolve
-          // the access as a whole rather than its name.
-          if (PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, parent) ?? ""))
+          // A member name is not a value, but `globalThis.Number` (a cast of
+          // the global object, or a const alias of it — `const g =
+          // globalThis; g.Number`) names the constructor itself: resolve the
+          // access as a whole rather than its name.
+          if (
+            PRIMITIVE_CONSTRUCTOR_NAMES.has(stdlibGlobalNameOf(lowerer, parent) ?? "") ||
+            isGlobalObjectRead(lowerer, parent.expression)
+          )
             found = true;
           return;
         }

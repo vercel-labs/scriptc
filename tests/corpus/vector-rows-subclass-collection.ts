@@ -16,6 +16,11 @@ for (let i = 0; i < 50; i++) {
   // Species results are subclass instances too, with the same rows.
   const mapped = rows.map((row) => row)
   const sliced = rows.slice(1)
+  // A dynamic store through the view commits the storage into a checked
+  // array that takes the class: the retyped instance still holds headerless
+  // rows, so the commit must carry the guard that keeps the trace off them.
+  const view: any = rows
+  view["meta"] = i
   total += rows.size() + rows.counter() + mapped.length + sliced.length
 }
 console.log("total", total)

@@ -6405,6 +6405,18 @@ void scr_arr_adopt_view_properties(ScrArr *a, ScrDyn *view, ScrArr *target) {
     scr_arr_ext(a)->cls = from->cls;
     from->cls = NULL;
   }
+  /* The commit gives `a` the storage `target` held, so the flags that
+   * describe that storage move with it: a traced Array subclass of an
+   * array-of-arrays must keep skipping its header-less rows, and slots the
+   * storage marks foreign stay foreign. Losing either here would hand plain
+   * rows to the cycle collector or release a foreign payload twice. */
+  if (from) {
+    ScrArrExt *x = scr_arr_ext(a);
+    x->untraced_rows = from->untraced_rows;
+    x->foreign = from->foreign;
+    from->untraced_rows = false;
+    from->foreign = false;
+  }
   if (from && from->prop_len) {
     /* Both arrays have the same element type, so the slots keep their owner. */
     ScrArrExt *x = scr_arr_ext(a);

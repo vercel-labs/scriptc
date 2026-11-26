@@ -53,3 +53,25 @@ try {
 } catch (error) {
   console.log("null", error.name, error.message);
 }
+
+// A computed locale object's length is read as an ordinary property: a
+// getter runs (its side effects happen) and its exception propagates.
+const throwingLocale = {
+  get length() {
+    throw new Error("length boom");
+  },
+};
+try {
+  new Intl.NumberFormat(throwingLocale);
+  console.log("length-getter", "no throw");
+} catch (error) {
+  console.log("length-getter", error.name, error.message);
+}
+let localeReads = 0;
+const countingLocale = {
+  get length() {
+    localeReads++;
+    return 0;
+  },
+};
+console.log("length-read", new Intl.NumberFormat(countingLocale).format(1), localeReads);

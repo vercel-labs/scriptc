@@ -890,11 +890,14 @@ ScrStr *scr_intl_locale_value(ScrDyn *value) {
   double length = 0;
   if (value != NULL && value->kind == SCR_DYN_ARR) {
     length = scr_dyn_arr_len(value);
-  } else if (value != NULL && value->kind == SCR_DYN_OBJ) {
-    /* ToObject(locales).length: a getter may run and may throw. */
-    const ScrDyn *entry = scr_dyn_obj_get(value, "length", sizeof "length" - 1);
-    if (scr_exc_pending()) return NULL;
-    if (entry != NULL && entry->kind == SCR_DYN_NUM) length = entry->v.num;
+  } else if (value != NULL && (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_PROXY)) {
+    /* ToObject(locales).length is an ordinary property read: a getter or a
+     * proxy trap runs (its side effects happen there), and its exception
+     * propagates. The raw slot read would bypass both. */
+    ScrDyn *entry = scr_dyn_obj_read(value, "length", sizeof "length" - 1);
+    if (entry == NULL) return NULL;
+    if (entry->kind == SCR_DYN_NUM) length = entry->v.num;
+    scr_dyn_release(entry);
   }
   if (length > 0) {
     scr_intl_refuse("a locales list computed at run time");

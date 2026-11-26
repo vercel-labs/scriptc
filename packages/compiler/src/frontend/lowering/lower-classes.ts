@@ -2552,9 +2552,16 @@ export function collectClassShapeInner(
           // Constructor parameter decorators apply with the class decorations
           // (`__param(i, d)` entries on the class's `__decorate`), even when
           // no class decorator exists.
-          const constructor = decl.members.nodes.find(
-            (member): member is ts.ConstructorDeclaration => ts.isConstructorDeclaration(member),
-          );
+          // Overload signatures precede the implementation; the parameter
+          // decorators live on the implementation (with a body).
+          const constructor =
+            decl.members.nodes.find(
+              (member): member is ts.ConstructorDeclaration =>
+                ts.isConstructorDeclaration(member) && member.body !== undefined,
+            ) ??
+            decl.members.nodes.find((member): member is ts.ConstructorDeclaration =>
+              ts.isConstructorDeclaration(member),
+            );
           if (constructor !== undefined)
             legacyCtorParameters.push(...parameterDecoratorsOf(constructor));
         }
@@ -7062,20 +7069,69 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
                 : 'property decorators that return a descriptor under "experimentalDecorators" in a project with constructor-assigned fields (useDefineForClassFields: false; the field write would bypass the descriptor)',
             );
         }
+        // tsc passes the accumulated result (initially undefined) as the
+        // decorator's third argument and keeps a truthy return; after the
+        // reverse applications a truthy result is defined on the target.
+        let resultId: string | null = null;
         for (let i = callees.length - 1; i >= 0; i--) {
           const d = callees[i]!.decorator;
           const dLoc = locOf(d);
+          const previous: IrExpr =
+            resultId === null
+              ? dynUndefinedExpr(dLoc)
+              : { kind: "varRef", localId: resultId, type: DYN, loc: dLoc };
+          const result = lowerer.declareHiddenLocal("legacyres", DYN);
           stmts.push({
-            kind: "exprStmt",
-            expr: {
-              kind: "dynCall",
-              callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
-              calleeName: "decorator",
-              args: [target(dLoc), key(dLoc), dynUndefinedExpr(dLoc)],
+            kind: "varDecl",
+            localId: result.id,
+            init: {
+              kind: "logical",
+              op: "||",
+              left: {
+                kind: "dynCall",
+                callee: { kind: "varRef", localId: callees[i]!.localId, type: DYN, loc: dLoc },
+                calleeName: "decorator",
+                args: [target(dLoc), key(dLoc), previous],
+                type: DYN,
+                loc: dLoc,
+              },
+              right: previous,
               type: DYN,
               loc: dLoc,
             },
             loc: dLoc,
+          });
+          resultId = result.id;
+        }
+        if (resultId !== null) {
+          stmts.push({
+            kind: "if",
+            cond: {
+              kind: "dynTest",
+              test: "truthy",
+              value: { kind: "varRef", localId: resultId, type: DYN, loc: at },
+              type: BOOL,
+              loc: at,
+            },
+            then: [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "dyn.defineProperty",
+                  args: [
+                    target(at),
+                    key(at),
+                    { kind: "varRef", localId: resultId, type: DYN, loc: at },
+                  ],
+                  type: DYN,
+                  loc: at,
+                },
+                loc: at,
+              },
+            ],
+            else_: null,
+            loc: at,
           });
         }
       }

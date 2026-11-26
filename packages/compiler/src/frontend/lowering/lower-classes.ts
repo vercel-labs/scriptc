@@ -1221,8 +1221,12 @@ export interface LegacyParameterDecoration {
  * lives in `ClassInfo.prototypeOriginals`); a PROPERTY gets `undefined` as
  * its descriptor. `name` is the declared string key. */
 export interface LegacyMemberDecoration {
-  kind: "method" | "property";
-  member: ts.MethodDeclaration | ts.PropertyDeclaration;
+  kind: "method" | "property" | "accessor";
+  member:
+    | ts.MethodDeclaration
+    | ts.PropertyDeclaration
+    | ts.GetAccessorDeclaration
+    | ts.SetAccessorDeclaration;
   decorators: ts.Decorator[];
   name: string;
   static: boolean;
@@ -2616,7 +2620,10 @@ export function collectClassShapeInner(
             const staticMember =
               ts.getModifiers(member)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true;
             const literalName =
-              (ts.isMethodDeclaration(member) || ts.isPropertyDeclaration(member)) &&
+              (ts.isMethodDeclaration(member) ||
+                ts.isPropertyDeclaration(member) ||
+                ts.isGetAccessorDeclaration(member) ||
+                ts.isSetAccessorDeclaration(member)) &&
               (ts.isIdentifier(member.name) ||
                 ts.isStringLiteral(member.name) ||
                 ts.isNumericLiteral(member.name));
@@ -2642,6 +2649,21 @@ export function collectClassShapeInner(
                 parameters: [],
               };
               (staticMember ? legacyStaticMembers : legacyInstanceMembers).push(entry);
+              continue;
+            }
+            if (
+              (ts.isGetAccessorDeclaration(member) || ts.isSetAccessorDeclaration(member)) &&
+              !staticMember &&
+              literalName
+            ) {
+              legacyInstanceMembers.push({
+                kind: "accessor",
+                member,
+                decorators,
+                name: (member.name as ts.Identifier | ts.StringLiteral | ts.NumericLiteral).text,
+                static: false,
+                parameters: [],
+              });
               continue;
             }
             const at = dec ?? parameters[0]!.decorators[0]!;
@@ -6855,6 +6877,33 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
       }
       return prototypeLocal;
     };
+    let accessorProtoLocal: string | null = null;
+    const accessorTarget = (at: SrcLoc): string => {
+      if (accessorProtoLocal === null) {
+        const view = reflectClassPrototype(
+          lowerer,
+          info,
+          loc,
+          classValueRef(lowerer, info, info.decl!),
+        );
+        if (view === null) {
+          lowerer.unsupported(
+            "SC1090",
+            members[0]!.decorators[0]!,
+            'accessor decorators under "experimentalDecorators" (this class has no reflectable prototype to decorate)',
+          );
+        }
+        const local = lowerer.declareHiddenLocal("legacyaccessor", DYN);
+        stmts.push({
+          kind: "varDecl",
+          localId: local.id,
+          init: lowerer.coerceToExpected(view, DYN),
+          loc: at,
+        });
+        accessorProtoLocal = local.id;
+      }
+      return accessorProtoLocal;
+    };
     let classLocal: string | null = null;
     const classTarget = (at: SrcLoc): string => {
       if (classLocal === null) {
@@ -6871,7 +6920,12 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
     };
     for (const entry of members) {
       const at = locOf(entry.member);
-      const targetId = entry.static ? classTarget(at) : prototypeTarget(at);
+      const targetId =
+        entry.kind === "accessor"
+          ? accessorTarget(at)
+          : entry.static
+            ? classTarget(at)
+            : prototypeTarget(at);
       const target = (dLoc: SrcLoc): IrExpr => ({
         kind: "varRef",
         localId: targetId,
@@ -6946,8 +7000,8 @@ function lowerLegacyMemberDecorations(lowerer: Lowerer, info: ClassInfo): IrStmt
             loc: at,
           });
         }
-      } else if (entry.kind === "method") {
-        if (info.prototypeOriginals?.get(entry.name) === undefined) {
+      } else if (entry.kind === "method" || entry.kind === "accessor") {
+        if (entry.kind === "method" && info.prototypeOriginals?.get(entry.name) === undefined) {
           lowerer.unsupported(
             "SC1090",
             entry.decorators[0] ?? entry.parameters[0]!.decorators[0]!,

@@ -103,34 +103,50 @@ function memoryStat(stat: string, field: string): number {
   return match === null ? 0 : Number(match[1]);
 }
 
-/** The page cache the process's cgroup can drop on demand: its inactive file
- * pages, less those still dirty or under writeback. 0 when the process is in
- * no memory cgroup the files describe. */
-export function cgroupReclaimableBytes(read: MemoryFileReader = readMemoryFile): number {
-  const cgroups = read("/proc/self/cgroup");
-  if (cgroups === undefined) return 0;
-  const v2 = /^0::\/(.*)$/m.exec(cgroups);
-  if (v2 !== null) {
-    const stat = read(`/sys/fs/cgroup/${v2[1]}/memory.stat`) ?? read("/sys/fs/cgroup/memory.stat");
-    if (stat === undefined) return 0;
-    return Math.max(
-      0,
-      memoryStat(stat, "inactive_file") -
-        memoryStat(stat, "file_dirty") -
-        memoryStat(stat, "file_writeback"),
-    );
-  }
-  const v1 = /^\d+:[^:\n]*\bmemory\b[^:\n]*:\/(.*)$/m.exec(cgroups);
-  if (v1 === null) return 0;
+/** The reclaimable cache a cgroup v2 memory.stat reports, or undefined
+ * when the cgroup's file cannot be read. */
+function cgroupV2Reclaimable(read: MemoryFileReader, path: string): number | undefined {
+  const stat = read(`/sys/fs/cgroup/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory.stat");
+  if (stat === undefined) return undefined;
+  return Math.max(
+    0,
+    memoryStat(stat, "inactive_file") -
+      memoryStat(stat, "file_dirty") -
+      memoryStat(stat, "file_writeback"),
+  );
+}
+
+/** The reclaimable cache a cgroup v1 memory controller reports, or undefined
+ * when its file cannot be read. */
+function cgroupV1Reclaimable(read: MemoryFileReader, path: string): number | undefined {
   const stat =
-    read(`/sys/fs/cgroup/memory/${v1[1]}/memory.stat`) ?? read("/sys/fs/cgroup/memory/memory.stat");
-  if (stat === undefined) return 0;
+    read(`/sys/fs/cgroup/memory/${path}/memory.stat`) ?? read("/sys/fs/cgroup/memory/memory.stat");
+  if (stat === undefined) return undefined;
   return Math.max(
     0,
     memoryStat(stat, "total_inactive_file") -
       memoryStat(stat, "total_dirty") -
       memoryStat(stat, "total_writeback"),
   );
+}
+
+/** The page cache the process's cgroup can drop on demand: its inactive file
+ * pages, less those still dirty or under writeback. A v1 memory controller
+ * named in /proc/self/cgroup is the one that accounts the process's memory,
+ * even on a hybrid host that also lists the v2 hierarchy (`0::`); otherwise
+ * the v2 hierarchy does. 0 when the process is in no memory cgroup the files
+ * describe. */
+export function cgroupReclaimableBytes(read: MemoryFileReader = readMemoryFile): number {
+  const cgroups = read("/proc/self/cgroup");
+  if (cgroups === undefined) return 0;
+  const v1 = /^\d+:[^:\n]*\bmemory\b[^:\n]*:\/(.*)$/m.exec(cgroups);
+  const v2 = /^0::\/(.*)$/m.exec(cgroups);
+  if (v1 !== null) {
+    const reclaimable = cgroupV1Reclaimable(read, v1[1]!);
+    if (reclaimable !== undefined) return reclaimable;
+  }
+  if (v2 !== null) return cgroupV2Reclaimable(read, v2[1]!) ?? 0;
+  return 0;
 }
 
 /** What nativeCodegenAvailableBytes reads on Linux, given in tests. */

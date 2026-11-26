@@ -201,6 +201,19 @@ test("reads the reclaimable page cache from the process's memory cgroup", () => 
     "/sys/fs/cgroup/memory/build/memory.stat": `total_inactive_file ${3000 * MB}\ntotal_dirty ${500 * MB}\ntotal_writeback 0\n`,
   });
   expect(cgroupReclaimableBytes(v1)).toBe(2500 * MB);
+  // A hybrid host lists the v2 hierarchy (0::) beside v1 controllers; its
+  // memory is accounted by the v1 memory controller, whose stats count.
+  const hybrid = files({
+    "/proc/self/cgroup": "12:memory:/build\n4:cpu,cpuacct:/build\n0::/build\n",
+    "/sys/fs/cgroup/memory/build/memory.stat": `total_inactive_file ${3000 * MB}\ntotal_dirty ${500 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(hybrid)).toBe(2500 * MB);
+  // A v1 memory controller whose stats cannot be read leaves the v2 hierarchy.
+  const unreadableV1 = files({
+    "/proc/self/cgroup": "12:memory:/build\n0::/build\n",
+    "/sys/fs/cgroup/build/memory.stat": `inactive_file ${800 * MB}\n`,
+  });
+  expect(cgroupReclaimableBytes(unreadableV1)).toBe(800 * MB);
   // No cgroup, or files that cannot be read, reclaim nothing.
   expect(cgroupReclaimableBytes(files({}))).toBe(0);
   expect(cgroupReclaimableBytes(files({ "/proc/self/cgroup": "0::/x\n" }))).toBe(0);

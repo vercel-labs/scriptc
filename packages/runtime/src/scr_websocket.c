@@ -53,6 +53,11 @@
  * peer cannot make the client buffer without bound. */
 #define SCR_WS_MAX_PAYLOAD ((size_t)128 * 1024 * 1024)
 #define SCR_WS_MAX_FRAGMENTS 131072
+/* How much automatic pong output may wait unsent: a peer that pings faster
+ * than it reads the replies would otherwise grow the socket's write queue
+ * without bound. Past this much backlog a ping is not answered, and the
+ * replies resume as the queue drains. */
+#define SCR_WS_PONG_BACKLOG ((double)(64 * 1024))
 
 enum {
   SCR_WS_CONNECTING = 0,
@@ -560,7 +565,13 @@ static void scr_ws_handle_frame(ScrWs *ws, int fin, int opcode, const unsigned c
                                 size_t length) {
   switch (opcode) {
   case SCR_WS_OP_PING:
-    if (ws->sock != NULL && !ws->close_sent) scr_ws_send_frame(ws, SCR_WS_OP_PONG, payload, length);
+    /* The replies are the client's own writes: answering every ping while
+     * the peer refuses to read them would queue that much output in this
+     * process. Past the backlog the ping goes unanswered, and answers
+     * resume once the queue has drained. */
+    if (ws->sock != NULL && !ws->close_sent &&
+        scr_net_sock_writable_length(ws->sock) < SCR_WS_PONG_BACKLOG)
+      scr_ws_send_frame(ws, SCR_WS_OP_PONG, payload, length);
     return;
   case SCR_WS_OP_PONG:
     return;

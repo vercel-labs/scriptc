@@ -6,9 +6,14 @@ import * as http2 from "node:http2";
 import * as net from "node:net";
 
 const server = http2.createServer((req: http2.Http2ServerRequest, res: http2.Http2ServerResponse) => {
-  console.log("dispatched", req.method, JSON.stringify(req.url));
-  req.resume();
-  req.on("end", () => res.end("ok"));
+  console.log("dispatched", req.method, req.url);
+  // Node marks the request aborted before it completes it, so the handler
+  // never mistakes a body that cannot arrive for a clean end.
+  req.on("aborted", () => console.log("aborted"));
+  req.on("end", () => {
+    console.log("end", req.aborted === true, req.complete);
+    res.end("ok");
+  });
 });
 server.on("stream", (stream: http2.ServerHttp2Stream) => {
   stream.on("error", (e) => console.log("stream error", (e as { code?: string }).code));

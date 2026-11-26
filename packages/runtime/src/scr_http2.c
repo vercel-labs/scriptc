@@ -3746,11 +3746,15 @@ static void scr_h2_reject_protocol_error(ScrH2Session *s, ScrH2Stream *st, int32
  * a listener sees ERR_HTTP2_STREAM_ERROR. A stream nobody listens on stays
  * silent (Node's session keeps an internal listener; ours must not treat
  * the rejection as an unhandled 'error'). */
-static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id,
-                                       bool end_stream) {
+static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t stream_id) {
   scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
   st->rst_code = 1;
   st->destroyed = true;
+  /* Node's order on the compat side: the request is marked aborted (its
+   * 'aborted' event fires and its signal aborts) BEFORE the raw stream
+   * reports the protocol error, and both before 'end' — the handler of a
+   * request whose body never arrived never sees a clean success. */
+  scr_h2_stream_begin_close(st);
   if (st->err_ls.n > 0) {
     /* Node's ERR_HTTP2_STREAM_ERROR message for the reset code. */
     const char *name = scr_h2_code_name(1);
@@ -3763,10 +3767,9 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
     /* reported above: the settle below must not raise it a second time */
     st->suppress_rst_error = true;
   }
-  /* Node completes the request when it rejects the block — its compat
-   * request's 'end' runs with no trailers (nghttp2 closes the stream under
-   * it), so the handler never hangs waiting for a body that can't arrive. */
-  (void)end_stream;
+  /* Then it completes the request: the compat request's 'end' runs with no
+   * trailers (nghttp2 closes the stream under it), so a handler never hangs
+   * waiting for a body that cannot arrive. */
   if (!st->end_recv) {
     st->end_recv = true;
     st->end_emitted = true;
@@ -3776,7 +3779,6 @@ static void scr_h2_reject_stream_error(ScrH2Session *s, ScrH2Stream *st, int32_t
       scr_h2_stream_maybe_emit_end(st);
     }
   }
-  scr_h2_stream_begin_close(st);
   scr_h2_stream_settle(st);
 }
 
@@ -3800,14 +3802,14 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
          * peer from appending header fields to one request without bound:
          * every accepted block would land in the request's trailer
          * storage, and nothing else limits how many arrive. */
-        scr_h2_reject_stream_error(s, st, stream_id, end_stream);
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       if (st->got_trailers || st->end_recv) {
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
-        scr_h2_reject_stream_error(s, st, stream_id, end_stream);
+        scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
       st->got_trailers = true;

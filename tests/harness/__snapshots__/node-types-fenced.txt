@@ -1,15 +1,15 @@
-fenced.ts:27:15 - error SC2020: 'Response.type' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:27:3 - error SC2020: 'Response.blob' is typed by @types/node but has no scriptc lowering yet
 
   26 |   const response = await fetch(url);
-  27 |   console.log(response.type);
-     |               ^~~~~~~~~~~~~
+  27 |   response.blob();
+     |   ^~~~~~~~~~~~~
   28 |   response.formData();
 
-  hint: the member is outside the native static handle projection
+  hint: the native fetch runtime does not implement this Response operation
 
 fenced.ts:28:3 - error SC2020: 'Response.formData' is typed by @types/node but has no scriptc lowering yet
 
-  27 |   console.log(response.type);
+  27 |   response.blob();
   28 |   response.formData();
      |   ^~~~~~~~~~~~~~~~~
   29 | }

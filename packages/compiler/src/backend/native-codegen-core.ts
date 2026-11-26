@@ -1,5 +1,5 @@
 /** Native codegen helper protocol shared by compiler hosts. */
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 
 import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
@@ -85,6 +85,18 @@ export interface NativeCodegenJobsOptions {
   unoptimized?: boolean;
 }
 
+/** The memory a build measures its lanes against. macOS counts only free and
+ * inactive pages as available, which on a Mac that has been up for a while is
+ * a small share of its RAM even when the rest is page cache the kernel
+ * reclaims on demand, so physical memory is the floor there. */
+export function nativeCodegenAvailableBytes(
+  measuredBytes: number,
+  totalBytes: number = totalmem(),
+  platform: NodeJS.Platform = process.platform,
+): number {
+  return platform === "darwin" ? Math.max(measuredBytes, totalBytes) : measuredBytes;
+}
+
 /** The partitions one build compiles at once: its partitions, the host's
  * hardware threads, or as many lanes as the memory available for code
  * generation can give that much peak each, whichever is fewest. A module
@@ -104,8 +116,13 @@ export function nativeCodegenJobs(
       // A host without the API measures nothing; assume a small one.
     }
     if (availableBytes === undefined) availableBytes = 8 * 1024 * 1024 * 1024;
+    else availableBytes = nativeCodegenAvailableBytes(availableBytes);
   }
-  const partitionBytes = Math.max(1, llvmBytes / Math.min(partitions, parallelism));
+  // Each lane parses and optimizes one partition, so its peak is a multiple
+  // of that partition's bytes, not of a thread's share of the module: a host
+  // that divides a large module into more partitions than it has threads
+  // still gives every lane one partition at a time.
+  const partitionBytes = Math.max(1, llvmBytes / partitions);
   const laneBytes = Math.max(
     partitionBytes *
       (options.unoptimized === true

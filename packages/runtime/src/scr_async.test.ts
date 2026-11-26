@@ -144,6 +144,15 @@ test("a timer armed during a turn runs after that turn's immediates", async () =
   expect(withoutContextWarning(result.stderr)).toBe("");
 });
 
+// The sequence is the heap's FIFO tiebreak and the key a turn's eligibility
+// snapshot compares against: it must keep counting past 2^32 arms, where a
+// 32-bit counter (unsigned long on Windows) wraps and strands a live timer.
+test("the timer sequence orders past the 32-bit boundary", async () => {
+  const result = await execFileAsync(bin, ["timerwrap"]);
+  expect(result.stdout).toBe("timer sequence orders past the 32-bit boundary\n");
+  expect(withoutContextWarning(result.stderr)).toBe("");
+});
+
 // The queue's capacity is the white-box part: a program sees it only as
 // memory that grows with every immediate it ever queued, and as a
 // clearImmediate that gets slower with them.

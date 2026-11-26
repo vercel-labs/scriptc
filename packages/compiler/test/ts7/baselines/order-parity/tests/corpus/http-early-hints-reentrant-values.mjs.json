@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/http-early-hints-reentrant-values.mjs"
+ ],
+ "diags": []
+}

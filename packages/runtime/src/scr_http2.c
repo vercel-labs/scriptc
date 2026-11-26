@@ -4049,6 +4049,49 @@ static bool scr_h2_request_block_valid(const ScrH2Session *s, const ScrH2Headers
   return authority != NULL || host;
 }
 
+/* A received trailer block: no pseudo-header field at all, and the regular
+ * fields follow the same nghttp2 rules as a request block's. Node answers a
+ * block that breaks them with RST_STREAM(PROTOCOL_ERROR); the request (or
+ * response) still completes, so a handler never loses the message, and the
+ * normalized trailers it sees are empty. */
+static bool scr_h2_trailer_block_valid(const ScrH2Headers *h) {
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    if (name->len == 0 || name->data[0] == ':') return false;
+    if (!scr_h2_regular_field_valid(name, h->values[i])) return false;
+  }
+  return true;
+}
+
+/* A received response block (the response itself or an informational one):
+ * exactly one :status — three digits, 100 or more — and no other
+ * pseudo-header, with the regular fields under the same rules. nghttp2
+ * validates every received block, so the client rejects a malformed one
+ * with RST_STREAM(PROTOCOL_ERROR) and reports ERR_HTTP2_STREAM_ERROR
+ * instead of surfacing a response. */
+static bool scr_h2_response_block_valid(const ScrH2Headers *h) {
+  const ScrStr *status = NULL;
+  for (size_t i = 0; i < h->n; i++) {
+    const ScrStr *name = h->names[i];
+    if (name->len == 0) return false;
+    if (name->data[0] != ':') {
+      if (!scr_h2_regular_field_valid(name, h->values[i])) return false;
+      continue;
+    }
+    if (!scr_h2_name_is(name, ":status")) return false;
+    if (status != NULL) return false;
+    status = h->values[i];
+  }
+  if (status == NULL || status->len != 3) return false;
+  unsigned v = 0;
+  for (size_t i = 0; i < 3; i++) {
+    char c = status->data[i];
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + (unsigned)(c - '0');
+  }
+  return v >= 100;
+}
+
 /* Node's test for the Expect header: "100-continue", ASCII-insensitive. */
 static bool scr_h2_expects_continue(const ScrStr *v) {
   static const char want[] = "100-continue";
@@ -4147,6 +4190,10 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
         /* the trailer block already arrived: further HEADERS on the stream
          * are a protocol error, and accepting them would keep appending to
          * the request's trailer storage while the response is pending. */
+        scr_h2_reject_stream_error(s, st, stream_id);
+        return;
+      }
+      if (!scr_h2_trailer_block_valid(h)) {
         scr_h2_reject_stream_error(s, st, stream_id);
         return;
       }
@@ -4285,6 +4332,20 @@ static void scr_h2_dispatch_headers(ScrH2Session *s, int32_t stream_id, uint8_t 
   /* client: response headers on a stream this session opened */
   ScrH2Stream *st = scr_h2_find_stream(s, stream_id);
   if (!st || st->destroyed) return;
+  /* Every received block is validated before it reaches anything, as
+   * nghttp2 does: the response (and each informational block) needs one
+   * three-digit :status and no other pseudo-header, a trailer block needs
+   * none, and both follow the regular field rules. A malformed block
+   * resets the stream; the stream then reports ERR_HTTP2_STREAM_ERROR. */
+  if (!(st->got_response ? scr_h2_trailer_block_valid(h)
+                         : scr_h2_response_block_valid(h))) {
+    scr_h2_send_rst(s, stream_id, 1 /* NGHTTP2_PROTOCOL_ERROR */);
+    st->rst_code = 1;
+    st->destroyed = true;
+    scr_h2_stream_begin_close(st);
+    scr_h2_stream_settle(st);
+    return;
+  }
   int block_status = scr_h2_headers_status(h);
   if (!st->got_response && block_status >= 100 && block_status < 200) {
     /* An informational response — never END_STREAM, never the response.

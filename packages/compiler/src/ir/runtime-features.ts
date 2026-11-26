@@ -2324,9 +2324,11 @@ const RUNTIME_FEATURE_RULES = {
   webStreams: rule({ prefixes: ["webstream."] }),
   /** A program that builds a Blob or File can hand one to fetch: selects
    * scr_fetch.c's SCR_WEB_BODIES build, which sends the blob's bytes and
-   * type as Node does. Every other program keeps the default fetch unit,
-   * byte for byte. */
-  webBodies: rule({ prefixes: ["blob."] }),
+   * type as Node does. An fs.openAsBlob result is such a Blob, and handing
+   * it to fetch straight from the promise is the ordinary use, so its call
+   * selects the build too. Every other program keeps the default fetch
+   * unit, byte for byte. */
+  webBodies: rule({ prefixes: ["blob."], fns: ["fs.openAsBlob"] }),
   /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
    * A WritableStream controller's signal is one (scr_webstreams.c), and
    * util.transferableAbortSignal/Controller are the util face of the same

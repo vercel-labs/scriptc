@@ -19,3 +19,28 @@ const retyped = c.map((x) => [x])
 console.log("retyped", retyped.length, Object.getPrototypeOf(retyped) === customProto, (Object.getPrototypeOf(retyped) as any).marker === true)
 const sliced = c.slice()
 console.log("slice", sliced.length, Object.getPrototypeOf(sliced) === customProto, (Object.getPrototypeOf(sliced) as any).marker === true)
+
+// The same shape when the replaced prototype still inherits from the class's
+// own prototype: Get(instance, "constructor") then names the class, so Node's
+// species is the class again, and both the plain and retyped results inherit
+// the constructor-installed prototype.
+let protoInherits: any
+class D extends Array<number> {
+  constructor(len: number = 0) {
+    super(len)
+    Object.setPrototypeOf(this, protoInherits)
+  }
+}
+protoInherits = Object.create(D.prototype)
+protoInherits.marker2 = true
+const d = new D()
+d.push(1)
+const dMap = d.map((x) => x)
+const dRetyped = d.map((x) => [x])
+console.log(
+  "inherits",
+  dMap.length,
+  Object.getPrototypeOf(dMap) === protoInherits,
+  Object.getPrototypeOf(dRetyped) === protoInherits,
+  (Object.getPrototypeOf(dRetyped) as any).marker2 === true,
+)

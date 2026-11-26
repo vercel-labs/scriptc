@@ -2125,20 +2125,59 @@ static ScrArr *scr_arr_species_move(ScrArr *species, ScrArr *result, bool set_le
 static void scr_arr_retype_empty(ScrArr *a, uint8_t elem, const ScrArrOps *ops) {
   uint32_t len = a->len;
   ScrArrExt *x = scr_arr_ext_of(a);
-  const ScrArrClass *cls = x->cls;
-  scr_arr_free_parts(a);
+  const ScrArrClass *cls = x ? x->cls : NULL;
+  const uint8_t old_elem = a->elem;
+  const ScrArrOps *old_ops = scr_arr_ops(a);
+  /* The species result keeps the state its constructor installed: a
+   * replaced prototype especially, which Node's retyped result inherits
+   * from the constructor call. Only the element storage is replaced. */
+  if (x != NULL) {
+    /* Out-of-line named properties and sparse slots carry the OLD element
+     * kind's payloads; release them before the kind changes and start the
+     * new storage with none. */
+    for (size_t i = 0; i < x->sparse_len; i++) {
+      if (x->sparse[i].state == SCR_ARR_VALUE)
+        scr_elem_release_with(old_elem, old_ops, x->sparse[i].slot);
+      else if (x->sparse[i].state == SCR_ARR_FOREIGN)
+        scr_dyn_release(scr_slot_to_ptr(x->sparse[i].slot));
+    }
+    scr_arr_sparse_free(x->sparse);
+    x->sparse = NULL;
+    x->sparse_len = x->sparse_cap = 0;
+    for (size_t i = 0; i < x->prop_len; i++) {
+      if (x->props[i].state == SCR_ARR_VALUE)
+        scr_elem_release_with(old_elem, old_ops, x->props[i].slot);
+      else if (x->props[i].state == SCR_ARR_FOREIGN)
+        scr_dyn_release(scr_slot_to_ptr(x->props[i].slot));
+      free(x->props[i].key);
+    }
+    free(x->props);
+    x->props = NULL;
+    x->prop_len = x->prop_cap = 0;
+    x->foreign = false;
+    /* The dense slots are holes (the caller checked), so freeing the
+     * allocation releases no payload; the extension's pointer word is
+     * re-created around the same extension below. */
+    if (!scr_arr_inline(a) && a->data != NULL) scr_mem_free(scr_arr_alloc_start(a));
+  } else if (!scr_arr_inline(a) && a->data != NULL) {
+    scr_mem_free(scr_arr_alloc_start(a));
+  }
   a->data = NULL;
   a->len = a->cap = a->filled = 0;
   a->elem = elem;
   uint32_t id = ops ? scr_arr_ops_id(ops) : 0;
-  a->spare = (uint16_t)(id << SCR_ARR_OPS_SHIFT);
-  x = scr_arr_ext(a);
-  if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
-  x->cls = cls;
-  /* The new element type decides whether its rows carry the collector
-   * header, exactly as scr_arr_subclass_init does for a fresh instance: a
-   * retyped subclass of an array-of-arrays keeps the guard. */
-  x->untraced_rows = a->cyc && elem == SCR_ELEM_ARR && ops == NULL;
+  a->spare = (uint16_t)((id << SCR_ARR_OPS_SHIFT) | (x != NULL ? SCR_ARR_HAS_EXT : 0));
+  if (x != NULL) {
+    char *start = scr_mem_alloc(SCR_ARR_EXT_PREFIX);
+    if (!start) scr_arr_oom();
+    memcpy(start, &x, sizeof x);
+    a->data = (uint64_t *)(start + SCR_ARR_EXT_PREFIX);
+    if (id == SCR_ARR_OPS_OVERFLOW) x->ops = ops;
+    x->cls = cls;
+    /* The new element type decides whether its rows carry the collector
+     * header, exactly as scr_arr_subclass_init does for a fresh instance. */
+    x->untraced_rows = a->cyc && elem == SCR_ELEM_ARR && ops == NULL;
+  }
   scr_arr_set_len(a, (double)len);
 }
 
@@ -2159,7 +2198,12 @@ static bool scr_arr_species_is_class(ScrArr *recv, const ScrArrClass *cls) {
       break;
     ScrDyn *ctor = scr_dyn_obj_get(cur, "constructor", 11); /* borrowed */
     if (ctor != NULL) {
-      const char *name = scr_dyn_class_name(ctor);
+      /* The constructor's own class name: scr_dyn_class_name walks an
+       * object's prototype chain, which a class constructor value does not
+       * carry its name on. A class value is identified by its class object. */
+      const char *name = ctor->kind == SCR_DYN_FUNC && ctor->v.fn.class_obj != NULL
+                             ? ctor->v.fn.name
+                             : NULL;
       same = name != NULL && strcmp(name, cls->name) == 0;
       break;
     }

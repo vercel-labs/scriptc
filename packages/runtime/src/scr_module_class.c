@@ -88,9 +88,9 @@ static void scr_module_class_ensure(void) {
   scr_dyn_handle_class_install(SCR_DYNH_MODULE_CLASS, &scr_module_class_ops, &scr_module_class_kt);
   ScrDyn *prototype = scr_dyn_handle_class_prototype(SCR_DYNH_MODULE_CLASS);
   if (prototype != NULL) {
-    scr_dyn_obj_set(prototype, "require", 7, scr_module_class_method_value("module.require", 1, "require"));
-    scr_dyn_obj_set(prototype, "load", 4, scr_module_class_method_value("module.load", 1, "load"));
-    scr_dyn_obj_set(prototype, "_compile", 8, scr_module_class_method_value("module._compile", 3, "_compile"));
+    scr_dyn_obj_set(prototype, "require", 7, scr_module_class_method_value("module.require", 1, ""));
+    scr_dyn_obj_set(prototype, "load", 4, scr_module_class_method_value("module.load", 1, ""));
+    scr_dyn_obj_set(prototype, "_compile", 8, scr_module_class_method_value("module._compile", 3, ""));
     ScrDyn *parent_get = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_module_class_undefined_member, 0,
                                           "native:module", "get parent");
     ScrDyn *preloading_get = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_module_class_false_member, 0,

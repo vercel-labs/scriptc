@@ -720,7 +720,11 @@ export function lowerNodeModuleProperty(
     const value = lowerCjsExportsObjectValue(lowerer, expr);
     if (value) return value;
   }
-  if (member === "exports" || member === "require") return null;
+  // `module.require(...)` as a CALL keeps its own lowering; the value form
+  // reads the prototype's function, as Node's does.
+  const requireCall =
+    member === "require" && ts.isCallExpression(expr.parent) && expr.parent.expression === expr;
+  if (member === "exports" || (member === "require" && requireCall)) return null;
   let moduleRef = direct
     ? cjsModuleRef(lowerer, expr.expression)
     : lowerer.lowerExpr(expr.expression);
@@ -794,6 +798,22 @@ export function lowerNodeModuleProperty(
       return call("module.loaded", BOOL);
     case "isPreloading":
       return boolLit(false, loc);
+    case "require":
+    case "load":
+    case "_compile": {
+      // Node's prototype members: function values with empty names and
+      // Node's lengths. A compiled program loads no module at run time, so
+      // calling one refuses; reading, typeof, .name/.length and identity
+      // with Module.prototype.<member> answer Node's.
+      const prototype: IrExpr = {
+        kind: "libCall",
+        fn: "module.ctorPrototype",
+        args: [],
+        type: DYN,
+        loc,
+      };
+      return { kind: "dynKeyGet", value: prototype, key: strLit(member, loc), type: DYN, loc };
+    }
     case "parent": {
       if (isAnyTyped(lowerer, expr) || isCjsJsFile(ts.getSourceFileOfNode(expr), lowerer.program)) {
         // The runtime keeps Node's two absent cases apart: the entry is

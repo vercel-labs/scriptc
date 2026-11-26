@@ -2,3 +2,4 @@
   Cache deletion or reloading, metadata writes, `module.paths` mutation, and `require.extensions` are unsupported.
   Read-only access to `module.id`, `filename`, `path`, `paths`, `loaded`, `isPreloading`, `parent`, `children`, `require.main`, and `require.cache` lookup/enumeration compiles.
   The module object is an instance of `node:module`'s `Module`: `instanceof`, `Module.prototype` and `Object.getPrototypeOf(module)` answer as Node's do, while `new Module()` and the prototype's loading members (`require`, `load`, `_compile`) are refused because a compiled program loads no module at run time.
+  The prototype's loading members are readable as values (`typeof module.load`, its empty `name` and Node's `length`, identity with `Module.prototype`), while calling them and `new Module()` are refused.

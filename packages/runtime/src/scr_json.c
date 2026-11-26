@@ -21440,6 +21440,32 @@ ScrDyn *scr_dyn_get_own_property_symbols(const ScrDyn *value) {
   return out;
 }
 
+/* Every own symbol-keyed property's descriptor, as
+ * getOwnPropertySymbols lists them: the class's own symbols (DatabaseSync's
+ * brand) and the ones a program added to the handle, which the descriptor
+ * record must carry too or a descriptor-based copy loses them. */
+static bool scr_json_descriptors_add_symbols(ScrDyn *object, ScrDyn *result) {
+  ScrDyn *symbols = scr_dyn_get_own_property_symbols(object);
+  if (symbols == NULL) return false;
+  for (size_t i = 0; i < symbols->v.arr.len; i++) {
+    ScrDyn *symbol = symbols->v.arr.items[i];
+    ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(object, symbol);
+    if (descriptor == NULL) {
+      scr_dyn_release(symbols);
+      return false;
+    }
+    if (descriptor->kind != SCR_DYN_UNDEF) {
+      /* symbol_key_set borrows the descriptor. */
+      scr_dyn_symbol_key_set(result, symbol, descriptor);
+      scr_dyn_release(descriptor);
+    } else {
+      scr_dyn_release(descriptor);
+    }
+  }
+  scr_dyn_release(symbols);
+  return true;
+}
+
 ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
   if (object->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *view = scr_dyn_typed_ref_materialize(object);
@@ -21469,6 +21495,10 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
         else scr_dyn_release(descriptor);
       }
       scr_dyn_release(names);
+      if (!scr_json_descriptors_add_symbols(object, result)) {
+        scr_dyn_release(result);
+        return NULL;
+      }
       return result;
     }
   }
@@ -21491,25 +21521,7 @@ ScrDyn *scr_dyn_get_own_property_descriptors(ScrDyn *object) {
       else scr_dyn_release(descriptor);
     }
     scr_dyn_release(names);
-    ScrDyn *symbols = scr_dyn_handle_own_symbols(object);
-    if (symbols != NULL) {
-      if (symbols->symbol_keys)
-        for (size_t i = 0; i < symbols->symbol_keys->v.arr.len; i++) {
-          ScrDyn *symbol = symbols->symbol_keys->v.arr.items[i];
-          ScrDyn *descriptor = scr_dyn_get_own_property_descriptor(object, symbol);
-          if (!descriptor) {
-            scr_dyn_release(symbols);
-            scr_dyn_release(result);
-            return NULL;
-          }
-          if (descriptor->kind != SCR_DYN_UNDEF) {
-            /* symbol_key_set borrows the descriptor. */
-            scr_dyn_symbol_key_set(result, symbol, descriptor);
-            scr_dyn_release(descriptor);
-          } else scr_dyn_release(descriptor);
-        }
-      scr_dyn_release(symbols);
-    } else if (scr_exc_pending()) {
+    if (!scr_json_descriptors_add_symbols(object, result)) {
       scr_dyn_release(result);
       return NULL;
     }

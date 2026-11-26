@@ -3958,21 +3958,37 @@ ScrDyn *scr_dyn_get_prototype(ScrDyn *object) {
     ScrDyn *args[] = {target};
     ScrDyn *result = scr_dyn_proxy_call(object, trap, args, 1);
     if (result == NULL) return NULL;
-    if (result->kind != SCR_DYN_OBJ && result->kind != SCR_DYN_NULL) {
+    /* Any object — an array, a function, a handle, a capsule — and null are
+     * the trap's allowed results. */
+    if (!scr_dyn_to_primitive_result_is_object(result) && result->kind != SCR_DYN_NULL) {
       static const char message[] =
           "'getPrototypeOf' on proxy: trap returned neither object nor null";
       scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
       scr_dyn_release(result);
       return NULL;
     }
-    if ((target->kind == SCR_DYN_OBJ || target->kind == SCR_DYN_ARR) && target->non_extensible) {
+    /* A non-extensible target fixes the answer, functions included (their
+     * own property table carries the state a freeze sets). */
+    bool non_extensible = false;
+    if (target->kind == SCR_DYN_OBJ || target->kind == SCR_DYN_ARR) {
+      non_extensible = target->non_extensible;
+    } else if (target->kind == SCR_DYN_FUNC) {
+      ScrDyn *table = scr_dyn_function_properties_existing(target);
+      if (table != NULL) {
+        non_extensible = table->non_extensible;
+        scr_dyn_release(table);
+      }
+    }
+    if (non_extensible) {
       ScrDyn *expected = scr_dyn_get_prototype(target);
       bool same = expected != NULL &&
           (expected->kind == SCR_DYN_NULL ? result->kind == SCR_DYN_NULL : expected == result);
       scr_dyn_release(expected);
       if (!same) {
+        static const char message[] =
+            "'getPrototypeOf' on proxy: proxy target is non-extensible but the trap did not return its actual prototype";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
         scr_dyn_release(result);
-        scr_dyn_proxy_invariant();
         return NULL;
       }
     }

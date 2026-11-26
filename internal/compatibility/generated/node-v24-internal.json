@@ -74901,6 +74901,7 @@
           "tests/corpus/module-compile-cache-require.cjs",
           "tests/corpus/module-compile-cache-values.mjs",
           "tests/corpus/module-create-require-args/main.cjs",
+          "tests/corpus/module-create-require-shapes/main.cjs",
           "tests/corpus/module-find-package-json/main.ts",
           "tests/corpus/module-function-values/main.ts",
           "tests/harness/module-compile-cache.test.ts",
@@ -74948,7 +74949,8 @@
           "tests/corpus/2675-create-require-nested-esm.js",
           "tests/corpus/2932-create-require-program/main.ts",
           "tests/harness/npm-static.test.ts",
-          "tests/corpus/module-create-require-args/main.cjs"
+          "tests/corpus/module-create-require-args/main.cjs",
+          "tests/corpus/module-create-require-shapes/main.cjs"
         ]
       },
       "anchorSource": "exact"

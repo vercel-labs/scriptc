@@ -49,6 +49,17 @@ console.log("explicit", explicit.privateKey.asymmetricKeyType, explicit.publicKe
 const generated = dhPair({ primeLength: 512, generator: 2 });
 console.log("generated", generated.privateKey.asymmetricKeyType, generated.publicKey.asymmetricKeyType);
 
+// A generated prime takes any generator above 1, as OpenSSL's parameter
+// search does; an explicit prime takes 0 and 1 too, and the degenerate
+// public value they make is a one-byte INTEGER, so its DER is stable.
+const generatedThree = dhPair({ primeLength: 512, generator: 3 });
+console.log("generated generator three", generatedThree.publicKey.asymmetricKeyType);
+for (const generator of [0, 1]) {
+  const degenerate = dhPair({ prime: dh.getPrime(), generator });
+  const spki = degenerate.publicKey.export({ type: "spki", format: "der" });
+  console.log("prime generator " + generator, spki.length, spki.subarray(-6).toString("hex"));
+}
+
 // Node's export rules: each half has exactly one type, and JWK is not a DH
 // format.
 const attempt = (label, run) => {
@@ -71,6 +82,9 @@ attempt("empty options", () => dhPair({}));
 attempt("unknown group", () => dhPair({ group: "ffdhe2048" }));
 attempt("group and prime", () => dhPair({ group: "modp5", prime: dh.getPrime() }));
 attempt("group and generator", () => dhPair({ group: "modp5", generator: 2 }));
+attempt("group and primeLength", () => dhPair({ group: "modp5", primeLength: 512 }));
+attempt("prime and primeLength", () => dhPair({ prime: dh.getPrime(), primeLength: 512 }));
+attempt("generator out of range", () => dhPair({ prime: dh.getPrime(), generator: 2147483648 }));
 attempt("prime too small", () => dhPair({ prime: Buffer.from([0x17]), generator: 2 }));
 attempt("bad generator", () => dhPair({ primeLength: 512, generator: 0 }));
 attempt("primeLength too small", () => dhPair({ primeLength: 511, generator: 2 }));

@@ -1903,6 +1903,48 @@ static void sp_set(ScrDyn *obj, const char *key, ScrDyn *value) {
   scr_dyn_obj_set(obj, key, strlen(key), value);
 }
 
+/* A copy of one options value: strings and byte buffers are copied, since
+ * a caller can change them in place afterwards; every other value is
+ * shared on its own reference. */
+static ScrDyn *sp_copy_option(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_STR) return sp_dyn_str(scr_str_new(v->v.str->data, v->v.str->len));
+  if (v->kind == SCR_DYN_BYTES || scr_buffer_storage_is(v)) {
+    ScrBytes *view = scr_bytes_buffer_source((ScrDyn *)v);
+    if (view) {
+      ScrDyn *copy = sp_dyn_buffer(view->data, (size_t)scr_bytes_byte_len(view));
+      scr_bytes_release(view);
+      return copy;
+    }
+  }
+  return scr_dyn_retain((ScrDyn *)v);
+}
+
+/* The options a deferred key generation exports with: the two encoding
+ * objects are copied when the call is made, and hold copies of the fields
+ * the export reads, so a later change to the caller's object (a passphrase
+ * another request writes, say) cannot reach the key. Node reads the
+ * encodings when generateKeyPair is called. */
+static ScrDyn *sp_snapshot_keygen_options(const ScrDyn *options) {
+  ScrDyn *copy = scr_dyn_new_obj();
+  static const char *const keys[] = {"publicKeyEncoding", "privateKeyEncoding"};
+  static const char *const fields[] = {"type", "format", "cipher", "passphrase"};
+  for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+    const ScrDyn *enc = sp_opt(options, keys[i]);
+    if (enc->kind == SCR_DYN_UNDEF) continue;
+    if (!scr_dyn_is_object(enc)) {
+      sp_set(copy, keys[i], scr_dyn_retain((ScrDyn *)enc));
+      continue;
+    }
+    ScrDyn *snapshot = scr_dyn_new_obj();
+    for (size_t f = 0; f < sizeof fields / sizeof fields[0]; f++) {
+      const ScrDyn *value = sp_opt(enc, fields[f]);
+      if (value->kind != SCR_DYN_UNDEF) sp_set(snapshot, fields[f], sp_copy_option(value));
+    }
+    sp_set(copy, keys[i], snapshot);
+  }
+  return copy;
+}
+
 /* base64url without padding of raw bytes. */
 static ScrDyn *sp_b64url(const uint8_t *raw, size_t len) {
   size_t b64_len = 0;
@@ -3960,6 +4002,14 @@ static bool sp_check_dh_int(const ScrDyn *v, const char *name, double *out) {
   return true;
 }
 
+/* Node's ERR_INCOMPATIBLE_OPTION_PAIR for two DH options it takes alone. */
+static void sp_dh_option_pair(const char *first, const char *second) {
+  char message[96];
+  snprintf(message, sizeof message,
+           "Option \"%s\" cannot be used in combination with option \"%s\"", first, second);
+  scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INCOMPATIBLE_OPTION_PAIR", "%s", message);
+}
+
 /* generateKeyPair('dh') options: exactly one of group, prime or
  * primeLength; a generator may accompany prime or primeLength but not a
  * group. False with Node's error pending. */
@@ -3978,11 +4028,11 @@ static bool sp_dh_keygen_options(const ScrDyn *options, SpKeyGen *gen) {
     return false;
   }
   if (has_group && (has_prime || has_len || has_generator)) {
-    const char *other = has_prime ? "prime" : has_len ? "primeLength" : "generator";
-    char message[96];
-    snprintf(message, sizeof message,
-             "Option \"group\" cannot be used in combination with option \"%s\"", other);
-    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INCOMPATIBLE_OPTION_PAIR", "%s", message);
+    sp_dh_option_pair("group", has_prime ? "prime" : has_len ? "primeLength" : "generator");
+    return false;
+  }
+  if (has_prime && has_len) {
+    sp_dh_option_pair("prime", "primeLength");
     return false;
   }
   gen->dh_generator = 2;
@@ -4195,9 +4245,12 @@ static unsigned char *sp_mpi_bytes(const mbedtls_mpi *x, size_t *len) {
   return bytes;
 }
 
+static bool sp_dh_params_bytes(double bits, double generator, unsigned char **params,
+                               size_t *params_len);
+
 /* A fresh DH key from the options: the named group's parameters, the
  * explicit prime and generator, or parameters generated at primeLength
- * with the generator (2, as OpenSSL generates them). */
+ * with the generator, as OpenSSL generates them. */
 static SpKey *sp_dh_keygen(const SpKeyGen *gen) {
   mbedtls_dhm_context ctx;
   mbedtls_dhm_init(&ctx);
@@ -4220,10 +4273,8 @@ static SpKey *sp_dh_keygen(const SpKeyGen *gen) {
       sp_dh_keygen_error("0280007E", "modulus too small");
       ok = false;
     }
-    if (ok && gen->dh_generator < 2) {
-      sp_dh_keygen_error("02800065", "bad generator");
-      ok = false;
-    }
+    /* An explicit prime takes any generator the option check accepted;
+     * Node raises no error for 0 or 1, it generates the degenerate key. */
     if (ok) {
       ok = mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), (mbedtls_mpi_sint)gen->dh_generator) == 0;
       x_size = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
@@ -4235,23 +4286,45 @@ static SpKey *sp_dh_keygen(const SpKeyGen *gen) {
   } else if (gen->dh_prime_len < 512) {
     sp_dh_keygen_error("0280007E", "modulus too small");
     ok = false;
-  } else if (gen->dh_generator != 2) {
+  } else if (gen->dh_generator < 2) {
     sp_dh_keygen_error("02800065", "bad generator");
     ok = false;
   } else {
-    /* mbedTLS's DHM entry points take the parameters; a generated set is a
-     * safe prime of primeLength bits with the generator 2, as OpenSSL
-     * generates. */
-    if (mbedtls_mpi_gen_prime(&ctx.MBEDTLS_PRIVATE(P), (size_t)gen->dh_prime_len,
-                              MBEDTLS_MPI_GEN_PRIME_FLAG_DH, sp_random, NULL) != 0 ||
-        mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), 2) != 0) {
+    /* A generated parameter set is a safe prime of primeLength bits with
+     * the generator, as OpenSSL generates them; the same bytes the worker
+     * pool produces for the callback form. */
+    size_t params_len = 0;
+    unsigned char *params = NULL;
+    if (!sp_dh_params_bytes(gen->dh_prime_len, gen->dh_generator, &params, &params_len) ||
+        mbedtls_mpi_read_binary(&ctx.MBEDTLS_PRIVATE(P), params, params_len) != 0 ||
+        mbedtls_mpi_lset(&ctx.MBEDTLS_PRIVATE(G), (mbedtls_mpi_sint)gen->dh_generator) != 0) {
       sp_unsupported_input();
       ok = false;
     } else {
       x_size = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
     }
+    if (params) {
+      mbedtls_platform_zeroize(params, params_len);
+      free(params);
+    }
   }
-  if (ok && !have_keys) {
+  if (ok && !have_keys && mbedtls_mpi_cmp_int(&ctx.MBEDTLS_PRIVATE(G), 2) < 0) {
+    /* mbedTLS's make_public rejects the degenerate public value (0 or 1)
+     * its range check wants gone; an explicit prime with a generator of 0
+     * or 1 is a request Node fulfils, so the exponent and the value are
+     * made here: X in [2, P-2], GX = G^X mod P. */
+    mbedtls_mpi T;
+    mbedtls_mpi_init(&T);
+    if (mbedtls_mpi_copy(&T, &ctx.MBEDTLS_PRIVATE(P)) != 0 ||
+        mbedtls_mpi_sub_int(&T, &T, 1) != 0 ||
+        mbedtls_mpi_random(&ctx.MBEDTLS_PRIVATE(X), 2, &T, sp_random, NULL) != 0 ||
+        mbedtls_mpi_exp_mod(&ctx.MBEDTLS_PRIVATE(GX), &ctx.MBEDTLS_PRIVATE(G),
+                            &ctx.MBEDTLS_PRIVATE(X), &ctx.MBEDTLS_PRIVATE(P), NULL) != 0) {
+      sp_unsupported_input();
+      ok = false;
+    }
+    mbedtls_mpi_free(&T);
+  } else if (ok && !have_keys) {
     /* mbedtls_dhm_make_public writes exactly the modulus width. */
     size_t public_len = mbedtls_mpi_size(&ctx.MBEDTLS_PRIVATE(P));
     unsigned char *public_bytes = malloc(public_len ? public_len : 1);
@@ -4309,7 +4382,14 @@ static bool sp_dh_params_bytes(double bits, double generator, unsigned char **pa
 
 static SpKey *sp_keygen_run(const SpKeyGen *gen, bool *job_error) {
   *job_error = false;
-  if (gen->kind == SP_GEN_DH) return sp_dh_keygen(gen);
+  if (gen->kind == SP_GEN_DH) {
+    SpKey *k = sp_dh_keygen(gen);
+    /* A DH generation failure (modulus too small, bad generator) reaches
+     * the callback of generateKeyPair, as Node's threadpool job reports
+     * it; the synchronous form throws the same error. */
+    if (!k && scr_exc_pending()) *job_error = true;
+    return k;
+  }
   SpKey *k = sp_key_alloc(true);
   if (gen->kind == SP_GEN_ED25519) {
     k->ed25519 = true;
@@ -7169,7 +7249,7 @@ void scr_crypto_generate_key_pair_async(ScrDyn *type, ScrDyn *options, ScrDyn *c
       SpDhParamsJob *work = calloc(1, sizeof *work);
       if (!work) scr_trap("scriptc: out of memory\n");
       work->gen = gen;
-      work->options = scr_dyn_retain(plain);
+      work->options = sp_snapshot_keygen_options(plain);
       work->callback = scr_dyn_retain(callback);
       scr_dyn_release(plain);
       scr_work_submit(work, sp_dh_params_work, sp_dh_params_after, sp_dh_params_destroy);

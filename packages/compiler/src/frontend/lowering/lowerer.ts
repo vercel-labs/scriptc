@@ -26228,6 +26228,8 @@ export class Lowerer {
     if (module === "module" && member === "builtinModules") return this.builtinModulesValue(loc);
     if (module === "module" && member === "Module")
       return { kind: "libCall", fn: "module.ctor", args: [], type: DYN, loc };
+    if (module === "module" && member === "constants")
+      return { kind: "libCall", fn: "module.compileCacheConstants", args: [], type: DYN, loc };
     if (module === "http" && member === "METHODS")
       return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
     if ((module === "http" || module === "https") && member === "globalAgent")

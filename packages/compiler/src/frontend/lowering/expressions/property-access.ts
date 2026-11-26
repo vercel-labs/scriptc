@@ -191,6 +191,7 @@ import {
 } from "./optional-chains.js";
 import {
   isCjsModuleGlobal,
+  lowerModuleClassStatic,
   lowerNodeModuleProperty,
   lowerRequireMainProperty,
 } from "../lower-node-module.js";
@@ -948,6 +949,8 @@ export function lowerPropertyAccessExpr(
   if (requireMain) return requireMain;
   const moduleProperty = lowerNodeModuleProperty(lowerer, expr);
   if (moduleProperty) return moduleProperty;
+  const moduleStatic = lowerModuleClassStatic(lowerer, expr);
+  if (moduleStatic) return moduleStatic;
   if (
     stdlibGlobalNameOf(lowerer, expr.expression) === "Symbol" &&
     [

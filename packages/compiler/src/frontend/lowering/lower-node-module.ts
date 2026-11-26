@@ -28,6 +28,7 @@ import {
 } from "../../ir/ir.js";
 import { boolLit, numLit, strLit, varRef } from "../../ir/build.js";
 import { withoutParenthesesTypeWrappers } from "../outer-expressions.js";
+import { dynUndefinedExpr } from "../../ir/build.js";
 
 const MODULE_FIELDS = new Set([
   "children",
@@ -963,4 +964,170 @@ export function fenceNodeModuleMutationCall(
     call,
     "module.paths is introspection-only in a fixed compiled graph; configure resolution at build time",
   );
+}
+
+/** True when `expr` evaluates to node:module's `Module` class value: the
+ * member read on the node:module namespace, directly or through a const
+ * binding initialized with it. */
+export function isModuleClassValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const value = withoutParenthesesTypeWrappers(expr);
+  const moduleMember = (e: ts.Expression): boolean => {
+    if (!ts.isPropertyAccessExpression(e) || e.questionDotToken || e.name.text !== "Module")
+      return false;
+    const bi = lowerer.builtinMemberOf(e);
+    return bi !== null && bi.module === "module" && bi.member === "Module";
+  };
+  if (moduleMember(value)) return true;
+  if (!ts.isIdentifier(value)) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(value);
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    decl.initializer === undefined ||
+    !ts.isVariableDeclarationList(decl.parent) ||
+    (decl.parent.flags & ts.NodeFlags.Const) === 0
+  )
+    return false;
+  return moduleMember(withoutParenthesesTypeWrappers(decl.initializer));
+}
+
+/** A static member of node:module's `Module` class read as a value
+ * (`Module.isBuiltin`, `Module.builtinModules`): the class carries the
+ * module surface as statics, identical to the namespace's exports, so the
+ * read lowers through the same member tables. Null when the class value is
+ * not the receiver or the member has no value lowering (an internal such as
+ * `_cache` stays unrepresented). */
+/** The members node:module's `Module` class carries as statics that the
+ * compiled surface can answer. */
+const MODULE_CLASS_STATIC_NAMES: readonly string[] = [
+  "Module",
+  "builtinModules",
+  "constants",
+  "isBuiltin",
+  "syncBuiltinESMExports",
+  "enableCompileCache",
+  "flushCompileCache",
+  "getCompileCacheDir",
+  "findPackageJSON",
+  "createRequire",
+  "getSourceMapsSupport",
+  "setSourceMapsSupport",
+  "findSourceMap",
+  "SourceMap",
+  "register",
+  "registerHooks",
+  "runMain",
+  "stripTypeScriptTypes",
+];
+
+/** `Module[key]` with a runtime STRING key: the key is evaluated once and
+ * matched against the class's statics the compiled surface answers, so a
+ * computed name reads the same value its own spelling does; any other name
+ * answers undefined, as an object without the property does. Non-string
+ * keys keep the general element-read behavior (Node's ToPropertyKey would
+ * stringify them, which no static needs here). */
+export function lowerModuleClassDynamicStatic(
+  lowerer: Lowerer,
+  expr: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken !== undefined) return null;
+  if (!isModuleClassValue(lowerer, expr.expression)) return null;
+  if (lowerer.foldedStringKeyOf(expr.argumentExpression) !== null) return null;
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr.argumentExpression));
+  if (type === null || type.kind !== "string") return null;
+  const loc = locOf(expr);
+  const keyLocal = lowerer.declareHiddenLocal("%moduleStaticKey", STRING);
+  let chain: IrExpr = dynUndefinedExpr(loc);
+  for (let i = MODULE_CLASS_STATIC_NAMES.length - 1; i >= 0; i--) {
+    const member = MODULE_CLASS_STATIC_NAMES[i]!;
+    const value = lowerer.lowerBuiltinMemberDynValue("module", member, loc);
+    if (value === null) continue;
+    chain = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: varRef(keyLocal.id, STRING, loc),
+        right: { kind: "strLit", value: member, type: STRING, loc },
+        type: { kind: "bool" },
+        loc,
+      },
+      then: lowerer.coerceInto(expr, value, DYN),
+      else_: chain,
+      type: DYN,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: keyLocal.id,
+        init: lowerer.coerceInto(
+          expr.argumentExpression,
+          lowerer.lowerExpr(expr.argumentExpression),
+          STRING,
+        ),
+        loc,
+      },
+    ],
+    result: chain,
+    type: DYN,
+    loc,
+  };
+}
+
+export function lowerModuleClassStatic(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (expr.questionDotToken) return null;
+  if (!isModuleClassValue(lowerer, expr.expression)) return null;
+  return lowerer.lowerBuiltinMemberDynValue("module", expr.name.text, locOf(expr));
+}
+
+/** A call to a static of node:module's `Module` class (`Module.isBuiltin(
+ * "fs")`): the static is the module surface's own value, so the call runs
+ * the same callable the namespace export is. Null when the receiver is not
+ * the class value, the call spreads, or the member has no value lowering. */
+export function lowerModuleClassStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const callee = call.expression;
+  if (call.questionDotToken !== undefined) return null;
+  let member: string | null = null;
+  let receiver: ts.Expression;
+  if (ts.isPropertyAccessExpression(callee) && !callee.questionDotToken) {
+    member = callee.name.text;
+    receiver = callee.expression;
+  } else if (ts.isElementAccessExpression(callee) && callee.questionDotToken === undefined) {
+    member = lowerer.foldedStringKeyOf(callee.argumentExpression);
+    receiver = callee.expression;
+  } else {
+    return null;
+  }
+  if (member === null) return null;
+  if (!isModuleClassValue(lowerer, receiver)) return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const value = lowerer.lowerBuiltinMemberDynValue("module", member, locOf(callee));
+  if (value === null) return null;
+  const loc = locOf(call);
+  const args = call.arguments.nodes.map((arg) =>
+    lowerer.coerceInto(arg, lowerer.lowerExpr(arg), DYN),
+  );
+  const called: IrExpr = {
+    kind: "dynCall",
+    callee: value,
+    calleeName: ts.getTextOfNode(callee),
+    args,
+    type: DYN,
+    loc,
+  };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  return result !== null && result.kind !== "dyn"
+    ? lowerer.coerceToExpected(called, result)
+    : called;
 }

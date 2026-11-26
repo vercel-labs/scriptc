@@ -556,10 +556,12 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
+  export interface StatOptions {
+    bigint?: boolean;
+  }
   /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
    * ENOTDIR) instead of throwing. bigint: true answers BigIntStats. */
-  export interface StatSyncOptions {
-    bigint?: boolean;
+  export interface StatSyncOptions extends StatOptions {
     throwIfNoEntry?: boolean;
   }
   export function statSync(path: string | URL, options?: undefined): Stats;

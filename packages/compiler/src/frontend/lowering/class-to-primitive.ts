@@ -473,6 +473,11 @@ export function classToStringRegistrations(lowerer: Lowerer, loc: SrcLoc): IrStm
   const stmts: IrStmt[] = [];
   for (const info of lowerer.classes.values()) {
     if (info.def.runtime || info.def.abstract) continue;
+    // Only a class whose instances can exist needs its conversion
+    // registered. An exported class value the program never constructs has
+    // no instance, and its conversion method is not a lowered unit: calling
+    // it here would name an undeclared function.
+    if (!lowerer.classCanBeConstructed(info)) continue;
     const plan = classStringMethod(lowerer, info, loc);
     if (!plan) continue;
     const t = { kind: "object" as const, className: info.def.name };

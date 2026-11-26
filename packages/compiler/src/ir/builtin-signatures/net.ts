@@ -51,6 +51,13 @@ export const netSignatures = defineLibFnSignatures({
    * 127.0.0.1 — SEMANTICS.md); the connect callback is once('connect'). */
   "net.createServer": { argTypes: [], result: NETSERVER_T },
   "net.createServerCb": { argTypes: [null], result: NETSERVER_T },
+  /** net.createServer(options[, listener]): Node's ServerOpts over every
+   * accepted socket (allowHalfOpen, pauseOnConnect, noDelay, keepAlive,
+   * keepAliveInitialDelay, highWaterMark, blockList). The record crosses
+   * as a checked-dynamic value; the option ladders throw Node's errors.
+   * MAY THROW. */
+  "net.createServerOpts": { argTypes: [DYN], result: NETSERVER_T },
+  "net.createServerOptsCb": { argTypes: [DYN, null], result: NETSERVER_T },
   "net.listen": { argTypes: [NETSERVER_T, F64], result: VOID },
   /** listen(path[, cb]): a Unix-socket server; the socket file is removed
    * when the server closes. Failures are the async 'error'. */
@@ -314,6 +321,12 @@ export const netSignatures = defineLibFnSignatures({
   /** socket.connect(port[, host][, connectListener]): an idle socket
    * starts the dial net.connect's port form performs (port and host run
    * the validation ladder first); answers the socket. */
+  /** socket.connect() with no arguments throws Node's ERR_MISSING_ARGS at
+   * the call (MAY THROW); socket.connect(path[, connectListener]) dials a
+   * Unix socket from the idle socket. */
+  "net.sockConnectMissing": { argTypes: [NETSOCKET_T], result: VOID },
+  "net.sockConnectPath": { argTypes: [NETSOCKET_T, DYN, DYN, DYN], result: VOID },
+  "net.sockConnectPathCb": { argTypes: [NETSOCKET_T, DYN, DYN, DYN, null], result: VOID },
   "net.sockConnect": { argTypes: [NETSOCKET_T, F64, STRING], result: VOID },
   "net.sockConnectCb": {
     argTypes: [NETSOCKET_T, F64, STRING, { kind: "func", params: [], ret: VOID }],

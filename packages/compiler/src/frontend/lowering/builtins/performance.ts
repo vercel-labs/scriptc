@@ -16,6 +16,7 @@ import {
   type SrcLoc,
   VOID,
   funcOf,
+  isUnitType,
   mapOf,
   typeKey,
 } from "../../../ir/ir.js";
@@ -35,6 +36,8 @@ import {
   uvMetricsShape,
 } from "../../type-mapper.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { nullishBranches } from "../lower-exprs.js";
+import { nullishReadTypeError } from "../primitive-throws.js";
 import { lowerOptionalArgument } from "../optional-arguments.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
@@ -184,62 +187,101 @@ export function lowerPerfHooksCall(
     if (expr.arguments.nodes.length !== 0) {
       lowerer.noLowering("PerformanceEntry toJSON with arguments", expr);
     }
-    const entry = lowerer.lowerExpr(access.expression);
-    if (entry.type.kind !== "record")
-      lowerer.badType(access.expression, lowerer.typeOf(access.expression));
-    const entryT = entry.type;
-    if (perfValueIsResourceTiming(lowerer, access.expression)) {
-      return {
-        kind: "dynFrom",
-        value: perfResourceJson(lowerer, entry, entryT, loc),
-        type: DYN,
-        loc,
-      };
-    }
     // A PerformanceEntry-typed value may be any entry class: answer the
     // resource toJSON for a resource entry and the base one otherwise,
     // exactly as the class's own toJSON would. The receiver is bound once,
     // so a call expression runs once.
-    const local = lowerer.declareHiddenLocal("%perfEntryToJson", entryT);
-    const ref = (): IrExpr => varRef(local.id, entryT, loc);
-    return {
-      kind: "seqExpr",
-      stmts: [{ kind: "varDecl", localId: local.id, init: entry, loc }],
-      result: {
-        kind: "ternary",
-        cond: {
-          kind: "strEq",
-          negated: false,
-          left: {
-            kind: "recordGet",
-            obj: ref(),
-            shapeId: entryT.shapeId,
-            field: "entryType",
-            type: STRING,
-            loc,
-          },
-          right: { kind: "strLit", value: "resource", type: STRING, loc },
-          type: BOOL,
-          loc,
-        },
-        then: {
+    const buildJson = (value: IrExpr, entryT: IrType & { kind: "record" }): IrExpr => {
+      if (perfValueIsResourceTiming(lowerer, access.expression)) {
+        return {
           kind: "dynFrom",
-          value: perfResourceJson(lowerer, ref(), entryT, loc),
+          value: perfResourceJson(lowerer, value, entryT, loc),
           type: DYN,
           loc,
-        },
-        else_: {
-          kind: "dynFrom",
-          value: perfEntryJson(lowerer, ref(), entryT, loc),
+        };
+      }
+      const local = lowerer.declareHiddenLocal("%perfEntryToJson", entryT);
+      const ref = (): IrExpr => varRef(local.id, entryT, loc);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "strEq",
+            negated: false,
+            left: {
+              kind: "recordGet",
+              obj: ref(),
+              shapeId: entryT.shapeId,
+              field: "entryType",
+              type: STRING,
+              loc,
+            },
+            right: { kind: "strLit", value: "resource", type: STRING, loc },
+            type: BOOL,
+            loc,
+          },
+          then: {
+            kind: "dynFrom",
+            value: perfResourceJson(lowerer, ref(), entryT, loc),
+            type: DYN,
+            loc,
+          },
+          else_: {
+            kind: "dynFrom",
+            value: perfEntryJson(lowerer, ref(), entryT, loc),
+            type: DYN,
+            loc,
+          },
           type: DYN,
           loc,
         },
         type: DYN,
         loc,
-      },
-      type: DYN,
-      loc,
+      };
     };
+    const entry = lowerer.lowerExpr(access.expression);
+    if (entry.type.kind === "record") return buildJson(entry, entry.type);
+    // An indexed read of an entry list (`getEntries()[0]`, `entries[0]`)
+    // lowers to the entry beside an absent arm; Node throws its TypeError
+    // when the element is missing, and the entry's own toJSON otherwise.
+    if (entry.type.kind === "union") {
+      const unionType = entry.type;
+      const arms = lowerer.unions.get(unionType.unionId)?.arms ?? [];
+      const present = arms.filter((arm) => !isUnitType(arm));
+      const only = present[0];
+      if (
+        present.length === 1 &&
+        only !== undefined &&
+        only.kind === "record" &&
+        isPerfEntryType(lowerer, only)
+      ) {
+        const unit = arms.some((arm) => arm.kind === "nullT") ? "null" : "undefined";
+        return nullishBranches(
+          lowerer,
+          entry,
+          unionType,
+          arms,
+          DYN,
+          loc,
+          () => nullishReadTypeError(unit, "toJSON", DYN, loc),
+          (stable) =>
+            buildJson(
+              {
+                kind: "unionNarrow",
+                unionId: unionType.unionId,
+                tag: arms.indexOf(only),
+                value: stable,
+                type: only,
+                loc,
+              },
+              only,
+            ),
+        );
+      }
+    }
+    lowerer.badType(access.expression, lowerer.typeOf(access.expression));
   }
   if (
     access.name.text === "toJSON" &&

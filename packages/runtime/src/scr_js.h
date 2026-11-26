@@ -35,6 +35,7 @@
 #define SCR_JS_H
 
 #include "scr_dyn.h"
+#include "scr_jsval_bits.h"
 #include "scr_number.h"
 
 #include <math.h>
@@ -43,22 +44,21 @@
 
 typedef void *ScrJsVal;
 
-#if UINTPTR_MAX > 0xFFFFFFFFu
-#define SCR_JS_IMMEDIATES 1
-#else
-#define SCR_JS_IMMEDIATES 0
-#endif
+/* The encoding itself lives in scr_jsval_bits.h, which scr_json.c includes
+ * too: layout-mode object slots hold jsval words and that unit reads them
+ * without linking a js unit. */
+#define SCR_JS_IMMEDIATES SCR_JSVAL_WORDS
 
 #if SCR_JS_IMMEDIATES
 
-#define SCR_JS_TAG_SHIFT 48
-#define SCR_JS_TAG_SPECIAL UINT64_C(0xFFF9)
-#define SCR_JS_TAG_CELL UINT64_C(0xFFFA)
-#define SCR_JS_TAG_STR UINT64_C(0xFFFB)
-#define SCR_JS_TAG_BIGINT UINT64_C(0xFFFC)
-#define SCR_JS_DOUBLE_LIMIT (SCR_JS_TAG_SPECIAL << SCR_JS_TAG_SHIFT)
-#define SCR_JS_PAYLOAD_MASK ((UINT64_C(1) << SCR_JS_TAG_SHIFT) - 1)
-#define SCR_JS_CANONICAL_NAN UINT64_C(0x7FF8000000000000)
+#define SCR_JS_TAG_SHIFT SCR_JSVAL_TAG_SHIFT
+#define SCR_JS_TAG_SPECIAL SCR_JSVAL_TAG_SPECIAL
+#define SCR_JS_TAG_CELL SCR_JSVAL_TAG_CELL
+#define SCR_JS_TAG_STR SCR_JSVAL_TAG_STR
+#define SCR_JS_TAG_BIGINT SCR_JSVAL_TAG_BIGINT
+#define SCR_JS_DOUBLE_LIMIT SCR_JSVAL_DOUBLE_LIMIT
+#define SCR_JS_PAYLOAD_MASK SCR_JSVAL_PAYLOAD_MASK
+#define SCR_JS_CANONICAL_NAN SCR_JSVAL_CANONICAL_NAN
 #define SCR_JS_UNDEFINED_BITS (SCR_JS_DOUBLE_LIMIT | 0)
 #define SCR_JS_NULL_BITS (SCR_JS_DOUBLE_LIMIT | 1)
 #define SCR_JS_FALSE_BITS (SCR_JS_DOUBLE_LIMIT | 2)
@@ -167,6 +167,13 @@ ScrDyn *scr_js_to_dyn(ScrJsVal v);
 ScrDyn *scr_js_to_dyn_borrow(ScrJsVal v);
 ScrJsVal scr_js_from_str(ScrStr *s);       /* borrows and retains s */
 ScrJsVal scr_js_from_bigint(ScrBigInt *b); /* borrows and retains b */
+
+/* ── layout stores (scr_js_object.c) ────────────────────────────────────
+ * A compiled site writes a layout slot's immediate inline; these entries
+ * take every heap value, keeping the slot's owning reference and the word
+ * it replaced correct. Both borrow `value`. */
+void scr_js_slot_put(ScrJsVal *slot, ScrJsVal value);
+void scr_js_slot_put_dyn(ScrJsVal *slot, ScrDyn *value);
 
 /* ── operators (the dyn.* operators of scr_json.c over jsvals) ──────────
  * Each implements its dyn twin's JS semantics exactly, including

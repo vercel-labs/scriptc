@@ -5,6 +5,7 @@ import { emitWasmModules } from "./wasm-modules.js";
 import { weakTraceTable } from "./alloc.js";
 import { DYN_ABSENT, type LlEmitter, ffiCallbackDummyLl, llStrBytes } from "./emitter.js";
 import { type ChunkResult, EmitJournal } from "./emit-journal.js";
+import { libHostStateType } from "./lib-host-state.js";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -504,6 +505,97 @@ function writeDefinitions(
   return startupSymbols;
 }
 
+/** The per-site globals the emitter numbers from module-wide counters as it
+ * emits (inline caches, dyn read caches, guard groups), as `@<prefix><n>`. */
+const SITE_PREFIXES = ["@sc_js_ic_", "@sc_dyn_read_ic_", "@sc_js_group_"] as const;
+
+/** One use of a numbered site in a function's text. */
+interface SiteUse {
+  start: number;
+  end: number;
+  name: string;
+  prefix: string;
+}
+
+function isNameChar(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95 ||
+    code === 46 ||
+    code === 36 ||
+    code === 45
+  );
+}
+
+/** The uses of numbered sites in `def`, in text order. */
+function siteUses(def: string): SiteUse[] {
+  const uses: SiteUse[] = [];
+  for (const prefix of SITE_PREFIXES) {
+    for (let at = def.indexOf(prefix); at >= 0; at = def.indexOf(prefix, at + 1)) {
+      let end = at + prefix.length;
+      while (end < def.length && def.charCodeAt(end) >= 48 && def.charCodeAt(end) <= 57) end++;
+      if (end === at + prefix.length || (end < def.length && isNameChar(def.charCodeAt(end))))
+        continue;
+      uses.push({ start: at, end, name: def.slice(at + 1, end), prefix: prefix.slice(1, -1) });
+    }
+  }
+  return uses.sort((left, right) => left.start - right.start);
+}
+
+/** Renames each numbered site global that exactly one function's body uses
+ * to a name of that function and the site's place in it
+ * (`sc_js_ic.<function>.<k>`), in `fnDefs` and `fnDefText`, and answers the
+ * renames. A counter numbers a site by every site any function emitted
+ * before it, so one more function earlier in the module renumbered every
+ * site after it: an edit, or another app's own code, changed the text of
+ * every function that holds an inline cache, and with it every compiled
+ * partition the LLVM helper could reuse (native-codegen.ts). Named by its
+ * function, a site keeps its name wherever its function lands. A site
+ * another function or a helper also names keeps its number. */
+function nameSitesByOwner(emitter: LlEmitter, fnDefs: string[]): Map<string, string> {
+  const owner = new Map<string, number>();
+  const usesOf: (SiteUse[] | undefined)[] = [];
+  fnDefs.forEach((def, index) => {
+    const uses = siteUses(def);
+    if (uses.length === 0) return;
+    usesOf[index] = uses;
+    for (const { name } of uses) {
+      const known = owner.get(name);
+      if (known === undefined) owner.set(name, index);
+      else if (known !== index) owner.set(name, -1);
+    }
+  });
+  const renames = new Map<string, string>();
+  usesOf.forEach((uses, index) => {
+    const fn = emitter.mod.functions[index];
+    if (uses === undefined || fn === undefined) return;
+    const symbol = mangleFunction(fn.name);
+    const counts = new Map<string, number>();
+    const parts: string[] = [];
+    const def = fnDefs[index]!;
+    let from = 0;
+    for (const { start, end, name, prefix } of uses) {
+      if (owner.get(name) !== index) continue;
+      let to = renames.get(name);
+      if (to === undefined) {
+        const k = counts.get(prefix) ?? 0;
+        counts.set(prefix, k + 1);
+        renames.set(name, (to = `${prefix}.${symbol}.${k}`));
+      }
+      parts.push(def.slice(from, start + 1), to);
+      from = end;
+    }
+    if (parts.length === 0) return;
+    parts.push(def.slice(from));
+    const text = parts.join("");
+    fnDefs[index] = text;
+    if (emitter.fnDefText.get(fn.name) === def) emitter.fnDefText.set(fn.name, text);
+  });
+  return renames;
+}
+
 export function emitModuleParts(emitter: LlEmitter): string[] {
   // Function bodies first (the literal/unit/fn-value tables fill as they
   // emit), then the file assembles around them — the runtime ABI’s order.
@@ -520,6 +612,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
       relieveHeapPressure();
     }
   emitter.selectStacklessAsync(fnDefs);
+  const siteNames = nameSitesByOwner(emitter, fnDefs);
   const errorViews: string[] = [];
   for (const property of ERROR_READER_PROPERTIES) {
     const reader = errorReaderName(property);
@@ -996,6 +1089,11 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     `%ScrClosure = type { ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr, i32, i32, ptr, ptr }`,
     `%ScrFfiTable = type { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, i8, ptr, ptr, ${emitter.sizeType}, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr }`,
     `%ScrRegex = type { ${emitter.sizeType}, ptr, ptr, ptr, double, ptr, ptr, ptr }`,
+    // The library host-callback state (scr_core.h's ScrLibHostState, built
+    // by lib-host-state.ts): native call sites GEP a channel's fn, ctx and
+    // the callback-depth counter through it instead of calling the
+    // accessors. Only a native library module can name it.
+    ...(emitter.mod.lib !== undefined && !emitter.wasi ? [libHostStateType(emitter.sizeType)] : []),
     // ScrArr mirrors scr_runtime.h field-for-field: { rc, len (i32), cap
     // (i32), elem, cyc, spare, filled, data } (field numbers in
     // SCR_ARR_FIELD), where the dense states follow the cap value slots at
@@ -1157,15 +1255,18 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
         ? "thread_local "
         : "";
     out.push(...threadSlotsBlockDefinitions(emitter.threadSlotsBlocks, tl !== ""));
-    for (let site = 0; site < emitter.dynReadIcSites; site++)
+    const site = (name: string): string => siteNames.get(name) ?? name;
+    for (let n = 0; n < emitter.dynReadIcSites; n++)
       out.push(
-        `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
+        `@${site(`sc_dyn_read_ic_${n}`)} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
       );
-    for (let site = 0; site < emitter.jsIcSiteCount; site++)
-      out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
-    for (let group = 0; group < emitter.jsGroupCount; group++)
+    for (let n = 0; n < emitter.jsIcSiteCount; n++)
       out.push(
-        `@sc_js_group_${group} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
+        `@${site(`sc_js_ic_${n}`)} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`,
+      );
+    for (let n = 0; n < emitter.jsGroupCount; n++)
+      out.push(
+        `@${site(`sc_js_group_${n}`)} = internal ${tl}global [${JS_GROUP_WORDS} x i64] zeroinitializer`,
       );
     for (const [name, keys] of emitter.jsGroupKeysTable)
       out.push(

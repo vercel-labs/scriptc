@@ -595,6 +595,7 @@ import {
   builtinEmitterInfoOf,
   builtinStreamInfoOf,
   analyzeClassDecoration,
+  validateLegacyMemberDispatch,
   classIteratorDrainCall,
   classIteratorMethodCall,
   classIteratorNextCall,
@@ -15380,6 +15381,7 @@ export class Lowerer {
     // class, and reference lowering needs each class's rebindability
     // (valueGlobalId) settled before any body lowers.
     for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+    validateLegacyMemberDispatch(this);
     this.prepareModuleInits(parts);
     prepareCjsModuleGraph(this, parts);
 
@@ -16207,6 +16209,7 @@ export class Lowerer {
       // lower the decoration calls, whose edges (decorator bodies, construct
       // thunks) reachable emit must see.
       for (const info of this.classes.values()) analyzeClassDecoration(this, info);
+      validateLegacyMemberDispatch(this);
       this.prepareModuleInits(parts);
       prepareCjsModuleGraph(this, parts);
     } catch (e) {

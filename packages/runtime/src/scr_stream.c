@@ -7688,8 +7688,25 @@ ScrDyn *scr_stream_read_dyn(ScrStream *s, ScrDyn *size) {
    * form that drains. */
   double n;
   if (!size || size->kind == SCR_DYN_UNDEF) n = NAN;
-  else if (size->kind == SCR_DYN_STR) n = scr_parse_int(size->v.str, 10);
-  else n = scr_dyn_number_coerce(size);
+  else if (size->kind == SCR_DYN_STR) {
+    n = scr_parse_int(size->v.str, 10);
+    /* parseInt of a digit run too long for a double is Infinity, which
+     * Node's computeNewHighWaterMark refuses (a numeric Infinity is the
+     * absent form instead: parseInt(String(Infinity)) is NaN), and a
+     * negative Infinity reads nothing. */
+    if (isnan(n)) {
+      /* parseInt could not read a digit: Node's absent form */
+    } else if (!isfinite(n)) {
+      if (n > 0) {
+        static const char msg[] =
+            "The value of \"size\" is out of range. It must be <= 1GiB. Received Infinity";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_OUT_OF_RANGE");
+        return scr_dyn_undefined();
+      }
+      /* -Infinity: a negative size reads nothing */
+      n = -1.0;
+    }
+  } else n = scr_dyn_number_coerce(size);
   if (scr_exc_pending()) return scr_dyn_undefined();
   ScrEntryKind kind = SCR_ENTRY_BYTES;
   void *chunk = s->st->has_r ? scr_stream_read_n_kind(s, n, &kind) : NULL;

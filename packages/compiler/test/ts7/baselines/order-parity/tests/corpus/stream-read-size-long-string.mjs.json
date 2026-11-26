@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stream-read-size-long-string.mjs"
+ ],
+ "diags": []
+}

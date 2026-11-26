@@ -1129,6 +1129,77 @@ static void scr_intl_canonicalize_language(const char *icu, char *out, size_t si
     scr_intl_tag_lower(variant, lower_variant, sizeof lower_variant);
   }
 
+  /* CLDR's other alias tables canonicalize the subtags before matching, as
+   * Node's CanonicalizeUnicodeLocaleId does: a territory alias (UK -> GB),
+   * a script alias (Qaai -> Zinh) and a variant alias (heploc -> alalc97).
+   * Without the territory table en-UK is not an available locale and the
+   * lookup matcher drops it to en instead of selecting Node's en-GB. */
+  for (int round = 0; round < SCR_INTL_ALIAS_ROUNDS; round++) {
+    bool changed = false;
+    char replacement[ULOC_FULLNAME_CAPACITY];
+    if (script[0] != '\0') {
+      UErrorCode scriptsStatus = U_ZERO_ERROR;
+      UResourceBundle *scripts = ures_getByKey(alias, "script", NULL, &scriptsStatus);
+      if (U_SUCCESS(scriptsStatus) && scripts != NULL) {
+        if (scr_intl_alias_lookup(scripts, script, replacement, sizeof replacement) &&
+            strcmp(replacement, script) != 0) {
+          snprintf(script, sizeof script, "%s", replacement);
+          changed = true;
+        }
+        ures_close(scripts);
+      }
+    }
+    if (region[0] != '\0') {
+      UErrorCode regionStatus = U_ZERO_ERROR;
+      UResourceBundle *territories = ures_getByKey(alias, "territory", NULL, &regionStatus);
+      if (U_SUCCESS(regionStatus) && territories != NULL) {
+        if (scr_intl_alias_lookup(territories, region, replacement, sizeof replacement) &&
+            strcmp(replacement, region) != 0) {
+          snprintf(region, sizeof region, "%s", replacement);
+          changed = true;
+        }
+        ures_close(territories);
+      }
+    }
+    if (variant[0] != '\0') {
+      UErrorCode variantStatus = U_ZERO_ERROR;
+      UResourceBundle *variants = ures_getByKey(alias, "variant", NULL, &variantStatus);
+      if (U_SUCCESS(variantStatus) && variants != NULL) {
+        char rebuilt[ULOC_FULLNAME_CAPACITY];
+        size_t used = 0;
+        bool replaced_any = false;
+        const char *at = variant;
+        while (*at != '\0') {
+          const char *end = strchr(at, '_');
+          const size_t len = end == NULL ? strlen(at) : (size_t)(end - at);
+          char piece[ULOC_FULLNAME_CAPACITY];
+          char lower_piece[ULOC_FULLNAME_CAPACITY];
+          if (len >= sizeof piece) break;
+          memcpy(piece, at, len);
+          piece[len] = '\0';
+          scr_intl_tag_lower(piece, lower_piece, sizeof lower_piece);
+          char aliased[ULOC_FULLNAME_CAPACITY];
+          if (scr_intl_alias_lookup(variants, lower_piece, aliased, sizeof aliased) &&
+              strcmp(aliased, piece) != 0) {
+            snprintf(piece, sizeof piece, "%s", aliased);
+            replaced_any = true;
+          }
+          const int written =
+              snprintf(rebuilt + used, sizeof rebuilt - used, "%s%s", used > 0 ? "_" : "", piece);
+          if (written <= 0 || (size_t)written >= sizeof rebuilt - used) break;
+          used += (size_t)written;
+          at = end == NULL ? at + len : end + 1;
+        }
+        if (replaced_any) {
+          snprintf(variant, sizeof variant, "%s", rebuilt);
+          changed = true;
+        }
+        ures_close(variants);
+      }
+    }
+    if (!changed) break;
+  }
+
   ures_close(languages);
   ures_close(alias);
   ures_close(metadata);

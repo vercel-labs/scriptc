@@ -35,6 +35,11 @@ const tags = [
   // all (Node answers the default locale).
   "en-RU",
   "hak",
+  // Territory and script aliases canonicalize before matching (en-UK is
+  // en-GB, de-DD is de-DE), as Node's CanonicalizeUnicodeLocaleId does.
+  "en-UK",
+  "de-DD",
+  "en-Qaai",
   "EN-us",
   "xx-YY",
   "en-US-u-nu-latn",

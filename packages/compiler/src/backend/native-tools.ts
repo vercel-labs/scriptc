@@ -10,6 +10,8 @@ import {
   nativePartitionPaths,
   validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
+  type NativeCodegenVersion,
+  type NativeDispatchOpt,
   type NativeHelperFailure,
 } from "./native-codegen-core.js";
 import {
@@ -100,6 +102,9 @@ export function emitNativeObject(options: {
   partitionCache?: string;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** Level for the emitter's generated dynamic-dispatch helpers. Sent only
+   * when the helper advertises `dispatch-opt`. */
+  dispatchOpt?: NativeDispatchOpt;
   verified?: NativeHelperVerification;
 }): { outputs: string[]; profileMatch: NativeProfileMatch | null } {
   verifyNativeHelper(options);
@@ -131,6 +136,9 @@ export function emitNativeObject(options: {
     ...(options.partitionCache === undefined || outputs.length < 2
       ? []
       : ["--cache-dir", options.partitionCache]),
+    ...(options.dispatchOpt === undefined || !helperHasFeature(options, "dispatch-opt")
+      ? []
+      : ["--dispatch-opt", options.dispatchOpt]),
     ...nativeProfileHelperArgs(options.profile),
   ]);
   for (const output of outputs) requireNativeArtifact(output);
@@ -171,6 +179,63 @@ export interface NativeHelperVerification {
   remember(): void;
 }
 
+/** Version replies this process has already validated, by helper executable
+ * and target: a build verifies and then uses one helper many times. */
+const helperVersions = new Map<string, NativeCodegenVersion>();
+
+/** The identity of the file a helper path names. A rebuilt or reinstalled
+ * helper is a different executable at the same path: its version reply and
+ * feature set must be asked again, or a later build would keep sending that
+ * helper options it does not know or accept one it no longer matches. */
+function helperFileIdentity(executable: string): string {
+  try {
+    const info = statSync(executable, { bigint: true });
+    return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}`;
+  } catch {
+    return "missing";
+  }
+}
+
+/** The helper's validated `version` reply, probing the executable once per
+ * process for one file identity. */
+function nativeHelperVersion(options: {
+  executable: string;
+  compilerVersion: string;
+  target: NativeTargetSpec;
+  helper: NativeHelperSpec;
+  server?: string | null;
+}): NativeCodegenVersion {
+  const key = `${options.executable}\0${options.target.llvmTriple}\0${helperFileIdentity(options.executable)}`;
+  const cached = helperVersions.get(key);
+  if (cached !== undefined) return cached;
+  const reply = JSON.parse(
+    runHelperTool(options.server ?? null, options.executable, ["version", "--format=json"]),
+  ) as Record<string, unknown>;
+  const version = validateNativeCodegenVersion(
+    reply,
+    options.target,
+    options.helper,
+    options.compilerVersion,
+  );
+  helperVersions.set(key, version);
+  return version;
+}
+
+/** Whether the helper advertises a protocol feature, such as an option a
+ * newer compiler sends and an older helper would reject. */
+function helperHasFeature(
+  options: {
+    executable: string;
+    compilerVersion: string;
+    target: NativeTargetSpec;
+    helper: NativeHelperSpec;
+    server?: string | null;
+  },
+  feature: string,
+): boolean {
+  return nativeHelperVersion(options).features?.includes(feature) === true;
+}
+
 /** Verify installed identity even when a caller can reuse a cached object.
  * With `verified`, the version probe runs only for a helper it does not
  * know yet. */
@@ -197,9 +262,6 @@ export function verifyNativeHelper(options: {
     );
   }
   if (options.verified?.known() === true) return;
-  const version = JSON.parse(
-    runHelperTool(options.server ?? null, options.executable, ["version", "--format=json"]),
-  ) as Record<string, unknown>;
-  validateNativeCodegenVersion(version, options.target, options.helper, options.compilerVersion);
+  nativeHelperVersion(options);
   options.verified?.remember();
 }

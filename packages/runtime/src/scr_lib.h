@@ -181,6 +181,8 @@ ScrStr *scr_process_exec_path(void);
 /* process.arch: the binary's OWN architecture ("arm64", "x64") — Node's
  * answer for its own build on the same machine. +1 interned. */
 ScrStr *scr_process_arch(void);
+/* process.config (frozen, one per process; +1). */
+ScrDyn *scr_process_config(void);
 /* process.versions.node: the runtime's Node COMPATIBILITY TARGET — no
  * Node exists under a compiled binary, so this reports the version whose
  * semantics the runtime implements (SEMANTICS.md divergence 60). +1

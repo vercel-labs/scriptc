@@ -14,6 +14,7 @@
  *   pending checks after every fs call (the MAY_THROW_LIB_FNS seed).
  *   scr_fs_exists never throws, like Node's existsSync.
  */
+#include "scr_optional.h"
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
 #include "scr_dir_private.h"
@@ -284,11 +285,14 @@ static void scr_module_registry_cleanup(void) {
 extern void scr_census_write(void) __attribute__((weak));
 #endif
 
+static void scr_process_config_teardown(void);
+
 static void scr_lib_cleanup(void) {
 #if defined(__linux__) && !defined(SCR_LIB)
   if (scr_census_write != NULL) scr_census_write();
 #endif
   scr_module_registry_cleanup();
+  scr_process_config_teardown();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
   free(scr_lib_argv_owned);
@@ -586,6 +590,82 @@ void scr_module_fail(double module_id) {
   scr_module_dyn_refresh(m);
 }
 
+/* process.config: the build configuration Node reports. A compiled binary
+ * has no gyp build of its own, so the object carries the shape Node's has —
+ * frozen, with `variables` and `target_defaults` — and the values this
+ * build can answer honestly: its architecture and the shared-library and
+ * OpenSSL switches the runtime is built with. +1, one object per process. */
+static SCR_TL ScrDyn *scr_process_config_obj = NULL;
+
+/* Whether the ICU unit is linked (scr_intl.c installs this from its
+ * constructor): the always-linked storage keeps a binary without ICU free
+ * of any reference to that unit. Process-wide, not thread-local: a worker
+ * must see the constructor's store too. */
+double (*scr_intl_i18n_support_fn)(void) = NULL;
+
+/* The cached configuration leaves with the process: scr_lib_cleanup runs
+ * before the RC audit (its atexit handler is registered later, and atexit is
+ * LIFO), so the singleton is released there whatever registered first. */
+static void scr_process_config_teardown(void) {
+  scr_dyn_release(scr_process_config_obj);
+  scr_process_config_obj = NULL;
+}
+
+ScrDyn *scr_process_config(void) {
+  if (scr_process_config_obj) return scr_dyn_retain(scr_process_config_obj);
+  ScrDyn *variables = scr_dyn_new_obj();
+  ScrStr *arch = scr_process_arch();
+  scr_dyn_obj_set(variables, "host_arch", 9, scr_dyn_new_str(arch));
+  scr_dyn_obj_set(variables, "target_arch", 11, scr_dyn_new_str(arch));
+  scr_str_release(arch);
+  scr_dyn_obj_set(variables, "node_shared", 11, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_shared_libuv", 17, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(variables, "node_use_openssl", 16, scr_dyn_new_bool(true));
+  /* The one variable a binary answers from what it links: v8_enable_i18n_support is 1
+   * when the ICU unit is part of the build (its constructor installed the hook). */
+  double i18n = scr_intl_i18n_support_fn && scr_intl_i18n_support_fn() != 0.0 ? 1.0 : 0.0;
+  scr_dyn_obj_set(variables, "v8_enable_i18n_support", 22, scr_dyn_new_num(i18n));
+  ScrDyn *target = scr_dyn_new_obj();
+  ScrDyn *include_dirs = scr_dyn_new_arr();
+  ScrDyn *libraries = scr_dyn_new_arr();
+  ScrDyn *defines = scr_dyn_new_arr();
+  ScrDyn *cflags = scr_dyn_new_arr();
+  scr_dyn_release(scr_dyn_freeze_data(include_dirs));
+  scr_dyn_release(scr_dyn_freeze_data(libraries));
+  scr_dyn_release(scr_dyn_freeze_data(defines));
+  scr_dyn_release(scr_dyn_freeze_data(cflags));
+  scr_dyn_obj_set(target, "include_dirs", 12, include_dirs);
+  scr_dyn_obj_set(target, "libraries", 9, libraries);
+  scr_dyn_obj_set(target, "defines", 7, defines);
+  scr_dyn_obj_set(target, "cflags", 6, cflags);
+  ScrStr *release = scr_str_new("Release", 7);
+  scr_dyn_obj_set(target, "default_configuration", 21, scr_dyn_new_str(release));
+  ScrDyn *configurations = scr_dyn_new_obj();
+  const char *const modes[2] = {"Release", "Debug"};
+  for (int i = 0; i < 2; i++) {
+    ScrDyn *mode = scr_dyn_new_obj();
+    /* Node's configuration is deeply frozen, the variables objects and the
+     * configurations entries included. */
+    ScrDyn *mode_variables = scr_dyn_new_obj();
+    scr_dyn_release(scr_dyn_freeze_data(mode_variables));
+    scr_dyn_obj_set(mode, "variables", 9, mode_variables);
+    scr_dyn_obj_set(mode, "v8_enable_v8_checks", 19, scr_dyn_new_num(i == 0 ? 0 : 1));
+    scr_dyn_release(scr_dyn_freeze_data(mode));
+    scr_dyn_obj_set(configurations, modes[i], strlen(modes[i]), mode);
+  }
+  scr_dyn_release(scr_dyn_freeze_data(configurations));
+  scr_dyn_obj_set(target, "configurations", 14, configurations);
+  scr_str_release(release);
+  ScrDyn *config = scr_dyn_new_obj();
+  scr_dyn_obj_set(config, "variables", 9, variables);
+  scr_dyn_obj_set(config, "target_defaults", 15, target);
+  scr_dyn_release(scr_dyn_freeze_data(variables));
+  scr_dyn_release(scr_dyn_freeze_data(target));
+  scr_dyn_release(scr_dyn_freeze_data(config));
+  scr_process_config_obj = scr_dyn_retain(config);
+  return config;
+}
+
 ScrStr *scr_module_filename(double module_id) {
   return scr_str_retain(scr_module_record(module_id)->filename);
 }
@@ -647,6 +727,11 @@ static void scr_module_dyn_children_remove(ScrModuleRecord *m, double child_id) 
   scr_dyn_release(kids);
 }
 
+/* Node's Module.prototype, from the module-class unit: a program that never
+ * names `Module` links none of it, and its module views keep the plain
+ * object prototype. */
+extern ScrDyn *scr_module_class_prototype(void) __attribute__((weak));
+
 /* The checked-dynamic view of one module record (Node's Module object as a
  * program sees it when the value's type is any): one object per record,
  * built once and cached, so identity holds between `module.children[i]`,
@@ -655,6 +740,14 @@ ScrDyn *scr_module_dyn_object(double module_id) {
   ScrModuleRecord *m = scr_module_record(module_id);
   if (m->dyn_self) return scr_dyn_retain(m->dyn_self);
   ScrDyn *o = scr_dyn_new_obj();
+  if (scr_module_class_prototype != NULL) {
+    ScrDyn *prototype = scr_module_class_prototype();
+    if (prototype != NULL) {
+      ScrDyn *linked = scr_dyn_set_prototype(o, prototype);
+      if (linked) scr_dyn_release(linked);
+      scr_dyn_release(prototype);
+    }
+  }
   /* Cache before filling: a require cycle reaches the parent through its
    * children, and the record must already answer its own object then. */
   m->dyn_self = scr_dyn_retain(o);
@@ -17288,22 +17381,12 @@ ScrStr *scr_num_to_exponential(double x) {
  * |x| ≥ 1e21 (NaN and ±Infinity ride that arm's texts via ToString too,
  * matching the spec's early answers). */
 ScrStr *scr_num_to_fixed0(double x) {
-  if (isnan(x)) return scr_str_new("NaN", 3);
-  if (fabs(x) >= 1e21) return scr_f64_to_scrstr(x);
-  double a = fabs(x);
-  double fl = floor(a);
-  double n = (a - fl >= 0.5) ? fl + 1 : fl; /* exact: a < 2^70, and below
-                                             * 2^52 the fraction is exact;
-                                             * at/above it a - fl == 0 */
-  ScrStr *digits = scr_f64_to_scrstr(n); /* n < 1e21 → never exponent form */
-  if (!(x < 0)) return digits;
-  size_t len = digits->len;
-  char buf[64];
-  buf[0] = '-';
-  memcpy(buf + 1, digits->data, len);
-  ScrStr *r = scr_str_new(buf, len + 1);
-  scr_str_release(digits);
-  return r;
+  /* fractionDigits 0 is the same conversion as the written 0: the exact
+   * decimal integer of the binary value. Formatting the rounded double as
+   * shortest round-trip text instead (scr_f64_to_scrstr) answers the wrong
+   * digits for large integers below 1e21, e.g. 999999999999999900000,
+   * whose exact integer is 999999999999999868928. */
+  return scr_num_to_fixed(x, 0);
 }
 
 /* Number.prototype.toFixed(fractionDigits), with the argument already
@@ -18271,3 +18354,10 @@ ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
   scr_bytes_release(filled);
   return scr_dyn_retain(value);
 }
+
+/* The optional-unit tables (scr_optional.h). They live in this always-linked
+ * unit rather than one of their own, so a program that links neither unit adds
+ * no object to its link for them; a unit that is there installs its table from
+ * a constructor. */
+const ScrEventTargetOps *scr_optional_event_target = NULL;
+const ScrDcOps *scr_optional_dc = NULL;

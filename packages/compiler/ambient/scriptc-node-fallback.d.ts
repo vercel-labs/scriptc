@@ -915,6 +915,7 @@ type KeyFormat =
   | "raw"
   | "raw-private"
   | "raw-public"
+  | "raw-seed"
   | "raw-secret"
   | "raw-seed"
   | "spki";
@@ -1064,7 +1065,11 @@ interface SubtleCrypto {
       | "X25519"
       | { name: "X25519" }
       | "X448"
-      | { name: "X448" },
+      | { name: "X448" }
+      | "ML-KEM-512"
+      | "ML-KEM-768"
+      | "ML-KEM-1024"
+      | { name: "ML-KEM-512" | "ML-KEM-768" | "ML-KEM-1024" },
     extractable: boolean,
     keyUsages: readonly KeyUsage[],
   ): Promise<CryptoKeyPair>;
@@ -1138,6 +1143,30 @@ interface SubtleCrypto {
     wrappingKey: CryptoKey,
     wrapAlgorithm: AlgorithmIdentifier | AesGcmParams | AesCbcParams | AesCtrParams | RsaOaepParams,
   ): Promise<ArrayBuffer>;
+  encapsulateBits(
+    algorithm: AlgorithmIdentifier,
+    encapsulationKey: CryptoKey,
+  ): Promise<{ sharedKey: ArrayBuffer; ciphertext: ArrayBuffer }>;
+  encapsulateKey(
+    algorithm: AlgorithmIdentifier,
+    encapsulationKey: CryptoKey,
+    keyAlgorithm: AlgorithmIdentifier,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<{ sharedKey: CryptoKey; ciphertext: ArrayBuffer }>;
+  decapsulateBits(
+    algorithm: AlgorithmIdentifier,
+    decapsulationKey: CryptoKey,
+    ciphertext: BufferSource,
+  ): Promise<ArrayBuffer>;
+  decapsulateKey(
+    algorithm: AlgorithmIdentifier,
+    decapsulationKey: CryptoKey,
+    ciphertext: BufferSource,
+    keyAlgorithm: AlgorithmIdentifier,
+    extractable: boolean,
+    keyUsages: readonly KeyUsage[],
+  ): Promise<CryptoKey>;
 }
 interface Crypto {
   readonly subtle: SubtleCrypto;
@@ -2122,6 +2151,23 @@ declare module "node:perf_hooks" {
     ): EventLoopUtilization;
   }
   export const performance: Performance;
+  /* perf_hooks.constants: the GC kind and flag values a 'gc' entry's detail
+   * carries, as @types/node declares them. Every name reads its Node v24
+   * value at the access site (the zlib.constants stance); the object value
+   * walks the same enumerable GC numbers. */
+  export namespace constants {
+    const NODE_PERFORMANCE_GC_MAJOR: number;
+    const NODE_PERFORMANCE_GC_MINOR: number;
+    const NODE_PERFORMANCE_GC_INCREMENTAL: number;
+    const NODE_PERFORMANCE_GC_WEAKCB: number;
+    const NODE_PERFORMANCE_GC_FLAGS_NO: number;
+    const NODE_PERFORMANCE_GC_FLAGS_CONSTRUCT_RETAINED: number;
+    const NODE_PERFORMANCE_GC_FLAGS_FORCED: number;
+    const NODE_PERFORMANCE_GC_FLAGS_SYNCHRONOUS_PHANTOM_PROCESSING: number;
+    const NODE_PERFORMANCE_GC_FLAGS_ALL_AVAILABLE_GARBAGE: number;
+    const NODE_PERFORMANCE_GC_FLAGS_ALL_EXTERNAL_MEMORY: number;
+    const NODE_PERFORMANCE_GC_FLAGS_SCHEDULE_IDLE: number;
+  }
   /* Event-loop metrics: utilization (idle/active ms since the loop started)
    * and monitorEventLoopDelay's sampling histogram (nanoseconds). */
   export interface EventLoopUtilization {

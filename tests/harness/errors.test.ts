@@ -3854,7 +3854,7 @@ await attempt("unwrap an ecdsa key", () =>
     );
   });
 
-  test("a method outside the slice is a named fence where it runs", async () => {
+  test("a lowered method reaches Node's argument check", async () => {
     const r = await compileAndRun(
       "webcrypto-encapsulate-bits",
       `console.log("before");
@@ -3865,8 +3865,11 @@ await crypto.subtle.encapsulateBits("ML-KEM-768", key);
     );
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("before\n");
-    expect(r.stderr).toMatch(
-      /^Uncaught Error: 'crypto\.subtle\.encapsulateBits' is part of the standard library types but has no scriptc lowering yet.*\n$/,
+    // ML-KEM encapsulation is in the native slice, so this is no longer a
+    // compile-time fence: the call runs and Node's own argument check rejects
+    // an HMAC key for it.
+    expect(r.stderr).toBe(
+      "Uncaught TypeError [ERR_INVALID_ARG_TYPE]: Failed to execute 'encapsulateBits' on 'SubtleCrypto': 2nd argument is not of type CryptoKey.\n",
     );
   });
 });

@@ -10,6 +10,9 @@ import { locOf } from "../../program.js";
 import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
 import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES, CRYPTO_MACS } from "../crypto-tables.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
+import { x509RecordCall } from "../lower-classes.js";
+import { isX509Type } from "./x509.js";
+import { keyedHelperName } from "../stable-names.js";
 import {
   BOOL,
   BYTES_U8,
@@ -19,8 +22,10 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrLocal,
   type IrType,
   type IrStmt,
+  NULL_T,
   STRING,
   type SrcLoc,
   VOID,
@@ -403,6 +408,7 @@ export function lowerCryptoModuleCall(
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.${bi.member} with spread arguments`, expr);
   }
+  if (bi.member === "parsePKCS12") return lowerParsePKCS12(lowerer, expr, args, loc);
   if (bi.member === "getRandomValues") return lowerCryptoGetRandomValues(lowerer, expr);
   if (bi.member === "randomBytes") {
     const callbackType =
@@ -1820,6 +1826,336 @@ function primeCallback(
   if (options !== undefined && lowerer.mapTypeOf(lowerer.typeOf(options))?.kind === "func")
     return options;
   return args[max - 1];
+}
+
+/** crypto.parsePKCS12(bundle[, options]) (scr_pki.c). The runtime parses
+ * the bundle once into a three-part handle — the private KeyObject or null,
+ * the DER of the certificate matching that key or null, and the DER of every
+ * other certificate — and this composes Node's result record from it. Each
+ * certificate becomes the X509Certificate record `new X509Certificate(der)`
+ * builds, so its fields, methods and checks read the DER the bundle held. */
+function lowerParsePKCS12(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr {
+  if (args.length > 2)
+    lowerer.noLowering(
+      `crypto.parsePKCS12 with ${args.length} arguments`,
+      expr,
+      "parsePKCS12(bundle[, options]) is supported",
+    );
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (type === null || type.kind !== "record")
+    lowerer.noLowering(
+      "crypto.parsePKCS12 with this result type",
+      expr,
+      "its result is { privateKey, certificate, additionalCertificates }",
+    );
+  const shape = lowerer.shapes.get(type.shapeId);
+  const fieldOf = (name: string): IrType | undefined =>
+    shape?.fields.find((f) => f.name === name)?.type;
+  const keyType = fieldOf("privateKey");
+  const certType = fieldOf("certificate");
+  const extrasType = fieldOf("additionalCertificates");
+  if (!keyType || !certType || !extrasType)
+    lowerer.noLowering(
+      "crypto.parsePKCS12 with this result type",
+      expr,
+      "its result is { privateKey, certificate, additionalCertificates }",
+    );
+
+  // The certificate field is X509Certificate | null: a record arm and the
+  // null unit. The additional certificates are an array of that record.
+  if (certType.kind !== "union")
+    lowerer.noLowering(
+      "crypto.parsePKCS12 with this result type",
+      expr,
+      "certificate is X509Certificate | null",
+    );
+  const certUnion = lowerer.unions.get(certType.unionId);
+  const certRecordTag = certUnion?.arms.findIndex((arm) => isX509Type(lowerer, arm)) ?? -1;
+  const certNullArm = certUnion?.arms.findIndex((arm) => arm.kind === "nullT") ?? -1;
+  const certArm = certRecordTag < 0 ? undefined : certUnion!.arms[certRecordTag];
+  if (!certUnion || !certArm || certArm.kind !== "record" || certNullArm < 0)
+    lowerer.noLowering(
+      "crypto.parsePKCS12 with this result type",
+      expr,
+      "certificate is X509Certificate | null",
+    );
+  if (
+    extrasType.kind !== "array" ||
+    !isX509Type(lowerer, extrasType.elem) ||
+    extrasType.elem.kind !== "record"
+  )
+    lowerer.noLowering(
+      "crypto.parsePKCS12 with this result type",
+      expr,
+      "additionalCertificates is X509Certificate[]",
+    );
+
+  const helperKey = `p12.record:${type.shapeId}`;
+  let helper = lowerer.valueHelpers.get(helperKey);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%p12.record", helperKey);
+    lowerer.valueHelpers.set(helperKey, helper);
+    const partsId = "parts.0";
+    const keyId = "key.0";
+    const countId = "count.0";
+    const indexId = "index.0";
+    const leafId = "leaf.0";
+    const derId = "der.0";
+    const extrasId = "additionalCertificates.0";
+    const keyRef: IrExpr = { kind: "varRef", localId: keyId, type: DYN, loc };
+    const countRef: IrExpr = { kind: "varRef", localId: countId, type: F64, loc };
+    const indexRef: IrExpr = { kind: "varRef", localId: indexId, type: F64, loc };
+    const leafRef: IrExpr = { kind: "varRef", localId: leafId, type: BYTES_U8, loc };
+    const derRef: IrExpr = { kind: "varRef", localId: derId, type: BYTES_U8, loc };
+    const extrasRef: IrExpr = { kind: "varRef", localId: extrasId, type: extrasType, loc };
+    const partsRef: IrExpr = { kind: "varRef", localId: partsId, type: DYN, loc };
+
+    // privateKey: KeyObject (checked-dynamic) or null.
+    let keyValue: IrExpr;
+    if (keyType.kind === "dyn") {
+      keyValue = keyRef;
+    } else if (keyType.kind === "union") {
+      const def = lowerer.unions.get(keyType.unionId);
+      const dynArm = def?.arms.findIndex((arm) => arm.kind === "dyn") ?? -1;
+      const nullArm = def?.arms.findIndex((arm) => arm.kind === "nullT") ?? -1;
+      if (!def || dynArm < 0 || nullArm < 0)
+        lowerer.noLowering(
+          "crypto.parsePKCS12 with this result type",
+          expr,
+          "privateKey is KeyObject | null",
+        );
+      keyValue = {
+        kind: "ternary",
+        cond: { kind: "dynTest", test: "null", value: keyRef, type: BOOL, loc },
+        then: {
+          kind: "unionWrap",
+          unionId: keyType.unionId,
+          tag: nullArm,
+          value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+          type: keyType,
+          loc,
+        },
+        else_: {
+          kind: "unionWrap",
+          unionId: keyType.unionId,
+          tag: dynArm,
+          value: keyRef,
+          type: keyType,
+          loc,
+        },
+        type: keyType,
+        loc,
+      };
+    } else {
+      lowerer.noLowering(
+        "crypto.parsePKCS12 with this result type",
+        expr,
+        "privateKey is KeyObject | null",
+      );
+    }
+    // certificate: the matching certificate's record, or null when the DER
+    // is empty (the runtime answers empty bytes for "none").
+    const certValue: IrExpr = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: {
+          kind: "bytesIntrinsic",
+          method: "length",
+          receiver: leafRef,
+          args: [],
+          type: F64,
+          loc,
+        },
+        right: { kind: "numLit", value: 0, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      then: {
+        kind: "unionWrap",
+        unionId: certType.unionId,
+        tag: certNullArm,
+        value: { kind: "unitLit", unit: "null", type: NULL_T, loc },
+        type: certType,
+        loc,
+      },
+      else_: {
+        kind: "unionWrap",
+        unionId: certType.unionId,
+        tag: certRecordTag,
+        value: x509RecordCall(lowerer, leafRef, certArm, loc, true),
+        type: certType,
+        loc,
+      },
+      type: certType,
+      loc,
+    };
+    const fields = shape!.fields.map((f) => {
+      if (f.name === "privateKey") return { name: f.name, value: keyValue };
+      if (f.name === "certificate") return { name: f.name, value: certValue };
+      if (f.name === "additionalCertificates") return { name: f.name, value: extrasRef };
+      throw new Error(`lowerer bug: parsed bundle field ${f.name}`);
+    });
+    const locals: IrLocal[] = [
+      { id: "bundle.0", name: "bundle", type: DYN, mutable: false },
+      { id: "options.0", name: "options", type: DYN, mutable: false },
+      { id: partsId, name: "parts", type: DYN, mutable: false },
+      { id: keyId, name: "key", type: DYN, mutable: false },
+      { id: countId, name: "count", type: F64, mutable: false },
+      { id: indexId, name: "index", type: F64, mutable: true },
+      { id: leafId, name: "leaf", type: BYTES_U8, mutable: false },
+      { id: derId, name: "der", type: BYTES_U8, mutable: true },
+      { id: extrasId, name: "additionalCertificates", type: extrasType, mutable: false },
+    ];
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "bundle.0", name: "bundle", type: DYN },
+        { localId: "options.0", name: "options", type: DYN },
+      ],
+      returnType: type,
+      locals,
+      body: [
+        {
+          kind: "varDecl",
+          localId: partsId,
+          init: {
+            kind: "libCall",
+            fn: "crypto.parsePKCS12",
+            args: [
+              { kind: "varRef", localId: "bundle.0", type: DYN, loc },
+              { kind: "varRef", localId: "options.0", type: DYN, loc },
+            ],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: keyId,
+          init: { kind: "libCall", fn: "crypto.pkcs12Key", args: [partsRef], type: DYN, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: countId,
+          init: { kind: "libCall", fn: "crypto.pkcs12Count", args: [partsRef], type: F64, loc },
+          loc,
+        },
+        // The certificate loop index is initialized before any lookup reads
+        // it: the loop's own bundle lookup below overwrites `der`, but a
+        // declaration that read the index first would pass an uninitialized
+        // double into the runtime.
+        {
+          kind: "assign",
+          localId: indexId,
+          value: { kind: "numLit", value: 0, type: F64, loc },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: leafId,
+          init: {
+            kind: "libCall",
+            fn: "crypto.pkcs12Der",
+            args: [partsRef, { kind: "numLit", value: -1, type: F64, loc }],
+            type: BYTES_U8,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: derId,
+          init: {
+            kind: "libCall",
+            fn: "crypto.pkcs12Der",
+            args: [partsRef, indexRef],
+            type: BYTES_U8,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: extrasId,
+          init: { kind: "arrayLit", elems: [], type: extrasType, loc },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: indexRef,
+            right: countRef,
+            type: BOOL,
+            loc,
+          },
+          body: [
+            {
+              kind: "assign",
+              localId: derId,
+              value: {
+                kind: "libCall",
+                fn: "crypto.pkcs12Der",
+                args: [partsRef, indexRef],
+                type: BYTES_U8,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "exprStmt",
+              expr: {
+                kind: "arrIntrinsic",
+                method: "push",
+                receiver: extrasRef,
+                args: [x509RecordCall(lowerer, derRef, extrasType.elem, loc, true)],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: indexId,
+              value: {
+                kind: "bin",
+                op: "+",
+                left: indexRef,
+                right: { kind: "numLit", value: 1, type: F64, loc },
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        {
+          kind: "return",
+          value: { kind: "recordLit", fields, type, loc },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: helper,
+    args: [dynArg(lowerer, args[0], loc), dynArg(lowerer, args[1], loc)],
+    type,
+    loc,
+  };
 }
 
 /** The asymmetric-key and signature members (scr_pki.c): checked-dynamic

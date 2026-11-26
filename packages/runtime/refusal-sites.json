@@ -1099,6 +1099,12 @@
  },
  {
   "file": "scr_json.c",
+  "function": "scr_dyn_key_check",
+  "message": "a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_json.c",
   "function": "scr_dyn_class_view_unavailable",
   "message": "class fields cannot be represented as checked-dynamic properties",
   "code": "SC1090"

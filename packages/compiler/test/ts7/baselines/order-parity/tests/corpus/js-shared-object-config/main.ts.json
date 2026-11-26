@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-shared-object-config/browser.js",
+  "<repo>/tests/corpus/js-shared-object-config/config.js",
+  "<repo>/tests/corpus/js-shared-object-config/main.ts"
+ ],
+ "diags": []
+}

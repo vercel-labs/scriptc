@@ -178,6 +178,44 @@ steps.push(() => {
   setTimeout(() => settle("timeout"), 300);
 });
 
+const halfOpenProbe = (label: string, allowHalfOpen: boolean): void => {
+  // a server that answers the first chunk and sends its FIN; the client
+  // then tries one more write after its 'end'
+  const peer = net.createServer((socket) => {
+    socket.on("data", () => socket.end("bye"));
+    socket.on("error", () => {});
+  });
+  peer.listen(0, "127.0.0.1", () => {
+    const peerPort = (peer.address() as { port: number }).port;
+    const client = net.connect({ port: peerPort, host: "127.0.0.1", allowHalfOpen });
+    let settled = false;
+    const settle = (tag: string): void => {
+      if (settled) return;
+      settled = true;
+      say(label, tag);
+      client.destroy();
+      peer.close(() => run());
+    };
+    client.on("connect", () => client.write("hello"));
+    client.on("data", () => {});
+    client.on("error", (err) => settle(`error-${codeOf(err)}`));
+    client.on("end", () => {
+      const writableAtEnd = client.writable;
+      // let a non-half-open socket's automatic end land before writing
+      setTimeout(() => {
+        client.write("after-fin", (err) => {
+          const result = err === null || err === undefined ? "write-ok" : `write-${codeOf(err)}`;
+          settle(`ending-writable-${writableAtEnd} ${result}`);
+        });
+      }, 20);
+    });
+    setTimeout(() => settle("timeout"), 800);
+  });
+};
+
+steps.push(() => halfOpenProbe("half-open", true));
+steps.push(() => halfOpenProbe("closed", false));
+
 steps.push(() => {
   // a port outside Node's range throws its validatePort RangeError before
   // any dial starts (a non-number port is a TypeScript error here)

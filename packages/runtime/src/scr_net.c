@@ -4363,6 +4363,7 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
   /* the Socket constructor's ladder */
   static const char *const om[] = { "objectMode", "readableObjectMode", "writableObjectMode" };
   bool keepalive = false, ka_given = false;
+  bool allow_half_open = false;
   double ka_delay = 0;
   double tos = 0;
   bool tos_given = false;
@@ -4407,6 +4408,8 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
         goto fail;
       }
     }
+    v = scr_dyn_obj_get(opts, "allowHalfOpen", 13);
+    if (v != NULL && scr_net_dyn_truthy(v)) allow_half_open = true;
     v = scr_dyn_obj_get(opts, "noDelay", 7);
     (void)v; /* TCP_NODELAY stays the runtime's default: a documented divergence */
     v = scr_dyn_obj_get(opts, "keepAlive", 9);
@@ -4591,6 +4594,7 @@ ScrNetSocket *scr_net_connect_dyn(const ScrDyn *a0, const ScrDyn *a1, const ScrD
   }
 
   ScrNetSocket *s = scr_net_sock_new();
+  s->allow_half_open = allow_half_open;
   s->peer_port = (int)port_num;
   scr_net_sock_set_peer(s, host_str);
   if (local_set) {

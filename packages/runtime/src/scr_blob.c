@@ -162,16 +162,11 @@ static ScrStr *scr_blob_type_of(ScrStr *s) {
   return out;
 }
 
-/* Node's openAsBlob keeps the type the caller gave it; only the characters
- * that could not travel in a header are dropped (the empty type then).
- * Case is preserved: MIME parameters can be case-sensitive. */
-ScrStr *scr_blob_type_printable(ScrStr *raw) {
-  for (size_t i = 0; i < raw->len; i++) {
-    unsigned char c = (unsigned char)raw->data[i];
-    if (c < 0x20 || c > 0x7e) return scr_str_new("", 0);
-  }
-  return scr_str_retain(raw);
-}
+/* Node's openAsBlob keeps the type string exactly as the caller gave it:
+ * non-ASCII characters, tabs, newlines and the rest reach the Blob's type
+ * unchanged (unlike Blob's own type setter, which would clear them).
+ * Case is preserved too: MIME parameters can be case-sensitive. */
+ScrStr *scr_blob_type_as_given(ScrStr *raw) { return scr_str_retain(raw); }
 
 /* One source part: a Blob contributes its own parts, an ArrayBuffer or
  * view its bytes, and anything else its UTF-8 string (line endings

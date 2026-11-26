@@ -69,6 +69,13 @@ const falsyType: any = JSON.parse("0");
 const falsy = await fs.openAsBlob(file, { type: falsyType });
 console.log("falsy type", JSON.stringify(falsy.type));
 
+// Node's openAsBlob keeps the type string verbatim, unlike Blob's own type
+// setter: non-ASCII characters, tabs and newlines survive.
+for (const verbatim of ["caf\u00e9", "a\tb", "text/plain\n", "text/plain; x=caf\u00e9"]) {
+  const kept = await fs.openAsBlob(file, { type: verbatim });
+  console.log("verbatim type", JSON.stringify(kept.type));
+}
+
 // 7. The Blob reads the file its first read opened: a symlink repointed to
 // another file afterwards no longer answers, whether or not the new target
 // keeps the size.

@@ -94,10 +94,9 @@ static ScrStr *scr_fs_blob_type(const ScrDyn *options) {
     return NULL;
   }
   /* The type reaches Content-Type on a fetch body: Node's openAsBlob keeps
-   * the caller's string, and only a character that could not travel in a
-   * header turns it into the empty type (case is preserved: MIME
-   * parameters can be case-sensitive). */
-  ScrStr *out = scr_blob_type_printable(value->v.str);
+   * the caller's string verbatim, including non-ASCII characters and tabs
+   * (case is preserved: MIME parameters can be case-sensitive). */
+  ScrStr *out = scr_blob_type_as_given(value->v.str);
   scr_dyn_release(value);
   return out;
 }

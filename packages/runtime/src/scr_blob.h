@@ -50,10 +50,10 @@ typedef struct ScrBlobSource {
   void (*release)(void *ctx);
 } ScrBlobSource;
 ScrDyn *scr_blob_from_source(ScrBlobSource *source, double size, ScrStr *type);
-/* The type a file-backed Blob may carry: `raw` (borrowed) itself, or the
- * empty type when it holds a character outside U+0020..U+007E (+1). Case is
- * preserved (Node's openAsBlob keeps the caller's string). */
-ScrStr *scr_blob_type_printable(ScrStr *raw);
+/* The type a file-backed Blob carries: `raw` itself (+1), exactly as the
+ * caller gave it — Node's openAsBlob performs no type normalization, so
+ * non-ASCII characters, tabs and newlines survive. Case is preserved too. */
+ScrStr *scr_blob_type_as_given(ScrStr *raw);
 
 ScrDyn *scr_intl_segmenter_new(void);
 /* A word or sentence Intl.Segmenter whose segment() throws `refusal`

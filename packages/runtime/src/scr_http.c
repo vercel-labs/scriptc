@@ -6948,14 +6948,19 @@ void scr_http_client_append_header_dyn(ScrHttpClientReq *c, ScrStr *name, ScrDyn
     return;
   }
   ScrDyn *combined = scr_dyn_new_arr();
-  ScrDyn *old = c->hraw[pos];
-  if (old != NULL && old->kind == SCR_DYN_ARR) {
-    for (size_t i = 0; i < old->v.arr.len; i++)
-      scr_dyn_arr_push(combined, scr_dyn_retain(old->v.arr.items[i]));
-  } else if (old != NULL) {
-    scr_dyn_arr_push(combined, scr_dyn_retain(old));
-  } else {
-    scr_dyn_arr_push(combined, scr_dyn_new_str(c->hvalues[pos]));
+  /* Every value the name holds joins the appended ones, in order: the
+   * option array's elements and earlier appends all count. */
+  for (size_t i = 0; i < c->nheaders; i++) {
+    if (!scr_http_name_eq(c->hnames[i], name)) continue;
+    ScrDyn *old = c->hraw[i];
+    if (old != NULL && old->kind == SCR_DYN_ARR) {
+      for (size_t k = 0; k < old->v.arr.len; k++)
+        scr_dyn_arr_push(combined, scr_dyn_retain(old->v.arr.items[k]));
+    } else if (old != NULL) {
+      scr_dyn_arr_push(combined, scr_dyn_retain(old));
+    } else {
+      scr_dyn_arr_push(combined, scr_dyn_new_str(c->hvalues[i]));
+    }
   }
   if (value->kind == SCR_DYN_ARR) {
     for (size_t i = 0; i < value->v.arr.len; i++)
@@ -7047,25 +7052,43 @@ static void scr_http_client_send_head(ScrHttpClientReq *c, long long body_len) {
   else
     scr_http_buf_append(&b, c->path->data, c->path->len);
   scr_http_buf_str(&b, " HTTP/1.1\r\n");
+  /* Node writes a Cookie header's values as one line joined with "; ",
+   * whether they are an array value or the option array's repeated
+   * entries. Emit it once, where the name first appears. */
+  size_t cookie_at = SIZE_MAX;
+  for (size_t i = 0; i < c->nheaders; i++)
+    if (scr_http_header_name_is(c->hnames[i], "cookie")) {
+      cookie_at = i;
+      break;
+    }
   for (size_t i = 0; i < c->nheaders; i++) {
-    if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
-      bool cookie = c->hnames[i]->len == 6;
-      for (size_t j = 0; j < 6 && cookie; j++)
-        if (tolower((unsigned char)c->hnames[i]->data[j]) != "cookie"[j]) cookie = false;
-      if (cookie) {
-        /* Node joins a Cookie array into one line with "; " */
+    if (cookie_at != SIZE_MAX && scr_http_header_name_is(c->hnames[i], "cookie")) {
+      if (i == cookie_at) {
         scr_http_buf_append(&b, c->hnames[i]->data, c->hnames[i]->len);
         scr_http_buf_str(&b, ": ");
-        for (size_t k = 0; k < c->hraw[i]->v.arr.len; k++) {
-          ScrStr *text = scr_http_header_item_text(c->hnames[i], c->hraw[i]->v.arr.items[k]);
-          if (text == NULL) continue;
-          if (k > 0) scr_http_buf_str(&b, "; ");
-          scr_http_buf_append(&b, text->data, text->len);
-          scr_str_release(text);
+        bool first = true;
+        for (size_t j = 0; j < c->nheaders; j++) {
+          if (!scr_http_header_name_is(c->hnames[j], "cookie")) continue;
+          if (c->hraw[j] != NULL && c->hraw[j]->kind == SCR_DYN_ARR) {
+            for (size_t k = 0; k < c->hraw[j]->v.arr.len; k++) {
+              ScrStr *text = scr_http_header_item_text(c->hnames[j], c->hraw[j]->v.arr.items[k]);
+              if (text == NULL) continue;
+              if (!first) scr_http_buf_str(&b, "; ");
+              scr_http_buf_append(&b, text->data, text->len);
+              scr_str_release(text);
+              first = false;
+            }
+          } else {
+            if (!first) scr_http_buf_str(&b, "; ");
+            scr_http_buf_append(&b, c->hvalues[j]->data, c->hvalues[j]->len);
+            first = false;
+          }
         }
         scr_http_buf_str(&b, "\r\n");
-        continue;
       }
+      continue;
+    }
+    if (c->hraw[i] != NULL && c->hraw[i]->kind == SCR_DYN_ARR) {
       bool te = c->hnames[i]->len == 17;
       for (size_t j = 0; j < 17 && te; j++)
         if (tolower((unsigned char)c->hnames[i]->data[j]) != "transfer-encoding"[j]) te = false;

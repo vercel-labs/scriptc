@@ -12,7 +12,8 @@ const server = http.createServer((req: http.IncomingMessage, res: http.ServerRes
   const raw = req.rawHeaders;
   for (let i = 0; i + 1 < raw.length; i += 2) {
     const name = raw[i] ?? "";
-    if (name.toLowerCase().startsWith("x-")) seen.push(name + "=" + (raw[i + 1] ?? ""));
+    const lower = name.toLowerCase();
+    if (lower.startsWith("x-") || lower === "cookie") seen.push(name + "=" + (raw[i + 1] ?? ""));
   }
   console.log(req.url, seen.join(","));
   res.end("ok");
@@ -73,6 +74,36 @@ server.listen(0, "127.0.0.1", () => {
         path: "/ordering",
         headers: { "x-shared": shared, "x-bump": bump() },
       });
+    },
+    (p) =>
+      // Node joins a Cookie array into one line
+      http.request({
+        host: "127.0.0.1",
+        port: p,
+        path: "/cookie",
+        headers: { cookie: ["a=1", "b=2"] },
+      }),
+    (p) => {
+      // appendHeader keeps every value the option array wrote
+      const req = http.request({
+        host: "127.0.0.1",
+        port: p,
+        path: "/append",
+        headers: { "x-append": ["a", "b"] },
+      });
+      req.appendHeader("x-append", "c");
+      req.appendHeader("x-append", ["d", "e"]);
+      return req;
+    },
+    (p) => {
+      const req = http.request({
+        host: "127.0.0.1",
+        port: p,
+        path: "/cookie-append",
+        headers: { cookie: ["a=1", "b=2"] },
+      });
+      req.appendHeader("cookie", "c=3");
+      return req;
     },
   ];
   const driver = (index: number): void => {

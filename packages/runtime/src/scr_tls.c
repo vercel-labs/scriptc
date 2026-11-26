@@ -2571,6 +2571,25 @@ static void scr_tls_hold_until_immediate(ScrTlsSock *t) {
  * identity, so the builtin name check is disabled for it (the chain check
  * stands). Its returned Error fails the connection with that error's
  * message and code. False when the connection must fail. */
+/* The verified chain as getPeerCertificate's legacy object, leaf linked to
+ * its issuers through vrfy_chain alone. +1 (an object; {} without a chain). */
+static ScrDyn *scr_tls_verified_certificate(ScrTlsSock *t) {
+  ScrDyn *leaf = NULL;
+  ScrDyn *previous = NULL;
+  for (size_t i = 0; i < t->vrfy_chain_len; i++) {
+    const mbedtls_x509_crt *c = t->vrfy_chain[i];
+    if (c == NULL || c->raw.len == 0) break;
+    ScrBytes *der = scr_bytes_new(SCR_BYTES_U8, (double)c->raw.len);
+    memcpy(der->data, c->raw.p, c->raw.len);
+    ScrDyn *object = scr_crypto_x509_legacy_object(der);
+    scr_bytes_release(der);
+    if (leaf == NULL) leaf = object;
+    else scr_dyn_obj_set(previous, "issuerCertificate", 17, object);
+    previous = object;
+  }
+  return leaf != NULL ? leaf : scr_dyn_new_obj();
+}
+
 static bool scr_tls_run_check_identity(ScrTlsSock *t) {
   /* Node runs the caller's verifier only when the chain verified: a chain
    * failure stands on its own (the socket answers unauthorized and the
@@ -2581,11 +2600,12 @@ static bool scr_tls_run_check_identity(ScrTlsSock *t) {
   ScrStr *host = scr_str_new(name, strlen(name));
   ScrDyn *hostv = scr_dyn_new_str(host);
   scr_str_release(host);
-  /* Node hands the verifier the detailed certificate: the leaf linked to
-   * its issuers, so issuer pinning can read `issuerCertificate`. */
-  ScrDyn *detailed = scr_dyn_new_bool(true);
-  ScrDyn *cert = scr_tls_sock_get_peer_certificate(t->sock, detailed);
-  scr_dyn_release(detailed);
+  /* The verifier's certificate is the chain mbedTLS VERIFIED — the verify
+   * callback's walk, leaf at depth 0 — with issuerCertificate built from
+   * those entries only: a peer cannot hang a forged cross-certificate (or a
+   * pasted genuine root) off it the way the metadata-linked public accessor
+   * allows, so issuer pinning inspects the authenticated chain. */
+  ScrDyn *cert = scr_tls_verified_certificate(t);
   if (cert == NULL) {
     scr_dyn_release(hostv);
     return false;
@@ -2837,8 +2857,9 @@ static void scr_tls_settle(void *tctx) {
     scr_dyn_release(t->cli->check_identity);
     t->cli->check_identity = NULL;
   }
-  scr_dyn_release(t->check_identity_err);
-  t->check_identity_err = NULL;
+  /* the stored verdict STAYS: socket.authorized must keep answering false
+   * after 'close' for an identity the verifier rejected (the transport free
+   * releases it) */
   scr_net_ls_drop(&t->secure_ls);
   scr_net_ls_drop(&t->session_ls);
   scr_net_ls_drop(&t->keylog_ls);

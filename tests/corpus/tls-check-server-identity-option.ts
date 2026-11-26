@@ -42,7 +42,8 @@ const cases: Case[] = [
             ? (viewed.issuerCertificate.subject !== undefined
                 ? viewed.issuerCertificate.subject.CN
                 : "no-issuer-subject")
-            : "no-issuer");
+            : "no-issuer",
+);
       return undefined;
     },
   },
@@ -152,6 +153,7 @@ const next = (): void => {
   });
   client.on("close", () => {
     if (connected) {
+      if (entry.reportAuth === true) say(entry.label, "post-close authorized", client.authorized);
       say(entry.label, "connected");
       next();
     }

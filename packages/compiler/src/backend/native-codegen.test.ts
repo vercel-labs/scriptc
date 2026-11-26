@@ -21,7 +21,9 @@ import {
 } from "./native-codegen.js";
 import {
   failureText,
+  generatedDispatchOptFor,
   nativeBuildPartitions,
+  nativeCodegenAvailableBytes,
   nativeCodegenJobs,
   nativeHelperFailureMessage,
   nativePartitionPaths,
@@ -49,6 +51,7 @@ async function fakePackage(
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
     profileReport?: string;
+    features?: string[];
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -68,6 +71,7 @@ async function fakePackage(
     supported_targets: [MACOS_ARM64_TARGET.llvmTriple],
     default_target: MACOS_ARM64_TARGET.llvmTriple,
     data_layout: MACOS_ARM64_TARGET.dataLayout,
+    ...(options.features === undefined ? {} : { features: options.features }),
   });
   await writeFile(
     bin,
@@ -126,23 +130,63 @@ function request(
   };
 }
 
+test("the release posture asks for the light dispatch level", () => {
+  expect(generatedDispatchOptFor(undefined)).toBe("light");
+  expect(generatedDispatchOptFor("release")).toBe("light");
+  expect(generatedDispatchOptFor("dev")).toBeUndefined();
+  expect(generatedDispatchOptFor("speed")).toBeUndefined();
+});
+
+test("a dispatch level reaches a helper that advertises it and keys the cache", async () => {
+  const pkg = await fakePackage({ features: ["dispatch-opt"] });
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson),
+    dispatchOpt: generatedDispatchOptFor("release"),
+  });
+  expect(await readFile(pkg.log, "utf8")).toContain("--dispatch-opt light");
+
+  // A speed build asks for no level: the option is absent, and the artifact
+  // is not the release cache entry (the helper runs again).
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "speed.o")),
+    dispatchOpt: generatedDispatchOptFor("speed"),
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).not.toContain("--dispatch-opt");
+});
+
 test("caps codegen lanes by the memory available", () => {
   const bytes = 512 * 1024 * 1024;
-  // A partition lane parses a partition (a core's worth of the module) and
-  // may hold 16 times its text: 64 MB each, ample memory: every thread.
+  // A lane parses and optimizes one of the module's 64 partitions and may
+  // hold 16 times its 8 MB, or the 192 MB floor: 2 GB gives every thread a
+  // lane; dividing by the thread count instead would model 64 MB lanes and
+  // run a fraction of them.
   expect(nativeCodegenJobs(bytes, 64, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
-  // Eight lanes would take 8 GB: a smaller host runs fewer at once.
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(1);
-  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(6);
+  expect(nativeCodegenJobs(bytes, 64, { availableBytes: 2 * 2 ** 30, parallelism: 8 })).toBe(8);
+  // A few large partitions peak higher: two 256 MB partitions are 4 GB lanes,
+  // so a smaller host gives the build fewer of them.
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 8 * 2 ** 30, parallelism: 8 })).toBe(1);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 16 * 2 ** 30, parallelism: 8 })).toBe(3);
+  expect(nativeCodegenJobs(bytes, 2, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(8);
   // An unoptimized build's lanes peak lower, and one partition compiles alone.
   expect(
-    nativeCodegenJobs(bytes, 64, {
-      availableBytes: 6 * 2 ** 30,
+    nativeCodegenJobs(bytes, 2, {
+      availableBytes: 8 * 2 ** 30,
       parallelism: 8,
       unoptimized: true,
     }),
-  ).toBe(7);
+  ).toBe(2);
   expect(nativeCodegenJobs(bytes, 1, { availableBytes: 64 * 2 ** 30, parallelism: 8 })).toBe(1);
+});
+
+test("measures macOS memory by its physical memory", () => {
+  // macOS reports only free and inactive pages as available.
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(16 * 2 ** 30);
+  // A host that reports more than its physical memory keeps that report.
+  expect(nativeCodegenAvailableBytes(32 * 2 ** 30, 16 * 2 ** 30, "darwin")).toBe(32 * 2 ** 30);
+  // Other hosts keep what the process measured.
+  expect(nativeCodegenAvailableBytes(2 * 2 ** 30, 16 * 2 ** 30, "linux")).toBe(2 * 2 ** 30);
 });
 
 test("reuses an artifact for the same module name from another directory", async () => {

@@ -209,6 +209,32 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(`${t} = call ptr @scr_net_create_server(ptr ${cb}, ptr ${adapter})`);
     return host.own({ name: t, type: e.type });
   }
+  if (e.fn === "net.createServerOpts" || e.fn === "net.createServerOptsCb") {
+    // net.createServer(options[, listener]): the ServerOpts record plus
+    // the optional connection handler. The runtime validates the record
+    // (the option ladders can throw) and applies it to accepted sockets.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    let adapter = "null";
+    if (e.fn === "net.createServerOptsCb") {
+      const cbT = e.args[1]!.type;
+      if (cbT.kind !== "func")
+        throw new InternalCompilerError(
+          "llvm emitter bug: net.createServerOptsCb handler not a func",
+        );
+      host.toHeap(args[1]!);
+      cb = args[1]!.name;
+      adapter = cbT.params.length === 0 ? "@scr_net_conn_thunk0" : "@scr_net_conn_thunk_sock";
+      host.declare(`declare void ${adapter}(ptr, ptr)`);
+    }
+    host.declare(`declare ptr @scr_net_create_server_opts(ptr, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_net_create_server_opts(ptr ${args[0]!.name}, ptr ${cb}, ptr ${adapter})`,
+    );
+    host.emitPendingCheck();
+    return host.own({ name: t, type: e.type });
+  }
   if (e.fn === "net.listen" || e.fn === "net.listenCb") {
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
@@ -534,6 +560,37 @@ export function emitNetworkHttpLibCall(host: LlvmEmitterContext, e: LibCallExpr)
     B.line(
       `call void @scr_net_sock_connect_port(ptr ${args[0]!.name}, double ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${cb})`,
     );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockConnectMissing") {
+    // socket.connect(): Node's ERR_MISSING_ARGS is thrown at the call.
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.declare(`declare void @scr_net_sock_connect_missing(ptr)`);
+    B.line(`call void @scr_net_sock_connect_missing(ptr ${args[0]!.name})`);
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "net.sockConnectPath" || e.fn === "net.sockConnectPathCb") {
+    // socket.connect(path, ...): the idle socket dials a Unix socket. The
+    // two dyn slots carry argument expressions Node evaluates and ignores
+    // (the middle of a three-argument call, or a non-function callback
+    // slot), so the runtime sees the evaluation even though it uses only
+    // the path and the listener.
+    const args = e.args.map((a) => host.emitExpr(a));
+    let cb = "null";
+    if (e.fn === "net.sockConnectPathCb") {
+      host.toHeap(args[4]!);
+      cb = args[4]!.name;
+    }
+    host.declare(`declare void @scr_net_sock_connect_path(ptr, ptr, ptr, ptr, ptr)`);
+    B.line(
+      `call void @scr_net_sock_connect_path(ptr ${args[0]!.name}, ptr ${args[1]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${cb})`,
+    );
+    // validatePort's ladder throws synchronously for the empty, whitespace
+    // and out-of-range port strings; the pending exception must reach the
+    // statement (a try/catch, or the unwind the caller expects). A refused
+    // path is the async 'error' event instead.
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }

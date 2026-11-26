@@ -58,6 +58,7 @@ export const streamSignatures = defineLibFnSignatures({
    * which must be async iterable: ERR_INVALID_RETURN_VALUE naming the
    * stage ("transform[i]") otherwise. Answers the value (+1). */
   "stream.dynTransformResult": { argTypes: [DYN, STRING], result: DYN },
+  "stream.duplexBodyValue": { argTypes: [DYN], result: DYN },
   /** A checked-dynamic pipeline() stage taken as a stream: a native stream
    * (+1), or Duplex.from of a value that is not stream-like or a function
    * (an iterable), which the pipeline uses without piping into it. Other
@@ -171,7 +172,12 @@ export const streamSignatures = defineLibFnSignatures({
   "stream.optionValues": { argTypes: [null, DYN, DYN], result: VOID },
   "stream.checkEncodingOption": { argTypes: [DYN], result: VOID },
   "stream.duplexFromGen": { argTypes: [null, null, null, null, null, null], result: VOID },
+  "stream.duplexFromGenNoSource": { argTypes: [null, null, null, null, null, null], result: VOID },
   "stream.duplexFromDyn": { argTypes: [DYN], result: VOID },
+  /** A compose stage before the last whose value arrives untyped: a web
+   * stream answers a Duplex whose chunks stay web values (the pipeline's
+   * adaptation), where Duplex.from's body adaptation encodes them. */
+  "stream.composeStageDyn": { argTypes: [DYN], result: VOID },
   /** Duplex.from over a lone Readable or Writable, or a { readable,
    * writable } pair of streams (duplexify.js's _duplexify). */
   "stream.duplexifyReadable": { argTypes: [null], result: VOID },
@@ -183,6 +189,7 @@ export const streamSignatures = defineLibFnSignatures({
   /** Duplex.from(asyncFunction): the stage, its source helper and the
    * promise's box helper. */
   "stream.duplexFromAsyncFn": { argTypes: [null, null, null], result: VOID },
+  "stream.duplexFromAsyncFnNoSource": { argTypes: [null, null, null], result: VOID },
   /** The same for a body that declares the options argument: then the
    * AbortController's abort() and its signal. */
   "stream.duplexFromGenSignal": {

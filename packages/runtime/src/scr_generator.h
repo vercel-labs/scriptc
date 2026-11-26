@@ -206,6 +206,8 @@ ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
 ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
+ScrDyn *scr_fetch_response_error(void); /* Response.error(); +1 Response handle */
+ScrDyn *scr_fetch_response_redirect(ScrDyn *url, ScrDyn *status); /* Response.redirect(url, status?); borrowed args; +1 Response handle or NULL pending */
 ScrArr *scr_fetch_response_light(ScrDyn *response); /* @hono/node-server shim: borrowed; +1 string[] */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
@@ -301,5 +303,10 @@ bool scr_webstream_instanceof(ScrDyn *value, double kind);
  * among them; +1. The call also counts as a runtime iterator step, so a
  * program that passes a generator here registers its member getters. */
 ScrDyn *scr_webstream_from(ScrDyn *iterable);
+/* node:stream/web's ReadableStreamTee(stream[, cloneForBranch2])
+ * (webstream.tee): the two branches of the default tee, the second reading
+ * a structuredClone of each chunk when cloneForBranch2 is truthy; an array
+ * of the two streams (+1), or NULL with Node's argument TypeError pending. */
+ScrDyn *scr_ws_tee_call(ScrDyn *stream, ScrDyn *clone);
 
 #endif /* SCR_GENERATOR_H */

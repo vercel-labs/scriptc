@@ -31,8 +31,10 @@ export function builtinImportOf(
   const binding = builtinModuleBindingOf(lowerer, ident);
   // node:stream/web's exports ARE the web stream globals: its bindings
   // lower through the globals' own paths (stdlibGlobalNameOf resolves the
-  // alias to the same name), not through module-member tables.
-  return binding?.module === "stream/web" ? null : binding;
+  // alias to the same name), not through module-member tables. The one
+  // function beside them, ReadableStreamTee, lowers as that member.
+  if (binding?.module === "stream/web" && binding.member !== "ReadableStreamTee") return null;
+  return binding;
 }
 
 /** The member a node:stream/web import binding names (`import {
@@ -409,7 +411,7 @@ function isUndefinedValue(expr: ts.Expression): boolean {
 
 /** True for a read of the createRequire import binding itself (the value
  * tested by a conditional initializer). */
-function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
+export function isCreateRequireImportValue(lowerer: Lowerer, expr: ts.Expression): boolean {
   const e = withoutParenthesesTypeWrappers(expr);
   if (!ts.isIdentifier(e)) return false;
   const bi = builtinImportOf(lowerer, e);

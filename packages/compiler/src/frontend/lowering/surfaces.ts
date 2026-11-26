@@ -1752,6 +1752,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // arguments, results converted to the call site's type.
       createPrivateKey: { fn: "crypto.createPrivateKey", params: [DYN], result: DYN },
       createPublicKey: { fn: "crypto.createPublicKey", params: [DYN], result: DYN },
+      // Special-cased (lowerParsePKCS12): the parsed bundle's parts compose
+      // the result record, whose X509Certificate members are records built
+      // from the certificates' DER.
+      parsePKCS12: { fn: "crypto.parsePKCS12", params: [], result: VOID },
       createSign: { fn: "crypto.createSign", params: [DYN, DYN], result: DYN },
       createVerify: { fn: "crypto.createVerify", params: [DYN, DYN], result: DYN },
       generateKeyPairSync: { fn: "crypto.generateKeyPairSync", params: [], result: DYN },
@@ -2375,8 +2379,21 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       },
     },
     // node:stream/web re-exports the web stream globals (the same objects);
-    // its members lower through the globals' own paths.
-    "stream/web": {},
+    // its members lower through the globals' own paths. ReadableStreamTee is
+    // the one function beside them (webstream.tee), the default tee with an
+    // optional structuredClone of the second branch's chunks.
+    "stream/web": {
+      ReadableStreamTee: {
+        fn: "webstream.tee",
+        params: [DYN, DYN],
+        result: DYN,
+        valueParams: [
+          { mode: "required", type: DYN },
+          { mode: "optional", type: DYN, defaultValue: undefined },
+        ],
+        valueLength: 1,
+      },
+    },
     // node:assert lowers ENTIRELY through the assert spoke (lower-assert.ts
     // — every call shape is special-cased: optional messages complete, the
     // comparisons pick per-type libCalls, deep equality synthesizes
@@ -2512,7 +2529,11 @@ export const BUILTIN_MODULE_CONSTS: Record<
   http: { maxHeaderSize: 16384 },
   // Node's default protocol range, the TLS 1.2 to 1.3 range the bundled
   // mbedTLS negotiates
-  tls: { DEFAULT_MIN_VERSION: "TLSv1.2", DEFAULT_MAX_VERSION: "TLSv1.3" },
+  tls: {
+    DEFAULT_MIN_VERSION: "TLSv1.2",
+    DEFAULT_MAX_VERSION: "TLSv1.3",
+    DEFAULT_ECDH_CURVE: "auto",
+  },
   path: { sep: "/", delimiter: ":" },
   "path/posix": { sep: "/", delimiter: ":" },
   "path/win32": { sep: "\\", delimiter: ";" },
@@ -2570,6 +2591,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     pathToFileURL: ["url.pathToFileURL", "url.pathToFileURLPlatform", "url.pathToFileURLWin32"],
   },
   fs: {
+    openAsBlob: ["fs.openAsBlob"],
     // Every flag and mode spelling the lowering selects: inline numeric O_*
     // flags (the target-neutral mask), raw open(2) bits, the octal-string
     // creation mode, and the forms whose flags or mode only the runtime
@@ -2916,13 +2938,17 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
         "webcrypto.decrypt",
         "webcrypto.wrapKey",
         "webcrypto.unwrapKey",
+        "webcrypto.encapsulateBits",
+        "webcrypto.encapsulateKey",
+        "webcrypto.decapsulateBits",
+        "webcrypto.decapsulateKey",
         "webcrypto.deriveBits",
         "webcrypto.deriveKey",
         "webcrypto.sign",
         "webcrypto.verify",
         "webcrypto.digest",
       ],
-      note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
+      note: "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, ML-KEM encapsulateBits and decapsulateBits with their *Key forms, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused",
     },
     {
       id: "stdlib.webcrypto.CryptoKey",
@@ -2953,6 +2979,13 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs.watchFile",
       fns: ["fs.watchFile", "statWatcher.ref", "statWatcher.unref"],
       note: "stat polling of a resolved path with Stats listeners, answering the StatWatcher whose ref()/unref() move that registration's loop liveness; bigint: true is refused",
+    },
+    {
+      id: "node-builtin.fs.openAsBlob",
+      kind: "node-builtin",
+      name: "fs.openAsBlob",
+      fns: ["fs.openAsBlob"],
+      note: "a Blob over a file's bytes, read on demand: the open and fstat happen at the call, and every read re-checks the file's size and modification time",
     },
     {
       id: "node-builtin.fs.unwatchFile",
@@ -4268,12 +4301,13 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     member === "toLocaleUpperCase"
   ) {
     hint =
-      "collation and locale negotiation stay outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation) — what lowers: Intl.NumberFormat and " +
-      "Intl.DateTimeFormat objects with format(), the toLocaleString(), toLocaleDateString() " +
-      'and toLocaleTimeString() forms with a locale and options (the default locale, "en-US" ' +
-      'or "en"), and Intl.Segmenter with grapheme or word granularity; sentence segmentation, ' +
-      "resolvedOptions, and the remaining Intl constructors remain unsupported";
+      "collation and the remaining Intl surfaces stay outside the static runtime (the " +
+      "localeCompare stance: code-unit order, no collation) — what lowers: Intl.NumberFormat " +
+      "and Intl.DateTimeFormat objects with format(), the toLocaleString(), " +
+      "toLocaleDateString() and toLocaleTimeString() forms with a locale and options (the " +
+      "default locale, or one string tag validated and negotiated as Node does), and " +
+      "Intl.Segmenter with grapheme or word granularity; sentence segmentation, " +
+      "resolvedOptions, locale lists, and the remaining Intl constructors remain unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +

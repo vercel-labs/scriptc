@@ -1820,11 +1820,68 @@ static void stream_ref_member_questions(void) {
   assert(!scr_exc_pending());
 }
 
+/* scr_dyn_class_value_slot folds a class value's key at 32 bits, as
+ * ir/class-key-index.ts classValueSlot does. classval:Foo folds to a word
+ * whose length term and tail sum past INT32_MAX, so the arithmetic has to be
+ * unsigned. */
+static void class_value_slots(void) {
+  static const int expected[] = {1,   3,   6,    12,   25,   51,   103,  206,
+                                 412, 825, 1651, 3303, 6606, 13212, 26424, 52848};
+  ScrStr *name = scr_str_new("Foo", 3);
+  ScrClassObj tpl = {0};
+  tpl.name = name;
+  ScrClassObj *cls = scr_classobj_new(&tpl, 0);
+  ScrDyn *value = scr_dyn_new_class(cls, "classval:Foo");
+  scr_classobj_release(cls);
+  for (int bits = 1; bits <= 16; bits++) {
+    int slot = scr_dyn_class_value_slot(value, bits);
+    assert(slot == expected[bits - 1]);
+  }
+  assert(!scr_exc_pending());
+
+  /* A value that is not a class value, and a key shorter than four bytes. */
+  ScrDyn *plain = scr_dyn_new_obj();
+  assert(scr_dyn_class_value_slot(plain, 9) == -1);
+  scr_dyn_release(plain);
+  ScrStr *short_name = scr_str_new("Ab", 2);
+  ScrClassObj short_tpl = {0};
+  short_tpl.name = short_name;
+  ScrClassObj *short_cls = scr_classobj_new(&short_tpl, 0);
+  ScrDyn *short_value = scr_dyn_new_class(short_cls, "abc");
+  scr_classobj_release(short_cls);
+  assert(scr_dyn_class_value_slot(short_value, 9) == -1);
+  scr_dyn_release(short_value);
+  scr_str_release(short_name);
+  scr_str_release(name);
+  scr_dyn_release(value);
+}
+
+/* The leak scan's node record answers by provenance: an allocation the
+ * dynamic allocator did not make is not a node whatever its bytes hold, a
+ * node is, and a released node's memory is no longer one. */
+static void leak_scan_record_names_nodes(void) {
+#ifdef SCR_LSAN_IMMORTAL
+  extern bool scr_lsan_dyns_has(const void *node);
+  void *foreign = calloc(1, 256);
+  assert(foreign != NULL);
+  assert(!scr_lsan_dyns_has(foreign));
+  ScrDyn *node = scr_dyn_new_obj();
+  assert(scr_lsan_dyns_has(node));
+  scr_dyn_release(node);
+#ifdef SCR_RC_AUDIT
+  assert(!scr_lsan_dyns_has(node)); /* the memory went back to the allocator */
+#endif
+  free(foreign);
+#endif
+}
+
 int main(void) {
   json_string_boundaries();
   record_frozen_bit();
   json_indent_ownership();
   scr_init();
+  class_value_slots();
+  leak_scan_record_names_nodes();
   checked_storage();
   shared_property_keys();
   named_record_assignment();

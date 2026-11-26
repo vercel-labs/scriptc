@@ -1,6 +1,7 @@
 /** Native codegen helper protocol shared by compiler hosts. */
-import { availableParallelism } from "node:os";
+import { availableParallelism, totalmem } from "node:os";
 
+import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -84,6 +85,18 @@ export interface NativeCodegenJobsOptions {
   unoptimized?: boolean;
 }
 
+/** The memory a build measures its lanes against. macOS counts only free and
+ * inactive pages as available, which on a Mac that has been up for a while is
+ * a small share of its RAM even when the rest is page cache the kernel
+ * reclaims on demand, so physical memory is the floor there. */
+export function nativeCodegenAvailableBytes(
+  measuredBytes: number,
+  totalBytes: number = totalmem(),
+  platform: NodeJS.Platform = process.platform,
+): number {
+  return platform === "darwin" ? Math.max(measuredBytes, totalBytes) : measuredBytes;
+}
+
 /** The partitions one build compiles at once: its partitions, the host's
  * hardware threads, or as many lanes as the memory available for code
  * generation can give that much peak each, whichever is fewest. A module
@@ -103,8 +116,13 @@ export function nativeCodegenJobs(
       // A host without the API measures nothing; assume a small one.
     }
     if (availableBytes === undefined) availableBytes = 8 * 1024 * 1024 * 1024;
+    else availableBytes = nativeCodegenAvailableBytes(availableBytes);
   }
-  const partitionBytes = Math.max(1, llvmBytes / Math.min(partitions, parallelism));
+  // Each lane parses and optimizes one partition, so its peak is a multiple
+  // of that partition's bytes, not of a thread's share of the module: a host
+  // that divides a large module into more partitions than it has threads
+  // still gives every lane one partition at a time.
+  const partitionBytes = Math.max(1, llvmBytes / partitions);
   const laneBytes = Math.max(
     partitionBytes *
       (options.unoptimized === true
@@ -297,6 +315,33 @@ export interface NativeCodegenVersion {
   supported_targets: string[];
   default_target: string;
   data_layout: string;
+  /** Optional protocol features this helper build understands. */
+  features?: string[];
+}
+
+/** How an optimized program object compiles the emitter's generated
+ * dynamic-dispatch helpers (`%dyn.class.*`): the helper's own
+ * `--dispatch-opt` values. */
+export type NativeDispatchOpt = "off" | "light";
+
+/** The dispatch-helper optimization a release program object asks for —
+ * `speed` builds keep the program's own level for them. The large helpers are
+ * bodies the program calls directly and never inlines, so their own O2 passes
+ * cost build time the program cannot observe; the helper runs them through the
+ * O1 function simplification instead and leaves the O2 pipeline to the
+ * program's own code. Development builds leave them at the program's level
+ * (opt-level 0). */
+export const GENERATED_DISPATCH_OPT: NativeDispatchOpt = "light";
+
+/** The dispatch-helper level a program object asks for, from the build's
+ * posture: release only. Speed is an optimized posture that deliberately
+ * trades build time for run time, so its program code keeps the fully
+ * optimized pipeline, large helpers included; development builds compile
+ * everything at opt-level 0. */
+export function generatedDispatchOptFor(
+  optimization: NativeOptimization | undefined,
+): NativeDispatchOpt | undefined {
+  return (optimization ?? "release") === "release" ? GENERATED_DISPATCH_OPT : undefined;
 }
 
 export function validateNativeCodegenVersion(
@@ -338,5 +383,12 @@ export function validateNativeCodegenVersion(
     mismatch("supported_targets", `an array containing ${target.llvmTriple}`);
   }
   if (typeof value["host_triple"] !== "string") mismatch("host_triple", "a string");
+  if (
+    value["features"] !== undefined &&
+    (!Array.isArray(value["features"]) ||
+      !value["features"].every((feature) => typeof feature === "string"))
+  ) {
+    mismatch("features", "an array of strings");
+  }
   return value as unknown as NativeCodegenVersion;
 }

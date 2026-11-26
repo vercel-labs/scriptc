@@ -1,27 +1,20 @@
-compat-absent-web-globals.ts:5:20 - error SC0001: Cannot find name 'EventSource'.
+compat-absent-web-globals.ts:7:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
 
-  4 | // rather than an unverified registry gap.
-  5 | const events = new EventSource("http://localhost:1/stream");
-    |                    ^~~~~~~~~~~
-  6 | events.close();
-
-compat-absent-web-globals.ts:8:20 - error SC0001: Cannot find name 'WebSocket'. Did you mean 'socket'?
-
-  7 | 
-  8 | const socket = new WebSocket("ws://localhost:1");
+  6 | // does not have the name at all.)
+  7 | const socket = new WebSocket("ws://localhost:1");
     |                    ^~~~~~~~~
-  9 | socket.close();
+  8 | socket.close();
 
-compat-absent-web-globals.ts:11:18 - error SC0001: Cannot find name 'CompressionStream'.
+compat-absent-web-globals.ts:10:18 - error SC0001: Cannot find name 'CompressionStream'.
 
-  10 | 
-  11 | const gzip = new CompressionStream("gzip");
+   9 | 
+  10 | const gzip = new CompressionStream("gzip");
      |                  ^~~~~~~~~~~~~~~~~
-  12 | const gunzip = new DecompressionStream("gzip");
+  11 | const gunzip = new DecompressionStream("gzip");
 
-compat-absent-web-globals.ts:12:20 - error SC0001: Cannot find name 'DecompressionStream'.
+compat-absent-web-globals.ts:11:20 - error SC0001: Cannot find name 'DecompressionStream'.
 
-  11 | const gzip = new CompressionStream("gzip");
-  12 | const gunzip = new DecompressionStream("gzip");
+  10 | const gzip = new CompressionStream("gzip");
+  11 | const gunzip = new DecompressionStream("gzip");
      |                    ^~~~~~~~~~~~~~~~~~~
-  13 | console.log(typeof gzip.readable, typeof gunzip.writable);
+  12 | console.log(typeof gzip.readable, typeof gunzip.writable);

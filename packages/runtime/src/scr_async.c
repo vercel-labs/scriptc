@@ -75,6 +75,20 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
  * no leak checker leave them NULL. */
 void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
 void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((weak));
+/* The allocator's view of an address: where its allocation starts, and its
+ * size. An abandoned fiber's leak-scan roots are named through these
+ * (scr_lsan_keep_fiber_values). Weak like the leak-region hooks: a
+ * sanitizer runtime without an allocator interface leaves them NULL. */
+const void *__sanitizer_get_allocated_begin(const void *p) __attribute__((weak));
+/* scr_json.c: the dynamic nodes this program allocated (SCR_LSAN_IMMORTAL). */
+bool scr_lsan_dyns_has(const void *node);
+size_t __sanitizer_get_allocated_size(const volatile void *p) __attribute__((weak));
+/* Whether any byte of [beg, beg+size) is poisoned. A suspended frame's
+ * redzones (and the padding between its locals) stay poisoned while the
+ * fiber is parked, so the leak scan must not read them: an instrumented
+ * read of a redzone aborts the process instead of scanning it. Weak like
+ * the hooks above. */
+void *__asan_region_is_poisoned(void *beg, size_t size) __attribute__((weak));
 #endif
 #endif
 
@@ -1496,6 +1510,186 @@ static void scr_fiber_keep_abandoned(ScrFiber *fiber) {
   scr_abandoned_fibers[scr_abandoned_len++] = fiber;
 }
 
+/* ── leak-scan roots of an abandoned fiber ──────────────────────────────
+ * A suspended fiber's stack, and a stackless generator's coroutine frame,
+ * stay referenced for the process's life on purpose (see above). But
+ * LeakSanitizer's reachability scan follows plain pointers only: a dynamic
+ * value a live frame keeps through an object's layout slot would be
+ * reported although the frame owns it, because a slot holds the cell word,
+ * not the pointer. Before abandoning the fiber, name every dynamic value
+ * the frame reaches for the scan (scr_lsan_immortal), walking the dynamic
+ * edges the scan cannot follow. Scans the saved stack, the coroutine frame
+ * and the fiber record, follows plain pointers into heap blocks, and stops
+ * after a fixed budget: an abandoned frame is small, and the budget bounds
+ * a pathological chain. Sanitizer lane only. */
+typedef struct {
+  const char *p;
+  size_t words;
+} ScrLsanRange;
+
+typedef struct {
+  const void **seen; /* allocation begins and dynamic values processed */
+  size_t seen_cap, seen_len;
+  ScrLsanRange *range;
+  size_t nrange, cap_range;
+  ScrDyn **dyn;
+  size_t ndyn, cap_dyn;
+  size_t budget; /* words left to scan */
+} ScrLsanScan;
+
+static void scr_lsan_seen_grow(ScrLsanScan *s) {
+  size_t cap = s->seen_cap ? s->seen_cap * 2 : 64;
+  const void **old = s->seen;
+  size_t old_cap = s->seen_cap;
+  const void **grown = calloc(cap, sizeof *grown);
+  if (!grown) scr_oom();
+  for (size_t i = 0; i < old_cap; i++) {
+    const void *v = old[i];
+    if (!v) continue;
+    size_t j = ((uintptr_t)v >> 4) & (cap - 1);
+    while (grown[j]) j = (j + 1) & (cap - 1);
+    grown[j] = v;
+  }
+  free(old);
+  s->seen = grown;
+  s->seen_cap = cap;
+}
+
+/* Adds `p` to the processed set; false when it was already there. */
+static bool scr_lsan_seen(ScrLsanScan *s, const void *p) {
+  if ((s->seen_len + 1) * 2 > s->seen_cap) scr_lsan_seen_grow(s);
+  size_t mask = s->seen_cap - 1;
+  size_t i = ((uintptr_t)p >> 4) & mask;
+  while (s->seen[i]) {
+    if (s->seen[i] == p) return false;
+    i = (i + 1) & mask;
+  }
+  s->seen[i] = p;
+  s->seen_len++;
+  return true;
+}
+
+static void scr_lsan_push_range(ScrLsanScan *s, const void *p, size_t bytes) {
+  if (!p || bytes < sizeof(void *)) return;
+  if (s->nrange == s->cap_range) {
+    size_t cap = s->cap_range ? s->cap_range * 2 : 32;
+    ScrLsanRange *grown = realloc(s->range, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    s->range = grown;
+    s->cap_range = cap;
+  }
+  s->range[s->nrange].p = p;
+  s->range[s->nrange].words = bytes / sizeof(void *);
+  s->nrange++;
+}
+
+static void scr_lsan_push_dyn(ScrLsanScan *s, ScrDyn *d) {
+  if (!d || !scr_lsan_seen(s, d)) return;
+  if (s->ndyn == s->cap_dyn) {
+    size_t cap = s->cap_dyn ? s->cap_dyn * 2 : 32;
+    ScrDyn **grown = realloc(s->dyn, cap * sizeof *grown);
+    if (!grown) scr_oom();
+    s->dyn = grown;
+    s->cap_dyn = cap;
+  }
+  s->dyn[s->ndyn++] = d;
+}
+
+/* A word that lies exactly one cycle header into an allocation of at least
+ * a dynamic value's size, that scr_json.c records as a node it allocated,
+ * and whose own fields still look like one. */
+static bool scr_lsan_is_dyn(const void *w, size_t bytes) {
+  if (bytes < sizeof(ScrCycHdr) + sizeof(ScrDyn)) return false;
+  /* Provenance, not the bytes at the address: a Buffer holds data the
+   * program controls, and the scan dereferences what it takes for a node. */
+  if (!scr_lsan_dyns_has(w)) return false;
+  const ScrDyn *d = w;
+  return (unsigned)d->kind <= (unsigned)SCR_DYN_PROXY && d->rc != 0;
+}
+
+static void scr_lsan_scan(ScrLsanScan *s) {
+  for (;;) {
+    if (s->nrange && s->budget) {
+      ScrLsanRange range = s->range[--s->nrange];
+      const uintptr_t *word = (const uintptr_t *)range.p;
+      for (size_t i = 0; i < range.words && s->budget; i++, s->budget--) {
+        /* A parked frame keeps its redzones (and any inter-local padding)
+         * poisoned: reading one is exactly the fault the sanitizer is
+         * there to report, and it would abort the leak scan it is part
+         * of. Skip those words; the live words around them are scanned. */
+        if (__asan_region_is_poisoned &&
+            __asan_region_is_poisoned((char *)range.p + i * sizeof *word, sizeof *word))
+          continue;
+        uintptr_t w = word[i];
+        if (!w) continue;
+        const void *begin = __sanitizer_get_allocated_begin((const void *)w);
+        if (!begin) continue;
+        size_t bytes = __sanitizer_get_allocated_size(begin);
+        if ((const char *)w == (const char *)begin + sizeof(ScrCycHdr)) {
+          if (scr_lsan_is_dyn((const void *)w, bytes)) scr_lsan_push_dyn(s, (ScrDyn *)w);
+          continue;
+        }
+        if ((const char *)w == (const char *)begin && scr_lsan_seen(s, begin))
+          scr_lsan_push_range(s, begin, bytes);
+      }
+      continue;
+    }
+    if (!s->ndyn) break;
+    ScrDyn *d = s->dyn[--s->ndyn];
+    scr_lsan_immortal(d);
+    /* Its own words carry plain pointers to native blocks (a handle's
+     * record, a closure, a container's items and entries) that may in turn
+     * hold dynamic values: scan them like any other allocation. */
+    {
+      const void *begin = __sanitizer_get_allocated_begin(d);
+      if (begin) scr_lsan_push_range(s, begin, __sanitizer_get_allocated_size(begin));
+    }
+    switch (d->kind) {
+    case SCR_DYN_ARR:
+      for (size_t i = 0; i < d->v.arr.len; i++)
+        if (!d->v.arr.presence || d->v.arr.presence[i])
+          scr_lsan_push_dyn(s, d->v.arr.items[i]);
+      scr_lsan_push_dyn(s, d->v.arr.properties);
+      break;
+    case SCR_DYN_OBJ:
+      for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+        ScrDynProp e = scr_dyn_obj_prop_at(d, i);
+        if (e.accessor) {
+          scr_lsan_push_dyn(s, e.getter);
+          scr_lsan_push_dyn(s, e.setter);
+        } else scr_lsan_push_dyn(s, e.value);
+      }
+      break;
+    case SCR_DYN_TYPED_REF: scr_lsan_push_dyn(s, d->v.typed_ref.materialized); break;
+    case SCR_DYN_PROXY:
+      scr_lsan_push_dyn(s, d->v.proxy.target);
+      scr_lsan_push_dyn(s, d->v.proxy.handler);
+      break;
+    default: break;
+    }
+    scr_lsan_push_dyn(s, d->prototype);
+    scr_lsan_push_dyn(s, d->symbol_properties);
+    scr_lsan_push_dyn(s, d->symbol_keys);
+  }
+}
+
+static void scr_lsan_keep_fiber_values(ScrFiber *fiber) {
+  if (!__sanitizer_get_allocated_begin || !__sanitizer_get_allocated_size) return;
+  ScrLsanScan s;
+  memset(&s, 0, sizeof s);
+  s.budget = (size_t)1 << 22; /* 32 MiB of frame/heap words */
+  scr_lsan_push_range(&s, fiber, sizeof *fiber);
+  if (fiber->coro) {
+    const void *begin = __sanitizer_get_allocated_begin(fiber->coro);
+    if (begin) scr_lsan_push_range(&s, begin, __sanitizer_get_allocated_size(begin));
+  }
+  scr_lsan_push_range(&s, fiber->stack, SCR_FIBER_STACK);
+  scr_lsan_scan(&s);
+  free(s.seen);
+  free(s.range);
+  free(s.dyn);
+}
+
 static SCR_TL ScrFiber *scr_stackless_fibers;
 #endif
 
@@ -1623,7 +1817,12 @@ static void scr_async_gen_resume_ready(ScrGen *g);
  * deadline and seq, so ties against later timers stay FIFO like Node's. */
 typedef struct {
   double deadline_ms;
-  unsigned long seq;
+  /* The tiebreak and the turn's eligibility snapshot compare this counter
+   * with `<`, so it must outlive any program's timer arming: a 32-bit
+   * counter (unsigned long on Windows) would wrap, and a timer armed before
+   * the wrap would read as armed by the current turn forever, blocking the
+   * heap's root. Same width as the net unit's registration sequence. */
+  unsigned long long seq;
   ScrClosure *cb; /* owned */
   double repeat_ms;
   unsigned long id;
@@ -1634,7 +1833,7 @@ typedef struct {
 
 static SCR_TL ScrTimer *scr_timers = NULL;
 static SCR_TL size_t scr_ntimers = 0, scr_timers_cap = 0;
-static SCR_TL unsigned long scr_timer_seq = 0;
+static SCR_TL unsigned long long scr_timer_seq = 0;
 /* REF'd armed timers — the loop's timer-liveness count (an unref'd timer
  * sits in the heap and still FIRES if the loop runs for other reasons, but
  * does not by itself keep the loop alive). Kept in sync by push/pop/remove
@@ -2235,6 +2434,8 @@ static void scr_next_tick_raw_first(void (*fn)(void)) {
   if (scr_nt_tail == NULL) scr_nt_tail = t;
 }
 
+void (*scr_raw_tick_teardown_hook)(void) = NULL;
+
 void scr_nticks_teardown(void) {
   while (scr_nt_head != NULL) {
     ScrNtick *t = scr_nt_head;
@@ -2244,6 +2445,9 @@ void scr_nticks_teardown(void) {
     scr_mem_free(t);
   }
   scr_nt_tail = NULL;
+  /* A raw tick whose state the marker owns (a queue it drains) releases it
+   * now: the markers never run. */
+  if (scr_raw_tick_teardown_hook != NULL) scr_raw_tick_teardown_hook();
 }
 
 static void scr_immediates_teardown(void);
@@ -7041,6 +7245,21 @@ static bool scr_loop_run_checkpoint(void) {
   return true;
 }
 
+/* A checkpoint for a dispatch station that batches several event callbacks
+ * in one C call (scr_children_poll's reap sweep). Node drains the
+ * nextTick/microtask queue after every callback it invokes from C++, so a
+ * tick one callback queued — the late send a child's 'disconnect' handler
+ * arms — runs before the station's next callback, that child's 'exit'.
+ * Hosted (Node owns the queues), no drain happens here: Node's own
+ * checkpoint already does it. */
+bool scr_loop_drain_checkpoint(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return true;
+#endif
+  if (!scr_loop_started) return true;
+  return scr_loop_run_checkpoint();
+}
+
 /* Defined beside the death rule at the end of the pass (the 'beforeExit'
  * branch re-tests it after listeners ran). */
 static bool scr_loop_has_reffed_work(void);
@@ -7072,7 +7291,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * callbacks already armed timers; the flag resets when the turn completes.
    * One scr_loop_run_pass call runs many turns, so it cannot be captured once
    * per call — that would strand every timer armed in an earlier turn. */
-  unsigned long timer_seq_at_turn_start = scr_timer_seq;
+  unsigned long long timer_seq_at_turn_start = scr_timer_seq;
   bool timer_snapshot_taken = false;
   for (;;) {
     if (SCR_PASS_HANDED_OVER()) return rejection_failed;
@@ -8474,6 +8693,9 @@ void scr_gen_release(ScrGen *g) {
       g->fiber->gen = NULL;
 #ifdef SCR_ASAN_FIBERS
       scr_fiber_keep_abandoned(g->fiber);
+      /* The frame keeps its dynamic values: name them for the leak scan,
+       * which cannot follow a layout slot's cell word. */
+      scr_lsan_keep_fiber_values(g->fiber);
 #endif
     }
   }

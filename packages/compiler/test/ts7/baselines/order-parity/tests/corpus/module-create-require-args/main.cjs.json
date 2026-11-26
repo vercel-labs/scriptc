@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/module-create-require-args/main.cjs"
+ ],
+ "diags": []
+}

@@ -460,6 +460,7 @@ export const dynSignatures = defineLibFnSignatures({
    * call: always throws Node's TypeError [ERR_MISSING_ARGS] with Node's
    * own (verbatim, doubly-wrapped) message. */
   "dyn.structuredClone": { argTypes: [DYN, DYN], result: DYN },
+  "dyn.truthy": { argTypes: [DYN], result: BOOL },
   /** The declaration-typed boundary's adoption (decl-projection.ts):
    * `source` is the dynamic value a boundary cast just converted, and
    * `capsule` a live capsule of the native value built from it. Every

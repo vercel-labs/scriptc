@@ -92,8 +92,8 @@ void scr_http2_session_set_ref(ScrH2Session *s, bool ref);
 void scr_http2_session_ref(ScrH2Session *s);
 void scr_http2_session_unref(ScrH2Session *s);
 /* session.goaway([code][, lastStreamID][, opaqueData]): an explicit GOAWAY
- * frame; a negative lastStreamID is the last processed stream (Node's
- * default), opaqueData appends to the frame. */
+ * frame; a zero or negative lastStreamID is the last processed peer
+ * stream (Node's default), opaqueData appends to the frame. */
 void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
                               ScrBytes *opaque /*borrowed, nullable*/);
 void scr_http2_session_on_error(ScrH2Session *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);

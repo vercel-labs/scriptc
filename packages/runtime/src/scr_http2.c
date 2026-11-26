@@ -56,6 +56,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #include <stdlib.h>
@@ -854,9 +855,9 @@ struct ScrH2Session {
   size_t nstreams, streams_cap;
   int32_t next_stream_id;      /* client request ids: 1, 3, 5, ... */
   int32_t last_recv_stream_id; /* the GOAWAY last-stream answer */
-  /* The highest stream id the session created (either direction): the
-   * default lastStreamID of session.goaway(), Node's last processed id. */
-  int32_t last_proc_stream_id;
+  int32_t last_proc_stream_id; /* the highest peer-initiated stream id
+                                * processed (nghttp2's last_proc_stream_id):
+                                * goaway()'s default lastStreamID. */
   /* The highest peer-initiated stream this side created: a HEADERS block
    * on a lower id is a closed stream's late frame, dropped rather than
    * opening a stream again. */
@@ -4588,26 +4589,47 @@ void scr_http2_session_on_timeout(ScrH2Session *s, ScrClosure *cb /*moves*/, boo
   scr_net_ls_add(&s->timeout_ls, cb, NULL, once);
 }
 
+/* getTimerDuration(msecs, 'msecs'): Node checks the duration before it
+ * touches the timer, so a negative or non-finite value throws
+ * ERR_OUT_OF_RANGE and leaves the armed timer and its listeners alone. */
+static bool scr_h2_timeout_msecs_valid(double msecs) {
+  if (isfinite(msecs) && msecs >= 0) return true;
+  char recv[48], msg[176];
+  scr_num_received(msecs, recv);
+  int len = snprintf(msg, sizeof msg,
+                     "The value of \"msecs\" is out of range. It must be a non-negative finite number. Received %s",
+                     recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
 /* session.setTimeout(msecs[, callback]): the session socket's idle timer;
  * the callback is registered as a once 'timeout' listener, as Node does. */
 void scr_http2_session_set_timeout(ScrH2Session *s, double msecs) {
+  if (s->destroyed || s->close_emitted) return;
+  if (!scr_h2_timeout_msecs_valid(msecs)) return;
   if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
 }
 
 void scr_http2_session_set_timeout_cb(ScrH2Session *s, double msecs, ScrClosure *cb /*moves*/) {
-  if (s->close_emitted) {
+  if (s->destroyed || s->close_emitted) {
     scr_closure_release(cb);
     return;
   }
-  /* a zero (or negative) idle timeout disables the timer and does NOT
-   * register the callback — Node's setTimeout(0, cb) shape. */
-  if (!(msecs > 0)) {
-    if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+  if (!scr_h2_timeout_msecs_valid(msecs)) {
+    scr_closure_release(cb);
+    return;
+  }
+  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
+  /* setTimeout(0, cb) disables the timer and does NOT register the
+   * callback; a registration of that same function leaves with it
+   * (Node's removeListener('timeout', callback)). */
+  if (msecs == 0) {
+    scr_net_ls_remove_last(&s->timeout_ls, cb);
     scr_closure_release(cb);
     return;
   }
   scr_net_ls_add(&s->timeout_ls, cb, NULL, true);
-  if (s->sock != NULL) scr_net_sock_set_timeout(s->sock, msecs);
 }
 
 /* session.ref()/unref(): the underlying socket's loop reference. */
@@ -4620,14 +4642,14 @@ void scr_http2_session_ref(ScrH2Session *s) { scr_http2_session_set_ref(s, true)
 void scr_http2_session_unref(ScrH2Session *s) { scr_http2_session_set_ref(s, false); }
 
 /* session.goaway([code][, lastStreamID][, opaqueData]): an explicit GOAWAY
- * frame. lastStreamID < 0 is Node's default — the last processed stream id;
- * opaqueData appends to the frame. The session refuses peer streams from
- * here on (the session's goaway_sent gate). */
+ * frame. A zero or negative lastStreamID is Node's default — the last
+ * processed peer stream id; opaqueData appends to the frame. The session
+ * refuses peer streams from here on (the session's goaway_sent gate). */
 void scr_http2_session_goaway(ScrH2Session *s, double code, double last_stream_id,
                               ScrBytes *opaque /*borrowed, nullable*/) {
   if (s == NULL || s->destroyed || !scr_h2_sock_alive(s)) return;
   int32_t last = (int32_t)last_stream_id;
-  if (last < 0) last = s->last_proc_stream_id;
+  if (last <= 0) last = s->last_proc_stream_id;
   uint32_t l32 = (uint32_t)last & 0x7fffffffu;
   uint32_t code32 = (uint32_t)(int64_t)code;
   size_t olen = opaque != NULL ? (size_t)opaque->len : 0;

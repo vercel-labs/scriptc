@@ -1,8 +1,11 @@
 // Http2Session controls: session.setTimeout() arms the socket's idle timer
-// and its callback is a once 'timeout' listener (the event fires too);
+// and its callback is a once 'timeout' listener (the event fires too; a
+// zero duration disables the timer and removes that callback's
+// registration, while a negative or non-finite one throws);
 // session.goaway([code][, lastStreamID][, opaqueData]) sends the frames,
-// with the lastStreamID defaulting to the last processed stream; ref/unref
-// are the underlying socket's loop reference (Node answers undefined).
+// with a zero lastStreamID defaulting to the last processed peer stream;
+// ref/unref are the underlying socket's loop reference (Node answers
+// undefined).
 import * as http2 from "node:http2";
 import type { AddressInfo } from "node:net";
 
@@ -21,6 +24,12 @@ function run(
       lines.push(`${label} session`);
       if (!withTimeout) return;
       session.on("timeout", () => lines.push(`${label} timeout event`));
+      // a zero duration removes the callback's existing registration
+      const removed = (): void => {
+        lines.push(`${label} removed callback`);
+      };
+      session.setTimeout(15, removed);
+      session.setTimeout(0, removed);
       // a zero timeout disables the timer and drops the callback (Node)
       session.setTimeout(0, () => lines.push(`${label} zero callback`));
       session.setTimeout(20, () => lines.push(`${label} timeout cb`));
@@ -115,8 +124,63 @@ function runClientDefault(): Promise<void> {
   });
 }
 
+function runTimeoutErrors(): Promise<void> {
+  return new Promise((resolve) => {
+    const server = http2.createServer();
+    const fired = (): void => {
+      lines.push("timeout-error fired");
+    };
+    server.on("session", (opened) => {
+      for (const ms of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        try {
+          opened.setTimeout(ms);
+          lines.push(`timeout-error ${ms} no error`);
+        } catch (error) {
+          const e = error as Error & { code?: string };
+          lines.push(`timeout-error ${ms} ${e.name} ${e.code} ${e.message}`);
+        }
+      }
+      try {
+        opened.setTimeout(-1, fired);
+        lines.push("timeout-error callback no error");
+      } catch (error) {
+        const e = error as Error & { code?: string };
+        lines.push(`timeout-error callback ${e.name} ${e.code} ${e.message}`);
+      }
+      // a rejected duration leaves an armed timer and its listener alone
+      opened.setTimeout(20, fired);
+      try {
+        opened.setTimeout(Number.NaN);
+      } catch (error) {
+        const e = error as Error & { code?: string };
+        lines.push(`timeout-error armed-then-rejected ${e.name} ${e.code}`);
+      }
+    });
+    server.on("stream", (stream) => {
+      stream.respond({ ":status": 200 });
+      stream.end("ok");
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const client = http2.connect(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      client.on("error", () => {});
+      const request = client.request({ ":path": "/" });
+      request.on("data", () => {});
+      request.on("end", () => {
+        setTimeout(() => {
+          client.destroy();
+          server.close(() => resolve());
+        }, 60);
+      });
+      request.resume();
+      request.end();
+    });
+  });
+}
+
 await run("timed", (session) => session.goaway(), true);
+await run("explicit-zero", (session) => session.goaway(0, 0), false);
 await run("opaque", (session) => session.goaway(0, 1, Buffer.from("bye")), false);
 await runClientDefault();
+await runTimeoutErrors();
 
 for (const line of lines) console.log(line);

@@ -632,6 +632,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.connect",
   "http2.connectCb",
   "http2.sessionRequest",
+  // setTimeout validates its duration like getTimerDuration: a negative or
+  // non-finite msecs throws ERR_OUT_OF_RANGE from the call.
+  "http2.sessionSetTimeout",
+  "http2.sessionSetTimeoutCb",
   "http2.streamSetEncoding",
   // Settings are validated (ERR_HTTP2_INVALID_SETTING_VALUE), a ping's
   // payload and a destroyed session are refused, and a dynamic listener

@@ -1219,7 +1219,7 @@ struct ScrHttpRes {
    * buffer (the corked bytes plus the socket's own) has emptied. */
   ScrNetLs drain_ls;
   bool need_drain;
-  bool drain_wait; /* the socket's 'drain' is armed for this message */
+  bool drain_wait;
   /* The AsyncLocalStorage context of the end() call (+1, NULL outside a
    * store) once `end_ctx_set`: 'finish', the end() callbacks and 'close'
    * after an end run in it, as Node's do. An http2 compatibility response
@@ -2888,10 +2888,19 @@ static void scr_http_res_arm_socket_drain(ScrHttpRes *r) {
 
 static void scr_http_res_maybe_drain(ScrHttpRes *r) {
   if (!r->need_drain || r->finished || r->destroyed) return;
-  if (scr_http_res_writable_length(r) != 0) {
+  /* 'drain' follows the socket's buffer. The message's own corked bytes
+   * leave at the cork flush (which drains again), so arming the socket for
+   * bytes it does not hold would wait on a flush that never comes and leave
+   * the loop turning on a waiter no event can satisfy. */
+  if (r->sock != NULL && scr_net_sock_writable_length(r->sock) != 0) {
     scr_http_res_arm_socket_drain(r);
     return;
   }
+  if (scr_http_res_writable_length(r) != 0) return;
+  r->need_drain = false;
+  /* Node emits 'drain' asynchronously: a handler that writes the next chunk
+   * must not re-enter this write's stack (a drain-driven upload would grow
+   * the native stack with every chunk) */
   r->need_drain = false;
   if (!scr_net_ls_has_live(&r->drain_ls)) return;
   scr_http_res_retain(r);
@@ -3391,7 +3400,8 @@ enum {
   SCR_HTTP_EMIT_CLIENT_FINISH = 9, /* ScrHttpClientReq: outgoing body flushed */
   SCR_HTTP_EMIT_CLIENT_ABORT = 10, /* ScrHttpClientReq: abort() notification */
   SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR = 11, /* ScrHttpClientReq: destroy(err) before a dial */
-  SCR_HTTP_EMIT_CLIENT_WAE = 12 /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_CLIENT_WAE = 12, /* ScrHttpClientReq: a write after end() */
+  SCR_HTTP_EMIT_CLIENT_DRAIN = 13 /* ScrHttpClientReq: 'drain', off the write stack */
 };
 
 typedef struct {
@@ -3405,6 +3415,7 @@ static SCR_TL size_t scr_http_emits_head = 0, scr_http_emits_len = 0, scr_http_e
 static void scr_http_client_release_internal(struct ScrHttpClientReq *c);
 static void scr_http_client_settle(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_socket(struct ScrHttpClientReq *c);
+static void scr_http_client_emit_drain(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_finish(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_destroy_error(struct ScrHttpClientReq *c);
 static void scr_http_client_emit_write_after_end(struct ScrHttpClientReq *c);
@@ -3457,6 +3468,7 @@ static void scr_http_emit_release(ScrHttpEmit *e) {
   case SCR_HTTP_EMIT_CLIENT_FINISH:
   case SCR_HTTP_EMIT_CLIENT_ABORT:
   case SCR_HTTP_EMIT_CLIENT_WAE:
+  case SCR_HTTP_EMIT_CLIENT_DRAIN:
   case SCR_HTTP_EMIT_CLIENT_DESTROY_ERROR:
     scr_http_client_release_internal((struct ScrHttpClientReq *)e->h);
     break;
@@ -3722,6 +3734,9 @@ static void scr_http_proto_sweep(void) {
       break;
     case SCR_HTTP_EMIT_CLIENT_WAE:
       scr_http_client_emit_write_after_end((struct ScrHttpClientReq *)e.h);
+      break;
+    case SCR_HTTP_EMIT_CLIENT_DRAIN:
+      scr_http_client_emit_drain((struct ScrHttpClientReq *)e.h);
       break;
     case SCR_HTTP_EMIT_CLIENT_ABORT:
       scr_http_client_emit_abort((struct ScrHttpClientReq *)e.h);
@@ -6489,6 +6504,7 @@ struct ScrHttpClientReq {
   ScrNetLs drain_ls;
   bool need_drain;
   bool drain_wait;
+  bool drain_emit_queued; /* 'drain' queued for the emit sweep (Node emits it async) */
   ScrNetLs continue_ls; /* 'continue': a 100 Continue response arrived */
   ScrNetLs info_ls;     /* 'information': any 1xx response but 101 (ScrHttpRespFn fires) */
   ScrNetLs connect_ls;  /* 'connect': the response to a CONNECT request (ScrHttpUpgradeFn fires) */
@@ -6715,6 +6731,13 @@ static void scr_http_client_emit_socket(ScrHttpClientReq *c) {
    * answered false drains here even while its corked bytes wait in the
    * message (they do not hold the socket's 'drain' back). */
   scr_http_client_maybe_drain(c);
+}
+
+/* 'drain' from the sweep: the write that answered false has returned, so a
+ * handler that writes the next chunk adds no frames to that stack. */
+static void scr_http_client_emit_drain(struct ScrHttpClientReq *c) {
+  c->drain_emit_queued = false;
+  scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
 }
 
 static void scr_http_client_emit_finish(ScrHttpClientReq *c) {
@@ -7415,10 +7438,12 @@ static void scr_http_client_maybe_drain(ScrHttpClientReq *c) {
     return;
   }
   c->need_drain = false;
-  if (!scr_net_ls_has_live(&c->drain_ls)) return;
-  scr_http_client_retain(c);
-  scr_net_fire0_this(&c->drain_ls, c, SCR_DYNH_HTTP_CLIENT);
-  scr_http_client_release(c);
+  /* Node emits 'drain' asynchronously: a handler that writes the next chunk
+   * must not re-enter this write's stack (a drain-driven upload would grow
+   * the native stack with every chunk) */
+  if (c->drain_emit_queued) return;
+  c->drain_emit_queued = true;
+  scr_http_emit_push(SCR_HTTP_EMIT_CLIENT_DRAIN, scr_http_client_retain(c));
 }
 
 static bool scr_http_client_write_backpressure(ScrHttpClientReq *c) {

@@ -1857,6 +1857,13 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  /** Whether the program type-checks against the bundled Node fallback
+   * declarations. A config-less project plans them, but a dependency can
+   * still pull the project's installed `@types/node` in (a
+   * `/// <reference types="node" />` directive resolves from the referring
+   * file regardless of the program roots), and the fallback then stands
+   * down. */
+  let nodeFallback = nodeTypes === null;
   // skipLibCheck is FORCED for every program: checking a third-party lib's
   // internals against OUR lib choice (es2025, no dyn, and the bundled Node
   // declarations when the project has no @types/node) is not scriptc's
@@ -1969,6 +1976,20 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // The fallback stands down when the constructed program already holds
+    // Node's types: a dependency's `/// <reference types="node" />` resolves
+    // the project's installed `@types/node` from the referring file, so both
+    // declaration sets would load and every global they share would be
+    // redeclared. Rebuild on the pulled types, and keep the bundled
+    // declarations only for a project that pulls nothing in.
+    if (nodeFallback && program.getSourceFileNames().some(isNodeTypesPath)) {
+      nodeFallback = false;
+      for (let index = programRoots.length - 1; index >= 0; index--)
+        if (isFallbackDtsPath(programRoots[index]!)) programRoots.splice(index, 1);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -2292,7 +2313,7 @@ function loadProgram7(
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
-        nodeFallback: nodeTypes === null,
+        nodeFallback,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,

@@ -18,6 +18,7 @@ import { SemanticChecker } from "./ts7/semantic-checker.js";
 import { DECL_BOUNDARY_PREFIX } from "./decl-projection.js";
 import { elideProgramImports } from "./import-elision.js";
 import { cjsVoidInitPreambleTargets, type CjsVoidInitPreamble } from "./program.js";
+import { isFallbackDtsPath } from "./dts-paths.js";
 import * as adapter from "./ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "./ts7/source-parser-node.js";
 
@@ -856,6 +857,47 @@ test("`export *` over a CommonJS module re-exports the names Node's lexer finds"
     expect(sf?.text).toContain('import "./runtime.cjs";');
     expect(sf?.text).toContain('export { "jsx", "Fragment" } from "./runtime.cjs";');
     expect(sf?.text).toContain('as "module.exports"');
+    expect(checkPreflight(load)).toEqual([]);
+  } finally {
+    load.dispose();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a config-less project retires the bundled fallback when a dependency pulls @types/node", () => {
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-node-fallback-"));
+  const write = (name: string, text: string): void => {
+    mkdirSync(dirname(join(dir, name)), { recursive: true });
+    writeFileSync(join(dir, name), text);
+  };
+  // No tsconfig.json: the project plans the bundled Node fallback. A
+  // dependency's type directive still resolves the installed @types/node,
+  // and the two declaration sets must not both load.
+  write("package.json", '{"type":"module","dependencies":{"dep":"1.0.0"}}');
+  write(
+    "node_modules/@types/node/package.json",
+    '{"name":"@types/node","version":"24.10.1","types":"index.d.ts"}',
+  );
+  write(
+    "node_modules/@types/node/index.d.ts",
+    "declare var BufferEncoding: string;\ndeclare var console: { log(...data: unknown[]): void };\ndeclare var __scriptcNodeTypesProbe: number;\n",
+  );
+  write(
+    "node_modules/dep/package.json",
+    '{"name":"dep","version":"1.0.0","type":"module","main":"./index.js","types":"./index.d.ts"}',
+  );
+  write(
+    "node_modules/dep/index.d.ts",
+    '/// <reference types="node" />\nexport declare function env(): string;\n',
+  );
+  write("node_modules/dep/index.js", 'export function env() {\n  return "value";\n}\n');
+  write("main.ts", 'import { env } from "dep";\nconsole.log(env());\n');
+  const load = loadProgram(join(dir, "main.ts"));
+  try {
+    const files = load.program.getSourceFiles().map((file) => file.fileName);
+    expect(files.some((file) => file.includes("@types/node"))).toBe(true);
+    expect(files.some((file) => isFallbackDtsPath(file))).toBe(false);
+    expect(load.typeWorld?.nodeFallback).toBe(false);
     expect(checkPreflight(load)).toEqual([]);
   } finally {
     load.dispose();

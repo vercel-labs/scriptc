@@ -1459,6 +1459,12 @@
  },
  {
   "file": "scr_lib.c",
+  "function": "scr_module_extensions_refuse",
+  "message": "require.extensions handlers are part of the standard library types but have no scriptc lowering yet",
+  "code": "SC2020"
+ },
+ {
+  "file": "scr_lib.c",
   "function": "scr_stats_constructor",
   "message": "Calling the fs.Stats constructors has no lowering",
   "code": "SC2020"

@@ -5521,6 +5521,148 @@ static void sf_headers_pair_length_error(size_t len) {
  * validates it after body extraction, matching Undici's two phases. */
 /* *canonical_out reports that the result copies a canonical Headers
  * object's pairs (SfHeaders.canonical). */
+/* Node's message for a sequence element that is not an object with an
+ * iterator: the position, and for a primitive its value in parentheses. */
+static void sf_headers_element_not_iterable(size_t index, const ScrDyn *value) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, "Headers constructor: init[");
+  char digits[24];
+  int n = snprintf(digits, sizeof digits, "%zu", index);
+  if (n > 0) scr_jb_write(&b, digits, (size_t)n);
+  scr_jb_putc(&b, ']');
+  if (value != NULL) {
+    scr_jb_puts(&b, " (");
+    switch (value->kind) {
+      case SCR_DYN_STR: scr_jb_put_json_str(&b, value->v.str); break;
+      case SCR_DYN_NUM: {
+        char number[40];
+        size_t len = scr_f64_to_str(value->v.num, number);
+        scr_jb_write(&b, number, len);
+        break;
+      }
+      case SCR_DYN_BOOL: scr_jb_puts(&b, value->v.b ? "true" : "false"); break;
+      case SCR_DYN_NULL: scr_jb_puts(&b, "null"); break;
+      case SCR_DYN_UNDEF: scr_jb_puts(&b, "undefined"); break;
+      case SCR_DYN_BIGINT: {
+        ScrStr *text = scr_bigint_inspect(value->v.bigint);
+        scr_jb_write(&b, text->data, text->len);
+        scr_str_release(text);
+        break;
+      }
+      case SCR_DYN_SYMBOL: {
+        ScrStr *text = value->v.symbol.render(value->v.symbol.value);
+        scr_jb_write(&b, text->data, text->len);
+        scr_str_release(text);
+        break;
+      }
+      default: break;
+    }
+    scr_jb_putc(&b, ')');
+  }
+  scr_jb_puts(&b, " is not iterable.");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Node's message for a symbol member of a pair. */
+static void sf_headers_symbol_member_error(size_t index, size_t member) {
+  char message[112];
+  int n = snprintf(message, sizeof message,
+                   "Headers constructor: init[%zu][%zu] is a symbol, which "
+                   "cannot be converted to a ByteString.",
+                   index, member);
+  if (n < 0 || (size_t)n >= sizeof message) sf_oom();
+  sf_type_error(message);
+}
+
+static bool sf_headers_primitive(const ScrDyn *value) {
+  switch (value->kind) {
+    case SCR_DYN_UNDEF: case SCR_DYN_NULL: case SCR_DYN_BOOL: case SCR_DYN_NUM:
+    case SCR_DYN_STR: case SCR_DYN_BIGINT: case SCR_DYN_SYMBOL:
+      return true;
+    default:
+      return false;
+  }
+}
+
+/* A pair's two members as the name and value texts (+1 each): the ByteString
+ * conversion of each, with Node's symbol message. False with the exception
+ * pending. */
+static bool sf_headers_pair_members(ScrDyn *const *items, size_t index, ScrStr **name_out,
+                                    ScrStr **value_out) {
+  for (size_t j = 0; j < 2; j++) {
+    if (items[j]->kind == SCR_DYN_SYMBOL) {
+      sf_headers_symbol_member_error(index, j);
+      return false;
+    }
+  }
+  ScrStr *raw_name = scr_dyn_string_coerce_js(items[0]);
+  ScrStr *name_bytes = raw_name ? sf_header_value_bytestring(raw_name) : NULL;
+  ScrStr *name = name_bytes ? sf_latin1_to_utf8(name_bytes) : NULL;
+  scr_str_release(name_bytes);
+  scr_str_release(raw_name);
+  ScrStr *raw_value = name ? scr_dyn_string_coerce_js(items[1]) : NULL;
+  ScrStr *value_bytes = raw_value ? sf_header_value_bytestring(raw_value) : NULL;
+  ScrStr *value = value_bytes ? sf_latin1_to_utf8(value_bytes) : NULL;
+  scr_str_release(value_bytes);
+  scr_str_release(raw_value);
+  if (!name || !value) {
+    scr_str_release(name);
+    scr_str_release(value);
+    return false;
+  }
+  *name_out = name;
+  *value_out = value;
+  return true;
+}
+
+/* The sequence branch: every element answers a pair, and Node's messages name
+ * the element's position. +1, or NULL with the exception pending. */
+static ScrArr *sf_headers_convert_sequence(ScrDyn *list /*borrowed*/) {
+  ScrArr *converted = scr_arr_new(SCR_ELEM_STR, 8);
+  size_t count = (size_t)scr_dyn_arr_len(list);
+  for (size_t i = 0; i < count; i++) {
+    ScrDyn *pair = list->v.arr.items[i];
+    ScrDyn *items = NULL;
+    bool iterable;
+    if (pair->kind == SCR_DYN_ARR) {
+      items = scr_dyn_retain(pair);
+      iterable = true;
+    } else {
+      iterable = scr_dyn_sequence_values(pair, &items);
+    }
+    if (!iterable) {
+      if (!scr_exc_pending())
+        sf_headers_element_not_iterable(i, sf_headers_primitive(pair) ? pair : NULL);
+      goto fail;
+    }
+    size_t pair_len = (size_t)scr_dyn_arr_len(items);
+    if (pair_len != 2) {
+      scr_dyn_release(items);
+      sf_headers_pair_length_error(pair_len);
+      goto fail;
+    }
+    ScrStr *name = NULL;
+    ScrStr *value = NULL;
+    bool ok = sf_headers_pair_members(items->v.arr.items, i, &name, &value);
+    scr_dyn_release(items);
+    if (!ok) goto fail;
+    scr_arr_push_ref(converted, name);
+    scr_arr_push_ref(converted, value);
+  }
+  return converted;
+fail:
+  scr_arr_release(converted);
+  return NULL;
+}
+
+/* The WebIDL HeadersInit conversion phase. It performs the observable
+ * sequence/record walk and every ByteString coercion, but deliberately
+ * leaves header-name/value syntax validation for initialization. Response
+ * construction converts this snapshot before status/statusText and only
+ * validates it after body extraction, matching Undici's two phases. */
+/* *canonical_out reports that the result copies a canonical Headers
+ * object's pairs (SfHeaders.canonical). */
 static ScrArr *sf_headers_convert_init(const ScrDyn *headers, bool *canonical_out) {
   *canonical_out = false;
   if (headers && headers->kind == SCR_DYN_TYPED_REF) {
@@ -5529,11 +5671,32 @@ static ScrArr *sf_headers_convert_init(const ScrDyn *headers, bool *canonical_ou
     scr_dyn_release(materialized);
     return converted;
   }
-  ScrArr *converted = scr_arr_new(SCR_ELEM_STR, 8);
   if (!headers || headers->kind == SCR_DYN_UNDEF) {
+    return scr_arr_new(SCR_ELEM_STR, 8);
+  }
+  if (headers->kind == SCR_DYN_HANDLE &&
+      headers->v.handle.tag == SCR_DYNH_FETCH_HEADERS) {
+    ScrArr *converted = scr_arr_new(SCR_ELEM_STR, 8);
+    SfHeaders *source = (SfHeaders *)headers->v.handle.ptr;
+    size_t n = (size_t)scr_arr_len(source->pairs);
+    for (size_t i = 0; i < n - n % 2; i++)
+      scr_arr_push_ref(converted, scr_str_retain(sf_pair_at(source->pairs, i)));
+    *canonical_out = source->canonical;
     return converted;
   }
+  /* The sequence branch: an array fast path, then any other object with an
+   * iterator (a Map, a Set, a generator, a program's own iterable). */
+  if (headers->kind == SCR_DYN_ARR)
+    return sf_headers_convert_sequence((ScrDyn *)headers);
+  ScrDyn *list = NULL;
+  if (scr_dyn_sequence_values(headers, &list)) {
+    ScrArr *converted = sf_headers_convert_sequence(list);
+    scr_dyn_release(list);
+    return converted;
+  }
+  if (scr_exc_pending()) return NULL;
   if (headers->kind == SCR_DYN_OBJ) {
+    ScrArr *converted = scr_arr_new(SCR_ELEM_STR, 8);
     for (size_t i = 0; i < scr_dyn_obj_count(headers); i++) {
       ScrDynProp e = scr_dyn_obj_prop_at(headers, i);
       ScrStr *raw_name = scr_str_new(e.key, e.key_len);
@@ -5553,82 +5716,19 @@ static ScrArr *sf_headers_convert_init(const ScrDyn *headers, bool *canonical_ou
       if (!name || !value) {
         scr_str_release(name);
         scr_str_release(value);
-        goto fail;
+        scr_arr_release(converted);
+        return NULL;
       }
       scr_arr_push_ref(converted, name);
       scr_arr_push_ref(converted, value);
     }
-    return converted;
-  }
-  if (headers->kind == SCR_DYN_ARR) {
-    for (size_t i = 0; i < headers->v.arr.len; i++) {
-      ScrDyn *pair = scr_dyn_retain(headers->v.arr.items[i]);
-      if (pair->kind == SCR_DYN_TYPED_REF) {
-        ScrDyn *materialized = scr_dyn_typed_ref_materialize(pair);
-        scr_dyn_release(pair);
-        pair = materialized;
-      }
-      if (pair->kind != SCR_DYN_ARR || pair->v.arr.len != 2) {
-        bool sequence = pair->kind == SCR_DYN_ARR;
-        size_t pair_len = pair->kind == SCR_DYN_ARR ? pair->v.arr.len : 0;
-        scr_dyn_release(pair);
-        if (!scr_exc_pending()) {
-          if (sequence) {
-            sf_headers_pair_length_error(pair_len);
-          } else {
-            sf_headers_constructor_type_error();
-          }
-        }
-        goto fail;
-      }
-      ScrDyn *name_source = scr_dyn_retain(pair->v.arr.items[0]);
-      ScrDyn *value_source = scr_dyn_retain(pair->v.arr.items[1]);
-      scr_dyn_release(pair);
-      ScrStr *raw_name = scr_dyn_string_coerce_js(name_source);
-      scr_dyn_release(name_source);
-      ScrStr *name_bytes = raw_name
-          ? sf_header_value_bytestring(raw_name)
-          : NULL;
-      ScrStr *name = name_bytes ? sf_latin1_to_utf8(name_bytes) : NULL;
-      scr_str_release(name_bytes);
-      scr_str_release(raw_name);
-      ScrStr *raw_value = name
-          ? scr_dyn_string_coerce_js(value_source)
-          : NULL;
-      scr_dyn_release(value_source);
-      ScrStr *value_bytes = raw_value
-          ? sf_header_value_bytestring(raw_value)
-          : NULL;
-      ScrStr *value = value_bytes ? sf_latin1_to_utf8(value_bytes) : NULL;
-      scr_str_release(value_bytes);
-      scr_str_release(raw_value);
-      if (!name || !value) {
-        scr_str_release(name);
-        scr_str_release(value);
-        goto fail;
-      }
-      scr_arr_push_ref(converted, name);
-      scr_arr_push_ref(converted, value);
-    }
-    return converted;
-  }
-  if (headers->kind == SCR_DYN_HANDLE &&
-      headers->v.handle.tag == SCR_DYNH_FETCH_HEADERS) {
-    SfHeaders *source = (SfHeaders *)headers->v.handle.ptr;
-    size_t n = (size_t)scr_arr_len(source->pairs);
-    for (size_t i = 0; i < n - n % 2; i++)
-      scr_arr_push_ref(converted, scr_str_retain(sf_pair_at(source->pairs, i)));
-    *canonical_out = source->canonical;
     return converted;
   }
   /* Functions are WebIDL objects and an ordinary function has no
    * enumerable HeadersInit entries. The checked-dynamic function model's
    * expando properties are non-enumerable by construction. */
-  if (headers->kind == SCR_DYN_FUNC) return converted;
+  if (headers->kind == SCR_DYN_FUNC) return scr_arr_new(SCR_ELEM_STR, 8);
   sf_headers_constructor_type_error();
-
-fail:
-  scr_arr_release(converted);
   return NULL;
 }
 

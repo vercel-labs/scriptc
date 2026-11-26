@@ -1857,6 +1857,13 @@ function loadProgram7(
       : null,
   );
   const nodeTypes = config.configFile ? resolveNodeTypes7(entryPath) : null;
+  /** Whether the program type-checks against the bundled Node fallback
+   * declarations. A config-less project plans them, but a dependency can
+   * still pull the project's installed `@types/node` in (a
+   * `/// <reference types="node" />` directive resolves from the referring
+   * file regardless of the program roots), and the fallback then stands
+   * down. */
+  let nodeFallback = nodeTypes === null;
   // skipLibCheck is FORCED for every program: checking a third-party lib's
   // internals against OUR lib choice (es2025, no dyn, and the bundled Node
   // declarations when the project has no @types/node) is not scriptc's
@@ -1969,6 +1976,41 @@ function loadProgram7(
       program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
       previous.dispose();
       if (pass === 31) throw new Error("static program-root discovery did not converge");
+    }
+    // The fallback stands down when the constructed program already holds
+    // the project's installed @types/node: a dependency's `/// <reference
+    // types="node" />` resolves it from the referring file, so both
+    // declaration sets would load and every global they share would be
+    // redeclared. `undici-types` alone is not Node's declarations (a
+    // dependency can reference it without installing @types/node), and the
+    // fallback stays for that program. Rebuild on the pulled types, and keep
+    // the bundled declarations only for a project that pulls nothing in.
+    const pulledNodeTypes = program
+      .getSourceFileNames()
+      .some((name) => npmPackageNameOf(name) === "@types/node");
+    if (nodeFallback && pulledNodeTypes) {
+      nodeFallback = false;
+      for (let index = programRoots.length - 1; index >= 0; index--)
+        if (isFallbackDtsPath(programRoots[index]!)) programRoots.splice(index, 1);
+      const previous = program;
+      program = host.createProgram([...programRoots, overridesDtsPath()], options, false, lineage);
+      previous.dispose();
+      // The adopted path adds the declarations an older @types/node lacks
+      // (DOMException for an imported package implementation's undici
+      // fetch); the fallback file carried them itself, so the stand-down
+      // must add them too.
+      const supplements = nodeTypesSupplementRoots7(program, host);
+      if (supplements.length > 0) {
+        for (const root of supplements) if (!programRoots.includes(root)) programRoots.push(root);
+        const withSupplements = program;
+        program = host.createProgram(
+          [...programRoots, overridesDtsPath()],
+          options,
+          false,
+          lineage,
+        );
+        withSupplements.dispose();
+      }
     }
     // Node 24 ships no temporal global, but TS 7 types it in an ESNext
     // lib slice. Programs that name it (feature probes such as smol-toml's
@@ -2292,7 +2334,7 @@ function loadProgram7(
       ...(parameterPropertiesFirst.size > 0 ? { parameterPropertiesFirst } : {}),
       dependencyJs: dependencyJsPredicate(entry.fileName, projectSources),
       typeWorld: {
-        nodeFallback: nodeTypes === null,
+        nodeFallback,
         projectLib: config.projectLib ?? null,
         forcedStrictNullChecks: config.forcedStrictNullChecks ?? false,
         projectCheckJs: config.checkJs ?? false,

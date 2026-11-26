@@ -353,6 +353,10 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "icu.dateTimeFormatNew",
   "icu.dateTimeFormatFormat",
   "icu.dateToLocale",
+  "icu.dateToLocaleDyn",
+  // Reads a computed locales value's locale-list length, which may run a
+  // getter and throw, and raises Node's TypeError and RangeError.
+  "icu.localeValue",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
@@ -540,6 +544,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "emitter.emitMixed",
   "emitter.hasDyn",
   "emitter.listenersDyn",
+  "emitter.rawListenersDyn",
   "emitter.emitError",
   "emitter.on",
   "emitter.onNamed",
@@ -628,6 +633,13 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "https.requestUrlDynCb",
   // address() of a Unix-socket server read as the AddressInfo record.
   "net.serverAddressCheck",
+  // socket.connect() with no arguments throws Node's ERR_MISSING_ARGS;
+  // socket.connect(string) runs validatePort's ladder (ERR_SOCKET_BAD_PORT
+  // for the empty, whitespace and out-of-range strings), and registers a
+  // run-time function callback.
+  "net.sockConnectMissing",
+  "net.sockConnectPath",
+  "net.sockConnectPathCb",
   // net.createServer(options[, listener]): Node's ServerOpts ladders —
   // options itself must be an object, options.highWaterMark and
   // options.keepAliveInitialDelay numbers, options.blockList a
@@ -641,6 +653,8 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   // synchronously (the stream-operations stance below), so the data/
   // write paths that can fire inline join too.
   "http2.connect",
+  "http2.performServerHandshake",
+  "http2.performServerHandshakeOpts",
   "http2.connectCb",
   "http2.sessionRequest",
   "http2.streamSetEncoding",
@@ -651,6 +665,7 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "http2.sessionSettingsCb0",
   "http2.sessionSettingsDynCb",
   "http2.sessionOnSettingsDyn",
+  "http2.sessionSetLocalWindowSize",
   "http2.sessionPing",
   "http2.sessionPingPayload",
   "http2.getPackedSettings",
@@ -1842,6 +1857,7 @@ const MAY_THROW_LIB_FNS_PART_6: readonly IrLibFn[] = [
   // form turns them into a rejection, the sync form throws them).
   "fsp.mkdtempDisposable",
   "fs.mkdtempDisposableSync",
+  "fs.openAsBlob",
   "mkdtempResult.remove",
   "mkdtempResult.removeSync",
   "mkdtempResult.asyncDispose",

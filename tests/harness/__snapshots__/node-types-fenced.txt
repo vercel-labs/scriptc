@@ -16,18 +16,18 @@ fenced.ts:28:3 - error SC2020: 'Response.formData' is typed by @types/node but h
 
   hint: the native fetch runtime does not implement this Response operation
 
-fenced.ts:37:1 - error SC2020: 'fs.openAsBlob' is typed by @types/node but has no scriptc lowering yet
+fenced.ts:37:1 - error SC2020: 'fsPromises.watch outside a for await' is part of the standard library types but has no scriptc lowering yet
 
   36 | import { win32 } from "path";
-  37 | openAsBlob("x");
-     | ^~~~~~~~~~~~~~~
+  37 | watch("x");
+     | ^~~~~~~~~~
   38 | console.log(EventEmitter.captureRejections);
 
-  hint: the type checker sees everything @types/node declares, but only the supported surface compiles (https://scriptc.dev/limitations)
+  hint: the iterator is consumed by `for await (const info of fsPromises.watch(path, options))`, which is the only supported shape
 
 fenced.ts:38:13 - error SC2020: 'typeof EventEmitter.captureRejections' is typed by @types/node but has no scriptc lowering yet
 
-  37 | openAsBlob("x");
+  37 | watch("x");
   38 | console.log(EventEmitter.captureRejections);
      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   39 | console.log(win32.sep);

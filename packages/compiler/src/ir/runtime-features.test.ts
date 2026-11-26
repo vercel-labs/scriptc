@@ -137,6 +137,15 @@ describe("runtime feature snapshots", () => {
     const blob = module();
     blob.functions[0]!.body.push(call("blob.new"), call("fetch.input"));
     expect(moduleRuntimeFeatures(blob)).toMatchObject({ fetch: true, webBodies: true });
+
+    // An fs.openAsBlob result handed straight to fetch is the same body.
+    const opened = module();
+    opened.functions[0]!.body.push(call("fs.openAsBlob"), call("fetch.input"));
+    expect(moduleRuntimeFeatures(opened)).toMatchObject({
+      fetch: true,
+      fsOpenAsBlob: true,
+      webBodies: true,
+    });
   });
 
   test("gates the call-time parameter bind unit on a barriered generator", () => {

@@ -2055,6 +2055,10 @@ bool scr_dyn_array_prototype_owns(const ScrStr *key);
  * NULL when the chain reaches Array.prototype without it. +1. */
 ScrDyn *scr_dyn_arr_custom_member(const ScrDyn *d, const char *key, size_t key_len);
 void scr_dyn_obj_set(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
+/* An own data property on a function value: the closure's property table,
+ * created on first use (the compiler's function values share it). Moves
+ * `value`. */
+void scr_dyn_fn_set_prop(ScrDyn *function, const char *key, size_t key_len, ScrDyn *value);
 void scr_dyn_obj_set_field(ScrDyn *obj, const char *key, size_t key_len, ScrDyn *value);
 ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor);
 /* The same, where the descriptor may be any object (scr_dyn_descriptor_snapshot). */
@@ -2849,6 +2853,13 @@ typedef struct ScrDynHandleOps {
    * fetch classes). NULL = scr_dyn_handle_props.c's slot table owns the
    * table. See ScrDynHandlePropsHooks.table. */
   void (*adopt_props)(void *h, ScrDyn *props);
+  /* The properties a program set on the handle as a checked object
+   * (Node's expando), borrowed; NULL when it has none. The WebIDL stream
+   * classes keep their expando here; own-property reflection reads its
+   * names after the class's declared ones. NULL hook = the unit keeps no
+   * such object; `tag` is the handle's installed class tag, so a unit whose
+   * states have several shapes can tell which ones keep an expando. */
+  ScrDyn *(*own_props)(void *h, ScrDynHandleTag tag);
 } ScrDynHandleOps;
 
 /* The own-property tables of runtime handles (scr_dyn_handle_props.c),
@@ -2938,6 +2949,13 @@ typedef struct ScrDynHandleClass {
    * replace. NULL = ScrDynHandleOps.invoke. */
   ScrDyn *(*method_invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
                            const char *what);
+  /* Whether Node's instances of this class own no properties (the WebIDL
+   * stream classes): getOwnPropertyNames answers an empty list and for-in
+   * visits the class prototype's members alone. False leaves the class's
+   * own-property reflection unmodelled, which keeps the named refusal: a
+   * class whose instances do own properties (node:dns Resolver's
+   * enumerable `_handle`) must model them here before reflection answers. */
+  bool no_own_properties;
 } ScrDynHandleClass;
 
 /* Installs a tag's ops with the class its handles belong to; both outlive
@@ -2992,6 +3010,15 @@ typedef struct ScrDynHandleClassOps {
    * handle whose class declares none; an alias tag answers its class's
    * table. */
   const ScrDynHandleAccessor *(*accessors)(const ScrDyn *handle);
+  /* Whether the handle's class declares that its instances own no
+   * properties (ScrDynHandleClass.no_own_properties): the one answer
+   * own-property reflection takes from the class. False for a class whose
+   * instances own properties it does not model, so the reflection keeps
+   * its refusal instead of answering an incomplete list. */
+  bool (*owns_nothing)(const ScrDyn *handle);
+  /* The properties a program added to the handle (borrowed), or NULL: the
+   * expando a declared class's instances keep beside their prototype. */
+  ScrDyn *(*own_properties)(const ScrDyn *handle);
 } ScrDynHandleClassOps;
 extern const ScrDynHandleClassOps *scr_dyn_handle_class_ops;
 

@@ -32,6 +32,8 @@ test(
     expect(run.stderr).toBe("");
     expect(run.stdout.trim().split("\n")).toEqual([
       "refused Error SC2020 a dynamic collection key whose value cannot be adopted as the key type is not supported yet",
+      // The conversion's own error survives the identity check.
+      "refused Error undefined getter boom",
       "stored 1 true",
     ]);
   },

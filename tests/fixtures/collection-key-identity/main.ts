@@ -17,5 +17,16 @@ function store(value: any): void {
   }
 }
 
+/* A conversion that throws while it reads the source — a getter that throws
+ * on a class instance held as a dynamic value — keeps its own error; the key
+ * refusal must not replace it. */
+class Explosive {
+  parent: Layer | null = null;
+  get order(): number {
+    throw new Error("getter boom");
+  }
+}
+
 store(Object.freeze(JSON.parse('{"parent":null,"order":1}')));
+store(new Explosive());
 store(JSON.parse('{"parent":null,"order":1}'));

@@ -577,6 +577,14 @@ const MAY_THROW_LIB_FNS_PART_2: readonly IrLibFn[] = [
   "tls.sockExportKeyingMaterial",
   "net.sockWriteDyn",
   "net.sockEndDyn",
+  // socket.write/end(data, encoding): Buffer.from's encoding ladder throws
+  // ERR_UNKNOWN_ENCODING for an unknown name.
+  "net.sockWriteEnc",
+  "net.sockEndEnc",
+  // write/end(data, encoding) with a Buffer chunk: the encoding is
+  // validated (Buffer.isEncoding, plus "buffer") before it is ignored.
+  "net.sockWriteBytesEnc",
+  "net.sockEndBytesEnc",
   "http.resWriteDyn",
   "http.resEndDyn",
   // setHeaders walks the argument (a Map's entries) and throws Node's

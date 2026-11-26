@@ -77217,6 +77217,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-tos-keepalive.ts",
@@ -77871,6 +77872,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -77993,6 +77995,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78471,6 +78474,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78523,6 +78527,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78553,6 +78558,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78626,6 +78632,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78656,6 +78663,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78776,6 +78784,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -78869,6 +78878,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]
@@ -81580,6 +81590,7 @@
           "tests/corpus/net-socket-construct-dyn.cjs",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-method-values.cjs",
           "tests/corpus/net-socket-set-encoding-names.ts",
           "tests/corpus/net-socket-write-rejected.cjs",
@@ -81917,6 +81928,7 @@
           "tests/corpus/net-paused-socket-exit.cjs",
           "tests/corpus/net-server-socket-peer-close.cjs",
           "tests/corpus/net-socket-encoding-pipe.cjs",
+          "tests/corpus/net-socket-encodings.ts",
           "tests/corpus/net-socket-construct.ts",
           "tests/corpus/net-socket-construct-dyn.cjs"
         ]

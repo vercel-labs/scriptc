@@ -119,6 +119,49 @@ test("a legacy method decorator runs after the static initializers, with a metho
   expect(defines.length).toBeGreaterThan(0);
 });
 
+test("a legacy property decorator gets (target, key, undefined) and defines nothing", async () => {
+  const source = [
+    "function mark(): (t: object, k: string) => void {",
+    "  return (t: object, k: string): void => { console.log(k); };",
+    "}",
+    "class Widget {",
+    "  @mark()",
+    "  name = 'w';",
+    "}",
+    "console.log(new Widget().name);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  const init = initFunction(mod);
+  const expressions = exprs(init);
+  const application = expressions.find((e) => e.kind === "dynCall" && e.calleeName === "decorator");
+  expect(application).toBeDefined();
+  if (application?.kind !== "dynCall") throw new Error("expected a dynamic call");
+  expect(application.args).toHaveLength(3);
+  const defines = expressions.filter((e) => e.kind === "libCall" && e.fn === "dyn.defineProperty");
+  expect(defines).toHaveLength(0);
+});
+
+test("constructor parameter decorators decorate a class with no class decorator", async () => {
+  const source = [
+    "function inject(): (t: object, k: string | symbol | undefined, i: number) => void {",
+    "  return (t: object, k: string | symbol | undefined, i: number): void => { console.log(k, i); };",
+    "}",
+    "class Widget {",
+    "  constructor(@inject() public dep: number) {}",
+    "}",
+    "console.log(new Widget(1).dep);",
+    "",
+  ].join("\n");
+  const mod = await lower(source, legacyTsconfig);
+  const init = initFunction(mod);
+  const application = exprs(init).find((e) => e.kind === "dynCall" && e.calleeName === "decorator");
+  expect(application).toBeDefined();
+  if (application?.kind !== "dynCall") throw new Error("expected a dynamic call");
+  // (class, undefined, index)
+  expect(application.args).toHaveLength(3);
+});
+
 test("a class whose only decoration is a method decorator still runs it", async () => {
   const source = [
     "function make(): (t: object, k: string, d: PropertyDescriptor) => void {",
